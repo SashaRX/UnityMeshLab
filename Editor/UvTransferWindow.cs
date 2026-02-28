@@ -119,6 +119,7 @@ namespace LightmapUvTool
 
         void OnDisable()
         {
+            if (CheckerTexturePreview.IsActive) CheckerTexturePreview.Restore();
             if (glMat) DestroyImmediate(glMat);
             glMat = null;
         }
@@ -462,9 +463,31 @@ namespace LightmapUvTool
             EditorGUILayout.EndScrollView();
 
             EditorGUILayout.Space(6);
-            H("Save");
+            H("3D Preview");
+            {
+                var bg = GUI.backgroundColor;
+                if (CheckerTexturePreview.IsActive) GUI.backgroundColor = new Color(1f,.4f,.3f);
+                string cLbl = CheckerTexturePreview.IsActive ? "■ Disable Checker" : "▶ Checker Preview (UV2)";
+                if (GUILayout.Button(cLbl, GUILayout.Height(24)))
+                    ToggleChecker();
+                GUI.backgroundColor = bg;
+            }
+
+            EditorGUILayout.Space(6);
+            H("Apply UV2 to FBX (Postprocessor)");
+            EditorGUILayout.HelpBox(
+                "Saves UV2 as sidecar asset beside the FBX. On every FBX reimport " +
+                "the postprocessor injects UV2 — just like Unity's Generate Lightmap UVs.",
+                MessageType.Info);
+            ColorBtn(new Color(.3f,.85f,.4f), "Apply UV2 to FBX", 28, ApplyUv2ToFbx);
+
+            EditorGUILayout.Space(4);
+            ColorBtn(new Color(.9f,.3f,.3f), "Reset UV2 (delete sidecar)", 24, ResetUv2FromFbx);
+
+            EditorGUILayout.Space(8);
+            H("Legacy Save (mesh .asset copies)");
             pipeSettings.savePath = EditorGUILayout.TextField("Path", pipeSettings.savePath);
-            ColorBtn(new Color(.9f,.5f,.2f), "Save All Mesh Assets", 26, SaveAll);
+            ColorBtn(new Color(.6f,.5f,.3f), "Save All Mesh Assets", 24, SaveAll);
             if (GUILayout.Button("Update LODGroup Refs")) UpdateRefs();
         }
 
@@ -838,6 +861,170 @@ namespace LightmapUvTool
                 Undo.RecordObject(e.meshFilter, "UV Transfer"); e.meshFilter.sharedMesh = m; n++;
             }
             Debug.Log("[Save] "+n+" refs updated");
+        }
+
+        // ════════════════════════════════════════════════════════════
+        //  Checker Preview
+        // ════════════════════════════════════════════════════════════
+
+        void ToggleChecker()
+        {
+            if (CheckerTexturePreview.IsActive)
+            {
+                CheckerTexturePreview.Restore();
+                Repaint();
+                return;
+            }
+
+            // Collect renderers + their UV2 working copies
+            var entries = new List<(Renderer renderer, Mesh meshWithUv2)>();
+            foreach (var e in meshEntries)
+            {
+                if (!e.include || e.renderer == null) continue;
+                Mesh uvMesh = e.lodIndex == sourceLodIndex ? e.repackedMesh : e.transferredMesh;
+                if (uvMesh != null)
+                    entries.Add((e.renderer, uvMesh));
+            }
+
+            if (entries.Count == 0)
+            {
+                Debug.LogWarning("[Checker] No meshes with UV2. Run Repack + Transfer first.");
+                return;
+            }
+
+            CheckerTexturePreview.Apply(entries);
+            Repaint();
+        }
+
+        // ════════════════════════════════════════════════════════════
+        //  Apply UV2 to FBX (postprocessor sidecar)
+        // ════════════════════════════════════════════════════════════
+
+        void ApplyUv2ToFbx()
+        {
+            if (lodGroup == null) return;
+
+            // Group mesh entries by source FBX path
+            var fbxGroups = new Dictionary<string, List<System.Tuple<string, Vector2[]>>>();
+
+            foreach (var e in meshEntries)
+            {
+                if (!e.include) continue;
+                Mesh resultMesh = e.lodIndex == sourceLodIndex ? e.repackedMesh : e.transferredMesh;
+                if (resultMesh == null) continue;
+
+                // Get FBX path from original mesh
+                string fbxPath = AssetDatabase.GetAssetPath(e.originalMesh);
+                if (string.IsNullOrEmpty(fbxPath)) continue;
+
+                // Read UV2 from our result mesh
+                var uv2List = new List<Vector2>();
+                resultMesh.GetUVs(pipeSettings.targetUvChannel, uv2List);
+                if (uv2List.Count == 0) continue;
+
+                if (!fbxGroups.ContainsKey(fbxPath))
+                    fbxGroups[fbxPath] = new List<System.Tuple<string, Vector2[]>>();
+
+                fbxGroups[fbxPath].Add(System.Tuple.Create(e.originalMesh.name, uv2List.ToArray()));
+            }
+
+            if (fbxGroups.Count == 0)
+            {
+                Debug.LogWarning("[Apply] No meshes with UV2 data to apply.");
+                return;
+            }
+
+            int totalMeshes = 0;
+            try
+            {
+                foreach (var kv in fbxGroups)
+                {
+                    string fbxPath = kv.Key;
+                    string sidecarPath = Uv2DataAsset.GetSidecarPath(fbxPath);
+
+                    // Load or create sidecar
+                    var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sidecarPath);
+                    if (data == null)
+                    {
+                        data = ScriptableObject.CreateInstance<Uv2DataAsset>();
+                        AssetDatabase.CreateAsset(data, sidecarPath);
+                    }
+
+                    // Write UV2 entries
+                    foreach (var entry in kv.Value)
+                    {
+                        data.Set(entry.Item1, entry.Item2);
+                        totalMeshes++;
+                    }
+
+                    EditorUtility.SetDirty(data);
+                    AssetDatabase.SaveAssets();
+
+                    Debug.Log($"[Apply] Sidecar '{sidecarPath}': {kv.Value.Count} mesh(es)");
+
+                    // Reimport FBX to trigger postprocessor
+                    AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError("[Apply] " + ex);
+            }
+
+            AssetDatabase.Refresh();
+            Debug.Log($"[Apply] Done: {totalMeshes} mesh(es) across {fbxGroups.Count} FBX file(s)");
+
+            // Clear working copies — the FBX meshes now have UV2 baked in
+            Refresh();
+            Repaint();
+        }
+
+        // ════════════════════════════════════════════════════════════
+        //  Reset UV2 (delete sidecar + reimport)
+        // ════════════════════════════════════════════════════════════
+
+        void ResetUv2FromFbx()
+        {
+            if (lodGroup == null) return;
+
+            // Collect unique FBX paths
+            var fbxPaths = new HashSet<string>();
+            foreach (var e in meshEntries)
+            {
+                if (e.originalMesh == null) continue;
+                string p = AssetDatabase.GetAssetPath(e.originalMesh);
+                if (!string.IsNullOrEmpty(p)) fbxPaths.Add(p);
+            }
+
+            if (fbxPaths.Count == 0) return;
+
+            if (!EditorUtility.DisplayDialog("Reset UV2",
+                $"Delete UV2 sidecar data for {fbxPaths.Count} FBX file(s)?\n" +
+                "This will remove all transferred UV2 on next reimport.",
+                "Delete", "Cancel"))
+                return;
+
+            int deleted = 0;
+            foreach (string fbxPath in fbxPaths)
+            {
+                string sidecarPath = Uv2DataAsset.GetSidecarPath(fbxPath);
+                if (AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sidecarPath) != null)
+                {
+                    AssetDatabase.DeleteAsset(sidecarPath);
+                    Debug.Log($"[Reset] Deleted '{sidecarPath}'");
+                    deleted++;
+                }
+
+                // Reimport FBX — mesh will no longer have UV2
+                AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate);
+            }
+
+            AssetDatabase.Refresh();
+            Debug.Log($"[Reset] Deleted {deleted} sidecar(s), reimported {fbxPaths.Count} FBX");
+
+            if (CheckerTexturePreview.IsActive) CheckerTexturePreview.Restore();
+            Refresh();
+            Repaint();
         }
 
         // ════════════════════════════════════════════════════════════

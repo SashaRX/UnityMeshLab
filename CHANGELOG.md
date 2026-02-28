@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0] - 2026-02-28
+
+### Added — Checker preview, FBX postprocessor, UV2 reset
+- **Checker 3D preview**: procedural 8×8 colored grid with alphanumeric labels (A1..H8),
+  applied to model in SceneView via UV2 channel. Temporarily swaps materials + meshes;
+  fully restored on disable. Button in Review tab.
+- **Apply UV2 to FBX (postprocessor)**: saves UV2 as sidecar ScriptableObject
+  (`ModelName_uv2data.asset`) beside the FBX. `Uv2AssetPostprocessor.OnPostprocessModel`
+  injects UV2 on every FBX reimport — identical to Unity's "Generate Lightmap UVs" approach.
+  FBX file stays untouched on disk.
+- **Reset UV2**: deletes sidecar asset and reimports FBX, removing all transferred UV2.
+- `CheckerTexturePreview.cs` — procedural texture generation + material/mesh swap management
+- `Uv2DataAsset.cs` — sidecar ScriptableObject storing per-mesh UV2 arrays
+- `Uv2AssetPostprocessor.cs` — AssetPostprocessor that reads sidecar and injects UV2
+- `CheckerUV2.shader` reads TEXCOORD2 for UV2 visualization
+
 ## [0.5.0] - 2026-02-28
 
 ### Changed — Architecture pivot: UV0-space shell transforms replace 3D projection
