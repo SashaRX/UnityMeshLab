@@ -1,0 +1,45 @@
+# Unity
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+*.csproj
+*.sln
+*.suo
+*.user
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vs/
+*.swp
+*~
+
+# Compiled native
+Assets/Plugins/**/*.dll
+Assets/Plugins/**/*.so
+Assets/Plugins/**/*.bundle
+Assets/Plugins/**/*.dylib
+*.obj
+*.lib
+*.exp
+
+# xatlas source (get from github.com/jpcy/xatlas)
+Native/xatlas.h
+Native/xatlas.cpp
+
+# Test file
+test.txt
