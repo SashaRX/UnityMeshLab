@@ -13,6 +13,8 @@ namespace LightmapUvTool
     {
         public string meshName;
         public Vector2[] uv2;
+        /// <summary>If true, postprocessor must weld UV0 false seams before applying UV2.</summary>
+        public bool welded;
     }
 
     [CreateAssetMenu(menuName = "LightmapUvTool/UV2 Data (internal)", fileName = "uv2data")]
@@ -29,16 +31,17 @@ namespace LightmapUvTool
         }
 
         /// <summary>Set UV2 for a mesh name (add or overwrite).</summary>
-        public void Set(string meshName, Vector2[] uv2)
+        public void Set(string meshName, Vector2[] uv2, bool welded = false)
         {
             var e = Find(meshName);
             if (e != null)
             {
                 e.uv2 = uv2;
+                e.welded = welded;
             }
             else
             {
-                entries.Add(new MeshUv2Entry { meshName = meshName, uv2 = uv2 });
+                entries.Add(new MeshUv2Entry { meshName = meshName, uv2 = uv2, welded = welded });
             }
         }
 

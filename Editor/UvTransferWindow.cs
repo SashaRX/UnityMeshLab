@@ -69,8 +69,10 @@ namespace LightmapUvTool
             public int lodIndex;
             public Renderer renderer;
             public MeshFilter meshFilter;
-            public Mesh originalMesh;
+            public Mesh originalMesh;     // working copy — may be replaced by weld
+            public Mesh fbxMesh;          // always the FBX asset mesh (for path lookup)
             public bool include = true;
+            public bool wasWelded;        // true if originalMesh was replaced by weld
             public Mesh repackedMesh;
             public Mesh transferredMesh;
             public TargetTransferState transferState;
@@ -166,7 +168,8 @@ namespace LightmapUvTool
                     if (mf == null || mf.sharedMesh == null) continue;
                     meshEntries.Add(new MeshEntry {
                         lodIndex = li, renderer = r, meshFilter = mf,
-                        originalMesh = mf.sharedMesh });
+                        originalMesh = mf.sharedMesh,
+                        fbxMesh = mf.sharedMesh });
                 }
             }
         }
@@ -861,6 +864,7 @@ namespace LightmapUvTool
                 if (welded != null && welded != e.originalMesh)
                 {
                     e.originalMesh = welded;
+                    e.wasWelded = true;
                     totalWelded++;
                 }
             }
@@ -1032,6 +1036,19 @@ namespace LightmapUvTool
             {
                 if (!e.include || e.renderer == null) continue;
                 Mesh uvMesh = e.lodIndex == sourceLodIndex ? e.repackedMesh : e.transferredMesh;
+
+                // Fallback: if no working copy, use original/FBX mesh if it has UV2
+                if (uvMesh == null)
+                {
+                    Mesh fallback = e.originalMesh ?? e.fbxMesh;
+                    if (fallback != null)
+                    {
+                        var testUv2 = new List<Vector2>();
+                        fallback.GetUVs(2, testUv2);
+                        if (testUv2.Count > 0) uvMesh = fallback;
+                    }
+                }
+
                 if (uvMesh != null)
                     entries.Add((e.renderer, uvMesh));
             }
@@ -1055,7 +1072,7 @@ namespace LightmapUvTool
             if (lodGroup == null) return;
 
             // Group mesh entries by source FBX path
-            var fbxGroups = new Dictionary<string, List<System.Tuple<string, Vector2[]>>>();
+            var fbxGroups = new Dictionary<string, List<(string name, Vector2[] uv2, bool welded)>>();
 
             foreach (var e in meshEntries)
             {
@@ -1063,8 +1080,9 @@ namespace LightmapUvTool
                 Mesh resultMesh = e.lodIndex == sourceLodIndex ? e.repackedMesh : e.transferredMesh;
                 if (resultMesh == null) continue;
 
-                // Get FBX path from original mesh
-                string fbxPath = AssetDatabase.GetAssetPath(e.originalMesh);
+                // Get FBX path from the immutable FBX mesh ref (survives weld)
+                Mesh pathMesh = e.fbxMesh != null ? e.fbxMesh : e.originalMesh;
+                string fbxPath = AssetDatabase.GetAssetPath(pathMesh);
                 if (string.IsNullOrEmpty(fbxPath)) continue;
 
                 // Read UV2 from our result mesh
@@ -1073,9 +1091,11 @@ namespace LightmapUvTool
                 if (uv2List.Count == 0) continue;
 
                 if (!fbxGroups.ContainsKey(fbxPath))
-                    fbxGroups[fbxPath] = new List<System.Tuple<string, Vector2[]>>();
+                    fbxGroups[fbxPath] = new List<(string, Vector2[], bool)>();
 
-                fbxGroups[fbxPath].Add(System.Tuple.Create(e.originalMesh.name, uv2List.ToArray()));
+                // Use FBX mesh name (postprocessor matches by this name)
+                string meshName = e.fbxMesh != null ? e.fbxMesh.name : e.originalMesh.name;
+                fbxGroups[fbxPath].Add((meshName, uv2List.ToArray(), e.wasWelded));
             }
 
             if (fbxGroups.Count == 0)
@@ -1100,10 +1120,10 @@ namespace LightmapUvTool
                         AssetDatabase.CreateAsset(data, sidecarPath);
                     }
 
-                    // Write UV2 entries
+                    // Write UV2 entries (with weld flag)
                     foreach (var entry in kv.Value)
                     {
-                        data.Set(entry.Item1, entry.Item2);
+                        data.Set(entry.name, entry.uv2, entry.welded);
                         totalMeshes++;
                     }
 

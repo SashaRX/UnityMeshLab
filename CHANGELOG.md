@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.1] - 2026-02-28
+
+### Fixed — Weld persistence + checker after Apply
+- **Weld persists through FBX reimport**: sidecar now stores `welded` flag per mesh;
+  postprocessor calls `WeldInPlace()` before UV2 injection so vertex count matches.
+- **FBX path lookup after weld**: added `fbxMesh` reference to MeshEntry so
+  `AssetDatabase.GetAssetPath` works even after `originalMesh` replaced by welded copy.
+  Previously welded meshes were silently skipped during Apply.
+- **Checker preview after Apply**: `ToggleChecker` now falls back to `originalMesh`/`fbxMesh`
+  if working copies were cleared by Refresh, checking for existing UV2 channel.
+
 ## [0.7.0] - 2026-02-28
 
 ### Added — UV0 analysis/fix + split padding

@@ -28,42 +28,41 @@ namespace LightmapUvTool
             {
                 var mesh = mf.sharedMesh;
                 if (mesh == null) continue;
-                var entry = data.Find(mesh.name);
-                if (entry == null || entry.uv2 == null) continue;
-
-                if (entry.uv2.Length == mesh.vertexCount)
-                {
-                    mesh.SetUVs(2, entry.uv2);
-                    applied++;
-                }
-                else
-                {
-                    Debug.LogWarning($"[UV2 Postprocess] '{mesh.name}': vertex count mismatch " +
-                                    $"(mesh={mesh.vertexCount}, uv2={entry.uv2.Length}). Skipped.");
-                }
+                if (ApplyEntryToMesh(data, mesh)) applied++;
             }
 
             foreach (var smr in skinned)
             {
                 var mesh = smr.sharedMesh;
                 if (mesh == null) continue;
-                var entry = data.Find(mesh.name);
-                if (entry == null || entry.uv2 == null) continue;
-
-                if (entry.uv2.Length == mesh.vertexCount)
-                {
-                    mesh.SetUVs(2, entry.uv2);
-                    applied++;
-                }
-                else
-                {
-                    Debug.LogWarning($"[UV2 Postprocess] '{mesh.name}': vertex count mismatch " +
-                                    $"(mesh={mesh.vertexCount}, uv2={entry.uv2.Length}). Skipped.");
-                }
+                if (ApplyEntryToMesh(data, mesh)) applied++;
             }
 
             if (applied > 0)
                 Debug.Log($"[UV2 Postprocess] '{modelPath}': injected UV2 into {applied} mesh(es)");
+        }
+
+        /// <summary>Apply weld (if flagged) + UV2 to a single mesh. Returns true on success.</summary>
+        static bool ApplyEntryToMesh(Uv2DataAsset data, Mesh mesh)
+        {
+            var entry = data.Find(mesh.name);
+            if (entry == null || entry.uv2 == null) return false;
+
+            // Weld false seams first if the sidecar says so
+            if (entry.welded)
+            {
+                Uv0Analyzer.WeldInPlace(mesh);
+            }
+
+            if (entry.uv2.Length == mesh.vertexCount)
+            {
+                mesh.SetUVs(2, entry.uv2);
+                return true;
+            }
+
+            Debug.LogWarning($"[UV2 Postprocess] '{mesh.name}': vertex count mismatch " +
+                            $"(mesh={mesh.vertexCount}, uv2={entry.uv2.Length}). Skipped.");
+            return false;
         }
     }
 }

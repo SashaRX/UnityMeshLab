@@ -269,6 +269,127 @@ namespace LightmapUvTool
         }
 
         // ═══════════════════════════════════════════════════════════
+        //  WeldInPlace: apply weld directly to an existing mesh
+        //  Used by postprocessor to weld FBX mesh before UV2 injection.
+        //  Returns true if weld was applied (vertex count changed).
+        // ═══════════════════════════════════════════════════════════
+
+        public static bool WeldInPlace(Mesh mesh)
+        {
+            var verts = mesh.vertices;
+            var normals = mesh.normals;
+            var uv0 = mesh.uv;
+            var tris = mesh.triangles;
+            int vertCount = mesh.vertexCount;
+
+            if (uv0 == null || uv0.Length == 0) return false;
+
+            bool hasNormals = normals != null && normals.Length == vertCount;
+            var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals);
+            if (weldMap.Count == 0) return false;
+
+            // Remap index buffer
+            int[] newTris = new int[tris.Length];
+            for (int i = 0; i < tris.Length; i++)
+            {
+                int v = tris[i];
+                newTris[i] = weldMap.TryGetValue(v, out int target) ? target : v;
+            }
+
+            // Find used vertices
+            var used = new HashSet<int>();
+            for (int i = 0; i < newTris.Length; i++)
+                used.Add(newTris[i]);
+
+            // Build compaction map
+            int[] compactMap = new int[vertCount];
+            for (int i = 0; i < vertCount; i++) compactMap[i] = -1;
+            int newVertCount = 0;
+            for (int i = 0; i < vertCount; i++)
+                if (used.Contains(i))
+                    compactMap[i] = newVertCount++;
+
+            // Remap triangles
+            for (int i = 0; i < newTris.Length; i++)
+                newTris[i] = compactMap[newTris[i]];
+
+            // Compact all vertex attributes
+            var newVerts = new Vector3[newVertCount];
+            Vector3[] newNormals = hasNormals ? new Vector3[newVertCount] : null;
+            var newUv0 = new Vector2[newVertCount];
+
+            var tangents = mesh.tangents;
+            bool hasTangents = tangents != null && tangents.Length == vertCount;
+            Vector4[] newTangents = hasTangents ? new Vector4[newVertCount] : null;
+
+            var uv1List = new List<Vector2>();
+            mesh.GetUVs(1, uv1List);
+            bool hasUv1 = uv1List.Count == vertCount;
+            Vector2[] uv1 = hasUv1 ? uv1List.ToArray() : null;
+            Vector2[] newUv1 = hasUv1 ? new Vector2[newVertCount] : null;
+
+            var colors = mesh.colors;
+            bool hasColors = colors != null && colors.Length == vertCount;
+            Color[] newColors = hasColors ? new Color[newVertCount] : null;
+
+            var boneWeights = mesh.boneWeights;
+            bool hasBW = boneWeights != null && boneWeights.Length == vertCount;
+            BoneWeight[] newBW = hasBW ? new BoneWeight[newVertCount] : null;
+
+            for (int i = 0; i < vertCount; i++)
+            {
+                int ni = compactMap[i];
+                if (ni < 0) continue;
+                newVerts[ni] = verts[i];
+                newUv0[ni] = uv0[i];
+                if (hasNormals) newNormals[ni] = normals[i];
+                if (hasTangents) newTangents[ni] = tangents[i];
+                if (hasUv1) newUv1[ni] = uv1[i];
+                if (hasColors) newColors[ni] = colors[i];
+                if (hasBW) newBW[ni] = boneWeights[i];
+            }
+
+            // Capture submesh layout before Clear
+            int subCount = mesh.subMeshCount;
+            var subDescs = new UnityEngine.Rendering.SubMeshDescriptor[subCount];
+            for (int s = 0; s < subCount; s++)
+                subDescs[s] = mesh.GetSubMesh(s);
+
+            // Copy bind poses if skinned
+            var bindPoses = mesh.bindposes;
+
+            // Apply to mesh in-place
+            mesh.Clear();
+            mesh.vertices = newVerts;
+            mesh.uv = newUv0;
+            if (hasNormals) mesh.normals = newNormals;
+            if (hasTangents) mesh.tangents = newTangents;
+            if (hasUv1) mesh.SetUVs(1, newUv1);
+            if (hasColors) mesh.colors = newColors;
+            if (hasBW) mesh.boneWeights = newBW;
+            if (bindPoses != null && bindPoses.Length > 0)
+                mesh.bindposes = bindPoses;
+
+            // Restore submeshes with compacted triangles
+            mesh.subMeshCount = subCount;
+            int triOffset = 0;
+            for (int s = 0; s < subCount; s++)
+            {
+                int idxCount = subDescs[s].indexCount;
+                int[] subTris = new int[idxCount];
+                System.Array.Copy(newTris, triOffset, subTris, 0, idxCount);
+                mesh.SetTriangles(subTris, s);
+                triOffset += idxCount;
+            }
+
+            mesh.RecalculateBounds();
+
+            Debug.Log($"[UV0Fix] WeldInPlace '{mesh.name}': " +
+                      $"welded {weldMap.Count} pairs, {vertCount} → {newVertCount} verts");
+            return true;
+        }
+
+        // ═══════════════════════════════════════════════════════════
         //  Build weld map: duplicate vertex → keep vertex
         //  Groups vertices by quantized position, then checks
         //  UV0 + normal within epsilon.
