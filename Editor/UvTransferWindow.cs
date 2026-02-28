@@ -69,6 +69,7 @@ namespace LightmapUvTool
             public Mesh transferredMesh;
             public TargetTransferState transferState;
             public TransferQualityEvaluator.TransferReport? report;
+            public GroupedShellTransfer.TransferResult shellTransferResult;
         }
 
         // ════════════════════════════════════════════════════════════
@@ -142,6 +143,7 @@ namespace LightmapUvTool
             meshEntries.Clear();
             hasRepack = hasTransfer = false;
             srcCache.Clear();
+            shellTransformCache.Clear();
             if (lodGroup == null) return;
             var lods = lodGroup.GetLODs();
             for (int li = 0; li < lods.Length; li++)
@@ -360,7 +362,13 @@ namespace LightmapUvTool
                 {
                     string st = e.transferredMesh != null ? "V" : "O";
                     string extra = "";
-                    if (e.report.HasValue)
+                    if (e.shellTransferResult != null)
+                    {
+                        var r = e.shellTransferResult;
+                        float p = r.verticesTotal > 0 ? r.verticesTransferred*100f/r.verticesTotal : 0;
+                        extra = $" ({r.shellsMatched}sh, {p:F0}% verts)";
+                    }
+                    else if (e.report.HasValue)
                     {
                         var r = e.report.Value;
                         float p = r.totalTriangles > 0 ? r.accepted*100f/r.totalTriangles : 0;
@@ -421,21 +429,33 @@ namespace LightmapUvTool
             {
                 if (li == sourceLodIndex) continue;
                 var ee = ForLod(li);
-                if (!ee.Any(e => e.report.HasValue)) continue;
+                if (!ee.Any(e => e.report.HasValue || e.shellTransferResult != null)) continue;
                 EditorGUILayout.LabelField("-- LOD" + li + " --", EditorStyles.boldLabel);
                 foreach (var e in ee)
                 {
+                    // New pipeline: GroupedShellTransfer results
+                    if (e.shellTransferResult != null)
+                    {
+                        var r = e.shellTransferResult;
+                        EditorGUILayout.LabelField("  " + e.renderer.name + " (shell transform)", EditorStyles.miniBoldLabel);
+                        Bar("Verts OK", r.verticesTransferred, r.verticesTotal, cAccept);
+                        Bar("Verts Miss", r.verticesTotal - r.verticesTransferred, r.verticesTotal, cReject);
+                        EditorGUILayout.LabelField($"  Shells: {r.shellsMatched} matched, {r.shellsUnmatched} unmatched", EditorStyles.miniLabel);
+                        EditorGUILayout.Space(4);
+                        continue;
+                    }
+                    // Legacy pipeline: old report
                     if (!e.report.HasValue) continue;
-                    var r = e.report.Value;
+                    var rp = e.report.Value;
                     EditorGUILayout.LabelField("  " + e.renderer.name, EditorStyles.miniBoldLabel);
-                    Bar("Accepted",  r.accepted, r.totalTriangles, cAccept);
-                    Bar("Ambiguous", r.ambiguous, r.totalTriangles, cAmbig);
-                    Bar("BdrRisk",   r.borderRisk, r.totalTriangles, cBorder);
-                    Bar("Mismatch",  r.unavoidableMismatch, r.totalTriangles, cMis);
-                    Bar("Rejected",  r.rejected, r.totalTriangles, cReject);
-                    EditorGUILayout.LabelField("  Err mean=" + r.meanError.ToString("F5") + " max=" + r.maxError.ToString("F5") + "  Conf=" + r.meanConfidence.ToString("F3"), EditorStyles.miniLabel);
-                    if (r.borderReport.totalBorderPrims > 0)
-                        EditorGUILayout.LabelField("  Border: " + r.borderReport.repairedCount + " fix, " + r.borderReport.skippedAlreadyMatching + " ok, " + r.borderReport.markedBorderRisk + " risk", EditorStyles.miniLabel);
+                    Bar("Accepted",  rp.accepted, rp.totalTriangles, cAccept);
+                    Bar("Ambiguous", rp.ambiguous, rp.totalTriangles, cAmbig);
+                    Bar("BdrRisk",   rp.borderRisk, rp.totalTriangles, cBorder);
+                    Bar("Mismatch",  rp.unavoidableMismatch, rp.totalTriangles, cMis);
+                    Bar("Rejected",  rp.rejected, rp.totalTriangles, cReject);
+                    EditorGUILayout.LabelField("  Err mean=" + rp.meanError.ToString("F5") + " max=" + rp.maxError.ToString("F5") + "  Conf=" + rp.meanConfidence.ToString("F3"), EditorStyles.miniLabel);
+                    if (rp.borderReport.totalBorderPrims > 0)
+                        EditorGUILayout.LabelField("  Border: " + rp.borderReport.repairedCount + " fix, " + rp.borderReport.skippedAlreadyMatching + " ok, " + rp.borderReport.markedBorderRisk + " risk", EditorStyles.miniLabel);
                     EditorGUILayout.Space(4);
                 }
             }
@@ -734,6 +754,10 @@ namespace LightmapUvTool
 
         void ExecTransferAll() { for (int li=0; li<LodN; li++) if (li!=sourceLodIndex) ExecTransferLod(li); }
 
+        // ── Source shell analysis cache (mesh instanceID → shell infos) ──
+        Dictionary<int, GroupedShellTransfer.SourceShellInfo[]> shellTransformCache =
+            new Dictionary<int, GroupedShellTransfer.SourceShellInfo[]>();
+
         void ExecTransferLod(int tLod)
         {
             var srcE = ForLod(sourceLodIndex); var tgtE = ForLod(tLod);
@@ -747,29 +771,29 @@ namespace LightmapUvTool
                     if (sM==null||tM==null) continue;
                     EditorUtility.DisplayProgressBar("Transfer", "LOD"+tLod+": "+te.renderer.name, .1f+.8f*ti/tgtE.Count);
 
+                    // Analyze source: extract UV0 shells and compute UV0→UV2 transforms
                     int id = sM.GetInstanceID();
-                    if (!srcCache.TryGetValue(id, out var sd)) { sd = SourceMeshAnalyzer.Analyze(sM, pipeSettings.sourceUvChannel); if (sd!=null) srcCache[id]=sd; }
-                    if (sd==null) continue;
+                    if (!shellTransformCache.TryGetValue(id, out var srcInfos))
+                    {
+                        srcInfos = GroupedShellTransfer.AnalyzeSource(sM);
+                        if (srcInfos != null) shellTransformCache[id] = srcInfos;
+                    }
+                    if (srcInfos == null) continue;
 
-                    var st = SourceMeshAnalyzer.PrepareTarget(tM, pipeSettings.targetUvChannel);
-                    ShellAssignmentSolver.Solve(sd, st, new ShellAssignmentSolver.Settings {
-                        maxProjectionDistance=pipeSettings.maxProjectionDistance,
-                        maxNormalAngle=pipeSettings.maxNormalAngle,
-                        filterBySubmesh=pipeSettings.filterBySubmesh });
-
-                    InitialUvTransferSolver.Solve(sd, st);
-
-                    var br = BorderRepairSolver.Solve(sd, st, new BorderRepairSolver.Settings {
-                        perimeterTolerance=pipeSettings.perimeterTolerance,
-                        borderFuseTolerance=pipeSettings.borderFuseTolerance,
-                        enableBorderRepair=pipeSettings.enableBorderRepair });
-
-                    var rpt = TransferQualityEvaluator.Evaluate(sd, st, br);
+                    // Transfer: match target UV0 shells → source, apply transforms
+                    var tr = GroupedShellTransfer.Transfer(tM, srcInfos);
+                    if (tr.uv2 == null) continue;
 
                     var om = Instantiate(tM); om.name = tM.name+"_uvTransfer";
-                    om.SetUVs(pipeSettings.targetUvChannel, new List<Vector2>(st.targetUv));
-                    te.transferredMesh=om; te.transferState=st; te.report=rpt;
-                    Debug.Log("[Transfer] "+te.renderer.name+": "+rpt.accepted+"/"+rpt.totalTriangles+" accepted");
+                    om.SetUVs(pipeSettings.targetUvChannel, new List<Vector2>(tr.uv2));
+                    te.transferredMesh = om;
+                    te.transferState = null;
+                    te.report = null;
+                    te.shellTransferResult = tr;
+
+                    Debug.Log($"[Transfer] {te.renderer.name}: " +
+                              $"{tr.shellsMatched} shells matched, {tr.shellsUnmatched} unmatched, " +
+                              $"{tr.verticesTransferred}/{tr.verticesTotal} verts");
                 }
                 hasTransfer = tgtE.Any(e => e.transferredMesh!=null);
             }

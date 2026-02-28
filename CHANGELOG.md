@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.5.0] - 2026-02-28
+
+### Changed — Architecture pivot: UV0-space shell transforms replace 3D projection
+- **New transfer approach**: instead of projecting target vertices onto source mesh in 3D,
+  compute per-shell similarity transform (rotate + scale + translate) from LOD0's UV0→UV2
+  mapping, then apply the same transform to all LOD vertices via UV0 shell matching.
+- xatlas repack preserves shell internal structure — only changes placement. This means
+  the UV0→UV2 mapping per shell is a pure similarity transform (4 parameters: a, b, tx, ty).
+- Shell matching uses UV0 bounding box overlap + UV0 centroid distance + 3D centroid
+  proximity (disambiguates stacked/mirrored shells).
+- Transfer is mathematically exact — no interpolation, no barycentric projection, no artifacts.
+- Old 3D projection pipeline (SourceMeshAnalyzer, ShellAssignmentSolver, InitialUvTransferSolver,
+  BorderRepairSolver) bypassed; code retained for reference.
+
+### Added
+- `GroupedShellTransfer.cs` — complete new pipeline: AnalyzeSource + Transfer
+- `GroupedShellTransfer.ShellTransform` — similarity transform struct with Apply method
+- `GroupedShellTransfer.SourceShellInfo` — per-shell data for cross-LOD matching
+- `GroupedShellTransfer.ComputeSimilarityTransform` — least-squares similarity fit (UV0→UV2)
+- Shell transform cache in UvTransferWindow (avoids re-analysis on repeated transfers)
+- Review tab shows shells matched/unmatched + vertex coverage instead of triangle status bars
+
 ## [0.4.1] - 2026-02-28
 
 ### Changed
