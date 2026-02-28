@@ -31,8 +31,14 @@ namespace LightmapUvTool
             UvTransferPipeline.PipelineSettings.Default;
 
         int atlasResolution = 1024;
-        int paddingPixels   = 2;
+        int shellPaddingPx  = 2;
+        int borderPaddingPx = 0;
         bool rotateCharts   = true;
+
+        // UV0 analysis
+        Dictionary<int, Uv0Report> uv0Reports = new Dictionary<int, Uv0Report>();
+        bool uv0Analyzed = false;
+        bool uv0Welded = false;
 
         // Source analysis cache (mesh instanceID → data)
         Dictionary<int, SourceMeshData> srcCache = new Dictionary<int, SourceMeshData>();
@@ -145,6 +151,9 @@ namespace LightmapUvTool
             hasRepack = hasTransfer = false;
             srcCache.Clear();
             shellTransformCache.Clear();
+            uv0Reports.Clear();
+            uv0Analyzed = false;
+            uv0Welded = false;
             if (lodGroup == null) return;
             var lods = lodGroup.GetLODs();
             for (int li = 0; li < lods.Length; li++)
@@ -299,6 +308,84 @@ namespace LightmapUvTool
             pipeSettings.saveNewMeshAssets = EditorGUILayout.Toggle("  Save Assets", pipeSettings.saveNewMeshAssets);
             if (pipeSettings.saveNewMeshAssets)
                 pipeSettings.savePath = EditorGUILayout.TextField("  Path", pipeSettings.savePath);
+
+            // ── UV0 Analysis ──
+            EditorGUILayout.Space(8);
+            H("UV0 Analysis & Fix");
+            EditorGUILayout.HelpBox(
+                "Detects false UV seams (weld candidates), degenerate triangles, " +
+                "flipped triangles, and overlapping shells in UV0.",
+                MessageType.Info);
+
+            ColorBtn(new Color(.5f,.7f,.9f), "Analyze UV0", 24, ExecAnalyzeUv0);
+
+            if (uv0Analyzed)
+            {
+                bool anyIssues = false;
+                foreach (var kv in uv0Reports)
+                {
+                    var r = kv.Value;
+                    EditorGUILayout.LabelField(r.meshName, EditorStyles.miniBoldLabel);
+                    EditorGUILayout.LabelField(
+                        $"  {r.totalShells} shells, {r.totalVertices} verts, {r.totalTriangles} tris",
+                        EditorStyles.miniLabel);
+
+                    if (r.falseSeamPairs > 0)
+                    {
+                        var c = GUI.contentColor;
+                        GUI.contentColor = new Color(1f,.7f,.2f);
+                        EditorGUILayout.LabelField(
+                            $"  ⚠ {r.falseSeamPairs} false seam pairs ({r.falseSeamVertices} weldable verts)",
+                            EditorStyles.miniLabel);
+                        GUI.contentColor = c;
+                        anyIssues = true;
+                    }
+                    if (r.degenerateTriangles > 0)
+                    {
+                        var c = GUI.contentColor;
+                        GUI.contentColor = new Color(1f,.5f,.3f);
+                        EditorGUILayout.LabelField(
+                            $"  ⚠ {r.degenerateTriangles} degenerate UV triangles",
+                            EditorStyles.miniLabel);
+                        GUI.contentColor = c;
+                    }
+                    if (r.flippedTriangles > 0)
+                    {
+                        var c = GUI.contentColor;
+                        GUI.contentColor = new Color(1f,.4f,.4f);
+                        EditorGUILayout.LabelField(
+                            $"  ⚠ {r.flippedTriangles} flipped UV triangles",
+                            EditorStyles.miniLabel);
+                        GUI.contentColor = c;
+                    }
+                    if (r.overlapGroups > 0)
+                    {
+                        EditorGUILayout.LabelField(
+                            $"  {r.overlapGroups} overlap groups ({r.overlappingShells} shells)",
+                            EditorStyles.miniLabel);
+                    }
+                    if (!r.HasIssues)
+                    {
+                        var c = GUI.contentColor;
+                        GUI.contentColor = new Color(.3f,.9f,.3f);
+                        EditorGUILayout.LabelField("  ✓ No issues", EditorStyles.miniLabel);
+                        GUI.contentColor = c;
+                    }
+                }
+
+                if (anyIssues && !uv0Welded)
+                {
+                    EditorGUILayout.Space(4);
+                    ColorBtn(new Color(.9f,.7f,.2f), "Weld False Seams (all meshes)", 24, ExecWeldUv0);
+                }
+                else if (uv0Welded)
+                {
+                    var c = GUI.contentColor;
+                    GUI.contentColor = new Color(.3f,.9f,.3f);
+                    EditorGUILayout.LabelField("✓ UV0 welded — working copies ready", EditorStyles.miniLabel);
+                    GUI.contentColor = c;
+                }
+            }
         }
 
         // ──────────────── Repack ────────────────
@@ -309,7 +396,10 @@ namespace LightmapUvTool
             if (lodGroup == null) { Warn("Set LODGroup first."); return; }
 
             atlasResolution = EditorGUILayout.IntField("Resolution", atlasResolution);
-            paddingPixels   = EditorGUILayout.IntSlider("Padding px", paddingPixels, 0, 16);
+            shellPaddingPx  = EditorGUILayout.IntSlider("Shell Padding (px)", shellPaddingPx, 0, 16);
+            borderPaddingPx = EditorGUILayout.IntSlider("Border Padding (px)", borderPaddingPx, 0, 16);
+            if (borderPaddingPx == 0)
+                EditorGUILayout.LabelField("  Border=0: UVs extend to atlas edges (Clamp mode)", EditorStyles.miniLabel);
             rotateCharts    = EditorGUILayout.Toggle("Rotate", rotateCharts);
 
             var src = ForLod(sourceLodIndex);
@@ -724,6 +814,65 @@ namespace LightmapUvTool
         }
 
         // ════════════════════════════════════════════════════════════
+        //  UV0 Analysis & Weld
+        // ════════════════════════════════════════════════════════════
+
+        void ExecAnalyzeUv0()
+        {
+            if (lodGroup == null) return;
+            uv0Reports.Clear();
+
+            foreach (var e in meshEntries)
+            {
+                if (!e.include || e.originalMesh == null) continue;
+                var report = Uv0Analyzer.Analyze(e.originalMesh);
+                uv0Reports[e.originalMesh.GetInstanceID()] = report;
+            }
+
+            uv0Analyzed = true;
+            int totalFalseSeams = 0, totalDegen = 0, totalFlipped = 0;
+            foreach (var kv in uv0Reports)
+            {
+                totalFalseSeams += kv.Value.falseSeamPairs;
+                totalDegen += kv.Value.degenerateTriangles;
+                totalFlipped += kv.Value.flippedTriangles;
+            }
+            Debug.Log($"[UV0Analyze] {uv0Reports.Count} meshes: " +
+                      $"{totalFalseSeams} false seams, {totalDegen} degenerate, {totalFlipped} flipped");
+            Repaint();
+        }
+
+        void ExecWeldUv0()
+        {
+            if (lodGroup == null) return;
+
+            int totalWelded = 0;
+            foreach (var e in meshEntries)
+            {
+                if (!e.include || e.originalMesh == null) continue;
+
+                // Check if this mesh has false seams
+                int id = e.originalMesh.GetInstanceID();
+                if (!uv0Reports.TryGetValue(id, out var report)) continue;
+                if (report.falseSeamPairs == 0) continue;
+
+                // Weld: creates new mesh with merged indices
+                var welded = Uv0Analyzer.WeldUv0(e.originalMesh);
+                if (welded != null && welded != e.originalMesh)
+                {
+                    e.originalMesh = welded;
+                    totalWelded++;
+                }
+            }
+
+            uv0Welded = totalWelded > 0;
+            Debug.Log($"[UV0Fix] Welded {totalWelded} meshes (working copies only, FBX untouched)");
+
+            // Re-analyze to show updated state
+            ExecAnalyzeUv0();
+        }
+
+        // ════════════════════════════════════════════════════════════
         //  Pipeline
         // ════════════════════════════════════════════════════════════
 
@@ -750,7 +899,8 @@ namespace LightmapUvTool
 
                 var opts = RepackOptions.Default;
                 opts.resolution = (uint)atlasResolution;
-                opts.padding = (uint)paddingPixels;
+                opts.padding = (uint)shellPaddingPx;
+                opts.borderPadding = (uint)borderPaddingPx;
 
                 // Pack all meshes into a single shared atlas
                 var results = XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);

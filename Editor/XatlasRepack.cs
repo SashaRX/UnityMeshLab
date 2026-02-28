@@ -8,7 +8,8 @@ namespace LightmapUvTool
 {
     public struct RepackOptions
     {
-        public uint padding;
+        public uint padding;        // inter-shell padding (pixels)
+        public uint borderPadding;   // atlas edge padding (pixels), default 0
         public uint resolution;
         public float texelsPerUnit;
         public bool bilinear;
@@ -18,6 +19,7 @@ namespace LightmapUvTool
         public static RepackOptions Default => new RepackOptions
         {
             padding    = 4,
+            borderPadding = 0,
             resolution = 0,
             texelsPerUnit = 0f,
             bilinear   = true,
@@ -200,6 +202,10 @@ namespace LightmapUvTool
 
                 // ── Diagnostic: top longest UV2 edges (after fix) ──
                 DiagnoseLongestEdges(uv2, tris, faceShellIds, vertChartId, 10);
+
+                // ── Border padding inset ──
+                if (opts.borderPadding > 0 && result.atlasWidth > 0)
+                    ApplyBorderInset(uv2, opts.borderPadding, result.atlasWidth, result.atlasHeight);
 
                 // ── Apply UV2 (channel 2 — matches SourceMeshAnalyzer.GetUVs(2)) ──
                 mesh.SetUVs(2, uv2);
@@ -384,6 +390,10 @@ namespace LightmapUvTool
                     results[m].orphanTriangles = orphanTris;
                     results[m].snappedVertices = snapped;
 
+                    // Border padding inset
+                    if (opts.borderPadding > 0 && atlasW > 0)
+                        ApplyBorderInset(uv2, opts.borderPadding, atlasW, atlasH);
+
                     // Apply UV2
                     mesh.SetUVs(2, uv2);
                     results[m].ok = true;
@@ -398,6 +408,52 @@ namespace LightmapUvTool
             }
 
             return results;
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // Apply border inset: shrink all UV2 toward center to leave
+        // borderPadding pixels of margin at atlas edges.
+        // uv2 = uv2 * (1 - 2*inset) + inset
+        // ─────────────────────────────────────────────────────────────────
+        public static void ApplyBorderInset(Mesh mesh, int borderPaddingPx, uint atlasSize)
+        {
+            if (borderPaddingPx <= 0 || atlasSize == 0) return;
+
+            var uv2List = new List<Vector2>();
+            mesh.GetUVs(2, uv2List);
+            if (uv2List.Count == 0) return;
+
+            float inset = (float)borderPaddingPx / atlasSize;
+            float scale = 1f - 2f * inset;
+
+            if (scale <= 0f)
+            {
+                Debug.LogWarning($"[xatlas] Border padding {borderPaddingPx}px too large " +
+                                 $"for atlas {atlasSize}px — skipping inset.");
+                return;
+            }
+
+            var uv2 = uv2List.ToArray();
+            for (int i = 0; i < uv2.Length; i++)
+                uv2[i] = uv2[i] * scale + new Vector2(inset, inset);
+
+            mesh.SetUVs(2, uv2);
+            Debug.Log($"[xatlas] Border inset applied: {borderPaddingPx}px / {atlasSize}px " +
+                      $"(inset={inset:F4}, scale={scale:F4})");
+        }
+
+        public static Vector2[] ApplyBorderInset(Vector2[] uv2, int borderPaddingPx, uint atlasSize)
+        {
+            if (borderPaddingPx <= 0 || atlasSize == 0 || uv2 == null) return uv2;
+
+            float inset = (float)borderPaddingPx / atlasSize;
+            float scale = 1f - 2f * inset;
+            if (scale <= 0f) return uv2;
+
+            var result = new Vector2[uv2.Length];
+            for (int i = 0; i < uv2.Length; i++)
+                result[i] = uv2[i] * scale + new Vector2(inset, inset);
+            return result;
         }
 
         // ─────────────────────────────────────────────────────────────────
@@ -617,6 +673,33 @@ namespace LightmapUvTool
                 list.RemoveAt(list.Count - 1);
                 minKeep = list[list.Count - 1].length;
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // Border padding inset: shrink UV layout away from atlas edges
+        // uv = uv * (1 - 2*inset) + inset  where inset = borderPx / atlasSize
+        // ─────────────────────────────────────────────────────────────────
+        static void ApplyBorderInset(Vector2[] uv2, uint borderPx, uint atlasW, uint atlasH)
+        {
+            float insetX = (float)borderPx / atlasW;
+            float insetY = (float)borderPx / atlasH;
+            float scaleX = 1f - 2f * insetX;
+            float scaleY = 1f - 2f * insetY;
+
+            if (scaleX <= 0f || scaleY <= 0f)
+            {
+                Debug.LogWarning($"[xatlas] Border padding {borderPx}px too large for atlas {atlasW}x{atlasH}");
+                return;
+            }
+
+            for (int i = 0; i < uv2.Length; i++)
+            {
+                uv2[i] = new Vector2(
+                    uv2[i].x * scaleX + insetX,
+                    uv2[i].y * scaleY + insetY);
+            }
+
+            Debug.Log($"[xatlas] Border inset: {borderPx}px, scale=({scaleX:F4},{scaleY:F4}), offset=({insetX:F4},{insetY:F4})");
         }
 
         // ─────────────────────────────────────────────────────────────────

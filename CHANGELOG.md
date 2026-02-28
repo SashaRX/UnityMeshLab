@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.0] - 2026-02-28
+
+### Added — UV0 analysis/fix + split padding
+- **UV0 Analyzer**: detects false UV seams (weld candidates), degenerate UV triangles,
+  flipped UV triangles within shells, and overlapping shell groups. Report displayed
+  in Setup tab with per-mesh breakdown and color-coded warnings.
+- **UV0 Weld**: merges false-seam vertices (identical position + UV0 + normal but
+  different indices) by rebuilding index buffer and compacting vertex arrays.
+  All vertex attributes preserved (tangents, UV1, colors, bone weights, submeshes).
+  Operates on working copies only — FBX untouched.
+- **Split padding**: shell padding (inter-island, passed to xatlas) and border padding
+  (atlas edges, applied as post-repack linear inset). Border padding defaults to 0
+  for Clamp mode lightmaps. Two separate sliders in Repack tab.
+- `Uv0Analyzer.cs` — analysis + weld pipeline with spatial hashing for O(n) duplicate detection
+- `RepackOptions.borderPadding` field, `XatlasRepack.ApplyBorderInset()` post-process
+
 ## [0.6.0] - 2026-02-28
 
 ### Added — Checker preview, FBX postprocessor, UV2 reset
