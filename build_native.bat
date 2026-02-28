@@ -40,4 +40,4 @@ if errorlevel 1 (
 
 echo.
 echo === Done ===
-echo DLL copied to Assets\Plugins\x86_64\xatlas-unity.dll
+echo DLL copied to Plugins\x86_64\xatlas-unity.dll

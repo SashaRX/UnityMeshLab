@@ -1,65 +1,73 @@
-# Lightmap UV Tool
+# Lightmap UV LOD Transfer
 
-Unity Editor tool for transferring UV2 lightmap coordinates from LOD0 to LOD1+ meshes via xatlas.
+Unity Editor tool for transferring UV2 lightmap coordinates from LOD0 to higher LOD levels using xatlas repack and surface-based projection.
 
-## What it does
+## Features
 
-- Takes a LODGroup (or set of LOD meshes)
-- Repacks existing UV0 shells into UV2 for lightmap (no full unwrap — repack only)
-- Resolves UV0 overlaps so each shell gets a unique lightmap chart
-- Transfers the resulting UV2 from LOD0 to all other LODs via surface correspondence
-- Never modifies geometry, never adds vertices, never creates new seams
+- **Repack, not unwrap**: uses existing UV0 shells as input charts for xatlas packing
+- **Surface-based transfer**: projects target LOD geometry onto LOD0 surface, not UV-space
+- **Shell-aware pipeline**: shell classification → isolated transfer → border repair
+- **No topology changes**: only UV coordinates are modified, no vertices added or split
+- **Multi-mesh atlas**: supports multiple renderers sharing one lightmap atlas
+- **Quality diagnostics**: per-triangle status (Accepted/Ambiguous/BorderRisk/Mismatch), confidence heatmaps, border repair reports
+- **Editor UI**: 8-stage pipeline with individual re-run, UV preview with 7 visualization modes
 
-## Current status
+## Installation
 
-**Stage 1 — Complete:**
-- xatlas native bridge (C++ DLL with P/Invoke wrapper)
-- UV shell extraction via Union-Find
-- Overlap group detection via bbox intersection
-- xatlas AddUvMesh repack pipeline (repack-only, no unwrap)
-- C#-side UV2 assignment with majority vote conflict resolution
-- Orphan vertex detection and snap-to-midpoint fix
-- UV Preview window (GL rendering with shell fill, wireframe, degenerate overlay)
+### Unity Package Manager (recommended)
 
-**Next: Stage 2** — Source mesh analysis (BVH), surface projection, shell-aware transfer to LOD1.
+1. Open **Window → Package Manager**
+2. Click **+** → **Add package from git URL...**
+3. Enter:
+   ```
+   https://github.com/SashaRX/UnityLodUvLightmapTransfer.git
+   ```
 
-## Structure
+### Manual
 
+Clone the repo into your project's `Packages/` folder:
+```bash
+cd YourProject/Packages
+git clone https://github.com/SashaRX/UnityLodUvLightmapTransfer.git com.sasharx.lightmap-uv-tool
 ```
-Assets/
-  Editor/
-    LightmapUvTool/
-      XatlasRepack.cs         — Main repack pipeline
-      XatlasNative.cs         — P/Invoke declarations
-      UvShellExtractor.cs     — Shell extraction + overlap detection
-      XatlasRepackTest.cs     — Menu test entry point
-      UvPreviewWindow.cs      — UV preview editor window
-  Plugins/
-    x86_64/
-      xatlas-unity.dll        — Compiled native bridge (not in repo)
-Native/
-  xatlas-unity-bridge.cpp     — Native bridge source
-  xatlas.h                    — xatlas header (not in repo, get from github.com/jpcy/xatlas)
-  xatlas.cpp                  — xatlas impl (not in repo)
-```
-
-## Building the native bridge
-
-```
-cl /O2 /LD /EHsc xatlas-unity-bridge.cpp xatlas.cpp /Fe:xatlas-unity.dll
-```
-
-Place resulting `xatlas-unity.dll` into `Assets/Plugins/x86_64/`.
 
 ## Usage
 
-1. Select a GameObject with MeshFilter
-2. `Tools → Xatlas → Test Repack Selected` — builds UV2 on the selected mesh
-3. `Tools → Xatlas → UV Preview` — opens UV preview window (supports UV0/UV2 toggle)
+1. Open **Tools → Lightmap UV → Transfer Window**
+2. Select a LODGroup in the scene
+3. Configure settings (UV channels, atlas resolution, padding, projection parameters)
+4. Click **Run Full Pipeline** or execute stages individually
+5. Review results in the UV preview and quality report
+6. Save output mesh assets
 
-## Constraints
+## Building Native DLL
 
-- Uses xatlas **AddUvMesh** (repack mode only) — no full unwrap
-- Unity's `GenerateSecondaryUVSet` is not used
-- Topology is never modified
-- Only UV2 channel is written
+The pre-built `xatlas-unity.dll` is included for Windows x64. To rebuild:
+
+```bash
+build_native.bat
+```
+
+Requirements: Visual Studio 2022, CMake 3.20+. xatlas source is fetched automatically.
+
+## Pipeline Stages
+
+| Stage | Description |
+|-------|-------------|
+| 0. Collect | Gather meshes from LODGroup |
+| 1. Repack | Build UV2 on LOD0 via xatlas chart packing |
+| 2. Analyze | Build source BVH, shells, borders, metrics |
+| 3. Shell Assign | Project target onto source, classify shell membership |
+| 4. Initial Transfer | Shell-isolated UV transfer |
+| 5-6. Border Repair | Detect border primitives, measure perimeter, conditional fuse |
+| 7. Validate | Quality evaluation, triangle status classification |
+| 8. Save | Write mesh assets, update LODGroup |
+
+## Requirements
+
+- Unity 2020.3+
+- Windows x64 (native DLL)
+
+## License
+
+MIT

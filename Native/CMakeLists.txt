@@ -37,7 +37,7 @@ set_target_properties(xatlas-unity PROPERTIES
 )
 
 # ── Post-build: copy DLL to Unity Plugins ──
-set(UNITY_PLUGINS_DIR "${CMAKE_SOURCE_DIR}/../Assets/Plugins/x86_64")
+set(UNITY_PLUGINS_DIR "${CMAKE_SOURCE_DIR}/../Plugins/x86_64")
 
 add_custom_command(TARGET xatlas-unity POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${UNITY_PLUGINS_DIR}"

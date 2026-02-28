@@ -28,14 +28,13 @@ Thumbs.db
 *.swp
 *~
 
-# Compiled native
-Assets/Plugins/**/*.dll
-Assets/Plugins/**/*.so
-Assets/Plugins/**/*.bundle
-Assets/Plugins/**/*.dylib
+# Build intermediates
 *.obj
 *.lib
 *.exp
+
+# Native plugins are tracked (needed for UPM git install)
+# Rebuild with build_native.bat if needed
 
 # CMake build output (xatlas fetched automatically)
 Native/_deps/
