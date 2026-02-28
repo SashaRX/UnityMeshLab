@@ -556,17 +556,6 @@ namespace LightmapUvTool
             EditorGUILayout.EndScrollView();
 
             EditorGUILayout.Space(6);
-            H("3D Preview");
-            {
-                var bg = GUI.backgroundColor;
-                if (CheckerTexturePreview.IsActive) GUI.backgroundColor = new Color(1f,.4f,.3f);
-                string cLbl = CheckerTexturePreview.IsActive ? "■ Disable Checker" : "▶ Checker Preview (UV2)";
-                if (GUILayout.Button(cLbl, GUILayout.Height(24)))
-                    ToggleChecker();
-                GUI.backgroundColor = bg;
-            }
-
-            EditorGUILayout.Space(6);
             H("Apply UV2 to FBX (Postprocessor)");
             EditorGUILayout.HelpBox(
                 "Saves UV2 as sidecar asset beside the FBX. On every FBX reimport " +
@@ -621,6 +610,17 @@ namespace LightmapUvTool
             GUILayout.Space(4);
             zoom = EditorGUILayout.Slider(zoom, .5f, 4f, GUILayout.Width(100));
             if (showFill) fillAlpha = EditorGUILayout.Slider(fillAlpha, .05f, .6f, GUILayout.Width(80));
+
+            GUILayout.Space(8);
+            {
+                var bg2 = GUI.backgroundColor;
+                if (CheckerTexturePreview.IsActive) GUI.backgroundColor = new Color(1f,.4f,.3f);
+                string ckLbl = CheckerTexturePreview.IsActive ? "■ Checker" : "▶ Checker";
+                if (GUILayout.Button(ckLbl, EditorStyles.toolbarButton, GUILayout.Width(70)))
+                    ToggleChecker();
+                GUI.backgroundColor = bg2;
+            }
+
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
         }
@@ -970,6 +970,7 @@ namespace LightmapUvTool
 
                     Debug.Log($"[Transfer] {te.renderer.name}: " +
                               $"{tr.shellsMatched} shells matched, {tr.shellsUnmatched} unmatched, " +
+                              $"{tr.shellsMirrored} mirrored, " +
                               $"{tr.verticesTransferred}/{tr.verticesTotal} verts");
                 }
                 hasTransfer = tgtE.Any(e => e.transferredMesh!=null);
@@ -1035,9 +1036,9 @@ namespace LightmapUvTool
             foreach (var e in meshEntries)
             {
                 if (!e.include || e.renderer == null) continue;
-                Mesh uvMesh = e.lodIndex == sourceLodIndex ? e.repackedMesh : e.transferredMesh;
+                Mesh uvMesh = e.transferredMesh ?? e.repackedMesh;
 
-                // Fallback: if no working copy, use original/FBX mesh if it has UV2
+                // Fallback: use original/FBX mesh if it has UV2 (e.g. after Apply or auto-generated)
                 if (uvMesh == null)
                 {
                     Mesh fallback = e.originalMesh ?? e.fbxMesh;
@@ -1055,7 +1056,7 @@ namespace LightmapUvTool
 
             if (entries.Count == 0)
             {
-                Debug.LogWarning("[Checker] No meshes with UV2. Run Repack + Transfer first.");
+                Debug.LogWarning("[Checker] No meshes with UV2 found. Run at least Repack to preview.");
                 return;
             }
 

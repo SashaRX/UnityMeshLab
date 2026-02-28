@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.2] - 2026-02-28
+
+### Fixed — UV2 out-of-bounds on LODs + checker on all tabs
+- **Per-target-shell nearest-vertex matching**: transfer no longer reuses source's
+  precomputed UV0→UV2 transform directly on target UV0. Instead, for each matched
+  target shell, finds nearest source vertex by UV0 distance and builds point pairs
+  (target_UV0, nearest_source_UV2) to compute a fresh similarity transform per shell.
+  Fixes UV2 coordinates going far outside 0-1 when LOD UV0 layout differs from LOD0.
+- **Checker in toolbar**: moved checker toggle from Review tab to canvas toolbar,
+  accessible on any tab (Setup, Repack, Transfer, Review).
+
 ## [0.7.1] - 2026-02-28
 
 ### Fixed — Weld persistence + checker after Apply

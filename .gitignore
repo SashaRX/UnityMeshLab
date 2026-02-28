@@ -41,3 +41,6 @@ Native/_deps/
 
 # Test file
 test.txt
+
+# Temp commit message file
+.commitmsg
