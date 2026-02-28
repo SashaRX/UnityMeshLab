@@ -70,9 +70,10 @@ namespace LightmapUvTool
                 Object.DestroyImmediate(tmp);
                 return null;
             }
-            var uv2 = tmp.uv2;
+            var uvOut = new List<Vector2>();
+            tmp.GetUVs(2, uvOut);
             Object.DestroyImmediate(tmp);
-            return uv2;
+            return uvOut.ToArray();
         }
 
         public static RepackResult RepackSingle(Mesh mesh, RepackOptions opts)
@@ -200,8 +201,8 @@ namespace LightmapUvTool
                 // ── Diagnostic: top longest UV2 edges (after fix) ──
                 DiagnoseLongestEdges(uv2, tris, faceShellIds, vertChartId, 10);
 
-                // ── Apply UV2 ──
-                mesh.uv2 = uv2;
+                // ── Apply UV2 (channel 2 — matches SourceMeshAnalyzer.GetUVs(2)) ──
+                mesh.SetUVs(2, uv2);
                 result.ok = true;
 
                 // ── Stats ──
