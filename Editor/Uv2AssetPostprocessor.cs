@@ -112,20 +112,9 @@ namespace LightmapUvTool
             var meshPos = mesh.vertices;
             int count = meshPos.Length;
 
-            // Quick check: sample positions to detect reordering
-            bool inOrder = true;
-            int checkCount = Mathf.Min(count, 20);
-            for (int i = 0; i < checkCount; i++)
-            {
-                if (Vector3.SqrMagnitude(meshPos[i] - entry.vertPositions[i]) > 1e-8f)
-                {
-                    inOrder = false;
-                    break;
-                }
-            }
-
-            if (inOrder)
-                return entry.uv2;
+            // Always remap: meshopt may reorder vertices differently between
+            // editor workflow and postprocessor (e.g. 616→547→425 vs 616→587→425),
+            // causing vertex order to diverge even when final counts match.
 
             // Vertex order differs — remap UV2 by matching positions
             var meshUv0 = new List<Vector2>();
