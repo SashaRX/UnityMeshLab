@@ -324,6 +324,110 @@ namespace LightmapUvTool
                       $"{transferred}/{vertCount} verts" +
                       (disambiguated > 0 ? $", {disambiguated} disambiguated" : ""));
 
+            // ── Post-transfer: fix stretched triangles ──
+            // A vertex assigned to the wrong source shell creates a triangle
+            // with an abnormally long UV2 edge. Detect and re-transfer outliers.
+            int stretchFixed = 0;
+            for (int ti = 0; ti < tTriCount; ti++)
+            {
+                int tI0 = tTris[ti * 3], tI1 = tTris[ti * 3 + 1], tI2 = tTris[ti * 3 + 2];
+                Vector2 u2A = result.uv2[tI0], u2B = result.uv2[tI1], u2C = result.uv2[tI2];
+
+                // Measure UV2 edge lengths
+                float e01 = (u2B - u2A).sqrMagnitude;
+                float e12 = (u2C - u2B).sqrMagnitude;
+                float e20 = (u2A - u2C).sqrMagnitude;
+                float maxEdgeSq = Mathf.Max(e01, Mathf.Max(e12, e20));
+
+                // Compare to UV0 edge lengths — if UV2 edge is much longer, it's stretched
+                Vector2 u0A = tUv0[tI0], u0B = tUv0[tI1], u0C = tUv0[tI2];
+                float u0e01 = (u0B - u0A).sqrMagnitude;
+                float u0e12 = (u0C - u0B).sqrMagnitude;
+                float u0e20 = (u0A - u0C).sqrMagnitude;
+                float maxUv0Sq = Mathf.Max(u0e01, Mathf.Max(u0e12, u0e20));
+
+                // Stretch threshold: UV2 edge > 0.15 (squared: 0.0225) and ratio to UV0 > 25x
+                if (maxEdgeSq < 0.0225f) continue;
+                if (maxUv0Sq > 1e-10f && maxEdgeSq / maxUv0Sq < 25f) continue;
+
+                // Identify which vertex is the outlier (farthest from centroid of other two)
+                int outlierIdx;
+                int goodA, goodB;
+                if (maxEdgeSq == e01)
+                {
+                    // Edge 0-1 is longest — outlier is whichever of 0,1 is farther from 2
+                    float d0 = (u2A - u2C).sqrMagnitude;
+                    float d1 = (u2B - u2C).sqrMagnitude;
+                    if (d0 > d1) { outlierIdx = tI0; goodA = tI1; goodB = tI2; }
+                    else { outlierIdx = tI1; goodA = tI0; goodB = tI2; }
+                }
+                else if (maxEdgeSq == e12)
+                {
+                    float d1 = (u2B - u2A).sqrMagnitude;
+                    float d2 = (u2C - u2A).sqrMagnitude;
+                    if (d1 > d2) { outlierIdx = tI1; goodA = tI0; goodB = tI2; }
+                    else { outlierIdx = tI2; goodA = tI0; goodB = tI1; }
+                }
+                else
+                {
+                    float d2 = (u2C - u2B).sqrMagnitude;
+                    float d0 = (u2A - u2B).sqrMagnitude;
+                    if (d2 > d0) { outlierIdx = tI2; goodA = tI0; goodB = tI1; }
+                    else { outlierIdx = tI0; goodA = tI1; goodB = tI2; }
+                }
+
+                // Re-transfer outlier using the 3D region from good vertices
+                Vector3 goodRegion = (vertRegion[goodA] + vertRegion[goodB]) * 0.5f;
+                Vector2 oUv = tUv0[outlierIdx];
+                Vector3 oN = tHasN ? tNormals[outlierIdx] : Vector3.up;
+
+                float bestUvD = float.MaxValue;
+                int bestF2 = -1;
+                float bestU2 = 0, bestV2 = 0, bestW2 = 0;
+                for (int f = 0; f < srcTriCount; f++)
+                {
+                    float dSq = PointToTri2D(oUv, triUv0A[f], triUv0B[f], triUv0C[f],
+                        out float u, out float v, out float w);
+                    if (dSq < bestUvD) { bestUvD = dSq; bestF2 = f; bestU2 = u; bestV2 = v; bestW2 = w; }
+                }
+                float th2 = bestUvD + OVERLAP_THRESHOLD;
+                float best3D2 = float.MaxValue;
+                for (int f = 0; f < srcTriCount; f++)
+                {
+                    float uvD = PointToTri2D(oUv, triUv0A[f], triUv0B[f], triUv0C[f],
+                        out float u, out float v, out float w);
+                    if (uvD > th2) continue;
+                    float dot = Vector3.Dot(oN, triFaceN[f]);
+                    if (dot < NORMAL_DOT_MIN) continue;
+                    float d3D = (goodRegion - tri3DCentroid[f]).sqrMagnitude;
+                    if (d3D < best3D2)
+                    {
+                        best3D2 = d3D; bestF2 = f;
+                        bestU2 = u; bestV2 = v; bestW2 = w;
+                    }
+                }
+                if (bestF2 >= 0)
+                {
+                    Vector2 fixedUv2 = triUv2A[bestF2] * bestU2
+                                     + triUv2B[bestF2] * bestV2
+                                     + triUv2C[bestF2] * bestW2;
+                    // Only apply if it actually reduces the stretch
+                    Vector2 newU2A = outlierIdx == tI0 ? fixedUv2 : result.uv2[tI0];
+                    Vector2 newU2B = outlierIdx == tI1 ? fixedUv2 : result.uv2[tI1];
+                    Vector2 newU2C = outlierIdx == tI2 ? fixedUv2 : result.uv2[tI2];
+                    float newMax = Mathf.Max(
+                        (newU2B - newU2A).sqrMagnitude,
+                        Mathf.Max((newU2C - newU2B).sqrMagnitude, (newU2A - newU2C).sqrMagnitude));
+                    if (newMax < maxEdgeSq)
+                    {
+                        result.uv2[outlierIdx] = fixedUv2;
+                        stretchFixed++;
+                    }
+                }
+            }
+            if (stretchFixed > 0)
+                Debug.Log($"[GroupedTransfer] '{targetMesh.name}': fixed {stretchFixed} stretched vertices");
+
             // UV2 bounds check
             int oob = 0;
             Vector2 uvMin = Vector2.one * float.MaxValue, uvMax = Vector2.one * float.MinValue;
