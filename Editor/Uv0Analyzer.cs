@@ -623,7 +623,7 @@ namespace LightmapUvTool
 
             for (int i = 0; i < vertCount; i++)
             {
-                long h = PosHash(verts[i], posEps);
+                long h = SpatialKey(verts[i], posEps);
                 if (!posToGroup.ContainsKey(h))
                     posToGroup[h] = new List<int>();
                 posToGroup[h].Add(i);
@@ -634,7 +634,7 @@ namespace LightmapUvTool
             var groupIdMap = new Dictionary<long, int>();
             for (int i = 0; i < vertCount; i++)
             {
-                long h = PosHash(verts[i], posEps);
+                long h = SpatialKey(verts[i], posEps);
                 if (!groupIdMap.ContainsKey(h))
                     groupIdMap[h] = nextGroup++;
                 posGroup[i] = groupIdMap[h];
