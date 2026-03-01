@@ -742,7 +742,7 @@ namespace LightmapUvTool
                 RenderTexture.active = prevRT;
 
                 // Draw the RT as a regular GUI texture — properly clipped to canvasRect
-                GUI.DrawTexture(canvasRect, canvasRT);
+                GUI.DrawTexture(canvasRect, canvasRT, ScaleMode.StretchToFill, false);
             }
         }
 
