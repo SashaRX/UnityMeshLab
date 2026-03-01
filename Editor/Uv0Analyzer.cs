@@ -63,7 +63,7 @@ namespace LightmapUvTool
 
             if (uv0 == null || uv0.Length == 0)
             {
-                Debug.LogWarning($"[UV0Analyze] '{mesh.name}': no UV0");
+                UvtLog.Warn($"[UV0Analyze] '{mesh.name}': no UV0");
                 return report;
             }
 
@@ -161,7 +161,7 @@ namespace LightmapUvTool
 
             if (weldMap.Count == 0)
             {
-                Debug.Log($"[UV0Fix] '{source.name}': no false seams found");
+                UvtLog.Verbose($"[UV0Fix] '{source.name}': no false seams found");
                 return Object.Instantiate(source);
             }
 
@@ -262,7 +262,7 @@ namespace LightmapUvTool
             result.RecalculateBounds();
 
             int removed = vertCount - newVertCount;
-            Debug.Log($"[UV0Fix] '{source.name}': welded {weldMap.Count} pairs, " +
+            UvtLog.Verbose($"[UV0Fix] '{source.name}': welded {weldMap.Count} pairs, " +
                       $"removed {removed} vertices ({vertCount} → {newVertCount})");
 
             return result;
@@ -384,7 +384,7 @@ namespace LightmapUvTool
 
             mesh.RecalculateBounds();
 
-            Debug.Log($"[UV0Fix] WeldInPlace '{mesh.name}': " +
+            UvtLog.Verbose($"[UV0Fix] WeldInPlace '{mesh.name}': " +
                       $"welded {weldMap.Count} pairs, {vertCount} → {newVertCount} verts");
             return true;
         }
@@ -417,7 +417,7 @@ namespace LightmapUvTool
 
             if (sUv0 == null || sUv0.Length == 0)
             {
-                Debug.LogWarning("[UV0Fix] Source mesh has no UV0, cannot guide weld");
+                UvtLog.Warn("[UV0Fix] Source mesh has no UV0, cannot guide weld");
                 return Object.Instantiate(target);
             }
 
@@ -489,7 +489,7 @@ namespace LightmapUvTool
 
             if (weldMap.Count == 0)
             {
-                Debug.Log($"[UV0Fix] SourceGuidedWeld '{target.name}': nothing to weld");
+                UvtLog.Verbose($"[UV0Fix] SourceGuidedWeld '{target.name}': nothing to weld");
                 return target;
             }
 
@@ -577,7 +577,7 @@ namespace LightmapUvTool
             int removed = tVertCount - newVertCount;
             int shellsBefore = UvShellExtractor.Extract(tUv0, tTris).Count;
             int shellsAfter = UvShellExtractor.Extract(newUv0, newTris).Count;
-            Debug.Log($"[UV0Fix] SourceGuidedWeld '{target.name}': " +
+            UvtLog.Verbose($"[UV0Fix] SourceGuidedWeld '{target.name}': " +
                       $"welded {weldMap.Count} pairs, removed {removed} verts " +
                       $"({tVertCount} → {newVertCount}), " +
                       $"shells {shellsBefore} → {shellsAfter}");
@@ -789,7 +789,7 @@ namespace LightmapUvTool
             int shellsBefore = UvShellExtractor.Extract(uv0, tris).Count;
             int shellsAfter  = UvShellExtractor.Extract(newUv0, newTris).Count;
             int removed = vertCount - newVertCount;
-            Debug.Log($"[UV0Fix] UvEdgeWeld '{mesh.name}': " +
+            UvtLog.Verbose($"[UV0Fix] UvEdgeWeld '{mesh.name}': " +
                       $"welded {weldCount} pairs, removed {removed} verts " +
                       $"({vertCount} → {newVertCount}), " +
                       $"shells {shellsBefore} → {shellsAfter}");

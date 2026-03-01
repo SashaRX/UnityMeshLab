@@ -237,7 +237,7 @@ namespace LightmapUvTool
 
             if (conflictCount > 0)
             {
-                Debug.Log($"[InitialUvTransfer] Resolved {conflictCount} vertex shell conflicts" +
+                UvtLog.Verbose($"[InitialUvTransfer] Resolved {conflictCount} vertex shell conflicts" +
                           (hasUv0 ? $" ({uv0ResolvedCount} decided by UV0 proximity)" : ""));
             }
         }
@@ -476,7 +476,7 @@ namespace LightmapUvTool
 
             if (fixedCount > 0)
             {
-                Debug.Log($"[InitialUvTransfer] Post-validation fixed {fixedCount} anomalous triangles");
+                UvtLog.Verbose($"[InitialUvTransfer] Post-validation fixed {fixedCount} anomalous triangles");
             }
         }
 

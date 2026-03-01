@@ -103,17 +103,6 @@ namespace LightmapUvTool
             result.shellCount = shells.Count;
             result.overlapGroupCount = overlapGroups.Count;
 
-            Debug.Log($"[xatlas] Input: '{mesh.name}', verts={vertCount}, faces={faceCount}, " +
-                      $"shells={shells.Count}, overlap_groups={overlapGroups.Count}");
-
-            foreach (var group in overlapGroups)
-            {
-                string s = "";
-                foreach (int si in group)
-                    s += $"shell{si}({shells[si].faceIndices.Count}f) ";
-                Debug.Log($"[xatlas]   Overlap group: [{s.Trim()}]");
-            }
-
             // ── Flatten UV0 ──
             float[] uvFlat = new float[vertCount * 2];
             for (int i = 0; i < vertCount; i++)
@@ -179,9 +168,6 @@ namespace LightmapUvTool
                 XatlasNative.xatlasGetOutputVertexData(0, outXref, outUV, outChart, outVertCount);
                 XatlasNative.xatlasGetOutputIndices(0, outIdx, outIndexCount);
 
-                Debug.Log($"[xatlas] Output: verts={outVertCount}, idx={outIndexCount}, " +
-                          $"charts={result.chartCount}");
-
                 // ── C#-side UV2 assignment ──
                 Vector2[] uv2;
                 uint[] vertChartId;
@@ -227,12 +213,8 @@ namespace LightmapUvTool
                     }
                 }
 
-                Debug.Log($"[xatlas] OK — atlas={result.atlasWidth}x{result.atlasHeight}, " +
-                          $"charts={result.chartCount}, shells={shells.Count}, " +
-                          $"conflicts={conflicts}, orphan_verts={orphanVerts}, " +
-                          $"orphan_tris={orphanTris}, snapped={snapped}, " +
-                          $"uv2_range=[{minU:F4}..{maxU:F4}]x[{minV:F4}..{maxV:F4}], " +
-                          $"verts_with_uv2={nonZero}/{vertCount}");
+                UvtLog.Verbose($"[xatlas] '{mesh.name}': atlas={result.atlasWidth}x{result.atlasHeight}, " +
+                          $"charts={result.chartCount}, conflicts={conflicts}, orphans={orphanVerts}");
             }
             finally
             {
@@ -279,11 +261,6 @@ namespace LightmapUvTool
 
                 results[m].shellCount        = shells.Count;
                 results[m].overlapGroupCount  = overlapGroups.Count;
-
-                int vertCount = mesh.vertexCount;
-                int faceCount = allTris[m].Length / 3;
-                Debug.Log($"[xatlas] Input[{m}]: '{mesh.name}', verts={vertCount}, faces={faceCount}, " +
-                          $"shells={shells.Count}, overlap_groups={overlapGroups.Count}");
             }
 
             // ── Single xatlas session for all meshes ──
@@ -340,7 +317,7 @@ namespace LightmapUvTool
                 uint atlasH = XatlasNative.xatlasGetAtlasHeight();
                 uint totalCharts = XatlasNative.xatlasGetChartCount();
 
-                Debug.Log($"[xatlas] Joint atlas: {atlasW}x{atlasH}, total_charts={totalCharts}, meshes={outMeshCount}");
+                    UvtLog.Info($"[xatlas] Joint atlas: {atlasW}x{atlasH}, total_charts={totalCharts}, meshes={outMeshCount}");
 
                 // ── Per-mesh output extraction ──
                 for (int m = 0; m < meshCount; m++)
@@ -371,8 +348,6 @@ namespace LightmapUvTool
 
                     results[m].chartCount = (uint)outVertCount; // per-mesh chart count approximation
 
-                    Debug.Log($"[xatlas] Output[{m}]: '{mesh.name}', verts={outVertCount}, idx={outIndexCount}");
-
                     // Assign UV2
                     Vector2[] uv2;
                     uint[] vertChartId;
@@ -397,9 +372,6 @@ namespace LightmapUvTool
                     // Apply UV2
                     mesh.SetUVs(2, uv2);
                     results[m].ok = true;
-
-                    Debug.Log($"[xatlas] OK[{m}]: '{mesh.name}', conflicts={conflicts}, " +
-                              $"orphans={orphanVerts}, snapped={snapped}");
                 }
             }
             finally
@@ -428,7 +400,7 @@ namespace LightmapUvTool
 
             if (scale <= 0f)
             {
-                Debug.LogWarning($"[xatlas] Border padding {borderPaddingPx}px too large " +
+                UvtLog.Warn($"[xatlas] Border padding {borderPaddingPx}px too large " +
                                  $"for atlas {atlasSize}px — skipping inset.");
                 return;
             }
@@ -438,8 +410,6 @@ namespace LightmapUvTool
                 uv2[i] = uv2[i] * scale + new Vector2(inset, inset);
 
             mesh.SetUVs(2, uv2);
-            Debug.Log($"[xatlas] Border inset applied: {borderPaddingPx}px / {atlasSize}px " +
-                      $"(inset={inset:F4}, scale={scale:F4})");
         }
 
         public static Vector2[] ApplyBorderInset(Vector2[] uv2, int borderPaddingPx, uint atlasSize)
@@ -492,17 +462,7 @@ namespace LightmapUvTool
             }
 
             if (orphanVertCount == 0)
-            {
-                Debug.Log("[xatlas] Post-process: 0 orphan vertices");
                 return;
-            }
-
-            // Log orphan details
-            for (int v = 0; v < vertCount; v++)
-            {
-                if (isOrphan[v])
-                    Debug.Log($"[xatlas]   Orphan vertex {v}: uv2=({uv2[v].x:F4},{uv2[v].y:F4})");
-            }
 
             // Find triangles with orphan vertices, track per-vertex usage
             var orphanFaces = new List<int>();
@@ -526,8 +486,6 @@ namespace LightmapUvTool
             }
 
             orphanTriCount = orphanFaces.Count;
-            Debug.Log($"[xatlas] Post-process: {orphanVertCount} orphan vertices, " +
-                      $"{orphanTriCount} affected triangles");
 
             // Snap orphan vertices
             // Collect proposed snap targets (there may be multiple per vertex from different faces)
@@ -574,11 +532,7 @@ namespace LightmapUvTool
 
                 // Only snap if vertex appears more in orphan tris than valid tris
                 if (orphanTriUse[v] < validTriUse[v])
-                {
-                    Debug.Log($"[xatlas]   Orphan vertex {v}: skipping snap " +
-                              $"(orphan_tris={orphanTriUse[v]} < valid_tris={validTriUse[v]})");
                     continue;
-                }
 
                 var targets = kv.Value;
                 Vector2 avg = Vector2.zero;
@@ -586,14 +540,11 @@ namespace LightmapUvTool
                     avg += targets[i];
                 avg /= targets.Count;
 
-                Debug.Log($"[xatlas]   Orphan vertex {v}: snap ({uv2[v].x:F4},{uv2[v].y:F4}) " +
-                          $"-> ({avg.x:F4},{avg.y:F4}) [{targets.Count} proposals]");
-
                 uv2[v] = avg;
                 snappedCount++;
             }
 
-            Debug.Log($"[xatlas] Post-process done: {snappedCount}/{orphanVertCount} vertices snapped");
+            UvtLog.Verbose($"[xatlas] Post-process: snapped {snappedCount}/{orphanVertCount} orphan vertices");
         }
 
         static void AddSnapTarget(Dictionary<int, List<Vector2>> dict, int vertIdx, Vector2 target)
@@ -636,20 +587,6 @@ namespace LightmapUvTool
             }
 
             longest.Sort((a, b) => b.length.CompareTo(a.length));
-
-            Debug.Log($"[xatlas] ── TOP {longest.Count} longest UV2 edges (after fix) ──");
-            for (int i = 0; i < longest.Count; i++)
-            {
-                var e = longest[i];
-                string chartStr = e.chart0 == ORPHAN_CHART ? "ORPHAN" : e.chart0.ToString();
-                string chartStr1 = e.chart1 == ORPHAN_CHART ? "ORPHAN" : e.chart1.ToString();
-                string tag = (e.chart0 != e.chart1) ? " ← PROBLEM" : "";
-                Debug.Log($"[xatlas]   #{i}: face={e.face}, v=[{e.v0},{e.v1}], " +
-                          $"shell={e.shell}, chart={chartStr}/{chartStr1}, " +
-                          $"len={e.length:F4}, " +
-                          $"uv2=({e.uv2_0.x:F4},{e.uv2_0.y:F4})->({e.uv2_1.x:F4},{e.uv2_1.y:F4}){tag}");
-            }
-            Debug.Log("[xatlas] ── end ──");
         }
 
         static void CheckEdge(List<EdgeInfo> list, ref float minKeep, int topN,
@@ -688,7 +625,7 @@ namespace LightmapUvTool
 
             if (scaleX <= 0f || scaleY <= 0f)
             {
-                Debug.LogWarning($"[xatlas] Border padding {borderPx}px too large for atlas {atlasW}x{atlasH}");
+                UvtLog.Warn($"[xatlas] Border padding {borderPx}px too large for atlas {atlasW}x{atlasH}");
                 return;
             }
 
@@ -698,8 +635,6 @@ namespace LightmapUvTool
                     uv2[i].x * scaleX + insetX,
                     uv2[i].y * scaleY + insetY);
             }
-
-            Debug.Log($"[xatlas] Border inset: {borderPx}px, scale=({scaleX:F4},{scaleY:F4}), offset=({insetX:F4},{insetY:F4})");
         }
 
         // ─────────────────────────────────────────────────────────────────

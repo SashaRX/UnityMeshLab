@@ -289,7 +289,7 @@ namespace LightmapUvTool
             }
 
             if (overlapPairs > 0)
-                Debug.LogWarning($"[Validator] UV2 overlap: {overlapPairs} shell pairs, " +
+                UvtLog.Warn($"[Validator] UV2 overlap: {overlapPairs} shell pairs, " +
                     $"{overlapTris.Count} triangles affected");
         }
 

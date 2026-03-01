@@ -105,7 +105,7 @@ namespace LightmapUvTool
                 var sh = Shader.Find("Hidden/LightmapUvTool/CheckerUV2");
                 if (sh == null)
                 {
-                    Debug.LogError("[Checker] Shader 'Hidden/LightmapUvTool/CheckerUV2' not found");
+                    UvtLog.Error("[Checker] Shader 'Hidden/LightmapUvTool/CheckerUV2' not found");
                     return;
                 }
                 checkerMat = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };

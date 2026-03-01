@@ -300,7 +300,7 @@ namespace LightmapUvTool
                 }
                 catch (System.Exception e)
                 {
-                    Debug.LogWarning($"[UvPreview] GL: {e.Message}");
+                    UvtLog.Warn($"[UvPreview] GL: {e.Message}");
                 }
                 finally
                 {

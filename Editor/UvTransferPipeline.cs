@@ -75,7 +75,7 @@ namespace LightmapUvTool
             var lods = lodGroup.GetLODs();
             if (sourceLodIndex < 0 || sourceLodIndex >= lods.Length)
             {
-                Debug.LogError("[UvTransferPipeline] Invalid source LOD index");
+                UvtLog.Error("[UvTransferPipeline] Invalid source LOD index");
                 return result;
             }
 
@@ -83,11 +83,11 @@ namespace LightmapUvTool
             Mesh sourceMesh = GetMeshFromLod(lods[sourceLodIndex]);
             if (sourceMesh == null)
             {
-                Debug.LogError("[UvTransferPipeline] No mesh found on source LOD");
+                UvtLog.Error("[UvTransferPipeline] No mesh found on source LOD");
                 return result;
             }
 
-            Debug.Log($"[Pipeline] Source: {sourceMesh.name}, " +
+            UvtLog.Info($"[Pipeline] Source: {sourceMesh.name}, " +
                       $"{sourceMesh.vertexCount} verts, {sourceMesh.triangles.Length / 3} tris");
 
             // ── Stage 1: Analyze Source ──
@@ -100,7 +100,7 @@ namespace LightmapUvTool
                 return result;
             }
 
-            Debug.Log($"[Pipeline] Source analysis: {result.sourceData.uvShells.Count} shells, " +
+            UvtLog.Verbose($"[Pipeline] Source analysis: {result.sourceData.uvShells.Count} shells, " +
                       $"{result.sourceData.borderPrimitiveIds.Count} border prims");
 
             // ── Process each target LOD ──
@@ -111,7 +111,7 @@ namespace LightmapUvTool
                 Mesh targetMesh = GetMeshFromLod(lods[lodIdx]);
                 if (targetMesh == null) continue;
 
-                Debug.Log($"[Pipeline] Target LOD{lodIdx}: {targetMesh.name}, " +
+                UvtLog.Verbose($"[Pipeline] Target LOD{lodIdx}: {targetMesh.name}, " +
                           $"{targetMesh.vertexCount} verts, {targetMesh.triangles.Length / 3} tris");
 
                 float progress = 0.2f + 0.7f * ((float)(lodIdx) / lods.Length);
@@ -136,7 +136,7 @@ namespace LightmapUvTool
             // ── Print reports ──
             foreach (var tr in result.targetResults)
             {
-                Debug.Log($"[Pipeline] LOD{tr.lodIndex} report:\n{tr.report}");
+                UvtLog.Verbose($"[Pipeline] LOD{tr.lodIndex} report:\n{tr.report}");
             }
 
             return result;
@@ -170,7 +170,7 @@ namespace LightmapUvTool
                 if (tr.state.triangleShellAssignments[f] >= 0) assigned++;
                 else unassigned++;
             }
-            Debug.Log($"[Pipeline] LOD{lodIndex} shell assignment: " +
+            UvtLog.Verbose($"[Pipeline] LOD{lodIndex} shell assignment: " +
                       $"{assigned} assigned, {unassigned} unassigned");
 
             // ── Stage 3: Initial Transfer ──
@@ -244,7 +244,7 @@ namespace LightmapUvTool
             {
                 string assetPath = $"{settings.savePath}/{tr.outputMesh.name}.asset";
                 AssetDatabase.CreateAsset(tr.outputMesh, assetPath);
-                Debug.Log($"[Pipeline] Saved: {assetPath}");
+                UvtLog.Info($"[Pipeline] Saved: {assetPath}");
 
                 // Update LODGroup renderer
                 if (tr.lodIndex < lods.Length)

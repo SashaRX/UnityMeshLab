@@ -45,24 +45,33 @@ namespace LightmapUvTool
         Dictionary<int, SourceMeshData> srcCache = new Dictionary<int, SourceMeshData>();
 
         // UI
-        enum Tab { Setup, Repack, Transfer, Review }
+        enum Tab { Setup, Repack, Transfer }
         Tab tab = Tab.Setup;
         bool hasRepack, hasTransfer;
 
-        // Canvas
+        // Canvas — fill mode (mutually exclusive overlays)
+        enum FillMode { Shells, Status, ShellMatch, Validation, None }
+        FillMode fillMode = FillMode.Shells;
+
         float canvasZoom = 1f;
-        Vector2 canvasPan;      // pixel offset from centered position
+        Vector2 canvasPan;
         bool canvasPanning;
         RenderTexture canvasRT;
         int  pvChannel = 2;
         int  pvLod     = 0;
-        bool showFill = true, showWire = true, showBorder, showStatus;
-        bool showShellMatch, showValidation;
+        bool showWire = true, showBorder;
         float fillAlpha = 0.25f;
+
+        // Sidebar foldouts
+        bool foldProjection = true;
+        bool foldBorderRepair = false;
+        bool foldOutput = true;
+        bool foldUv0Analysis = false;
+        bool foldRepackSettings = true;
 
         // Sidebar
         Vector2 sideScroll, reportScroll;
-        float sideW = 320f;
+        float sideW = 300f;
         bool sideDragging;
 
         Material glMat;
@@ -73,11 +82,11 @@ namespace LightmapUvTool
             public int lodIndex;
             public Renderer renderer;
             public MeshFilter meshFilter;
-            public Mesh originalMesh;     // working copy — may be replaced by weld
-            public Mesh fbxMesh;          // always the FBX asset mesh (for path lookup)
+            public Mesh originalMesh;
+            public Mesh fbxMesh;
             public bool include = true;
-            public bool wasWelded;        // true if meshopt dedup was applied
-            public bool wasEdgeWelded;    // true if UvEdgeWeld was applied
+            public bool wasWelded;
+            public bool wasEdgeWelded;
             public Mesh repackedMesh;
             public Mesh transferredMesh;
             public TargetTransferState transferState;
@@ -109,6 +118,16 @@ namespace LightmapUvTool
         static readonly Color cReject = new Color(.4f,.4f,.4f,.5f);
         static readonly Color cNone   = new Color(.3f,.3f,.3f,.3f);
 
+        static readonly Color cValClean    = new Color(.2f, .85f, .3f, .4f);
+        static readonly Color cValInverted = new Color(.95f, .15f, .15f, .55f);
+        static readonly Color cValStretch  = new Color(.95f, .85f, .15f, .5f);
+        static readonly Color cValZero     = new Color(.7f, .2f, .9f, .5f);
+        static readonly Color cValOOB      = new Color(1f, .5f, .1f, .5f);
+        static readonly Color cValOverlap  = new Color(1f, .1f, .9f, .55f);
+
+        // Fill mode labels for dropdown
+        static readonly string[] fillModeLabels = { "Shells", "Status", "Shell Match", "Validation", "None" };
+
         // ════════════════════════════════════════════════════════════
         //  Lifecycle
         // ════════════════════════════════════════════════════════════
@@ -125,9 +144,9 @@ namespace LightmapUvTool
             var sh = Shader.Find("Hidden/Internal-Colored");
             if (sh == null) return;
             glMat = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };
-            glMat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
-            glMat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
-            glMat.SetInt("_Cull",     (int)UnityEngine.Rendering.CullMode.Off);
+            glMat.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
+            glMat.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
+            glMat.SetInt("_Cull",     (int)CullMode.Off);
             glMat.SetInt("_ZWrite",   0);
         }
 
@@ -192,6 +211,7 @@ namespace LightmapUvTool
         {
             EditorGUILayout.BeginHorizontal();
 
+            // ── Left sidebar ──
             EditorGUILayout.BeginVertical(GUILayout.Width(sideW));
             sideScroll = EditorGUILayout.BeginScrollView(sideScroll);
             DrawSidebar();
@@ -200,6 +220,7 @@ namespace LightmapUvTool
 
             DrawResizeHandle();
 
+            // ── Right: toolbar + canvas + status ──
             EditorGUILayout.BeginVertical();
             DrawToolbar();
             DrawCanvas();
@@ -218,35 +239,37 @@ namespace LightmapUvTool
             if (Event.current.type == EventType.MouseDown && r.Contains(Event.current.mousePosition))
             { GUIUtility.hotControl = id; sideDragging = true; Event.current.Use(); }
             if (sideDragging && Event.current.type == EventType.MouseDrag)
-            { sideW = Mathf.Clamp(Event.current.mousePosition.x, 220, 520); Event.current.Use(); Repaint(); }
+            { sideW = Mathf.Clamp(Event.current.mousePosition.x, 200, 520); Event.current.Use(); Repaint(); }
             if (Event.current.rawType == EventType.MouseUp && sideDragging)
             { sideDragging = false; GUIUtility.hotControl = 0; }
         }
 
         // ════════════════════════════════════════════════════════════
-        //  Sidebar Tabs
+        //  Sidebar
         // ════════════════════════════════════════════════════════════
 
         void DrawSidebar()
         {
+            // Tab bar
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-            TBtn("Setup",Tab.Setup); TBtn("Repack",Tab.Repack);
-            TBtn("Transfer",Tab.Transfer); TBtn("Review",Tab.Review);
+            TBtn("Setup", Tab.Setup);
+            TBtn("Repack", Tab.Repack);
+            TBtn("Transfer", Tab.Transfer);
             EditorGUILayout.EndHorizontal();
-            EditorGUILayout.Space(4);
-            switch(tab)
+
+            EditorGUILayout.Space(2);
+            switch (tab)
             {
                 case Tab.Setup:    DrawSetup();    break;
                 case Tab.Repack:   DrawRepack();   break;
                 case Tab.Transfer: DrawTransfer(); break;
-                case Tab.Review:   DrawReview();   break;
             }
         }
 
         void TBtn(string l, Tab t)
         {
             var bg = GUI.backgroundColor;
-            if (tab==t) GUI.backgroundColor = new Color(.35f,.65f,1f);
+            if (tab == t) GUI.backgroundColor = new Color(.35f,.65f,1f);
             if (GUILayout.Button(l, EditorStyles.toolbarButton)) tab = t;
             GUI.backgroundColor = bg;
         }
@@ -255,17 +278,17 @@ namespace LightmapUvTool
 
         void DrawSetup()
         {
-            H("Input");
+            // ── Input ──
             EditorGUI.BeginChangeCheck();
             lodGroup = (LODGroup)EditorGUILayout.ObjectField("LODGroup", lodGroup, typeof(LODGroup), true);
             if (EditorGUI.EndChangeCheck()) Refresh();
 
-            if (lodGroup == null) { EditorGUILayout.HelpBox("Assign a LODGroup or select a GameObject with one.", MessageType.Info); return; }
+            if (lodGroup == null) { EditorGUILayout.HelpBox("Assign LODGroup or select a GameObject.", MessageType.Info); return; }
 
             sourceLodIndex = EditorGUILayout.IntSlider("Source LOD", sourceLodIndex, 0, LodN - 1);
-            EditorGUILayout.Space(4);
-            H("Meshes (" + meshEntries.Count + " renderers)");
 
+            // ── Meshes (compact) ──
+            EditorGUILayout.Space(2);
             for (int li = 0; li < LodN; li++)
             {
                 var ee = meshEntries.Where(e => e.lodIndex == li).ToList();
@@ -273,139 +296,128 @@ namespace LightmapUvTool
                 bool src = li == sourceLodIndex;
                 var c = GUI.contentColor;
                 if (src) GUI.contentColor = new Color(.4f,.85f,1f);
-                EditorGUILayout.LabelField("LOD " + li + (src ? " (Source)" : " (Target)") + "  [" + ee.Count + "]", EditorStyles.boldLabel);
+                string header = (src ? "LOD " + li + " (Source)" : "LOD " + li + " (Target)") + "  [" + ee.Count + "]";
+                EditorGUILayout.LabelField(header, EditorStyles.miniBoldLabel);
                 GUI.contentColor = c;
 
-                EditorGUI.indentLevel++;
                 foreach (var e in ee)
                 {
                     EditorGUILayout.BeginHorizontal();
-                    e.include = EditorGUILayout.Toggle(e.include, GUILayout.Width(16));
-                    string badge = e.repackedMesh != null ? " [R]" : e.transferredMesh != null ? " [T]" : e.wasWelded ? " [W]" : "";
-                    EditorGUILayout.LabelField(e.renderer.name + badge, GUILayout.Width(150));
+                    e.include = EditorGUILayout.Toggle(e.include, GUILayout.Width(14));
+                    string badge = e.repackedMesh != null ? "[R]" : e.transferredMesh != null ? "[T]" : e.wasWelded ? "[W]" : "";
+                    string name = e.renderer.name;
+                    if (name.Length > 22) name = name.Substring(0, 20) + "..";
+                    EditorGUILayout.LabelField(badge + name, EditorStyles.miniLabel, GUILayout.MinWidth(60));
                     var m = e.originalMesh;
-                    EditorGUILayout.LabelField("V:" + m.vertexCount + " T:" + (m.triangles.Length/3), EditorStyles.miniLabel);
-                    if (GUILayout.Button("Eye", EditorStyles.miniButton, GUILayout.Width(30)))
-                    { pvLod = li; Repaint(); }
+                    EditorGUILayout.LabelField("V:" + m.vertexCount + " T:" + (m.triangles.Length / 3), EditorStyles.miniLabel, GUILayout.Width(80));
                     EditorGUILayout.EndHorizontal();
                 }
-                EditorGUI.indentLevel--;
-                EditorGUILayout.Space(2);
             }
 
-            // ── Reset button: visible when any working copies are modified ──
+            // ── Reset button ──
             bool anyModified = meshEntries.Any(e =>
                 e.wasWelded || e.repackedMesh != null || e.transferredMesh != null);
             if (anyModified)
             {
-                EditorGUILayout.Space(4);
-                ColorBtn(new Color(.9f,.35f,.35f), "Reset All Working Copies", 24, ResetWorkingCopies);
+                EditorGUILayout.Space(2);
+                ColorBtn(new Color(.9f,.35f,.35f), "Reset All Working Copies", 20, ResetWorkingCopies);
             }
 
-            EditorGUILayout.Space(8);
+            // ── Run Full Pipeline ──
+            EditorGUILayout.Space(6);
+            ColorBtn(new Color(.2f,.75f,.95f), "▶  Run Full Pipeline", 30, ExecFullPipeline);
+            EditorGUILayout.LabelField("Analyze → Weld → Repack → Transfer → Review", EditorStyles.miniLabel);
+
+            // ── Pipeline Settings ──
+            EditorGUILayout.Space(6);
             H("Pipeline Settings");
             pipeSettings.sourceUvChannel = EditorGUILayout.IntPopup("Source UV", pipeSettings.sourceUvChannel, new[]{"UV0","UV2"}, new[]{0,2});
             pipeSettings.targetUvChannel = EditorGUILayout.IntPopup("Target UV", pipeSettings.targetUvChannel, new[]{"UV0","UV2"}, new[]{0,2});
 
-            EditorGUILayout.Space(2);
-            EditorGUILayout.LabelField("Projection", EditorStyles.miniLabel);
-            pipeSettings.maxProjectionDistance = EditorGUILayout.FloatField("  Max Dist", pipeSettings.maxProjectionDistance);
-            pipeSettings.maxNormalAngle = EditorGUILayout.Slider("  Normal Angle", pipeSettings.maxNormalAngle, 10, 180);
-            pipeSettings.filterBySubmesh = EditorGUILayout.Toggle("  Submesh Filter", pipeSettings.filterBySubmesh);
-
-            EditorGUILayout.Space(2);
-            EditorGUILayout.LabelField("Border Repair", EditorStyles.miniLabel);
-            pipeSettings.enableBorderRepair = EditorGUILayout.Toggle("  Enable", pipeSettings.enableBorderRepair);
-            if (pipeSettings.enableBorderRepair)
+            foldProjection = EditorGUILayout.Foldout(foldProjection, "Projection", true);
+            if (foldProjection)
             {
-                pipeSettings.perimeterTolerance = EditorGUILayout.FloatField("  Perim Tol", pipeSettings.perimeterTolerance);
-                pipeSettings.borderFuseTolerance = EditorGUILayout.FloatField("  Fuse Tol", pipeSettings.borderFuseTolerance);
+                EditorGUI.indentLevel++;
+                pipeSettings.maxProjectionDistance = EditorGUILayout.FloatField("Max Dist", pipeSettings.maxProjectionDistance);
+                pipeSettings.maxNormalAngle = EditorGUILayout.Slider("Normal Angle", pipeSettings.maxNormalAngle, 10, 180);
+                pipeSettings.filterBySubmesh = EditorGUILayout.Toggle("Submesh Filter", pipeSettings.filterBySubmesh);
+                EditorGUI.indentLevel--;
             }
 
-            EditorGUILayout.Space(2);
-            EditorGUILayout.LabelField("Output", EditorStyles.miniLabel);
-            pipeSettings.saveNewMeshAssets = EditorGUILayout.Toggle("  Save Assets", pipeSettings.saveNewMeshAssets);
-            if (pipeSettings.saveNewMeshAssets)
-                pipeSettings.savePath = EditorGUILayout.TextField("  Path", pipeSettings.savePath);
+            foldBorderRepair = EditorGUILayout.Foldout(foldBorderRepair, "Border Repair", true);
+            if (foldBorderRepair)
+            {
+                EditorGUI.indentLevel++;
+                pipeSettings.enableBorderRepair = EditorGUILayout.Toggle("Enable", pipeSettings.enableBorderRepair);
+                if (pipeSettings.enableBorderRepair)
+                {
+                    pipeSettings.perimeterTolerance = EditorGUILayout.FloatField("Perim Tol", pipeSettings.perimeterTolerance);
+                    pipeSettings.borderFuseTolerance = EditorGUILayout.FloatField("Fuse Tol", pipeSettings.borderFuseTolerance);
+                }
+                EditorGUI.indentLevel--;
+            }
+
+            foldOutput = EditorGUILayout.Foldout(foldOutput, "Output", true);
+            if (foldOutput)
+            {
+                EditorGUI.indentLevel++;
+                pipeSettings.saveNewMeshAssets = EditorGUILayout.Toggle("Save Assets", pipeSettings.saveNewMeshAssets);
+                if (pipeSettings.saveNewMeshAssets)
+                    pipeSettings.savePath = EditorGUILayout.TextField("Path", pipeSettings.savePath);
+                EditorGUI.indentLevel--;
+            }
 
             // ── UV0 Analysis ──
-            EditorGUILayout.Space(8);
-            H("UV0 Analysis & Fix");
-            EditorGUILayout.HelpBox(
-                "Detects false UV seams (weld candidates), degenerate triangles, " +
-                "flipped triangles, and overlapping shells in UV0.",
-                MessageType.Info);
-
-            ColorBtn(new Color(.5f,.7f,.9f), "Analyze UV0", 24, ExecAnalyzeUv0);
-
-            if (uv0Analyzed)
+            EditorGUILayout.Space(4);
+            foldUv0Analysis = EditorGUILayout.Foldout(foldUv0Analysis, "UV0 Analysis & Fix", true);
+            if (foldUv0Analysis)
             {
-                bool anyIssues = false;
-                foreach (var kv in uv0Reports)
-                {
-                    var r = kv.Value;
-                    EditorGUILayout.LabelField(r.meshName, EditorStyles.miniBoldLabel);
-                    EditorGUILayout.LabelField(
-                        $"  {r.totalShells} shells, {r.totalVertices} verts, {r.totalTriangles} tris",
-                        EditorStyles.miniLabel);
+                ColorBtn(new Color(.5f,.7f,.9f), "Analyze UV0", 22, ExecAnalyzeUv0);
 
-                    if (r.falseSeamPairs > 0)
+                if (uv0Analyzed)
+                {
+                    bool anyIssues = false;
+                    foreach (var kv in uv0Reports)
                     {
-                        var c = GUI.contentColor;
-                        GUI.contentColor = new Color(1f,.7f,.2f);
-                        EditorGUILayout.LabelField(
-                            $"  ⚠ {r.falseSeamPairs} false seam pairs ({r.falseSeamVertices} weldable verts)",
-                            EditorStyles.miniLabel);
-                        GUI.contentColor = c;
-                        anyIssues = true;
-                    }
-                    if (r.degenerateTriangles > 0)
-                    {
-                        var c = GUI.contentColor;
-                        GUI.contentColor = new Color(1f,.5f,.3f);
-                        EditorGUILayout.LabelField(
-                            $"  ⚠ {r.degenerateTriangles} degenerate UV triangles",
-                            EditorStyles.miniLabel);
-                        GUI.contentColor = c;
-                    }
-                    if (r.flippedTriangles > 0)
-                    {
-                        var c = GUI.contentColor;
-                        GUI.contentColor = new Color(1f,.4f,.4f);
-                        EditorGUILayout.LabelField(
-                            $"  ⚠ {r.flippedTriangles} flipped UV triangles",
-                            EditorStyles.miniLabel);
-                        GUI.contentColor = c;
-                    }
-                    if (r.overlapGroups > 0)
-                    {
-                        EditorGUILayout.LabelField(
-                            $"  {r.overlapGroups} overlap groups ({r.overlappingShells} shells)",
-                            EditorStyles.miniLabel);
-                    }
-                    if (!r.HasIssues)
-                    {
-                        var c = GUI.contentColor;
-                        GUI.contentColor = new Color(.3f,.9f,.3f);
-                        EditorGUILayout.LabelField("  ✓ No issues", EditorStyles.miniLabel);
-                        GUI.contentColor = c;
-                    }
-                }
+                        var r = kv.Value;
+                        EditorGUILayout.LabelField(r.meshName + ": " + r.totalShells + " shells", EditorStyles.miniLabel);
 
-                // Show weld button if: false seam issues exist, OR target LODs exist
-                // (source-guided weld may be needed even without false seams)
-                bool hasTargetLods = meshEntries.Any(e => e.include && e.lodIndex != sourceLodIndex);
-                if ((anyIssues || hasTargetLods) && !uv0Welded)
-                {
-                    EditorGUILayout.Space(4);
-                    ColorBtn(new Color(.9f,.7f,.2f), "Weld (false seams + source-guided)", 24, ExecWeldUv0);
-                }
-                else if (uv0Welded)
-                {
-                    var c = GUI.contentColor;
-                    GUI.contentColor = new Color(.3f,.9f,.3f);
-                    EditorGUILayout.LabelField("✓ UV0 welded — working copies ready", EditorStyles.miniLabel);
-                    GUI.contentColor = c;
+                        if (r.falseSeamPairs > 0)
+                        {
+                            var cc = GUI.contentColor; GUI.contentColor = new Color(1f,.7f,.2f);
+                            EditorGUILayout.LabelField($"  {r.falseSeamPairs} false seams ({r.falseSeamVertices} weldable)", EditorStyles.miniLabel);
+                            GUI.contentColor = cc;
+                            anyIssues = true;
+                        }
+                        if (r.degenerateTriangles > 0)
+                        {
+                            var cc = GUI.contentColor; GUI.contentColor = new Color(1f,.5f,.3f);
+                            EditorGUILayout.LabelField($"  {r.degenerateTriangles} degenerate tris", EditorStyles.miniLabel);
+                            GUI.contentColor = cc;
+                        }
+                        if (r.flippedTriangles > 0)
+                        {
+                            var cc = GUI.contentColor; GUI.contentColor = new Color(1f,.4f,.4f);
+                            EditorGUILayout.LabelField($"  {r.flippedTriangles} flipped tris", EditorStyles.miniLabel);
+                            GUI.contentColor = cc;
+                        }
+                        if (!r.HasIssues)
+                        {
+                            var cc = GUI.contentColor; GUI.contentColor = new Color(.3f,.9f,.3f);
+                            EditorGUILayout.LabelField("  No issues", EditorStyles.miniLabel);
+                            GUI.contentColor = cc;
+                        }
+                    }
+
+                    bool hasTargetLods = meshEntries.Any(e => e.include && e.lodIndex != sourceLodIndex);
+                    if ((anyIssues || hasTargetLods) && !uv0Welded)
+                        ColorBtn(new Color(.9f,.7f,.2f), "Weld (false seams + source-guided)", 22, ExecWeldUv0);
+                    else if (uv0Welded)
+                    {
+                        var cc = GUI.contentColor; GUI.contentColor = new Color(.3f,.9f,.3f);
+                        EditorGUILayout.LabelField("UV0 welded — working copies ready", EditorStyles.miniLabel);
+                        GUI.contentColor = cc;
+                    }
                 }
             }
         }
@@ -414,89 +426,81 @@ namespace LightmapUvTool
 
         void DrawRepack()
         {
-            H("xatlas Repack  (LOD0 → UV2)");
+            H("xatlas Repack (LOD0 → UV2)");
             if (lodGroup == null) { Warn("Set LODGroup first."); return; }
 
-            atlasResolution = EditorGUILayout.IntField("Resolution", atlasResolution);
-            shellPaddingPx  = EditorGUILayout.IntSlider("Shell Padding (px)", shellPaddingPx, 0, 16);
-            borderPaddingPx = EditorGUILayout.IntSlider("Border Padding (px)", borderPaddingPx, 0, 16);
-            if (borderPaddingPx == 0)
-                EditorGUILayout.LabelField("  Border=0: UVs extend to atlas edges (Clamp mode)", EditorStyles.miniLabel);
-            rotateCharts    = EditorGUILayout.Toggle("Rotate", rotateCharts);
+            foldRepackSettings = EditorGUILayout.Foldout(foldRepackSettings, "Settings", true);
+            if (foldRepackSettings)
+            {
+                EditorGUI.indentLevel++;
+                atlasResolution = EditorGUILayout.IntField("Resolution", atlasResolution);
+                shellPaddingPx  = EditorGUILayout.IntSlider("Shell Padding", shellPaddingPx, 0, 16);
+                borderPaddingPx = EditorGUILayout.IntSlider("Border Padding", borderPaddingPx, 0, 16);
+                if (borderPaddingPx == 0)
+                    EditorGUILayout.LabelField("Border=0: UVs to atlas edges (Clamp)", EditorStyles.miniLabel);
+                rotateCharts = EditorGUILayout.Toggle("Rotate", rotateCharts);
+                EditorGUI.indentLevel--;
+            }
 
             var src = ForLod(sourceLodIndex);
-            EditorGUILayout.Space(2);
-            foreach (var e in src)
-                EditorGUILayout.LabelField("  " + (e.repackedMesh != null ? "V" : "O") + " " + e.renderer.name, EditorStyles.miniLabel);
 
-            EditorGUILayout.Space(6);
-            ColorBtn(new Color(.3f,.8f,.4f), "Repack All", 28, () => ExecRepack(src));
+            EditorGUILayout.Space(4);
+            ColorBtn(new Color(.3f,.8f,.4f), "Repack All", 26, () => ExecRepack(src));
 
             if (src.Count > 1)
             {
                 EditorGUILayout.Space(2);
+                EditorGUILayout.LabelField("Per-mesh:", EditorStyles.miniLabel);
                 foreach (var e in src)
-                    if (GUILayout.Button("Repack: " + e.renderer.name, EditorStyles.miniButton))
+                    if (GUILayout.Button("  " + e.renderer.name, EditorStyles.miniButton))
                         ExecRepack(new List<MeshEntry>{e});
             }
 
             if (hasRepack)
             {
-                EditorGUILayout.Space(6);
+                EditorGUILayout.Space(4);
                 EditorGUILayout.HelpBox("Repack done. Preview UV2, then Transfer.", MessageType.Info);
-                if (GUILayout.Button("Preview UV2"))
-                { pvChannel = 2; pvLod = sourceLodIndex; showStatus = false; Repaint(); }
             }
         }
 
-        // ──────────────── Transfer ────────────────
+        // ──────────────── Transfer + Review (merged) ────────────────
 
         void DrawTransfer()
         {
-            H("UV Transfer  (Source → Targets)");
+            H("UV Transfer (Source → Targets)");
             if (lodGroup == null) { Warn("Set LODGroup first."); return; }
             if (!hasRepack) { Warn("Run Repack first."); return; }
 
+            // Status per LOD
             for (int li = 0; li < LodN; li++)
             {
                 if (li == sourceLodIndex) continue;
                 var ee = ForLod(li);
                 if (ee.Count == 0) continue;
                 bool done = ee.All(e => e.transferredMesh != null);
-                bool part = ee.Any(e => e.transferredMesh != null);
-                string ico = done ? "V" : part ? "~" : "O";
-                var c = GUI.contentColor;
+                var cc = GUI.contentColor;
                 if (done) GUI.contentColor = new Color(.3f,.9f,.3f);
-                EditorGUILayout.LabelField(ico + " LOD" + li + ": " + ee.Count + " mesh", EditorStyles.boldLabel);
-                GUI.contentColor = c;
+                EditorGUILayout.LabelField((done ? "✓" : "○") + " LOD" + li + ": " + ee.Count + " mesh", EditorStyles.miniBoldLabel);
+                GUI.contentColor = cc;
 
-                EditorGUI.indentLevel++;
                 foreach (var e in ee)
                 {
-                    string st = e.transferredMesh != null ? "V" : "O";
                     string extra = "";
                     if (e.shellTransferResult != null)
                     {
                         var r = e.shellTransferResult;
-                        float p = r.verticesTotal > 0 ? r.verticesTransferred*100f/r.verticesTotal : 0;
-                        extra = $" ({r.shellsMatched}sh, {p:F0}% verts)";
+                        float p = r.verticesTotal > 0 ? r.verticesTransferred * 100f / r.verticesTotal : 0;
+                        extra = $" ({r.shellsMatched}sh, {p:F0}%)";
                     }
-                    else if (e.report.HasValue)
-                    {
-                        var r = e.report.Value;
-                        float p = r.totalTriangles > 0 ? r.accepted*100f/r.totalTriangles : 0;
-                        extra = " (" + p.ToString("F0") + "% ok)";
-                    }
-                    EditorGUILayout.LabelField("  " + st + " " + e.renderer.name + extra, EditorStyles.miniLabel);
+                    EditorGUILayout.LabelField("  " + (e.transferredMesh != null ? "✓" : "○") + " " + e.renderer.name + extra, EditorStyles.miniLabel);
                 }
-                EditorGUI.indentLevel--;
             }
 
-            EditorGUILayout.Space(8);
-            ColorBtn(new Color(.3f,.6f,1f), "Transfer All Targets", 28, () => ExecTransferAll());
+            EditorGUILayout.Space(6);
+            ColorBtn(new Color(.3f,.6f,1f), "Transfer All Targets", 26, ExecTransferAll);
 
-            EditorGUILayout.Space(4);
-            EditorGUILayout.LabelField("Per-LOD re-run:", EditorStyles.miniLabel);
+            // Per-LOD re-run
+            EditorGUILayout.Space(2);
             for (int li = 0; li < LodN; li++)
             {
                 if (li == sourceLodIndex || ForLod(li).Count == 0) continue;
@@ -504,122 +508,78 @@ namespace LightmapUvTool
                     ExecTransferLod(li);
             }
 
+            // ── Validation Report (inline) ──
             if (hasTransfer)
             {
-                EditorGUILayout.Space(6);
-                if (GUILayout.Button("Preview Result"))
+                EditorGUILayout.Space(8);
+                H("Quality Report");
+                reportScroll = EditorGUILayout.BeginScrollView(reportScroll, GUILayout.MaxHeight(250));
+
+                for (int li = 0; li < LodN; li++)
                 {
-                    for (int i = 0; i < LodN; i++)
-                        if (i != sourceLodIndex && ForLod(i).Count > 0) { pvLod = i; break; }
-                    pvChannel = 2; showStatus = true; Repaint();
-                }
-                if (GUILayout.Button("Go to Review")) tab = Tab.Review;
-            }
-        }
+                    if (li == sourceLodIndex) continue;
+                    var ee = ForLod(li);
+                    if (!ee.Any(e => e.shellTransferResult != null || e.report.HasValue)) continue;
 
-        // ──────────────── Review ────────────────
-
-        void DrawReview()
-        {
-            H("Quality Report");
-            if (!hasTransfer) { EditorGUILayout.HelpBox("Run Transfer first.", MessageType.Info); return; }
-
-            reportScroll = EditorGUILayout.BeginScrollView(reportScroll);
-
-            var srcE = ForLod(sourceLodIndex);
-            EditorGUILayout.LabelField("-- Source --", EditorStyles.boldLabel);
-            foreach (var e in srcE)
-            {
-                if (e.repackedMesh == null) continue;
-                var uvl = new List<Vector2>();
-                e.repackedMesh.GetUVs(2, uvl);
-                var sh = UvShellExtractor.Extract(uvl.ToArray(), e.repackedMesh.triangles);
-                EditorGUILayout.LabelField("  " + e.renderer.name + ": " + sh.Count + " shells", EditorStyles.miniLabel);
-            }
-            EditorGUILayout.Space(4);
-
-            for (int li = 0; li < LodN; li++)
-            {
-                if (li == sourceLodIndex) continue;
-                var ee = ForLod(li);
-                if (!ee.Any(e => e.report.HasValue || e.shellTransferResult != null)) continue;
-                EditorGUILayout.LabelField("-- LOD" + li + " --", EditorStyles.boldLabel);
-                foreach (var e in ee)
-                {
-                    // New pipeline: GroupedShellTransfer results
-                    if (e.shellTransferResult != null)
+                    EditorGUILayout.LabelField("LOD" + li, EditorStyles.miniBoldLabel);
+                    foreach (var e in ee)
                     {
-                        var r = e.shellTransferResult;
-                        EditorGUILayout.LabelField("  " + e.renderer.name + " (shell-first)", EditorStyles.miniBoldLabel);
-                        Bar("Verts OK", r.verticesTransferred, r.verticesTotal, cAccept);
-                        Bar("Verts Miss", r.verticesTotal - r.verticesTransferred, r.verticesTotal, cReject);
-                        EditorGUILayout.LabelField($"  Shell match: {r.shellsMatched} src shells", EditorStyles.miniLabel);
-
-                        // Validation report
-                        var vr = e.validationReport;
-                        if (vr != null)
+                        if (e.shellTransferResult != null)
                         {
-                            EditorGUILayout.Space(2);
-                            EditorGUILayout.LabelField("  Validation:", EditorStyles.miniLabel);
-                            Bar("Clean", vr.cleanCount, vr.totalTriangles, cValClean);
-                            if (vr.invertedCount > 0)
-                                Bar("Inverted", vr.invertedCount, vr.totalTriangles, cValInverted);
-                            if (vr.stretchedCount > 0)
-                                Bar("Stretched", vr.stretchedCount, vr.totalTriangles, cValStretch);
-                            if (vr.zeroAreaCount > 0)
-                                Bar("Zero Area", vr.zeroAreaCount, vr.totalTriangles, cValZero);
-                            if (vr.oobCount > 0)
-                                Bar("Out of Bounds", vr.oobCount, vr.totalTriangles, cValOOB);
-                            if (vr.overlapShellPairs > 0)
-                                Bar("Overlap", vr.overlapTriangleCount, vr.totalTriangles, cValOverlap);
+                            var r = e.shellTransferResult;
+                            EditorGUILayout.LabelField("  " + e.renderer.name, EditorStyles.miniLabel);
+                            Bar("OK", r.verticesTransferred, r.verticesTotal, cAccept);
+                            Bar("Miss", r.verticesTotal - r.verticesTransferred, r.verticesTotal, cReject);
+
+                            var vr = e.validationReport;
+                            if (vr != null)
+                            {
+                                Bar("Clean", vr.cleanCount, vr.totalTriangles, cValClean);
+                                if (vr.invertedCount > 0) Bar("Inv", vr.invertedCount, vr.totalTriangles, cValInverted);
+                                if (vr.stretchedCount > 0) Bar("Str", vr.stretchedCount, vr.totalTriangles, cValStretch);
+                                if (vr.zeroAreaCount > 0) Bar("0A", vr.zeroAreaCount, vr.totalTriangles, cValZero);
+                                if (vr.oobCount > 0) Bar("OB", vr.oobCount, vr.totalTriangles, cValOOB);
+                                if (vr.overlapShellPairs > 0) Bar("Ov", vr.overlapTriangleCount, vr.totalTriangles, cValOverlap);
+                            }
                         }
-                        EditorGUILayout.Space(4);
-                        continue;
+                        else if (e.report.HasValue)
+                        {
+                            var rp = e.report.Value;
+                            EditorGUILayout.LabelField("  " + e.renderer.name + " (legacy)", EditorStyles.miniLabel);
+                            Bar("OK", rp.accepted, rp.totalTriangles, cAccept);
+                            Bar("Ambig", rp.ambiguous, rp.totalTriangles, cAmbig);
+                            Bar("Miss", rp.unavoidableMismatch, rp.totalTriangles, cMis);
+                            Bar("Rej", rp.rejected, rp.totalTriangles, cReject);
+                        }
+                        EditorGUILayout.Space(2);
                     }
-                    // Legacy pipeline: old report
-                    if (!e.report.HasValue) continue;
-                    var rp = e.report.Value;
-                    EditorGUILayout.LabelField("  " + e.renderer.name, EditorStyles.miniBoldLabel);
-                    Bar("Accepted",  rp.accepted, rp.totalTriangles, cAccept);
-                    Bar("Ambiguous", rp.ambiguous, rp.totalTriangles, cAmbig);
-                    Bar("BdrRisk",   rp.borderRisk, rp.totalTriangles, cBorder);
-                    Bar("Mismatch",  rp.unavoidableMismatch, rp.totalTriangles, cMis);
-                    Bar("Rejected",  rp.rejected, rp.totalTriangles, cReject);
-                    EditorGUILayout.LabelField("  Err mean=" + rp.meanError.ToString("F5") + " max=" + rp.maxError.ToString("F5") + "  Conf=" + rp.meanConfidence.ToString("F3"), EditorStyles.miniLabel);
-                    if (rp.borderReport.totalBorderPrims > 0)
-                        EditorGUILayout.LabelField("  Border: " + rp.borderReport.repairedCount + " fix, " + rp.borderReport.skippedAlreadyMatching + " ok, " + rp.borderReport.markedBorderRisk + " risk", EditorStyles.miniLabel);
-                    EditorGUILayout.Space(4);
                 }
+                EditorGUILayout.EndScrollView();
+
+                // ── Apply to FBX ──
+                EditorGUILayout.Space(6);
+                H("Apply UV2");
+                ColorBtn(new Color(.3f,.85f,.4f), "Apply UV2 to FBX", 26, ApplyUv2ToFbx);
+                EditorGUILayout.Space(2);
+                ColorBtn(new Color(.9f,.3f,.3f), "Reset UV2 (delete sidecar)", 20, ResetUv2FromFbx);
+
+                EditorGUILayout.Space(4);
+                H("Legacy Save");
+                pipeSettings.savePath = EditorGUILayout.TextField("Path", pipeSettings.savePath);
+                ColorBtn(new Color(.6f,.5f,.3f), "Save All Mesh Assets", 22, SaveAll);
+                if (GUILayout.Button("Update LODGroup Refs", EditorStyles.miniButton)) UpdateRefs();
             }
-            EditorGUILayout.EndScrollView();
-
-            EditorGUILayout.Space(6);
-            H("Apply UV2 to FBX (Postprocessor)");
-            EditorGUILayout.HelpBox(
-                "Saves UV2 as sidecar asset beside the FBX. On every FBX reimport " +
-                "the postprocessor injects UV2 — just like Unity's Generate Lightmap UVs.",
-                MessageType.Info);
-            ColorBtn(new Color(.3f,.85f,.4f), "Apply UV2 to FBX", 28, ApplyUv2ToFbx);
-
-            EditorGUILayout.Space(4);
-            ColorBtn(new Color(.9f,.3f,.3f), "Reset UV2 (delete sidecar)", 24, ResetUv2FromFbx);
-
-            EditorGUILayout.Space(8);
-            H("Legacy Save (mesh .asset copies)");
-            pipeSettings.savePath = EditorGUILayout.TextField("Path", pipeSettings.savePath);
-            ColorBtn(new Color(.6f,.5f,.3f), "Save All Mesh Assets", 24, SaveAll);
-            if (GUILayout.Button("Update LODGroup Refs")) UpdateRefs();
         }
 
         void Bar(string label, int n, int total, Color col)
         {
             float pct = total > 0 ? (float)n / total : 0;
-            var r = GUILayoutUtility.GetRect(0, 15, GUILayout.ExpandWidth(true));
+            var r = GUILayoutUtility.GetRect(0, 14, GUILayout.ExpandWidth(true));
             EditorGUI.DrawRect(r, new Color(.15f,.15f,.15f));
             EditorGUI.DrawRect(new Rect(r.x, r.y, r.width * pct, r.height), col);
             var s = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleLeft };
             s.normal.textColor = Color.white;
-            EditorGUI.LabelField(new Rect(r.x+4, r.y, r.width, r.height), label + ": " + n + " (" + (pct*100).ToString("F1") + "%)", s);
+            EditorGUI.LabelField(new Rect(r.x + 4, r.y, r.width, r.height), label + ": " + n + " (" + (pct * 100).ToString("F0") + "%)", s);
         }
 
         // ════════════════════════════════════════════════════════════
@@ -629,41 +589,66 @@ namespace LightmapUvTool
         void DrawToolbar()
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+
+            // ── LOD buttons ──
             if (LodN > 0)
             {
-                var names = new string[LodN];
                 for (int i = 0; i < LodN; i++)
-                    names[i] = i == sourceLodIndex ? "LOD" + i + "(S)" : "LOD" + i;
-                pvLod = EditorGUILayout.Popup(pvLod, names, EditorStyles.toolbarPopup, GUILayout.Width(80));
+                {
+                    string label = i == sourceLodIndex ? "LOD" + i + "(S)" : "LOD" + i;
+                    var bg = GUI.backgroundColor;
+                    if (pvLod == i) GUI.backgroundColor = new Color(.35f,.65f,1f);
+                    if (GUILayout.Button(label, EditorStyles.toolbarButton, GUILayout.Width(58)))
+                        pvLod = i;
+                    GUI.backgroundColor = bg;
+                }
+                GUILayout.Space(6);
             }
+
+            // ── UV channel toggle ──
             int ci = pvChannel == 0 ? 0 : 1;
-            ci = GUILayout.Toolbar(ci, new[]{"UV0","UV2"}, EditorStyles.toolbarButton, GUILayout.Width(90));
+            ci = GUILayout.Toolbar(ci, new[]{"UV0","UV2"}, EditorStyles.toolbarButton, GUILayout.Width(80));
             pvChannel = ci == 0 ? 0 : 2;
 
+            GUILayout.Space(6);
+
+            // ── Fill mode dropdown ──
+            EditorGUILayout.LabelField("Fill:", EditorStyles.miniLabel, GUILayout.Width(24));
+            fillMode = (FillMode)EditorGUILayout.Popup((int)fillMode, fillModeLabels, EditorStyles.toolbarPopup, GUILayout.Width(80));
+
             GUILayout.Space(4);
-            showFill   = GUILayout.Toggle(showFill,   "Fl", EditorStyles.toolbarButton, GUILayout.Width(22));
-            showWire   = GUILayout.Toggle(showWire,   "Wr", EditorStyles.toolbarButton, GUILayout.Width(24));
-            showBorder = GUILayout.Toggle(showBorder, "Bd", EditorStyles.toolbarButton, GUILayout.Width(22));
-            showStatus = GUILayout.Toggle(showStatus, "St", EditorStyles.toolbarButton, GUILayout.Width(22));
-            showShellMatch = GUILayout.Toggle(showShellMatch, "Sh", EditorStyles.toolbarButton, GUILayout.Width(22));
-            showValidation = GUILayout.Toggle(showValidation, "Vl", EditorStyles.toolbarButton, GUILayout.Width(22));
-            GUILayout.Space(4);
-            canvasZoom = EditorGUILayout.Slider(canvasZoom, .1f, 20f, GUILayout.Width(100));
+
+            // ── Overlay toggles ──
+            showWire   = GUILayout.Toggle(showWire,   "Wire", EditorStyles.toolbarButton, GUILayout.Width(36));
+            showBorder = GUILayout.Toggle(showBorder, "Bdr",  EditorStyles.toolbarButton, GUILayout.Width(30));
+
+            GUILayout.Space(6);
+
+            // ── Zoom + alpha ──
+            canvasZoom = EditorGUILayout.Slider(canvasZoom, .1f, 20f, GUILayout.Width(90));
             if (GUILayout.Button("Fit", EditorStyles.toolbarButton, GUILayout.Width(28)))
             { canvasZoom = 1f; canvasPan = Vector2.zero; }
-            if (showFill) fillAlpha = EditorGUILayout.Slider(fillAlpha, .05f, .6f, GUILayout.Width(80));
+            if (fillMode != FillMode.None)
+                fillAlpha = EditorGUILayout.Slider(fillAlpha, .05f, .6f, GUILayout.Width(70));
 
-            GUILayout.Space(8);
+            GUILayout.Space(6);
+
+            // ── Checker ──
             {
                 var bg2 = GUI.backgroundColor;
                 if (CheckerTexturePreview.IsActive) GUI.backgroundColor = new Color(1f,.4f,.3f);
                 string ckLbl = CheckerTexturePreview.IsActive ? "■ Checker" : "▶ Checker";
-                if (GUILayout.Button(ckLbl, EditorStyles.toolbarButton, GUILayout.Width(70)))
+                if (GUILayout.Button(ckLbl, EditorStyles.toolbarButton, GUILayout.Width(66)))
                     ToggleChecker();
                 GUI.backgroundColor = bg2;
             }
 
+            // ── Log level ──
             GUILayout.FlexibleSpace();
+            EditorGUILayout.LabelField("Log:", EditorStyles.miniLabel, GUILayout.Width(24));
+            var lvl = (UvtLog.Level)EditorGUILayout.EnumPopup(UvtLog.Current, EditorStyles.toolbarPopup, GUILayout.Width(64));
+            if (lvl != UvtLog.Current) UvtLog.Current = lvl;
+
             EditorGUILayout.EndHorizontal();
         }
 
@@ -684,26 +669,21 @@ namespace LightmapUvTool
             }
             if (draws.Count == 0) return;
 
-            // Full available area for the canvas (no ScrollView)
             var canvasRect = GUILayoutUtility.GetRect(GUIContent.none, GUIStyle.none,
                 GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
 
             float baseSz = Mathf.Max(64, Mathf.Min(canvasRect.width, canvasRect.height));
             float sz = baseSz * canvasZoom;
 
-            // UV square origin in canvas-local coords (centered by default)
             float cx = (canvasRect.width - sz) * 0.5f + canvasPan.x;
             float cy = (canvasRect.height - sz) * 0.5f + canvasPan.y;
 
-            // ── Input handling ──
             HandleCanvasInput(canvasRect, baseSz, sz, cx, cy);
 
             if (Event.current.type == EventType.Repaint && glMat != null)
             {
-                // Dark background for entire canvas area
                 EditorGUI.DrawRect(canvasRect, new Color(.08f,.08f,.08f));
 
-                // ── Render UV into RenderTexture (GL.* ignores GUI.BeginClip) ──
                 int rtW = Mathf.Max(1, (int)canvasRect.width);
                 int rtH = Mathf.Max(1, (int)canvasRect.height);
                 if (canvasRT == null || canvasRT.width != rtW || canvasRT.height != rtH)
@@ -722,16 +702,12 @@ namespace LightmapUvTool
                 {
                     glMat.SetPass(0);
                     GL.PushMatrix(); push = true;
-                    // Pixel matrix matching the RT dimensions; cx/cy are canvas-local
                     GL.LoadPixelMatrix(0, rtW, rtH, 0);
 
-                    // UV square background
                     GL.Begin(GL.QUADS);
                     GL.Color(new Color(.12f,.12f,.12f));
-                    GL.Vertex3(cx, cy, 0);
-                    GL.Vertex3(cx + sz, cy, 0);
-                    GL.Vertex3(cx + sz, cy + sz, 0);
-                    GL.Vertex3(cx, cy + sz, 0);
+                    GL.Vertex3(cx, cy, 0); GL.Vertex3(cx + sz, cy, 0);
+                    GL.Vertex3(cx + sz, cy + sz, 0); GL.Vertex3(cx, cy + sz, 0);
                     GL.End();
 
                     GlGrid(cx, cy, sz);
@@ -747,28 +723,41 @@ namespace LightmapUvTool
                         if (uvs == null || tri == null) continue;
                         int uN = uvs.Length, fN = tri.Length / 3;
 
-                        TriangleStatus[] stats = showStatus && entry.transferState != null ? entry.transferState.triangleStatus : null;
-                        HashSet<int> bdr = showBorder && entry.transferState != null ? entry.transferState.borderPrimitiveIds : null;
+                        TriangleStatus[] stats = entry.transferState?.triangleStatus;
+                        HashSet<int> bdr = showBorder ? entry.transferState?.borderPrimitiveIds : null;
 
-                        if (showShellMatch && entry.shellTransferResult?.vertexToSourceShell != null)
-                            GlFillShellMatch(cx,cy,sz, uvs,tri,fN,uN, entry.shellTransferResult.vertexToSourceShell);
-                        else if (showValidation && entry.validationReport?.perTriangle != null)
-                            GlFillValidation(cx,cy,sz, uvs,tri,fN,uN, entry.validationReport.perTriangle);
-                        else if (showFill)
+                        // Fill
+                        switch (fillMode)
                         {
-                            if (stats != null) GlFillSt(cx,cy,sz, uvs,tri,fN,uN, stats);
-                            else               GlFillSh(cx,cy,sz, uvs,tri,fN,uN, idx);
+                            case FillMode.ShellMatch when entry.shellTransferResult?.vertexToSourceShell != null:
+                                GlFillShellMatch(cx,cy,sz, uvs,tri,fN,uN, entry.shellTransferResult.vertexToSourceShell);
+                                break;
+                            case FillMode.Validation when entry.validationReport?.perTriangle != null:
+                                GlFillValidation(cx,cy,sz, uvs,tri,fN,uN, entry.validationReport.perTriangle);
+                                break;
+                            case FillMode.Status when stats != null:
+                                GlFillSt(cx,cy,sz, uvs,tri,fN,uN, stats);
+                                break;
+                            case FillMode.Shells:
+                                GlFillSh(cx,cy,sz, uvs,tri,fN,uN, idx);
+                                break;
+                            case FillMode.None:
+                                break;
+                            default:
+                                // fallback: show shells if requested mode has no data
+                                if (fillMode != FillMode.None)
+                                    GlFillSh(cx,cy,sz, uvs,tri,fN,uN, idx);
+                                break;
                         }
+
                         if (bdr != null && bdr.Count > 0) GlBdr(cx,cy,sz, uvs,tri,fN,uN, bdr);
                         if (showWire) GlWr(cx,cy,sz, uvs,tri,fN,uN);
                     }
                 }
-                catch (Exception ex) { Debug.LogWarning("[UV] GL: " + ex.Message); }
+                catch (Exception ex) { UvtLog.Warn("[UV] GL: " + ex.Message); }
                 finally { if (push) GL.PopMatrix(); }
 
                 RenderTexture.active = prevRT;
-
-                // Draw the RT as a regular GUI texture — properly clipped to canvasRect
                 GUI.DrawTexture(canvasRect, canvasRT, ScaleMode.StretchToFill, false);
             }
         }
@@ -777,7 +766,6 @@ namespace LightmapUvTool
         {
             var e = Event.current;
 
-            // Scroll wheel → zoom centered on cursor
             if (e.type == EventType.ScrollWheel && canvasRect.Contains(e.mousePosition))
             {
                 float oldZoom = canvasZoom;
@@ -786,7 +774,6 @@ namespace LightmapUvTool
                 canvasZoom = Mathf.Clamp(canvasZoom * factor, 0.1f, 20f);
                 float newSz = baseSz * canvasZoom;
 
-                // Keep UV point under cursor fixed
                 Vector2 local = e.mousePosition - canvasRect.position;
                 float mx = local.x - cx;
                 float my = local.y - cy;
@@ -795,49 +782,25 @@ namespace LightmapUvTool
                 canvasPan.x = newCx - (canvasRect.width - newSz) * 0.5f;
                 canvasPan.y = newCy - (canvasRect.height - newSz) * 0.5f;
 
-                e.Use();
-                Repaint();
+                e.Use(); Repaint();
             }
 
-            // Middle mouse or Alt+Left drag → pan
             bool startPan = canvasRect.Contains(e.mousePosition) &&
                             ((e.type == EventType.MouseDown && e.button == 2) ||
                              (e.type == EventType.MouseDown && e.button == 0 && e.alt));
-            if (startPan)
-            {
-                canvasPanning = true;
-                e.Use();
-            }
-            if (e.type == EventType.MouseDrag && canvasPanning)
-            {
-                canvasPan += e.delta;
-                e.Use();
-                Repaint();
-            }
-            if (e.rawType == EventType.MouseUp && (e.button == 2 || e.button == 0))
-            {
-                canvasPanning = false;
-            }
+            if (startPan) { canvasPanning = true; e.Use(); }
+            if (e.type == EventType.MouseDrag && canvasPanning) { canvasPan += e.delta; e.Use(); Repaint(); }
+            if (e.rawType == EventType.MouseUp && (e.button == 2 || e.button == 0)) canvasPanning = false;
 
-            // Double-click middle button → fit to view
             if (e.type == EventType.MouseDown && e.button == 2 && e.clickCount == 2 && canvasRect.Contains(e.mousePosition))
-            {
-                canvasZoom = 1f;
-                canvasPan = Vector2.zero;
-                e.Use();
-                Repaint();
-            }
+            { canvasZoom = 1f; canvasPan = Vector2.zero; e.Use(); Repaint(); }
         }
 
         // ── GL helpers ──
 
-        /// <summary>
-        /// Create a writable copy of a mesh. Instantiate() inherits isReadable=false
-        /// from imported FBX meshes, so we manually copy all channels into a new Mesh().
-        /// </summary>
         static Mesh MakeReadableCopy(Mesh src)
         {
-            var dst = new Mesh(); // new Mesh() is always isReadable=true
+            var dst = new Mesh();
             dst.indexFormat = src.indexFormat;
             dst.SetVertices(new List<Vector3>(src.vertices));
             if (src.normals  != null && src.normals.Length  > 0) dst.SetNormals(new List<Vector3>(src.normals));
@@ -845,30 +808,15 @@ namespace LightmapUvTool
             if (src.colors   != null && src.colors.Length   > 0) dst.SetColors(new List<Color>(src.colors));
             if (src.boneWeights != null && src.boneWeights.Length > 0) dst.boneWeights = src.boneWeights;
             if (src.bindposes   != null && src.bindposes.Length   > 0) dst.bindposes   = src.bindposes;
-            // Copy UVs preserving original dimension (Vector2/3/4).
-            // Skip UV2 (channel 2) — it will be overwritten by transfer and its presence
-            // would change MeshOptimizer's channel layout, causing dedup mismatch with postprocessor.
             for (int ch = 0; ch < 8; ch++)
             {
-                if (ch == 2) continue; // UV2 is our output channel
+                if (ch == 2) continue;
                 var attr = (VertexAttribute)((int)VertexAttribute.TexCoord0 + ch);
                 if (!src.HasVertexAttribute(attr)) continue;
                 int dim = src.GetVertexAttributeDimension(attr);
-                if (dim <= 2)
-                {
-                    var uv = new List<Vector2>(); src.GetUVs(ch, uv);
-                    if (uv.Count > 0) dst.SetUVs(ch, uv);
-                }
-                else if (dim == 3)
-                {
-                    var uv = new List<Vector3>(); src.GetUVs(ch, uv);
-                    if (uv.Count > 0) dst.SetUVs(ch, uv);
-                }
-                else
-                {
-                    var uv = new List<Vector4>(); src.GetUVs(ch, uv);
-                    if (uv.Count > 0) dst.SetUVs(ch, uv);
-                }
+                if (dim <= 2)      { var uv = new List<Vector2>(); src.GetUVs(ch, uv); if (uv.Count > 0) dst.SetUVs(ch, uv); }
+                else if (dim == 3) { var uv = new List<Vector3>(); src.GetUVs(ch, uv); if (uv.Count > 0) dst.SetUVs(ch, uv); }
+                else               { var uv = new List<Vector4>(); src.GetUVs(ch, uv); if (uv.Count > 0) dst.SetUVs(ch, uv); }
             }
             dst.subMeshCount = src.subMeshCount;
             for (int s = 0; s < src.subMeshCount; s++)
@@ -877,14 +825,9 @@ namespace LightmapUvTool
             return dst;
         }
 
-        // ── GL ──
-
         static Vector2[] RdUv(Mesh m, int ch) { var l = new List<Vector2>(); m.GetUVs(ch, l); return l.Count > 0 ? l.ToArray() : null; }
-
         static bool UOk(Vector2 u) => u.x >= UV_LO && u.x <= UV_HI && u.y >= UV_LO && u.y <= UV_HI && !float.IsNaN(u.x) && !float.IsNaN(u.y) && !float.IsInfinity(u.x) && !float.IsInfinity(u.y);
-
         static bool TOk(Vector2[] u, int n, int a, int b, int c) => a>=0&&a<n&&b>=0&&b<n&&c>=0&&c<n && UOk(u[a])&&UOk(u[b])&&UOk(u[c]);
-
         static void Vx(float ox, float oy, float sz, Vector2 u) => GL.Vertex3(ox+u.x*sz, oy+(1f-u.y)*sz, 0);
 
         void GlGrid(float ox, float oy, float sz)
@@ -967,29 +910,20 @@ namespace LightmapUvTool
             GL.End();
         }
 
-        // ── Shell Match visualization: color by matched source shell ──
-        void GlFillShellMatch(float ox, float oy, float sz, Vector2[] uv, int[] t,
-            int fN, int uN, int[] vertShellMap)
+        void GlFillShellMatch(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, int[] vertShellMap)
         {
             if (vertShellMap == null) return;
-            int tot = 0, b = 0;
-            Color cc = Color.clear;
+            int tot = 0, b = 0; Color cc = Color.clear;
             GL.Begin(GL.TRIANGLES);
             for (int f = 0; f < fN && tot < MAX_TRI; f++)
             {
-                int a0 = t[f * 3], a1 = t[f * 3 + 1], a2 = t[f * 3 + 2];
+                int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
                 if (!TOk(uv, uN, a0, a1, a2)) continue;
                 int sh = (a0 < vertShellMap.Length) ? vertShellMap[a0] : -1;
-                Color nc;
-                if (sh < 0)
-                    nc = new Color(0.3f, 0.3f, 0.3f, fillAlpha);
-                else
-                    nc = new Color(pal[sh % pal.Length].r, pal[sh % pal.Length].g,
-                                   pal[sh % pal.Length].b, fillAlpha * 1.5f);
+                Color nc = sh < 0 ? new Color(0.3f, 0.3f, 0.3f, fillAlpha) :
+                    new Color(pal[sh % pal.Length].r, pal[sh % pal.Length].g, pal[sh % pal.Length].b, fillAlpha * 1.5f);
                 if (nc.r != cc.r || nc.g != cc.g || nc.b != cc.b)
-                {
-                    GL.End(); GL.Begin(GL.TRIANGLES); cc = nc; GL.Color(cc); b = 0;
-                }
+                { GL.End(); GL.Begin(GL.TRIANGLES); cc = nc; GL.Color(cc); b = 0; }
                 Vx(ox, oy, sz, uv[a0]); Vx(ox, oy, sz, uv[a1]); Vx(ox, oy, sz, uv[a2]);
                 tot++; b++;
                 if (b >= BATCH) { GL.End(); GL.Begin(GL.TRIANGLES); GL.Color(cc); b = 0; }
@@ -997,37 +931,25 @@ namespace LightmapUvTool
             GL.End();
         }
 
-        // ── Validation visualization: color by issue type ──
-        static readonly Color cValClean    = new Color(.2f, .85f, .3f, .4f);
-        static readonly Color cValInverted = new Color(.95f, .15f, .15f, .55f);
-        static readonly Color cValStretch  = new Color(.95f, .85f, .15f, .5f);
-        static readonly Color cValZero     = new Color(.7f, .2f, .9f, .5f);
-        static readonly Color cValOOB      = new Color(1f, .5f, .1f, .5f);
-        static readonly Color cValOverlap  = new Color(1f, .1f, .9f, .55f);
-
-        void GlFillValidation(float ox, float oy, float sz, Vector2[] uv, int[] t,
-            int fN, int uN, TransferValidator.TriIssue[] perTri)
+        void GlFillValidation(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, TransferValidator.TriIssue[] perTri)
         {
             if (perTri == null) return;
-            int tot = 0, b = 0;
-            Color cc = Color.clear;
+            int tot = 0, b = 0; Color cc = Color.clear;
             GL.Begin(GL.TRIANGLES);
             for (int f = 0; f < fN && tot < MAX_TRI; f++)
             {
-                int a0 = t[f * 3], a1 = t[f * 3 + 1], a2 = t[f * 3 + 2];
+                int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
                 if (!TOk(uv, uN, a0, a1, a2)) continue;
                 var fl = (f < perTri.Length) ? perTri[f] : TransferValidator.TriIssue.None;
                 Color nc;
-                if ((fl & TransferValidator.TriIssue.Inverted) != 0)      nc = cValInverted;
-                else if ((fl & TransferValidator.TriIssue.ZeroArea) != 0) nc = cValZero;
+                if      ((fl & TransferValidator.TriIssue.Inverted) != 0)  nc = cValInverted;
+                else if ((fl & TransferValidator.TriIssue.ZeroArea) != 0)  nc = cValZero;
                 else if ((fl & TransferValidator.TriIssue.Stretched) != 0) nc = cValStretch;
-                else if ((fl & TransferValidator.TriIssue.Overlap) != 0) nc = cValOverlap;
+                else if ((fl & TransferValidator.TriIssue.Overlap) != 0)   nc = cValOverlap;
                 else if ((fl & TransferValidator.TriIssue.OutOfBounds) != 0) nc = cValOOB;
                 else nc = cValClean;
                 if (nc.r != cc.r || nc.g != cc.g || nc.b != cc.b)
-                {
-                    GL.End(); GL.Begin(GL.TRIANGLES); cc = nc; GL.Color(cc); b = 0;
-                }
+                { GL.End(); GL.Begin(GL.TRIANGLES); cc = nc; GL.Color(cc); b = 0; }
                 Vx(ox, oy, sz, uv[a0]); Vx(ox, oy, sz, uv[a1]); Vx(ox, oy, sz, uv[a2]);
                 tot++; b++;
                 if (b >= BATCH) { GL.End(); GL.Begin(GL.TRIANGLES); GL.Color(cc); b = 0; }
@@ -1037,7 +959,7 @@ namespace LightmapUvTool
 
         static Color SC(TriangleStatus s)
         {
-            switch(s)
+            switch (s)
             {
                 case TriangleStatus.Accepted: return cAccept;
                 case TriangleStatus.Ambiguous: return cAmbig;
@@ -1055,21 +977,39 @@ namespace LightmapUvTool
         void DrawStatusBar()
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-            var ee = ForLod(pvLod); int tV=0,tT=0;
-            foreach (var e in ee) { Mesh m=DMesh(e); if (m==null) continue; tV+=m.vertexCount; tT+=m.triangles.Length/3; }
-            EditorGUILayout.LabelField("LOD" + pvLod + " | " + ee.Count + " mesh | V:" + tV + " T:" + tT + " | " + (pvChannel==0?"UV0":"UV2"), EditorStyles.miniLabel);
-            if (showValidation) { GUILayout.FlexibleSpace(); Sw("✓",cValClean);Sw("Inv",cValInverted);Sw("Str",cValStretch);Sw("0A",cValZero);Sw("OB",cValOOB);Sw("Ov",cValOverlap); }
-            else if (showShellMatch) { GUILayout.FlexibleSpace(); EditorGUILayout.LabelField("Shell Match: color = source shell", EditorStyles.miniLabel); }
-            else if (showStatus) { GUILayout.FlexibleSpace(); Sw("Ok",cAccept);Sw("Am",cAmbig);Sw("Bd",cBorder);Sw("Mi",cMis);Sw("Rj",cReject); }
+            var ee = ForLod(pvLod);
+            int tV = 0, tT = 0;
+            foreach (var e in ee) { Mesh m = DMesh(e); if (m == null) continue; tV += m.vertexCount; tT += m.triangles.Length / 3; }
+            EditorGUILayout.LabelField("LOD" + pvLod + " | " + ee.Count + " mesh | V:" + tV + " T:" + tT + " | " + (pvChannel == 0 ? "UV0" : "UV2"), EditorStyles.miniLabel);
+
+            GUILayout.FlexibleSpace();
+
+            switch (fillMode)
+            {
+                case FillMode.Validation:
+                    Sw("✓", cValClean); Sw("Inv", cValInverted); Sw("Str", cValStretch); Sw("0A", cValZero); Sw("OB", cValOOB); Sw("Ov", cValOverlap);
+                    break;
+                case FillMode.ShellMatch:
+                    EditorGUILayout.LabelField("Shell Match: color = source shell", EditorStyles.miniLabel);
+                    break;
+                case FillMode.Status:
+                    Sw("Ok", cAccept); Sw("Am", cAmbig); Sw("Bd", cBorder); Sw("Mi", cMis); Sw("Rj", cReject);
+                    break;
+            }
             EditorGUILayout.EndHorizontal();
         }
 
-        void Sw(string l, Color c) { var r=GUILayoutUtility.GetRect(9,9,GUILayout.Width(9)); EditorGUI.DrawRect(r,c); EditorGUILayout.LabelField(l,EditorStyles.miniLabel,GUILayout.Width(18)); }
+        void Sw(string l, Color c)
+        {
+            var r = GUILayoutUtility.GetRect(9, 9, GUILayout.Width(9));
+            EditorGUI.DrawRect(r, c);
+            EditorGUILayout.LabelField(l, EditorStyles.miniLabel, GUILayout.Width(18));
+        }
 
         Mesh DMesh(MeshEntry e)
         {
-            if (e.lodIndex==sourceLodIndex && e.repackedMesh!=null && pvChannel==2) return e.repackedMesh;
-            if (e.lodIndex!=sourceLodIndex && e.transferredMesh!=null && pvChannel==2) return e.transferredMesh;
+            if (e.lodIndex == sourceLodIndex && e.repackedMesh != null && pvChannel == 2) return e.repackedMesh;
+            if (e.lodIndex != sourceLodIndex && e.transferredMesh != null && pvChannel == 2) return e.transferredMesh;
             return e.originalMesh;
         }
 
@@ -1081,14 +1021,12 @@ namespace LightmapUvTool
         {
             if (lodGroup == null) return;
             uv0Reports.Clear();
-
             foreach (var e in meshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
                 var report = Uv0Analyzer.Analyze(e.originalMesh);
                 uv0Reports[e.originalMesh.GetInstanceID()] = report;
             }
-
             uv0Analyzed = true;
             int totalFalseSeams = 0, totalDegen = 0, totalFlipped = 0;
             foreach (var kv in uv0Reports)
@@ -1097,8 +1035,7 @@ namespace LightmapUvTool
                 totalDegen += kv.Value.degenerateTriangles;
                 totalFlipped += kv.Value.flippedTriangles;
             }
-            Debug.Log($"[UV0Analyze] {uv0Reports.Count} meshes: " +
-                      $"{totalFalseSeams} false seams, {totalDegen} degenerate, {totalFlipped} flipped");
+            UvtLog.Info($"[UV0Analyze] {uv0Reports.Count} meshes: {totalFalseSeams} false seams, {totalDegen} degenerate, {totalFlipped} flipped");
             Repaint();
         }
 
@@ -1106,30 +1043,25 @@ namespace LightmapUvTool
         {
             if (lodGroup == null) return;
 
-            // ── Phase 1: meshoptimizer (dedup + cache + overdraw + fetch) ──
             int meshoptOptimized = 0;
             foreach (var e in meshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
-
                 var copy = MakeReadableCopy(e.originalMesh);
                 copy.name = e.originalMesh.name + "_optimized";
                 var optResult = MeshOptimizer.Optimize(copy);
                 if (optResult.ok)
                 {
-                    Debug.Log($"[meshopt] '{e.originalMesh.name}': {optResult.originalVertexCount} → {optResult.optimizedVertexCount} verts");
                     e.originalMesh = copy;
                     e.wasWelded = true;
                     meshoptOptimized++;
                 }
                 else
                 {
-                    Debug.LogWarning($"[meshopt] '{e.originalMesh.name}' failed: {optResult.error}");
                     DestroyImmediate(copy);
                 }
             }
 
-            // ── Phase 2: UV edge weld — merge UV shells along seam edges ──
             int edgeWelded = 0;
             foreach (var e in meshEntries)
             {
@@ -1144,44 +1076,91 @@ namespace LightmapUvTool
             }
 
             uv0Welded = meshoptOptimized > 0 || edgeWelded > 0;
-            Debug.Log($"[UV0Fix] Optimized: {meshoptOptimized} meshopt, " +
-                      $"{edgeWelded} UV edge weld (working copies only, FBX untouched)");
-
-            // Re-analyze to show updated state
+            UvtLog.Info($"[UV0Fix] Optimized: {meshoptOptimized} meshopt, {edgeWelded} UV edge weld");
             ExecAnalyzeUv0();
         }
 
         // ════════════════════════════════════════════════════════════
-        //  Pipeline
+        //  Full Pipeline
+        // ════════════════════════════════════════════════════════════
+
+        void ExecFullPipeline()
+        {
+            if (lodGroup == null) { UvtLog.Warn("[Pipeline] No LODGroup assigned."); return; }
+            if (meshEntries.Count == 0) { UvtLog.Warn("[Pipeline] No meshes found."); return; }
+
+            try
+            {
+                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 1/4: Analyze UV0...", 0.05f);
+                ExecAnalyzeUv0();
+
+                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 2/4: Weld...", 0.15f);
+                bool hasTargetLods = meshEntries.Any(e => e.include && e.lodIndex != sourceLodIndex);
+                bool anyIssues = uv0Reports.Values.Any(r => r.falseSeamPairs > 0);
+                if ((anyIssues || hasTargetLods) && !uv0Welded)
+                    ExecWeldUv0();
+
+                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 3/4: Repack...", 0.35f);
+                var src = ForLod(sourceLodIndex);
+                ExecRepack(src);
+
+                if (!hasRepack)
+                {
+                    UvtLog.Error("[Pipeline] Repack failed — aborting.");
+                    return;
+                }
+
+                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 4/4: Transfer...", 0.6f);
+                ExecTransferAll();
+
+                tab = Tab.Transfer;
+                pvChannel = 2;
+                fillMode = FillMode.Validation;
+                // Switch to first target LOD for preview
+                for (int i = 0; i < LodN; i++)
+                    if (i != sourceLodIndex && ForLod(i).Count > 0) { pvLod = i; break; }
+
+                UvtLog.Info("[Pipeline] Full pipeline complete.");
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Error("[Pipeline] " + ex);
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+                Repaint();
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════
+        //  Pipeline Steps
         // ════════════════════════════════════════════════════════════
 
         void ExecRepack(List<MeshEntry> entries)
         {
             try
             {
-                // Filter valid entries and create mesh copies
                 var validEntries = new List<MeshEntry>();
                 var meshCopies = new List<Mesh>();
                 for (int i = 0; i < entries.Count; i++)
                 {
                     var e = entries[i]; var mesh = e.originalMesh; if (mesh == null) continue;
                     var uv0 = mesh.uv;
-                    if (uv0 == null || uv0.Length == 0) { Debug.LogWarning("[Repack] " + e.renderer.name + ": no UV0"); continue; }
+                    if (uv0 == null || uv0.Length == 0) { UvtLog.Warn("[Repack] " + e.renderer.name + ": no UV0"); continue; }
                     var cp = Instantiate(mesh); cp.name = mesh.name + "_repack";
                     validEntries.Add(e);
                     meshCopies.Add(cp);
                 }
-
                 if (meshCopies.Count == 0) return;
 
-                EditorUtility.DisplayProgressBar("Repack", "Packing " + meshCopies.Count + " meshes into shared atlas...", 0.5f);
+                EditorUtility.DisplayProgressBar("Repack", "Packing " + meshCopies.Count + " meshes...", 0.5f);
 
                 var opts = RepackOptions.Default;
                 opts.resolution = (uint)atlasResolution;
                 opts.padding = (uint)shellPaddingPx;
                 opts.borderPadding = (uint)borderPaddingPx;
 
-                // Pack all meshes into a single shared atlas
                 var results = XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);
 
                 for (int i = 0; i < validEntries.Count; i++)
@@ -1189,41 +1168,41 @@ namespace LightmapUvTool
                     var e = validEntries[i];
                     if (!results[i].ok)
                     {
-                        Debug.LogError("[Repack] " + e.renderer.name + ": " + results[i].error);
+                        UvtLog.Error("[Repack] " + e.renderer.name + ": " + results[i].error);
                         DestroyImmediate(meshCopies[i]);
                         continue;
                     }
                     e.repackedMesh = meshCopies[i];
-                    Debug.Log("[Repack] " + e.renderer.name + ": " + results[i].shellCount + " shells, " +
-                              results[i].overlapGroupCount + " overlap, atlas=" + results[i].atlasWidth + "x" + results[i].atlasHeight);
                 }
                 hasRepack = ForLod(sourceLodIndex).Any(e => e.repackedMesh != null);
             }
-            catch (Exception ex) { Debug.LogError("[Repack] " + ex); }
+            catch (Exception ex) { UvtLog.Error("[Repack] " + ex); }
             finally { EditorUtility.ClearProgressBar(); }
             Repaint();
         }
 
-        void ExecTransferAll() { for (int li=0; li<LodN; li++) if (li!=sourceLodIndex) ExecTransferLod(li); }
+        void ExecTransferAll()
+        {
+            for (int li = 0; li < LodN; li++)
+                if (li != sourceLodIndex) ExecTransferLod(li);
+        }
 
-        // ── Source shell analysis cache (mesh instanceID → shell infos) ──
         Dictionary<int, GroupedShellTransfer.SourceShellInfo[]> shellTransformCache =
             new Dictionary<int, GroupedShellTransfer.SourceShellInfo[]>();
 
         void ExecTransferLod(int tLod)
         {
             var srcE = ForLod(sourceLodIndex); var tgtE = ForLod(tLod);
-            if (srcE.Count==0||tgtE.Count==0) return;
+            if (srcE.Count == 0 || tgtE.Count == 0) return;
             try
             {
-                for (int ti=0; ti<tgtE.Count; ti++)
+                for (int ti = 0; ti < tgtE.Count; ti++)
                 {
-                    var te = tgtE[ti]; var se = ti<srcE.Count ? srcE[ti] : srcE[0];
+                    var te = tgtE[ti]; var se = ti < srcE.Count ? srcE[ti] : srcE[0];
                     Mesh sM = se.repackedMesh ?? se.originalMesh; Mesh tM = te.originalMesh;
-                    if (sM==null||tM==null) continue;
-                    EditorUtility.DisplayProgressBar("Transfer", "LOD"+tLod+": "+te.renderer.name, .1f+.8f*ti/tgtE.Count);
+                    if (sM == null || tM == null) continue;
+                    EditorUtility.DisplayProgressBar("Transfer", "LOD" + tLod + ": " + te.renderer.name, .1f + .8f * ti / tgtE.Count);
 
-                    // Analyze source: extract UV0 shells and compute UV0→UV2 transforms
                     int id = sM.GetInstanceID();
                     if (!shellTransformCache.TryGetValue(id, out var srcInfos))
                     {
@@ -1232,31 +1211,22 @@ namespace LightmapUvTool
                     }
                     if (srcInfos == null) continue;
 
-                    // UV edge weld already done in Phase 2, no additional weld needed
-
-                    // Transfer: triangle surface projection UV2 copy
                     var tr = GroupedShellTransfer.Transfer(tM, sM);
                     if (tr.uv2 == null) continue;
 
-                    var om = Instantiate(tM); om.name = tM.name+"_uvTransfer";
+                    var om = Instantiate(tM); om.name = tM.name + "_uvTransfer";
                     om.SetUVs(pipeSettings.targetUvChannel, new List<Vector2>(tr.uv2));
                     te.transferredMesh = om;
                     te.transferState = null;
                     te.report = null;
                     te.shellTransferResult = tr;
 
-                    // Validate transfer
                     te.validationReport = TransferValidator.Validate(tM, tr.uv2, tr);
                     TransferValidator.DetectUv2Overlaps(tM, tr.uv2, te.validationReport);
-
-                    Debug.Log($"[Transfer] {te.renderer.name}: " +
-                              $"{tr.shellsMatched} source shells used, " +
-                              $"{tr.verticesTransferred}/{tr.verticesTotal} verts | " +
-                              $"Validation: {te.validationReport.Summary}");
                 }
-                hasTransfer = tgtE.Any(e => e.transferredMesh!=null);
+                hasTransfer = tgtE.Any(e => e.transferredMesh != null);
             }
-            catch (Exception ex) { Debug.LogError("[Transfer] LOD"+tLod+": "+ex); }
+            catch (Exception ex) { UvtLog.Error("[Transfer] LOD" + tLod + ": " + ex); }
             finally { EditorUtility.ClearProgressBar(); }
             Repaint();
         }
@@ -1275,28 +1245,28 @@ namespace LightmapUvTool
                 var fld = System.IO.Path.GetFileName(p);
                 if (!string.IsNullOrEmpty(par)) AssetDatabase.CreateFolder(par, fld);
             }
-            int n=0;
+            int n = 0;
             foreach (var e in meshEntries)
             {
-                Mesh m = e.lodIndex==sourceLodIndex ? e.repackedMesh : e.transferredMesh;
-                if (m==null) continue;
-                string ap = AssetDatabase.GenerateUniqueAssetPath(p+"/"+m.name+".asset");
-                AssetDatabase.CreateAsset(m, ap); Debug.Log("[Save] "+ap); n++;
+                Mesh m = e.lodIndex == sourceLodIndex ? e.repackedMesh : e.transferredMesh;
+                if (m == null) continue;
+                string ap = AssetDatabase.GenerateUniqueAssetPath(p + "/" + m.name + ".asset");
+                AssetDatabase.CreateAsset(m, ap); n++;
             }
             AssetDatabase.SaveAssets(); AssetDatabase.Refresh();
-            Debug.Log("[Save] "+n+" assets -> "+p);
+            UvtLog.Info("[Save] " + n + " assets -> " + p);
         }
 
         void UpdateRefs()
         {
-            if (lodGroup==null) return; int n=0;
+            if (lodGroup == null) return; int n = 0;
             foreach (var e in meshEntries)
             {
-                Mesh m = e.lodIndex==sourceLodIndex ? e.repackedMesh : e.transferredMesh;
-                if (m==null||e.meshFilter==null) continue;
+                Mesh m = e.lodIndex == sourceLodIndex ? e.repackedMesh : e.transferredMesh;
+                if (m == null || e.meshFilter == null) continue;
                 Undo.RecordObject(e.meshFilter, "UV Transfer"); e.meshFilter.sharedMesh = m; n++;
             }
-            Debug.Log("[Save] "+n+" refs updated");
+            UvtLog.Info("[Save] " + n + " refs updated");
         }
 
         // ════════════════════════════════════════════════════════════
@@ -1305,21 +1275,13 @@ namespace LightmapUvTool
 
         void ToggleChecker()
         {
-            if (CheckerTexturePreview.IsActive)
-            {
-                CheckerTexturePreview.Restore();
-                Repaint();
-                return;
-            }
+            if (CheckerTexturePreview.IsActive) { CheckerTexturePreview.Restore(); Repaint(); return; }
 
-            // Collect renderers + their UV2 working copies
             var entries = new List<(Renderer renderer, Mesh meshWithUv2)>();
             foreach (var e in meshEntries)
             {
                 if (!e.include || e.renderer == null) continue;
                 Mesh uvMesh = e.transferredMesh ?? e.repackedMesh;
-
-                // Fallback: use original/FBX mesh if it has UV2 (e.g. after Apply or auto-generated)
                 if (uvMesh == null)
                 {
                     Mesh fallback = e.originalMesh ?? e.fbxMesh;
@@ -1330,30 +1292,26 @@ namespace LightmapUvTool
                         if (testUv2.Count > 0) uvMesh = fallback;
                     }
                 }
-
-                if (uvMesh != null)
-                    entries.Add((e.renderer, uvMesh));
+                if (uvMesh != null) entries.Add((e.renderer, uvMesh));
             }
 
             if (entries.Count == 0)
             {
-                Debug.LogWarning("[Checker] No meshes with UV2 found. Run at least Repack to preview.");
+                UvtLog.Warn("[Checker] No meshes with UV2. Run Repack first.");
                 return;
             }
-
             CheckerTexturePreview.Apply(entries);
             Repaint();
         }
 
         // ════════════════════════════════════════════════════════════
-        //  Apply UV2 to FBX (postprocessor sidecar)
+        //  Apply UV2 to FBX
         // ════════════════════════════════════════════════════════════
 
         void ApplyUv2ToFbx()
         {
             if (lodGroup == null) return;
 
-            // Group mesh entries by source FBX path
             var fbxGroups = new Dictionary<string, List<(string name, Vector2[] uv2, bool welded, bool edgeWelded, Vector3[] positions, Vector2[] uv0)>>();
 
             foreach (var e in meshEntries)
@@ -1362,17 +1320,14 @@ namespace LightmapUvTool
                 Mesh resultMesh = e.lodIndex == sourceLodIndex ? e.repackedMesh : e.transferredMesh;
                 if (resultMesh == null) continue;
 
-                // Get FBX path from the immutable FBX mesh ref (survives weld)
-                Mesh pathMesh = e.fbxMesh != null ? e.fbxMesh : e.originalMesh;
+                Mesh pathMesh = e.fbxMesh ?? e.originalMesh;
                 string fbxPath = AssetDatabase.GetAssetPath(pathMesh);
                 if (string.IsNullOrEmpty(fbxPath)) continue;
 
-                // Read UV2 from our result mesh
                 var uv2List = new List<Vector2>();
                 resultMesh.GetUVs(pipeSettings.targetUvChannel, uv2List);
                 if (uv2List.Count == 0) continue;
 
-                // Read vertex positions and UV0 for order-independent remapping in postprocessor
                 var positions = resultMesh.vertices;
                 var uv0List = new List<Vector2>();
                 resultMesh.GetUVs(0, uv0List);
@@ -1380,14 +1335,13 @@ namespace LightmapUvTool
                 if (!fbxGroups.ContainsKey(fbxPath))
                     fbxGroups[fbxPath] = new List<(string, Vector2[], bool, bool, Vector3[], Vector2[])>();
 
-                // Use FBX mesh name (postprocessor matches by this name)
                 string meshName = e.fbxMesh != null ? e.fbxMesh.name : e.originalMesh.name;
                 fbxGroups[fbxPath].Add((meshName, uv2List.ToArray(), e.wasWelded, e.wasEdgeWelded, positions, uv0List.ToArray()));
             }
 
             if (fbxGroups.Count == 0)
             {
-                Debug.LogWarning("[Apply] No meshes with UV2 data to apply.");
+                UvtLog.Warn("[Apply] No meshes with UV2 data.");
                 return;
             }
 
@@ -1399,7 +1353,6 @@ namespace LightmapUvTool
                     string fbxPath = kv.Key;
                     string sidecarPath = Uv2DataAsset.GetSidecarPath(fbxPath);
 
-                    // Load or create sidecar
                     var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sidecarPath);
                     if (data == null)
                     {
@@ -1407,7 +1360,6 @@ namespace LightmapUvTool
                         AssetDatabase.CreateAsset(data, sidecarPath);
                     }
 
-                    // Write UV2 entries (with weld flag + vertex fingerprint for remapping)
                     foreach (var entry in kv.Value)
                     {
                         data.Set(entry.name, entry.uv2, entry.welded, entry.edgeWelded,
@@ -1417,62 +1369,45 @@ namespace LightmapUvTool
 
                     EditorUtility.SetDirty(data);
                     AssetDatabase.SaveAssets();
-
-                    Debug.Log($"[Apply] Sidecar '{sidecarPath}': {kv.Value.Count} mesh(es)");
-
-                    // Reimport FBX to trigger postprocessor
                     AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate);
                 }
             }
-            catch (System.Exception ex)
-            {
-                Debug.LogError("[Apply] " + ex);
-            }
+            catch (Exception ex) { UvtLog.Error("[Apply] " + ex); }
 
             AssetDatabase.Refresh();
-            Debug.Log($"[Apply] Done: {totalMeshes} mesh(es) across {fbxGroups.Count} FBX file(s)");
-
-            // Clear working copies — the FBX meshes now have UV2 baked in
+            UvtLog.Info($"[Apply] Done: {totalMeshes} mesh(es) across {fbxGroups.Count} FBX file(s)");
             Refresh();
             Repaint();
         }
 
         // ════════════════════════════════════════════════════════════
-        //  Reset working copies (back to FBX meshes, clear all derived data)
+        //  Reset
         // ════════════════════════════════════════════════════════════
 
         void ResetWorkingCopies()
         {
             foreach (var e in meshEntries)
             {
-                if (e.fbxMesh != null)
-                    e.originalMesh = e.fbxMesh;
+                if (e.fbxMesh != null) e.originalMesh = e.fbxMesh;
                 e.repackedMesh = null;
                 e.transferredMesh = null;
                 e.shellTransferResult = null;
                 e.wasWelded = false;
                 e.report = null;
             }
-            hasRepack = false;
-            hasTransfer = false;
-            uv0Analyzed = false;
-            uv0Welded = false;
+            hasRepack = hasTransfer = false;
+            uv0Analyzed = uv0Welded = false;
             uv0Reports.Clear();
             srcCache.Clear();
             shellTransformCache.Clear();
-            Debug.Log("[Reset] All working copies restored to FBX originals");
+            UvtLog.Info("[Reset] All working copies restored to FBX originals");
             Repaint();
         }
-
-        // ════════════════════════════════════════════════════════════
-        //  Reset UV2 (delete sidecar + reimport)
-        // ════════════════════════════════════════════════════════════
 
         void ResetUv2FromFbx()
         {
             if (lodGroup == null) return;
 
-            // Collect unique FBX paths
             var fbxPaths = new HashSet<string>();
             foreach (var e in meshEntries)
             {
@@ -1480,12 +1415,10 @@ namespace LightmapUvTool
                 string p = AssetDatabase.GetAssetPath(e.originalMesh);
                 if (!string.IsNullOrEmpty(p)) fbxPaths.Add(p);
             }
-
             if (fbxPaths.Count == 0) return;
 
             if (!EditorUtility.DisplayDialog("Reset UV2",
-                $"Delete UV2 sidecar data for {fbxPaths.Count} FBX file(s)?\n" +
-                "This will remove all transferred UV2 on next reimport.",
+                $"Delete UV2 sidecar data for {fbxPaths.Count} FBX file(s)?",
                 "Delete", "Cancel"))
                 return;
 
@@ -1496,17 +1429,13 @@ namespace LightmapUvTool
                 if (AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sidecarPath) != null)
                 {
                     AssetDatabase.DeleteAsset(sidecarPath);
-                    Debug.Log($"[Reset] Deleted '{sidecarPath}'");
                     deleted++;
                 }
-
-                // Reimport FBX — mesh will no longer have UV2
                 AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate);
             }
 
             AssetDatabase.Refresh();
-            Debug.Log($"[Reset] Deleted {deleted} sidecar(s), reimported {fbxPaths.Count} FBX");
-
+            UvtLog.Info($"[Reset] Deleted {deleted} sidecar(s), reimported {fbxPaths.Count} FBX");
             if (CheckerTexturePreview.IsActive) CheckerTexturePreview.Restore();
             Refresh();
             Repaint();

@@ -53,7 +53,7 @@ namespace LightmapUvTool
                 int saved = totalFbxVerts - totalFinalVerts;
                 float pct = totalFbxVerts > 0 ? saved * 100f / totalFbxVerts : 0f;
                 string remap = remapCount > 0 ? $", {remapCount} remapped" : "";
-                Debug.Log($"[UV2 Postprocess] '{modelPath}': {applied} mesh(es), {totalFbxVerts}→{totalFinalVerts} verts (−{saved}, −{pct:F1}%{remap})");
+                UvtLog.Info($"[UV2 Postprocess] '{modelPath}': {applied} mesh(es), {totalFbxVerts}→{totalFinalVerts} verts (−{saved}, −{pct:F1}%{remap})");
             }
         }
 
@@ -103,7 +103,7 @@ namespace LightmapUvTool
 
             if (entry.uv2.Length != mesh.vertexCount)
             {
-                Debug.LogWarning($"[UV2 Postprocess] '{mesh.name}': vertex count mismatch " +
+                UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': vertex count mismatch " +
                                 $"(mesh={mesh.vertexCount}, uv2={entry.uv2.Length}). Skipped.");
                 return false;
             }
@@ -264,14 +264,14 @@ namespace LightmapUvTool
                 }
 
                 if (fallbackMatched > 0)
-                    Debug.Log($"[UV2 Postprocess] '{mesh.name}': {fallbackMatched} vertices matched by nearest-neighbor fallback");
+                    UvtLog.Info($"[UV2 Postprocess] '{mesh.name}': {fallbackMatched} vertices matched by nearest-neighbor fallback");
 
             }
 
             didRemap = true;
 
             if (matched < count)
-                Debug.LogWarning($"[UV2 Postprocess] '{mesh.name}': position remap {matched}/{count} " +
+                UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': position remap {matched}/{count} " +
                                  $"(unmatched vertices will have zero UV2)");
 
             return result;

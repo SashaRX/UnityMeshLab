@@ -12,10 +12,10 @@ namespace LightmapUvTool
         static void TestRepackSelected()
         {
             var go = Selection.activeGameObject;
-            if (go == null) { Debug.LogError("[xatlas] Select a GameObject with MeshFilter"); return; }
+            if (go == null) { UvtLog.Error("[xatlas] Select a GameObject with MeshFilter"); return; }
 
             var mf = go.GetComponent<MeshFilter>();
-            if (mf == null || mf.sharedMesh == null) { Debug.LogError("[xatlas] No MeshFilter/Mesh"); return; }
+            if (mf == null || mf.sharedMesh == null) { UvtLog.Error("[xatlas] No MeshFilter/Mesh"); return; }
 
             Mesh mesh = Object.Instantiate(mf.sharedMesh);
             mesh.name = mf.sharedMesh.name + "_UV2";
@@ -27,24 +27,24 @@ namespace LightmapUvTool
 
             if (!result.ok)
             {
-                Debug.LogError($"[xatlas] FAILED: {result.error}");
+                UvtLog.Error($"[xatlas] FAILED: {result.error}");
                 Object.DestroyImmediate(mesh);
                 return;
             }
 
             mf.sharedMesh = mesh;
 
-            Debug.Log("[xatlas] ═══════════════════════════════════════");
-            Debug.Log($"[xatlas] Result: {mesh.name}");
-            Debug.Log($"[xatlas]   Atlas: {result.atlasWidth} x {result.atlasHeight}");
-            Debug.Log($"[xatlas]   Charts: {result.chartCount}");
-            Debug.Log($"[xatlas]   Shells: {result.shellCount}");
-            Debug.Log($"[xatlas]   Overlap groups: {result.overlapGroupCount}");
-            Debug.Log($"[xatlas]   Conflict vertices: {result.conflictVertices}");
-            Debug.Log($"[xatlas]   Orphan vertices: {result.orphanVertices}");
-            Debug.Log($"[xatlas]   Orphan triangles: {result.orphanTriangles}");
-            Debug.Log($"[xatlas]   Snapped vertices: {result.snappedVertices}");
-            Debug.Log("[xatlas] ═══════════════════════════════════════");
+            UvtLog.Verbose("[xatlas] ═══════════════════════════════════════");
+            UvtLog.Verbose($"[xatlas] Result: {mesh.name}");
+            UvtLog.Verbose($"[xatlas]   Atlas: {result.atlasWidth} x {result.atlasHeight}");
+            UvtLog.Verbose($"[xatlas]   Charts: {result.chartCount}");
+            UvtLog.Verbose($"[xatlas]   Shells: {result.shellCount}");
+            UvtLog.Verbose($"[xatlas]   Overlap groups: {result.overlapGroupCount}");
+            UvtLog.Verbose($"[xatlas]   Conflict vertices: {result.conflictVertices}");
+            UvtLog.Verbose($"[xatlas]   Orphan vertices: {result.orphanVertices}");
+            UvtLog.Verbose($"[xatlas]   Orphan triangles: {result.orphanTriangles}");
+            UvtLog.Verbose($"[xatlas]   Snapped vertices: {result.snappedVertices}");
+            UvtLog.Verbose("[xatlas] ═══════════════════════════════════════");
         }
     }
 }

@@ -255,7 +255,7 @@ namespace LightmapUvTool
             }
 
             if (reassigned > 0)
-                Debug.Log($"[ShellAssignment] Stabilized {reassigned} outlier triangle(s) by neighbor consensus");
+                UvtLog.Verbose($"[ShellAssignment] Stabilized {reassigned} outlier triangle(s) by neighbor consensus");
         }
     }
 }

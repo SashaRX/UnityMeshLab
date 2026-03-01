@@ -87,7 +87,7 @@ namespace LightmapUvTool
                 uvDimStr.Append(layout.uvDim[ch]);
             }
 
-            Debug.Log($"[meshopt] Channel layout: stride={layout.totalStride}, dedupStride={layout.dedupStride}, " +
+            UvtLog.Verbose($"[meshopt] Channel layout: stride={layout.totalStride}, dedupStride={layout.dedupStride}, " +
                       $"normal={layout.hasNormal}, tangent={layout.hasTangent}, color={layout.hasColor}, " +
                       $"uv dims=[{uvDimStr}]");
 
@@ -186,7 +186,7 @@ namespace LightmapUvTool
                 submeshTriangles.Add(finalTris);
                 totalOutVerts += (int)outVertCount;
 
-                Debug.Log($"[meshopt] Submesh {s}: {localVertCount} → {outVertCount} verts, " +
+                UvtLog.Verbose($"[meshopt] Submesh {s}: {localVertCount} → {outVertCount} verts, " +
                           $"{localIndexCount} indices");
             }
 
@@ -245,7 +245,7 @@ namespace LightmapUvTool
 
             result.ok = true;
 
-            Debug.Log($"[meshopt] Done: {result.originalVertexCount} → {result.optimizedVertexCount} verts " +
+            UvtLog.Info($"[meshopt] Done: {result.originalVertexCount} → {result.optimizedVertexCount} verts " +
                       $"({subCount} submeshes)");
 
             return result;

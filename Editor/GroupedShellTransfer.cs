@@ -66,7 +66,7 @@ namespace LightmapUvTool
             sourceMesh.GetUVs(2, uv2List);
             if (uv0List.Count == 0 || uv2List.Count == 0)
             {
-                Debug.LogError("[GroupedTransfer] Source mesh missing UV0 or UV2");
+                UvtLog.Error("[GroupedTransfer] Source mesh missing UV0 or UV2");
                 return null;
             }
             var uv0 = uv0List.ToArray();
@@ -106,7 +106,7 @@ namespace LightmapUvTool
                     shellUv2 = u2s.ToArray(), faceIndices = sh.faceIndices
                 };
             }
-            Debug.Log($"[GroupedTransfer] Source '{sourceMesh.name}': {infos.Length} shells");
+
             return infos;
         }
 
@@ -134,7 +134,7 @@ namespace LightmapUvTool
             var srcUv2 = srcUv2List.ToArray();
 
             if (srcUv0.Length == 0 || srcUv2.Length == 0)
-            { Debug.LogError("[GroupedTransfer] Source missing UV0/UV2"); return result; }
+            { UvtLog.Error("[GroupedTransfer] Source missing UV0/UV2"); return result; }
 
             // Target data
             var tVerts = targetMesh.vertices;
@@ -144,7 +144,7 @@ namespace LightmapUvTool
             int vertCount = targetMesh.vertexCount;
 
             if (tUv0.Length == 0)
-            { Debug.LogError("[GroupedTransfer] Target missing UV0"); return result; }
+            { UvtLog.Error("[GroupedTransfer] Target missing UV0"); return result; }
 
             result.uv2 = new Vector2[vertCount];
             result.verticesTotal = vertCount;
@@ -387,10 +387,6 @@ namespace LightmapUvTool
             result.verticesTransferred = transferred;
             result.shellsMatched = shellsMatched;
 
-            Debug.Log($"[GroupedTransfer] '{targetMesh.name}': shell-first, " +
-                      $"{tgtShells.Count} target → {shellsMatched} matched, " +
-                      $"{transferred}/{vertCount} verts (3D:{shells3D} UV0:{shellsUV0})");
-
             // UV2 bounds check
             int oob = 0;
             Vector2 uvMin = Vector2.one * float.MaxValue, uvMax = Vector2.one * float.MinValue;
@@ -401,7 +397,7 @@ namespace LightmapUvTool
                 if (uv.x < -0.01f || uv.x > 1.01f || uv.y < -0.01f || uv.y > 1.01f) oob++;
             }
             if (oob > 0)
-                Debug.LogWarning($"[GroupedTransfer] '{targetMesh.name}': {oob} verts outside 0-1! " +
+                UvtLog.Warn($"[GroupedTransfer] '{targetMesh.name}': {oob} verts outside 0-1! " +
                     $"UV2=[{uvMin.x:F3},{uvMin.y:F3}]-[{uvMax.x:F3},{uvMax.y:F3}]");
 
             return result;
@@ -555,7 +551,7 @@ namespace LightmapUvTool
         // Legacy overload
         public static TransferResult Transfer(Mesh targetMesh, SourceShellInfo[] sourceInfos)
         {
-            Debug.LogWarning("[GroupedTransfer] Legacy Transfer called.");
+
             return new TransferResult { uv2 = new Vector2[targetMesh.vertexCount], verticesTotal = targetMesh.vertexCount };
         }
     }

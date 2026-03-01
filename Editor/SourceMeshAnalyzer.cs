@@ -34,7 +34,7 @@ namespace LightmapUvTool
             mesh.GetUVs(uvChannel, uvList);
             if (uvList.Count == 0)
             {
-                Debug.LogError($"[SourceMeshAnalyzer] Mesh '{mesh.name}' has no UV{uvChannel}");
+                UvtLog.Error($"[SourceMeshAnalyzer] Mesh '{mesh.name}' has no UV{uvChannel}");
                 return null;
             }
             data.uvSource = uvList.ToArray();
