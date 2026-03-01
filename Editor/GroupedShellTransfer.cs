@@ -301,91 +301,7 @@ namespace LightmapUvTool
 
                 var srcFacesChosen = srcShells[chosenSrc].faceIndices;
 
-                // ── Run BOTH projections ──
-
-                // A) 3D surface projection — AABB multi-shell
-                //    Find source shells whose 3D AABB overlaps target shell's AABB,
-                //    then search only their triangles. This handles merged target shells
-                //    (LOD2) without cross-contaminating non-merged shells (LOD1).
-                var uv2_3D = new Dictionary<int, Vector2>();
-                var face3D = new Dictionary<int, int>(); // vertex → best source face
-                {
-                    // Compute target shell 3D AABB
-                    Vector3 tMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-                    Vector3 tMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-                    foreach (int vi in tShell.vertexIndices)
-                    {
-                        if (vi < tVerts.Length)
-                        {
-                            tMin = Vector3.Min(tMin, tVerts[vi]);
-                            tMax = Vector3.Max(tMax, tVerts[vi]);
-                        }
-                    }
-                    // Pad by 10% of diagonal to catch border vertices
-                    float pad = (tMax - tMin).magnitude * 0.1f + 0.001f;
-                    tMin -= new Vector3(pad, pad, pad);
-                    tMax += new Vector3(pad, pad, pad);
-
-                    // Collect faces from all source shells overlapping this AABB
-                    var multiFaces = new List<int>();
-                    for (int si = 0; si < srcShells.Count; si++)
-                    {
-                        if (srcAABBMin[si].x <= tMax.x && srcAABBMax[si].x >= tMin.x &&
-                            srcAABBMin[si].y <= tMax.y && srcAABBMax[si].y >= tMin.y &&
-                            srcAABBMin[si].z <= tMax.z && srcAABBMax[si].z >= tMin.z)
-                        {
-                            multiFaces.AddRange(srcShells[si].faceIndices);
-                        }
-                    }
-                    // Fallback: if no overlap found, use matched shell
-                    if (multiFaces.Count == 0)
-                        multiFaces.AddRange(srcFacesChosen);
-
-                    bool hasTargetNormals = tNormals != null && tNormals.Length == tVerts.Length;
-                    foreach (int vi in tShell.vertexIndices)
-                    {
-                        if (vi >= tVerts.Length) continue;
-                        Vector3 tPos = tVerts[vi];
-                        Vector3 tNrm = hasTargetNormals ? tNormals[vi] : Vector3.zero;
-                        bool useNormalFilter = hasTargetNormals;
-
-                        // Pass 1: normal-filtered (dot >= 0)
-                        float bestDSq = float.MaxValue;
-                        int bestF = -1; float bestU = 0, bestV = 0, bestW = 0;
-                        if (useNormalFilter)
-                        {
-                            for (int fi = 0; fi < multiFaces.Count; fi++)
-                            {
-                                int f = multiFaces[fi];
-                                if (Vector3.Dot(tNrm, triNormal[f]) < 0f) continue;
-                                float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
-                                    out float u, out float v, out float w);
-                                if (dSq < bestDSq) { bestDSq = dSq; bestF = f; bestU = u; bestV = v; bestW = w; }
-                            }
-                        }
-
-                        // Pass 2: fallback without normal filter
-                        if (bestF < 0)
-                        {
-                            bestDSq = float.MaxValue;
-                            for (int fi = 0; fi < multiFaces.Count; fi++)
-                            {
-                                int f = multiFaces[fi];
-                                float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
-                                    out float u, out float v, out float w);
-                                if (dSq < bestDSq) { bestDSq = dSq; bestF = f; bestU = u; bestV = v; bestW = w; }
-                            }
-                        }
-
-                        if (bestF >= 0)
-                        {
-                            uv2_3D[vi] = triUv2A[bestF] * bestU + triUv2B[bestF] * bestV + triUv2C[bestF] * bestW;
-                            face3D[vi] = bestF;
-                        }
-                    }
-                }
-
-                // B) UV0 projection
+                // ── UV0 single-shell projection (matched source shell only) ──
                 var uv2_UV0 = new Dictionary<int, Vector2>();
                 foreach (int vi in tShell.vertexIndices)
                 {
@@ -406,8 +322,7 @@ namespace LightmapUvTool
 
                 // ── Detect merged shell via UV0 coverage ──
                 // If UV0 projection has many vertices with high distance,
-                // the target shell spans geometry beyond the matched source shell
-                // (merged shell from LOD simplification). Only then use 3D.
+                // the target shell spans geometry beyond the matched source shell.
                 int uv0BadCount = 0;
                 const float kUv0BadThreshold = 0.01f; // squared distance in UV0 space
                 foreach (int vi in tShell.vertexIndices)
@@ -421,24 +336,41 @@ namespace LightmapUvTool
                         float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
                             out _, out _, out _);
                         if (dSq < bestDSq) bestDSq = dSq;
-                        if (bestDSq < 1e-8f) break; // inside triangle, no need to check more
+                        if (bestDSq < 1e-8f) break;
                     }
                     if (bestDSq > kUv0BadThreshold) uv0BadCount++;
                 }
                 int tShellVerts = tShell.vertexIndices.Count;
                 bool isMergedShell = tShellVerts > 0 && (float)uv0BadCount / tShellVerts > 0.3f;
 
-                // Pick winner based on shell type
                 Dictionary<int, Vector2> chosenUv2;
                 if (isMergedShell)
                 {
-                    // Merged shell: 3D needed (UV0 can't cover all vertices)
-                    chosenUv2 = uv2_3D;
+                    // Merged shell: UV0 multi-shell — search ALL source triangles
+                    // (safe: UV0 is unique per shell, no front/back ambiguity)
+                    var uv2_multi = new Dictionary<int, Vector2>();
+                    foreach (int vi in tShell.vertexIndices)
+                    {
+                        if (vi >= tUv0.Length) continue;
+                        Vector2 tUv = tUv0[vi];
+                        float bestDSq2 = float.MaxValue;
+                        int bestF2 = -1; float bestU2 = 0, bestV2 = 0, bestW2 = 0;
+                        for (int f = 0; f < srcTriCount; f++)
+                        {
+                            float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
+                                out float u, out float v, out float w);
+                            if (dSq < bestDSq2) { bestDSq2 = dSq; bestF2 = f; bestU2 = u; bestV2 = v; bestW2 = w; }
+                            if (bestDSq2 < 1e-8f) break;
+                        }
+                        if (bestF2 >= 0)
+                            uv2_multi[vi] = triUv2A[bestF2] * bestU2 + triUv2B[bestF2] * bestV2 + triUv2C[bestF2] * bestW2;
+                    }
+                    chosenUv2 = uv2_multi;
                     shells3D++;
                 }
                 else
                 {
-                    // Non-merged: UV0 is safe (stays in matched source shell)
+                    // Non-merged: UV0 single-shell (stays in matched source shell)
                     chosenUv2 = uv2_UV0;
                     shellsUV0++;
                 }
