@@ -987,15 +987,7 @@ namespace LightmapUvTool
                     }
                     if (srcInfos == null) continue;
 
-                    // Source-guided weld: merge target vertices that belong to
-                    // the same source UV0 shell (reunify LOD-split islands)
-                    Mesh weldedTarget = Uv0Analyzer.SourceGuidedWeld(tM, sM);
-                    if (weldedTarget != tM)
-                    {
-                        te.originalMesh = weldedTarget;
-                        te.wasWelded = true;
-                        tM = weldedTarget;
-                    }
+                    // UV edge weld already done in Phase 2, no additional weld needed
 
                     // Transfer: triangle surface projection UV2 copy
                     var tr = GroupedShellTransfer.Transfer(tM, sM);

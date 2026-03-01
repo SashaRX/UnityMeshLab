@@ -250,7 +250,13 @@ namespace LightmapUvTool
             }
 
             result.verticesTransferred = transferred;
-            result.shellsMatched = 0;
+
+            // Count source shells that contributed to transfer
+            var usedFaces = new HashSet<int>();
+            // We know bestFace was set for each vertex - count unique source shells
+            // Simple heuristic: count source UV0 shells
+            var srcShells = UvShellExtractor.Extract(srcUv0, srcTris);
+            result.shellsMatched = srcShells.Count;
 
             Debug.Log($"[GroupedTransfer] '{targetMesh.name}': " +
                       $"UV0-first + 3D-guard, " +
