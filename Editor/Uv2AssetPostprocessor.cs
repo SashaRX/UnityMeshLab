@@ -161,6 +161,7 @@ namespace LightmapUvTool
 
             var result = new Vector2[count];
             var used = new bool[entry.uv2.Length];
+            var meshMatched = new bool[count];
             int matched = 0;
 
             for (int i = 0; i < count; i++)
@@ -176,6 +177,7 @@ namespace LightmapUvTool
                 {
                     result[i] = entry.uv2[candidates[0]];
                     used[candidates[0]] = true;
+                    meshMatched[i] = true;
                     matched++;
                 }
                 else if (hasUv0)
@@ -197,6 +199,7 @@ namespace LightmapUvTool
                     {
                         result[i] = entry.uv2[bestIdx];
                         used[bestIdx] = true;
+                        meshMatched[i] = true;
                         matched++;
                     }
                 }
@@ -209,11 +212,60 @@ namespace LightmapUvTool
                         {
                             result[i] = entry.uv2[ci];
                             used[ci] = true;
+                            meshMatched[i] = true;
                             matched++;
                             break;
                         }
                     }
                 }
+            }
+
+            // Fallback pass: for vertices unmatched by quantized hash (bucket boundary
+            // float rounding), find nearest unused sidecar vertex by 3D distance.
+            if (matched < count)
+            {
+                // Collect unmatched mesh vertex indices
+                var unmatchedMesh = new List<int>(count - matched);
+                for (int i = 0; i < count; i++)
+                    if (!meshMatched[i])
+                        unmatchedMesh.Add(i);
+
+                // Collect unused sidecar indices
+                var unusedSidecar = new List<int>(entry.uv2.Length - matched);
+                for (int i = 0; i < used.Length; i++)
+                    if (!used[i]) unusedSidecar.Add(i);
+
+                int fallbackMatched = 0;
+                foreach (int mi in unmatchedMesh)
+                {
+                    float bestDist = float.MaxValue;
+                    int bestIdx = -1;
+                    int bestListIdx = -1;
+                    for (int j = 0; j < unusedSidecar.Count; j++)
+                    {
+                        int si = unusedSidecar[j];
+                        float d = Vector3.SqrMagnitude(meshPos[mi] - entry.vertPositions[si]);
+                        if (d < bestDist)
+                        {
+                            bestDist = d;
+                            bestIdx = si;
+                            bestListIdx = j;
+                        }
+                    }
+                    // Accept if within reasonable tolerance (1mm)
+                    if (bestIdx >= 0 && bestDist < 1e-4f)
+                    {
+                        result[mi] = entry.uv2[bestIdx];
+                        used[bestIdx] = true;
+                        unusedSidecar.RemoveAt(bestListIdx);
+                        matched++;
+                        fallbackMatched++;
+                    }
+                }
+
+                if (fallbackMatched > 0)
+                    Debug.Log($"[UV2 Postprocess] '{mesh.name}': {fallbackMatched} vertices matched by nearest-neighbor fallback");
+
             }
 
             didRemap = true;
