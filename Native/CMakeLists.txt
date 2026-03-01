@@ -12,7 +12,16 @@ FetchContent_Declare(
     GIT_TAG        master
     GIT_SHALLOW    TRUE
 )
-FetchContent_MakeAvailable(xatlas)
+FetchContent_Declare(
+    meshoptimizer
+    GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
+    GIT_TAG        v0.22
+    GIT_SHALLOW    TRUE
+)
+set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+# meshoptimizer static lib must be PIC when linked into our shared lib (Linux/GCC)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+FetchContent_MakeAvailable(xatlas meshoptimizer)
 
 # ── Build shared library ──
 add_library(xatlas-unity SHARED
@@ -23,6 +32,9 @@ add_library(xatlas-unity SHARED
 target_include_directories(xatlas-unity PRIVATE
     ${xatlas_SOURCE_DIR}/source/xatlas
 )
+
+# Link meshoptimizer (static lib baked into our shared lib)
+target_link_libraries(xatlas-unity PRIVATE meshoptimizer)
 
 # Release optimizations
 target_compile_options(xatlas-unity PRIVATE
