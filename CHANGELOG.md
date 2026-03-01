@@ -9,6 +9,15 @@
   re-selecting a previously processed LODGroup.
 - **[W] badge** on welded meshes in the mesh list.
 
+## [0.7.8] - 2026-03-01
+
+### Fixed — Normal-filtered UV0 transfer (thin wall disambiguation)
+- **Transfer uses normal filter + UV0 nearest**: for each target vertex,
+  first filters source vertices by normal similarity (dot > 0.5), then
+  finds nearest by UV0 among filtered set. Normal separates front/back
+  of thin walls. UV0 gives precise position within same geometric side.
+  Falls back to unfiltered UV0 nearest if no normal-compatible source found.
+
 ## [0.7.7] - 2026-03-01
 
 ### Fixed — Correct matching spaces for weld vs transfer

@@ -1,8 +1,8 @@
-// GroupedShellTransfer.cs — UV2 transfer via UV0 nearest-vertex matching
-// Core idea: for each target LOD vertex, find nearest source (LOD0) vertex
-// by UV0 distance and directly copy its UV2. UV0 is the shared coordinate
-// system between LOD levels. 3D matching fails on thin geometry (wall
-// front/back are close in 3D but on different UV0 shells).
+// GroupedShellTransfer.cs — UV2 transfer via normal-filtered UV0 nearest vertex
+// For each target LOD vertex: filter source vertices by normal similarity
+// (dot > 0.5), then find nearest by UV0 distance, copy UV2.
+// Normal filter separates front/back of thin geometry (CementWall).
+// UV0 nearest gives precise positioning within the same geometric side.
 
 using System.Collections.Generic;
 using UnityEngine;
@@ -21,9 +21,10 @@ namespace LightmapUvTool
             public float signedAreaUv0;              // positive = CCW, negative = CW
             public int vertexCount;
 
-            // Per-vertex data for UV0 nearest-vertex transfer
+            // Per-vertex data for transfer
             public int[] vertexIndices;              // original mesh vertex indices
             public Vector3[] worldPositions;         // 3D positions
+            public Vector3[] normals;                // vertex normals (for side disambiguation)
             public Vector2[] shellUv0;               // UV0 values for matching
             public Vector2[] shellUv2;               // UV2 values to copy
         }
@@ -61,6 +62,8 @@ namespace LightmapUvTool
             var uv2 = uv2List.ToArray();
             var tris = sourceMesh.triangles;
             var verts = sourceMesh.vertices;
+            var norms = sourceMesh.normals;
+            bool hasNormals = norms != null && norms.Length == verts.Length;
 
             var shells = UvShellExtractor.Extract(uv0, tris);
             var infos = new SourceShellInfo[shells.Count];
@@ -72,6 +75,7 @@ namespace LightmapUvTool
                 // Collect per-vertex data
                 var idxList = new List<int>();
                 var posList = new List<Vector3>();
+                var nrmList = new List<Vector3>();
                 var uv0sList = new List<Vector2>();
                 var uv2sList = new List<Vector2>();
                 Vector2 uv0Sum = Vector2.zero;
@@ -83,6 +87,7 @@ namespace LightmapUvTool
                     if (vi >= uv0.Length || vi >= uv2.Length || vi >= verts.Length) continue;
                     idxList.Add(vi);
                     posList.Add(verts[vi]);
+                    nrmList.Add(hasNormals ? norms[vi] : Vector3.up);
                     uv0sList.Add(uv0[vi]);
                     uv2sList.Add(uv2[vi]);
                     uv0Sum += uv0[vi];
@@ -103,6 +108,7 @@ namespace LightmapUvTool
                     vertexCount = n,
                     vertexIndices = idxList.ToArray(),
                     worldPositions = posList.ToArray(),
+                    normals = nrmList.ToArray(),
                     shellUv0 = uv0sList.ToArray(),
                     shellUv2 = uv2sList.ToArray()
                 };
@@ -114,11 +120,16 @@ namespace LightmapUvTool
         }
 
         // ═══════════════════════════════════════════════════════════
-        //  Step 2: Transfer UV2 to target mesh via UV0 nearest vertex
-        //  - For each target vertex, find nearest source vertex by UV0
-        //  - Copy UV2 directly — UV0 is the shared coordinate system
-        //  - 3D matching fails on thin geometry (wall front/back)
+        //  Step 2: Transfer UV2 via normal-filtered UV0 nearest vertex
+        //  For each target vertex:
+        //  1. Filter source vertices by normal similarity (dot > 0.5)
+        //  2. Among filtered set, find nearest by UV0 distance
+        //  3. Copy UV2
+        //  Normal filter separates front/back of thin walls.
+        //  UV0 nearest gives precise positioning within same side.
         // ═══════════════════════════════════════════════════════════
+
+        const float NORMAL_DOT_THRESHOLD = 0.5f;
 
         public static TransferResult Transfer(
             Mesh targetMesh, SourceShellInfo[] sourceInfos)
@@ -128,17 +139,20 @@ namespace LightmapUvTool
             var tUv0List = new List<Vector2>();
             targetMesh.GetUVs(0, tUv0List);
             var tUv0 = tUv0List.ToArray();
+            var tNormals = targetMesh.normals;
             int vertCount = targetMesh.vertexCount;
+            bool tHasNormals = tNormals != null && tNormals.Length == vertCount;
 
             result.uv2 = new Vector2[vertCount];
             result.verticesTotal = vertCount;
 
-            // Build flat arrays of all source UV0 + UV2
+            // Build flat arrays of all source data
             int totalSrcVerts = 0;
             foreach (var si in sourceInfos) totalSrcVerts += si.shellUv0.Length;
 
             var allSrcUv0 = new Vector2[totalSrcVerts];
             var allSrcUv2 = new Vector2[totalSrcVerts];
+            var allSrcNrm = new Vector3[totalSrcVerts];
             var allSrcShell = new int[totalSrcVerts];
             int offset = 0;
             for (int s = 0; s < sourceInfos.Length; s++)
@@ -148,31 +162,53 @@ namespace LightmapUvTool
                 {
                     allSrcUv0[offset] = si.shellUv0[i];
                     allSrcUv2[offset] = si.shellUv2[i];
+                    allSrcNrm[offset] = si.normals[i];
                     allSrcShell[offset] = s;
                     offset++;
                 }
             }
 
-            // For each target vertex: find nearest source vertex by UV0
+            // For each target vertex: normal-filtered UV0 nearest
             int[] matchedShell = new int[vertCount];
             bool[] vertexDone = new bool[vertCount];
+            int normalFiltered = 0;
 
             for (int vi = 0; vi < vertCount; vi++)
             {
                 Vector2 tUv = tUv0[vi];
-                float bestDist = float.MaxValue;
-                int bestIdx = 0;
+                Vector3 tN = tHasNormals ? tNormals[vi] : Vector3.up;
 
+                float bestDist = float.MaxValue;
+                int bestIdx = -1;
+
+                // Pass 1: UV0 nearest among normal-compatible source verts
                 for (int si = 0; si < totalSrcVerts; si++)
                 {
+                    float dot = Vector3.Dot(tN, allSrcNrm[si]);
+                    if (dot < NORMAL_DOT_THRESHOLD) continue;
+
                     float d = (tUv - allSrcUv0[si]).sqrMagnitude;
                     if (d < bestDist) { bestDist = d; bestIdx = si; }
                 }
 
-                result.uv2[vi] = allSrcUv2[bestIdx];
-                matchedShell[vi] = allSrcShell[bestIdx];
-                vertexDone[vi] = true;
-                result.verticesTransferred++;
+                // Pass 2 fallback: if no normal-compatible found, use any
+                if (bestIdx < 0)
+                {
+                    normalFiltered++;
+                    for (int si = 0; si < totalSrcVerts; si++)
+                    {
+                        float d = (tUv - allSrcUv0[si]).sqrMagnitude;
+                        if (d < bestDist) { bestDist = d; bestIdx = si; }
+                    }
+                }
+
+                if (bestIdx >= 0)
+                {
+                    result.uv2[vi] = allSrcUv2[bestIdx];
+                    matchedShell[vi] = allSrcShell[bestIdx];
+                    vertexDone[vi] = true;
+                    result.verticesTransferred++;
+                }
             }
 
             // Count shells matched (unique source shells used)
@@ -183,7 +219,8 @@ namespace LightmapUvTool
 
             Debug.Log($"[GroupedTransfer] '{targetMesh.name}': " +
                       $"{result.shellsMatched} source shells used, " +
-                      $"{result.verticesTransferred}/{result.verticesTotal} verts");
+                      $"{result.verticesTransferred}/{result.verticesTotal} verts" +
+                      (normalFiltered > 0 ? $", {normalFiltered} normal-fallback" : ""));
 
             // UV2 bounds check
             int outOfBounds = 0;
