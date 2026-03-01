@@ -9,6 +9,18 @@
   re-selecting a previously processed LODGroup.
 - **[W] badge** on welded meshes in the mesh list.
 
+## [0.8.3] - 2026-03-01
+
+### Changed — UV0-first transfer with 3D guard (UV Weld Selected philosophy)
+- **UV0 is primary search space, 3D is only disambiguation guard.**
+  For each target vertex: find nearest source triangle in UV0 2D space.
+  If only one candidate → use directly. If multiple at same UV0 distance
+  (overlapping UV shells from tiling textures) → use 3D position + normal
+  to pick correct triangle. Compute UV0 barycentric → interpolate UV2.
+- No shell assignment step needed. UV0 lookup naturally finds correct
+  triangle; 3D only resolves ambiguity from overlapping shells.
+- Logs "3D-disambiguated" count for vertices that needed overlap resolution.
+
 ## [0.8.2] - 2026-03-01
 
 ### Changed — Two-phase transfer: shell assignment + UV0-space projection
