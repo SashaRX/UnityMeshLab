@@ -138,6 +138,7 @@ namespace LightmapUvTool
 
             // Target data
             var tVerts = targetMesh.vertices;
+            var tNormals = targetMesh.normals;
             var tUv0List = new List<Vector2>(); targetMesh.GetUVs(0, tUv0List);
             var tUv0 = tUv0List.ToArray();
             int vertCount = targetMesh.vertexCount;
@@ -168,6 +169,13 @@ namespace LightmapUvTool
                 triPosA[f] = srcVerts[i0]; triPosB[f] = srcVerts[i1]; triPosC[f] = srcVerts[i2];
                 triUv0A[f] = srcUv0[i0];  triUv0B[f] = srcUv0[i1];  triUv0C[f] = srcUv0[i2];
                 triUv2A[f] = srcUv2[i0];  triUv2B[f] = srcUv2[i1];  triUv2C[f] = srcUv2[i2];
+            }
+
+            // Pre-compute source triangle normals (for normal-filtered projection)
+            var triNormal = new Vector3[srcTriCount];
+            for (int f = 0; f < srcTriCount; f++)
+            {
+                triNormal[f] = Vector3.Cross(triPosB[f] - triPosA[f], triPosC[f] - triPosA[f]).normalized;
             }
 
             // ── Phase 1: Extract shells ──
@@ -278,21 +286,45 @@ namespace LightmapUvTool
 
                 // ── Run BOTH projections ──
 
-                // A) 3D surface projection — GLOBAL (all source triangles)
-                //    Handles merged target shells that span multiple source shells
+                // A) 3D surface projection — GLOBAL + NORMAL FILTER
+                //    Searches all source triangles, but skips those facing opposite direction.
+                //    This prevents front↔back cross-contamination on thin walls while
+                //    still covering merged target shells that span multiple source shells.
                 var uv2_3D = new Dictionary<int, Vector2>();
+                bool hasNormals = tNormals != null && tNormals.Length == tVerts.Length;
                 foreach (int vi in tShell.vertexIndices)
                 {
                     if (vi >= tVerts.Length) continue;
                     Vector3 tPos = tVerts[vi];
+                    Vector3 tNorm = hasNormals ? tNormals[vi] : Vector3.zero;
+                    bool useNormalFilter = hasNormals && tNorm.sqrMagnitude > 0.5f;
+
                     float bestDSq = float.MaxValue;
                     int bestF = -1; float bestU = 0, bestV = 0, bestW = 0;
-                    for (int f = 0; f < srcTriCount; f++)
+
+                    // Pass 1: normal-filtered global search
+                    if (useNormalFilter)
                     {
-                        float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
-                            out float u, out float v, out float w);
-                        if (dSq < bestDSq) { bestDSq = dSq; bestF = f; bestU = u; bestV = v; bestW = w; }
+                        for (int f = 0; f < srcTriCount; f++)
+                        {
+                            if (Vector3.Dot(tNorm, triNormal[f]) < 0.0f) continue;
+                            float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
+                                out float u, out float v, out float w);
+                            if (dSq < bestDSq) { bestDSq = dSq; bestF = f; bestU = u; bestV = v; bestW = w; }
+                        }
                     }
+
+                    // Pass 2 fallback: unfiltered (degenerate normals or no aligned tri found)
+                    if (bestF < 0)
+                    {
+                        for (int f = 0; f < srcTriCount; f++)
+                        {
+                            float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
+                                out float u, out float v, out float w);
+                            if (dSq < bestDSq) { bestDSq = dSq; bestF = f; bestU = u; bestV = v; bestW = w; }
+                        }
+                    }
+
                     if (bestF >= 0)
                         uv2_3D[vi] = triUv2A[bestF] * bestU + triUv2B[bestF] * bestV + triUv2C[bestF] * bestW;
                 }
