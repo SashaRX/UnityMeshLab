@@ -404,31 +404,43 @@ namespace LightmapUvTool
                         uv2_UV0[vi] = triUv2A[bestF] * bestU + triUv2B[bestF] * bestV + triUv2C[bestF] * bestW;
                 }
 
-                // ── Detect merged shell: does 3D projection reach multiple source shells? ──
-                int foreignCount = 0, sameCount = 0;
-                foreach (var kv in face3D)
+                // ── Detect merged shell via UV0 coverage ──
+                // If UV0 projection has many vertices with high distance,
+                // the target shell spans geometry beyond the matched source shell
+                // (merged shell from LOD simplification). Only then use 3D.
+                int uv0BadCount = 0;
+                const float kUv0BadThreshold = 0.01f; // squared distance in UV0 space
+                foreach (int vi in tShell.vertexIndices)
                 {
-                    if (faceToSrcShell[kv.Value] != chosenSrc) foreignCount++;
-                    else sameCount++;
+                    if (vi >= tUv0.Length) continue;
+                    Vector2 tUv = tUv0[vi];
+                    float bestDSq = float.MaxValue;
+                    for (int fi = 0; fi < srcFacesChosen.Count; fi++)
+                    {
+                        int f = srcFacesChosen[fi];
+                        float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
+                            out _, out _, out _);
+                        if (dSq < bestDSq) bestDSq = dSq;
+                        if (bestDSq < 1e-8f) break; // inside triangle, no need to check more
+                    }
+                    if (bestDSq > kUv0BadThreshold) uv0BadCount++;
                 }
-                int totalProj = foreignCount + sameCount;
-                bool isMergedShell = totalProj > 0 && (float)foreignCount / totalProj > 0.2f;
+                int tShellVerts = tShell.vertexIndices.Count;
+                bool isMergedShell = tShellVerts > 0 && (float)uv0BadCount / tShellVerts > 0.3f;
 
                 // Pick winner based on shell type
                 Dictionary<int, Vector2> chosenUv2;
                 if (isMergedShell)
                 {
-                    // Merged shell: 3D is correct (needs multi-shell coverage)
+                    // Merged shell: 3D needed (UV0 can't cover all vertices)
                     chosenUv2 = uv2_3D;
                     shells3D++;
                 }
                 else
                 {
-                    // Single-source shell: compare quality, tiebreak UV0
-                    int issues3D = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, uv2_3D);
-                    int issuesUV0 = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, uv2_UV0);
-                    chosenUv2 = (issues3D < issuesUV0) ? uv2_3D : uv2_UV0;
-                    if (issues3D < issuesUV0) shells3D++; else shellsUV0++;
+                    // Non-merged: UV0 is safe (stays in matched source shell)
+                    chosenUv2 = uv2_UV0;
+                    shellsUV0++;
                 }
 
                 // Write chosen UV2
@@ -491,12 +503,7 @@ namespace LightmapUvTool
                 {
                     var a0 = uv0[i0]; var b0 = uv0[i1]; var c0 = uv0[i2];
                     float saUv0 = (b0.x - a0.x) * (c0.y - a0.y) - (c0.x - a0.x) * (b0.y - a0.y);
-                    if (saUv0 * saUv2 < 0f) { issues++; continue; } // opposite winding
-
-                    // Stretch check: UV2 area vastly disproportionate to UV0 area
-                    float absUv0 = Mathf.Abs(saUv0);
-                    float absUv2 = Mathf.Abs(saUv2);
-                    if (absUv0 > 1e-10f && absUv2 / absUv0 > 100f) issues++;
+                    if (saUv0 * saUv2 < 0f) issues++; // opposite winding
                 }
             }
             return issues;
