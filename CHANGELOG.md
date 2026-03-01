@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.4] - 2026-03-01
+
+### Changed — Source-guided weld + 3D nearest-vertex transfer
+- **Source-guided weld** (`Uv0Analyzer.SourceGuidedWeld`): merges target LOD
+  vertices by position+normal only when both map to the same source UV0 shell
+  via 3D proximity. Reunifies UV0 islands that LOD decimation split apart,
+  while preserving intentional seams between different source shells.
+  Fixes shell count mismatch (e.g. 7 source vs 26 target on CementWall).
+- **3D nearest-vertex transfer**: completely replaces similarity-transform
+  pipeline. For each target vertex, finds nearest source vertex by 3D position
+  and copies UV2 directly. No UV0 shell matching dependency, no transforms.
+  Eliminates UV2 out-of-bounds artifacts from degenerate/mirrored shells.
+- **UI labels updated**: transfer report shows "3D nearest-vertex" method and
+  "source shells used" count instead of matched/unmatched/mirrored.
+
 ## [0.7.3] - 2026-03-01
 
 ### Fixed — Mirrored shell transfer + degenerate shell fallback

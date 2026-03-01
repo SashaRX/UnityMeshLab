@@ -531,10 +531,10 @@ namespace LightmapUvTool
                     if (e.shellTransferResult != null)
                     {
                         var r = e.shellTransferResult;
-                        EditorGUILayout.LabelField("  " + e.renderer.name + " (shell transform)", EditorStyles.miniBoldLabel);
+                        EditorGUILayout.LabelField("  " + e.renderer.name + " (3D nearest-vertex)", EditorStyles.miniBoldLabel);
                         Bar("Verts OK", r.verticesTransferred, r.verticesTotal, cAccept);
                         Bar("Verts Miss", r.verticesTotal - r.verticesTransferred, r.verticesTotal, cReject);
-                        EditorGUILayout.LabelField($"  Shells: {r.shellsMatched} matched, {r.shellsUnmatched} unmatched", EditorStyles.miniLabel);
+                        EditorGUILayout.LabelField($"  Source shells used: {r.shellsMatched}", EditorStyles.miniLabel);
                         EditorGUILayout.Space(4);
                         continue;
                     }
@@ -957,7 +957,17 @@ namespace LightmapUvTool
                     }
                     if (srcInfos == null) continue;
 
-                    // Transfer: match target UV0 shells → source, apply transforms
+                    // Source-guided weld: merge target vertices that belong to
+                    // the same source UV0 shell (reunify LOD-split islands)
+                    Mesh weldedTarget = Uv0Analyzer.SourceGuidedWeld(tM, sM);
+                    if (weldedTarget != tM)
+                    {
+                        te.originalMesh = weldedTarget;
+                        te.wasWelded = true;
+                        tM = weldedTarget;
+                    }
+
+                    // Transfer: 3D nearest-vertex UV2 copy
                     var tr = GroupedShellTransfer.Transfer(tM, srcInfos);
                     if (tr.uv2 == null) continue;
 
@@ -969,8 +979,7 @@ namespace LightmapUvTool
                     te.shellTransferResult = tr;
 
                     Debug.Log($"[Transfer] {te.renderer.name}: " +
-                              $"{tr.shellsMatched} shells matched, {tr.shellsUnmatched} unmatched, " +
-                              $"{tr.shellsMirrored} mirrored, " +
+                              $"{tr.shellsMatched} source shells used, " +
                               $"{tr.verticesTransferred}/{tr.verticesTotal} verts");
                 }
                 hasTransfer = tgtE.Any(e => e.transferredMesh!=null);

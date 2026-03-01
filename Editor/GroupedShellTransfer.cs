@@ -1,9 +1,7 @@
-// GroupedShellTransfer.cs — UV2 transfer via per-shell similarity transforms
-// Core idea: xatlas repack preserves shell internal structure, only changes
-// placement (translate + rotate + uniform scale). We compute this transform
-// from LOD0's UV0→UV2 mapping and apply it to all LODs via UV0 matching.
-// Handles mirrored shells: computes both normal and reflected similarity
-// transforms, picks the correct one based on UV0 winding (signed area).
+// GroupedShellTransfer.cs — UV2 transfer via 3D nearest-vertex matching
+// Core idea: for each target LOD vertex, find nearest source (LOD0) vertex
+// by 3D position and directly copy its UV2. No similarity transforms,
+// no UV0 shell matching dependency. Works regardless of target UV0 layout.
 
 using System.Collections.Generic;
 using UnityEngine;
@@ -12,31 +10,6 @@ namespace LightmapUvTool
 {
     public static class GroupedShellTransfer
     {
-        // ─── Similarity transform ───
-        // Normal:    UV2 = [a -b; b  a] * UV0 + [tx, ty]  (det = a²+b² > 0)
-        // Reflected: UV2 = [a  b; b -a] * UV0 + [tx, ty]  (det = -(a²+b²) < 0)
-        public struct ShellTransform
-        {
-            public float a, b, tx, ty;
-            public float residual;
-            public bool mirrored;
-
-            public Vector2 Apply(Vector2 uv0)
-            {
-                if (mirrored)
-                    return new Vector2(
-                        a * uv0.x + b * uv0.y + tx,
-                        b * uv0.x - a * uv0.y + ty);
-                else
-                    return new Vector2(
-                        a * uv0.x - b * uv0.y + tx,
-                        b * uv0.x + a * uv0.y + ty);
-            }
-
-            public float Scale => Mathf.Sqrt(a * a + b * b);
-            public float AngleDeg => Mathf.Atan2(b, a) * Mathf.Rad2Deg;
-        }
-
         // ─── Shell info for cross-LOD matching ───
         public class SourceShellInfo
         {
@@ -44,12 +17,13 @@ namespace LightmapUvTool
             public Vector2 uv0BoundsMin, uv0BoundsMax;
             public Vector2 uv0Centroid;
             public Vector3 worldCentroid;
-            public ShellTransform transform;        // normal (same winding)
-            public ShellTransform mirrorTransform;   // reflected (opposite winding)
             public float signedAreaUv0;              // positive = CCW, negative = CW
             public int vertexCount;
-            public Vector2[] shellUv0;               // per-vertex UV0 for nearest-vertex matching
-            public Vector2[] shellUv2;               // per-vertex UV2 (transfer targets)
+
+            // Per-vertex data for 3D nearest-vertex transfer
+            public int[] vertexIndices;              // original mesh vertex indices
+            public Vector3[] worldPositions;         // 3D positions
+            public Vector2[] shellUv2;               // UV2 values to copy
         }
 
         // ─── Result of transfer for one target mesh ───
@@ -64,9 +38,8 @@ namespace LightmapUvTool
         }
 
         // ═══════════════════════════════════════════════════════════
-        //  Step 1: Analyze source mesh — extract UV0 shells and
-        //          compute similarity transform UV0→UV2 per shell
-        //          (both normal and reflected variants)
+        //  Step 1: Analyze source mesh — extract UV0 shells,
+        //          store per-vertex 3D positions + UV2 for transfer
         // ═══════════════════════════════════════════════════════════
 
         public static SourceShellInfo[] AnalyzeSource(Mesh sourceMesh)
@@ -94,28 +67,26 @@ namespace LightmapUvTool
             {
                 var shell = shells[si];
 
-                // Collect UV0→UV2 point pairs + centroids
-                var from = new List<Vector2>();
-                var to = new List<Vector2>();
+                // Collect per-vertex data
+                var idxList = new List<int>();
+                var posList = new List<Vector3>();
+                var uv2sList = new List<Vector2>();
                 Vector2 uv0Sum = Vector2.zero;
                 Vector3 worldSum = Vector3.zero;
                 int n = 0;
 
                 foreach (int vi in shell.vertexIndices)
                 {
-                    if (vi >= uv0.Length || vi >= uv2.Length) continue;
-                    from.Add(uv0[vi]);
-                    to.Add(uv2[vi]);
+                    if (vi >= uv0.Length || vi >= uv2.Length || vi >= verts.Length) continue;
+                    idxList.Add(vi);
+                    posList.Add(verts[vi]);
+                    uv2sList.Add(uv2[vi]);
                     uv0Sum += uv0[vi];
-                    if (vi < verts.Length) worldSum += verts[vi];
+                    worldSum += verts[vi];
                     n++;
                 }
 
                 float signedArea = ComputeSignedArea(tris, uv0, shell.faceIndices);
-
-                var xform = ComputeSimilarityTransform(from, to, false);
-                var mxform = ComputeSimilarityTransform(from, to, true);
-                mxform.mirrored = true;
 
                 infos[si] = new SourceShellInfo
                 {
@@ -124,37 +95,24 @@ namespace LightmapUvTool
                     uv0BoundsMax = shell.boundsMax,
                     uv0Centroid = n > 0 ? uv0Sum / n : Vector2.zero,
                     worldCentroid = n > 0 ? worldSum / n : Vector3.zero,
-                    transform = xform,
-                    mirrorTransform = mxform,
                     signedAreaUv0 = signedArea,
                     vertexCount = n,
-                    shellUv0 = from.ToArray(),
-                    shellUv2 = to.ToArray()
+                    vertexIndices = idxList.ToArray(),
+                    worldPositions = posList.ToArray(),
+                    shellUv2 = uv2sList.ToArray()
                 };
             }
 
-            // Log diagnostics
-            float maxResidual = 0;
-            int mirrorCount = 0;
-            foreach (var info in infos)
-            {
-                if (info.transform.residual > maxResidual)
-                    maxResidual = info.transform.residual;
-                if (info.signedAreaUv0 < 0) mirrorCount++;
-            }
-
-            Debug.Log($"[GroupedTransfer] Source '{sourceMesh.name}': " +
-                      $"{infos.Length} shells, max_residual={maxResidual:F6}" +
-                      (mirrorCount > 0 ? $", {mirrorCount} CW-wound" : ""));
+            Debug.Log($"[GroupedTransfer] Source '{sourceMesh.name}': {infos.Length} shells");
 
             return infos;
         }
 
         // ═══════════════════════════════════════════════════════════
-        //  Step 2: Transfer UV2 to target mesh
-        //  - Extract target UV0 shells
-        //  - Match each to a source shell by UV0 overlap + 3D proximity
-        //  - Detect mirror via signed area, pick correct transform
+        //  Step 2: Transfer UV2 to target mesh via 3D nearest vertex
+        //  - Match target vertex to source shell by 3D proximity
+        //  - Copy UV2 directly from nearest source vertex in 3D
+        //  - No similarity transforms, no UV0 dependency
         // ═══════════════════════════════════════════════════════════
 
         public static TransferResult Transfer(
@@ -162,176 +120,66 @@ namespace LightmapUvTool
         {
             var result = new TransferResult();
 
-            var tUv0List = new List<Vector2>();
-            targetMesh.GetUVs(0, tUv0List);
-            if (tUv0List.Count == 0)
-            {
-                Debug.LogError("[GroupedTransfer] Target mesh has no UV0");
-                return result;
-            }
-
-            var tUv0 = tUv0List.ToArray();
-            var tTris = targetMesh.triangles;
             var tVerts = targetMesh.vertices;
             int vertCount = targetMesh.vertexCount;
 
             result.uv2 = new Vector2[vertCount];
             result.verticesTotal = vertCount;
 
-            // Extract target UV0 shells
-            var targetShells = UvShellExtractor.Extract(tUv0, tTris);
+            // Build flat arrays of all source positions + UV2 for global fallback
+            int totalSrcVerts = 0;
+            foreach (var si in sourceInfos) totalSrcVerts += si.worldPositions.Length;
 
-            bool[] vertexDone = new bool[vertCount];
-
-            foreach (var tShell in targetShells)
+            var allSrcPos = new Vector3[totalSrcVerts];
+            var allSrcUv2 = new Vector2[totalSrcVerts];
+            var allSrcShell = new int[totalSrcVerts];
+            int offset = 0;
+            for (int s = 0; s < sourceInfos.Length; s++)
             {
-                // Compute target shell UV0 + 3D centroids
-                Vector2 tUv0Centroid = Vector2.zero;
-                Vector3 tWorldCentroid = Vector3.zero;
-                int tn = 0;
-
-                foreach (int vi in tShell.vertexIndices)
+                var si = sourceInfos[s];
+                for (int i = 0; i < si.worldPositions.Length; i++)
                 {
-                    if (vi < tUv0.Length) tUv0Centroid += tUv0[vi];
-                    if (vi < tVerts.Length) tWorldCentroid += tVerts[vi];
-                    tn++;
-                }
-                if (tn > 0) { tUv0Centroid /= tn; tWorldCentroid /= tn; }
-
-                // Compute target shell signed area in UV0
-                float tSignedArea = ComputeSignedArea(tTris, tUv0, tShell.faceIndices);
-
-                // Find best matching source shell
-                int bestIdx = -1;
-                float bestScore = -1f;
-
-                for (int si = 0; si < sourceInfos.Length; si++)
-                {
-                    var src = sourceInfos[si];
-
-                    // UV0 bounding box overlap ratio
-                    float overlap = BboxOverlapRatio(
-                        tShell.boundsMin, tShell.boundsMax,
-                        src.uv0BoundsMin, src.uv0BoundsMax);
-
-                    // UV0 centroid distance
-                    float uv0Dist = (tUv0Centroid - src.uv0Centroid).magnitude;
-
-                    // Quick reject: no UV0 overlap and far centroids
-                    if (overlap < 0.05f && uv0Dist > 0.15f) continue;
-
-                    // 3D centroid distance (critical for overlap disambiguation)
-                    float worldDist = (tWorldCentroid - src.worldCentroid).magnitude;
-
-                    // Scoring: UV0 overlap dominates, 3D breaks ties
-                    float score = overlap * 10f
-                                + 1f / (1f + uv0Dist * 20f)
-                                + 1f / (1f + worldDist * 5f);
-
-                    if (score > bestScore)
-                    {
-                        bestScore = score;
-                        bestIdx = si;
-                    }
-                }
-
-                if (bestIdx >= 0)
-                {
-                    var src = sourceInfos[bestIdx];
-
-                    // Detect mirror via signed area comparison
-                    bool isMirrored = (tSignedArea * src.signedAreaUv0) < 0f;
-                    if (isMirrored) result.shellsMirrored++;
-
-                    // ── Per-target-shell transform via nearest-vertex matching ──
-                    // Build point pairs (target_UV0, nearest_source_UV2) and compute
-                    // a fresh similarity transform. For mirrored shells, use the
-                    // precomputed source mirror transform directly — nearest-vertex
-                    // gives wrong correspondences when UV0 is reflected.
-
-                    ShellTransform xform;
-
-                    if (isMirrored)
-                    {
-                        // Mirrored: use precomputed source mirror transform
-                        // (nearest-vertex can't find correct pairs across reflection)
-                        xform = src.mirrorTransform;
-                    }
-                    else
-                    {
-                        var ptFrom = new List<Vector2>();
-                        var ptTo   = new List<Vector2>();
-
-                        foreach (int vi in tShell.vertexIndices)
-                        {
-                            if (vi >= tUv0.Length) continue;
-                            Vector2 tPt = tUv0[vi];
-
-                            // Find nearest source vertex in UV0 space
-                            float bestDist = float.MaxValue;
-                            int bestSi = 0;
-                            for (int si = 0; si < src.shellUv0.Length; si++)
-                            {
-                                float d = (tPt - src.shellUv0[si]).sqrMagnitude;
-                                if (d < bestDist) { bestDist = d; bestSi = si; }
-                            }
-
-                            ptFrom.Add(tPt);
-                            ptTo.Add(src.shellUv2[bestSi]);
-                        }
-
-                        if (ptFrom.Count >= 2)
-                        {
-                            xform = ComputeSimilarityTransform(ptFrom, ptTo, false);
-
-                            // Residual check: if transform is poor (degenerate small
-                            // shell or bad nearest-vertex), fall back to source transform
-                            if (xform.residual > 0.001f)
-                            {
-                                var fallback = src.transform;
-                                if (fallback.residual < xform.residual)
-                                {
-                                    Debug.LogWarning($"[GroupedTransfer] Shell residual " +
-                                        $"{xform.residual:F6} > threshold, falling back to " +
-                                        $"source transform (residual={fallback.residual:F6})");
-                                    xform = fallback;
-                                }
-                            }
-                        }
-                        else
-                        {
-                            // Fallback for tiny shells (<2 verts)
-                            xform = src.transform;
-                        }
-                    }
-
-                    int idx = 0;
-                    foreach (int vi in tShell.vertexIndices)
-                    {
-                        if (vi < tUv0.Length && !vertexDone[vi])
-                        {
-                            result.uv2[vi] = xform.Apply(tUv0[vi]);
-                            vertexDone[vi] = true;
-                            result.verticesTransferred++;
-                        }
-                        idx++;
-                    }
-                    result.shellsMatched++;
-                }
-                else
-                {
-                    result.shellsUnmatched++;
-                    Debug.LogWarning($"[GroupedTransfer] Unmatched target shell " +
-                                    $"(uv0=[{tShell.boundsMin}..{tShell.boundsMax}], " +
-                                    $"{tShell.vertexIndices.Count} verts)");
+                    allSrcPos[offset] = si.worldPositions[i];
+                    allSrcUv2[offset] = si.shellUv2[i];
+                    allSrcShell[offset] = s;
+                    offset++;
                 }
             }
 
+            // For each target vertex: find nearest source vertex by 3D position
+            // Copy UV2 directly
+            int[] matchedShell = new int[vertCount];
+            bool[] vertexDone = new bool[vertCount];
+
+            for (int vi = 0; vi < vertCount; vi++)
+            {
+                Vector3 tPos = tVerts[vi];
+                float bestDist = float.MaxValue;
+                int bestIdx = 0;
+
+                for (int si = 0; si < totalSrcVerts; si++)
+                {
+                    float d = (tPos - allSrcPos[si]).sqrMagnitude;
+                    if (d < bestDist) { bestDist = d; bestIdx = si; }
+                }
+
+                result.uv2[vi] = allSrcUv2[bestIdx];
+                matchedShell[vi] = allSrcShell[bestIdx];
+                vertexDone[vi] = true;
+                result.verticesTransferred++;
+            }
+
+            // Count shells matched (unique source shells used)
+            var shellsUsed = new HashSet<int>();
+            for (int i = 0; i < vertCount; i++)
+                if (vertexDone[i]) shellsUsed.Add(matchedShell[i]);
+            result.shellsMatched = shellsUsed.Count;
+
             Debug.Log($"[GroupedTransfer] '{targetMesh.name}': " +
-                      $"{result.shellsMatched} matched, {result.shellsUnmatched} unmatched, " +
+                      $"{result.shellsMatched} source shells used, " +
                       $"{result.verticesTransferred}/{result.verticesTotal} verts");
 
-            // UV2 bounds check — warn if any vertex outside 0-1
+            // UV2 bounds check
             int outOfBounds = 0;
             Vector2 uvMin = new Vector2(float.MaxValue, float.MaxValue);
             Vector2 uvMax = new Vector2(float.MinValue, float.MinValue);
@@ -354,104 +202,7 @@ namespace LightmapUvTool
         }
 
         // ═══════════════════════════════════════════════════════════
-        //  Similarity transform: least-squares fit
-        //  Normal:    UV2 = [a -b; b  a] * UV0 + [tx, ty]
-        //  Reflected: UV2 = [a  b; b -a] * UV0 + [tx, ty]
-        // ═══════════════════════════════════════════════════════════
-
-        static ShellTransform ComputeSimilarityTransform(
-            List<Vector2> from, List<Vector2> to, bool reflected)
-        {
-            int n = Mathf.Min(from.Count, to.Count);
-            if (n < 2)
-                return new ShellTransform { a = 1, b = 0, tx = 0, ty = 0, residual = 0 };
-
-            // Centroids
-            double cx = 0, cy = 0, dx = 0, dy = 0;
-            for (int i = 0; i < n; i++)
-            {
-                cx += from[i].x; cy += from[i].y;
-                dx += to[i].x;   dy += to[i].y;
-            }
-            cx /= n; cy /= n;
-            dx /= n; dy /= n;
-
-            // Centered sums
-            double norm2 = 0;
-            double sum_fxtx = 0, sum_fyty = 0, sum_fxty = 0, sum_fytx = 0;
-            for (int i = 0; i < n; i++)
-            {
-                double fx = from[i].x - cx, fy = from[i].y - cy;
-                double tx = to[i].x - dx,   ty = to[i].y - dy;
-                norm2   += fx * fx + fy * fy;
-                sum_fxtx += fx * tx;
-                sum_fyty += fy * ty;
-                sum_fxty += fx * ty;
-                sum_fytx += fy * tx;
-            }
-
-            if (norm2 < 1e-14)
-                return new ShellTransform { a = 1, b = 0, tx = 0, ty = 0, residual = 0 };
-
-            double a, b;
-            if (reflected)
-            {
-                // Reflected: UV2 = [a b; b -a] * UV0 + t
-                a = (sum_fxtx - sum_fyty) / norm2;
-                b = (sum_fytx + sum_fxty) / norm2;
-            }
-            else
-            {
-                // Normal: UV2 = [a -b; b a] * UV0 + t
-                a = (sum_fxtx + sum_fyty) / norm2;  // dot
-                b = (sum_fxty - sum_fytx) / norm2;   // cross
-            }
-
-            double txf, tyf;
-            if (reflected)
-            {
-                txf = dx - (a * cx + b * cy);
-                tyf = dy - (b * cx - a * cy);
-            }
-            else
-            {
-                txf = dx - (a * cx - b * cy);
-                tyf = dy - (b * cx + a * cy);
-            }
-
-            // Compute residual (mean squared error)
-            double sumSqErr = 0;
-            for (int i = 0; i < n; i++)
-            {
-                double px, py;
-                if (reflected)
-                {
-                    px = a * from[i].x + b * from[i].y + txf;
-                    py = b * from[i].x - a * from[i].y + tyf;
-                }
-                else
-                {
-                    px = a * from[i].x - b * from[i].y + txf;
-                    py = b * from[i].x + a * from[i].y + tyf;
-                }
-                double ex = px - to[i].x;
-                double ey = py - to[i].y;
-                sumSqErr += ex * ex + ey * ey;
-            }
-
-            return new ShellTransform
-            {
-                a = (float)a,
-                b = (float)b,
-                tx = (float)txf,
-                ty = (float)tyf,
-                residual = (float)(sumSqErr / n),
-                mirrored = reflected
-            };
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        //  Signed area of shell in UV space (positive = CCW, negative = CW)
+        //  Signed area of shell in UV space (used by AnalyzeSource)
         // ═══════════════════════════════════════════════════════════
 
         static float ComputeSignedArea(int[] tris, Vector2[] uvs, List<int> faceIndices)
@@ -465,23 +216,6 @@ namespace LightmapUvTool
                 area += (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
             }
             return (float)(area * 0.5);
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        //  Utility
-        // ═══════════════════════════════════════════════════════════
-
-        static float BboxOverlapRatio(Vector2 aMin, Vector2 aMax, Vector2 bMin, Vector2 bMax)
-        {
-            float oMinX = Mathf.Max(aMin.x, bMin.x);
-            float oMinY = Mathf.Max(aMin.y, bMin.y);
-            float oMaxX = Mathf.Min(aMax.x, bMax.x);
-            float oMaxY = Mathf.Min(aMax.y, bMax.y);
-            if (oMaxX <= oMinX || oMaxY <= oMinY) return 0f;
-            float overlapArea = (oMaxX - oMinX) * (oMaxY - oMinY);
-            float aArea = Mathf.Max(1e-10f, (aMax.x - aMin.x) * (aMax.y - aMin.y));
-            float bArea = Mathf.Max(1e-10f, (bMax.x - bMin.x) * (bMax.y - bMin.y));
-            return overlapArea / Mathf.Min(aArea, bArea);
         }
     }
 }

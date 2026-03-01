@@ -390,6 +390,199 @@ namespace LightmapUvTool
         }
 
         // ═══════════════════════════════════════════════════════════
+        //  Source-guided weld: merge target vertices by position+normal
+        //  only when both map to the SAME source UV0 shell.
+        //  This re-unifies islands that LOD simplification split apart
+        //  while preserving intentional seams between different shells.
+        //  UV0 of the kept vertex is preserved (lower index wins).
+        // ═══════════════════════════════════════════════════════════
+
+        public static Mesh SourceGuidedWeld(Mesh target, Mesh source)
+        {
+            var tVerts = target.vertices;
+            var tNormals = target.normals;
+            var tUv0 = target.uv;
+            var tTris = target.triangles;
+            int tVertCount = target.vertexCount;
+            bool tHasNormals = tNormals != null && tNormals.Length == tVertCount;
+
+            if (tUv0 == null || tUv0.Length == 0)
+                return Object.Instantiate(target);
+
+            // ── Build source: vertex → shell ID lookup ──
+            var sUv0 = source.uv;
+            var sVerts = source.vertices;
+            var sTris = source.triangles;
+            int sVertCount = source.vertexCount;
+
+            if (sUv0 == null || sUv0.Length == 0)
+            {
+                Debug.LogWarning("[UV0Fix] Source mesh has no UV0, cannot guide weld");
+                return Object.Instantiate(target);
+            }
+
+            var sourceShells = UvShellExtractor.Extract(sUv0, sTris);
+            int[] srcVertShellId = new int[sVertCount];
+            for (int i = 0; i < sVertCount; i++) srcVertShellId[i] = -1;
+            foreach (var shell in sourceShells)
+                foreach (int vi in shell.vertexIndices)
+                    srcVertShellId[vi] = shell.shellId;
+
+            // ── For each target vertex, find nearest source vertex by 3D ──
+            // Then get its source shell ID
+            int[] tVertShellId = new int[tVertCount];
+            for (int i = 0; i < tVertCount; i++)
+            {
+                float bestDist = float.MaxValue;
+                int bestSrc = 0;
+                for (int s = 0; s < sVertCount; s++)
+                {
+                    float d = (tVerts[i] - sVerts[s]).sqrMagnitude;
+                    if (d < bestDist) { bestDist = d; bestSrc = s; }
+                }
+                tVertShellId[i] = srcVertShellId[bestSrc];
+            }
+
+            // ── Find position+normal duplicates, weld if same source shell ──
+            float cellSize = POS_EPS * 100f;
+            var cells = new Dictionary<long, List<int>>();
+            for (int i = 0; i < tVertCount; i++)
+            {
+                long key = SpatialKey(tVerts[i], cellSize);
+                if (!cells.TryGetValue(key, out var list))
+                {
+                    list = new List<int>();
+                    cells[key] = list;
+                }
+                list.Add(i);
+            }
+
+            var weldMap = new Dictionary<int, int>();
+            foreach (var kv in cells)
+            {
+                var list = kv.Value;
+                for (int i = 0; i < list.Count; i++)
+                {
+                    int vi = list[i];
+                    if (weldMap.ContainsKey(vi)) continue;
+
+                    for (int j = i + 1; j < list.Count; j++)
+                    {
+                        int vj = list[j];
+                        if (weldMap.ContainsKey(vj)) continue;
+
+                        // Position must match
+                        if (!VecEqual(tVerts[vi], tVerts[vj], POS_EPS)) continue;
+                        // Normal must match
+                        if (tHasNormals && !VecEqual(tNormals[vi], tNormals[vj], NORMAL_EPS)) continue;
+                        // Both must map to the same source shell
+                        if (tVertShellId[vi] != tVertShellId[vj]) continue;
+                        if (tVertShellId[vi] < 0) continue; // no source match
+
+                        weldMap[vj] = vi;
+                    }
+                }
+            }
+
+            if (weldMap.Count == 0)
+            {
+                Debug.Log($"[UV0Fix] SourceGuidedWeld '{target.name}': nothing to weld");
+                return Object.Instantiate(target);
+            }
+
+            // ── Remap + compact (same as WeldUv0) ──
+            int[] newTris = new int[tTris.Length];
+            for (int i = 0; i < tTris.Length; i++)
+                newTris[i] = weldMap.TryGetValue(tTris[i], out int w) ? w : tTris[i];
+
+            var used = new HashSet<int>();
+            for (int i = 0; i < newTris.Length; i++) used.Add(newTris[i]);
+
+            int[] compactMap = new int[tVertCount];
+            for (int i = 0; i < tVertCount; i++) compactMap[i] = -1;
+            int newVertCount = 0;
+            for (int i = 0; i < tVertCount; i++)
+                if (used.Contains(i)) compactMap[i] = newVertCount++;
+
+            for (int i = 0; i < newTris.Length; i++)
+                newTris[i] = compactMap[newTris[i]];
+
+            // Compact vertex attributes
+            var newVerts = new Vector3[newVertCount];
+            Vector3[] newNormals = tHasNormals ? new Vector3[newVertCount] : null;
+            var newUv0 = new Vector2[newVertCount];
+
+            var tangents = target.tangents;
+            bool hasTangents = tangents != null && tangents.Length == tVertCount;
+            Vector4[] newTangents = hasTangents ? new Vector4[newVertCount] : null;
+
+            var uv1List = new List<Vector2>();
+            target.GetUVs(1, uv1List);
+            bool hasUv1 = uv1List.Count == tVertCount;
+            Vector2[] uv1 = hasUv1 ? uv1List.ToArray() : null;
+            Vector2[] newUv1 = hasUv1 ? new Vector2[newVertCount] : null;
+
+            var colors = target.colors;
+            bool hasColors = colors != null && colors.Length == tVertCount;
+            Color[] newColors = hasColors ? new Color[newVertCount] : null;
+
+            var boneWeights = target.boneWeights;
+            bool hasBW = boneWeights != null && boneWeights.Length == tVertCount;
+            BoneWeight[] newBW = hasBW ? new BoneWeight[newVertCount] : null;
+
+            for (int i = 0; i < tVertCount; i++)
+            {
+                int ni = compactMap[i];
+                if (ni < 0) continue;
+                newVerts[ni] = tVerts[i];
+                newUv0[ni] = tUv0[i];
+                if (tHasNormals) newNormals[ni] = tNormals[i];
+                if (hasTangents) newTangents[ni] = tangents[i];
+                if (hasUv1) newUv1[ni] = uv1[i];
+                if (hasColors) newColors[ni] = colors[i];
+                if (hasBW) newBW[ni] = boneWeights[i];
+            }
+
+            var result = new Mesh();
+            result.name = target.name + "_welded";
+            result.vertices = newVerts;
+            result.uv = newUv0;
+            if (tHasNormals) result.normals = newNormals;
+            if (hasTangents) result.tangents = newTangents;
+            if (hasUv1) result.SetUVs(1, newUv1);
+            if (hasColors) result.colors = newColors;
+            if (hasBW) result.boneWeights = newBW;
+
+            int subCount = target.subMeshCount;
+            result.subMeshCount = subCount;
+            int triOffset = 0;
+            for (int s = 0; s < subCount; s++)
+            {
+                var desc = target.GetSubMesh(s);
+                int idxCount = desc.indexCount;
+                int[] subTris = new int[idxCount];
+                System.Array.Copy(newTris, triOffset, subTris, 0, idxCount);
+                result.SetTriangles(subTris, s);
+                triOffset += idxCount;
+            }
+
+            if (target.bindposes != null && target.bindposes.Length > 0)
+                result.bindposes = target.bindposes;
+
+            result.RecalculateBounds();
+
+            int removed = tVertCount - newVertCount;
+            int shellsBefore = UvShellExtractor.Extract(tUv0, tTris).Count;
+            int shellsAfter = UvShellExtractor.Extract(newUv0, newTris).Count;
+            Debug.Log($"[UV0Fix] SourceGuidedWeld '{target.name}': " +
+                      $"welded {weldMap.Count} pairs, removed {removed} verts " +
+                      $"({tVertCount} → {newVertCount}), " +
+                      $"shells {shellsBefore} → {shellsAfter}");
+
+            return result;
+        }
+
+        // ═══════════════════════════════════════════════════════════
         //  Build weld map: duplicate vertex → keep vertex
         //  Groups vertices by quantized position, then checks
         //  UV0 + normal within epsilon.
