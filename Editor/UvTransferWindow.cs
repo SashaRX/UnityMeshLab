@@ -666,13 +666,18 @@ namespace LightmapUvTool
             if (Event.current.type == EventType.Repaint && glMat != null)
             {
                 EditorGUI.DrawRect(new Rect(ox, oy, sz, sz), new Color(.12f,.12f,.12f));
+
+                // Clip GL rendering to preview rect so UV<0 doesn't overflow onto sidebar
+                GUI.BeginClip(new Rect(ox, oy, sz, sz));
+                float cx = 0, cy = 0; // local coords inside clip rect
+
                 bool push = false;
                 try
                 {
                     glMat.SetPass(0);
                     GL.PushMatrix(); push = true;
                     GL.LoadPixelMatrix();
-                    GlGrid(ox, oy, sz);
+                    GlGrid(cx, cy, sz);
 
                     foreach (var item in draws)
                     {
@@ -690,15 +695,17 @@ namespace LightmapUvTool
 
                         if (showFill)
                         {
-                            if (stats != null) GlFillSt(ox,oy,sz, uvs,tri,fN,uN, stats);
-                            else               GlFillSh(ox,oy,sz, uvs,tri,fN,uN, idx);
+                            if (stats != null) GlFillSt(cx,cy,sz, uvs,tri,fN,uN, stats);
+                            else               GlFillSh(cx,cy,sz, uvs,tri,fN,uN, idx);
                         }
-                        if (bdr != null && bdr.Count > 0) GlBdr(ox,oy,sz, uvs,tri,fN,uN, bdr);
-                        if (showWire) GlWr(ox,oy,sz, uvs,tri,fN,uN);
+                        if (bdr != null && bdr.Count > 0) GlBdr(cx,cy,sz, uvs,tri,fN,uN, bdr);
+                        if (showWire) GlWr(cx,cy,sz, uvs,tri,fN,uN);
                     }
                 }
                 catch (Exception ex) { Debug.LogWarning("[UV] GL: " + ex.Message); }
                 finally { if (push) GL.PopMatrix(); }
+
+                GUI.EndClip();
             }
             EditorGUILayout.EndScrollView();
         }
