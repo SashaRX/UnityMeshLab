@@ -4,8 +4,10 @@
 // Place DLL in Assets/Plugins/x86_64/
 
 #include "xatlas.h"
+#include "meshoptimizer.h"
 #include <cstring>
 #include <cstdint>
+#include <vector>
 
 #ifdef _WIN32
 #define EXPORT extern "C" __declspec(dllexport)
@@ -155,4 +157,69 @@ EXPORT int xatlasGetOutputIndices(
 
     memcpy(outIndices, mesh.indexArray, count * sizeof(uint32_t));
     return count;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// meshoptimizer — full optimization pipeline (dedup + cache + overdraw + fetch)
+//
+// vertexData:          interleaved vertex buffer, position MUST be first 12 bytes (float3)
+// vertexCount:         number of vertices in the input
+// vertexStride:        bytes per vertex (must be >= 12)
+// indices:             input index buffer (triangles)
+// indexCount:          number of indices (must be multiple of 3)
+// overdrawThreshold:   meshopt_optimizeOverdraw threshold (typically 1.05)
+// outVertexData:       caller-allocated buffer, vertexCount * vertexStride bytes
+// outIndices:          caller-allocated buffer, indexCount uint32s
+// outVertexCount:      receives actual vertex count after deduplication
+//
+// Returns: 0 = OK, 1 = null pointer, 2 = stride < 12, 3 = indexCount not multiple of 3
+// ══════════════════════════════════════════════════════════════════
+
+EXPORT int meshoptOptimize(
+    const unsigned char* vertexData,
+    uint32_t             vertexCount,
+    uint32_t             vertexStride,
+    const uint32_t*      indices,
+    uint32_t             indexCount,
+    float                overdrawThreshold,
+    unsigned char*       outVertexData,
+    uint32_t*            outIndices,
+    uint32_t*            outVertexCount)
+{
+    // ── Validation ──
+    if (!vertexData || !indices || !outVertexData || !outIndices || !outVertexCount)
+        return 1;
+    if (vertexStride < 12)
+        return 2;
+    if (indexCount % 3 != 0)
+        return 3;
+    if (vertexCount == 0 || indexCount == 0) {
+        *outVertexCount = 0;
+        return 0;
+    }
+
+    // ── 1. Generate vertex remap (deduplication) ──
+    std::vector<unsigned int> remap(vertexCount);
+    size_t newVertexCount = meshopt_generateVertexRemap(
+        remap.data(), indices, indexCount,
+        vertexData, vertexCount, vertexStride);
+
+    // ── 2. Apply remap to index and vertex buffers ──
+    meshopt_remapIndexBuffer(outIndices, indices, indexCount, remap.data());
+    meshopt_remapVertexBuffer(outVertexData, vertexData, vertexCount, vertexStride, remap.data());
+
+    // ── 3. Optimize vertex cache (triangle reorder for GPU post-transform cache) ──
+    meshopt_optimizeVertexCache(outIndices, outIndices, indexCount, newVertexCount);
+
+    // ── 4. Optimize overdraw (needs position as first 12 bytes in stride) ──
+    meshopt_optimizeOverdraw(outIndices, outIndices, indexCount,
+        reinterpret_cast<const float*>(outVertexData),
+        newVertexCount, vertexStride, overdrawThreshold);
+
+    // ── 5. Optimize vertex fetch (reorder vertices for sequential access) ──
+    meshopt_optimizeVertexFetch(outVertexData, outIndices, indexCount,
+        outVertexData, newVertexCount, vertexStride);
+
+    *outVertexCount = (uint32_t)newVertexCount;
+    return 0;
 }
