@@ -684,14 +684,18 @@ namespace LightmapUvTool
                 // UV square background
                 EditorGUI.DrawRect(new Rect(cx, cy, sz, sz), new Color(.12f,.12f,.12f));
 
+                // GL uses window-space pixels (LoadPixelMatrix ignores BeginClip offset).
+                // Convert canvas-local (cx,cy) to window coords for GL drawing.
+                float glX = canvasRect.x + cx;
+                float glY = canvasRect.y + cy;
+
                 bool push = false;
                 try
                 {
                     glMat.SetPass(0);
                     GL.PushMatrix(); push = true;
-                    // Use clip-local pixel matrix (not full-screen) so GL coords match BeginClip local space
-                    GL.LoadPixelMatrix(0, canvasRect.width, canvasRect.height, 0);
-                    GlGrid(cx, cy, sz);
+                    GL.LoadPixelMatrix();
+                    GlGrid(glX, glY, sz);
 
                     foreach (var item in draws)
                     {
@@ -709,11 +713,11 @@ namespace LightmapUvTool
 
                         if (showFill)
                         {
-                            if (stats != null) GlFillSt(cx,cy,sz, uvs,tri,fN,uN, stats);
-                            else               GlFillSh(cx,cy,sz, uvs,tri,fN,uN, idx);
+                            if (stats != null) GlFillSt(glX,glY,sz, uvs,tri,fN,uN, stats);
+                            else               GlFillSh(glX,glY,sz, uvs,tri,fN,uN, idx);
                         }
-                        if (bdr != null && bdr.Count > 0) GlBdr(cx,cy,sz, uvs,tri,fN,uN, bdr);
-                        if (showWire) GlWr(cx,cy,sz, uvs,tri,fN,uN);
+                        if (bdr != null && bdr.Count > 0) GlBdr(glX,glY,sz, uvs,tri,fN,uN, bdr);
+                        if (showWire) GlWr(glX,glY,sz, uvs,tri,fN,uN);
                     }
                 }
                 catch (Exception ex) { Debug.LogWarning("[UV] GL: " + ex.Message); }
