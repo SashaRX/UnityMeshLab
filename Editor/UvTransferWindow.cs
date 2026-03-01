@@ -692,7 +692,7 @@ namespace LightmapUvTool
 
                 var prevRT = RenderTexture.active;
                 RenderTexture.active = canvasRT;
-                GL.Clear(true, true, new Color(.08f,.08f,.08f, 0f));
+                GL.Clear(true, true, new Color(.08f,.08f,.08f, 1f));
 
                 bool push = false;
                 try
