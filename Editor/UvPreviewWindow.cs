@@ -212,24 +212,8 @@ namespace LightmapUvTool
                     GL.sRGBWrite = QualitySettings.activeColorSpace == ColorSpace.Linear;
                     GL.LoadPixelMatrix();
 
-                    // ── Grid (GL.LINES) ──
-                    GL.Begin(GL.LINES);
-                    GL.Color(new Color(0.25f, 0.25f, 0.25f));
-                    for (int g = 0; g <= 4; g++)
-                    {
-                        float p = g * 0.25f * size;
-                        GL.Vertex3(ox + p, oy, 0); GL.Vertex3(ox + p, oy + size, 0);
-                        GL.Vertex3(ox, oy + p, 0); GL.Vertex3(ox + size, oy + p, 0);
-                    }
-                    // Border
-                    GL.Color(new Color(0.5f, 0.5f, 0.5f));
-                    GL.Vertex3(ox, oy, 0);        GL.Vertex3(ox + size, oy, 0);
-                    GL.Vertex3(ox + size, oy, 0);  GL.Vertex3(ox + size, oy + size, 0);
-                    GL.Vertex3(ox + size, oy + size, 0); GL.Vertex3(ox, oy + size, 0);
-                    GL.Vertex3(ox, oy + size, 0);  GL.Vertex3(ox, oy, 0);
-                    GL.End();
-
                     // ── Shell fills (GL.TRIANGLES, batched) ──
+                    // Drawn first so fills blend over uniform dark background only
                     if (showFill && cachedShells != null)
                     {
                         int total = 0;
@@ -255,6 +239,23 @@ namespace LightmapUvTool
                         }
                         GL.End();
                     }
+
+                    // ── Grid (GL.LINES) ──
+                    GL.Begin(GL.LINES);
+                    GL.Color(new Color(0.25f, 0.25f, 0.25f));
+                    for (int g = 0; g <= 4; g++)
+                    {
+                        float p = g * 0.25f * size;
+                        GL.Vertex3(ox + p, oy, 0); GL.Vertex3(ox + p, oy + size, 0);
+                        GL.Vertex3(ox, oy + p, 0); GL.Vertex3(ox + size, oy + p, 0);
+                    }
+                    // Border
+                    GL.Color(new Color(0.5f, 0.5f, 0.5f));
+                    GL.Vertex3(ox, oy, 0);        GL.Vertex3(ox + size, oy, 0);
+                    GL.Vertex3(ox + size, oy, 0);  GL.Vertex3(ox + size, oy + size, 0);
+                    GL.Vertex3(ox + size, oy + size, 0); GL.Vertex3(ox, oy + size, 0);
+                    GL.Vertex3(ox, oy + size, 0);  GL.Vertex3(ox, oy, 0);
+                    GL.End();
 
                     // ── Degenerate (red triangles, batched) ──
                     if (showDegen && cachedDegenFaces != null && cachedDegenFaces.Count > 0)
