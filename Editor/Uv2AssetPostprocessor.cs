@@ -12,6 +12,13 @@ namespace LightmapUvTool
 {
     public class Uv2AssetPostprocessor : AssetPostprocessor
     {
+        struct ApplyStats
+        {
+            public int fbxVerts;      // vertex count from fresh FBX import
+            public int finalVerts;    // vertex count after meshopt + weld
+            public bool remapped;     // true if position remap was used
+        }
+
         void OnPostprocessModel(GameObject root)
         {
             string modelPath = assetPath;
@@ -24,30 +31,40 @@ namespace LightmapUvTool
             var filters = root.GetComponentsInChildren<MeshFilter>(true);
             var skinned = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
             int applied = 0;
+            int totalFbxVerts = 0, totalFinalVerts = 0;
+            int remapCount = 0;
 
             foreach (var mf in filters)
             {
                 var mesh = mf.sharedMesh;
                 if (mesh == null) continue;
-                if (ApplyEntryToMesh(data, mesh)) applied++;
+                if (ApplyEntryToMesh(data, mesh, out var s)) { applied++; totalFbxVerts += s.fbxVerts; totalFinalVerts += s.finalVerts; if (s.remapped) remapCount++; }
             }
 
             foreach (var smr in skinned)
             {
                 var mesh = smr.sharedMesh;
                 if (mesh == null) continue;
-                if (ApplyEntryToMesh(data, mesh)) applied++;
+                if (ApplyEntryToMesh(data, mesh, out var s)) { applied++; totalFbxVerts += s.fbxVerts; totalFinalVerts += s.finalVerts; if (s.remapped) remapCount++; }
             }
 
             if (applied > 0)
-                Debug.Log($"[UV2 Postprocess] '{modelPath}': injected UV2 into {applied} mesh(es)");
+            {
+                int saved = totalFbxVerts - totalFinalVerts;
+                float pct = totalFbxVerts > 0 ? saved * 100f / totalFbxVerts : 0f;
+                string remap = remapCount > 0 ? $", {remapCount} remapped" : "";
+                Debug.Log($"[UV2 Postprocess] '{modelPath}': {applied} mesh(es), {totalFbxVerts}→{totalFinalVerts} verts (−{saved}, −{pct:F1}%{remap})");
+            }
         }
 
         /// <summary>Apply weld (if flagged) + UV2 to a single mesh. Returns true on success.</summary>
-        static bool ApplyEntryToMesh(Uv2DataAsset data, Mesh mesh)
+        static bool ApplyEntryToMesh(Uv2DataAsset data, Mesh mesh, out ApplyStats stats)
         {
+            stats = default;
             var entry = data.Find(mesh.name);
             if (entry == null || entry.uv2 == null) return false;
+
+            stats.fbxVerts = mesh.vertexCount;
 
             // Phase 1: meshopt full pipeline (dedup + vertex cache + overdraw + fetch reorder)
             // Must match the tool's MeshOptimizer.Optimize exactly, not just WeldInPlace,
@@ -91,8 +108,12 @@ namespace LightmapUvTool
                 return false;
             }
 
+            stats.finalVerts = mesh.vertexCount;
+
             // Apply UV2 with position-based remapping if vertex order differs
-            var uv2 = RemapUv2IfNeeded(entry, mesh);
+            bool didRemap;
+            var uv2 = RemapUv2IfNeeded(entry, mesh, out didRemap);
+            stats.remapped = didRemap;
             mesh.SetUVs(2, uv2);
             return true;
         }
@@ -103,8 +124,10 @@ namespace LightmapUvTool
         /// workflow and the postprocessor (different starting vertex count/order from FBX reimport).
         /// This remaps UV2 by matching vertex positions so the correct UV2 reaches each vertex.
         /// </summary>
-        static Vector2[] RemapUv2IfNeeded(MeshUv2Entry entry, Mesh mesh)
+        static Vector2[] RemapUv2IfNeeded(MeshUv2Entry entry, Mesh mesh, out bool didRemap)
         {
+            didRemap = false;
+
             // No position data stored — backward compat, use UV2 as-is
             if (entry.vertPositions == null || entry.vertPositions.Length != entry.uv2.Length)
                 return entry.uv2;
@@ -193,11 +216,11 @@ namespace LightmapUvTool
                 }
             }
 
+            didRemap = true;
+
             if (matched < count)
                 Debug.LogWarning($"[UV2 Postprocess] '{mesh.name}': position remap {matched}/{count} " +
                                  $"(unmatched vertices will have zero UV2)");
-            else
-                Debug.Log($"[UV2 Postprocess] '{mesh.name}': remapped {count} vertices by position");
 
             return result;
         }
