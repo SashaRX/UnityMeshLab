@@ -689,7 +689,8 @@ namespace LightmapUvTool
                 {
                     glMat.SetPass(0);
                     GL.PushMatrix(); push = true;
-                    GL.LoadPixelMatrix();
+                    // Use clip-local pixel matrix (not full-screen) so GL coords match BeginClip local space
+                    GL.LoadPixelMatrix(0, canvasRect.width, canvasRect.height, 0);
                     GlGrid(cx, cy, sz);
 
                     foreach (var item in draws)
