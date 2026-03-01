@@ -398,9 +398,9 @@ namespace LightmapUvTool
                 int issues3D = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, uv2_3D);
                 int issuesUV0 = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, uv2_UV0);
 
-                // Pick winner: fewer issues wins; tiebreak → 3D (better for mirrored shells)
-                var chosenUv2 = (issues3D <= issuesUV0) ? uv2_3D : uv2_UV0;
-                if (issues3D <= issuesUV0) shells3D++; else shellsUV0++;
+                // Pick winner: fewer issues wins; tiebreak → UV0 (safer, stays in matched shell)
+                var chosenUv2 = (issues3D < issuesUV0) ? uv2_3D : uv2_UV0;
+                if (issues3D < issuesUV0) shells3D++; else shellsUV0++;
 
                 // Write chosen UV2
                 foreach (var kv in chosenUv2)
@@ -462,8 +462,19 @@ namespace LightmapUvTool
                 {
                     var a0 = uv0[i0]; var b0 = uv0[i1]; var c0 = uv0[i2];
                     float saUv0 = (b0.x - a0.x) * (c0.y - a0.y) - (c0.x - a0.x) * (b0.y - a0.y);
-                    if (saUv0 * saUv2 < 0f) issues++; // opposite winding
+                    if (saUv0 * saUv2 < 0f) { issues++; continue; } // opposite winding
+
+                    // Stretch check: UV2 area vastly disproportionate to UV0 area
+                    float absUv0 = Mathf.Abs(saUv0);
+                    float absUv2 = Mathf.Abs(saUv2);
+                    if (absUv0 > 1e-10f && absUv2 / absUv0 > 100f) issues++;
                 }
+
+                // Cross-atlas edge check: UV2 edge > 0.5 means vertices from different atlas regions
+                float maxEdgeSq = Mathf.Max(
+                    (b2 - a2).sqrMagnitude,
+                    Mathf.Max((c2 - b2).sqrMagnitude, (a2 - c2).sqrMagnitude));
+                if (maxEdgeSq > 0.25f) issues++; // edge > 0.5 in UV2 space
             }
             return issues;
         }
