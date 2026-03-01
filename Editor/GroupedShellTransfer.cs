@@ -1,7 +1,8 @@
-// GroupedShellTransfer.cs — UV2 transfer via 3D nearest-vertex matching
+// GroupedShellTransfer.cs — UV2 transfer via UV0 nearest-vertex matching
 // Core idea: for each target LOD vertex, find nearest source (LOD0) vertex
-// by 3D position and directly copy its UV2. No similarity transforms,
-// no UV0 shell matching dependency. Works regardless of target UV0 layout.
+// by UV0 distance and directly copy its UV2. UV0 is the shared coordinate
+// system between LOD levels. 3D matching fails on thin geometry (wall
+// front/back are close in 3D but on different UV0 shells).
 
 using System.Collections.Generic;
 using UnityEngine;
@@ -20,9 +21,10 @@ namespace LightmapUvTool
             public float signedAreaUv0;              // positive = CCW, negative = CW
             public int vertexCount;
 
-            // Per-vertex data for 3D nearest-vertex transfer
+            // Per-vertex data for UV0 nearest-vertex transfer
             public int[] vertexIndices;              // original mesh vertex indices
             public Vector3[] worldPositions;         // 3D positions
+            public Vector2[] shellUv0;               // UV0 values for matching
             public Vector2[] shellUv2;               // UV2 values to copy
         }
 
@@ -70,6 +72,7 @@ namespace LightmapUvTool
                 // Collect per-vertex data
                 var idxList = new List<int>();
                 var posList = new List<Vector3>();
+                var uv0sList = new List<Vector2>();
                 var uv2sList = new List<Vector2>();
                 Vector2 uv0Sum = Vector2.zero;
                 Vector3 worldSum = Vector3.zero;
@@ -80,6 +83,7 @@ namespace LightmapUvTool
                     if (vi >= uv0.Length || vi >= uv2.Length || vi >= verts.Length) continue;
                     idxList.Add(vi);
                     posList.Add(verts[vi]);
+                    uv0sList.Add(uv0[vi]);
                     uv2sList.Add(uv2[vi]);
                     uv0Sum += uv0[vi];
                     worldSum += verts[vi];
@@ -99,6 +103,7 @@ namespace LightmapUvTool
                     vertexCount = n,
                     vertexIndices = idxList.ToArray(),
                     worldPositions = posList.ToArray(),
+                    shellUv0 = uv0sList.ToArray(),
                     shellUv2 = uv2sList.ToArray()
                 };
             }
@@ -109,10 +114,10 @@ namespace LightmapUvTool
         }
 
         // ═══════════════════════════════════════════════════════════
-        //  Step 2: Transfer UV2 to target mesh via 3D nearest vertex
-        //  - Match target vertex to source shell by 3D proximity
-        //  - Copy UV2 directly from nearest source vertex in 3D
-        //  - No similarity transforms, no UV0 dependency
+        //  Step 2: Transfer UV2 to target mesh via UV0 nearest vertex
+        //  - For each target vertex, find nearest source vertex by UV0
+        //  - Copy UV2 directly — UV0 is the shared coordinate system
+        //  - 3D matching fails on thin geometry (wall front/back)
         // ═══════════════════════════════════════════════════════════
 
         public static TransferResult Transfer(
@@ -120,46 +125,47 @@ namespace LightmapUvTool
         {
             var result = new TransferResult();
 
-            var tVerts = targetMesh.vertices;
+            var tUv0List = new List<Vector2>();
+            targetMesh.GetUVs(0, tUv0List);
+            var tUv0 = tUv0List.ToArray();
             int vertCount = targetMesh.vertexCount;
 
             result.uv2 = new Vector2[vertCount];
             result.verticesTotal = vertCount;
 
-            // Build flat arrays of all source positions + UV2 for global fallback
+            // Build flat arrays of all source UV0 + UV2
             int totalSrcVerts = 0;
-            foreach (var si in sourceInfos) totalSrcVerts += si.worldPositions.Length;
+            foreach (var si in sourceInfos) totalSrcVerts += si.shellUv0.Length;
 
-            var allSrcPos = new Vector3[totalSrcVerts];
+            var allSrcUv0 = new Vector2[totalSrcVerts];
             var allSrcUv2 = new Vector2[totalSrcVerts];
             var allSrcShell = new int[totalSrcVerts];
             int offset = 0;
             for (int s = 0; s < sourceInfos.Length; s++)
             {
                 var si = sourceInfos[s];
-                for (int i = 0; i < si.worldPositions.Length; i++)
+                for (int i = 0; i < si.shellUv0.Length; i++)
                 {
-                    allSrcPos[offset] = si.worldPositions[i];
+                    allSrcUv0[offset] = si.shellUv0[i];
                     allSrcUv2[offset] = si.shellUv2[i];
                     allSrcShell[offset] = s;
                     offset++;
                 }
             }
 
-            // For each target vertex: find nearest source vertex by 3D position
-            // Copy UV2 directly
+            // For each target vertex: find nearest source vertex by UV0
             int[] matchedShell = new int[vertCount];
             bool[] vertexDone = new bool[vertCount];
 
             for (int vi = 0; vi < vertCount; vi++)
             {
-                Vector3 tPos = tVerts[vi];
+                Vector2 tUv = tUv0[vi];
                 float bestDist = float.MaxValue;
                 int bestIdx = 0;
 
                 for (int si = 0; si < totalSrcVerts; si++)
                 {
-                    float d = (tPos - allSrcPos[si]).sqrMagnitude;
+                    float d = (tUv - allSrcUv0[si]).sqrMagnitude;
                     if (d < bestDist) { bestDist = d; bestIdx = si; }
                 }
 

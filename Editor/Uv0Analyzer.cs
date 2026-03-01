@@ -428,8 +428,10 @@ namespace LightmapUvTool
                 foreach (int vi in shell.vertexIndices)
                     srcVertShellId[vi] = shell.shellId;
 
-            // ── For each target vertex, find nearest source vertex by 3D ──
-            // Then get its source shell ID
+            // ── For each target vertex, find nearest source vertex by UV0 ──
+            // UV0 is the shared coordinate system between LOD levels.
+            // 3D nearest fails on thin geometry (wall front/back are close
+            // in 3D but on different UV0 shells).
             int[] tVertShellId = new int[tVertCount];
             for (int i = 0; i < tVertCount; i++)
             {
@@ -437,7 +439,7 @@ namespace LightmapUvTool
                 int bestSrc = 0;
                 for (int s = 0; s < sVertCount; s++)
                 {
-                    float d = (tVerts[i] - sVerts[s]).sqrMagnitude;
+                    float d = (tUv0[i] - sUv0[s]).sqrMagnitude;
                     if (d < bestDist) { bestDist = d; bestSrc = s; }
                 }
                 tVertShellId[i] = srcVertShellId[bestSrc];

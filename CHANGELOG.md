@@ -9,6 +9,15 @@
   re-selecting a previously processed LODGroup.
 - **[W] badge** on welded meshes in the mesh list.
 
+## [0.7.6] - 2026-03-01
+
+### Fixed — UV0-space matching instead of 3D
+- **Transfer uses UV0 nearest-vertex**: finds nearest source vertex by UV0
+  distance, not 3D position. 3D matching fails on thin geometry (CementWall)
+  where front/back faces are close in 3D but on different UV0 shells.
+- **SourceGuidedWeld uses UV0 nearest**: determines source shell membership
+  via UV0 proximity instead of 3D proximity. Same thin-geometry fix.
+
 ## [0.7.5] - 2026-03-01
 
 ### Fixed — Weld button runs source-guided weld
