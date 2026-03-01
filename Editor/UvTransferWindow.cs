@@ -274,7 +274,7 @@ namespace LightmapUvTool
                 {
                     EditorGUILayout.BeginHorizontal();
                     e.include = EditorGUILayout.Toggle(e.include, GUILayout.Width(16));
-                    string badge = e.repackedMesh != null ? " [R]" : e.transferredMesh != null ? " [T]" : "";
+                    string badge = e.repackedMesh != null ? " [R]" : e.transferredMesh != null ? " [T]" : e.wasWelded ? " [W]" : "";
                     EditorGUILayout.LabelField(e.renderer.name + badge, GUILayout.Width(150));
                     var m = e.originalMesh;
                     EditorGUILayout.LabelField("V:" + m.vertexCount + " T:" + (m.triangles.Length/3), EditorStyles.miniLabel);
@@ -284,6 +284,15 @@ namespace LightmapUvTool
                 }
                 EditorGUI.indentLevel--;
                 EditorGUILayout.Space(2);
+            }
+
+            // ── Reset button: visible when any working copies are modified ──
+            bool anyModified = meshEntries.Any(e =>
+                e.wasWelded || e.repackedMesh != null || e.transferredMesh != null);
+            if (anyModified)
+            {
+                EditorGUILayout.Space(4);
+                ColorBtn(new Color(.9f,.35f,.35f), "Reset All Working Copies", 24, ResetWorkingCopies);
             }
 
             EditorGUILayout.Space(8);
@@ -1185,6 +1194,33 @@ namespace LightmapUvTool
 
             // Clear working copies — the FBX meshes now have UV2 baked in
             Refresh();
+            Repaint();
+        }
+
+        // ════════════════════════════════════════════════════════════
+        //  Reset working copies (back to FBX meshes, clear all derived data)
+        // ════════════════════════════════════════════════════════════
+
+        void ResetWorkingCopies()
+        {
+            foreach (var e in meshEntries)
+            {
+                if (e.fbxMesh != null)
+                    e.originalMesh = e.fbxMesh;
+                e.repackedMesh = null;
+                e.transferredMesh = null;
+                e.shellTransferResult = null;
+                e.wasWelded = false;
+                e.report = null;
+            }
+            hasRepack = false;
+            hasTransfer = false;
+            uv0Analyzed = false;
+            uv0Welded = false;
+            uv0Reports.Clear();
+            srcCache.Clear();
+            shellTransformCache.Clear();
+            Debug.Log("[Reset] All working copies restored to FBX originals");
             Repaint();
         }
 

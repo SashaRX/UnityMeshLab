@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.6] - 2026-03-01
+
+### Added — Reset Working Copies button
+- **Reset All Working Copies** button in Setup tab: visible when any meshes
+  are modified (welded, repacked, or transferred). Restores all `originalMesh`
+  back to FBX originals, clears all derived meshes and caches. Useful when
+  re-selecting a previously processed LODGroup.
+- **[W] badge** on welded meshes in the mesh list.
+
 ## [0.7.5] - 2026-03-01
 
 ### Fixed — Weld button runs source-guided weld
