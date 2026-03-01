@@ -1229,7 +1229,7 @@ namespace LightmapUvTool
             if (lodGroup == null) return;
 
             // Group mesh entries by source FBX path
-            var fbxGroups = new Dictionary<string, List<(string name, Vector2[] uv2, bool welded, bool edgeWelded)>>();
+            var fbxGroups = new Dictionary<string, List<(string name, Vector2[] uv2, bool welded, bool edgeWelded, Vector3[] positions, Vector2[] uv0)>>();
 
             foreach (var e in meshEntries)
             {
@@ -1247,12 +1247,17 @@ namespace LightmapUvTool
                 resultMesh.GetUVs(pipeSettings.targetUvChannel, uv2List);
                 if (uv2List.Count == 0) continue;
 
+                // Read vertex positions and UV0 for order-independent remapping in postprocessor
+                var positions = resultMesh.vertices;
+                var uv0List = new List<Vector2>();
+                resultMesh.GetUVs(0, uv0List);
+
                 if (!fbxGroups.ContainsKey(fbxPath))
-                    fbxGroups[fbxPath] = new List<(string, Vector2[], bool, bool)>();
+                    fbxGroups[fbxPath] = new List<(string, Vector2[], bool, bool, Vector3[], Vector2[])>();
 
                 // Use FBX mesh name (postprocessor matches by this name)
                 string meshName = e.fbxMesh != null ? e.fbxMesh.name : e.originalMesh.name;
-                fbxGroups[fbxPath].Add((meshName, uv2List.ToArray(), e.wasWelded, e.wasEdgeWelded));
+                fbxGroups[fbxPath].Add((meshName, uv2List.ToArray(), e.wasWelded, e.wasEdgeWelded, positions, uv0List.ToArray()));
             }
 
             if (fbxGroups.Count == 0)
@@ -1277,10 +1282,11 @@ namespace LightmapUvTool
                         AssetDatabase.CreateAsset(data, sidecarPath);
                     }
 
-                    // Write UV2 entries (with weld flag)
+                    // Write UV2 entries (with weld flag + vertex fingerprint for remapping)
                     foreach (var entry in kv.Value)
                     {
-                        data.Set(entry.name, entry.uv2, entry.welded, entry.edgeWelded);
+                        data.Set(entry.name, entry.uv2, entry.welded, entry.edgeWelded,
+                                 entry.positions, entry.uv0);
                         totalMeshes++;
                     }
 

@@ -17,6 +17,10 @@ namespace LightmapUvTool
         public bool welded;
         /// <summary>If true, postprocessor must run UvEdgeWeld after meshopt dedup.</summary>
         public bool edgeWelded;
+        /// <summary>Vertex positions at the time UV2 was computed (for order-independent remapping).</summary>
+        public Vector3[] vertPositions;
+        /// <summary>Vertex UV0 at the time UV2 was computed (for disambiguation at shared positions).</summary>
+        public Vector2[] vertUv0;
     }
 
     [CreateAssetMenu(menuName = "LightmapUvTool/UV2 Data (internal)", fileName = "uv2data")]
@@ -33,7 +37,8 @@ namespace LightmapUvTool
         }
 
         /// <summary>Set UV2 for a mesh name (add or overwrite).</summary>
-        public void Set(string meshName, Vector2[] uv2, bool welded = false, bool edgeWelded = false)
+        public void Set(string meshName, Vector2[] uv2, bool welded = false, bool edgeWelded = false,
+                        Vector3[] vertPositions = null, Vector2[] vertUv0 = null)
         {
             var e = Find(meshName);
             if (e != null)
@@ -41,10 +46,15 @@ namespace LightmapUvTool
                 e.uv2 = uv2;
                 e.welded = welded;
                 e.edgeWelded = edgeWelded;
+                e.vertPositions = vertPositions;
+                e.vertUv0 = vertUv0;
             }
             else
             {
-                entries.Add(new MeshUv2Entry { meshName = meshName, uv2 = uv2, welded = welded, edgeWelded = edgeWelded });
+                entries.Add(new MeshUv2Entry {
+                    meshName = meshName, uv2 = uv2, welded = welded, edgeWelded = edgeWelded,
+                    vertPositions = vertPositions, vertUv0 = vertUv0
+                });
             }
         }
 
