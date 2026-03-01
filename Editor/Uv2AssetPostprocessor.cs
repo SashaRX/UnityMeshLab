@@ -49,10 +49,12 @@ namespace LightmapUvTool
             var entry = data.Find(mesh.name);
             if (entry == null || entry.uv2 == null) return false;
 
-            // Phase 1: meshopt dedup (WeldInPlace) if flagged
+            // Phase 1: meshopt full pipeline (dedup + vertex cache + overdraw + fetch reorder)
+            // Must match the tool's MeshOptimizer.Optimize exactly, not just WeldInPlace,
+            // because meshopt_optimizeVertexFetch reorders vertices and UV2 indices depend on that order.
             if (entry.welded)
             {
-                Uv0Analyzer.WeldInPlace(mesh);
+                MeshOptimizer.Optimize(mesh);
             }
 
             // Phase 2: UV edge weld if flagged
