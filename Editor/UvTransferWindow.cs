@@ -53,6 +53,7 @@ namespace LightmapUvTool
         float canvasZoom = 1f;
         Vector2 canvasPan;      // pixel offset from centered position
         bool canvasPanning;
+        RenderTexture canvasRT;
         int  pvChannel = 2;
         int  pvLod     = 0;
         bool showFill = true, showWire = true, showBorder, showStatus;
@@ -131,6 +132,7 @@ namespace LightmapUvTool
         void OnDisable()
         {
             if (CheckerTexturePreview.IsActive) CheckerTexturePreview.Restore();
+            if (canvasRT) { canvasRT.Release(); DestroyImmediate(canvasRT); canvasRT = null; }
             if (glMat) DestroyImmediate(glMat);
             glMat = null;
         }
@@ -678,24 +680,38 @@ namespace LightmapUvTool
                 // Dark background for entire canvas area
                 EditorGUI.DrawRect(canvasRect, new Color(.08f,.08f,.08f));
 
-                // Clip ALL GL rendering to the canvas rect (prevents overflow onto sidebar)
-                GUI.BeginClip(canvasRect);
+                // ── Render UV into RenderTexture (GL.* ignores GUI.BeginClip) ──
+                int rtW = Mathf.Max(1, (int)canvasRect.width);
+                int rtH = Mathf.Max(1, (int)canvasRect.height);
+                if (canvasRT == null || canvasRT.width != rtW || canvasRT.height != rtH)
+                {
+                    if (canvasRT) { canvasRT.Release(); DestroyImmediate(canvasRT); }
+                    canvasRT = new RenderTexture(rtW, rtH, 0, RenderTextureFormat.ARGB32);
+                    canvasRT.hideFlags = HideFlags.HideAndDontSave;
+                }
 
-                // UV square background
-                EditorGUI.DrawRect(new Rect(cx, cy, sz, sz), new Color(.12f,.12f,.12f));
-
-                // GL uses window-space pixels (LoadPixelMatrix ignores BeginClip offset).
-                // Convert canvas-local (cx,cy) to window coords for GL drawing.
-                float glX = canvasRect.x + cx;
-                float glY = canvasRect.y + cy;
+                var prevRT = RenderTexture.active;
+                RenderTexture.active = canvasRT;
+                GL.Clear(true, true, new Color(.08f,.08f,.08f, 0f));
 
                 bool push = false;
                 try
                 {
                     glMat.SetPass(0);
                     GL.PushMatrix(); push = true;
-                    GL.LoadPixelMatrix();
-                    GlGrid(glX, glY, sz);
+                    // Pixel matrix matching the RT dimensions; cx/cy are canvas-local
+                    GL.LoadPixelMatrix(0, rtW, rtH, 0);
+
+                    // UV square background
+                    GL.Begin(GL.QUADS);
+                    GL.Color(new Color(.12f,.12f,.12f));
+                    GL.Vertex3(cx, cy, 0);
+                    GL.Vertex3(cx + sz, cy, 0);
+                    GL.Vertex3(cx + sz, cy + sz, 0);
+                    GL.Vertex3(cx, cy + sz, 0);
+                    GL.End();
+
+                    GlGrid(cx, cy, sz);
 
                     foreach (var item in draws)
                     {
@@ -713,17 +729,20 @@ namespace LightmapUvTool
 
                         if (showFill)
                         {
-                            if (stats != null) GlFillSt(glX,glY,sz, uvs,tri,fN,uN, stats);
-                            else               GlFillSh(glX,glY,sz, uvs,tri,fN,uN, idx);
+                            if (stats != null) GlFillSt(cx,cy,sz, uvs,tri,fN,uN, stats);
+                            else               GlFillSh(cx,cy,sz, uvs,tri,fN,uN, idx);
                         }
-                        if (bdr != null && bdr.Count > 0) GlBdr(glX,glY,sz, uvs,tri,fN,uN, bdr);
-                        if (showWire) GlWr(glX,glY,sz, uvs,tri,fN,uN);
+                        if (bdr != null && bdr.Count > 0) GlBdr(cx,cy,sz, uvs,tri,fN,uN, bdr);
+                        if (showWire) GlWr(cx,cy,sz, uvs,tri,fN,uN);
                     }
                 }
                 catch (Exception ex) { Debug.LogWarning("[UV] GL: " + ex.Message); }
                 finally { if (push) GL.PopMatrix(); }
 
-                GUI.EndClip();
+                RenderTexture.active = prevRT;
+
+                // Draw the RT as a regular GUI texture — properly clipped to canvasRect
+                GUI.DrawTexture(canvasRect, canvasRT);
             }
         }
 
