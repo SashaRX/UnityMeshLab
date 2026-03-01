@@ -1,8 +1,9 @@
-// GroupedShellTransfer.cs — UV2 transfer via normal-filtered 3D nearest vertex
-// For each target LOD vertex: filter source vertices by normal similarity
-// (dot > 0.5), then find nearest by 3D position among filtered set, copy UV2.
-// Normal filter separates front/back of thin geometry (CementWall).
-// 3D nearest (not UV0) avoids ambiguity from overlapping UV0 shells (tiling).
+// GroupedShellTransfer.cs — UV2 transfer via 3-pass matching
+// 1. Normal filter (dot > 0.5) — separates front/back of thin walls
+// 2. 3D nearest among normal-compatible — spatial correspondence
+// 3. UV0 disambiguation — among source verts at same 3D position (seam
+//    duplicates), pick the one whose UV0 matches target vertex's UV0.
+//    Critical: one 3D vertex has multiple UV vertices on different shells.
 
 using System.Collections.Generic;
 using UnityEngine;
@@ -120,16 +121,19 @@ namespace LightmapUvTool
         }
 
         // ═══════════════════════════════════════════════════════════
-        //  Step 2: Transfer UV2 via normal-filtered 3D nearest vertex
+        //  Step 2: Transfer UV2 — 3-pass matching
         //  For each target vertex:
         //  1. Filter source vertices by normal similarity (dot > 0.5)
-        //  2. Among filtered set, find nearest by 3D position
-        //  3. Copy UV2
-        //  Normal filter separates front/back of thin walls.
-        //  3D nearest (not UV0) avoids ambiguity from overlapping UV0.
+        //     → separates front/back of thin walls
+        //  2. Find nearest by 3D position among filtered
+        //     → spatial correspondence
+        //  3. Among all source verts within epsilon of best 3D dist,
+        //     pick the one with closest UV0
+        //     → disambiguates seam vertices (same pos, different UV shells)
         // ═══════════════════════════════════════════════════════════
 
         const float NORMAL_DOT_THRESHOLD = 0.5f;
+        const float SEAM_EPSILON_FACTOR = 1.5f; // multiplier on best 3D dist
 
         public static TransferResult Transfer(
             Mesh targetMesh, SourceShellInfo[] sourceInfos)
@@ -138,6 +142,9 @@ namespace LightmapUvTool
 
             var tVerts = targetMesh.vertices;
             var tNormals = targetMesh.normals;
+            var tUv0List = new List<Vector2>();
+            targetMesh.GetUVs(0, tUv0List);
+            var tUv0 = tUv0List.ToArray();
             int vertCount = targetMesh.vertexCount;
             bool tHasNormals = tNormals != null && tNormals.Length == vertCount;
 
@@ -149,6 +156,7 @@ namespace LightmapUvTool
             foreach (var si in sourceInfos) totalSrcVerts += si.worldPositions.Length;
 
             var allSrcPos = new Vector3[totalSrcVerts];
+            var allSrcUv0 = new Vector2[totalSrcVerts];
             var allSrcUv2 = new Vector2[totalSrcVerts];
             var allSrcNrm = new Vector3[totalSrcVerts];
             var allSrcShell = new int[totalSrcVerts];
@@ -159,6 +167,7 @@ namespace LightmapUvTool
                 for (int i = 0; i < si.worldPositions.Length; i++)
                 {
                     allSrcPos[offset] = si.worldPositions[i];
+                    allSrcUv0[offset] = si.shellUv0[i];
                     allSrcUv2[offset] = si.shellUv2[i];
                     allSrcNrm[offset] = si.normals[i];
                     allSrcShell[offset] = s;
@@ -166,38 +175,69 @@ namespace LightmapUvTool
                 }
             }
 
-            // For each target vertex: normal-filtered 3D nearest
+            // For each target vertex: normal → 3D → UV0 disambiguation
             int[] matchedShell = new int[vertCount];
             bool[] vertexDone = new bool[vertCount];
-            int normalFiltered = 0;
+            int normalFallback = 0;
+            int uv0Disambiguated = 0;
 
             for (int vi = 0; vi < vertCount; vi++)
             {
                 Vector3 tPos = tVerts[vi];
                 Vector3 tN = tHasNormals ? tNormals[vi] : Vector3.up;
+                Vector2 tUv = tUv0[vi];
 
-                float bestDist = float.MaxValue;
+                float bestDist3D = float.MaxValue;
                 int bestIdx = -1;
+                bool usedNormalFilter = true;
 
-                // Pass 1: 3D nearest among normal-compatible source verts
+                // Pass 1: find best 3D distance among normal-compatible
                 for (int si = 0; si < totalSrcVerts; si++)
                 {
                     float dot = Vector3.Dot(tN, allSrcNrm[si]);
                     if (dot < NORMAL_DOT_THRESHOLD) continue;
 
                     float d = (tPos - allSrcPos[si]).sqrMagnitude;
-                    if (d < bestDist) { bestDist = d; bestIdx = si; }
+                    if (d < bestDist3D) { bestDist3D = d; bestIdx = si; }
                 }
 
-                // Pass 2 fallback: if no normal-compatible found, use any
+                // Fallback: no normal-compatible found
                 if (bestIdx < 0)
                 {
-                    normalFiltered++;
+                    normalFallback++;
+                    usedNormalFilter = false;
                     for (int si = 0; si < totalSrcVerts; si++)
                     {
                         float d = (tPos - allSrcPos[si]).sqrMagnitude;
-                        if (d < bestDist) { bestDist = d; bestIdx = si; }
+                        if (d < bestDist3D) { bestDist3D = d; bestIdx = si; }
                     }
+                }
+
+                // Pass 2: among all within epsilon of best 3D, pick closest UV0
+                if (bestIdx >= 0 && bestDist3D > 0f)
+                {
+                    float threshold = bestDist3D * SEAM_EPSILON_FACTOR + 1e-10f;
+                    float bestUv0Dist = (tUv - allSrcUv0[bestIdx]).sqrMagnitude;
+                    bool found = false;
+
+                    for (int si = 0; si < totalSrcVerts; si++)
+                    {
+                        if (!usedNormalFilter || Vector3.Dot(tN, allSrcNrm[si]) >= NORMAL_DOT_THRESHOLD)
+                        {
+                            float d3 = (tPos - allSrcPos[si]).sqrMagnitude;
+                            if (d3 <= threshold)
+                            {
+                                float dUv = (tUv - allSrcUv0[si]).sqrMagnitude;
+                                if (dUv < bestUv0Dist)
+                                {
+                                    bestUv0Dist = dUv;
+                                    bestIdx = si;
+                                    found = true;
+                                }
+                            }
+                        }
+                    }
+                    if (found) uv0Disambiguated++;
                 }
 
                 if (bestIdx >= 0)
@@ -218,7 +258,8 @@ namespace LightmapUvTool
             Debug.Log($"[GroupedTransfer] '{targetMesh.name}': " +
                       $"{result.shellsMatched} source shells used, " +
                       $"{result.verticesTransferred}/{result.verticesTotal} verts" +
-                      (normalFiltered > 0 ? $", {normalFiltered} normal-fallback" : ""));
+                      (uv0Disambiguated > 0 ? $", {uv0Disambiguated} UV0-disambiguated" : "") +
+                      (normalFallback > 0 ? $", {normalFallback} normal-fallback" : ""));
 
             // UV2 bounds check
             int outOfBounds = 0;

@@ -9,6 +9,20 @@
   re-selecting a previously processed LODGroup.
 - **[W] badge** on welded meshes in the mesh list.
 
+## [0.8.0] - 2026-03-01
+
+### Fixed — 3-pass transfer: normal → 3D → UV0 disambiguation
+- **Core insight**: one 3D vertex has multiple UV vertices on different shells
+  (seam duplicates). Pure 3D nearest picks arbitrary seam duplicate → wrong UV2.
+- **New 3-pass algorithm**:
+  1. Normal filter (dot > 0.5) — separates front/back of thin walls
+  2. 3D nearest among normal-compatible — spatial correspondence
+  3. UV0 disambiguation — among source verts within epsilon of best 3D
+     distance, pick the one whose UV0 is closest to target vertex's UV0.
+     This correctly resolves seam vertices that share position+normal
+     but belong to different UV shells with different UV2 coordinates.
+- Logs UV0-disambiguated count for diagnostics.
+
 ## [0.7.9] - 2026-03-01
 
 ### Fixed — Normal-filtered 3D transfer (overlapping UV0 disambiguation)
