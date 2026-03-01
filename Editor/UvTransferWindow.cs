@@ -885,9 +885,7 @@ namespace LightmapUvTool
             }
 
             // ── Phase 2: source-guided weld for target LODs ──
-            // TEMPORARILY DISABLED — testing meshopt only
             int guidedWelded = 0;
-            /*
             var srcE = ForLod(sourceLodIndex);
             for (int li = 0; li < LodN; li++)
             {
@@ -910,7 +908,6 @@ namespace LightmapUvTool
                     }
                 }
             }
-            */
 
             uv0Welded = meshoptOptimized > 0 || guidedWelded > 0;
             Debug.Log($"[UV0Fix] Optimized: {meshoptOptimized} meshopt, " +
