@@ -72,7 +72,8 @@ namespace LightmapUvTool
             public Mesh originalMesh;     // working copy — may be replaced by weld
             public Mesh fbxMesh;          // always the FBX asset mesh (for path lookup)
             public bool include = true;
-            public bool wasWelded;        // true if originalMesh was replaced by weld
+            public bool wasWelded;        // true if meshopt dedup was applied
+            public bool wasEdgeWelded;    // true if UvEdgeWeld was applied
             public Mesh repackedMesh;
             public Mesh transferredMesh;
             public TargetTransferState transferState;
@@ -893,7 +894,7 @@ namespace LightmapUvTool
                 if (welded != null && welded != e.originalMesh)
                 {
                     e.originalMesh = welded;
-                    e.wasWelded = true;
+                    e.wasEdgeWelded = true;
                     edgeWelded++;
                 }
             }
@@ -1104,7 +1105,7 @@ namespace LightmapUvTool
             if (lodGroup == null) return;
 
             // Group mesh entries by source FBX path
-            var fbxGroups = new Dictionary<string, List<(string name, Vector2[] uv2, bool welded)>>();
+            var fbxGroups = new Dictionary<string, List<(string name, Vector2[] uv2, bool welded, bool edgeWelded)>>();
 
             foreach (var e in meshEntries)
             {
@@ -1123,11 +1124,11 @@ namespace LightmapUvTool
                 if (uv2List.Count == 0) continue;
 
                 if (!fbxGroups.ContainsKey(fbxPath))
-                    fbxGroups[fbxPath] = new List<(string, Vector2[], bool)>();
+                    fbxGroups[fbxPath] = new List<(string, Vector2[], bool, bool)>();
 
                 // Use FBX mesh name (postprocessor matches by this name)
                 string meshName = e.fbxMesh != null ? e.fbxMesh.name : e.originalMesh.name;
-                fbxGroups[fbxPath].Add((meshName, uv2List.ToArray(), e.wasWelded));
+                fbxGroups[fbxPath].Add((meshName, uv2List.ToArray(), e.wasWelded, e.wasEdgeWelded));
             }
 
             if (fbxGroups.Count == 0)
@@ -1155,7 +1156,7 @@ namespace LightmapUvTool
                     // Write UV2 entries (with weld flag)
                     foreach (var entry in kv.Value)
                     {
-                        data.Set(entry.name, entry.uv2, entry.welded);
+                        data.Set(entry.name, entry.uv2, entry.welded, entry.edgeWelded);
                         totalMeshes++;
                     }
 

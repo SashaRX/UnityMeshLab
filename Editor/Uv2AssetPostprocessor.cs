@@ -4,6 +4,7 @@
 // This mirrors Unity's built-in "Generate Lightmap UVs" approach: the FBX stays
 // untouched on disk; UV2 lives only in the imported mesh inside Library/.
 
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEditor;
 
@@ -48,10 +49,37 @@ namespace LightmapUvTool
             var entry = data.Find(mesh.name);
             if (entry == null || entry.uv2 == null) return false;
 
-            // Weld false seams first if the sidecar says so
+            // Phase 1: meshopt dedup (WeldInPlace) if flagged
             if (entry.welded)
             {
                 Uv0Analyzer.WeldInPlace(mesh);
+            }
+
+            // Phase 2: UV edge weld if flagged
+            if (entry.edgeWelded)
+            {
+                var welded = Uv0Analyzer.UvEdgeWeld(mesh);
+                if (welded != null && welded != mesh)
+                {
+                    // Copy welded data back into the mesh object
+                    mesh.Clear();
+                    mesh.vertices = welded.vertices;
+                    mesh.normals = welded.normals;
+                    mesh.tangents = welded.tangents;
+                    mesh.colors = welded.colors;
+                    for (int ch = 0; ch < 8; ch++)
+                    {
+                        var uvs = new List<Vector2>();
+                        welded.GetUVs(ch, uvs);
+                        if (uvs.Count > 0) mesh.SetUVs(ch, uvs);
+                    }
+                    mesh.boneWeights = welded.boneWeights;
+                    mesh.bindposes = welded.bindposes;
+                    mesh.subMeshCount = welded.subMeshCount;
+                    for (int s = 0; s < welded.subMeshCount; s++)
+                        mesh.SetTriangles(welded.GetTriangles(s), s);
+                    mesh.RecalculateBounds();
+                }
             }
 
             if (entry.uv2.Length == mesh.vertexCount)
