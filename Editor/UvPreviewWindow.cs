@@ -18,7 +18,7 @@ namespace LightmapUvTool
         bool showFill = true;
         bool showWire = true;
         bool showDegen;
-        float fillAlpha = 0.25f;
+        float fillAlpha = 0.55f;
         float degThreshold = 0.25f;
 
         // Shell cache
@@ -46,16 +46,16 @@ namespace LightmapUvTool
 
         static readonly Color[] palette =
         {
-            new Color(0.20f, 0.60f, 1.00f),
-            new Color(1.00f, 0.40f, 0.20f),
-            new Color(0.30f, 0.85f, 0.40f),
-            new Color(0.90f, 0.25f, 0.60f),
-            new Color(0.95f, 0.85f, 0.20f),
-            new Color(0.55f, 0.30f, 0.90f),
-            new Color(0.00f, 0.80f, 0.80f),
-            new Color(0.85f, 0.55f, 0.20f),
-            new Color(0.60f, 0.90f, 0.20f),
-            new Color(0.90f, 0.20f, 0.20f),
+            new Color(0.10f, 0.50f, 1.00f),
+            new Color(1.00f, 0.25f, 0.10f),
+            new Color(0.15f, 0.90f, 0.30f),
+            new Color(0.95f, 0.15f, 0.55f),
+            new Color(1.00f, 0.90f, 0.10f),
+            new Color(0.50f, 0.15f, 0.95f),
+            new Color(0.00f, 0.85f, 0.85f),
+            new Color(0.95f, 0.50f, 0.05f),
+            new Color(0.50f, 0.95f, 0.10f),
+            new Color(0.95f, 0.10f, 0.10f),
         };
 
         [MenuItem("Tools/Xatlas/UV Preview")]
@@ -133,7 +133,7 @@ namespace LightmapUvTool
             showWire  = GUILayout.Toggle(showWire,  "Wire",  EditorStyles.toolbarButton, GUILayout.Width(45));
             showDegen = GUILayout.Toggle(showDegen, "Degen", EditorStyles.toolbarButton, GUILayout.Width(50));
             if (showFill)
-                fillAlpha = EditorGUILayout.Slider(fillAlpha, 0.05f, 0.6f);
+                fillAlpha = EditorGUILayout.Slider(fillAlpha, 0.05f, 1.0f);
             if (showDegen)
                 degThreshold = EditorGUILayout.Slider(degThreshold, 0.05f, 0.5f);
             EditorGUILayout.EndHorizontal();
@@ -209,26 +209,11 @@ namespace LightmapUvTool
                     glMat.SetPass(0);
                     GL.PushMatrix();
                     pushed = true;
+                    GL.sRGBWrite = QualitySettings.activeColorSpace == ColorSpace.Linear;
                     GL.LoadPixelMatrix();
 
-                    // ── Grid (GL.LINES) ──
-                    GL.Begin(GL.LINES);
-                    GL.Color(new Color(0.25f, 0.25f, 0.25f));
-                    for (int g = 0; g <= 4; g++)
-                    {
-                        float p = g * 0.25f * size;
-                        GL.Vertex3(ox + p, oy, 0); GL.Vertex3(ox + p, oy + size, 0);
-                        GL.Vertex3(ox, oy + p, 0); GL.Vertex3(ox + size, oy + p, 0);
-                    }
-                    // Border
-                    GL.Color(new Color(0.5f, 0.5f, 0.5f));
-                    GL.Vertex3(ox, oy, 0);        GL.Vertex3(ox + size, oy, 0);
-                    GL.Vertex3(ox + size, oy, 0);  GL.Vertex3(ox + size, oy + size, 0);
-                    GL.Vertex3(ox + size, oy + size, 0); GL.Vertex3(ox, oy + size, 0);
-                    GL.Vertex3(ox, oy + size, 0);  GL.Vertex3(ox, oy, 0);
-                    GL.End();
-
                     // ── Shell fills (GL.TRIANGLES, batched) ──
+                    // Drawn first so fills blend over uniform dark background only
                     if (showFill && cachedShells != null)
                     {
                         int total = 0;
@@ -254,6 +239,23 @@ namespace LightmapUvTool
                         }
                         GL.End();
                     }
+
+                    // ── Grid (GL.LINES) ──
+                    GL.Begin(GL.LINES);
+                    GL.Color(new Color(0.25f, 0.25f, 0.25f));
+                    for (int g = 0; g <= 4; g++)
+                    {
+                        float p = g * 0.25f * size;
+                        GL.Vertex3(ox + p, oy, 0); GL.Vertex3(ox + p, oy + size, 0);
+                        GL.Vertex3(ox, oy + p, 0); GL.Vertex3(ox + size, oy + p, 0);
+                    }
+                    // Border
+                    GL.Color(new Color(0.5f, 0.5f, 0.5f));
+                    GL.Vertex3(ox, oy, 0);        GL.Vertex3(ox + size, oy, 0);
+                    GL.Vertex3(ox + size, oy, 0);  GL.Vertex3(ox + size, oy + size, 0);
+                    GL.Vertex3(ox + size, oy + size, 0); GL.Vertex3(ox, oy + size, 0);
+                    GL.Vertex3(ox, oy + size, 0);  GL.Vertex3(ox, oy, 0);
+                    GL.End();
 
                     // ── Degenerate (red triangles, batched) ──
                     if (showDegen && cachedDegenFaces != null && cachedDegenFaces.Count > 0)
