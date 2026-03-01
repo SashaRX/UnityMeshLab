@@ -57,6 +57,7 @@ namespace LightmapUvTool
         int  pvChannel = 2;
         int  pvLod     = 0;
         bool showFill = true, showWire = true, showBorder, showStatus;
+        bool showShellMatch, showValidation;
         float fillAlpha = 0.25f;
 
         // Sidebar
@@ -82,6 +83,7 @@ namespace LightmapUvTool
             public TargetTransferState transferState;
             public TransferQualityEvaluator.TransferReport? report;
             public GroupedShellTransfer.TransferResult shellTransferResult;
+            public TransferValidator.ValidationReport validationReport;
         }
 
         // ════════════════════════════════════════════════════════════
@@ -548,10 +550,29 @@ namespace LightmapUvTool
                     if (e.shellTransferResult != null)
                     {
                         var r = e.shellTransferResult;
-                        EditorGUILayout.LabelField("  " + e.renderer.name + " (3D nearest-vertex)", EditorStyles.miniBoldLabel);
+                        EditorGUILayout.LabelField("  " + e.renderer.name + " (shell-first)", EditorStyles.miniBoldLabel);
                         Bar("Verts OK", r.verticesTransferred, r.verticesTotal, cAccept);
                         Bar("Verts Miss", r.verticesTotal - r.verticesTransferred, r.verticesTotal, cReject);
-                        EditorGUILayout.LabelField($"  Source shells used: {r.shellsMatched}", EditorStyles.miniLabel);
+                        EditorGUILayout.LabelField($"  Shell match: {r.shellsMatched} src shells", EditorStyles.miniLabel);
+
+                        // Validation report
+                        var vr = e.validationReport;
+                        if (vr != null)
+                        {
+                            EditorGUILayout.Space(2);
+                            EditorGUILayout.LabelField("  Validation:", EditorStyles.miniLabel);
+                            Bar("Clean", vr.cleanCount, vr.totalTriangles, cValClean);
+                            if (vr.invertedCount > 0)
+                                Bar("Inverted", vr.invertedCount, vr.totalTriangles, cValInverted);
+                            if (vr.stretchedCount > 0)
+                                Bar("Stretched", vr.stretchedCount, vr.totalTriangles, cValStretch);
+                            if (vr.zeroAreaCount > 0)
+                                Bar("Zero Area", vr.zeroAreaCount, vr.totalTriangles, cValZero);
+                            if (vr.oobCount > 0)
+                                Bar("Out of Bounds", vr.oobCount, vr.totalTriangles, cValOOB);
+                            if (vr.overlapShellPairs > 0)
+                                Bar("Overlap", vr.overlapTriangleCount, vr.totalTriangles, cValOverlap);
+                        }
                         EditorGUILayout.Space(4);
                         continue;
                     }
@@ -624,6 +645,8 @@ namespace LightmapUvTool
             showWire   = GUILayout.Toggle(showWire,   "Wr", EditorStyles.toolbarButton, GUILayout.Width(24));
             showBorder = GUILayout.Toggle(showBorder, "Bd", EditorStyles.toolbarButton, GUILayout.Width(22));
             showStatus = GUILayout.Toggle(showStatus, "St", EditorStyles.toolbarButton, GUILayout.Width(22));
+            showShellMatch = GUILayout.Toggle(showShellMatch, "Sh", EditorStyles.toolbarButton, GUILayout.Width(22));
+            showValidation = GUILayout.Toggle(showValidation, "Vl", EditorStyles.toolbarButton, GUILayout.Width(22));
             GUILayout.Space(4);
             canvasZoom = EditorGUILayout.Slider(canvasZoom, .1f, 20f, GUILayout.Width(100));
             if (GUILayout.Button("Fit", EditorStyles.toolbarButton, GUILayout.Width(28)))
@@ -727,7 +750,11 @@ namespace LightmapUvTool
                         TriangleStatus[] stats = showStatus && entry.transferState != null ? entry.transferState.triangleStatus : null;
                         HashSet<int> bdr = showBorder && entry.transferState != null ? entry.transferState.borderPrimitiveIds : null;
 
-                        if (showFill)
+                        if (showShellMatch && entry.shellTransferResult?.vertexToSourceShell != null)
+                            GlFillShellMatch(cx,cy,sz, uvs,tri,fN,uN, entry.shellTransferResult.vertexToSourceShell);
+                        else if (showValidation && entry.validationReport?.perTriangle != null)
+                            GlFillValidation(cx,cy,sz, uvs,tri,fN,uN, entry.validationReport.perTriangle);
+                        else if (showFill)
                         {
                             if (stats != null) GlFillSt(cx,cy,sz, uvs,tri,fN,uN, stats);
                             else               GlFillSh(cx,cy,sz, uvs,tri,fN,uN, idx);
@@ -940,6 +967,74 @@ namespace LightmapUvTool
             GL.End();
         }
 
+        // ── Shell Match visualization: color by matched source shell ──
+        void GlFillShellMatch(float ox, float oy, float sz, Vector2[] uv, int[] t,
+            int fN, int uN, int[] vertShellMap)
+        {
+            if (vertShellMap == null) return;
+            int tot = 0, b = 0;
+            Color cc = Color.clear;
+            GL.Begin(GL.TRIANGLES);
+            for (int f = 0; f < fN && tot < MAX_TRI; f++)
+            {
+                int a0 = t[f * 3], a1 = t[f * 3 + 1], a2 = t[f * 3 + 2];
+                if (!TOk(uv, uN, a0, a1, a2)) continue;
+                int sh = (a0 < vertShellMap.Length) ? vertShellMap[a0] : -1;
+                Color nc;
+                if (sh < 0)
+                    nc = new Color(0.3f, 0.3f, 0.3f, fillAlpha);
+                else
+                    nc = new Color(pal[sh % pal.Length].r, pal[sh % pal.Length].g,
+                                   pal[sh % pal.Length].b, fillAlpha * 1.5f);
+                if (nc.r != cc.r || nc.g != cc.g || nc.b != cc.b)
+                {
+                    GL.End(); GL.Begin(GL.TRIANGLES); cc = nc; GL.Color(cc); b = 0;
+                }
+                Vx(ox, oy, sz, uv[a0]); Vx(ox, oy, sz, uv[a1]); Vx(ox, oy, sz, uv[a2]);
+                tot++; b++;
+                if (b >= BATCH) { GL.End(); GL.Begin(GL.TRIANGLES); GL.Color(cc); b = 0; }
+            }
+            GL.End();
+        }
+
+        // ── Validation visualization: color by issue type ──
+        static readonly Color cValClean    = new Color(.2f, .85f, .3f, .4f);
+        static readonly Color cValInverted = new Color(.95f, .15f, .15f, .55f);
+        static readonly Color cValStretch  = new Color(.95f, .85f, .15f, .5f);
+        static readonly Color cValZero     = new Color(.7f, .2f, .9f, .5f);
+        static readonly Color cValOOB      = new Color(1f, .5f, .1f, .5f);
+        static readonly Color cValOverlap  = new Color(1f, .1f, .9f, .55f);
+
+        void GlFillValidation(float ox, float oy, float sz, Vector2[] uv, int[] t,
+            int fN, int uN, TransferValidator.TriIssue[] perTri)
+        {
+            if (perTri == null) return;
+            int tot = 0, b = 0;
+            Color cc = Color.clear;
+            GL.Begin(GL.TRIANGLES);
+            for (int f = 0; f < fN && tot < MAX_TRI; f++)
+            {
+                int a0 = t[f * 3], a1 = t[f * 3 + 1], a2 = t[f * 3 + 2];
+                if (!TOk(uv, uN, a0, a1, a2)) continue;
+                var fl = (f < perTri.Length) ? perTri[f] : TransferValidator.TriIssue.None;
+                Color nc;
+                if ((fl & TransferValidator.TriIssue.Inverted) != 0)      nc = cValInverted;
+                else if ((fl & TransferValidator.TriIssue.ZeroArea) != 0) nc = cValZero;
+                else if ((fl & TransferValidator.TriIssue.Stretched) != 0) nc = cValStretch;
+                else if ((fl & TransferValidator.TriIssue.Overlap) != 0) nc = cValOverlap;
+                else if ((fl & TransferValidator.TriIssue.OutOfBounds) != 0) nc = cValOOB;
+                else nc = cValClean;
+                if (nc.r != cc.r || nc.g != cc.g || nc.b != cc.b)
+                {
+                    GL.End(); GL.Begin(GL.TRIANGLES); cc = nc; GL.Color(cc); b = 0;
+                }
+                Vx(ox, oy, sz, uv[a0]); Vx(ox, oy, sz, uv[a1]); Vx(ox, oy, sz, uv[a2]);
+                tot++; b++;
+                if (b >= BATCH) { GL.End(); GL.Begin(GL.TRIANGLES); GL.Color(cc); b = 0; }
+            }
+            GL.End();
+        }
+
         static Color SC(TriangleStatus s)
         {
             switch(s)
@@ -963,7 +1058,9 @@ namespace LightmapUvTool
             var ee = ForLod(pvLod); int tV=0,tT=0;
             foreach (var e in ee) { Mesh m=DMesh(e); if (m==null) continue; tV+=m.vertexCount; tT+=m.triangles.Length/3; }
             EditorGUILayout.LabelField("LOD" + pvLod + " | " + ee.Count + " mesh | V:" + tV + " T:" + tT + " | " + (pvChannel==0?"UV0":"UV2"), EditorStyles.miniLabel);
-            if (showStatus) { GUILayout.FlexibleSpace(); Sw("Ok",cAccept);Sw("Am",cAmbig);Sw("Bd",cBorder);Sw("Mi",cMis);Sw("Rj",cReject); }
+            if (showValidation) { GUILayout.FlexibleSpace(); Sw("✓",cValClean);Sw("Inv",cValInverted);Sw("Str",cValStretch);Sw("0A",cValZero);Sw("OB",cValOOB);Sw("Ov",cValOverlap); }
+            else if (showShellMatch) { GUILayout.FlexibleSpace(); EditorGUILayout.LabelField("Shell Match: color = source shell", EditorStyles.miniLabel); }
+            else if (showStatus) { GUILayout.FlexibleSpace(); Sw("Ok",cAccept);Sw("Am",cAmbig);Sw("Bd",cBorder);Sw("Mi",cMis);Sw("Rj",cReject); }
             EditorGUILayout.EndHorizontal();
         }
 
@@ -1148,9 +1245,14 @@ namespace LightmapUvTool
                     te.report = null;
                     te.shellTransferResult = tr;
 
+                    // Validate transfer
+                    te.validationReport = TransferValidator.Validate(tM, tr.uv2, tr);
+                    TransferValidator.DetectUv2Overlaps(tM, tr.uv2, te.validationReport);
+
                     Debug.Log($"[Transfer] {te.renderer.name}: " +
                               $"{tr.shellsMatched} source shells used, " +
-                              $"{tr.verticesTransferred}/{tr.verticesTotal} verts");
+                              $"{tr.verticesTransferred}/{tr.verticesTotal} verts | " +
+                              $"Validation: {te.validationReport.Summary}");
                 }
                 hasTransfer = tgtE.Any(e => e.transferredMesh!=null);
             }

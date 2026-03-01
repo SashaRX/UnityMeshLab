@@ -42,6 +42,16 @@ namespace LightmapUvTool
             public int shellsMirrored;
             public int verticesTransferred;
             public int verticesTotal;
+
+            // ─── Diagnostics ───
+            /// Per-vertex: which source shell was matched (-1 = unmatched)
+            public int[] vertexToSourceShell;
+            /// Per target shell index → matched source shell index (-1 = unmatched)
+            public int[] targetShellToSourceShell;
+            /// Per target shell → 3D centroid
+            public Vector3[] targetShellCentroids;
+            /// Per target shell → match distance (sqr)
+            public float[] targetShellMatchDistSqr;
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -137,6 +147,8 @@ namespace LightmapUvTool
 
             result.uv2 = new Vector2[vertCount];
             result.verticesTotal = vertCount;
+            result.vertexToSourceShell = new int[vertCount];
+            for (int i = 0; i < vertCount; i++) result.vertexToSourceShell[i] = -1;
 
             // ── Pre-compute source triangle data ──
             int srcTriCount = srcTris.Length / 3;
@@ -175,6 +187,16 @@ namespace LightmapUvTool
             int transferred = 0;
             int shellsMatched = 0;
 
+            // Diagnostics: per target shell arrays
+            result.targetShellToSourceShell = new int[tgtShells.Count];
+            result.targetShellCentroids = new Vector3[tgtShells.Count];
+            result.targetShellMatchDistSqr = new float[tgtShells.Count];
+            for (int i = 0; i < tgtShells.Count; i++)
+            {
+                result.targetShellToSourceShell[i] = -1;
+                result.targetShellMatchDistSqr[i] = float.MaxValue;
+            }
+
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
             {
                 var tShell = tgtShells[tsi];
@@ -196,8 +218,14 @@ namespace LightmapUvTool
                     if (d < bestDist) { bestDist = d; bestSrc = si; }
                 }
 
+                // Record diagnostics
+                result.targetShellCentroids[tsi] = tCentroid;
+
                 if (bestSrc < 0) continue;
                 shellsMatched++;
+
+                result.targetShellToSourceShell[tsi] = bestSrc;
+                result.targetShellMatchDistSqr[tsi] = bestDist;
 
                 // Get matched source shell's face list
                 var srcFaces = srcShells[bestSrc].faceIndices;
@@ -229,6 +257,7 @@ namespace LightmapUvTool
                         result.uv2[vi] = triUv2A[bestF] * bestU
                                        + triUv2B[bestF] * bestV
                                        + triUv2C[bestF] * bestW;
+                        result.vertexToSourceShell[vi] = bestSrc;
                         transferred++;
                     }
                 }
