@@ -265,6 +265,8 @@ namespace LightmapUvTool
                     float bestDist = float.MaxValue;
                     int bestIdx = -1;
                     int bestListIdx = -1;
+
+                    // First try: nearest UNUSED sidecar vertex within tight tolerance (1mm)
                     for (int j = 0; j < unusedSidecar.Count; j++)
                     {
                         int si = unusedSidecar[j];
@@ -276,12 +278,31 @@ namespace LightmapUvTool
                             bestListIdx = j;
                         }
                     }
-                    // Accept if within reasonable tolerance (1mm)
+
                     if (bestIdx >= 0 && bestDist < 1e-4f)
                     {
                         result[mi] = entry.uv2[bestIdx];
                         used[bestIdx] = true;
                         unusedSidecar.RemoveAt(bestListIdx);
+                        matched++;
+                        fallbackMatched++;
+                        continue;
+                    }
+
+                    // Second try: nearest ANY sidecar vertex (allow reuse).
+                    // This handles the case where mesh has more vertices than sidecar
+                    // (e.g. meshopt produces slightly different count on reimport):
+                    // duplicate/nearby positions inherit UV2 from the closest existing point.
+                    bestDist = float.MaxValue;
+                    bestIdx = -1;
+                    for (int si = 0; si < entry.vertPositions.Length; si++)
+                    {
+                        float d = Vector3.SqrMagnitude(meshPos[mi] - entry.vertPositions[si]);
+                        if (d < bestDist) { bestDist = d; bestIdx = si; }
+                    }
+                    if (bestIdx >= 0)
+                    {
+                        result[mi] = entry.uv2[bestIdx];
                         matched++;
                         fallbackMatched++;
                     }
