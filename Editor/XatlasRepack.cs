@@ -142,8 +142,8 @@ namespace LightmapUvTool
             result.shellCount = shells.Count;
             result.overlapGroupCount = overlapGroups.Count;
 
-            // Normalize winding: flip negative-area shells (including fold-split sub-shells)
-            result.flippedShells = NormalizeShellWinding(uv0, tris, shells);
+            // UV0 winding normalized by ExecWeldUv0.
+            result.flippedShells = 0;
 
             // ── Flatten UV0 ──
             float[] uvFlat = new float[vertCount * 2];
@@ -305,10 +305,9 @@ namespace LightmapUvTool
                 results[m].overlapGroupCount  = overlapGroups.Count;
             }
 
-            // Normalize winding: flip negative-area shells (including fold-split sub-shells)
+            // UV0 winding normalized by ExecWeldUv0.
             for (int m = 0; m < meshCount; m++)
-                results[m].flippedShells = NormalizeShellWinding(
-                    allUv0[m], allTris[m], allShells[m]);
+                results[m].flippedShells = 0;
 
             // ── Single xatlas session for all meshes ──
             XatlasNative.xatlasCreate();
