@@ -142,11 +142,8 @@ namespace LightmapUvTool
             result.shellCount = shells.Count;
             result.overlapGroupCount = overlapGroups.Count;
 
-            // ── Normalize winding: flip mirrored shells ──
-            int flippedShells = NormalizeShellWinding(uv0, tris, shells);
-            if (flippedShells > 0)
-                UvtLog.Info($"[xatlas] '{mesh.name}': flipped {flippedShells} mirrored shell(s)");
-            result.flippedShells = flippedShells;
+            // UV0 winding is already normalized by ExecWeldUv0.
+            result.flippedShells = 0;
 
             // ── Flatten UV0 ──
             float[] uvFlat = new float[vertCount * 2];
@@ -308,19 +305,9 @@ namespace LightmapUvTool
                 results[m].overlapGroupCount  = overlapGroups.Count;
             }
 
-            // ── Normalize winding: flip mirrored shells in all meshes ──
+            // UV0 winding is already normalized by ExecWeldUv0 — no flip here.
             for (int m = 0; m < meshCount; m++)
-            {
-                int flipped = NormalizeShellWinding(allUv0[m], allTris[m], allShells[m]);
-                if (flipped > 0)
-                {
-                    UvtLog.Info($"[xatlas] '{meshes[m].name}': flipped {flipped} mirrored shell(s)");
-                    // Write flipped UV0 back to mesh so GroupedTransfer reads
-                    // the exact same UV0 space that xatlas used for UV2.
-                    meshes[m].SetUVs(0, new List<Vector2>(allUv0[m]));
-                }
-                results[m].flippedShells = flipped;
-            }
+                results[m].flippedShells = 0;
 
             // ── Single xatlas session for all meshes ──
             XatlasNative.xatlasCreate();

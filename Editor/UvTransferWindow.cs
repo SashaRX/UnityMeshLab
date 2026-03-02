@@ -1155,6 +1155,31 @@ namespace LightmapUvTool
 
             uv0Welded = meshoptOptimized > 0 || edgeWelded > 0;
             UvtLog.Info($"[UV0Fix] Optimized: {meshoptOptimized} meshopt, {edgeWelded} UV edge weld");
+
+            // ── Normalize UV0 winding on ALL optimized meshes ──
+            // Flip mirrored shells to positive winding ONCE, so all
+            // downstream stages (repack, transfer) share the same UV0 space.
+            int totalNormalized = 0;
+            foreach (var e in meshEntries)
+            {
+                if (!e.include || e.originalMesh == null) continue;
+                var mesh = e.originalMesh;
+                var uv0 = new List<Vector2>(); mesh.GetUVs(0, uv0);
+                if (uv0.Count == 0) continue;
+                var uv0Arr = uv0.ToArray();
+                var tris = mesh.triangles;
+                List<UvShell> shells; List<List<int>> overlap;
+                UvShellExtractor.BuildPerFaceShellIds(uv0Arr, tris, out shells, out overlap);
+                int flipped = XatlasRepack.NormalizeShellWinding(uv0Arr, tris, shells);
+                if (flipped > 0)
+                {
+                    mesh.SetUVs(0, new List<Vector2>(uv0Arr));
+                    totalNormalized += flipped;
+                }
+            }
+            if (totalNormalized > 0)
+                UvtLog.Info($"[UV0Fix] Normalized {totalNormalized} mirrored UV0 shell(s) across all meshes");
+
             ExecAnalyzeUv0();
         }
 
