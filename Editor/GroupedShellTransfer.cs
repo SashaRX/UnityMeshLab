@@ -295,6 +295,18 @@ namespace LightmapUvTool
                 triNormal[f] = Vector3.Cross(triPosB[f] - triPosA[f], triPosC[f] - triPosA[f]).normalized;
             }
 
+            // Pre-compute signed UV0 area per source triangle.
+            // Positive = correct winding; negative = flipped; ~0 = degenerate.
+            // Used to skip flipped/degenerate triangles during UV0-space lookup to
+            // prevent them from "winning" nearest-triangle search and corrupting UV2.
+            const float kMinUv0TriArea = 1e-8f;
+            var triUv0SignedArea = new float[srcTriCount];
+            for (int f = 0; f < srcTriCount; f++)
+            {
+                var a = triUv0A[f]; var b = triUv0B[f]; var c = triUv0C[f];
+                triUv0SignedArea[f] = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+            }
+
             // ── Phase 1: Extract shells ──
             var srcShells = UvShellExtractor.Extract(srcUv0, srcTris);
             var tgtTris = targetMesh.triangles;
@@ -458,6 +470,8 @@ namespace LightmapUvTool
                     // ── Merged shell: UV0 multi-shell interpolation ──
                     // Search ALL source triangles via UV0 nearest, interpolate UV2.
                     // Interpolation is bounded by source UV2 triangles — no extrapolation.
+                    // IMPORTANT: skip flipped/degenerate source triangles (negative/zero UV0 area)
+                    // so they cannot win the nearest-triangle search and corrupt UV2 output.
                     var uv2_merged = new Dictionary<int, Vector2>();
                     foreach (int vi in tShell.vertexIndices)
                     {
@@ -467,6 +481,8 @@ namespace LightmapUvTool
                         int bestF2 = -1; float bestU2 = 0, bestV2 = 0, bestW2 = 0;
                         for (int f = 0; f < srcTriCount; f++)
                         {
+                            // Skip flipped and degenerate triangles in UV0 space
+                            if (triUv0SignedArea[f] < kMinUv0TriArea) continue;
                             float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
                                 out float u, out float v, out float w);
                             if (dSq < bestDSq2) { bestDSq2 = dSq; bestF2 = f; bestU2 = u; bestV2 = v; bestW2 = w; }
@@ -509,6 +525,7 @@ namespace LightmapUvTool
                         for (int fi = 0; fi < srcFacesChosen.Count; fi++)
                         {
                             int f = srcFacesChosen[fi];
+                            if (triUv0SignedArea[f] < kMinUv0TriArea) continue; // skip flipped/degenerate
                             float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
                                 out float u, out float v, out float w);
                             if (dSq < bestDSq) { bestDSq = dSq; bestF = f; bestU = u; bestV = v; bestW = w; }
