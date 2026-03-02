@@ -1266,6 +1266,7 @@ namespace LightmapUvTool
 
                 var results = XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);
 
+                int totalUv2Flipped = 0;
                 for (int i = 0; i < validEntries.Count; i++)
                 {
                     var e = validEntries[i];
@@ -1276,7 +1277,28 @@ namespace LightmapUvTool
                         continue;
                     }
                     e.repackedMesh = meshCopies[i];
+
+                    // ── Normalize UV2 winding after xatlas ──
+                    // xatlas may flip charts during packing; ensure all UV2 shells
+                    // have positive winding before transfer.
+                    var mesh2 = e.repackedMesh;
+                    var uv2List = new List<Vector2>(); mesh2.GetUVs(2, uv2List);
+                    if (uv2List.Count > 0)
+                    {
+                        var uv2Arr = uv2List.ToArray();
+                        var tris2 = mesh2.triangles;
+                        List<UvShell> uv2Shells; List<List<int>> uv2Ov;
+                        UvShellExtractor.BuildPerFaceShellIds(uv2Arr, tris2, out uv2Shells, out uv2Ov);
+                        int flipped = XatlasRepack.NormalizeShellWinding(uv2Arr, tris2, uv2Shells);
+                        if (flipped > 0)
+                        {
+                            mesh2.SetUVs(2, new List<Vector2>(uv2Arr));
+                            totalUv2Flipped += flipped;
+                        }
+                    }
                 }
+                if (totalUv2Flipped > 0)
+                    UvtLog.Info($"[Repack] Normalized {totalUv2Flipped} inverted UV2 shell(s) after xatlas pack");
                 hasRepack = ForLod(sourceLodIndex).Any(e => e.repackedMesh != null);
             }
             catch (Exception ex) { UvtLog.Error("[Repack] " + ex); }
