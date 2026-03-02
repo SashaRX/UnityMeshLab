@@ -146,6 +146,41 @@ namespace LightmapUvTool
             if (tUv0.Length == 0)
             { UvtLog.Error("[GroupedTransfer] Target missing UV0"); return result; }
 
+            // ── Normalize target UV0 winding to match source ──
+            // Source UV0 was flipped by NormalizeShellWinding before repack.
+            // Target UV0 still has original mirrored shells. Flip them here
+            // so UV0 lookup operates in the same winding space.
+            {
+                var tgtTrisTemp = targetMesh.triangles;
+                var tgtShellsTemp = UvShellExtractor.Extract(tUv0, tgtTrisTemp);
+                int tFlipped = 0;
+                foreach (var shell in tgtShellsTemp)
+                {
+                    float sa = ComputeSignedArea(tgtTrisTemp, tUv0, shell.faceIndices);
+                    if (sa >= 0) continue; // positive winding, OK
+
+                    // Flip U around shell AABB center
+                    float minU = float.MaxValue, maxU = float.MinValue;
+                    foreach (int vi in shell.vertexIndices)
+                    {
+                        if (vi < tUv0.Length)
+                        {
+                            if (tUv0[vi].x < minU) minU = tUv0[vi].x;
+                            if (tUv0[vi].x > maxU) maxU = tUv0[vi].x;
+                        }
+                    }
+                    float twoCenter = minU + maxU;
+                    foreach (int vi in shell.vertexIndices)
+                    {
+                        if (vi < tUv0.Length)
+                            tUv0[vi] = new Vector2(twoCenter - tUv0[vi].x, tUv0[vi].y);
+                    }
+                    tFlipped++;
+                }
+                if (tFlipped > 0)
+                    UvtLog.Info($"[GroupedTransfer] '{targetMesh.name}': normalized {tFlipped} mirrored target UV0 shell(s)");
+            }
+
             result.uv2 = new Vector2[vertCount];
             result.verticesTotal = vertCount;
             result.vertexToSourceShell = new int[vertCount];
@@ -387,51 +422,9 @@ namespace LightmapUvTool
             result.verticesTransferred = transferred;
             result.shellsMatched = shellsMatched;
 
-            // Per-triangle repair removed: modifying shared vertices of inverted
-            // triangles cascades damage to neighbors, causing worse overlaps/stretching.
-            // Shell-level flip below handles whole-shell inversions correctly.
-
-            // ── Post-transfer: normalize UV2 winding on target ──
-            // Surface projection can produce inverted UV2 shells when target
-            // triangles have different vertex ordering than source.
-            // Fix: extract UV2 shells on target, flip any with negative signed area.
-            {
-                var uv2Shells = UvShellExtractor.Extract(result.uv2, tgtTris);
-                int flipped = 0;
-                foreach (var shell in uv2Shells)
-                {
-                    double area = 0;
-                    foreach (int f in shell.faceIndices)
-                    {
-                        int i0 = tgtTris[f * 3], i1 = tgtTris[f * 3 + 1], i2 = tgtTris[f * 3 + 2];
-                        if (i0 >= result.uv2.Length || i1 >= result.uv2.Length || i2 >= result.uv2.Length) continue;
-                        var a = result.uv2[i0]; var b = result.uv2[i1]; var c = result.uv2[i2];
-                        area += (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
-                    }
-                    if (area >= 0) continue;
-
-                    // Flip U around shell AABB center
-                    float minU = float.MaxValue, maxU = float.MinValue;
-                    foreach (int vi in shell.vertexIndices)
-                    {
-                        if (vi < result.uv2.Length)
-                        {
-                            if (result.uv2[vi].x < minU) minU = result.uv2[vi].x;
-                            if (result.uv2[vi].x > maxU) maxU = result.uv2[vi].x;
-                        }
-                    }
-                    float twoCenter = minU + maxU; // = centerU * 2
-                    foreach (int vi in shell.vertexIndices)
-                    {
-                        if (vi < result.uv2.Length)
-                            result.uv2[vi] = new Vector2(twoCenter - result.uv2[vi].x, result.uv2[vi].y);
-                    }
-                    flipped++;
-                }
-                result.shellsMirrored = flipped;
-                if (flipped > 0)
-                    UvtLog.Info($"[GroupedTransfer] '{targetMesh.name}': fixed {flipped} inverted UV2 shell(s)");
-            }
+            // Post-transfer UV2 shell flip removed: target UV0 is now normalized
+            // before lookup, so UV2 winding is correct from the start.
+            result.shellsMirrored = 0;
 
             // UV2 bounds check
             int oob = 0;
