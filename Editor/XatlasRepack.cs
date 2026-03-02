@@ -313,7 +313,12 @@ namespace LightmapUvTool
             {
                 int flipped = NormalizeShellWinding(allUv0[m], allTris[m], allShells[m]);
                 if (flipped > 0)
+                {
                     UvtLog.Info($"[xatlas] '{meshes[m].name}': flipped {flipped} mirrored shell(s)");
+                    // Write flipped UV0 back to mesh so GroupedTransfer reads
+                    // the exact same UV0 space that xatlas used for UV2.
+                    meshes[m].SetUVs(0, new List<Vector2>(allUv0[m]));
+                }
                 results[m].flippedShells = flipped;
             }
 
