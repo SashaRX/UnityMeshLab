@@ -40,12 +40,51 @@ namespace LightmapUvTool
         public int  orphanVertices;
         public int  orphanTriangles;
         public int  snappedVertices;
+        public int  flippedShells;
         public string error;
     }
 
     public static class XatlasRepack
     {
         const uint ORPHAN_CHART = uint.MaxValue;
+
+        /// <summary>
+        /// Flip UV0 shells with negative signed area (mirrored) so all charts
+        /// have positive winding before xatlas packing.
+        /// Modifies uv0 array in-place. Returns number of shells flipped.
+        /// </summary>
+        static int NormalizeShellWinding(Vector2[] uv0, int[] tris, List<UvShell> shells)
+        {
+            int flipped = 0;
+            foreach (var shell in shells)
+            {
+                // Compute signed area
+                double area = 0;
+                foreach (int f in shell.faceIndices)
+                {
+                    int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
+                    if (i0 >= uv0.Length || i1 >= uv0.Length || i2 >= uv0.Length) continue;
+                    area += (uv0[i1].x - uv0[i0].x) * (uv0[i2].y - uv0[i0].y)
+                          - (uv0[i2].x - uv0[i0].x) * (uv0[i1].y - uv0[i0].y);
+                }
+                if (area >= 0) continue; // positive winding — ok
+
+                // Shell is mirrored → flip U around AABB center
+                float centerU = (shell.boundsMin.x + shell.boundsMax.x) * 0.5f;
+                float twoCenter = centerU * 2f;
+                foreach (int vi in shell.vertexIndices)
+                {
+                    if (vi >= uv0.Length) continue;
+                    uv0[vi] = new Vector2(twoCenter - uv0[vi].x, uv0[vi].y);
+                }
+                // Update shell bounds after flip
+                float oldMinX = shell.boundsMin.x, oldMaxX = shell.boundsMax.x;
+                shell.boundsMin = new Vector2(twoCenter - oldMaxX, shell.boundsMin.y);
+                shell.boundsMax = new Vector2(twoCenter - oldMinX, shell.boundsMax.y);
+                flipped++;
+            }
+            return flipped;
+        }
 
         /// <summary>
         /// Convenience wrapper: repack UV0 shells into UV2, return packed UV2 array.
@@ -102,6 +141,12 @@ namespace LightmapUvTool
 
             result.shellCount = shells.Count;
             result.overlapGroupCount = overlapGroups.Count;
+
+            // ── Normalize winding: flip mirrored shells ──
+            int flippedShells = NormalizeShellWinding(uv0, tris, shells);
+            if (flippedShells > 0)
+                UvtLog.Info($"[xatlas] '{mesh.name}': flipped {flippedShells} mirrored shell(s)");
+            result.flippedShells = flippedShells;
 
             // ── Flatten UV0 ──
             float[] uvFlat = new float[vertCount * 2];
@@ -261,6 +306,15 @@ namespace LightmapUvTool
 
                 results[m].shellCount        = shells.Count;
                 results[m].overlapGroupCount  = overlapGroups.Count;
+            }
+
+            // ── Normalize winding: flip mirrored shells in all meshes ──
+            for (int m = 0; m < meshCount; m++)
+            {
+                int flipped = NormalizeShellWinding(allUv0[m], allTris[m], allShells[m]);
+                if (flipped > 0)
+                    UvtLog.Info($"[xatlas] '{meshes[m].name}': flipped {flipped} mirrored shell(s)");
+                results[m].flippedShells = flipped;
             }
 
             // ── Single xatlas session for all meshes ──
