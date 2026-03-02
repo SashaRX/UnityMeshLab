@@ -467,27 +467,60 @@ namespace LightmapUvTool
 
                 if (isMergedShell)
                 {
-                    // ── Merged shell: UV0 multi-shell interpolation ──
-                    // Search ALL source triangles via UV0 nearest, interpolate UV2.
-                    // Interpolation is bounded by source UV2 triangles — no extrapolation.
-                    // IMPORTANT: skip flipped/degenerate source triangles (negative/zero UV0 area)
-                    // so they cannot win the nearest-triangle search and corrupt UV2 output.
+                    // ── Merged shell: UV0 multi-shell interpolation with 3D tiebreak ──
+                    //
+                    // Problem: tiling geometry shares identical UV0 space across multiple
+                    // physically separate instances. xatlas assigns each instance its own
+                    // UV2 chart. A naive UV0-nearest search hits a random instance → overlaps.
+                    //
+                    // Solution: two-pass per vertex.
+                    //   Pass 1 – find best UV0 distance across ALL valid source triangles.
+                    //   Pass 2 – among all triangles within kUv0TieTolerance of that best
+                    //             distance, pick the one whose 3D centroid is closest to the
+                    //             target vertex's 3D position. This disambiguates tiling instances.
+                    //
+                    // Skip flipped/degenerate UV0 triangles (negative/zero area) to prevent
+                    // them winning the UV0 search and corrupting UV2 output.
+                    const float kUv0TieTolerance = 1e-4f; // candidates within this UV0 dist^2 of best
                     var uv2_merged = new Dictionary<int, Vector2>();
                     foreach (int vi in tShell.vertexIndices)
                     {
                         if (vi >= tUv0.Length) continue;
-                        Vector2 tUv = tUv0[vi];
-                        float bestDSq2 = float.MaxValue;
-                        int bestF2 = -1; float bestU2 = 0, bestV2 = 0, bestW2 = 0;
+                        Vector2 tUv  = tUv0[vi];
+                        Vector3 tPos = vi < tVerts.Length ? tVerts[vi] : Vector3.zero;
+
+                        // Pass 1: find best UV0 distance
+                        float bestUv0Dq = float.MaxValue;
                         for (int f = 0; f < srcTriCount; f++)
                         {
-                            // Skip flipped and degenerate triangles in UV0 space
                             if (triUv0SignedArea[f] < kMinUv0TriArea) continue;
                             float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
-                                out float u, out float v, out float w);
-                            if (dSq < bestDSq2) { bestDSq2 = dSq; bestF2 = f; bestU2 = u; bestV2 = v; bestW2 = w; }
-                            if (bestDSq2 < 1e-8f) break;
+                                out _, out _, out _);
+                            if (dSq < bestUv0Dq) bestUv0Dq = dSq;
                         }
+
+                        // Pass 2: among UV0-close candidates, pick nearest in 3D
+                        float threshold = bestUv0Dq + kUv0TieTolerance;
+                        int   bestF2 = -1;
+                        float bestU2 = 0, bestV2 = 0, bestW2 = 0;
+                        float best3DSq = float.MaxValue;
+                        for (int f = 0; f < srcTriCount; f++)
+                        {
+                            if (triUv0SignedArea[f] < kMinUv0TriArea) continue;
+                            float dUv = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
+                                out float u, out float v, out float w);
+                            if (dUv > threshold) continue;
+
+                            // 3D centroid of source triangle as proxy for its instance position
+                            Vector3 srcCenter = (triPosA[f] + triPosB[f] + triPosC[f]) / 3f;
+                            float d3Sq = (tPos - srcCenter).sqrMagnitude;
+                            if (d3Sq < best3DSq)
+                            {
+                                best3DSq = d3Sq;
+                                bestF2 = f; bestU2 = u; bestV2 = v; bestW2 = w;
+                            }
+                        }
+
                         if (bestF2 >= 0)
                             uv2_merged[vi] = triUv2A[bestF2] * bestU2 + triUv2B[bestF2] * bestV2 + triUv2C[bestF2] * bestW2;
                     }
