@@ -53,7 +53,7 @@ namespace LightmapUvTool
         /// have positive winding before xatlas packing.
         /// Modifies uv0 array in-place. Returns number of shells flipped.
         /// </summary>
-        static int NormalizeShellWinding(Vector2[] uv0, int[] tris, List<UvShell> shells)
+        public static int NormalizeShellWinding(Vector2[] uv0, int[] tris, List<UvShell> shells)
         {
             int flipped = 0;
             foreach (var shell in shells)

@@ -151,34 +151,13 @@ namespace LightmapUvTool
             { UvtLog.Error("[GroupedTransfer] Target missing UV0"); return result; }
 
             // ── Normalize target UV0 winding to match source ──
-            // Same flip as source above, so both UV0 spaces are identical.
+            // Use exact same functions as XatlasRepack to ensure identical flip.
             {
-                var tgtTrisTemp = targetMesh.triangles;
-                var tgtShellsTemp = UvShellExtractor.Extract(tUv0, tgtTrisTemp);
-                int tFlipped = 0;
-                foreach (var shell in tgtShellsTemp)
-                {
-                    float sa = ComputeSignedArea(tgtTrisTemp, tUv0, shell.faceIndices);
-                    if (sa >= 0) continue; // positive winding, OK
-
-                    // Flip U around shell AABB center
-                    float minU = float.MaxValue, maxU = float.MinValue;
-                    foreach (int vi in shell.vertexIndices)
-                    {
-                        if (vi < tUv0.Length)
-                        {
-                            if (tUv0[vi].x < minU) minU = tUv0[vi].x;
-                            if (tUv0[vi].x > maxU) maxU = tUv0[vi].x;
-                        }
-                    }
-                    float twoCenter = minU + maxU;
-                    foreach (int vi in shell.vertexIndices)
-                    {
-                        if (vi < tUv0.Length)
-                            tUv0[vi] = new Vector2(twoCenter - tUv0[vi].x, tUv0[vi].y);
-                    }
-                    tFlipped++;
-                }
+                var tgtTrisArr = targetMesh.triangles;
+                List<UvShell> normShells;
+                List<List<int>> normOverlap;
+                UvShellExtractor.BuildPerFaceShellIds(tUv0, tgtTrisArr, out normShells, out normOverlap);
+                int tFlipped = XatlasRepack.NormalizeShellWinding(tUv0, tgtTrisArr, normShells);
                 if (tFlipped > 0)
                     UvtLog.Info($"[GroupedTransfer] '{targetMesh.name}': normalized {tFlipped} mirrored target UV0 shell(s)");
             }
