@@ -169,6 +169,11 @@ namespace LightmapUvTool
                 var lg = go.GetComponentInParent<LODGroup>();
                 if (lg != null && lg != lodGroup) { lodGroup = lg; Refresh(); }
             }
+
+            // Re-apply checker to new selection
+            if (CheckerTexturePreview.IsActive)
+                ReapplyCheckerToSelection();
+
             UpdateSelectedSidecar();
             Repaint();
         }
@@ -1402,6 +1407,65 @@ namespace LightmapUvTool
         // ════════════════════════════════════════════════════════════
         //  Checker Preview
         // ════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Re-apply checker to the currently selected object.
+        /// First tries meshEntries (loaded LODGroup with working copies),
+        /// then falls back to scanning the selected GameObject directly
+        /// for FBX meshes that already have UV2 baked in (post-Apply).
+        /// </summary>
+        void ReapplyCheckerToSelection()
+        {
+            CheckerTexturePreview.Restore();
+
+            var go = Selection.activeGameObject;
+            if (go == null) return;
+
+            var entries = new List<(Renderer renderer, Mesh meshWithUv2)>();
+
+            // Check if selected object belongs to the loaded LODGroup
+            bool inLoadedGroup = lodGroup != null &&
+                (go.transform == lodGroup.transform || go.transform.IsChildOf(lodGroup.transform));
+
+            // 1) From meshEntries — working copies with UV2 (repack/transfer/applied FBX)
+            if (inLoadedGroup)
+            {
+                foreach (var e in meshEntries)
+                {
+                    if (!e.include || e.renderer == null) continue;
+                    Mesh uvMesh = e.transferredMesh ?? e.repackedMesh;
+                    if (uvMesh == null)
+                    {
+                        Mesh fallback = e.originalMesh ?? e.fbxMesh;
+                        if (fallback != null)
+                        {
+                            var testUv2 = new List<Vector2>();
+                            fallback.GetUVs(2, testUv2);
+                            if (testUv2.Count > 0) uvMesh = fallback;
+                        }
+                    }
+                    if (uvMesh != null) entries.Add((e.renderer, uvMesh));
+                }
+            }
+
+            // 2) Scan selected object directly — for objects not in loaded LODGroup,
+            //    or if meshEntries had no UV2 (e.g. fresh Refresh after LODGroup switch)
+            if (entries.Count == 0)
+            {
+                foreach (var r in go.GetComponentsInChildren<Renderer>())
+                {
+                    var mf = r.GetComponent<MeshFilter>();
+                    if (mf == null || mf.sharedMesh == null) continue;
+                    var testUv2 = new List<Vector2>();
+                    mf.sharedMesh.GetUVs(2, testUv2);
+                    if (testUv2.Count > 0)
+                        entries.Add((r, null)); // null = keep current mesh, just swap material
+                }
+            }
+
+            if (entries.Count > 0)
+                CheckerTexturePreview.Apply(entries);
+        }
 
         void ToggleChecker()
         {
