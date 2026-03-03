@@ -1213,6 +1213,8 @@ namespace LightmapUvTool
                 if (!e.include || e.originalMesh == null) continue;
                 var report = Uv0Analyzer.Analyze(e.originalMesh);
                 uv0Reports[e.originalMesh.GetInstanceID()] = report;
+                if (report.flippedTriangles > 0 || report.degenerateTriangles > 0)
+                    UvtLog.Info($"[UV0Analyze]   '{e.originalMesh.name}' LOD{e.lodIndex}: {report.flippedTriangles} flipped, {report.degenerateTriangles} degen, {report.totalShells} shells, {e.originalMesh.vertexCount} verts");
             }
             uv0Analyzed = true;
             int totalFalseSeams = 0, totalDegen = 0, totalFlipped = 0;

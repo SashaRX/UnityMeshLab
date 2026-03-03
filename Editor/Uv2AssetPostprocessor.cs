@@ -12,6 +12,9 @@ namespace LightmapUvTool
 {
     public class Uv2AssetPostprocessor : AssetPostprocessor
     {
+        // Run well after Bakery and other postprocessors (default order = 0).
+        public override int GetPostprocessOrder() => 10000;
+
         struct ApplyStats
         {
             public int fbxVerts;      // vertex count from fresh FBX import
@@ -31,6 +34,15 @@ namespace LightmapUvTool
             {
                 modelImporter.isReadable = true;
                 UvtLog.Info($"[UV2 Preprocess] Enabled Read/Write on '{assetPath}' for UV2 injection");
+            }
+
+            // Disable Unity's built-in lightmap UV generation — we provide our own UV2.
+            // Unity's generator may split vertices along UV seams, changing vertex count
+            // and making our stored remap table invalid.
+            if (modelImporter.generateSecondaryUV)
+            {
+                modelImporter.generateSecondaryUV = false;
+                UvtLog.Info($"[UV2 Preprocess] Disabled generateSecondaryUV on '{assetPath}' (sidecar provides UV2)");
             }
         }
 
@@ -53,7 +65,14 @@ namespace LightmapUvTool
             {
                 var mesh = mf.sharedMesh;
                 if (mesh == null) continue;
-                if (ApplyEntryToMesh(data, mesh, out var s)) { applied++; totalFbxVerts += s.fbxVerts; totalFinalVerts += s.finalVerts; if (s.remapped) remapCount++; }
+                if (ApplyEntryToMesh(data, mesh, out var s))
+                {
+                    applied++;
+                    totalFbxVerts += s.fbxVerts;
+                    totalFinalVerts += s.finalVerts;
+                    if (s.remapped) remapCount++;
+                    UvtLog.Verbose($"[UV2 Postprocess] mesh '{mesh.name}': {s.fbxVerts}→{s.finalVerts} verts, remapped={s.remapped}");
+                }
             }
 
             foreach (var smr in skinned)

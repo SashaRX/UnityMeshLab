@@ -554,6 +554,9 @@ namespace LightmapUvTool
                         foreach (int tsi in needsRematch)
                         {
                             var tShell = tgtShells[tsi];
+                            int oldSrc = result.targetShellToSourceShell[tsi];
+                            float oldDistSq = result.targetShellMatchDistSqr[tsi];
+                            float oldAvg3D = tgtChosenAvg3D[tsi];
 
                             FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
                                 triPosA, triPosB, triPosC, result.targetShellCentroids[tsi],
@@ -562,14 +565,27 @@ namespace LightmapUvTool
 
                             if (newSrc >= 0)
                             {
-                                result.targetShellToSourceShell[tsi] = newSrc;
-                                result.targetShellMatchDistSqr[tsi] = newDistSq;
-                                tgtChosenAvg3D[tsi] = newAvg3D;
-                                claimed.Add(newSrc);
-
                                 // Re-check merged status with new source
-                                tgtIsMerged[tsi] = DetectMergedShell(tShell, tUv0,
+                                bool newIsMerged = DetectMergedShell(tShell, tUv0,
                                     srcShells[newSrc].faceIndices, triUv0A, triUv0B, triUv0C);
+
+                                // If reassignment would make a non-merged shell become merged,
+                                // revert to original source — overlap is better than lost UV2.
+                                if (newIsMerged && !tgtIsMerged[tsi] && oldSrc >= 0)
+                                {
+                                    UvtLog.Info($"[GroupedTransfer] Dedup: t{tsi} reverted to src{oldSrc} " +
+                                        $"(new src{newSrc} would force merged)");
+                                    // Keep old assignment, just re-claim old source
+                                    claimed.Add(oldSrc);
+                                }
+                                else
+                                {
+                                    result.targetShellToSourceShell[tsi] = newSrc;
+                                    result.targetShellMatchDistSqr[tsi] = newDistSq;
+                                    tgtChosenAvg3D[tsi] = newAvg3D;
+                                    claimed.Add(newSrc);
+                                    tgtIsMerged[tsi] = newIsMerged;
+                                }
                             }
                             else
                             {
@@ -594,6 +610,18 @@ namespace LightmapUvTool
             }
 
             // ── Phase 3: Transfer UV2 using final source assignments ──
+            // Verbose: dump per-shell matching for diagnostics
+            for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+            {
+                int src = result.targetShellToSourceShell[tsi];
+                string method = tgtIsMerged[tsi] ? "merged" : "interp";
+                int tFaces = tgtShells[tsi].faceIndices.Count;
+                int tVtx = tgtShells[tsi].vertexIndices.Count;
+                float avg3D = tgtChosenAvg3D[tsi];
+                string srcInfo = src >= 0 ? $"src{src}({srcShells[src].faceIndices.Count}f)" : "none";
+                UvtLog.Verbose($"[GroupedTransfer]   t{tsi}({tFaces}f,{tVtx}v) → {srcInfo} [{method}] avg3D={avg3D:F6}");
+            }
+
             int transferred = 0;
             int shellsMatched = 0;
             int shellsTransform = 0, shellsInterpolation = 0, shellsMerged = 0;
