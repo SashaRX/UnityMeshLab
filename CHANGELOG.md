@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.11.3] - 2026-03-03
+
+### Fixed — Cross-source UV2 overlaps from merged shells
+- **Constrained search for force3D merged shells** (`GroupedShellTransfer.cs`):
+  the 3D-primary merged mode (introduced in 0.11.1 for dedup conflicts) used
+  all-source search, which could produce UV2 coordinates in other source
+  shells' UV2 regions — overlapping with target shells assigned to those
+  sources (e.g. `uv2sh[91](interp,src102) vs uv2sh[93](merged,src104):
+  diff-src`). Now constrains force3D search to the assigned source shell's
+  faces only, keeping UV2 within the source's UV2 bounds while still using
+  3D-primary decision logic for vertex projection.
+- **All-source overlap guard** (`GroupedShellTransfer.cs`): for non-force3D
+  merged shells that fall back to all-source search, the candidate UV2 AABB
+  is checked against claimed source shells' UV2 AABBs. If overlap is
+  detected, the constrained result is preferred even with more triangle
+  issues — trading minor quality loss for overlap-free lightmaps.
+- Eliminates merged-involved diff-src overlaps reported by the validator.
+
 ## [0.11.2] - 2026-03-03
 
 ### Fixed — Cross-source UV2 overlaps from xform extrapolation
