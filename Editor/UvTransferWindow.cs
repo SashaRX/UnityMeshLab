@@ -1574,11 +1574,26 @@ namespace LightmapUvTool
         //  Apply UV2 to FBX
         // ════════════════════════════════════════════════════════════
 
+        // ── Sidecar entry for ApplyUv2ToFbx ──
+        struct SidecarEntry
+        {
+            public string name;
+            public Vector2[] uv2;
+            public bool welded, edgeWelded;
+            public Vector3[] positions;
+            public Vector2[] uv0;
+            // Deterministic replay (variant B)
+            public int[] vertexRemap;
+            public int optimizedVertexCount;
+            public int[] optimizedTriangles;
+            public int[] submeshTriangleCounts;
+        }
+
         void ApplyUv2ToFbx()
         {
             if (lodGroup == null) return;
 
-            var fbxGroups = new Dictionary<string, List<(string name, Vector2[] uv2, bool welded, bool edgeWelded, Vector3[] positions, Vector2[] uv0)>>();
+            var fbxGroups = new Dictionary<string, List<SidecarEntry>>();
 
             foreach (var e in meshEntries)
             {
@@ -1595,15 +1610,42 @@ namespace LightmapUvTool
                 if (uv2List.Count == 0) continue;
 
                 var positions = resultMesh.vertices;
-                // Save original (un-normalized) UV0 for postprocessor matching
                 var uv0List = new List<Vector2>();
                 (e.originalMesh ?? resultMesh).GetUVs(0, uv0List);
 
                 if (!fbxGroups.ContainsKey(fbxPath))
-                    fbxGroups[fbxPath] = new List<(string, Vector2[], bool, bool, Vector3[], Vector2[])>();
+                    fbxGroups[fbxPath] = new List<SidecarEntry>();
 
                 string meshName = e.fbxMesh != null ? e.fbxMesh.name : e.originalMesh.name;
-                fbxGroups[fbxPath].Add((meshName, uv2List.ToArray(), e.wasWelded, e.wasEdgeWelded, positions, uv0List.ToArray()));
+
+                var sidecar = new SidecarEntry
+                {
+                    name = meshName,
+                    uv2 = uv2List.ToArray(),
+                    welded = e.wasWelded,
+                    edgeWelded = e.wasEdgeWelded,
+                    positions = positions,
+                    uv0 = uv0List.ToArray()
+                };
+
+                // Build deterministic replay data when mesh was optimized
+                if ((e.wasWelded || e.wasEdgeWelded) && e.fbxMesh != null)
+                {
+                    // optimizedMesh = the mesh after MeshOptimizer + UvEdgeWeld
+                    // For source LOD: repackedMesh has UV2 written on top of optimized geometry
+                    // For target LODs: transferredMesh has UV2 on top of optimized geometry
+                    // In both cases, vertex layout matches e.originalMesh (the optimized working copy)
+                    Mesh optimizedMesh = e.originalMesh;
+
+                    sidecar.vertexRemap = BuildVertexRemap(e.fbxMesh, optimizedMesh);
+                    sidecar.optimizedVertexCount = optimizedMesh.vertexCount;
+                    BuildTriangleData(optimizedMesh, out sidecar.optimizedTriangles, out sidecar.submeshTriangleCounts);
+
+                    UvtLog.Verbose($"[Apply] '{meshName}': remap {e.fbxMesh.vertexCount}→{optimizedMesh.vertexCount} " +
+                                  $"({sidecar.optimizedTriangles.Length / 3} tris, {optimizedMesh.subMeshCount} submeshes)");
+                }
+
+                fbxGroups[fbxPath].Add(sidecar);
             }
 
             if (fbxGroups.Count == 0)
@@ -1630,7 +1672,9 @@ namespace LightmapUvTool
                     foreach (var entry in kv.Value)
                     {
                         data.Set(entry.name, entry.uv2, entry.welded, entry.edgeWelded,
-                                 entry.positions, entry.uv0);
+                                 entry.positions, entry.uv0,
+                                 entry.vertexRemap, entry.optimizedVertexCount,
+                                 entry.optimizedTriangles, entry.submeshTriangleCounts);
                         totalMeshes++;
                     }
 
@@ -1645,6 +1689,122 @@ namespace LightmapUvTool
             UvtLog.Info($"[Apply] Done: {totalMeshes} mesh(es) across {fbxGroups.Count} FBX file(s)");
             Refresh();
             Repaint();
+        }
+
+        /// <summary>
+        /// Build a vertex remap table: rawFbxVertex[i] → optimizedVertex[remap[i]].
+        /// Uses quantized position + UV0 matching (same as RemapUv2IfNeeded but computed once at pipeline time).
+        /// </summary>
+        static int[] BuildVertexRemap(Mesh rawFbx, Mesh optimized)
+        {
+            var rawPos = rawFbx.vertices;
+            var optPos = optimized.vertices;
+            int rawCount = rawPos.Length;
+            int optCount = optPos.Length;
+
+            var rawUv0 = new List<Vector2>(); rawFbx.GetUVs(0, rawUv0);
+            var optUv0 = new List<Vector2>(); optimized.GetUVs(0, optUv0);
+            bool hasUv0 = rawUv0.Count == rawCount && optUv0.Count == optCount;
+
+            // Build quantized position lookup for optimized vertices
+            var posLookup = new Dictionary<(int, int, int), List<int>>();
+            for (int i = 0; i < optCount; i++)
+            {
+                var key = QuantizePos(optPos[i]);
+                if (!posLookup.TryGetValue(key, out var list))
+                {
+                    list = new List<int>(2);
+                    posLookup[key] = list;
+                }
+                list.Add(i);
+            }
+
+            var remap = new int[rawCount];
+            for (int i = 0; i < rawCount; i++) remap[i] = -1;
+
+            var used = new bool[optCount];
+            int matched = 0;
+
+            // Pass 1: exact quantized position match
+            for (int i = 0; i < rawCount; i++)
+            {
+                var key = QuantizePos(rawPos[i]);
+                if (!posLookup.TryGetValue(key, out var candidates)) continue;
+
+                if (candidates.Count == 1)
+                {
+                    remap[i] = candidates[0];
+                    // Don't mark as used — multiple raw verts can map to same optimized vert (dedup)
+                    matched++;
+                }
+                else if (hasUv0)
+                {
+                    float bestDist = float.MaxValue;
+                    int bestIdx = -1;
+                    foreach (int ci in candidates)
+                    {
+                        float d = Vector2.SqrMagnitude(rawUv0[i] - optUv0[ci]);
+                        if (d < bestDist) { bestDist = d; bestIdx = ci; }
+                    }
+                    if (bestIdx >= 0) { remap[i] = bestIdx; matched++; }
+                }
+                else
+                {
+                    // No UV0 — pick first candidate
+                    remap[i] = candidates[0];
+                    matched++;
+                }
+            }
+
+            // Pass 2: nearest-neighbor fallback for bucket boundary misses
+            if (matched < rawCount)
+            {
+                for (int i = 0; i < rawCount; i++)
+                {
+                    if (remap[i] >= 0) continue;
+                    float bestDist = float.MaxValue;
+                    int bestIdx = -1;
+                    for (int j = 0; j < optCount; j++)
+                    {
+                        float d = Vector3.SqrMagnitude(rawPos[i] - optPos[j]);
+                        if (d < bestDist) { bestDist = d; bestIdx = j; }
+                    }
+                    if (bestIdx >= 0 && bestDist < 1e-4f)
+                    {
+                        remap[i] = bestIdx;
+                        matched++;
+                    }
+                }
+            }
+
+            if (matched < rawCount)
+                UvtLog.Warn($"[Apply] BuildVertexRemap: {matched}/{rawCount} mapped ({rawCount - matched} unmapped)");
+
+            return remap;
+        }
+
+        /// <summary>Extract all triangle indices + per-submesh counts from a mesh.</summary>
+        static void BuildTriangleData(Mesh mesh, out int[] allTriangles, out int[] submeshCounts)
+        {
+            int subCount = mesh.subMeshCount;
+            submeshCounts = new int[subCount];
+            var allTris = new List<int>();
+            for (int s = 0; s < subCount; s++)
+            {
+                int[] sub = mesh.GetTriangles(s);
+                submeshCounts[s] = sub.Length;
+                allTris.AddRange(sub);
+            }
+            allTriangles = allTris.ToArray();
+        }
+
+        static (int, int, int) QuantizePos(Vector3 pos)
+        {
+            return (
+                Mathf.RoundToInt(pos.x * 10000f),
+                Mathf.RoundToInt(pos.y * 10000f),
+                Mathf.RoundToInt(pos.z * 10000f)
+            );
         }
 
         // ════════════════════════════════════════════════════════════

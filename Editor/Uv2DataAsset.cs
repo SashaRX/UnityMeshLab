@@ -21,6 +21,19 @@ namespace LightmapUvTool
         public Vector3[] vertPositions;
         /// <summary>Vertex UV0 at the time UV2 was computed (for disambiguation at shared positions).</summary>
         public Vector2[] vertUv0;
+
+        // ── Deterministic replay data (variant B) ──
+        /// <summary>
+        /// Maps raw FBX vertex index → optimized vertex index.
+        /// Length == raw FBX vertexCount. If null, no replay — legacy path.
+        /// </summary>
+        public int[] vertexRemap;
+        /// <summary>Number of vertices in the optimized mesh.</summary>
+        public int optimizedVertexCount;
+        /// <summary>Triangle indices for the optimized mesh (all submeshes concatenated).</summary>
+        public int[] optimizedTriangles;
+        /// <summary>Number of triangle indices per submesh (to reconstruct submesh boundaries).</summary>
+        public int[] submeshTriangleCounts;
     }
 
     [CreateAssetMenu(menuName = "LightmapUvTool/UV2 Data (internal)", fileName = "uv2data")]
@@ -38,7 +51,9 @@ namespace LightmapUvTool
 
         /// <summary>Set UV2 for a mesh name (add or overwrite).</summary>
         public void Set(string meshName, Vector2[] uv2, bool welded = false, bool edgeWelded = false,
-                        Vector3[] vertPositions = null, Vector2[] vertUv0 = null)
+                        Vector3[] vertPositions = null, Vector2[] vertUv0 = null,
+                        int[] vertexRemap = null, int optimizedVertexCount = 0,
+                        int[] optimizedTriangles = null, int[] submeshTriangleCounts = null)
         {
             var e = Find(meshName);
             if (e != null)
@@ -48,12 +63,18 @@ namespace LightmapUvTool
                 e.edgeWelded = edgeWelded;
                 e.vertPositions = vertPositions;
                 e.vertUv0 = vertUv0;
+                e.vertexRemap = vertexRemap;
+                e.optimizedVertexCount = optimizedVertexCount;
+                e.optimizedTriangles = optimizedTriangles;
+                e.submeshTriangleCounts = submeshTriangleCounts;
             }
             else
             {
                 entries.Add(new MeshUv2Entry {
                     meshName = meshName, uv2 = uv2, welded = welded, edgeWelded = edgeWelded,
-                    vertPositions = vertPositions, vertUv0 = vertUv0
+                    vertPositions = vertPositions, vertUv0 = vertUv0,
+                    vertexRemap = vertexRemap, optimizedVertexCount = optimizedVertexCount,
+                    optimizedTriangles = optimizedTriangles, submeshTriangleCounts = submeshTriangleCounts
                 });
             }
         }

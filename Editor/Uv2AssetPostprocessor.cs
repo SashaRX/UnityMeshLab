@@ -81,21 +81,43 @@ namespace LightmapUvTool
 
             stats.fbxVerts = mesh.vertexCount;
 
-            // Phase 1: meshopt full pipeline (dedup + vertex cache + overdraw + fetch reorder)
-            // Must match the tool's MeshOptimizer.Optimize exactly, not just WeldInPlace,
-            // because meshopt_optimizeVertexFetch reorders vertices and UV2 indices depend on that order.
+            // ── Deterministic replay path (variant B) ──
+            // If sidecar has a stored vertexRemap, replay the optimization
+            // by table lookup instead of re-running MeshOptimizer + UvEdgeWeld.
+            // This guarantees byte-identical results across Unity's verification passes.
+            if (entry.vertexRemap != null && entry.vertexRemap.Length > 0)
+            {
+                if (entry.vertexRemap.Length != mesh.vertexCount)
+                {
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': remap length mismatch " +
+                                $"(remap={entry.vertexRemap.Length}, mesh={mesh.vertexCount}) — falling back to legacy path.");
+                }
+                else
+                {
+                    bool ok = ReplayOptimization(mesh, entry);
+                    if (ok)
+                    {
+                        stats.finalVerts = mesh.vertexCount;
+                        stats.remapped = false;
+                        // UV2 count now matches — assign directly
+                        mesh.SetUVs(1, entry.uv2);
+                        return true;
+                    }
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': replay failed — falling back to legacy path.");
+                }
+            }
+
+            // ── Legacy path (no replay data in sidecar) ──
             if (entry.welded)
             {
                 MeshOptimizer.Optimize(mesh);
             }
 
-            // Phase 2: UV edge weld if flagged
             if (entry.edgeWelded)
             {
                 var welded = Uv0Analyzer.UvEdgeWeld(mesh);
                 if (welded != null && welded != mesh)
                 {
-                    // Copy welded data back into the mesh object
                     mesh.Clear();
                     mesh.vertices = welded.vertices;
                     mesh.normals = welded.normals;
@@ -118,10 +140,6 @@ namespace LightmapUvTool
 
             if (entry.uv2.Length != mesh.vertexCount)
             {
-                // Vertex counts differ (meshopt may produce slightly different results
-                // on fresh FBX reimport vs editor transfer session).
-                // Do NOT skip — proceed to RemapUv2IfNeeded which matches by 3D position.
-                // Only warn when no position data is available (legacy sidecar, no remap possible).
                 if (entry.vertPositions == null || entry.vertPositions.Length == 0)
                 {
                     UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': vertex count mismatch " +
@@ -134,12 +152,138 @@ namespace LightmapUvTool
 
             stats.finalVerts = mesh.vertexCount;
 
-            // Apply UV2 with position-based remapping if vertex order differs
             bool didRemap;
             var uv2 = RemapUv2IfNeeded(entry, mesh, out didRemap);
             stats.remapped = didRemap;
-            // Channel 1 = mesh.uv2 = Unity's lightmap UV channel
             mesh.SetUVs(1, uv2);
+            return true;
+        }
+
+        /// <summary>
+        /// Deterministic mesh rebuild from stored remap table.
+        /// Takes raw FBX mesh, applies stored vertex remap + triangle indices
+        /// to produce the exact same optimized mesh every time.
+        /// No MeshOptimizer or UvEdgeWeld calls — pure table-driven permutation.
+        /// </summary>
+        static bool ReplayOptimization(Mesh mesh, MeshUv2Entry entry)
+        {
+            int rawCount = mesh.vertexCount;
+            int optCount = entry.optimizedVertexCount;
+            int[] remap = entry.vertexRemap;
+
+            if (optCount <= 0 || entry.optimizedTriangles == null || entry.submeshTriangleCounts == null)
+                return false;
+
+            // Validate remap bounds
+            for (int i = 0; i < rawCount; i++)
+            {
+                if (remap[i] >= optCount)
+                {
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': remap[{i}]={remap[i]} >= optCount={optCount}");
+                    return false;
+                }
+            }
+
+            // ── Read all channels from raw FBX mesh ──
+            var rawPos     = mesh.vertices;
+            var rawNormals = mesh.normals;
+            var rawTangents = mesh.tangents;
+            var rawColors  = mesh.colors32;
+            var rawBoneW   = mesh.boneWeights;
+            var rawBindP   = mesh.bindposes;
+
+            // Read UV channels (0–7, skip channel 1 which is UV2 — we'll write that from sidecar)
+            var rawUvs = new List<Vector2>[8];
+            var rawUvDim = new int[8];
+            for (int ch = 0; ch < 8; ch++)
+            {
+                if (ch == 1) continue; // UV2 comes from sidecar
+                var attr = (UnityEngine.Rendering.VertexAttribute)((int)UnityEngine.Rendering.VertexAttribute.TexCoord0 + ch);
+                if (!mesh.HasVertexAttribute(attr)) continue;
+                rawUvDim[ch] = mesh.GetVertexAttributeDimension(attr);
+                rawUvs[ch] = new List<Vector2>();
+                mesh.GetUVs(ch, rawUvs[ch]);
+            }
+
+            // ── Build optimized arrays via remap ──
+            var optPos = new Vector3[optCount];
+            var optNormals = rawNormals != null && rawNormals.Length == rawCount ? new Vector3[optCount] : null;
+            var optTangents = rawTangents != null && rawTangents.Length == rawCount ? new Vector4[optCount] : null;
+            var optColors = rawColors != null && rawColors.Length == rawCount ? new Color32[optCount] : null;
+
+            var optUvs = new List<Vector2>[8];
+            for (int ch = 0; ch < 8; ch++)
+            {
+                if (ch == 1) continue;
+                if (rawUvs[ch] != null && rawUvs[ch].Count == rawCount)
+                {
+                    optUvs[ch] = new List<Vector2>(new Vector2[optCount]);
+                }
+            }
+
+            for (int i = 0; i < rawCount; i++)
+            {
+                int dst = remap[i];
+                if (dst < 0) continue; // vertex was removed (shouldn't happen with valid remap)
+
+                optPos[dst] = rawPos[i];
+                if (optNormals != null) optNormals[dst] = rawNormals[i];
+                if (optTangents != null) optTangents[dst] = rawTangents[i];
+                if (optColors != null) optColors[dst] = rawColors[i];
+
+                for (int ch = 0; ch < 8; ch++)
+                {
+                    if (ch == 1 || optUvs[ch] == null) continue;
+                    optUvs[ch][dst] = rawUvs[ch][i];
+                }
+            }
+
+            // ── Rebuild mesh ──
+            mesh.Clear();
+
+            mesh.SetVertices(optPos);
+            if (optNormals != null) mesh.SetNormals(optNormals);
+            if (optTangents != null) mesh.SetTangents(optTangents);
+            if (optColors != null) mesh.SetColors(optColors);
+
+            for (int ch = 0; ch < 8; ch++)
+            {
+                if (ch == 1 || optUvs[ch] == null) continue;
+                mesh.SetUVs(ch, optUvs[ch]);
+            }
+
+            // Restore bone data
+            if (rawBoneW != null && rawBoneW.Length > 0)
+            {
+                var optBoneW = new BoneWeight[optCount];
+                for (int i = 0; i < rawCount; i++)
+                {
+                    int dst = remap[i];
+                    if (dst >= 0) optBoneW[dst] = rawBoneW[i];
+                }
+                mesh.boneWeights = optBoneW;
+            }
+            if (rawBindP != null && rawBindP.Length > 0)
+                mesh.bindposes = rawBindP;
+
+            // ── Set submesh triangles ──
+            int subCount = entry.submeshTriangleCounts.Length;
+            mesh.subMeshCount = subCount;
+            int offset = 0;
+            for (int s = 0; s < subCount; s++)
+            {
+                int len = entry.submeshTriangleCounts[s];
+                var subTris = new int[len];
+                System.Array.Copy(entry.optimizedTriangles, offset, subTris, 0, len);
+                mesh.SetTriangles(subTris, s);
+                offset += len;
+            }
+
+            mesh.RecalculateBounds();
+            mesh.UploadMeshData(false);
+
+            UvtLog.Verbose($"[UV2 Postprocess] '{mesh.name}': replay {rawCount}→{optCount} verts " +
+                          $"({entry.optimizedTriangles.Length / 3} tris, {subCount} submeshes)");
             return true;
         }
 
