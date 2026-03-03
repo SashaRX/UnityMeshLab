@@ -1219,16 +1219,12 @@ namespace LightmapUvTool
                             float bestU = 0, bestV = 0, bestW = 0;
                             float bestDSq = float.MaxValue;
 
-                            // Normal filtering for thin geometry disambiguation
-                            Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
-                                ? tNormals[vi] : Vector3.up;
-
-                            // BVH lookup in source shell's UV0 space
+                            // NO normal filter — this is constrained to one source shell,
+                            // and belt geometry has target normals opposing source normals.
+                            // UV0 proximity within the shell is sufficient.
                             if (uv0Bvh != null)
                             {
-                                var hit = tNrm.sqrMagnitude > 0.5f
-                                    ? uv0Bvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, kBackfaceDot)
-                                    : uv0Bvh.FindNearest(tUv);
+                                var hit = uv0Bvh.FindNearest(tUv);
                                 bestF = hit.faceIndex;
                                 bestU = hit.u; bestV = hit.v; bestW = hit.w;
                                 bestDSq = hit.distSq;
