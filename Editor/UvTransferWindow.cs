@@ -440,7 +440,7 @@ namespace LightmapUvTool
             // ── Run Full Pipeline ──
             EditorGUILayout.Space(6);
             ColorBtn(new Color(.2f,.75f,.95f), "▶  Run Full Pipeline", 30, ExecFullPipeline);
-            EditorGUILayout.LabelField("Analyze → Weld → Repack → Transfer → Review", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField("Analyze → Weld → SymSplit → Repack → Transfer → Review", EditorStyles.miniLabel);
 
             // ── Pipeline Settings ──
             EditorGUILayout.Space(6);
@@ -1270,6 +1270,24 @@ namespace LightmapUvTool
             ExecAnalyzeUv0();
         }
 
+        void ExecSymmetrySplit()
+        {
+            int totalSplit = 0;
+            foreach (var e in meshEntries)
+            {
+                if (!e.include || e.originalMesh == null) continue;
+                if (e.lodIndex != sourceLodIndex) continue;
+                var mesh = e.originalMesh;
+                var uv0 = mesh.uv;
+                if (uv0 == null || uv0.Length == 0) continue;
+                var shells = UvShellExtractor.Extract(uv0, mesh.triangles);
+                int n = SymmetrySplitShells.Split(mesh, shells);
+                totalSplit += n;
+            }
+            if (totalSplit > 0)
+                UvtLog.Info($"[Pipeline] Symmetry split: {totalSplit} shell(s) split across source meshes");
+        }
+
         // ════════════════════════════════════════════════════════════
         //  Full Pipeline
         // ════════════════════════════════════════════════════════════
@@ -1281,16 +1299,19 @@ namespace LightmapUvTool
 
             try
             {
-                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 1/4: Analyze UV0...", 0.05f);
+                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 1/5: Analyze UV0...", 0.05f);
                 ExecAnalyzeUv0();
 
-                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 2/4: Weld...", 0.15f);
+                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 2/5: Weld...", 0.15f);
                 bool hasTargetLods = meshEntries.Any(e => e.include && e.lodIndex != sourceLodIndex);
                 bool anyIssues = uv0Reports.Values.Any(r => r.falseSeamPairs > 0);
                 if ((anyIssues || hasTargetLods) && !uv0Welded)
                     ExecWeldUv0();
 
-                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 3/4: Repack...", 0.35f);
+                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 3/5: Symmetry split...", 0.25f);
+                ExecSymmetrySplit();
+
+                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 4/5: Repack...", 0.40f);
                 var src = ForLod(sourceLodIndex);
                 ExecRepack(src);
 
@@ -1300,7 +1321,7 @@ namespace LightmapUvTool
                     return;
                 }
 
-                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 4/4: Transfer...", 0.6f);
+                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 5/5: Transfer...", 0.6f);
                 ExecTransferAll();
 
                 tab = Tab.Transfer;

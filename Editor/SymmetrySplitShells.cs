@@ -1,0 +1,410 @@
+// SymmetrySplitShells.cs — Split UV0 shells with symmetry overlap
+// Detects mirrored geometry sharing the same UV0 space, duplicates boundary
+// vertices to break topological connection so xatlas repacks them as separate charts.
+// Place in Assets/Editor/
+
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace LightmapUvTool
+{
+    public static class SymmetrySplitShells
+    {
+        const float UV_NEAR = 0.01f;   // UV0 centroid distance threshold
+        const float POS_FAR = 0.5f;    // 3D centroid distance threshold
+        const float GRID_CELL = 0.01f; // spatial hash cell for UV0 centroids
+
+        struct SplitInfo
+        {
+            public int shellIndex;
+            public int axis; // 0=X, 1=Y, 2=Z
+        }
+
+        /// <summary>
+        /// Detect and split shells with symmetry overlap.
+        /// Modifies mesh in-place, adds new shells to the list.
+        /// Returns number of shells split.
+        /// </summary>
+        public static int Split(Mesh mesh, List<UvShell> shells)
+        {
+            var verts = mesh.vertices;
+            var uv0 = mesh.uv;
+            var tris = mesh.triangles;
+
+            if (uv0 == null || uv0.Length == 0 || tris.Length == 0)
+                return 0;
+
+            int faceCount = tris.Length / 3;
+
+            // ── Precompute per-face centroids ──
+            var uv0C = new Vector2[faceCount];
+            var posC = new Vector3[faceCount];
+            for (int f = 0; f < faceCount; f++)
+            {
+                int v0 = tris[f * 3], v1 = tris[f * 3 + 1], v2 = tris[f * 3 + 2];
+                uv0C[f] = (uv0[v0] + uv0[v1] + uv0[v2]) / 3f;
+                posC[f] = (verts[v0] + verts[v1] + verts[v2]) / 3f;
+            }
+
+            // ══════════════ Phase 1: Detection ══════════════
+
+            var splits = new List<SplitInfo>();
+
+            for (int si = 0; si < shells.Count; si++)
+            {
+                var shell = shells[si];
+                var faces = shell.faceIndices;
+                if (faces.Count < 2) continue;
+
+                // Build UV0 centroid spatial hash for this shell
+                var grid = new Dictionary<long, List<int>>();
+                foreach (int f in faces)
+                {
+                    long key = UvGridKey(uv0C[f]);
+                    if (!grid.TryGetValue(key, out var bucket))
+                    {
+                        bucket = new List<int>();
+                        grid[key] = bucket;
+                    }
+                    bucket.Add(f);
+                }
+
+                // Find symmetry pairs via grid neighbor search
+                int[] axisVotes = new int[3];
+                bool found = false;
+
+                foreach (int f in faces)
+                {
+                    var c = uv0C[f];
+                    int cx = Mathf.FloorToInt(c.x / GRID_CELL);
+                    int cy = Mathf.FloorToInt(c.y / GRID_CELL);
+
+                    for (int dx = -1; dx <= 1; dx++)
+                    for (int dy = -1; dy <= 1; dy++)
+                    {
+                        long nk = GridKey(cx + dx, cy + dy);
+                        if (!grid.TryGetValue(nk, out var bucket)) continue;
+
+                        foreach (int g in bucket)
+                        {
+                            if (g <= f) continue; // avoid duplicate pairs + self
+                            float uvDist = Vector2.Distance(uv0C[f], uv0C[g]);
+                            if (uvDist >= UV_NEAR) continue;
+                            float posDist = Vector3.Distance(posC[f], posC[g]);
+                            if (posDist <= POS_FAR) continue;
+
+                            // Symmetry pair — vote on axis
+                            Vector3 mid = (posC[f] + posC[g]) * 0.5f;
+                            float ax = Mathf.Abs(mid.x);
+                            float ay = Mathf.Abs(mid.y);
+                            float az = Mathf.Abs(mid.z);
+
+                            if (ax <= ay && ax <= az) axisVotes[0]++;
+                            else if (ay <= az) axisVotes[1]++;
+                            else axisVotes[2]++;
+                            found = true;
+                        }
+                    }
+                }
+
+                if (!found) continue;
+
+                int bestAxis = 0;
+                if (axisVotes[1] > axisVotes[bestAxis]) bestAxis = 1;
+                if (axisVotes[2] > axisVotes[bestAxis]) bestAxis = 2;
+
+                splits.Add(new SplitInfo { shellIndex = si, axis = bestAxis });
+                UvtLog.Verbose($"[SymSplit] Shell {si}: symmetry on {AxisName(bestAxis)} " +
+                    $"({axisVotes[0]}x/{axisVotes[1]}y/{axisVotes[2]}z votes, {faces.Count} faces)");
+            }
+
+            if (splits.Count == 0) return 0;
+
+            // ══════════════ Phase 2: Split classification ══════════════
+
+            // Collect all boundary vertex duplications needed
+            int origVertCount = verts.Length;
+            int newVertOffset = 0;
+
+            // Per split: groupA faces, groupB faces, boundary remap
+            var splitData = new List<(
+                SplitInfo info,
+                List<int> groupA,
+                List<int> groupB,
+                Dictionary<int, int> boundaryRemap)>();
+
+            foreach (var sp in splits)
+            {
+                var shell = shells[sp.shellIndex];
+                var groupA = new List<int>();
+                var groupB = new List<int>();
+
+                foreach (int f in shell.faceIndices)
+                {
+                    float val = posC[f][sp.axis];
+                    if (val >= 0f)
+                        groupA.Add(f);
+                    else
+                        groupB.Add(f);
+                }
+
+                // Skip if one group is empty — no actual split
+                if (groupA.Count == 0 || groupB.Count == 0)
+                {
+                    UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (all faces on one side)");
+                    continue;
+                }
+
+                // Find vertices used by each group
+                var vertsA = new HashSet<int>();
+                var vertsB = new HashSet<int>();
+                foreach (int f in groupA)
+                    for (int j = 0; j < 3; j++)
+                        vertsA.Add(tris[f * 3 + j]);
+                foreach (int f in groupB)
+                    for (int j = 0; j < 3; j++)
+                        vertsB.Add(tris[f * 3 + j]);
+
+                // Boundary = intersection
+                var boundary = new HashSet<int>(vertsA);
+                boundary.IntersectWith(vertsB);
+
+                if (boundary.Count == 0)
+                {
+                    UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: no boundary vertices (already separate)");
+                    continue;
+                }
+
+                // Assign new indices for boundary vertices (for group B)
+                var remap = new Dictionary<int, int>();
+                foreach (int bv in boundary)
+                {
+                    remap[bv] = origVertCount + newVertOffset;
+                    newVertOffset++;
+                }
+
+                splitData.Add((sp, groupA, groupB, remap));
+                UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: A={groupA.Count} B={groupB.Count} boundary={boundary.Count}");
+            }
+
+            if (splitData.Count == 0) return 0;
+
+            // ══════════════ Phase 3: Apply ══════════════
+
+            int totalNewVerts = newVertOffset;
+            int newVertCount = origVertCount + totalNewVerts;
+
+            // Read all vertex attributes
+            var normals = mesh.normals;
+            var tangents = mesh.tangents;
+            var colors = mesh.colors;
+            var boneWeights = mesh.boneWeights;
+
+            bool hasNormals = normals != null && normals.Length == origVertCount;
+            bool hasTangents = tangents != null && tangents.Length == origVertCount;
+            bool hasColors = colors != null && colors.Length == origVertCount;
+            bool hasBW = boneWeights != null && boneWeights.Length == origVertCount;
+
+            // Read all UV channels (0-7)
+            var uvLists = new List<Vector4>[8];
+            var hasUv = new bool[8];
+            for (int ch = 0; ch < 8; ch++)
+            {
+                uvLists[ch] = new List<Vector4>();
+                mesh.GetUVs(ch, uvLists[ch]);
+                hasUv[ch] = uvLists[ch].Count == origVertCount;
+            }
+
+            // Expand arrays
+            var newVerts = new Vector3[newVertCount];
+            System.Array.Copy(verts, newVerts, origVertCount);
+
+            Vector3[] newNormals = null;
+            if (hasNormals)
+            {
+                newNormals = new Vector3[newVertCount];
+                System.Array.Copy(normals, newNormals, origVertCount);
+            }
+
+            Vector4[] newTangents = null;
+            if (hasTangents)
+            {
+                newTangents = new Vector4[newVertCount];
+                System.Array.Copy(tangents, newTangents, origVertCount);
+            }
+
+            Color[] newColors = null;
+            if (hasColors)
+            {
+                newColors = new Color[newVertCount];
+                System.Array.Copy(colors, newColors, origVertCount);
+            }
+
+            BoneWeight[] newBW = null;
+            if (hasBW)
+            {
+                newBW = new BoneWeight[newVertCount];
+                System.Array.Copy(boneWeights, newBW, origVertCount);
+            }
+
+            // Expand UV channels
+            var newUvs = new List<Vector4>[8];
+            for (int ch = 0; ch < 8; ch++)
+            {
+                if (!hasUv[ch]) { newUvs[ch] = null; continue; }
+                newUvs[ch] = new List<Vector4>(newVertCount);
+                newUvs[ch].AddRange(uvLists[ch]);
+                // Pad to newVertCount — will fill duplicates below
+                while (newUvs[ch].Count < newVertCount)
+                    newUvs[ch].Add(Vector4.zero);
+            }
+
+            // Copy boundary vertex attributes to new slots
+            foreach (var (info, groupA, groupB, remap) in splitData)
+            {
+                foreach (var kv in remap)
+                {
+                    int src = kv.Key;
+                    int dst = kv.Value;
+                    newVerts[dst] = verts[src];
+                    if (hasNormals) newNormals[dst] = normals[src];
+                    if (hasTangents) newTangents[dst] = tangents[src];
+                    if (hasColors) newColors[dst] = colors[src];
+                    if (hasBW) newBW[dst] = boneWeights[src];
+                    for (int ch = 0; ch < 8; ch++)
+                        if (hasUv[ch]) newUvs[ch][dst] = uvLists[ch][src];
+                }
+            }
+
+            // Update triangle indices for group B faces
+            int[] newTris = (int[])tris.Clone();
+            foreach (var (info, groupA, groupB, remap) in splitData)
+            {
+                foreach (int f in groupB)
+                {
+                    for (int j = 0; j < 3; j++)
+                    {
+                        int vi = newTris[f * 3 + j];
+                        if (remap.TryGetValue(vi, out int ni))
+                            newTris[f * 3 + j] = ni;
+                    }
+                }
+            }
+
+            // Capture submesh layout before Clear
+            int subCount = mesh.subMeshCount;
+            var subDescs = new UnityEngine.Rendering.SubMeshDescriptor[subCount];
+            for (int s = 0; s < subCount; s++)
+                subDescs[s] = mesh.GetSubMesh(s);
+
+            var bindPoses = mesh.bindposes;
+
+            // Apply to mesh
+            mesh.Clear();
+            mesh.vertices = newVerts;
+            if (hasNormals) mesh.normals = newNormals;
+            if (hasTangents) mesh.tangents = newTangents;
+            if (hasColors) mesh.colors = newColors;
+            if (hasBW) mesh.boneWeights = newBW;
+            if (bindPoses != null && bindPoses.Length > 0)
+                mesh.bindposes = bindPoses;
+
+            for (int ch = 0; ch < 8; ch++)
+            {
+                if (!hasUv[ch]) continue;
+                mesh.SetUVs(ch, newUvs[ch]);
+            }
+
+            // Restore submeshes
+            mesh.subMeshCount = subCount;
+            int triOffset = 0;
+            for (int s = 0; s < subCount; s++)
+            {
+                int idxCount = subDescs[s].indexCount;
+                int[] subTris = new int[idxCount];
+                System.Array.Copy(newTris, triOffset, subTris, 0, idxCount);
+                mesh.SetTriangles(subTris, s);
+                triOffset += idxCount;
+            }
+
+            mesh.RecalculateBounds();
+
+            // Update shell list — need fresh UV0 for bounds
+            var finalUv0 = mesh.uv;
+
+            foreach (var (info, groupA, groupB, remap) in splitData)
+            {
+                var origShell = shells[info.shellIndex];
+
+                // Rebuild original shell as group A
+                origShell.faceIndices = groupA;
+                origShell.vertexIndices.Clear();
+                Vector2 mnA = new Vector2(float.MaxValue, float.MaxValue);
+                Vector2 mxA = new Vector2(float.MinValue, float.MinValue);
+                foreach (int f in groupA)
+                {
+                    for (int j = 0; j < 3; j++)
+                    {
+                        int vi = newTris[f * 3 + j];
+                        origShell.vertexIndices.Add(vi);
+                        if (vi < finalUv0.Length)
+                        {
+                            mnA = Vector2.Min(mnA, finalUv0[vi]);
+                            mxA = Vector2.Max(mxA, finalUv0[vi]);
+                        }
+                    }
+                }
+                origShell.boundsMin = mnA;
+                origShell.boundsMax = mxA;
+                origShell.bboxArea = Mathf.Max(0f, (mxA.x - mnA.x) * (mxA.y - mnA.y));
+
+                // Create new shell for group B
+                var newShell = new UvShell { shellId = shells.Count };
+                newShell.faceIndices = groupB;
+                Vector2 mnB = new Vector2(float.MaxValue, float.MaxValue);
+                Vector2 mxB = new Vector2(float.MinValue, float.MinValue);
+                foreach (int f in groupB)
+                {
+                    for (int j = 0; j < 3; j++)
+                    {
+                        int vi = newTris[f * 3 + j];
+                        newShell.vertexIndices.Add(vi);
+                        if (vi < finalUv0.Length)
+                        {
+                            mnB = Vector2.Min(mnB, finalUv0[vi]);
+                            mxB = Vector2.Max(mxB, finalUv0[vi]);
+                        }
+                    }
+                }
+                newShell.boundsMin = mnB;
+                newShell.boundsMax = mxB;
+                newShell.bboxArea = Mathf.Max(0f, (mxB.x - mnB.x) * (mxB.y - mnB.y));
+                shells.Add(newShell);
+            }
+
+            UvtLog.Info($"[SymSplit] Split {splitData.Count} shell(s), " +
+                $"added {totalNewVerts} boundary verts ({origVertCount} → {newVertCount})");
+
+            return splitData.Count;
+        }
+
+        // ── Spatial hash helpers ──
+
+        static long UvGridKey(Vector2 uv)
+        {
+            int cx = Mathf.FloorToInt(uv.x / GRID_CELL);
+            int cy = Mathf.FloorToInt(uv.y / GRID_CELL);
+            return GridKey(cx, cy);
+        }
+
+        static long GridKey(int cx, int cy)
+        {
+            return (long)cx * 73856093L ^ (long)cy * 19349663L;
+        }
+
+        static string AxisName(int axis)
+        {
+            return axis == 0 ? "X" : axis == 1 ? "Y" : "Z";
+        }
+    }
+}
