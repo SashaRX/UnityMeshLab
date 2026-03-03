@@ -312,7 +312,7 @@ namespace LightmapUvTool
             if (LodN <= 0) return;
 
             int clamped = Mathf.Clamp(lodIndex, 0, LodN - 1);
-            if (pvLod == clamped && lodGroup != null && lodGroup.forceLOD == clamped)
+            if (pvLod == clamped)
                 return;
 
             pvLod = clamped;
