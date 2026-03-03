@@ -636,6 +636,25 @@ namespace LightmapUvTool
                 srcAABBMax[si] = bMax;
             }
 
+            // Compute UV2 bounding box for each source shell (for xform OOB detection)
+            var srcUv2Min = new Vector2[srcShells.Count];
+            var srcUv2Max = new Vector2[srcShells.Count];
+            for (int si = 0; si < srcShells.Count; si++)
+            {
+                Vector2 bMin2 = new Vector2(float.MaxValue, float.MaxValue);
+                Vector2 bMax2 = new Vector2(float.MinValue, float.MinValue);
+                foreach (int vi in srcShells[si].vertexIndices)
+                {
+                    if (vi < srcUv2.Length)
+                    {
+                        bMin2 = Vector2.Min(bMin2, srcUv2[vi]);
+                        bMax2 = Vector2.Max(bMax2, srcUv2[vi]);
+                    }
+                }
+                srcUv2Min[si] = bMin2;
+                srcUv2Max[si] = bMax2;
+            }
+
             // Precompute per-source-shell average face normal + total UV0 area
             var srcAvgNormal = new Vector3[srcShells.Count];
             var srcUv0Area = new float[srcShells.Count];
@@ -1144,6 +1163,42 @@ namespace LightmapUvTool
                             uv2_transform[vi] = xf.Apply(tUv0[vi]);
                         }
                         issuesTransform = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, uv2_transform);
+
+                        // Penalize xform if it extrapolates beyond source shell's UV2 bounds.
+                        // Extrapolation is the primary cause of cross-source UV2 overlaps,
+                        // since interp stays within source UV2 convex hull by construction.
+                        const float kOobMargin = 0.005f;
+                        Vector2 srcBMin2 = srcUv2Min[chosenSrc];
+                        Vector2 srcBMax2 = srcUv2Max[chosenSrc];
+                        Vector2 xfBMin = new Vector2(float.MaxValue, float.MaxValue);
+                        Vector2 xfBMax = new Vector2(float.MinValue, float.MinValue);
+                        int xfOob = 0;
+                        foreach (var kv in uv2_transform)
+                        {
+                            Vector2 uv = kv.Value;
+                            xfBMin = Vector2.Min(xfBMin, uv);
+                            xfBMax = Vector2.Max(xfBMax, uv);
+                            if (uv.x < srcBMin2.x - kOobMargin || uv.x > srcBMax2.x + kOobMargin ||
+                                uv.y < srcBMin2.y - kOobMargin || uv.y > srcBMax2.y + kOobMargin)
+                                xfOob++;
+                        }
+                        if (xfOob > 0)
+                        {
+                            // Check if extrapolated region crosses into another source
+                            // shell's UV2 AABB — if so, force interp to prevent overlap.
+                            for (int si = 0; si < srcShells.Count; si++)
+                            {
+                                if (si == chosenSrc) continue;
+                                if (xfBMin.x < srcUv2Max[si].x && xfBMax.x > srcUv2Min[si].x &&
+                                    xfBMin.y < srcUv2Max[si].y && xfBMax.y > srcUv2Min[si].y)
+                                {
+                                    issuesTransform = int.MaxValue;
+                                    break;
+                                }
+                            }
+                            if (issuesTransform < int.MaxValue)
+                                issuesTransform += xfOob;
+                        }
                     }
 
                     // Candidate B: per-vertex UV0 interpolation (BVH + normal filtering for thin details)
