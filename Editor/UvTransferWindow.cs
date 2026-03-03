@@ -85,6 +85,7 @@ namespace LightmapUvTool
         bool sideDragging;
 
         Material glMat;
+        Material texMat;
 
         // Preview cache: mesh instanceID -> boundary edge index pairs (a0,b0,a1,b1,...)
         readonly Dictionary<int, int[]> boundaryEdgeCache = new Dictionary<int, int[]>();
@@ -182,6 +183,10 @@ namespace LightmapUvTool
             glMat.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
             glMat.SetInt("_Cull",     (int)CullMode.Off);
             glMat.SetInt("_ZWrite",   0);
+
+            var texShader = Shader.Find("Unlit/Transparent");
+            if (texShader != null)
+                texMat = new Material(texShader) { hideFlags = HideFlags.HideAndDontSave };
         }
 
         void OnDisable()
@@ -193,7 +198,9 @@ namespace LightmapUvTool
             boundaryEdgeCache.Clear();
             if (canvasRT) { canvasRT.Release(); DestroyImmediate(canvasRT); canvasRT = null; }
             if (glMat) DestroyImmediate(glMat);
+            if (texMat) DestroyImmediate(texMat);
             glMat = null;
+            texMat = null;
         }
 
         void OnSelectionChange()
@@ -875,7 +882,14 @@ namespace LightmapUvTool
                     GL.Vertex3(cx + sz, cy + sz, 0); GL.Vertex3(cx, cy + sz, 0);
                     GL.End();
 
-                    if (checkerEnabled || fillMode != FillMode.None)
+                    Texture bgTex = ResolveUvPreviewBackgroundTexture(draws);
+                    if (bgTex != null)
+                    {
+                        GlTextureBg(cx, cy, sz, bgTex, new Vector2(1f, 1f), Vector2.zero, .95f);
+                        glMat.SetPass(0);
+                    }
+
+                    if (bgTex == null && (checkerEnabled || fillMode != FillMode.None))
                     {
                         // Show checker in UV preview under shell/overlay fills.
                         // Keep low alpha so shell colors stay dominant.
@@ -1086,6 +1100,31 @@ namespace LightmapUvTool
             GL.End();
         }
 
+
+        Texture ResolveUvPreviewBackgroundTexture(List<ValueTuple<Mesh, MeshEntry, int>> draws)
+        {
+            if (checkerEnabled)
+                return CheckerTexturePreview.GetCheckerTexture();
+
+            foreach (var item in draws)
+            {
+                var renderer = item.Item2.renderer;
+                if (renderer == null) continue;
+                var mats = renderer.sharedMaterials;
+                if (mats == null) continue;
+
+                for (int i = 0; i < mats.Length; i++)
+                {
+                    var mat = mats[i];
+                    if (mat == null || !mat.HasProperty("_MainTex")) continue;
+                    var tex = mat.mainTexture;
+                    if (tex != null) return tex;
+                }
+            }
+
+            return null;
+        }
+
         void GlCheckerBg(float ox, float oy, float sz, int cells, float alpha)
         {
             if (cells <= 0 || alpha <= 0f) return;
@@ -1104,6 +1143,34 @@ namespace LightmapUvTool
                     GL.Vertex3(x0 + cell, y0 + cell, 0);
                     GL.Vertex3(x0, y0 + cell, 0);
                 }
+            }
+            GL.End();
+        }
+
+        void GlTextureBg(float ox, float oy, float sz, Texture tex, Vector2 tiling, Vector2 offset, float alpha)
+        {
+            if (tex == null || texMat == null) return;
+
+            texMat.mainTexture = tex;
+            texMat.SetColor("_Color", new Color(1f, 1f, 1f, Mathf.Clamp01(alpha)));
+            texMat.SetPass(0);
+
+            GL.Begin(GL.QUADS);
+            for (int tu = -1; tu <= 3; tu++)
+            for (int tv = -1; tv <= 3; tv++)
+            {
+                float tx = ox + tu * sz;
+                float ty = oy - tv * sz;
+
+                float u0 = (tu + offset.x) * tiling.x;
+                float u1 = (tu + 1 + offset.x) * tiling.x;
+                float v0 = (tv + offset.y) * tiling.y;
+                float v1 = (tv + 1 + offset.y) * tiling.y;
+
+                GL.TexCoord2(u0, v1); GL.Vertex3(tx, ty, 0);
+                GL.TexCoord2(u1, v1); GL.Vertex3(tx + sz, ty, 0);
+                GL.TexCoord2(u1, v0); GL.Vertex3(tx + sz, ty + sz, 0);
+                GL.TexCoord2(u0, v0); GL.Vertex3(tx, ty + sz, 0);
             }
             GL.End();
         }

@@ -29,6 +29,16 @@ namespace LightmapUvTool
 
         public static bool IsActive => isActive;
 
+        /// <summary>
+        /// Returns the procedural checker texture used in Scene preview.
+        /// Ensures texture is generated before returning.
+        /// </summary>
+        public static Texture2D GetCheckerTexture()
+        {
+            EnsureAssets();
+            return checkerTex;
+        }
+
         // ═══════════════════════════════════════════════════════════
         //  Apply / Restore
         // ═══════════════════════════════════════════════════════════

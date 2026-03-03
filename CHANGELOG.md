@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.13.010] - 2026-03-03
+
+### Fixed — UV Preview background parity with model material/checker
+- **UV Preview background source** (`UvTransferWindow.cs`): canvas now resolves a real background texture for preview instead of relying only on generic gray checker underlay.
+  - If **Checker** mode is enabled, UV Preview uses the same procedural checker texture as Scene preview.
+  - Otherwise it takes the first available `_MainTex` from preview LOD renderer materials.
+- **Textured UV background draw pass** (`UvTransferWindow.cs`): added textured GL quad rendering for the 0-1 tile and neighboring UDIM tiles so the UV backdrop visually matches model shading reference.
+- **Checker texture accessor** (`CheckerTexturePreview.cs`): added `GetCheckerTexture()` to share one checker source between Scene and UV Preview.
+- **Editor resource lifecycle** (`UvTransferWindow.cs`): added creation/disposal of the texture drawing material (`texMat`) in `OnEnable` / `OnDisable`.
+
 ## [0.13.7] - 2026-03-03
 
 ### Fixed — UV0-interp fallback for broken force3D on thin wrapping geometry
