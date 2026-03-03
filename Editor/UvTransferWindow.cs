@@ -1861,14 +1861,10 @@ namespace LightmapUvTool
                     EditorUtility.SetDirty(data);
                     AssetDatabase.SaveAssets();
 
-                    // Disable Read/Write — mesh data is accessible during import regardless,
-                    // and this frees CPU RAM after import finalization.
-                    var importer = AssetImporter.GetAtPath(fbxPath) as ModelImporter;
-                    if (importer != null && importer.isReadable)
-                    {
-                        importer.isReadable = false;
-                        UvtLog.Verbose($"[Apply] Disabled Read/Write on '{fbxPath}' to save RAM");
-                    }
+                    // Note: We no longer disable Read/Write here. ReplayOptimization calls
+                    // mesh.Clear() then Set* — after Clear(), Unity checks isReadable even
+                    // during import, so the mesh must remain readable for the postprocessor
+                    // to rebuild it. The user can disable Read/Write manually after applying.
 
                     AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate);
                 }

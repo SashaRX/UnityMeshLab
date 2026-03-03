@@ -36,9 +36,6 @@ namespace LightmapUvTool
             string sidecarPath = Uv2DataAsset.GetSidecarPath(assetPath);
             if (!System.IO.File.Exists(sidecarPath)) return;
 
-            // Note: mesh data is accessible during OnPostprocessModel regardless of isReadable.
-            // The tool manages isReadable via ApplyUv2ToFbx() to free CPU RAM after import.
-
             // Disable Unity's built-in lightmap UV generation — we provide our own UV2.
             // Unity's generator may split vertices along UV seams, changing vertex count
             // and making our stored remap table invalid.
@@ -46,6 +43,15 @@ namespace LightmapUvTool
             {
                 modelImporter.generateSecondaryUV = false;
                 UvtLog.Info($"[UV2 Preprocess] Disabled generateSecondaryUV on '{assetPath}' (sidecar provides UV2)");
+            }
+
+            // ReplayOptimization calls mesh.Clear() then Set* — after Clear(), Unity checks
+            // isReadable even during import. Force it on so the postprocessor can rebuild the mesh.
+            // ApplyUv2ToFbx will disable it again after import to free CPU RAM.
+            if (!modelImporter.isReadable)
+            {
+                modelImporter.isReadable = true;
+                UvtLog.Verbose($"[UV2 Preprocess] Enabled Read/Write on '{assetPath}' (required for replay)");
             }
         }
 
