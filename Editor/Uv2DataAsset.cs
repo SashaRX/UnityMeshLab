@@ -134,6 +134,8 @@ namespace LightmapUvTool
         public bool stepMeshopt;
         /// <summary>Whether UvEdgeWeld was applied.</summary>
         public bool stepEdgeWeld;
+        /// <summary>Whether symmetry shell split was applied.</summary>
+        public bool stepSymmetrySplit;
         /// <summary>Whether xatlas repack was applied.</summary>
         public bool stepRepack;
         /// <summary>Whether UV transfer from source was applied.</summary>
@@ -145,8 +147,8 @@ namespace LightmapUvTool
     [CreateAssetMenu(menuName = "LightmapUvTool/UV2 Data (internal)", fileName = "uv2data")]
     public class Uv2DataAsset : ScriptableObject
     {
-        public const int CurrentSchemaVersion = 1;
-        public const string ToolVersionStr = "0.12.0";
+        public const int CurrentSchemaVersion = 2;
+        public const string ToolVersionStr = "0.13.0";
 
         public List<MeshUv2Entry> entries = new List<MeshUv2Entry>();
 
@@ -186,12 +188,14 @@ namespace LightmapUvTool
 
         /// <summary>Set UV2 for a mesh name (add or overwrite).</summary>
         public void Set(string meshName, Vector2[] uv2, bool welded = false, bool edgeWelded = false,
+                        bool symmetrySplit = false,
                         Vector3[] vertPositions = null, Vector2[] vertUv0 = null,
                         int[] vertexRemap = null, int optimizedVertexCount = 0,
                         int[] optimizedTriangles = null, int[] submeshTriangleCounts = null,
                         int schemaVersion = 0, string toolVersion = null,
                         MeshFingerprint sourceFingerprint = null, int targetUvChannel = 1,
                         bool stepMeshopt = false, bool stepEdgeWeld = false,
+                        bool stepSymmetrySplit = false,
                         bool stepRepack = false, bool stepTransfer = false,
                         bool hasReplayData = false)
         {
@@ -201,6 +205,8 @@ namespace LightmapUvTool
                 e.uv2 = uv2;
                 e.welded = welded;
                 e.edgeWelded = edgeWelded;
+                // backward compat: if explicit step flag absent, keep legacy boolean
+                e.stepSymmetrySplit = stepSymmetrySplit || symmetrySplit;
                 e.vertPositions = vertPositions;
                 e.vertUv0 = vertUv0;
                 e.vertexRemap = vertexRemap;
@@ -227,6 +233,7 @@ namespace LightmapUvTool
                     schemaVersion = schemaVersion, toolVersion = toolVersion,
                     sourceFingerprint = sourceFingerprint, targetUvChannel = targetUvChannel,
                     stepMeshopt = stepMeshopt, stepEdgeWeld = stepEdgeWeld,
+                    stepSymmetrySplit = stepSymmetrySplit || symmetrySplit,
                     stepRepack = stepRepack, stepTransfer = stepTransfer,
                     hasReplayData = hasReplayData
                 });

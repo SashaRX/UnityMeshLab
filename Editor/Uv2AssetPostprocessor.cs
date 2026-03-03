@@ -145,6 +145,8 @@ namespace LightmapUvTool
                 }
             }
 
+            bool symmetryStep = ResolveSymmetrySplitStep(entry);
+
             // ── Deterministic replay path (variant B) ──
             // If sidecar has a stored vertexRemap, replay the optimization
             // by table lookup instead of re-running MeshOptimizer + UvEdgeWeld.
@@ -166,6 +168,8 @@ namespace LightmapUvTool
                         stats.replayUsed = true;
                         // UV2 count now matches — assign directly
                         mesh.SetUVs(1, entry.uv2);
+                        UvtLog.Verbose($"[UV2 Postprocess] '{mesh.name}': replay path includes " +
+                                       $"meshopt={entry.stepMeshopt}, edgeWeld={entry.stepEdgeWeld}, symmetrySplit={symmetryStep}");
                         return true;
                     }
                     UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': replay failed — falling back to legacy path.");
@@ -176,10 +180,10 @@ namespace LightmapUvTool
             stats.legacyUsed = true;
 
             // Warn if mesh was modified but has no replay data
-            if (entry.welded || entry.edgeWelded)
+            if (entry.welded || entry.edgeWelded || symmetryStep)
             {
                 UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': mesh was modified " +
-                            $"(welded={entry.welded}, edgeWelded={entry.edgeWelded}) but no replay data — " +
+                            $"(welded={entry.welded}, edgeWelded={entry.edgeWelded}, symmetrySplit={symmetryStep}) but no replay data — " +
                             "using non-deterministic legacy path.");
             }
 
@@ -236,6 +240,24 @@ namespace LightmapUvTool
             stats.unmatchedVerts = unmatched;
             mesh.SetUVs(1, uv2);
             return true;
+        }
+
+        static bool ResolveSymmetrySplitStep(MeshUv2Entry entry)
+        {
+            if (entry == null) return false;
+            if (entry.stepSymmetrySplit) return true;
+
+            // Backward-compatible fallback for old sidecars without explicit symmetry flag:
+            // schema v0/v1 entries may still have replay data that implies topology changes.
+            if (entry.schemaVersion <= 1 &&
+                entry.hasReplayData &&
+                entry.vertexRemap != null && entry.vertexRemap.Length > 0 &&
+                !entry.stepMeshopt && !entry.stepEdgeWeld)
+            {
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>

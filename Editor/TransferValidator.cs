@@ -142,14 +142,47 @@ namespace LightmapUvTool
 
             if (vertShell != null)
             {
-                // Determine triangle's shell from majority of its vertices
+                // Determine triangle shell by majority vote over all 3 vertices.
+                // If no majority exists, fallback to the first valid vertex shell, else -1.
                 triShell = new int[faceCount];
                 var shellStretchLists = new Dictionary<int, List<float>>();
 
                 for (int f = 0; f < faceCount; f++)
                 {
                     int i0 = tris[f * 3];
-                    int sh = (i0 < vertShell.Length) ? vertShell[i0] : -1;
+                    int i1 = tris[f * 3 + 1];
+                    int i2 = tris[f * 3 + 2];
+
+                    int sh0 = (i0 < vertShell.Length) ? vertShell[i0] : -1;
+                    int sh1 = (i1 < vertShell.Length) ? vertShell[i1] : -1;
+                    int sh2 = (i2 < vertShell.Length) ? vertShell[i2] : -1;
+
+                    int sh;
+                    if (sh0 >= 0 && (sh0 == sh1 || sh0 == sh2))
+                    {
+                        sh = sh0;
+                    }
+                    else if (sh1 >= 0 && sh1 == sh2)
+                    {
+                        sh = sh1;
+                    }
+                    else if (sh0 >= 0)
+                    {
+                        sh = sh0;
+                    }
+                    else if (sh1 >= 0)
+                    {
+                        sh = sh1;
+                    }
+                    else if (sh2 >= 0)
+                    {
+                        sh = sh2;
+                    }
+                    else
+                    {
+                        sh = -1;
+                    }
+
                     triShell[f] = sh;
 
                     float sr = report.stretchRatios[f];
