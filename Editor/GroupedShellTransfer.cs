@@ -736,7 +736,12 @@ namespace LightmapUvTool
                         }
 
                         int issues = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, candidate);
-                        if (issues < bestMergedIssues)
+                        // Prefer all-source on tie when both have issues:
+                        // UV0 flipped winding causes false positives in CountShellIssues,
+                        // so equal non-zero scores mean all-source (wider search) is safer.
+                        bool better = (issues < bestMergedIssues) ||
+                            (issues == bestMergedIssues && !constrained && bestWasConstrained && issues > 0);
+                        if (better)
                         {
                             bestMergedIssues = issues;
                             bestMergedUv2 = candidate;
