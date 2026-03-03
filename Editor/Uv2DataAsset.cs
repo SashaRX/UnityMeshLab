@@ -142,13 +142,25 @@ namespace LightmapUvTool
         public bool stepTransfer;
         /// <summary>Whether deterministic replay data is present.</summary>
         public bool hasReplayData;
+
+        // ── Orphan vertex data (SymmetrySplit boundary verts with no raw FBX counterpart) ──
+        /// <summary>Indices in the optimized mesh that have no raw FBX source vertex.</summary>
+        public int[] orphanIndices;
+        /// <summary>Positions for orphan vertices (parallel to orphanIndices).</summary>
+        public Vector3[] orphanPositions;
+        /// <summary>Normals for orphan vertices (parallel to orphanIndices).</summary>
+        public Vector3[] orphanNormals;
+        /// <summary>Tangents for orphan vertices (parallel to orphanIndices).</summary>
+        public Vector4[] orphanTangents;
+        /// <summary>UV0 for orphan vertices (parallel to orphanIndices).</summary>
+        public Vector2[] orphanUv0;
     }
 
     [CreateAssetMenu(menuName = "LightmapUvTool/UV2 Data (internal)", fileName = "uv2data")]
     public class Uv2DataAsset : ScriptableObject
     {
         public const int CurrentSchemaVersion = 2;
-        public const string ToolVersionStr = "0.13.0";
+        public const string ToolVersionStr = "0.13.1";
 
         public List<MeshUv2Entry> entries = new List<MeshUv2Entry>();
 
@@ -238,6 +250,54 @@ namespace LightmapUvTool
                     hasReplayData = hasReplayData
                 });
             }
+        }
+
+        /// <summary>Set UV2 for a mesh name (add or overwrite) from a fully populated entry.</summary>
+        public void Set(MeshUv2Entry source)
+        {
+            if (source == null || string.IsNullOrEmpty(source.meshName))
+                throw new ArgumentNullException(nameof(source));
+
+            var e = Find(source.meshName);
+            if (e != null)
+            {
+                CopyEntryFields(source, e);
+            }
+            else
+            {
+                var clone = new MeshUv2Entry();
+                CopyEntryFields(source, clone);
+                entries.Add(clone);
+            }
+        }
+
+        static void CopyEntryFields(MeshUv2Entry src, MeshUv2Entry dst)
+        {
+            dst.meshName = src.meshName;
+            dst.uv2 = src.uv2;
+            dst.welded = src.welded;
+            dst.edgeWelded = src.edgeWelded;
+            dst.vertPositions = src.vertPositions;
+            dst.vertUv0 = src.vertUv0;
+            dst.vertexRemap = src.vertexRemap;
+            dst.optimizedVertexCount = src.optimizedVertexCount;
+            dst.optimizedTriangles = src.optimizedTriangles;
+            dst.submeshTriangleCounts = src.submeshTriangleCounts;
+            dst.schemaVersion = src.schemaVersion;
+            dst.toolVersion = src.toolVersion;
+            dst.sourceFingerprint = src.sourceFingerprint;
+            dst.targetUvChannel = src.targetUvChannel;
+            dst.stepMeshopt = src.stepMeshopt;
+            dst.stepEdgeWeld = src.stepEdgeWeld;
+            dst.stepSymmetrySplit = src.stepSymmetrySplit;
+            dst.stepRepack = src.stepRepack;
+            dst.stepTransfer = src.stepTransfer;
+            dst.hasReplayData = src.hasReplayData;
+            dst.orphanIndices = src.orphanIndices;
+            dst.orphanPositions = src.orphanPositions;
+            dst.orphanNormals = src.orphanNormals;
+            dst.orphanTangents = src.orphanTangents;
+            dst.orphanUv0 = src.orphanUv0;
         }
 
         /// <summary>Remove entry by mesh name. Returns true if found.</summary>

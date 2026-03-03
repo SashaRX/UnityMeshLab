@@ -36,11 +36,8 @@ namespace LightmapUvTool
             string sidecarPath = Uv2DataAsset.GetSidecarPath(assetPath);
             if (!System.IO.File.Exists(sidecarPath)) return;
 
-            if (!modelImporter.isReadable)
-            {
-                modelImporter.isReadable = true;
-                UvtLog.Info($"[UV2 Preprocess] Enabled Read/Write on '{assetPath}' for UV2 injection");
-            }
+            // Note: mesh data is accessible during OnPostprocessModel regardless of isReadable.
+            // The tool manages isReadable via ApplyUv2ToFbx() to free CPU RAM after import.
 
             // Disable Unity's built-in lightmap UV generation — we provide our own UV2.
             // Unity's generator may split vertices along UV seams, changing vertex count
@@ -380,6 +377,25 @@ namespace LightmapUvTool
                     if (ch == 1 || optUvs[ch] == null) continue;
                     optUvs[ch][dst] = rawUvs[ch][i];
                 }
+            }
+
+            // ── Fill orphan vertices (SymmetrySplit boundary verts, etc.) ──
+            if (entry.orphanIndices != null && entry.orphanIndices.Length > 0)
+            {
+                for (int k = 0; k < entry.orphanIndices.Length; k++)
+                {
+                    int dst = entry.orphanIndices[k];
+                    if (dst < 0 || dst >= optCount) continue;
+                    if (entry.orphanPositions != null && k < entry.orphanPositions.Length)
+                        optPos[dst] = entry.orphanPositions[k];
+                    if (optNormals != null && entry.orphanNormals != null && k < entry.orphanNormals.Length)
+                        optNormals[dst] = entry.orphanNormals[k];
+                    if (optTangents != null && entry.orphanTangents != null && k < entry.orphanTangents.Length)
+                        optTangents[dst] = entry.orphanTangents[k];
+                    if (optUvs[0] != null && entry.orphanUv0 != null && k < entry.orphanUv0.Length)
+                        optUvs[0][dst] = entry.orphanUv0[k];
+                }
+                UvtLog.Verbose($"[UV2 Postprocess] '{mesh.name}': filled {entry.orphanIndices.Length} orphan vertices from sidecar");
             }
 
             // ── Rebuild mesh ──

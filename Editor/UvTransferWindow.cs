@@ -185,6 +185,7 @@ namespace LightmapUvTool
         {
             if (checkerEnabled) CheckerTexturePreview.Restore();
             checkerEnabled = false;
+            CleanupWorkingMeshes();
             if (canvasRT) { canvasRT.Release(); DestroyImmediate(canvasRT); canvasRT = null; }
             if (glMat) DestroyImmediate(glMat);
             glMat = null;
@@ -1666,6 +1667,12 @@ namespace LightmapUvTool
             public bool stepRepack;
             public bool stepTransfer;
             public bool hasReplayData;
+            // Orphan vertex data (boundary verts with no raw FBX counterpart)
+            public int[] orphanIndices;
+            public Vector3[] orphanPositions;
+            public Vector3[] orphanNormals;
+            public Vector4[] orphanTangents;
+            public Vector2[] orphanUv0;
         }
 
         void ApplyUv2ToFbx()
@@ -1732,6 +1739,57 @@ namespace LightmapUvTool
                     BuildTriangleData(optimizedMesh, out sidecar.optimizedTriangles, out sidecar.submeshTriangleCounts);
                     sidecar.hasReplayData = (sidecar.vertexRemap != null);
 
+                    // ── Detect orphan vertices (optimized indices not covered by any remap entry) ──
+                    if (sidecar.vertexRemap != null && sidecar.optimizedVertexCount > 0)
+                    {
+                        int optVCount = sidecar.optimizedVertexCount;
+                        var covered = new bool[optVCount];
+                        for (int i = 0; i < sidecar.vertexRemap.Length; i++)
+                        {
+                            int dst = sidecar.vertexRemap[i];
+                            if (dst >= 0 && dst < optVCount)
+                                covered[dst] = true;
+                        }
+
+                        var orphanList = new List<int>();
+                        for (int j = 0; j < optVCount; j++)
+                            if (!covered[j]) orphanList.Add(j);
+
+                        if (orphanList.Count > 0)
+                        {
+                            var optPos = optimizedMesh.vertices;
+                            var optNorm = optimizedMesh.normals;
+                            var optTan = optimizedMesh.tangents;
+                            var optUv0List = new List<Vector2>();
+                            optimizedMesh.GetUVs(0, optUv0List);
+
+                            sidecar.orphanIndices = orphanList.ToArray();
+                            sidecar.orphanPositions = new Vector3[orphanList.Count];
+                            sidecar.orphanNormals = optNorm != null && optNorm.Length > 0 ? new Vector3[orphanList.Count] : null;
+                            sidecar.orphanTangents = optTan != null && optTan.Length > 0 ? new Vector4[orphanList.Count] : null;
+                            sidecar.orphanUv0 = optUv0List.Count > 0 ? new Vector2[orphanList.Count] : null;
+
+                            for (int k = 0; k < orphanList.Count; k++)
+                            {
+                                int idx = orphanList[k];
+                                sidecar.orphanPositions[k] = optPos[idx];
+                                if (sidecar.orphanNormals != null) sidecar.orphanNormals[k] = optNorm[idx];
+                                if (sidecar.orphanTangents != null) sidecar.orphanTangents[k] = optTan[idx];
+                                if (sidecar.orphanUv0 != null && idx < optUv0List.Count) sidecar.orphanUv0[k] = optUv0List[idx];
+                            }
+
+                            UvtLog.Info($"[Apply] '{meshName}': {orphanList.Count} orphan vertices stored");
+                        }
+                    }
+
+                    // Skip large position/UV0 arrays when replay data is present —
+                    // ReplayOptimization + orphan fill handles all vertex mapping deterministically.
+                    if (sidecar.hasReplayData)
+                    {
+                        sidecar.positions = null;
+                        sidecar.uv0 = null;
+                    }
+
                     UvtLog.Verbose($"[Apply] '{meshName}': remap {e.fbxMesh.vertexCount}→{optimizedMesh.vertexCount} " +
                                   $"({sidecar.optimizedTriangles.Length / 3} tris, {optimizedMesh.subMeshCount} submeshes), " +
                                   $"replaySteps=meshopt:{e.wasWelded}, edgeWeld:{e.wasEdgeWelded}, symmetrySplit:{e.wasSymmetrySplit}");
@@ -1770,20 +1828,48 @@ namespace LightmapUvTool
 
                     foreach (var entry in kv.Value)
                     {
-                        data.Set(entry.name, entry.uv2, entry.welded, entry.edgeWelded, entry.symmetrySplit,
-                                 entry.positions, entry.uv0,
-                                 entry.vertexRemap, entry.optimizedVertexCount,
-                                 entry.optimizedTriangles, entry.submeshTriangleCounts,
-                                 entry.schemaVersion, entry.toolVersion,
-                                 entry.sourceFingerprint, entry.targetUvChannel,
-                                 entry.stepMeshopt, entry.stepEdgeWeld, entry.stepSymmetrySplit,
-                                 entry.stepRepack, entry.stepTransfer,
-                                 entry.hasReplayData);
+                        data.Set(new MeshUv2Entry {
+                            meshName = entry.name,
+                            uv2 = entry.uv2,
+                            welded = entry.welded,
+                            edgeWelded = entry.edgeWelded,
+                            stepSymmetrySplit = entry.stepSymmetrySplit || entry.symmetrySplit,
+                            vertPositions = entry.positions,
+                            vertUv0 = entry.uv0,
+                            vertexRemap = entry.vertexRemap,
+                            optimizedVertexCount = entry.optimizedVertexCount,
+                            optimizedTriangles = entry.optimizedTriangles,
+                            submeshTriangleCounts = entry.submeshTriangleCounts,
+                            schemaVersion = entry.schemaVersion,
+                            toolVersion = entry.toolVersion,
+                            sourceFingerprint = entry.sourceFingerprint,
+                            targetUvChannel = entry.targetUvChannel,
+                            stepMeshopt = entry.stepMeshopt,
+                            stepEdgeWeld = entry.stepEdgeWeld,
+                            stepRepack = entry.stepRepack,
+                            stepTransfer = entry.stepTransfer,
+                            hasReplayData = entry.hasReplayData,
+                            orphanIndices = entry.orphanIndices,
+                            orphanPositions = entry.orphanPositions,
+                            orphanNormals = entry.orphanNormals,
+                            orphanTangents = entry.orphanTangents,
+                            orphanUv0 = entry.orphanUv0,
+                        });
                         totalMeshes++;
                     }
 
                     EditorUtility.SetDirty(data);
                     AssetDatabase.SaveAssets();
+
+                    // Disable Read/Write — mesh data is accessible during import regardless,
+                    // and this frees CPU RAM after import finalization.
+                    var importer = AssetImporter.GetAtPath(fbxPath) as ModelImporter;
+                    if (importer != null && importer.isReadable)
+                    {
+                        importer.isReadable = false;
+                        UvtLog.Verbose($"[Apply] Disabled Read/Write on '{fbxPath}' to save RAM");
+                    }
+
                     AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate);
                 }
             }
@@ -1791,6 +1877,7 @@ namespace LightmapUvTool
 
             AssetDatabase.Refresh();
             UvtLog.Info($"[Apply] Done: {totalMeshes} mesh(es) across {fbxGroups.Count} FBX file(s)");
+            CleanupWorkingMeshes();
             Refresh();
             Repaint();
         }
@@ -1915,13 +2002,37 @@ namespace LightmapUvTool
         //  Reset
         // ════════════════════════════════════════════════════════════
 
+        /// <summary>
+        /// Destroy all working mesh clones to free RAM.
+        /// Called after Apply when mesh data has been persisted to sidecar.
+        /// Does NOT destroy fbxMesh references (they are shared assets).
+        /// </summary>
+        void CleanupWorkingMeshes()
+        {
+            foreach (var e in meshEntries)
+            {
+                if (e.transferredMesh != null)
+                { DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
+                if (e.repackedMesh != null)
+                { DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
+                if (e.originalMesh != null && e.originalMesh != e.fbxMesh)
+                { DestroyImmediate(e.originalMesh); e.originalMesh = null; }
+            }
+        }
+
         void ResetWorkingCopies()
         {
             foreach (var e in meshEntries)
             {
+                // Destroy working mesh clones before resetting references
+                if (e.transferredMesh != null)
+                { DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
+                if (e.repackedMesh != null)
+                { DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
+                if (e.originalMesh != null && e.originalMesh != e.fbxMesh)
+                    DestroyImmediate(e.originalMesh);
+
                 if (e.fbxMesh != null) e.originalMesh = e.fbxMesh;
-                e.repackedMesh = null;
-                e.transferredMesh = null;
                 e.shellTransferResult = null;
                 e.wasWelded = false;
                 e.wasEdgeWelded = false;
@@ -1933,7 +2044,7 @@ namespace LightmapUvTool
             uv0Reports.Clear();
             srcCache.Clear();
             shellTransformCache.Clear();
-            UvtLog.Info("[Reset] All working copies restored to FBX originals");
+            UvtLog.Info("[Reset] All working copies destroyed and restored to FBX originals");
             Repaint();
         }
 
