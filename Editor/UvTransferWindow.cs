@@ -1276,7 +1276,6 @@ namespace LightmapUvTool
             foreach (var e in meshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
-                if (e.lodIndex != sourceLodIndex) continue;
                 var mesh = e.originalMesh;
                 var uv0 = mesh.uv;
                 if (uv0 == null || uv0.Length == 0) continue;
@@ -1285,7 +1284,7 @@ namespace LightmapUvTool
                 totalSplit += n;
             }
             if (totalSplit > 0)
-                UvtLog.Info($"[Pipeline] Symmetry split: {totalSplit} shell(s) split across source meshes");
+                UvtLog.Info($"[Pipeline] Symmetry split: {totalSplit} shell(s) split across all LODs");
         }
 
         // ════════════════════════════════════════════════════════════
