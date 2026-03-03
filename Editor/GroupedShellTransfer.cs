@@ -239,9 +239,9 @@ namespace LightmapUvTool
         // ═══════════════════════════════════════════════════════════
 
         static void FindBestSourceShell(
-            UvShellExtractor.ShellInfo tShell,
+            UvShell tShell,
             Vector3[] tVerts,
-            List<UvShellExtractor.ShellInfo> srcShells,
+            List<UvShell> srcShells,
             Vector3[] srcCentroid3D,
             Vector3[] triPosA, Vector3[] triPosB, Vector3[] triPosC,
             Vector3 tCentroid,
@@ -303,7 +303,7 @@ namespace LightmapUvTool
         // ═══════════════════════════════════════════════════════════
 
         static bool DetectMergedShell(
-            UvShellExtractor.ShellInfo tShell, Vector2[] tUv0,
+            UvShell tShell, Vector2[] tUv0,
             List<int> srcFaces,
             Vector2[] triUv0A, Vector2[] triUv0B, Vector2[] triUv0C)
         {
