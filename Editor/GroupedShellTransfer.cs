@@ -1219,15 +1219,17 @@ namespace LightmapUvTool
                             float bestU = 0, bestV = 0, bestW = 0;
                             float bestDSq = float.MaxValue;
 
-                            // Normal filtering for thin geometry disambiguation
+                            // Inverted normal filter: force3D shells have normals opposing
+                            // the source. Negate target normal so the filter finds the
+                            // correct opposing source face (belt -X → finds source +X).
+                            // Falls back to nearest-any if no opposing face found.
                             Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                                 ? tNormals[vi] : Vector3.up;
 
-                            // BVH lookup in source shell's UV0 space
                             if (uv0Bvh != null)
                             {
                                 var hit = tNrm.sqrMagnitude > 0.5f
-                                    ? uv0Bvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, kBackfaceDot)
+                                    ? uv0Bvh.FindNearestNormalFiltered(tUv, -tNrm, triNormal, kBackfaceDot)
                                     : uv0Bvh.FindNearest(tUv);
                                 bestF = hit.faceIndex;
                                 bestU = hit.u; bestV = hit.v; bestW = hit.w;
