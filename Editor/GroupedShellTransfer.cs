@@ -619,6 +619,11 @@ namespace LightmapUvTool
                     const float kBackfaceDot = 0.3f;
                     int localConsistencyFixes = 0;
 
+                    // Source-constrained: search only matched source faces to prevent cross-island UV2 overlap.
+                    // Fall back to all faces for forced-merged shells with no source match.
+                    bool mergedSearchAll = (srcFacesChosen == null);
+                    int mergedSearchCount = mergedSearchAll ? srcTriCount : srcFacesChosen.Count;
+
                     var uv2_merged = new Dictionary<int, Vector2>();
                     foreach (int vi in tShell.vertexIndices)
                     {
@@ -628,22 +633,24 @@ namespace LightmapUvTool
                         Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                             ? tNormals[vi] : Vector3.up;
 
-                        // ── UV0 projection (primary) ──
+                        // ── UV0 projection (primary), source-constrained ──
                         float bestDSqUv0 = float.MaxValue;
                         int bestFUv0 = -1; float bestU_uv0 = 0, bestV_uv0 = 0, bestW_uv0 = 0;
-                        for (int f = 0; f < srcTriCount; f++)
+                        for (int fi = 0; fi < mergedSearchCount; fi++)
                         {
+                            int f = mergedSearchAll ? fi : srcFacesChosen[fi];
                             float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
                                 out float u, out float v, out float w);
                             if (dSq < bestDSqUv0) { bestDSqUv0 = dSq; bestFUv0 = f; bestU_uv0 = u; bestV_uv0 = v; bestW_uv0 = w; }
                             if (bestDSqUv0 < 1e-8f) break;
                         }
 
-                        // ── 3D projection (secondary, with backface filter) ──
+                        // ── 3D projection (secondary, with backface filter), source-constrained ──
                         float bestDSq3D = float.MaxValue;
                         int bestF3D = -1; float bestU_3d = 0, bestV_3d = 0, bestW_3d = 0;
-                        for (int f = 0; f < srcTriCount; f++)
+                        for (int fi = 0; fi < mergedSearchCount; fi++)
                         {
+                            int f = mergedSearchAll ? fi : srcFacesChosen[fi];
                             if (Vector3.Dot(triNormal[f], tNrm) < kBackfaceDot) continue;
                             float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
                                 out float u, out float v, out float w);
