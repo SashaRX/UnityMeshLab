@@ -47,6 +47,8 @@ namespace LightmapUvTool
         enum Tab { Setup, Repack, Transfer }
         Tab tab = Tab.Setup;
         bool hasRepack, hasTransfer;
+        bool splitTargetsInSymmetryStep;
+        HashSet<int> lastSymmetrySplitLods = new HashSet<int>();
 
         // Canvas — fill mode (mutually exclusive overlays)
         enum FillMode { Shells, Status, ShellMatch, Validation, None }
@@ -441,7 +443,12 @@ namespace LightmapUvTool
             // ── Run Full Pipeline ──
             EditorGUILayout.Space(6);
             ColorBtn(new Color(.2f,.75f,.95f), "▶  Run Full Pipeline", 30, ExecFullPipeline);
-            EditorGUILayout.LabelField("Analyze → Weld → SymSplit → Repack → Transfer → Review", EditorStyles.miniLabel);
+            splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft(
+                "SymSplit target LODs (advanced / risky)",
+                splitTargetsInSymmetryStep);
+            if (splitTargetsInSymmetryStep)
+                EditorGUILayout.HelpBox("Внимание: split на target LOD может менять топологию и ухудшать стабильность сопоставления при Transfer/Apply.", MessageType.Warning);
+            EditorGUILayout.LabelField("Analyze → Weld → SymSplit(Source by default) → Repack → Transfer → Review", EditorStyles.miniLabel);
 
             // ── Pipeline Settings ──
             EditorGUILayout.Space(6);
@@ -1273,23 +1280,45 @@ namespace LightmapUvTool
             ExecAnalyzeUv0();
         }
 
-        void ExecSymmetrySplit()
+        void ExecSymmetrySplit(bool includeTargets)
         {
+            lastSymmetrySplitLods.Clear();
             int totalSplit = 0;
+            int sourceSplit = 0;
+            int targetSplit = 0;
             foreach (var e in meshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
                 e.wasSymmetrySplit = false;
+                bool isSource = e.lodIndex == sourceLodIndex;
+                if (!isSource && !includeTargets) continue;
                 var mesh = e.originalMesh;
                 var uv0 = mesh.uv;
                 if (uv0 == null || uv0.Length == 0) continue;
                 var shells = UvShellExtractor.Extract(uv0, mesh.triangles);
                 int n = SymmetrySplitShells.Split(mesh, shells);
-                if (n > 0) e.wasSymmetrySplit = true;
+                if (n <= 0) continue;
+                e.wasSymmetrySplit = true;
                 totalSplit += n;
+                if (isSource) sourceSplit += n;
+                else targetSplit += n;
+                lastSymmetrySplitLods.Add(e.lodIndex);
             }
+
             if (totalSplit > 0)
-                UvtLog.Info($"[Pipeline] Symmetry split: {totalSplit} shell(s) split across all LODs");
+            {
+                if (includeTargets)
+                    UvtLog.Info($"[Pipeline] Symmetry split: source LOD{sourceLodIndex}={sourceSplit}, targets={targetSplit}, total={totalSplit}; modified LODs: {string.Join(",", lastSymmetrySplitLods.OrderBy(i => i))}");
+                else
+                    UvtLog.Info($"[Pipeline] Symmetry split: source LOD{sourceLodIndex}={sourceSplit}, targets=0 (disabled), total={totalSplit}; modified LODs: {string.Join(",", lastSymmetrySplitLods.OrderBy(i => i))}");
+            }
+            else
+            {
+                UvtLog.Info($"[Pipeline] Symmetry split: no shell splits (mode: {(includeTargets ? "source+targets" : "source only")}).");
+            }
+
+            if (includeTargets && targetSplit > 0)
+                UvtLog.Warn("[Pipeline] Target LOD topology was modified by symmetry split; verify Transfer/Apply result stability.");
         }
 
         // ════════════════════════════════════════════════════════════
@@ -1312,8 +1341,9 @@ namespace LightmapUvTool
                 if ((anyIssues || hasTargetLods) && !uv0Welded)
                     ExecWeldUv0();
 
-                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 3/5: Symmetry split...", 0.25f);
-                ExecSymmetrySplit();
+                string splitModeLabel = splitTargetsInSymmetryStep ? "source + targets" : "source only";
+                EditorUtility.DisplayProgressBar("Full Pipeline", "Step 3/5: Symmetry split (" + splitModeLabel + ")...", 0.25f);
+                ExecSymmetrySplit(splitTargetsInSymmetryStep);
 
                 EditorUtility.DisplayProgressBar("Full Pipeline", "Step 4/5: Repack...", 0.40f);
                 var src = ForLod(sourceLodIndex);
@@ -1398,6 +1428,12 @@ namespace LightmapUvTool
 
         void ExecTransferAll()
         {
+            var src = ForLod(sourceLodIndex).Where(e => e.include).ToList();
+            int srcWithRepack = src.Count(e => e.repackedMesh != null);
+            UvtLog.Info($"[Transfer] Source layout: LOD{sourceLodIndex}, repacked {srcWithRepack}/{src.Count} mesh(es).");
+            if (splitTargetsInSymmetryStep && lastSymmetrySplitLods.Any(i => i != sourceLodIndex))
+                UvtLog.Warn($"[Transfer] Target LODs modified by SymSplit: {string.Join(",", lastSymmetrySplitLods.Where(i => i != sourceLodIndex).OrderBy(i => i))}. Mapping stability may be lower.");
+
             for (int li = 0; li < LodN; li++)
                 if (li != sourceLodIndex) ExecTransferLod(li);
         }
@@ -1423,6 +1459,10 @@ namespace LightmapUvTool
                         se = ti < srcE.Count ? srcE[ti] : srcE[0];
                     Mesh sM = se.repackedMesh ?? se.originalMesh; Mesh tM = te.originalMesh;
                     if (sM == null || tM == null) continue;
+
+                    if (te.transferredMesh != null && te.transferredMesh.vertexCount != tM.vertexCount)
+                        UvtLog.Warn($"[Transfer] LOD{tLod}/{te.renderer.name}: previous transferred mesh vertex count differs from target source mesh.");
+
                     EditorUtility.DisplayProgressBar("Transfer", "LOD" + tLod + ": " + te.renderer.name, .1f + .8f * ti / tgtE.Count);
 
                     int id = sM.GetInstanceID();
