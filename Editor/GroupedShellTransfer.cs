@@ -238,12 +238,15 @@ namespace LightmapUvTool
         //  Optionally excludes already-claimed source shells (dedup).
         // ═══════════════════════════════════════════════════════════
 
+        const int kMaxSampleVerts = 32;
+
         static void FindBestSourceShell(
             UvShell tShell,
             Vector3[] tVerts,
             List<UvShell> srcShells,
             Vector3[] srcCentroid3D,
             Vector3[] triPosA, Vector3[] triPosB, Vector3[] triPosC,
+            TriangleBvh[] shellBvh3D, int[][] shellBvh3DFaceMap,
             Vector3 tCentroid,
             int maxRetries, float goodDistSq,
             HashSet<int> excludeSources,
@@ -263,24 +266,40 @@ namespace LightmapUvTool
             }
             ranked.Sort((a, b) => a.distSq.CompareTo(b.distSq));
 
+            // Subsample target vertices for large shells
+            var vertList = new List<int>(tShell.vertexIndices);
+            int step = Mathf.Max(1, vertList.Count / kMaxSampleVerts);
+
             int tries = Mathf.Min(maxRetries, ranked.Count);
             for (int attempt = 0; attempt < tries; attempt++)
             {
                 int si = ranked[attempt].si;
                 var srcFaces = srcShells[si].faceIndices;
+                bool hasBvh = shellBvh3D != null && si < shellBvh3D.Length && shellBvh3D[si] != null;
 
                 float totalDistSq = 0; int sampled = 0;
-                foreach (int vi in tShell.vertexIndices)
+                for (int vi_idx = 0; vi_idx < vertList.Count; vi_idx += step)
                 {
+                    int vi = vertList[vi_idx];
                     if (vi >= tVerts.Length) continue;
                     Vector3 tPos = tVerts[vi];
-                    float bestDSq = float.MaxValue;
-                    for (int fi = 0; fi < srcFaces.Count; fi++)
+
+                    float bestDSq;
+                    if (hasBvh)
                     {
-                        int f = srcFaces[fi];
-                        float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
-                            out _, out _, out _);
-                        if (dSq < bestDSq) bestDSq = dSq;
+                        var hit = shellBvh3D[si].FindNearest(tPos);
+                        bestDSq = hit.distSq;
+                    }
+                    else
+                    {
+                        bestDSq = float.MaxValue;
+                        for (int fi = 0; fi < srcFaces.Count; fi++)
+                        {
+                            int f = srcFaces[fi];
+                            float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
+                                out _, out _, out _);
+                            if (dSq < bestDSq) bestDSq = dSq;
+                        }
                     }
                     totalDistSq += bestDSq;
                     sampled++;
@@ -305,24 +324,34 @@ namespace LightmapUvTool
         static bool DetectMergedShell(
             UvShell tShell, Vector2[] tUv0,
             List<int> srcFaces,
-            Vector2[] triUv0A, Vector2[] triUv0B, Vector2[] triUv0C)
+            Vector2[] triUv0A, Vector2[] triUv0B, Vector2[] triUv0C,
+            TriangleBvh2D shellBvh, float uv0BadThreshold)
         {
-            const float kUv0BadThreshold = 0.01f;
             int uv0BadCount = 0;
             foreach (int vi in tShell.vertexIndices)
             {
                 if (vi >= tUv0.Length) continue;
                 Vector2 tUv = tUv0[vi];
-                float bestDSq = float.MaxValue;
-                for (int fi = 0; fi < srcFaces.Count; fi++)
+
+                float bestDSq;
+                if (shellBvh != null)
                 {
-                    int f = srcFaces[fi];
-                    float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
-                        out _, out _, out _);
-                    if (dSq < bestDSq) bestDSq = dSq;
-                    if (bestDSq < 1e-8f) break;
+                    var hit = shellBvh.FindNearest(tUv);
+                    bestDSq = hit.faceIndex >= 0 ? hit.distSq : float.MaxValue;
                 }
-                if (bestDSq > kUv0BadThreshold) uv0BadCount++;
+                else
+                {
+                    bestDSq = float.MaxValue;
+                    for (int fi = 0; fi < srcFaces.Count; fi++)
+                    {
+                        int f = srcFaces[fi];
+                        float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
+                            out _, out _, out _);
+                        if (dSq < bestDSq) bestDSq = dSq;
+                        if (bestDSq < 1e-8f) break;
+                    }
+                }
+                if (bestDSq > uv0BadThreshold) uv0BadCount++;
             }
             int sv = tShell.vertexIndices.Count;
             return sv > 0 && (float)uv0BadCount / sv > 0.3f;
@@ -455,6 +484,85 @@ namespace LightmapUvTool
                 srcAABBMax[si] = bMax;
             }
 
+            // ── Mesh-scale metrics for adaptive thresholds ──
+            Vector3 srcBoundsMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            Vector3 srcBoundsMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+            for (int i = 0; i < srcVerts.Length; i++)
+            {
+                srcBoundsMin = Vector3.Min(srcBoundsMin, srcVerts[i]);
+                srcBoundsMax = Vector3.Max(srcBoundsMax, srcVerts[i]);
+            }
+            float meshDiagonal = (srcBoundsMax - srcBoundsMin).magnitude;
+
+            // Average UV0 triangle edge length
+            double totalEdgeLen = 0; int edgeCount = 0;
+            for (int f = 0; f < srcTriCount; f++)
+            {
+                totalEdgeLen += (triUv0B[f] - triUv0A[f]).magnitude;
+                totalEdgeLen += (triUv0C[f] - triUv0B[f]).magnitude;
+                totalEdgeLen += (triUv0A[f] - triUv0C[f]).magnitude;
+                edgeCount += 3;
+            }
+            float avgUv0Edge = edgeCount > 0 ? (float)(totalEdgeLen / edgeCount) : 0.01f;
+
+            // ── Build BVH structures for accelerated lookups ──
+            const int kMinFacesForShellBvh = 16;
+            const float kNormalDotMin = 0.0f; // reject backfaces in UV0 lookups
+
+            // Global UV0 2D BVH (for merged all-source transfer)
+            var globalUv0Bvh = new TriangleBvh2D(triUv0A, triUv0B, triUv0C);
+
+            // Per-source-shell UV0 2D BVH
+            var shellUv0Bvh = new TriangleBvh2D[srcShells.Count];
+            for (int si = 0; si < srcShells.Count; si++)
+                if (srcShells[si].faceIndices.Count > kMinFacesForShellBvh)
+                    shellUv0Bvh[si] = new TriangleBvh2D(triUv0A, triUv0B, triUv0C,
+                                                          srcShells[si].faceIndices.ToArray());
+
+            // Per-source-shell 3D BVH (for FindBestSourceShell)
+            var shellBvh3D = new TriangleBvh[srcShells.Count];
+            var shellBvh3DFaceMap = new int[srcShells.Count][];
+            for (int si = 0; si < srcShells.Count; si++)
+            {
+                var faces = srcShells[si].faceIndices;
+                if (faces.Count > kMinFacesForShellBvh)
+                {
+                    shellBvh3DFaceMap[si] = faces.ToArray();
+                    int fn = faces.Count;
+                    var sv = new Vector3[fn * 3];
+                    var st = new int[fn * 3];
+                    for (int i = 0; i < fn; i++)
+                    {
+                        int gf = faces[i];
+                        sv[i * 3]     = triPosA[gf];
+                        sv[i * 3 + 1] = triPosB[gf];
+                        sv[i * 3 + 2] = triPosC[gf];
+                        st[i * 3]     = i * 3;
+                        st[i * 3 + 1] = i * 3 + 1;
+                        st[i * 3 + 2] = i * 3 + 2;
+                    }
+                    shellBvh3D[si] = new TriangleBvh(sv, st);
+                }
+            }
+
+            // Adaptive thresholds
+            float kGoodDistSq = meshDiagonal > 0f
+                ? 0.001f * meshDiagonal * meshDiagonal
+                : 0.001f;
+            float kUv0BadThreshold = Mathf.Max(avgUv0Edge * avgUv0Edge, 0.001f);
+
+            // Adaptive kMaxRetries based on overlap group size
+            var overlapGroups = UvShellExtractor.FindOverlapGroups(srcShells);
+            int maxOverlapGroupSize = 0;
+            foreach (var group in overlapGroups)
+                maxOverlapGroupSize = Mathf.Max(maxOverlapGroupSize, group.Count);
+            int kMaxRetries = Mathf.Clamp(maxOverlapGroupSize + 2, 5, srcShells.Count);
+
+            UvtLog.Verbose($"[GroupedTransfer] Adaptive: meshDiag={meshDiagonal:F4}, " +
+                $"avgUv0Edge={avgUv0Edge:F6}, goodDistSq={kGoodDistSq:F6}, " +
+                $"uv0BadThresh={kUv0BadThreshold:F6}, maxRetries={kMaxRetries}, " +
+                $"overlapGroups={overlapGroups.Count}(maxSize={maxOverlapGroupSize})");
+
             // ── Phase 2a: Match each target shell → best source shell ──
             result.targetShellToSourceShell = new int[tgtShells.Count];
             result.targetShellMethod = new int[tgtShells.Count]; // 0=interp, 1=xform, 2=merged
@@ -472,9 +580,6 @@ namespace LightmapUvTool
                 tgtChosenAvg3D[i] = float.MaxValue;
             }
 
-            const float kGoodDistSq = 0.001f;
-            const int kMaxRetries = 5;
-
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
             {
                 var tShell = tgtShells[tsi];
@@ -488,10 +593,11 @@ namespace LightmapUvTool
                 if (tN > 0) tCentroid /= tN;
                 result.targetShellCentroids[tsi] = tCentroid;
 
-                // Find best source shell
+                // Find best source shell (with BVH acceleration + subsampling)
                 FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
-                    triPosA, triPosB, triPosC, tCentroid,
-                    kMaxRetries, kGoodDistSq, null,
+                    triPosA, triPosB, triPosC,
+                    shellBvh3D, shellBvh3DFaceMap,
+                    tCentroid, kMaxRetries, kGoodDistSq, null,
                     out int chosenSrc, out float chosenDistSq, out float chosenAvg3D);
 
                 if (chosenSrc < 0) continue;
@@ -500,9 +606,10 @@ namespace LightmapUvTool
                 result.targetShellMatchDistSqr[tsi] = chosenDistSq;
                 tgtChosenAvg3D[tsi] = chosenAvg3D;
 
-                // Detect merged shell via UV0 coverage
+                // Detect merged shell via UV0 coverage (BVH + adaptive threshold)
                 tgtIsMerged[tsi] = DetectMergedShell(tShell, tUv0,
-                    srcShells[chosenSrc].faceIndices, triUv0A, triUv0B, triUv0C);
+                    srcShells[chosenSrc].faceIndices, triUv0A, triUv0B, triUv0C,
+                    shellUv0Bvh[chosenSrc], kUv0BadThreshold);
             }
 
             // ── Phase 2b: Deduplicate — resolve same-source conflicts ──
@@ -546,8 +653,10 @@ namespace LightmapUvTool
                 // Re-match evicted targets with exclusion of already-claimed sources
                 if (needsRematch.Count > 0)
                 {
-                    // Iterative: each rematch claims a new source
-                    for (int iteration = 0; iteration < 3 && needsRematch.Count > 0; iteration++)
+                    // Adaptive iteration count: log2(conflicts), min 3, max 20
+                    int dedupMaxIter = Mathf.Clamp(
+                        Mathf.CeilToInt(Mathf.Log(needsRematch.Count + 1, 2)), 3, 20);
+                    for (int iteration = 0; iteration < dedupMaxIter && needsRematch.Count > 0; iteration++)
                     {
                         var stillNeedsRematch = new List<int>();
 
@@ -559,15 +668,18 @@ namespace LightmapUvTool
                             float oldAvg3D = tgtChosenAvg3D[tsi];
 
                             FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
-                                triPosA, triPosB, triPosC, result.targetShellCentroids[tsi],
+                                triPosA, triPosB, triPosC,
+                                shellBvh3D, shellBvh3DFaceMap,
+                                result.targetShellCentroids[tsi],
                                 kMaxRetries * 3, kGoodDistSq, claimed,
                                 out int newSrc, out float newDistSq, out float newAvg3D);
 
                             if (newSrc >= 0)
                             {
-                                // Re-check merged status with new source
+                                // Re-check merged status with new source (BVH + adaptive threshold)
                                 bool newIsMerged = DetectMergedShell(tShell, tUv0,
-                                    srcShells[newSrc].faceIndices, triUv0A, triUv0B, triUv0C);
+                                    srcShells[newSrc].faceIndices, triUv0A, triUv0B, triUv0C,
+                                    shellUv0Bvh[newSrc], kUv0BadThreshold);
 
                                 // If reassignment would make a non-merged shell become merged,
                                 // revert to original source — overlap is better than lost UV2.
@@ -667,9 +779,19 @@ namespace LightmapUvTool
                             constrained = false;               // try all-source
                         }
 
-                        int searchCount = constrained ? srcFacesChosen.Count : srcTriCount;
                         var candidate = new Dictionary<int, Vector2>();
                         int localFixes = 0;
+
+                        // Select BVH for UV0 projection
+                        TriangleBvh2D mergedUv0Bvh = null;
+                        if (constrained && chosenSrc >= 0)
+                            mergedUv0Bvh = shellUv0Bvh[chosenSrc];
+                        else if (!constrained)
+                            mergedUv0Bvh = globalUv0Bvh;
+
+                        // Constrained face list for linear fallback
+                        int searchCount = constrained && srcFacesChosen != null
+                            ? srcFacesChosen.Count : srcTriCount;
 
                         foreach (int vi in tShell.vertexIndices)
                         {
@@ -679,16 +801,32 @@ namespace LightmapUvTool
                             Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                                 ? tNormals[vi] : Vector3.up;
 
-                            // ── UV0 projection (primary) ──
-                            float bestDSqUv0 = float.MaxValue;
-                            int bestFUv0 = -1; float bestU_uv0 = 0, bestV_uv0 = 0, bestW_uv0 = 0;
-                            for (int fi = 0; fi < searchCount; fi++)
+                            // ── UV0 projection (primary, with BVH + normal filtering) ──
+                            float bestDSqUv0;
+                            int bestFUv0; float bestU_uv0, bestV_uv0, bestW_uv0;
+
+                            if (mergedUv0Bvh != null)
                             {
-                                int f = constrained ? srcFacesChosen[fi] : fi;
-                                float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
-                                    out float u, out float v, out float w);
-                                if (dSq < bestDSqUv0) { bestDSqUv0 = dSq; bestFUv0 = f; bestU_uv0 = u; bestV_uv0 = v; bestW_uv0 = w; }
-                                if (bestDSqUv0 < 1e-8f) break;
+                                var hitUv0 = tNrm.sqrMagnitude > 0.5f
+                                    ? mergedUv0Bvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, kBackfaceDot)
+                                    : mergedUv0Bvh.FindNearest(tUv);
+                                bestFUv0 = hitUv0.faceIndex;
+                                bestU_uv0 = hitUv0.u; bestV_uv0 = hitUv0.v; bestW_uv0 = hitUv0.w;
+                                bestDSqUv0 = hitUv0.distSq;
+                            }
+                            else
+                            {
+                                bestDSqUv0 = float.MaxValue;
+                                bestFUv0 = -1; bestU_uv0 = 0; bestV_uv0 = 0; bestW_uv0 = 0;
+                                for (int fi = 0; fi < searchCount; fi++)
+                                {
+                                    int f = constrained ? srcFacesChosen[fi] : fi;
+                                    float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
+                                        out float u, out float v, out float w);
+                                    if (dSq < bestDSqUv0)
+                                    { bestDSqUv0 = dSq; bestFUv0 = f; bestU_uv0 = u; bestV_uv0 = v; bestW_uv0 = w; }
+                                    if (bestDSqUv0 < 1e-8f) break;
+                                }
                             }
 
                             // ── 3D projection (secondary, with backface filter) ──
@@ -776,21 +914,53 @@ namespace LightmapUvTool
                         issuesTransform = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, uv2_transform);
                     }
 
-                    // Candidate B: per-vertex UV0 interpolation
+                    // Candidate B: per-vertex UV0 interpolation (BVH + normal filtering for thin details)
                     var uv2_interp = new Dictionary<int, Vector2>();
+                    var srcBvh = shellUv0Bvh[chosenSrc]; // may be null for small shells
                     foreach (int vi in tShell.vertexIndices)
                     {
                         if (vi >= tUv0.Length) continue;
                         Vector2 tUv = tUv0[vi];
-                        float bestDSq = float.MaxValue;
-                        int bestF = -1; float bestU = 0, bestV = 0, bestW = 0;
-                        for (int fi = 0; fi < srcFacesChosen.Count; fi++)
+                        int bestF; float bestU, bestV, bestW;
+
+                        if (srcBvh != null)
                         {
-                            int f = srcFacesChosen[fi];
-                            float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
-                                out float u, out float v, out float w);
-                            if (dSq < bestDSq) { bestDSq = dSq; bestF = f; bestU = u; bestV = v; bestW = w; }
+                            // BVH lookup with normal filtering for thin wall disambiguation
+                            Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                                ? tNormals[vi] : Vector3.zero;
+                            TriangleBvh2D.HitResult2D hit;
+                            if (tNrm.sqrMagnitude > 0.5f)
+                                hit = srcBvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, kNormalDotMin);
+                            else
+                                hit = srcBvh.FindNearest(tUv);
+                            bestF = hit.faceIndex; bestU = hit.u; bestV = hit.v; bestW = hit.w;
                         }
+                        else
+                        {
+                            // Linear scan for small shells (with inline normal check)
+                            float bestDSq = float.MaxValue;
+                            float bestDSqFiltered = float.MaxValue;
+                            bestF = -1; bestU = 0; bestV = 0; bestW = 0;
+                            int bestFFiltered = -1;
+                            float bestUF = 0, bestVF = 0, bestWF = 0;
+                            Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                                ? tNormals[vi] : Vector3.zero;
+                            bool hasNrm = tNrm.sqrMagnitude > 0.5f;
+                            for (int fi = 0; fi < srcFacesChosen.Count; fi++)
+                            {
+                                int f = srcFacesChosen[fi];
+                                float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
+                                    out float u, out float v, out float w);
+                                if (dSq < bestDSq)
+                                { bestDSq = dSq; bestF = f; bestU = u; bestV = v; bestW = w; }
+                                if (hasNrm && Vector3.Dot(triNormal[f], tNrm) >= kNormalDotMin && dSq < bestDSqFiltered)
+                                { bestDSqFiltered = dSq; bestFFiltered = f; bestUF = u; bestVF = v; bestWF = w; }
+                            }
+                            // Prefer normal-filtered result
+                            if (bestFFiltered >= 0)
+                            { bestF = bestFFiltered; bestU = bestUF; bestV = bestVF; bestW = bestWF; }
+                        }
+
                         if (bestF >= 0)
                             uv2_interp[vi] = triUv2A[bestF] * bestU + triUv2B[bestF] * bestV + triUv2C[bestF] * bestW;
                     }
