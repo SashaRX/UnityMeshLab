@@ -647,10 +647,11 @@ namespace LightmapUvTool
                     const float kBackfaceDot = 0.3f;
                     int localConsistencyFixes = 0;
 
-                    // Source-constrained: search only matched source faces to prevent cross-island UV2 overlap.
-                    // Fall back to all faces for forced-merged shells with no source match.
-                    bool mergedSearchAll = (srcFacesChosen == null);
-                    int mergedSearchCount = mergedSearchAll ? srcTriCount : srcFacesChosen.Count;
+                    // Merged shells by definition span multiple source shells.
+                    // Always search all source faces — source-constraining would limit
+                    // to one shell while the target covers multiple.
+                    int mergedSearchCount = srcTriCount;
+                    bool mergedSearchAll = true;
 
                     var uv2_merged = new Dictionary<int, Vector2>();
                     foreach (int vi in tShell.vertexIndices)
