@@ -641,87 +641,116 @@ namespace LightmapUvTool
 
                 if (tgtIsMerged[tsi])
                 {
-                    // ── Merged shell: UV0 multi-shell interpolation + 3D consistency check ──
+                    // ── Merged shell: try source-constrained first, fall back to all-source ──
+                    // Tiling merged: constrained gives 0 issues → stays within one UV2 island.
+                    // Genuine merged: constrained gives issues → fallback to all-source search.
                     const float kConsistencyThresh = 0.02f;
                     const float kUv0DistantThresh = 0.05f;
                     const float kBackfaceDot = 0.3f;
-                    int localConsistencyFixes = 0;
 
-                    // Merged shells by definition span multiple source shells.
-                    // Always search all source faces — source-constraining would limit
-                    // to one shell while the target covers multiple.
-                    int mergedSearchCount = srcTriCount;
-                    bool mergedSearchAll = true;
+                    Dictionary<int, Vector2> bestMergedUv2 = null;
+                    int bestMergedIssues = int.MaxValue;
+                    int bestMergedConsistencyFixes = 0;
+                    bool bestWasConstrained = false;
 
-                    var uv2_merged = new Dictionary<int, Vector2>();
-                    foreach (int vi in tShell.vertexIndices)
+                    for (int pass = 0; pass < 2; pass++)
                     {
-                        if (vi >= tUv0.Length || vi >= tVerts.Length) continue;
-                        Vector2 tUv = tUv0[vi];
-                        Vector3 tPos = tVerts[vi];
-                        Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
-                            ? tNormals[vi] : Vector3.up;
-
-                        // ── UV0 projection (primary), source-constrained ──
-                        float bestDSqUv0 = float.MaxValue;
-                        int bestFUv0 = -1; float bestU_uv0 = 0, bestV_uv0 = 0, bestW_uv0 = 0;
-                        for (int fi = 0; fi < mergedSearchCount; fi++)
+                        bool constrained;
+                        if (pass == 0)
                         {
-                            int f = mergedSearchAll ? fi : srcFacesChosen[fi];
-                            float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
-                                out float u, out float v, out float w);
-                            if (dSq < bestDSqUv0) { bestDSqUv0 = dSq; bestFUv0 = f; bestU_uv0 = u; bestV_uv0 = v; bestW_uv0 = w; }
-                            if (bestDSqUv0 < 1e-8f) break;
+                            constrained = (srcFacesChosen != null);
+                        }
+                        else
+                        {
+                            if (srcFacesChosen == null) break; // pass 0 was already all-source
+                            if (bestMergedIssues == 0) break;  // constrained was clean
+                            constrained = false;               // try all-source
                         }
 
-                        // ── 3D projection (secondary, with backface filter), source-constrained ──
-                        float bestDSq3D = float.MaxValue;
-                        int bestF3D = -1; float bestU_3d = 0, bestV_3d = 0, bestW_3d = 0;
-                        for (int fi = 0; fi < mergedSearchCount; fi++)
-                        {
-                            int f = mergedSearchAll ? fi : srcFacesChosen[fi];
-                            if (Vector3.Dot(triNormal[f], tNrm) < kBackfaceDot) continue;
-                            float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
-                                out float u, out float v, out float w);
-                            if (dSq < bestDSq3D) { bestDSq3D = dSq; bestF3D = f; bestU_3d = u; bestV_3d = v; bestW_3d = w; }
-                        }
+                        int searchCount = constrained ? srcFacesChosen.Count : srcTriCount;
+                        var candidate = new Dictionary<int, Vector2>();
+                        int localFixes = 0;
 
-                        // ── Consistency decision ──
-                        Vector2 uv2FromUv0 = (bestFUv0 >= 0)
-                            ? triUv2A[bestFUv0] * bestU_uv0 + triUv2B[bestFUv0] * bestV_uv0 + triUv2C[bestFUv0] * bestW_uv0
-                            : Vector2.zero;
-                        Vector2 uv2From3D = (bestF3D >= 0)
-                            ? triUv2A[bestF3D] * bestU_3d + triUv2B[bestF3D] * bestV_3d + triUv2C[bestF3D] * bestW_3d
-                            : Vector2.zero;
-
-                        if (bestFUv0 >= 0 && bestF3D >= 0)
+                        foreach (int vi in tShell.vertexIndices)
                         {
-                            float delta = (uv2FromUv0 - uv2From3D).magnitude;
-                            if (bestDSqUv0 > kUv0DistantThresh && delta > kConsistencyThresh)
+                            if (vi >= tUv0.Length || vi >= tVerts.Length) continue;
+                            Vector2 tUv = tUv0[vi];
+                            Vector3 tPos = tVerts[vi];
+                            Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                                ? tNormals[vi] : Vector3.up;
+
+                            // ── UV0 projection (primary) ──
+                            float bestDSqUv0 = float.MaxValue;
+                            int bestFUv0 = -1; float bestU_uv0 = 0, bestV_uv0 = 0, bestW_uv0 = 0;
+                            for (int fi = 0; fi < searchCount; fi++)
                             {
-                                uv2_merged[vi] = uv2From3D;
-                                localConsistencyFixes++;
+                                int f = constrained ? srcFacesChosen[fi] : fi;
+                                float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
+                                    out float u, out float v, out float w);
+                                if (dSq < bestDSqUv0) { bestDSqUv0 = dSq; bestFUv0 = f; bestU_uv0 = u; bestV_uv0 = v; bestW_uv0 = w; }
+                                if (bestDSqUv0 < 1e-8f) break;
                             }
-                            else
+
+                            // ── 3D projection (secondary, with backface filter) ──
+                            float bestDSq3D = float.MaxValue;
+                            int bestF3D = -1; float bestU_3d = 0, bestV_3d = 0, bestW_3d = 0;
+                            for (int fi = 0; fi < searchCount; fi++)
                             {
-                                uv2_merged[vi] = uv2FromUv0;
+                                int f = constrained ? srcFacesChosen[fi] : fi;
+                                if (Vector3.Dot(triNormal[f], tNrm) < kBackfaceDot) continue;
+                                float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
+                                    out float u, out float v, out float w);
+                                if (dSq < bestDSq3D) { bestDSq3D = dSq; bestF3D = f; bestU_3d = u; bestV_3d = v; bestW_3d = w; }
+                            }
+
+                            // ── Consistency decision ──
+                            Vector2 uv2FromUv0 = (bestFUv0 >= 0)
+                                ? triUv2A[bestFUv0] * bestU_uv0 + triUv2B[bestFUv0] * bestV_uv0 + triUv2C[bestFUv0] * bestW_uv0
+                                : Vector2.zero;
+                            Vector2 uv2From3D = (bestF3D >= 0)
+                                ? triUv2A[bestF3D] * bestU_3d + triUv2B[bestF3D] * bestV_3d + triUv2C[bestF3D] * bestW_3d
+                                : Vector2.zero;
+
+                            if (bestFUv0 >= 0 && bestF3D >= 0)
+                            {
+                                float delta = (uv2FromUv0 - uv2From3D).magnitude;
+                                if (bestDSqUv0 > kUv0DistantThresh && delta > kConsistencyThresh)
+                                {
+                                    candidate[vi] = uv2From3D;
+                                    localFixes++;
+                                }
+                                else
+                                {
+                                    candidate[vi] = uv2FromUv0;
+                                }
+                            }
+                            else if (bestFUv0 >= 0)
+                            {
+                                candidate[vi] = uv2FromUv0;
+                            }
+                            else if (bestF3D >= 0)
+                            {
+                                candidate[vi] = uv2From3D;
+                                localFixes++;
                             }
                         }
-                        else if (bestFUv0 >= 0)
+
+                        int issues = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, candidate);
+                        if (issues < bestMergedIssues)
                         {
-                            uv2_merged[vi] = uv2FromUv0;
-                        }
-                        else if (bestF3D >= 0)
-                        {
-                            uv2_merged[vi] = uv2From3D;
-                            localConsistencyFixes++;
+                            bestMergedIssues = issues;
+                            bestMergedUv2 = candidate;
+                            bestMergedConsistencyFixes = localFixes;
+                            bestWasConstrained = constrained;
                         }
                     }
 
-                    chosenUv2 = uv2_merged;
+                    chosenUv2 = bestMergedUv2;
                     shellsMerged++;
                     result.targetShellMethod[tsi] = 2; // merged
-                    result.consistencyCorrected += localConsistencyFixes;
+                    result.consistencyCorrected += bestMergedConsistencyFixes;
+                    UvtLog.Info($"[GroupedTransfer]   t{tsi} merged({tShell.faceIndices.Count}f): " +
+                        $"{(bestWasConstrained ? "src-constrained" : "all-source")} ({bestMergedIssues} issues)");
                 }
                 else
                 {
