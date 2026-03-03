@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.11.0] - 2026-03-03
+
+### Added — Multi-criteria source shell rescoring for merged shells
+- **RescoreMergedShells** (`GroupedShellTransfer.cs`): new Phase 2a+ step
+  between initial shell matching and deduplication. When `DetectMergedShell`
+  marks a target shell as merged (because 3D centroid-based matching picked
+  a wrong source), the new step evaluates all source shells using a 4-criteria
+  weighted score:
+  - UV0 coverage fraction (35%) — direct measure of UV0 compatibility
+  - Normal agreement (30%) — disambiguates front/back on thin geometry
+  - UV0 area ratio (20%) — filters mismatched shell sizes
+  - 3D centroid distance (15%) — spatial proximity prior
+- If the best-scoring source has UV0 coverage >= 70%, the shell is un-merged
+  and reassigned to the correct source, avoiding the lossy all-source fallback.
+- **ComputeUv0CoverageFraction** helper: refactored continuous version of
+  `DetectMergedShell` logic, returns 0..1 fraction instead of binary bool.
+- Precomputed per-shell average face normals and total UV0 areas for both
+  source and target shells (used by the scoring function).
+
 ## [0.9.94] - 2026-03-03
 
 ### Added — Edge analysis + spatial hash optimization (inspired by UnityMeshSimplifier)
