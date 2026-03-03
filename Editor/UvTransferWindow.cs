@@ -86,6 +86,9 @@ namespace LightmapUvTool
 
         Material glMat;
 
+        // Preview cache: mesh instanceID -> boundary edge index pairs (a0,b0,a1,b1,...)
+        readonly Dictionary<int, int[]> boundaryEdgeCache = new Dictionary<int, int[]>();
+
         // ─── Mesh Entry ───
         class MeshEntry
         {
@@ -185,7 +188,9 @@ namespace LightmapUvTool
         {
             if (checkerEnabled) CheckerTexturePreview.Restore();
             checkerEnabled = false;
+            if (lodGroup != null) lodGroup.ForceLOD(-1);
             CleanupWorkingMeshes();
+            boundaryEdgeCache.Clear();
             if (canvasRT) { canvasRT.Release(); DestroyImmediate(canvasRT); canvasRT = null; }
             if (glMat) DestroyImmediate(glMat);
             glMat = null;
@@ -268,6 +273,7 @@ namespace LightmapUvTool
             srcCache.Clear();
             shellTransformCache.Clear();
             uv0Reports.Clear();
+            boundaryEdgeCache.Clear();
             uv0Analyzed = false;
             uv0Welded = false;
             if (lodGroup == null) return;
@@ -291,11 +297,32 @@ namespace LightmapUvTool
                         meshGroupKey = ExtractGroupKey(r.name) });
                 }
             }
+
+            if (LodN > 0) SetPreviewLod(pvLod);
+            else pvLod = 0;
+
             UpdateSelectedSidecar();
         }
 
         List<MeshEntry> ForLod(int li) => meshEntries.Where(e => e.lodIndex == li && e.include).ToList();
         int LodN => lodGroup != null ? lodGroup.GetLODs().Length : 0;
+
+        void SetPreviewLod(int lodIndex)
+        {
+            if (LodN <= 0) return;
+
+            int clamped = Mathf.Clamp(lodIndex, 0, LodN - 1);
+            if (pvLod == clamped && lodGroup != null && lodGroup.forceLOD == clamped)
+                return;
+
+            pvLod = clamped;
+
+            // Keep scene model LOD in sync with window preview LOD.
+            if (lodGroup != null)
+                lodGroup.ForceLOD(clamped);
+
+            Repaint();
+        }
 
         // ════════════════════════════════════════════════════════════
         //  OnGUI
@@ -713,7 +740,7 @@ namespace LightmapUvTool
                     if (pvLod == i) GUI.backgroundColor = new Color(.35f,.65f,1f);
                     else            GUI.backgroundColor = new Color(.75f,.85f,.95f);
                     if (GUILayout.Button(label, EditorStyles.toolbarButton, GUILayout.Width(58)))
-                        pvLod = i;
+                        SetPreviewLod(i);
                     GUI.backgroundColor = bg;
                 }
 
@@ -848,6 +875,15 @@ namespace LightmapUvTool
                     GL.Vertex3(cx + sz, cy + sz, 0); GL.Vertex3(cx, cy + sz, 0);
                     GL.End();
 
+                    if (checkerEnabled || fillMode != FillMode.None)
+                    {
+                        // Show checker in UV preview under shell/overlay fills.
+                        // Keep low alpha so shell colors stay dominant.
+                        float baseAlpha = checkerEnabled ? 0.14f : fillAlpha * 0.45f;
+                        float checkerAlpha = Mathf.Clamp(baseAlpha, 0.06f, 0.22f);
+                        GlCheckerBg(cx, cy, sz, 8, checkerAlpha);
+                    }
+
                     // UDIM tile backgrounds (slightly darker)
                     GL.Begin(GL.QUADS);
                     GL.Color(new Color(.10f,.10f,.10f));
@@ -876,17 +912,22 @@ namespace LightmapUvTool
 
                         TriangleStatus[] stats = entry.transferState?.triangleStatus;
                         HashSet<int> bdr = showBorder ? entry.transferState?.borderPrimitiveIds : null;
+                        bool hasStatus = stats != null && stats.Length > 0;
+                        bool hasShellMatch = entry.shellTransferResult?.vertexToSourceShell != null
+                                             && entry.shellTransferResult.vertexToSourceShell.Length > 0;
+                        bool hasValidation = entry.validationReport?.perTriangle != null
+                                             && entry.validationReport.perTriangle.Length > 0;
 
                         // Fill
                         switch (fillMode)
                         {
-                            case FillMode.ShellMatch when entry.shellTransferResult?.vertexToSourceShell != null:
+                            case FillMode.ShellMatch when hasShellMatch:
                                 GlFillShellMatch(cx,cy,sz, uvs,tri,fN,uN, entry.shellTransferResult.vertexToSourceShell);
                                 break;
-                            case FillMode.Validation when entry.validationReport?.perTriangle != null:
+                            case FillMode.Validation when hasValidation:
                                 GlFillValidation(cx,cy,sz, uvs,tri,fN,uN, entry.validationReport.perTriangle);
                                 break;
-                            case FillMode.Status when stats != null:
+                            case FillMode.Status when hasStatus:
                                 GlFillSt(cx,cy,sz, uvs,tri,fN,uN, stats);
                                 break;
                             case FillMode.Shells:
@@ -901,7 +942,11 @@ namespace LightmapUvTool
                                 break;
                         }
 
-                        if (bdr != null && bdr.Count > 0) GlBdr(cx,cy,sz, uvs,tri,fN,uN, bdr);
+                        if (showBorder)
+                        {
+                            if (bdr != null && bdr.Count > 0) GlBdr(cx,cy,sz, uvs,tri,fN,uN, bdr);
+                            else GlUvBoundary(cx, cy, sz, mesh, uvs, tri, uN);
+                        }
                         if (showWire) GlWr(cx,cy,sz, uvs,tri,fN,uN);
                     }
                 }
@@ -1041,6 +1086,28 @@ namespace LightmapUvTool
             GL.End();
         }
 
+        void GlCheckerBg(float ox, float oy, float sz, int cells, float alpha)
+        {
+            if (cells <= 0 || alpha <= 0f) return;
+            float cell = sz / cells;
+            GL.Begin(GL.QUADS);
+            for (int y = 0; y < cells; y++)
+            {
+                for (int x = 0; x < cells; x++)
+                {
+                    bool dark = ((x + y) & 1) == 0;
+                    GL.Color(dark ? new Color(.20f,.20f,.20f,alpha) : new Color(.38f,.38f,.38f,alpha));
+                    float x0 = ox + x * cell;
+                    float y0 = oy + y * cell;
+                    GL.Vertex3(x0, y0, 0);
+                    GL.Vertex3(x0 + cell, y0, 0);
+                    GL.Vertex3(x0 + cell, y0 + cell, 0);
+                    GL.Vertex3(x0, y0 + cell, 0);
+                }
+            }
+            GL.End();
+        }
+
         void GlFillSh(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, int off)
         {
             List<UvShell> sh; try { sh = UvShellExtractor.Extract(uv, t); } catch { return; }
@@ -1106,6 +1173,68 @@ namespace LightmapUvTool
                 tot++; b++; if (b>=BATCH){GL.End();GL.Begin(GL.LINES);GL.Color(c);b=0;}
             }
             GL.End();
+        }
+
+        void GlUvBoundary(float ox, float oy, float sz, Mesh mesh, Vector2[] uv, int[] tri, int uN)
+        {
+            if (mesh == null || uv == null || tri == null || tri.Length < 3) return;
+
+            int id = mesh.GetInstanceID();
+            if (!boundaryEdgeCache.TryGetValue(id, out int[] pairs))
+            {
+                pairs = BuildBoundaryEdgePairs(tri);
+                boundaryEdgeCache[id] = pairs;
+            }
+            if (pairs == null || pairs.Length == 0) return;
+
+            GL.Begin(GL.LINES);
+            GL.Color(new Color(1f, .35f, .05f, .9f));
+            for (int i = 0; i + 1 < pairs.Length; i += 2)
+            {
+                int a = pairs[i], b = pairs[i + 1];
+                if (a < 0 || b < 0 || a >= uN || b >= uN) continue;
+                if (!UOk(uv[a]) || !UOk(uv[b])) continue;
+                Vx(ox, oy, sz, uv[a]);
+                Vx(ox, oy, sz, uv[b]);
+            }
+            GL.End();
+        }
+
+        static int[] BuildBoundaryEdgePairs(int[] tri)
+        {
+            if (tri == null || tri.Length < 3) return Array.Empty<int>();
+
+            var counts = new Dictionary<ulong, int>(tri.Length);
+            var orient = new Dictionary<ulong, (int a, int b)>(tri.Length);
+
+            for (int i = 0; i + 2 < tri.Length; i += 3)
+            {
+                AddEdge(tri[i], tri[i + 1], counts, orient);
+                AddEdge(tri[i + 1], tri[i + 2], counts, orient);
+                AddEdge(tri[i + 2], tri[i], counts, orient);
+            }
+
+            var result = new List<int>();
+            foreach (var kv in counts)
+            {
+                if (kv.Value != 1) continue;
+                var e = orient[kv.Key];
+                result.Add(e.a);
+                result.Add(e.b);
+            }
+            return result.ToArray();
+        }
+
+        static void AddEdge(int a, int b, Dictionary<ulong, int> counts, Dictionary<ulong, (int a, int b)> orient)
+        {
+            if (a == b) return;
+            int lo = a < b ? a : b;
+            int hi = a < b ? b : a;
+            ulong key = ((ulong)(uint)lo << 32) | (uint)hi;
+
+            counts.TryGetValue(key, out int c);
+            counts[key] = c + 1;
+            if (!orient.ContainsKey(key)) orient[key] = (a, b);
         }
 
         void GlFillShellMatch(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, int[] vertShellMap)
@@ -1362,9 +1491,9 @@ namespace LightmapUvTool
                 tab = Tab.Transfer;
                 pvChannel = 1;
                 fillMode = FillMode.Validation;
-                // Switch to first target LOD for preview
+                // Switch to first target LOD for preview (and scene model)
                 for (int i = 0; i < LodN; i++)
-                    if (i != sourceLodIndex && ForLod(i).Count > 0) { pvLod = i; break; }
+                    if (i != sourceLodIndex && ForLod(i).Count > 0) { SetPreviewLod(i); break; }
 
                 UvtLog.Info("[Pipeline] Full pipeline complete.");
             }
