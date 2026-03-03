@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.2] - 2026-03-03
+
+### Fixed — Cross-source UV2 overlaps from xform extrapolation
+- **Xform bounds check** (`GroupedShellTransfer.cs`): the similarity transform
+  (xform) method could extrapolate UV2 coordinates beyond the source shell's
+  UV2 region, causing overlaps with shells from different sources (e.g.
+  `uv2sh[11](xform,src11) vs uv2sh[109](interp,src117): diff-src`).
+- Now precomputes UV2 bounding boxes for each source shell and applies a
+  two-level penalty during xform vs interp method selection:
+  - If xform output AABB crosses into another source shell's UV2 AABB,
+    xform is invalidated entirely — forces interp (which stays within
+    source UV2 convex hull by construction).
+  - If OOB but no cross-shell overlap, applies mild penalty (OOB vertex count).
+- Eliminates diff-src xform-involved overlaps reported by the validator.
+
 ## [0.11.1] - 2026-03-03
 
 ### Fixed — Same-source UV2 overlaps via 3D-primary merged mode
