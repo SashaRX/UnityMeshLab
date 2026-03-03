@@ -517,7 +517,6 @@ namespace LightmapUvTool
                 }
                 if (totalPairs > overlapDetails.Count)
                     UvtLog.Info($"[Validator]  ... and {totalPairs - overlapDetails.Count} more pairs");
-                }
             }
         }
 
