@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.13.010] - 2026-03-03
+## [0.13.10] - 2026-03-03
 
 ### Fixed — UV Preview background parity with model material/checker
 - **UV Preview background source** (`UvTransferWindow.cs`): canvas now resolves a real background texture for preview instead of relying only on generic gray checker underlay.
