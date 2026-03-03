@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.11] - 2026-03-03
+
+### Fixed — UV Preview uses the same checker as model with requested alpha
+- In `UvTransferWindow.cs`, UV Preview background now uses the same checker texture source that is applied to the model and renders it with `alpha = 0.33333` when checker mode is enabled.
+- Kept fallback checker path, but aligned checker-enabled fallback alpha to `0.33333` as well.
+- Version format kept as `xx.xx.xx` (`0.13.11`).
+
 ## [0.13.10] - 2026-03-03
 
 ### Fixed — UV Preview background parity with model material/checker

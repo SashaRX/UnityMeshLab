@@ -891,16 +891,16 @@ namespace LightmapUvTool
                     Texture bgTex = ResolveUvPreviewBackgroundTexture(draws);
                     if (bgTex != null)
                     {
-                        GlTextureBg(cx, cy, sz, bgTex, new Vector2(1f, 1f), Vector2.zero, .95f);
+                        float bgAlpha = checkerEnabled ? 0.33333f : 0.95f;
+                        GlTextureBg(cx, cy, sz, bgTex, new Vector2(1f, 1f), Vector2.zero, bgAlpha);
                         glMat.SetPass(0);
                     }
 
                     if (bgTex == null && (checkerEnabled || fillMode != FillMode.None))
                     {
-                        // Show checker in UV preview under shell/overlay fills.
-                        // Keep low alpha so shell colors stay dominant.
-                        float baseAlpha = checkerEnabled ? 0.14f : fillAlpha * 0.45f;
-                        float checkerAlpha = Mathf.Clamp(baseAlpha, 0.06f, 0.22f);
+                        // Fallback checker if no texture was found.
+                        float baseAlpha = checkerEnabled ? 0.33333f : fillAlpha * 0.45f;
+                        float checkerAlpha = Mathf.Clamp(baseAlpha, 0.06f, 0.33333f);
                         GlCheckerBg(cx, cy, sz, 8, checkerAlpha);
                     }
 
