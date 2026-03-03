@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.13.0] - 2026-03-03
+
+### Changed — SymmetrySplit source-only default + sidecar metadata + validation improvement
+- **SymmetrySplit restricted to source LOD by default** (`UvTransferWindow.cs`):
+  `ExecSymmetrySplit` now accepts `bool includeTargets` parameter. By default
+  only source LOD is processed, preventing accidental topology changes on target
+  LODs that could degrade Transfer/Apply stability. UI toggle "SymSplit target
+  LODs (advanced / risky)" enables target processing with a warning.
+- **Symmetry split flag in sidecar** (`Uv2DataAsset.cs`, `Uv2AssetPostprocessor.cs`):
+  new `stepSymmetrySplit` field in `MeshUv2Entry` (schema version bumped to 2).
+  Sidecar now records whether symmetry split was applied, enabling deterministic
+  replay on reimport. Backward-compatible: `ResolveSymmetrySplitStep()` infers
+  the flag for old schema v0/v1 sidecars.
+- **`wasSymmetrySplit` per-mesh tracking** (`UvTransferWindow.cs`): each
+  `MeshEntry` tracks whether symmetry split modified it. Used in Apply to
+  populate sidecar flags and build replay data.
+- **Majority vote shell determination** (`TransferValidator.cs`): triangle
+  shell assignment now uses 3-vertex majority vote instead of first-vertex
+  lookup. If 2 of 3 vertices share a shell, that shell wins; otherwise falls
+  back to first valid vertex. Improves stretch outlier detection accuracy for
+  boundary triangles.
+- **Transfer diagnostics**: source layout logging, vertex count mismatch
+  warnings for previously transferred meshes, target LOD modification warnings
+  when SymSplit was applied to targets.
+
 ## [0.11.3] - 2026-03-03
 
 ### Fixed — Cross-source UV2 overlaps from merged shells
