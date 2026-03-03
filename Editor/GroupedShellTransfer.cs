@@ -646,11 +646,12 @@ namespace LightmapUvTool
                     const float kUv0DistantThresh = 0.05f;
                     const float kBackfaceDot = 0.3f;
 
-                    // ── Source shell count: classify tiling vs genuine merged ──
+                    // ── Source shell vote: classify tiling vs genuine merged ──
                     // 3D-project target verts → nearest source face → source shell ID.
-                    // Tiling: all verts map to 1 source shell → prefer constrained.
-                    // Genuine: verts span multiple source shells → prefer all-source.
-                    var hitSrcShells = new HashSet<int>();
+                    // Tiling: dominant shell gets ≥50% votes → prefer constrained.
+                    // Genuine: no dominant shell → prefer all-source.
+                    var srcShellVotes = new Dictionary<int, int>();
+                    int totalVotes = 0;
                     foreach (int vi in tShell.vertexIndices)
                     {
                         if (vi >= tVerts.Length) continue;
@@ -666,9 +667,19 @@ namespace LightmapUvTool
                                 out _, out _, out _);
                             if (dSq < bestDSq) { bestDSq = dSq; bestF = f; }
                         }
-                        if (bestF >= 0) hitSrcShells.Add(faceToSrcShell[bestF]);
+                        if (bestF >= 0)
+                        {
+                            int sid = faceToSrcShell[bestF];
+                            srcShellVotes.TryGetValue(sid, out int cnt);
+                            srcShellVotes[sid] = cnt + 1;
+                            totalVotes++;
+                        }
                     }
-                    int uniqueSrcShells = hitSrcShells.Count;
+                    int uniqueSrcShells = srcShellVotes.Count;
+                    int maxVotes = 0;
+                    foreach (var kv in srcShellVotes)
+                        if (kv.Value > maxVotes) maxVotes = kv.Value;
+                    bool dominantShell = totalVotes > 0 && maxVotes * 2 >= totalVotes; // ≥50%
 
                     Dictionary<int, Vector2> bestMergedUv2 = null;
                     int bestMergedIssues = int.MaxValue;
@@ -766,9 +777,9 @@ namespace LightmapUvTool
                         }
                         else if (issues == bestMergedIssues && issues > 0 && constrained != bestWasConstrained)
                         {
-                            // 1 source shell = tiling (same geometry, tiled UV0) → constrained
-                            // >1 source shells = genuine merged (LOD merged geometry) → all-source
-                            bool preferConstrained = uniqueSrcShells <= 1;
+                            // Dominant shell (≥50% votes) = tiling → constrained
+                            // No dominant = genuine merged → all-source
+                            bool preferConstrained = dominantShell;
                             better = (constrained == preferConstrained);
                         }
                         else
