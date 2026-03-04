@@ -75,7 +75,8 @@ namespace LightmapUvTool
             public int[] targetShellMethod;  // 0=interp, 1=xform, 2=merged
             public int[] faceToTargetShell;  // face index → target UV0 shell index
             public Vector3[] targetShellCentroids;
-            public float[] targetShellMatchDistSqr;
+            public float[] targetShellCentroidDistSqr;
+            public float[] targetShellAvgPointToSurfaceDistSqr;
             public int dedupConflicts;       // shells reassigned by dedup
         }
 
@@ -240,6 +241,50 @@ namespace LightmapUvTool
 
         const int kMaxSampleVerts = 32;
 
+        static float ComputeAvgPointToSurfaceDistSq(
+            UvShell tShell,
+            Vector3[] tVerts,
+            List<int> srcFaces,
+            Vector3[] triPosA, Vector3[] triPosB, Vector3[] triPosC,
+            TriangleBvh shellBvh3D)
+        {
+            // Subsample target vertices for large shells
+            var vertList = new List<int>(tShell.vertexIndices);
+            int step = Mathf.Max(1, vertList.Count / kMaxSampleVerts);
+
+            float totalDistSq = 0f;
+            int sampled = 0;
+            for (int vi_idx = 0; vi_idx < vertList.Count; vi_idx += step)
+            {
+                int vi = vertList[vi_idx];
+                if (vi >= tVerts.Length) continue;
+                Vector3 tPos = tVerts[vi];
+
+                float bestDSq;
+                if (shellBvh3D != null)
+                {
+                    var hit = shellBvh3D.FindNearest(tPos);
+                    bestDSq = hit.distSq;
+                }
+                else
+                {
+                    bestDSq = float.MaxValue;
+                    for (int fi = 0; fi < srcFaces.Count; fi++)
+                    {
+                        int f = srcFaces[fi];
+                        float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
+                            out _, out _, out _);
+                        if (dSq < bestDSq) bestDSq = dSq;
+                    }
+                }
+
+                totalDistSq += bestDSq;
+                sampled++;
+            }
+
+            return sampled > 0 ? totalDistSq / sampled : float.MaxValue;
+        }
+
         static void FindBestSourceShell(
             UvShell tShell,
             Vector3[] tVerts,
@@ -266,10 +311,6 @@ namespace LightmapUvTool
             }
             ranked.Sort((a, b) => a.distSq.CompareTo(b.distSq));
 
-            // Subsample target vertices for large shells
-            var vertList = new List<int>(tShell.vertexIndices);
-            int step = Mathf.Max(1, vertList.Count / kMaxSampleVerts);
-
             int tries = Mathf.Min(maxRetries, ranked.Count);
             for (int attempt = 0; attempt < tries; attempt++)
             {
@@ -277,35 +318,10 @@ namespace LightmapUvTool
                 var srcFaces = srcShells[si].faceIndices;
                 bool hasBvh = shellBvh3D != null && si < shellBvh3D.Length && shellBvh3D[si] != null;
 
-                float totalDistSq = 0; int sampled = 0;
-                for (int vi_idx = 0; vi_idx < vertList.Count; vi_idx += step)
-                {
-                    int vi = vertList[vi_idx];
-                    if (vi >= tVerts.Length) continue;
-                    Vector3 tPos = tVerts[vi];
-
-                    float bestDSq;
-                    if (hasBvh)
-                    {
-                        var hit = shellBvh3D[si].FindNearest(tPos);
-                        bestDSq = hit.distSq;
-                    }
-                    else
-                    {
-                        bestDSq = float.MaxValue;
-                        for (int fi = 0; fi < srcFaces.Count; fi++)
-                        {
-                            int f = srcFaces[fi];
-                            float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
-                                out _, out _, out _);
-                            if (dSq < bestDSq) bestDSq = dSq;
-                        }
-                    }
-                    totalDistSq += bestDSq;
-                    sampled++;
-                }
-
-                float avgDist = sampled > 0 ? totalDistSq / sampled : float.MaxValue;
+                float avgDist = ComputeAvgPointToSurfaceDistSq(
+                    tShell, tVerts, srcFaces,
+                    triPosA, triPosB, triPosC,
+                    hasBvh ? shellBvh3D[si] : null);
                 if (avgDist < chosenAvg3D)
                 {
                     chosenSrc = si;
@@ -422,8 +438,10 @@ namespace LightmapUvTool
             float uv0BadThreshold,
             bool[] tgtIsMerged,
             int[] targetShellToSourceShell,
-            float[] targetShellMatchDistSqr,
-            float[] tgtChosenAvg3D,
+            float[] targetShellCentroidDistSqr,
+            float[] targetShellAvgPointToSurfaceDistSqr,
+            Vector3[] triPosA, Vector3[] triPosB, Vector3[] triPosC,
+            TriangleBvh[] shellBvh3D,
             Vector3[] targetShellCentroids)
         {
             const float wArea     = 0.20f;
@@ -449,7 +467,8 @@ namespace LightmapUvTool
                 int bestSrc = -1;
                 float bestScore = -1f;
                 float bestCoverage = 0f;
-                float bestDistSq = float.MaxValue;
+                float bestCentroidDistSq = float.MaxValue;
+                float bestAvgPointToSurfaceDistSq = float.MaxValue;
 
                 for (int si = 0; si < srcShells.Count; si++)
                 {
@@ -469,6 +488,11 @@ namespace LightmapUvTool
                     float centDistSq = (tCentroid - srcCentroid3D[si]).sqrMagnitude;
                     float distScore = 1f - Mathf.Clamp01(centDistSq / diagSq);
 
+                    float avgPointToSurfaceDistSq = ComputeAvgPointToSurfaceDistSq(
+                        tShell, tVerts, srcShells[si].faceIndices,
+                        triPosA, triPosB, triPosC,
+                        shellBvh3D[si]);
+
                     // 4. UV0 coverage fraction
                     float coverage = ComputeUv0CoverageFraction(
                         tShell, tUv0,
@@ -486,7 +510,8 @@ namespace LightmapUvTool
                         bestScore = score;
                         bestSrc = si;
                         bestCoverage = coverage;
-                        bestDistSq = centDistSq;
+                        bestCentroidDistSq = centDistSq;
+                        bestAvgPointToSurfaceDistSq = avgPointToSurfaceDistSq;
                     }
                 }
 
@@ -495,8 +520,8 @@ namespace LightmapUvTool
                     int oldSrc = targetShellToSourceShell[tsi];
                     tgtIsMerged[tsi] = false;
                     targetShellToSourceShell[tsi] = bestSrc;
-                    targetShellMatchDistSqr[tsi] = bestDistSq;
-                    tgtChosenAvg3D[tsi] = bestDistSq;
+                    targetShellCentroidDistSqr[tsi] = bestCentroidDistSq;
+                    targetShellAvgPointToSurfaceDistSqr[tsi] = bestAvgPointToSurfaceDistSq;
                     rescued++;
 
                     UvtLog.Info($"[GroupedTransfer] Rescore: t{tsi} rescued from merged " +
@@ -808,9 +833,8 @@ namespace LightmapUvTool
             result.targetShellToSourceShell = new int[tgtShells.Count];
             result.targetShellMethod = new int[tgtShells.Count]; // 0=interp, 1=xform, 2=merged
             result.targetShellCentroids = new Vector3[tgtShells.Count];
-            result.targetShellMatchDistSqr = new float[tgtShells.Count];
-
-            var tgtChosenAvg3D = new float[tgtShells.Count];
+            result.targetShellCentroidDistSqr = new float[tgtShells.Count];
+            result.targetShellAvgPointToSurfaceDistSqr = new float[tgtShells.Count];
             var tgtIsMerged = new bool[tgtShells.Count];
             var tgtForce3DFallback = new bool[tgtShells.Count];
 
@@ -841,8 +865,8 @@ namespace LightmapUvTool
             {
                 result.targetShellToSourceShell[i] = -1;
                 result.targetShellMethod[i] = -1;
-                result.targetShellMatchDistSqr[i] = float.MaxValue;
-                tgtChosenAvg3D[i] = float.MaxValue;
+                result.targetShellCentroidDistSqr[i] = float.MaxValue;
+                result.targetShellAvgPointToSurfaceDistSqr[i] = float.MaxValue;
             }
 
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
@@ -868,8 +892,8 @@ namespace LightmapUvTool
                 if (chosenSrc < 0) continue;
 
                 result.targetShellToSourceShell[tsi] = chosenSrc;
-                result.targetShellMatchDistSqr[tsi] = chosenDistSq;
-                tgtChosenAvg3D[tsi] = chosenAvg3D;
+                result.targetShellCentroidDistSqr[tsi] = chosenDistSq;
+                result.targetShellAvgPointToSurfaceDistSqr[tsi] = chosenAvg3D;
 
                 // Detect merged shell via UV0 coverage (BVH + adaptive threshold)
                 tgtIsMerged[tsi] = DetectMergedShell(tShell, tUv0,
@@ -888,8 +912,10 @@ namespace LightmapUvTool
                 meshDiagonal, kUv0BadThreshold,
                 tgtIsMerged,
                 result.targetShellToSourceShell,
-                result.targetShellMatchDistSqr,
-                tgtChosenAvg3D,
+                result.targetShellCentroidDistSqr,
+                result.targetShellAvgPointToSurfaceDistSqr,
+                triPosA, triPosB, triPosC,
+                shellBvh3D,
                 result.targetShellCentroids);
 
             // ── Phase 2b: Deduplicate — resolve same-source conflicts ──
@@ -900,7 +926,7 @@ namespace LightmapUvTool
             var claimed = new HashSet<int>();
             {
                 // Build reverse map: source → list of non-merged target claimants
-                var srcClaimants = new Dictionary<int, List<(int tsi, float avg3D)>>();
+                var srcClaimants = new Dictionary<int, List<(int tsi, float quality)>>();
                 for (int tsi = 0; tsi < tgtShells.Count; tsi++)
                 {
                     int src = result.targetShellToSourceShell[tsi];
@@ -910,7 +936,7 @@ namespace LightmapUvTool
                         list = new List<(int, float)>();
                         srcClaimants[src] = list;
                     }
-                    list.Add((tsi, tgtChosenAvg3D[tsi]));
+                    list.Add((tsi, result.targetShellAvgPointToSurfaceDistSqr[tsi]));
                 }
 
                 // Identify conflicts and build claimed set
@@ -923,7 +949,7 @@ namespace LightmapUvTool
                     if (kv.Value.Count <= 1) continue;
 
                     // Multiple non-merged targets claim same source — keep best
-                    kv.Value.Sort((a, b) => a.avg3D.CompareTo(b.avg3D));
+                    kv.Value.Sort((a, b) => a.quality.CompareTo(b.quality));
                     for (int i = 1; i < kv.Value.Count; i++)
                     {
                         needsRematch.Add(kv.Value[i].tsi);
@@ -945,9 +971,6 @@ namespace LightmapUvTool
                         {
                             var tShell = tgtShells[tsi];
                             int oldSrc = result.targetShellToSourceShell[tsi];
-                            float oldDistSq = result.targetShellMatchDistSqr[tsi];
-                            float oldAvg3D = tgtChosenAvg3D[tsi];
-
                             FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
                                 triPosA, triPosB, triPosC,
                                 shellBvh3D, shellBvh3DFaceMap,
@@ -978,8 +1001,8 @@ namespace LightmapUvTool
                                 else
                                 {
                                     result.targetShellToSourceShell[tsi] = newSrc;
-                                    result.targetShellMatchDistSqr[tsi] = newDistSq;
-                                    tgtChosenAvg3D[tsi] = newAvg3D;
+                                    result.targetShellCentroidDistSqr[tsi] = newDistSq;
+                                    result.targetShellAvgPointToSurfaceDistSqr[tsi] = newAvg3D;
                                     claimed.Add(newSrc);
                                     tgtIsMerged[tsi] = newIsMerged;
                                 }
@@ -1014,9 +1037,11 @@ namespace LightmapUvTool
                 string method = tgtIsMerged[tsi] ? "merged" : "interp";
                 int tFaces = tgtShells[tsi].faceIndices.Count;
                 int tVtx = tgtShells[tsi].vertexIndices.Count;
-                float avg3D = tgtChosenAvg3D[tsi];
+                float avg3D = result.targetShellAvgPointToSurfaceDistSqr[tsi];
                 string srcInfo = src >= 0 ? $"src{src}({srcShells[src].faceIndices.Count}f)" : "none";
-                UvtLog.Verbose($"[GroupedTransfer]   t{tsi}({tFaces}f,{tVtx}v) → {srcInfo} [{method}] avg3D={avg3D:F6}");
+                float centDistSq = result.targetShellCentroidDistSqr[tsi];
+                UvtLog.Verbose($"[GroupedTransfer]   t{tsi}({tFaces}f,{tVtx}v) → {srcInfo} [{method}] " +
+                    $"avgPointToSurfaceDistSq={avg3D:F6}, centroidDistSq={centDistSq:F6}");
             }
 
             int transferred = 0;
