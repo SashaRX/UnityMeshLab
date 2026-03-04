@@ -896,12 +896,14 @@ namespace LightmapUvTool
                         glMat.SetPass(0);
                     }
 
-                    if (bgTex == null && (checkerEnabled || fillMode != FillMode.None))
+                    if (bgTex == null && (checkerEnabled || fillMode != FillMode.None || pvChannel == 1))
                     {
                         // Fallback checker if no texture was found.
-                        float baseAlpha = checkerEnabled ? 0.33333f : fillAlpha * 0.45f;
+                        float baseAlpha = pvChannel == 1
+                            ? 0.24f
+                            : (checkerEnabled ? 0.33333f : fillAlpha * 0.45f);
                         float checkerAlpha = Mathf.Clamp(baseAlpha, 0.06f, 0.33333f);
-                        GlCheckerBg(cx, cy, sz, 8, checkerAlpha);
+                        GlCheckerBg(cx, cy, sz, 8, checkerAlpha, pvChannel == 1);
                     }
 
                     // UDIM tile backgrounds (slightly darker)
@@ -1112,6 +1114,9 @@ namespace LightmapUvTool
             if (checkerEnabled)
                 return CheckerTexturePreview.GetCheckerTexture();
 
+            if (pvChannel == 1)
+                return null;
+
             foreach (var item in draws)
             {
                 var renderer = item.Item2.renderer;
@@ -1131,17 +1136,19 @@ namespace LightmapUvTool
             return null;
         }
 
-        void GlCheckerBg(float ox, float oy, float sz, int cells, float alpha)
+        void GlCheckerBg(float ox, float oy, float sz, int cells, float alpha, bool neutralGray = false)
         {
             if (cells <= 0 || alpha <= 0f) return;
             float cell = sz / cells;
             GL.Begin(GL.QUADS);
+            Color darkColor = neutralGray ? new Color(.24f,.24f,.24f,alpha) : new Color(.20f,.20f,.20f,alpha);
+            Color lightColor = neutralGray ? new Color(.32f,.32f,.32f,alpha) : new Color(.38f,.38f,.38f,alpha);
             for (int y = 0; y < cells; y++)
             {
                 for (int x = 0; x < cells; x++)
                 {
                     bool dark = ((x + y) & 1) == 0;
-                    GL.Color(dark ? new Color(.20f,.20f,.20f,alpha) : new Color(.38f,.38f,.38f,alpha));
+                    GL.Color(dark ? darkColor : lightColor);
                     float x0 = ox + x * cell;
                     float y0 = oy + y * cell;
                     GL.Vertex3(x0, y0, 0);
