@@ -1079,45 +1079,25 @@ namespace LightmapUvTool
 
                         // Select BVH for UV0 projection
                         // When source shell has UV0 overlap with partitions,
-                        // use partition-specific BVH to avoid picking faces
-                        // from the wrong spatial side.
-                        TriangleBvh2D mergedUv0Bvh = null;
-                        int matchedPartIdPass1 = -1;
+                        // use PER-VERTEX partition BVH based on each vertex's
+                        // normal direction (front→front partition, back→back).
+                        TriangleBvh2D defaultUv0Bvh = null;
+                        bool hasPartitions = false;
+                        SpatialPartitioner.ShellPartitionResult srcPR = null;
                         if (constrained && chosenSrc >= 0)
                         {
-                            var pr = srcPartitions[chosenSrc];
-                            if (pr.hasOverlap && pr.partitionCount > 1
-                                && partitionBvh[chosenSrc] != null)
-                            {
-                                Vector3 tgtC3D = result.targetShellCentroids[tsi];
-                                Vector3 tgtNrm = ComputeShellAvgNormal(tShell, tNormals);
-                                matchedPartIdPass1 = SpatialPartitioner.MatchPartition(pr, tgtC3D, tgtNrm);
-                                if (matchedPartIdPass1 >= 0
-                                    && partitionBvh[chosenSrc][matchedPartIdPass1] != null)
-                                    mergedUv0Bvh = partitionBvh[chosenSrc][matchedPartIdPass1];
-                                else
-                                    mergedUv0Bvh = shellUv0Bvh[chosenSrc];
-                            }
-                            else
-                            {
-                                mergedUv0Bvh = shellUv0Bvh[chosenSrc];
-                            }
+                            srcPR = srcPartitions[chosenSrc];
+                            hasPartitions = srcPR.hasOverlap && srcPR.partitionCount > 1
+                                && partitionBvh[chosenSrc] != null;
+                            defaultUv0Bvh = shellUv0Bvh[chosenSrc];
                         }
                         else if (!constrained)
-                            mergedUv0Bvh = globalUv0Bvh;
+                            defaultUv0Bvh = globalUv0Bvh;
 
-                        // Constrained face list for linear fallback / 3D search
-                        // When partition is active, narrow to partition faces only
-                        List<int> searchFaces = srcFacesChosen;
-                        if (constrained && matchedPartIdPass1 >= 0 && chosenSrc >= 0)
-                        {
-                            var partFaces = SpatialPartitioner.GetPartitionFaces(
-                                srcShells[chosenSrc], srcPartitions[chosenSrc], matchedPartIdPass1);
-                            if (partFaces.Length > 0)
-                                searchFaces = new List<int>(partFaces);
-                        }
-                        int searchCount = constrained && searchFaces != null
-                            ? searchFaces.Count : srcTriCount;
+                        // Default face list for 3D search (no partition)
+                        List<int> defaultSearchFaces = srcFacesChosen;
+                        int defaultSearchCount = constrained && defaultSearchFaces != null
+                            ? defaultSearchFaces.Count : srcTriCount;
 
                         foreach (int vi in tShell.vertexIndices)
                         {
@@ -1127,15 +1107,28 @@ namespace LightmapUvTool
                             Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                                 ? tNormals[vi] : Vector3.up;
 
+                            // Per-vertex partition selection based on vertex normal
+                            TriangleBvh2D vertexBvh = defaultUv0Bvh;
+                            List<int> vertexSearchFaces = defaultSearchFaces;
+                            int vertexSearchCount = defaultSearchCount;
+                            if (hasPartitions)
+                            {
+                                int pid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                                if (pid >= 0 && partitionBvh[chosenSrc][pid] != null)
+                                    vertexBvh = partitionBvh[chosenSrc][pid];
+                                // For linear fallback, also narrow to partition faces
+                                // (skip if BVH is available — it's faster)
+                            }
+
                             // ── UV0 projection (primary, with BVH + normal filtering) ──
                             float bestDSqUv0;
                             int bestFUv0; float bestU_uv0, bestV_uv0, bestW_uv0;
 
-                            if (mergedUv0Bvh != null)
+                            if (vertexBvh != null)
                             {
                                 var hitUv0 = tNrm.sqrMagnitude > 0.5f
-                                    ? mergedUv0Bvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, kBackfaceDot)
-                                    : mergedUv0Bvh.FindNearest(tUv);
+                                    ? vertexBvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, kBackfaceDot)
+                                    : vertexBvh.FindNearest(tUv);
                                 bestFUv0 = hitUv0.faceIndex;
                                 bestU_uv0 = hitUv0.u; bestV_uv0 = hitUv0.v; bestW_uv0 = hitUv0.w;
                                 bestDSqUv0 = hitUv0.distSq;
@@ -1144,9 +1137,9 @@ namespace LightmapUvTool
                             {
                                 bestDSqUv0 = float.MaxValue;
                                 bestFUv0 = -1; bestU_uv0 = 0; bestV_uv0 = 0; bestW_uv0 = 0;
-                                for (int fi = 0; fi < searchCount; fi++)
+                                for (int fi = 0; fi < vertexSearchCount; fi++)
                                 {
-                                    int f = constrained ? searchFaces[fi] : fi;
+                                    int f = constrained ? vertexSearchFaces[fi] : fi;
                                     float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
                                         out float u, out float v, out float w);
                                     if (dSq < bestDSqUv0)
@@ -1158,9 +1151,9 @@ namespace LightmapUvTool
                             // ── 3D projection (secondary, with backface filter) ──
                             float bestDSq3D = float.MaxValue;
                             int bestF3D = -1; float bestU_3d = 0, bestV_3d = 0, bestW_3d = 0;
-                            for (int fi = 0; fi < searchCount; fi++)
+                            for (int fi = 0; fi < defaultSearchCount; fi++)
                             {
-                                int f = constrained ? searchFaces[fi] : fi;
+                                int f = constrained ? defaultSearchFaces[fi] : fi;
                                 if (Vector3.Dot(triNormal[f], tNrm) < kBackfaceDot) continue;
                                 float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
                                     out float u, out float v, out float w);
@@ -1296,52 +1289,46 @@ namespace LightmapUvTool
                             }
                         }
 
-                        // ── Approach A/B: Partition-constrained BVH ──
-                        if (!usedPartition && partResult.hasOverlap && partResult.partitionCount > 1)
+                        // ── Approach A/B: Per-vertex partition-constrained BVH ──
+                        if (!usedPartition && partResult.hasOverlap && partResult.partitionCount > 1
+                            && partitionBvh[chosenSrc] != null)
                         {
-                            Vector3 tgtCentroid3D = result.targetShellCentroids[tsi];
-                            Vector3 tgtNrmPart = ComputeShellAvgNormal(tShell, tNormals);
-                            int matchedPartId = SpatialPartitioner.MatchPartition(partResult, tgtCentroid3D, tgtNrmPart);
+                            var candidatePart = new Dictionary<int, Vector2>();
 
-                            if (matchedPartId >= 0)
+                            foreach (int vi in tShell.vertexIndices)
                             {
-                                var partFaces = SpatialPartitioner.GetPartitionFaces(
-                                    srcShells[chosenSrc], partResult, matchedPartId);
+                                if (vi >= tUv0.Length) continue;
+                                Vector2 tUv = tUv0[vi];
+                                Vector3 vPos = (vi < tVerts.Length) ? tVerts[vi] : Vector3.zero;
+                                Vector3 vNrm = (tNormals != null && vi < tNormals.Length)
+                                    ? tNormals[vi] : Vector3.up;
 
-                                if (partFaces.Length > 0)
+                                int pid = SpatialPartitioner.MatchPartition(partResult, vPos, vNrm);
+                                var bvh = (pid >= 0 && partitionBvh[chosenSrc][pid] != null)
+                                    ? partitionBvh[chosenSrc][pid]
+                                    : shellUv0Bvh[chosenSrc];
+
+                                if (bvh == null) continue;
+                                var hit = bvh.FindNearest(tUv);
+                                if (hit.faceIndex >= 0)
                                 {
-                                    var partBvh = new TriangleBvh2D(triUv0A, triUv0B, triUv0C, partFaces);
-                                    var candidatePart = new Dictionary<int, Vector2>();
-
-                                    foreach (int vi in tShell.vertexIndices)
-                                    {
-                                        if (vi >= tUv0.Length) continue;
-                                        Vector2 tUv = tUv0[vi];
-
-                                        // Partition-constrained lookup — NO normal filter needed,
-                                        // partition already disambiguates overlapping sides
-                                        var hit = partBvh.FindNearest(tUv);
-                                        if (hit.faceIndex >= 0)
-                                        {
-                                            candidatePart[vi] = triUv2A[hit.faceIndex] * hit.u
-                                                              + triUv2B[hit.faceIndex] * hit.v
-                                                              + triUv2C[hit.faceIndex] * hit.w;
-                                        }
-                                    }
-
-                                    int issuesPart = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, candidatePart);
-                                    if (issuesPart < bestMergedIssues)
-                                    {
-                                        bestMergedIssues = issuesPart;
-                                        bestMergedUv2 = candidatePart;
-                                        bestMergedConsistencyFixes = 0;
-                                        bestWasConstrained = true;
-                                        usedPartition = true;
-
-                                        UvtLog.Info($"[GroupedTransfer]   t{tsi}: partition-constrained UV0-interp " +
-                                            $"(srcPartition={matchedPartId}, {issuesPart} issues)");
-                                    }
+                                    candidatePart[vi] = triUv2A[hit.faceIndex] * hit.u
+                                                      + triUv2B[hit.faceIndex] * hit.v
+                                                      + triUv2C[hit.faceIndex] * hit.w;
                                 }
+                            }
+
+                            int issuesPart = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, candidatePart);
+                            if (issuesPart < bestMergedIssues)
+                            {
+                                bestMergedIssues = issuesPart;
+                                bestMergedUv2 = candidatePart;
+                                bestMergedConsistencyFixes = 0;
+                                bestWasConstrained = true;
+                                usedPartition = true;
+
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: per-vertex partition UV0-interp " +
+                                    $"({issuesPart} issues)");
                             }
                         }
 
