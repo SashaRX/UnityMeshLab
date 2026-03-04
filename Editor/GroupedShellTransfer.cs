@@ -786,6 +786,23 @@ namespace LightmapUvTool
                 }
             }
 
+            // ── Global 3D BVH for ray-along-normal (overlap bypass) ──
+            // When source shells have UV0 overlap, shell matching and UV0-based
+            // transfer are unreliable. Build a GLOBAL 3D BVH from ALL source
+            // triangles and use per-vertex ray-along-normal projection instead.
+            bool modelHasOverlap = false;
+            for (int si = 0; si < srcShells.Count; si++)
+                if (srcPartitions[si].hasOverlap) { modelHasOverlap = true; break; }
+
+            TriangleBvh globalBvh3D = null;
+            float kRayMaxDist = Mathf.Max(meshDiagonal * 0.1f, 0.01f);
+            if (modelHasOverlap)
+            {
+                globalBvh3D = new TriangleBvh(srcVerts, srcTris);
+                UvtLog.Info($"[GroupedTransfer] Global 3D BVH for ray projection " +
+                    $"(diag={meshDiagonal:F4}, rayMax={kRayMaxDist:F4})");
+            }
+
             // Adaptive thresholds
             float kGoodDistSq = meshDiagonal > 0f
                 ? 0.001f * meshDiagonal * meshDiagonal
@@ -1039,6 +1056,75 @@ namespace LightmapUvTool
 
                 Dictionary<int, Vector2> chosenUv2;
 
+                // ── Global ray-along-normal for overlapping UV0 shells ──
+                // Bypasses shell-constrained logic entirely. Rays from each target
+                // vertex along its normal into ALL source triangles — naturally
+                // finds the correct side on thin geometry (belts, straps).
+                if (globalBvh3D != null && chosenSrc >= 0 && srcPartitions[chosenSrc].hasOverlap)
+                {
+                    var candidateRay = new Dictionary<int, Vector2>();
+                    int rayHits = 0, fallbacks = 0;
+
+                    foreach (int vi in tShell.vertexIndices)
+                    {
+                        if (vi >= tVerts.Length) continue;
+                        Vector3 tPos = tVerts[vi];
+                        Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                            ? tNormals[vi] : Vector3.up;
+
+                        int hitFace = -1;
+                        Vector3 hitBary = Vector3.zero;
+
+                        // Primary: ray along normal (forward preferred)
+                        if (tNrm.sqrMagnitude > 0.5f)
+                        {
+                            var rayHit = globalBvh3D.RaycastBidirectional(
+                                tPos, tNrm.normalized, kRayMaxDist);
+                            if (rayHit.triangleIndex >= 0)
+                            {
+                                hitFace = rayHit.triangleIndex;
+                                hitBary = rayHit.barycentric;
+                                rayHits++;
+                            }
+                        }
+
+                        // Fallback: nearest-point with normal filter (dot > 0.3)
+                        if (hitFace < 0)
+                        {
+                            var nearest = globalBvh3D.FindNearestNormalFiltered(
+                                tPos, tNrm, triNormal, 0.3f);
+                            if (nearest.triangleIndex >= 0)
+                            {
+                                hitFace = nearest.triangleIndex;
+                                hitBary = nearest.barycentric;
+                                fallbacks++;
+                            }
+                        }
+
+                        if (hitFace >= 0)
+                        {
+                            candidateRay[vi] = triUv2A[hitFace] * hitBary.x
+                                             + triUv2B[hitFace] * hitBary.y
+                                             + triUv2C[hitFace] * hitBary.z;
+                        }
+                    }
+
+                    int issues = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, candidateRay);
+
+                    UvtLog.Info($"[GroupedTransfer]   t{tsi}: global ray projection " +
+                        $"({rayHits} hits, {fallbacks} fallbacks, {issues} issues)");
+
+                    foreach (var kv in candidateRay)
+                    {
+                        result.uv2[kv.Key] = kv.Value;
+                        result.vertexToSourceShell[kv.Key] = chosenSrc;
+                        transferred++;
+                    }
+                    shellsMerged++;
+                    result.targetShellMethod[tsi] = 2;
+                    continue; // bypass all per-shell logic
+                }
+
                 if (tgtIsMerged[tsi])
                 {
                     // ── Merged shell: try source-constrained first, fall back to all-source ──
@@ -1057,80 +1143,6 @@ namespace LightmapUvTool
                     // source region), fall back to constrained if overlap guard rejects.
                     // Normal merged: constrained first, all-source fallback (unchanged).
                     bool force3D = tgtForce3DFallback[tsi];
-
-                    // ── Ray-along-normal projection for overlapping UV0 shells ──
-                    // When source shell has UV0 overlap (belts, straps), UV0-based
-                    // matching is unreliable. Instead: raycast from LOD1 vertex along
-                    // its normal → find LOD0 triangle intersection → barycentric UV2.
-                    // This naturally separates inner/outer on thin geometry.
-                    // Fallback to nearest-point with normal filter for ray misses.
-                    if (chosenSrc >= 0 && srcPartitions[chosenSrc].hasOverlap
-                        && shellBvh3D[chosenSrc] != null)
-                    {
-                        const float kRayMaxDist = 0.5f;
-                        const float kNearestFallbackDot = 0.0f;
-                        var faceMap = shellBvh3DFaceMap[chosenSrc];
-                        var localNormals = shellBvh3DFaceNormals[chosenSrc];
-                        var bvh3D = shellBvh3D[chosenSrc];
-
-                        var candidate3D = new Dictionary<int, Vector2>();
-                        int rayHits = 0, nearestFallbacks = 0;
-                        foreach (int vi in tShell.vertexIndices)
-                        {
-                            if (vi >= tVerts.Length) continue;
-                            Vector3 tPos = tVerts[vi];
-                            Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
-                                ? tNormals[vi] : Vector3.up;
-
-                            int hitFace = -1;
-                            Vector3 hitBary = Vector3.zero;
-
-                            // Primary: ray along normal (bidirectional)
-                            if (tNrm.sqrMagnitude > 0.5f)
-                            {
-                                var rayHit = bvh3D.RaycastBidirectional(tPos, tNrm, kRayMaxDist);
-                                if (rayHit.triangleIndex >= 0)
-                                {
-                                    hitFace = rayHit.triangleIndex;
-                                    hitBary = rayHit.barycentric;
-                                    rayHits++;
-                                }
-                            }
-
-                            // Fallback: nearest-point with normal filter
-                            if (hitFace < 0 && localNormals != null)
-                            {
-                                var nearest = bvh3D.FindNearestNormalFiltered(
-                                    tPos, tNrm, localNormals, kNearestFallbackDot);
-                                if (nearest.triangleIndex >= 0)
-                                {
-                                    hitFace = nearest.triangleIndex;
-                                    hitBary = nearest.barycentric;
-                                    nearestFallbacks++;
-                                }
-                            }
-
-                            if (hitFace >= 0 && hitFace < faceMap.Length)
-                            {
-                                int globalFace = faceMap[hitFace];
-                                candidate3D[vi] = triUv2A[globalFace] * hitBary.x
-                                                + triUv2B[globalFace] * hitBary.y
-                                                + triUv2C[globalFace] * hitBary.z;
-                            }
-                        }
-
-                        if (candidate3D.Count > 0)
-                        {
-                            int issues3D = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, candidate3D);
-                            bestMergedUv2 = candidate3D;
-                            bestMergedIssues = issues3D;
-                            bestWasConstrained = true;
-
-                            UvtLog.Info($"[GroupedTransfer]   t{tsi}: ray-along-normal 3D projection " +
-                                $"(overlap UV0, {rayHits} ray hits, {nearestFallbacks} fallbacks, " +
-                                $"{issues3D} issues)");
-                        }
-                    }
 
                     for (int pass = 0; pass < 2; pass++)
                     {

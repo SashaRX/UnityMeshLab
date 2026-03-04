@@ -97,20 +97,14 @@ namespace LightmapUvTool
 
         /// <summary>
         /// Ray-along-normal projection: shoots ray in both directions (+normal, -normal).
-        /// Returns the closest hit. Ideal for thin geometry (belts, straps) where
-        /// nearest-point fails but the ray naturally finds "its" side.
+        /// Always prefers forward hit (along normal = same side of thin geometry).
+        /// Backward hit is only used when forward misses entirely.
         /// </summary>
         public RayHit RaycastBidirectional(Vector3 origin, Vector3 normal, float maxDist)
         {
             var fwd = Raycast(origin, normal, maxDist);
-            var bck = Raycast(origin, -normal, maxDist);
-
-            if (fwd.triangleIndex < 0) return bck;
-            if (bck.triangleIndex < 0) return fwd;
-
-            // Prefer forward hit (along normal = "our" side), use backward only if much closer
-            // For thin geometry, forward hit is almost always correct
-            return fwd.t <= bck.t ? fwd : bck;
+            if (fwd.triangleIndex >= 0) return fwd;
+            return Raycast(origin, -normal, maxDist);
         }
 
         // ─── Build ───
