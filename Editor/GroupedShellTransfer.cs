@@ -1268,9 +1268,9 @@ namespace LightmapUvTool
                         // ── Approach C: Strip parameterization for ribbon shells ──
                         if (srcIsRibbon[chosenSrc] && partResult.hasOverlap)
                         {
-                            var candidateStrip = StripParameterization.Transfer(
+                            var candidateStrip = StripParameterization.TransferNormalFiltered(
                                 tShell, srcShells[chosenSrc],
-                                tVerts, srcVerts, srcUv0, srcUv2, srcTris,
+                                tVerts, tNormals, srcVerts, srcUv0, srcUv2, srcTris,
                                 triUv2A, triUv2B, triUv2C,
                                 srcRibbonAxis[chosenSrc], srcRibbonAxis2[chosenSrc],
                                 srcRibbonCentroid[chosenSrc]);
@@ -1290,7 +1290,8 @@ namespace LightmapUvTool
                         }
 
                         // ── Approach A/B: Per-vertex partition-constrained BVH ──
-                        if (!usedPartition && partResult.hasOverlap && partResult.partitionCount > 1
+                        // Always try even if strip was used — partition may do better
+                        if (partResult.hasOverlap && partResult.partitionCount > 1
                             && partitionBvh[chosenSrc] != null)
                         {
                             var candidatePart = new Dictionary<int, Vector2>();

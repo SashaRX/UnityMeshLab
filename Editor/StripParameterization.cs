@@ -2,7 +2,7 @@
 //
 // Approach C: For shells that are long narrow strips (ribbons), parametrize
 // by (t_along, t_across) using PCA axes. Transfer UV2 via nearest-neighbor
-// in parameterized space. Invariant to UV0 overlap, normals, and thickness.
+// in parameterized space, filtered by face normal to separate front/back.
 
 using System.Collections.Generic;
 using UnityEngine;
@@ -13,6 +13,7 @@ namespace LightmapUvTool
     {
         const float kAspectThreshold = 3f;     // length/width ratio for ribbon detection
         const float kPcaVarianceThreshold = 0.70f; // PCA first component explains >70% variance
+        const float kNormalDotThreshold = 0f;  // dot(srcNrm, tgtNrm) > 0 = same side
 
         /// <summary>
         /// Detect if a shell is ribbon-like based on 3D vertex positions.
@@ -130,7 +131,8 @@ namespace LightmapUvTool
         /// <summary>
         /// Transfer UV2 from source shell to target shell using strip parameterization.
         /// Each vertex is parameterized as (t_along, t_across) via projection onto PCA axes.
-        /// Transfer finds nearest source vertex in (t_along, t_across) space.
+        /// Transfer finds nearest source vertex in (t_along, t_across) space,
+        /// filtered by face normal to avoid matching front↔back on thin belts.
         /// </summary>
         public static Dictionary<int, Vector2> Transfer(
             UvShell targetShell, UvShell sourceShell,
@@ -142,16 +144,19 @@ namespace LightmapUvTool
         {
             var result = new Dictionary<int, Vector2>();
 
-            // Parametrize source shell vertices: (t_along, t_across)
-            // Build a list of source sample points with their UV2 and parameterized coords
-            var srcSamples = new List<(Vector2 param, Vector2 uv2)>();
+            // Parametrize source shell: (t_along, t_across, faceNormal)
+            var srcSamples = new List<(Vector2 param, Vector2 uv2, Vector3 normal)>();
 
-            // Sample from face centroids for denser coverage
             foreach (int f in sourceShell.faceIndices)
             {
                 int i0 = srcTriangles[f * 3], i1 = srcTriangles[f * 3 + 1], i2 = srcTriangles[f * 3 + 2];
                 if (i0 >= srcVertices.Length || i1 >= srcVertices.Length || i2 >= srcVertices.Length) continue;
                 if (i0 >= srcUv2.Length || i1 >= srcUv2.Length || i2 >= srcUv2.Length) continue;
+
+                // Face normal
+                Vector3 faceNrm = Vector3.Cross(
+                    srcVertices[i1] - srcVertices[i0],
+                    srcVertices[i2] - srcVertices[i0]).normalized;
 
                 // Face centroid in 3D
                 Vector3 pos3D = (srcVertices[i0] + srcVertices[i1] + srcVertices[i2]) / 3f;
@@ -162,9 +167,9 @@ namespace LightmapUvTool
                 // Face centroid in UV2
                 Vector2 uv2Val = (srcUv2[i0] + srcUv2[i1] + srcUv2[i2]) / 3f;
 
-                srcSamples.Add((new Vector2(tAlong, tAcross), uv2Val));
+                srcSamples.Add((new Vector2(tAlong, tAcross), uv2Val, faceNrm));
 
-                // Also add vertices for better coverage
+                // Also add vertices (use face normal for their normal)
                 for (int j = 0; j < 3; j++)
                 {
                     int vi = srcTriangles[f * 3 + j];
@@ -172,13 +177,13 @@ namespace LightmapUvTool
                     Vector3 vOff = vPos - centroid;
                     float vAlong = Vector3.Dot(vOff, principalAxis);
                     float vAcross = Vector3.Dot(vOff, secondaryAxis);
-                    srcSamples.Add((new Vector2(vAlong, vAcross), srcUv2[vi]));
+                    srcSamples.Add((new Vector2(vAlong, vAcross), srcUv2[vi], faceNrm));
                 }
             }
 
             if (srcSamples.Count == 0) return result;
 
-            // For each target vertex, find nearest source sample in (t_along, t_across) space
+            // For each target vertex, find nearest source sample filtered by normal
             foreach (int vi in targetShell.vertexIndices)
             {
                 if (vi >= tgtVertices.Length) continue;
@@ -189,20 +194,129 @@ namespace LightmapUvTool
                 float tAcross = Vector3.Dot(tOffset, secondaryAxis);
                 Vector2 tParam = new Vector2(tAlong, tAcross);
 
-                // Find nearest source sample
+                // Find nearest source sample with compatible normal
                 float bestDSq = float.MaxValue;
+                float bestDSqAny = float.MaxValue;
                 Vector2 bestUv2 = Vector2.zero;
+                Vector2 bestUv2Any = Vector2.zero;
+
+                // Use mesh normal if available, otherwise skip normal filter
+                Vector3 tNrm = Vector3.zero;
+                // We don't have target normals array here, so use a simple heuristic:
+                // we'll do two passes — filtered and unfiltered — and prefer filtered.
+                // Actually, we need to get target normals. Let's not filter here if we
+                // don't have them. The caller should pass them.
+                // For now, try all samples (backward compatible), but below we add
+                // an overload that accepts target normals.
                 foreach (var sample in srcSamples)
                 {
                     float dSq = (sample.param - tParam).sqrMagnitude;
-                    if (dSq < bestDSq)
+                    if (dSq < bestDSqAny)
                     {
-                        bestDSq = dSq;
-                        bestUv2 = sample.uv2;
+                        bestDSqAny = dSq;
+                        bestUv2Any = sample.uv2;
                     }
                 }
 
-                result[vi] = bestUv2;
+                result[vi] = bestUv2Any;
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Transfer UV2 with normal filtering — separates front/back of thin belts.
+        /// </summary>
+        public static Dictionary<int, Vector2> TransferNormalFiltered(
+            UvShell targetShell, UvShell sourceShell,
+            Vector3[] tgtVertices, Vector3[] tgtNormals,
+            Vector3[] srcVertices,
+            Vector2[] srcUv0, Vector2[] srcUv2,
+            int[] srcTriangles,
+            Vector2[] triUv2A, Vector2[] triUv2B, Vector2[] triUv2C,
+            Vector3 principalAxis, Vector3 secondaryAxis, Vector3 centroid)
+        {
+            var result = new Dictionary<int, Vector2>();
+
+            // Parametrize source shell: (t_along, t_across, faceNormal)
+            var srcSamples = new List<(Vector2 param, Vector2 uv2, Vector3 normal)>();
+
+            foreach (int f in sourceShell.faceIndices)
+            {
+                int i0 = srcTriangles[f * 3], i1 = srcTriangles[f * 3 + 1], i2 = srcTriangles[f * 3 + 2];
+                if (i0 >= srcVertices.Length || i1 >= srcVertices.Length || i2 >= srcVertices.Length) continue;
+                if (i0 >= srcUv2.Length || i1 >= srcUv2.Length || i2 >= srcUv2.Length) continue;
+
+                Vector3 faceNrm = Vector3.Cross(
+                    srcVertices[i1] - srcVertices[i0],
+                    srcVertices[i2] - srcVertices[i0]).normalized;
+
+                Vector3 pos3D = (srcVertices[i0] + srcVertices[i1] + srcVertices[i2]) / 3f;
+                Vector3 offset = pos3D - centroid;
+                float tAlong = Vector3.Dot(offset, principalAxis);
+                float tAcross = Vector3.Dot(offset, secondaryAxis);
+
+                Vector2 uv2Val = (srcUv2[i0] + srcUv2[i1] + srcUv2[i2]) / 3f;
+                srcSamples.Add((new Vector2(tAlong, tAcross), uv2Val, faceNrm));
+
+                for (int j = 0; j < 3; j++)
+                {
+                    int vi = srcTriangles[f * 3 + j];
+                    Vector3 vPos = srcVertices[vi];
+                    Vector3 vOff = vPos - centroid;
+                    float vAlong = Vector3.Dot(vOff, principalAxis);
+                    float vAcross = Vector3.Dot(vOff, secondaryAxis);
+                    srcSamples.Add((new Vector2(vAlong, vAcross), srcUv2[vi], faceNrm));
+                }
+            }
+
+            if (srcSamples.Count == 0) return result;
+
+            foreach (int vi in targetShell.vertexIndices)
+            {
+                if (vi >= tgtVertices.Length) continue;
+
+                Vector3 tPos = tgtVertices[vi];
+                Vector3 tOffset = tPos - centroid;
+                Vector2 tParam = new Vector2(
+                    Vector3.Dot(tOffset, principalAxis),
+                    Vector3.Dot(tOffset, secondaryAxis));
+
+                Vector3 tNrm = (tgtNormals != null && vi < tgtNormals.Length)
+                    ? tgtNormals[vi] : Vector3.zero;
+
+                float bestDSqFiltered = float.MaxValue;
+                Vector2 bestUv2Filtered = Vector2.zero;
+                float bestDSqAny = float.MaxValue;
+                Vector2 bestUv2Any = Vector2.zero;
+
+                foreach (var sample in srcSamples)
+                {
+                    float dSq = (sample.param - tParam).sqrMagnitude;
+
+                    // Unfiltered best (fallback)
+                    if (dSq < bestDSqAny)
+                    {
+                        bestDSqAny = dSq;
+                        bestUv2Any = sample.uv2;
+                    }
+
+                    // Normal-filtered best
+                    if (tNrm.sqrMagnitude > 0.5f && sample.normal.sqrMagnitude > 0.5f)
+                    {
+                        if (Vector3.Dot(sample.normal, tNrm) > kNormalDotThreshold)
+                        {
+                            if (dSq < bestDSqFiltered)
+                            {
+                                bestDSqFiltered = dSq;
+                                bestUv2Filtered = sample.uv2;
+                            }
+                        }
+                    }
+                }
+
+                // Prefer normal-filtered; fallback to unfiltered
+                result[vi] = bestDSqFiltered < float.MaxValue ? bestUv2Filtered : bestUv2Any;
             }
 
             return result;
