@@ -394,6 +394,25 @@ namespace LightmapUvTool
         static void PostValidateTriangleUv(SourceMeshData source, TargetTransferState target)
         {
             int fixedCount = 0;
+            int rejectedSharedCount = 0;
+            const bool topologySafeRepairOnly = true;
+
+            var vertexUseCount = new int[target.vertices.Length];
+            var vertexToFaces = new List<int>[target.vertices.Length];
+
+            for (int f = 0; f < target.faceCount; f++)
+            {
+                for (int j = 0; j < 3; j++)
+                {
+                    int vi = target.triangles[f * 3 + j];
+                    vertexUseCount[vi]++;
+
+                    if (vertexToFaces[vi] == null)
+                        vertexToFaces[vi] = new List<int>();
+
+                    vertexToFaces[vi].Add(f);
+                }
+            }
 
             for (int f = 0; f < target.faceCount; f++)
             {
@@ -459,9 +478,38 @@ namespace LightmapUvTool
 
                             if (newSpan < uvSpan * 0.5f)
                             {
+                                bool hasSharedVertex =
+                                    vertexUseCount[vi0] > 1 ||
+                                    vertexUseCount[vi1] > 1 ||
+                                    vertexUseCount[vi2] > 1;
+
+                                bool neighborImproved = true;
+                                if (hasSharedVertex)
+                                {
+                                    var proposal = new Dictionary<int, Vector2>(3)
+                                    {
+                                        [vi0] = fixedUv[0],
+                                        [vi1] = fixedUv[1],
+                                        [vi2] = fixedUv[2]
+                                    };
+
+                                    float metricBefore = EvaluateOneRingImpactMetric(
+                                        source, target, vertexToFaces, vi0, vi1, vi2, null);
+                                    float metricAfter = EvaluateOneRingImpactMetric(
+                                        source, target, vertexToFaces, vi0, vi1, vi2, proposal);
+
+                                    neighborImproved = metricAfter < metricBefore;
+                                }
+
+                                if (hasSharedVertex && topologySafeRepairOnly && !neighborImproved)
+                                {
+                                    rejectedSharedCount++;
+                                    continue;
+                                }
+
                                 // Write fixed UV only for this triangle's vertices
                                 // Note: this may affect neighboring triangles sharing these vertices,
-                                // but that's acceptable since the original UV was clearly wrong
+                                // but in topology-safe mode we only allow it when one-ring metric improves
                                 for (int j = 0; j < 3; j++)
                                 {
                                     int vi = target.triangles[f * 3 + j];
@@ -478,6 +526,89 @@ namespace LightmapUvTool
             {
                 UvtLog.Verbose($"[InitialUvTransfer] Post-validation fixed {fixedCount} anomalous triangles");
             }
+
+            if (rejectedSharedCount > 0)
+            {
+                UvtLog.Verbose($"[InitialUvTransfer] Post-validation rejected {rejectedSharedCount} repairs due to shared vertices");
+            }
+        }
+
+        static float EvaluateOneRingImpactMetric(
+            SourceMeshData source,
+            TargetTransferState target,
+            List<int>[] vertexToFaces,
+            int vi0,
+            int vi1,
+            int vi2,
+            Dictionary<int, Vector2> overrideUv)
+        {
+            var affectedFaces = new HashSet<int>();
+            AddAffectedFaces(vertexToFaces, vi0, affectedFaces);
+            AddAffectedFaces(vertexToFaces, vi1, affectedFaces);
+            AddAffectedFaces(vertexToFaces, vi2, affectedFaces);
+
+            float metric = 0f;
+
+            foreach (int f in affectedFaces)
+            {
+                if (target.triangleStatus[f] == TriangleStatus.Rejected) continue;
+
+                int i0 = target.triangles[f * 3];
+                int i1 = target.triangles[f * 3 + 1];
+                int i2 = target.triangles[f * 3 + 2];
+
+                Vector2 uv0 = overrideUv != null && overrideUv.TryGetValue(i0, out var o0) ? o0 : target.targetUv[i0];
+                Vector2 uv1 = overrideUv != null && overrideUv.TryGetValue(i1, out var o1) ? o1 : target.targetUv[i1];
+                Vector2 uv2 = overrideUv != null && overrideUv.TryGetValue(i2, out var o2) ? o2 : target.targetUv[i2];
+
+                Vector2 uvMin = Vector2.Min(Vector2.Min(uv0, uv1), uv2);
+                Vector2 uvMax = Vector2.Max(Vector2.Max(uv0, uv1), uv2);
+                float uvSpan = Mathf.Max(uvMax.x - uvMin.x, uvMax.y - uvMin.y);
+
+                float spanPenalty = uvSpan;
+
+                int shellId = target.triangleShellAssignments[f];
+                if (shellId >= 0 && shellId < source.uvShells.Count)
+                {
+                    var shell = source.uvShells[shellId];
+                    float shellSpan = Mathf.Max(
+                        shell.uvBoundsMax.x - shell.uvBoundsMin.x,
+                        shell.uvBoundsMax.y - shell.uvBoundsMin.y);
+
+                    if (shellSpan > 1e-6f)
+                        spanPenalty = uvSpan / shellSpan;
+                }
+
+                float orientationPenalty = 0f;
+                float signedAreaBefore = ComputeSignedArea(
+                    target.targetUv[i0],
+                    target.targetUv[i1],
+                    target.targetUv[i2]);
+                float signedAreaAfter = ComputeSignedArea(uv0, uv1, uv2);
+                if (Mathf.Abs(signedAreaBefore) > 1e-9f && Mathf.Abs(signedAreaAfter) > 1e-9f &&
+                    Mathf.Sign(signedAreaBefore) != Mathf.Sign(signedAreaAfter))
+                {
+                    orientationPenalty = 2f;
+                }
+
+                metric += spanPenalty + orientationPenalty;
+            }
+
+            return metric;
+        }
+
+        static void AddAffectedFaces(List<int>[] vertexToFaces, int vi, HashSet<int> affectedFaces)
+        {
+            var faces = vertexToFaces[vi];
+            if (faces == null) return;
+
+            foreach (int faceId in faces)
+                affectedFaces.Add(faceId);
+        }
+
+        static float ComputeSignedArea(Vector2 a, Vector2 b, Vector2 c)
+        {
+            return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
         }
 
         /// <summary>
