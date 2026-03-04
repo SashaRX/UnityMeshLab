@@ -1099,6 +1099,19 @@ namespace LightmapUvTool
                         int defaultSearchCount = constrained && defaultSearchFaces != null
                             ? defaultSearchFaces.Count : srcTriCount;
 
+                        // Pre-compute partition face lists for per-vertex 3D search
+                        List<int>[] partFaceLists = null;
+                        if (hasPartitions && constrained)
+                        {
+                            partFaceLists = new List<int>[srcPR.partitionCount];
+                            for (int pi = 0; pi < srcPR.partitionCount; pi++)
+                            {
+                                var faces = SpatialPartitioner.GetPartitionFaces(
+                                    srcShells[chosenSrc], srcPR, pi);
+                                partFaceLists[pi] = new List<int>(faces);
+                            }
+                        }
+
                         foreach (int vi in tShell.vertexIndices)
                         {
                             if (vi >= tUv0.Length || vi >= tVerts.Length) continue;
@@ -1109,15 +1122,12 @@ namespace LightmapUvTool
 
                             // Per-vertex partition selection based on vertex normal
                             TriangleBvh2D vertexBvh = defaultUv0Bvh;
-                            List<int> vertexSearchFaces = defaultSearchFaces;
-                            int vertexSearchCount = defaultSearchCount;
+                            int vertexPid = -1;
                             if (hasPartitions)
                             {
-                                int pid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
-                                if (pid >= 0 && partitionBvh[chosenSrc][pid] != null)
-                                    vertexBvh = partitionBvh[chosenSrc][pid];
-                                // For linear fallback, also narrow to partition faces
-                                // (skip if BVH is available — it's faster)
+                                vertexPid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                                if (vertexPid >= 0 && partitionBvh[chosenSrc][vertexPid] != null)
+                                    vertexBvh = partitionBvh[chosenSrc][vertexPid];
                             }
 
                             // ── UV0 projection (primary, with BVH + normal filtering) ──
@@ -1137,9 +1147,13 @@ namespace LightmapUvTool
                             {
                                 bestDSqUv0 = float.MaxValue;
                                 bestFUv0 = -1; bestU_uv0 = 0; bestV_uv0 = 0; bestW_uv0 = 0;
-                                for (int fi = 0; fi < vertexSearchCount; fi++)
+                                var searchFaces = (partFaceLists != null && vertexPid >= 0)
+                                    ? partFaceLists[vertexPid] : defaultSearchFaces;
+                                int searchCount = constrained && searchFaces != null
+                                    ? searchFaces.Count : srcTriCount;
+                                for (int fi = 0; fi < searchCount; fi++)
                                 {
-                                    int f = constrained ? vertexSearchFaces[fi] : fi;
+                                    int f = constrained ? searchFaces[fi] : fi;
                                     float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
                                         out float u, out float v, out float w);
                                     if (dSq < bestDSqUv0)
@@ -1148,12 +1162,17 @@ namespace LightmapUvTool
                                 }
                             }
 
-                            // ── 3D projection (secondary, with backface filter) ──
+                            // ── 3D projection — also partition-constrained ──
+                            var search3DFaces = (partFaceLists != null && vertexPid >= 0)
+                                ? partFaceLists[vertexPid] : defaultSearchFaces;
+                            int search3DCount = constrained && search3DFaces != null
+                                ? search3DFaces.Count : srcTriCount;
+
                             float bestDSq3D = float.MaxValue;
                             int bestF3D = -1; float bestU_3d = 0, bestV_3d = 0, bestW_3d = 0;
-                            for (int fi = 0; fi < defaultSearchCount; fi++)
+                            for (int fi = 0; fi < search3DCount; fi++)
                             {
-                                int f = constrained ? defaultSearchFaces[fi] : fi;
+                                int f = constrained ? search3DFaces[fi] : fi;
                                 if (Vector3.Dot(triNormal[f], tNrm) < kBackfaceDot) continue;
                                 float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
                                     out float u, out float v, out float w);
