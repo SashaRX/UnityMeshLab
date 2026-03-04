@@ -9,7 +9,7 @@ include(FetchContent)
 FetchContent_Declare(
     xatlas
     GIT_REPOSITORY https://github.com/jpcy/xatlas.git
-    GIT_TAG        master
+    GIT_TAG        main
     GIT_SHALLOW    TRUE
 )
 FetchContent_Declare(
