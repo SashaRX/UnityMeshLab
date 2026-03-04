@@ -318,14 +318,15 @@ namespace LightmapUvTool
 
         // ═══════════════════════════════════════════════════════════
         //  DetectMergedShell — check if a target shell's UV0 coverage
-        //  is too poor for the matched source shell (>30% verts bad).
+        //  is too poor for the matched source shell (adaptive bad-vertex fraction).
         // ═══════════════════════════════════════════════════════════
 
         static bool DetectMergedShell(
             UvShell tShell, Vector2[] tUv0,
             List<int> srcFaces,
             Vector2[] triUv0A, Vector2[] triUv0B, Vector2[] triUv0C,
-            TriangleBvh2D shellBvh, float uv0BadThreshold)
+            TriangleBvh2D shellBvh, float uv0BadThreshold,
+            float uv0BadFractionThreshold)
         {
             int uv0BadCount = 0;
             foreach (int vi in tShell.vertexIndices)
@@ -354,7 +355,7 @@ namespace LightmapUvTool
                 if (bestDSq > uv0BadThreshold) uv0BadCount++;
             }
             int sv = tShell.vertexIndices.Count;
-            return sv > 0 && (float)uv0BadCount / sv > 0.3f;
+            return sv > 0 && (float)uv0BadCount / sv > uv0BadFractionThreshold;
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -399,6 +400,55 @@ namespace LightmapUvTool
             return total > 0 ? (float)goodCount / total : 0f;
         }
 
+        static float ComputeShellUv0BadThreshold(
+            UvShell tShell, Vector2[] tUv0, int[] tgtTris, float fallbackThreshold)
+        {
+            Vector2 bmin = new Vector2(float.MaxValue, float.MaxValue);
+            Vector2 bmax = new Vector2(float.MinValue, float.MinValue);
+            var edgeLens = new List<float>(tShell.faceIndices.Count * 3);
+
+            foreach (int vi in tShell.vertexIndices)
+            {
+                if (vi >= tUv0.Length) continue;
+                Vector2 uv = tUv0[vi];
+                bmin = Vector2.Min(bmin, uv);
+                bmax = Vector2.Max(bmax, uv);
+            }
+
+            foreach (int f in tShell.faceIndices)
+            {
+                int i0 = tgtTris[f * 3], i1 = tgtTris[f * 3 + 1], i2 = tgtTris[f * 3 + 2];
+                if (i0 >= tUv0.Length || i1 >= tUv0.Length || i2 >= tUv0.Length) continue;
+                edgeLens.Add((tUv0[i1] - tUv0[i0]).magnitude);
+                edgeLens.Add((tUv0[i2] - tUv0[i1]).magnitude);
+                edgeLens.Add((tUv0[i0] - tUv0[i2]).magnitude);
+            }
+
+            float bboxDiag = (bmax - bmin).magnitude;
+
+            float medianEdge = 0f;
+            if (edgeLens.Count > 0)
+            {
+                edgeLens.Sort();
+                int mid = edgeLens.Count / 2;
+                medianEdge = (edgeLens.Count & 1) == 1
+                    ? edgeLens[mid]
+                    : 0.5f * (edgeLens[mid - 1] + edgeLens[mid]);
+            }
+
+            float localScale = Mathf.Max(bboxDiag * 0.5f, medianEdge);
+            float localThreshold = localScale * localScale;
+            return Mathf.Max(localThreshold, fallbackThreshold * 0.1f);
+        }
+
+        static float ComputeMergedBadFractionThreshold(UvShell tShell, float shellUv0Area)
+        {
+            float badFractionThreshold = 0.30f;
+            if (tShell.vertexIndices.Count <= 12) badFractionThreshold = Mathf.Min(badFractionThreshold, 0.20f);
+            if (shellUv0Area < 0.0025f) badFractionThreshold = Mathf.Min(badFractionThreshold, 0.15f);
+            return badFractionThreshold;
+        }
+
         // ═══════════════════════════════════════════════════════════
         //  RescoreMergedShells — for shells marked as merged, try all
         //  source shells with a multi-criteria score and un-merge if
@@ -419,7 +469,8 @@ namespace LightmapUvTool
             Vector3[] tgtAvgNormal,
             float[] tgtUv0Area,
             float meshDiagonal,
-            float uv0BadThreshold,
+            float[] tgtUv0BadThreshold,
+            float[] tgtUv0Coverage,
             bool[] tgtIsMerged,
             int[] targetShellToSourceShell,
             float[] targetShellMatchDistSqr,
@@ -445,6 +496,7 @@ namespace LightmapUvTool
                 Vector3 tCentroid = targetShellCentroids[tsi];
                 Vector3 tNrm = tgtAvgNormal[tsi];
                 float tArea = tgtUv0Area[tsi];
+                float tBadThreshold = tgtUv0BadThreshold[tsi];
 
                 int bestSrc = -1;
                 float bestScore = -1f;
@@ -474,7 +526,7 @@ namespace LightmapUvTool
                         tShell, tUv0,
                         srcShells[si].faceIndices,
                         triUv0A, triUv0B, triUv0C,
-                        shellUv0Bvh[si], uv0BadThreshold);
+                        shellUv0Bvh[si], tBadThreshold);
 
                     float score = wArea * areaScore
                                 + wNormal * normalScore
@@ -490,6 +542,8 @@ namespace LightmapUvTool
                     }
                 }
 
+                tgtUv0Coverage[tsi] = bestCoverage;
+
                 if (bestSrc >= 0 && bestCoverage >= kCoverageAcceptThreshold)
                 {
                     int oldSrc = targetShellToSourceShell[tsi];
@@ -501,7 +555,7 @@ namespace LightmapUvTool
 
                     UvtLog.Info($"[GroupedTransfer] Rescore: t{tsi} rescued from merged " +
                         $"(src{oldSrc}→src{bestSrc}, score={bestScore:F3}, " +
-                        $"coverage={bestCoverage:F3})");
+                        $"coverage={bestCoverage:F3}, uv0BadThresh={tBadThreshold:F6})");
                 }
             }
 
@@ -811,6 +865,9 @@ namespace LightmapUvTool
             result.targetShellMatchDistSqr = new float[tgtShells.Count];
 
             var tgtChosenAvg3D = new float[tgtShells.Count];
+            var tgtUv0BadThreshold = new float[tgtShells.Count];
+            var tgtMergedBadFractionThreshold = new float[tgtShells.Count];
+            var tgtUv0Coverage = new float[tgtShells.Count];
             var tgtIsMerged = new bool[tgtShells.Count];
             var tgtForce3DFallback = new bool[tgtShells.Count];
 
@@ -835,6 +892,8 @@ namespace LightmapUvTool
                 }
                 tgtAvgNormal[tsi] = nSum.sqrMagnitude > 1e-8f ? nSum.normalized : Vector3.up;
                 tgtUv0Area[tsi] = (float)areaSum;
+                tgtUv0BadThreshold[tsi] = ComputeShellUv0BadThreshold(tgtShells[tsi], tUv0, tgtTris, kUv0BadThreshold);
+                tgtMergedBadFractionThreshold[tsi] = ComputeMergedBadFractionThreshold(tgtShells[tsi], tgtUv0Area[tsi]);
             }
 
             for (int i = 0; i < tgtShells.Count; i++)
@@ -843,6 +902,7 @@ namespace LightmapUvTool
                 result.targetShellMethod[i] = -1;
                 result.targetShellMatchDistSqr[i] = float.MaxValue;
                 tgtChosenAvg3D[i] = float.MaxValue;
+                tgtUv0Coverage[i] = 0f;
             }
 
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
@@ -872,9 +932,19 @@ namespace LightmapUvTool
                 tgtChosenAvg3D[tsi] = chosenAvg3D;
 
                 // Detect merged shell via UV0 coverage (BVH + adaptive threshold)
+                float shellBadThreshold = tgtUv0BadThreshold[tsi];
+                float shellBadFractionThreshold = tgtMergedBadFractionThreshold[tsi];
+                float coverage = ComputeUv0CoverageFraction(tShell, tUv0,
+                    srcShells[chosenSrc].faceIndices, triUv0A, triUv0B, triUv0C,
+                    shellUv0Bvh[chosenSrc], shellBadThreshold);
+                tgtUv0Coverage[tsi] = coverage;
                 tgtIsMerged[tsi] = DetectMergedShell(tShell, tUv0,
                     srcShells[chosenSrc].faceIndices, triUv0A, triUv0B, triUv0C,
-                    shellUv0Bvh[chosenSrc], kUv0BadThreshold);
+                    shellUv0Bvh[chosenSrc], shellBadThreshold, shellBadFractionThreshold);
+
+                UvtLog.Verbose($"[GroupedTransfer] ShellCheck t{tsi}: uv0BadThresh={shellBadThreshold:F6}, " +
+                    $"coverage={coverage:F3}, badFracThresh={shellBadFractionThreshold:F3} => " +
+                    $"{(tgtIsMerged[tsi] ? "merged" : "non-merged")}");
             }
 
             // ── Phase 2a+: Rescore merged shells with multi-criteria matching ──
@@ -885,7 +955,8 @@ namespace LightmapUvTool
                 shellUv0Bvh, srcCentroid3D,
                 srcAvgNormal, srcUv0Area,
                 tgtAvgNormal, tgtUv0Area,
-                meshDiagonal, kUv0BadThreshold,
+                meshDiagonal, tgtUv0BadThreshold,
+                tgtUv0Coverage,
                 tgtIsMerged,
                 result.targetShellToSourceShell,
                 result.targetShellMatchDistSqr,
@@ -958,9 +1029,15 @@ namespace LightmapUvTool
                             if (newSrc >= 0)
                             {
                                 // Re-check merged status with new source (BVH + adaptive threshold)
+                                float shellBadThreshold = tgtUv0BadThreshold[tsi];
+                                float shellBadFractionThreshold = tgtMergedBadFractionThreshold[tsi];
+                                float coverage = ComputeUv0CoverageFraction(tShell, tUv0,
+                                    srcShells[newSrc].faceIndices, triUv0A, triUv0B, triUv0C,
+                                    shellUv0Bvh[newSrc], shellBadThreshold);
+                                tgtUv0Coverage[tsi] = coverage;
                                 bool newIsMerged = DetectMergedShell(tShell, tUv0,
                                     srcShells[newSrc].faceIndices, triUv0A, triUv0B, triUv0C,
-                                    shellUv0Bvh[newSrc], kUv0BadThreshold);
+                                    shellUv0Bvh[newSrc], shellBadThreshold, shellBadFractionThreshold);
 
                                 // If reassignment would make a non-merged shell become merged,
                                 // force 3D-primary merged mode instead of reverting to
@@ -1016,7 +1093,9 @@ namespace LightmapUvTool
                 int tVtx = tgtShells[tsi].vertexIndices.Count;
                 float avg3D = tgtChosenAvg3D[tsi];
                 string srcInfo = src >= 0 ? $"src{src}({srcShells[src].faceIndices.Count}f)" : "none";
-                UvtLog.Verbose($"[GroupedTransfer]   t{tsi}({tFaces}f,{tVtx}v) → {srcInfo} [{method}] avg3D={avg3D:F6}");
+                UvtLog.Verbose($"[GroupedTransfer]   t{tsi}({tFaces}f,{tVtx}v) → {srcInfo} [{method}] avg3D={avg3D:F6}, " +
+                    $"uv0BadThresh={tgtUv0BadThreshold[tsi]:F6}, coverage={tgtUv0Coverage[tsi]:F3}, " +
+                    $"badFracThresh={tgtMergedBadFractionThreshold[tsi]:F3}");
             }
 
             int transferred = 0;
