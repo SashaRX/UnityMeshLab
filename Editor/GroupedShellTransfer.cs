@@ -1022,6 +1022,7 @@ namespace LightmapUvTool
             int transferred = 0;
             int shellsMatched = 0;
             int shellsTransform = 0, shellsInterpolation = 0, shellsMerged = 0;
+            int normalFilterMissFallbackUsed = 0;
 
             // Track UV2 AABBs of placed force3D shells to prevent mutual overlap
             var force3DUsedRegions = new List<(Vector2 min, Vector2 max)>();
@@ -1046,6 +1047,7 @@ namespace LightmapUvTool
                     // Genuine merged: constrained gives issues → fallback to all-source search.
                     const float kConsistencyThresh = 0.02f;
                     const float kUv0DistantThresh = 0.05f;
+                    const float kNormalMissFallbackMaxDistSq = 0.10f;
                     const float kBackfaceDot = 0.3f;
 
                     Dictionary<int, Vector2> bestMergedUv2 = null;
@@ -1226,12 +1228,39 @@ namespace LightmapUvTool
 
                             if (vertexBvh != null)
                             {
-                                var hitUv0 = tNrm.sqrMagnitude > 0.5f
-                                    ? vertexBvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, kBackfaceDot)
-                                    : vertexBvh.FindNearest(tUv);
-                                bestFUv0 = hitUv0.faceIndex;
-                                bestU_uv0 = hitUv0.u; bestV_uv0 = hitUv0.v; bestW_uv0 = hitUv0.w;
-                                bestDSqUv0 = hitUv0.distSq;
+                                if (tNrm.sqrMagnitude > 0.5f)
+                                {
+                                    bool hasFiltered = vertexBvh.TryFindNearestNormalFiltered(
+                                        tUv, tNrm, triNormal, kBackfaceDot,
+                                        out var filteredHit, out var nearestAnyHit);
+
+                                    if (hasFiltered)
+                                    {
+                                        bestFUv0 = filteredHit.faceIndex;
+                                        bestU_uv0 = filteredHit.u; bestV_uv0 = filteredHit.v; bestW_uv0 = filteredHit.w;
+                                        bestDSqUv0 = filteredHit.distSq;
+                                    }
+                                    else if (nearestAnyHit.faceIndex >= 0 && !constrained
+                                             && nearestAnyHit.distSq <= kNormalMissFallbackMaxDistSq)
+                                    {
+                                        bestFUv0 = nearestAnyHit.faceIndex;
+                                        bestU_uv0 = nearestAnyHit.u; bestV_uv0 = nearestAnyHit.v; bestW_uv0 = nearestAnyHit.w;
+                                        bestDSqUv0 = nearestAnyHit.distSq;
+                                        normalFilterMissFallbackUsed++;
+                                    }
+                                    else
+                                    {
+                                        bestDSqUv0 = float.MaxValue;
+                                        bestFUv0 = -1; bestU_uv0 = 0; bestV_uv0 = 0; bestW_uv0 = 0;
+                                    }
+                                }
+                                else
+                                {
+                                    var hitUv0 = vertexBvh.FindNearest(tUv);
+                                    bestFUv0 = hitUv0.faceIndex;
+                                    bestU_uv0 = hitUv0.u; bestV_uv0 = hitUv0.v; bestW_uv0 = hitUv0.w;
+                                    bestDSqUv0 = hitUv0.distSq;
+                                }
                             }
                             else
                             {
@@ -1464,12 +1493,32 @@ namespace LightmapUvTool
 
                                 if (uv0Bvh != null)
                                 {
-                                    var hit = tNrm.sqrMagnitude > 0.5f
-                                        ? uv0Bvh.FindNearestNormalFiltered(tUv, -tNrm, triNormal, kBackfaceDot)
-                                        : uv0Bvh.FindNearest(tUv);
-                                    bestF = hit.faceIndex;
-                                    bestU = hit.u; bestV = hit.v; bestW = hit.w;
-                                    bestDSq = hit.distSq;
+                                    if (tNrm.sqrMagnitude > 0.5f)
+                                    {
+                                        bool hasFiltered = uv0Bvh.TryFindNearestNormalFiltered(
+                                            tUv, -tNrm, triNormal, kBackfaceDot,
+                                            out var filteredHit, out var nearestAnyHit);
+                                        if (hasFiltered)
+                                        {
+                                            bestF = filteredHit.faceIndex;
+                                            bestU = filteredHit.u; bestV = filteredHit.v; bestW = filteredHit.w;
+                                            bestDSq = filteredHit.distSq;
+                                        }
+                                        else if (nearestAnyHit.faceIndex >= 0 && nearestAnyHit.distSq <= kNormalMissFallbackMaxDistSq)
+                                        {
+                                            bestF = nearestAnyHit.faceIndex;
+                                            bestU = nearestAnyHit.u; bestV = nearestAnyHit.v; bestW = nearestAnyHit.w;
+                                            bestDSq = nearestAnyHit.distSq;
+                                            normalFilterMissFallbackUsed++;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        var hit = uv0Bvh.FindNearest(tUv);
+                                        bestF = hit.faceIndex;
+                                        bestU = hit.u; bestV = hit.v; bestW = hit.w;
+                                        bestDSq = hit.distSq;
+                                    }
                                 }
                                 else
                                 {
@@ -1600,9 +1649,28 @@ namespace LightmapUvTool
                                 ? tNormals[vi] : Vector3.zero;
                             TriangleBvh2D.HitResult2D hit;
                             if (tNrm.sqrMagnitude > 0.5f)
-                                hit = srcBvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, kNormalDotMin);
+                            {
+                                bool hasFiltered = srcBvh.TryFindNearestNormalFiltered(
+                                    tUv, tNrm, triNormal, kNormalDotMin,
+                                    out var filteredHit, out var nearestAnyHit);
+                                if (hasFiltered)
+                                {
+                                    hit = filteredHit;
+                                }
+                                else if (nearestAnyHit.faceIndex >= 0 && nearestAnyHit.distSq <= kUv0BadThreshold)
+                                {
+                                    hit = nearestAnyHit;
+                                    normalFilterMissFallbackUsed++;
+                                }
+                                else
+                                {
+                                    hit = new TriangleBvh2D.HitResult2D { faceIndex = -1, distSq = float.MaxValue };
+                                }
+                            }
                             else
+                            {
                                 hit = srcBvh.FindNearest(tUv);
+                            }
                             bestF = hit.faceIndex; bestU = hit.u; bestV = hit.v; bestW = hit.w;
                         }
                         else
@@ -1675,6 +1743,9 @@ namespace LightmapUvTool
                     : "") +
                 (result.consistencyCorrected > 0
                     ? $" (consistency-corrected:{result.consistencyCorrected})"
+                    : "") +
+                (normalFilterMissFallbackUsed > 0
+                    ? $" (normal-filter miss→fallback:{normalFilterMissFallbackUsed})"
                     : ""));
 
             // UV2 bounds check

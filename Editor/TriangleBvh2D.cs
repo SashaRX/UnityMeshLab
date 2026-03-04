@@ -79,21 +79,24 @@ namespace LightmapUvTool
         /// triNormals: per-face normals for the source mesh.
         /// queryNormal: normal of the query vertex.
         /// normalDotMin: minimum dot product to accept (e.g. 0.3 to reject backfaces).
-        /// Falls back to unconstrained if no normal-consistent triangle is close enough.
+        /// Returns true only when a normal-consistent candidate is found.
+        /// nearestAny always returns the nearest triangle regardless of normal,
+        /// so callers can apply explicit fallback policy.
         /// </summary>
-        public HitResult2D FindNearestNormalFiltered(
+        public bool TryFindNearestNormalFiltered(
             Vector2 queryPoint, Vector3 queryNormal,
-            Vector3[] triNormals, float normalDotMin)
+            Vector3[] triNormals, float normalDotMin,
+            out HitResult2D filteredHit,
+            out HitResult2D nearestAny)
         {
-            var bestFiltered = new HitResult2D { faceIndex = -1, distSq = float.MaxValue };
-            var bestAny = new HitResult2D { faceIndex = -1, distSq = float.MaxValue };
+            filteredHit = new HitResult2D { faceIndex = -1, distSq = float.MaxValue };
+            nearestAny = new HitResult2D { faceIndex = -1, distSq = float.MaxValue };
 
             if (nodeCount > 0)
                 FindNearestNormalRecursive(0, queryPoint, queryNormal, triNormals,
-                                           normalDotMin, ref bestFiltered, ref bestAny);
+                                           normalDotMin, ref filteredHit, ref nearestAny);
 
-            // Use filtered result if it found something, else fall back to any
-            return bestFiltered.faceIndex >= 0 ? bestFiltered : bestAny;
+            return filteredHit.faceIndex >= 0;
         }
 
         // ─── Build ───
