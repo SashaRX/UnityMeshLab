@@ -20,9 +20,12 @@ namespace LightmapUvTool
             public int shellId;
             public bool hasOverlap;
             public int partitionCount; // 1 = no split, >1 = partitions available
-            public int[] facePartitionId; // [globalFaceIndex] → partitionId (-1 for faces outside this shell)
+            public Dictionary<int, int> facePartitionId; // globalFaceIndex → partitionId (only shell faces)
             public Vector3[] partitionCentroid; // 3D centroid per partition
         }
+
+        const int kMinFacesForPartition = 4;
+        const int kGridResolution = 128;
 
         /// <summary>
         /// Partition source shells by detecting UV0 overlap and splitting via
@@ -30,10 +33,8 @@ namespace LightmapUvTool
         /// </summary>
         public static ShellPartitionResult[] PartitionShells(
             List<UvShell> shells,
-            Vector2[] uv0, int[] triangles, Vector3[] vertices,
-            int gridResolution = 512)
+            Vector2[] uv0, int[] triangles, Vector3[] vertices)
         {
-            int totalFaces = triangles.Length / 3;
             var results = new ShellPartitionResult[shells.Count];
 
             for (int si = 0; si < shells.Count; si++)
@@ -44,59 +45,67 @@ namespace LightmapUvTool
                     shellId = si,
                     hasOverlap = false,
                     partitionCount = 1,
-                    facePartitionId = new int[totalFaces],
-                    partitionCentroid = null
+                    facePartitionId = new Dictionary<int, int>()
                 };
-                for (int i = 0; i < totalFaces; i++) r.facePartitionId[i] = -1;
 
-                // Mark all faces in this shell as partition 0 initially
+                // Default: all faces in partition 0
                 foreach (int f in shell.faceIndices)
                     r.facePartitionId[f] = 0;
 
-                // Step 1: Overlap detection via UV0 grid rasterization
-                var overlappingFaces = DetectOverlap(shell, uv0, triangles, gridResolution);
-                r.hasOverlap = overlappingFaces.Count > 0;
-
-                if (!r.hasOverlap)
+                // Skip tiny shells
+                if (shell.faceIndices.Count < kMinFacesForPartition)
                 {
-                    // No overlap — single partition, compute centroid
-                    r.partitionCentroid = new Vector3[] { ComputePartitionCentroid(shell.faceIndices, triangles, vertices) };
+                    r.partitionCentroid = new[] { ComputePartitionCentroid(shell.faceIndices, triangles, vertices) };
                     results[si] = r;
                     continue;
                 }
 
-                UvtLog.Verbose($"[SpatialPartitioner] Shell {si}: overlap detected ({overlappingFaces.Count} faces in overlap zones)");
-
-                // Step 2: Face adjacency graph within shell
+                // Step 1: Build face adjacency (needed for both overlap detection and flood-fill)
+                var faceVerts = BuildFaceVertexSets(shell.faceIndices, triangles);
                 var adjacency = BuildFaceAdjacency(shell.faceIndices, triangles);
 
-                // Step 3: Flood-fill → connected components = partitions (Approach A)
+                // Step 2: Overlap detection — only flag faces sharing a grid cell
+                // with a NON-ADJACENT face (no shared vertex)
+                var overlappingFaces = DetectOverlap(shell, uv0, triangles, faceVerts);
+                r.hasOverlap = overlappingFaces.Count > 0;
+
+                if (!r.hasOverlap)
+                {
+                    r.partitionCentroid = new[] { ComputePartitionCentroid(shell.faceIndices, triangles, vertices) };
+                    results[si] = r;
+                    continue;
+                }
+
+                UvtLog.Verbose($"[SpatialPartitioner] Shell {si}: overlap detected " +
+                    $"({overlappingFaces.Count} faces in overlap zones)");
+
+                // Step 3: Flood-fill → connected components (Approach A)
                 var components = FloodFillComponents(shell.faceIndices, adjacency);
 
                 if (components.Count > 1)
                 {
-                    // Approach A succeeded — multiple connected components
                     r.partitionCount = components.Count;
                     r.partitionCentroid = new Vector3[components.Count];
                     for (int ci = 0; ci < components.Count; ci++)
                     {
                         foreach (int f in components[ci])
                             r.facePartitionId[f] = ci;
-                        r.partitionCentroid[ci] = ComputePartitionCentroid(components[ci], triangles, vertices);
+                        r.partitionCentroid[ci] = ComputePartitionCentroid(
+                            components[ci], triangles, vertices);
                     }
 
-                    UvtLog.Verbose($"[SpatialPartitioner] Shell {si}: flood-fill → {components.Count} partitions " +
-                        $"({string.Join(" + ", PartitionSizes(components))} faces)");
-                    for (int ci = 0; ci < components.Count; ci++)
-                        UvtLog.Verbose($"[SpatialPartitioner] Shell {si}: partition {ci} centroid={r.partitionCentroid[ci]:F2}");
+                    UvtLog.Verbose($"[SpatialPartitioner] Shell {si}: flood-fill → " +
+                        $"{components.Count} partitions ({PartitionSizes(components)} faces)");
                 }
                 else
                 {
-                    // Approach A failed — single connected component
-                    UvtLog.Verbose($"[SpatialPartitioner] Shell {si}: flood-fill → 1 partition (connected mesh)");
+                    UvtLog.Verbose($"[SpatialPartitioner] Shell {si}: flood-fill → " +
+                        $"1 partition (connected mesh)");
 
                     // Step 4: Approach B — forced split by 3D proximity
-                    var split = ForceSplitByProximity(shell, overlappingFaces, adjacency, triangles, vertices);
+                    var split = ForceSplitByProximity(
+                        shell, overlappingFaces, adjacency, triangles, vertices);
+
                     if (split != null && split.Count == 2)
                     {
                         r.partitionCount = 2;
@@ -105,19 +114,19 @@ namespace LightmapUvTool
                         {
                             foreach (int f in split[ci])
                                 r.facePartitionId[f] = ci;
-                            r.partitionCentroid[ci] = ComputePartitionCentroid(split[ci], triangles, vertices);
+                            r.partitionCentroid[ci] = ComputePartitionCentroid(
+                                split[ci], triangles, vertices);
                         }
 
-                        UvtLog.Verbose($"[SpatialPartitioner] Shell {si}: forced 3D split → 2 partitions " +
-                            $"({split[0].Count} + {split[1].Count} faces)");
-                        for (int ci = 0; ci < 2; ci++)
-                            UvtLog.Verbose($"[SpatialPartitioner] Shell {si}: partition {ci} centroid={r.partitionCentroid[ci]:F2}");
+                        UvtLog.Verbose($"[SpatialPartitioner] Shell {si}: forced 3D split → " +
+                            $"2 partitions ({split[0].Count} + {split[1].Count} faces)");
                     }
                     else
                     {
-                        // Both A and B failed — single partition
-                        r.partitionCentroid = new Vector3[] { ComputePartitionCentroid(shell.faceIndices, triangles, vertices) };
-                        UvtLog.Verbose($"[SpatialPartitioner] Shell {si}: forced split failed, staying as 1 partition");
+                        r.partitionCentroid = new[] {
+                            ComputePartitionCentroid(shell.faceIndices, triangles, vertices) };
+                        UvtLog.Verbose($"[SpatialPartitioner] Shell {si}: " +
+                            $"forced split failed, staying as 1 partition");
                     }
                 }
 
@@ -128,13 +137,13 @@ namespace LightmapUvTool
         }
 
         /// <summary>
-        /// Find the best-matching source partition for a target shell by 3D centroid distance.
+        /// Find the best-matching source partition for a target shell by 3D centroid.
         /// Returns partition index, or -1 if no partitions available.
         /// </summary>
         public static int MatchPartition(ShellPartitionResult srcPartition, Vector3 targetCentroid3D)
         {
             if (srcPartition == null || srcPartition.partitionCount <= 1)
-                return -1; // no partition constraint needed
+                return -1;
 
             int bestPart = 0;
             float bestDistSq = float.MaxValue;
@@ -153,38 +162,67 @@ namespace LightmapUvTool
         /// <summary>
         /// Collect global face indices belonging to a specific partition.
         /// </summary>
-        public static int[] GetPartitionFaces(UvShell shell, ShellPartitionResult partResult, int partitionId)
+        public static int[] GetPartitionFaces(
+            UvShell shell, ShellPartitionResult partResult, int partitionId)
         {
             var faces = new List<int>();
             foreach (int f in shell.faceIndices)
             {
-                if (partResult.facePartitionId[f] == partitionId)
+                if (partResult.facePartitionId.TryGetValue(f, out int pid) && pid == partitionId)
                     faces.Add(f);
             }
             return faces.ToArray();
         }
 
         // ════════════════════════════════════════════════════════════
-        //  Overlap detection: rasterize UV0 triangles onto 2D grid
+        //  Per-face vertex set (for fast adjacency check in overlap detection)
         // ════════════════════════════════════════════════════════════
 
-        static HashSet<int> DetectOverlap(UvShell shell, Vector2[] uv0, int[] triangles, int gridRes)
+        static Dictionary<int, HashSet<int>> BuildFaceVertexSets(List<int> faceIndices, int[] triangles)
+        {
+            var result = new Dictionary<int, HashSet<int>>(faceIndices.Count);
+            foreach (int f in faceIndices)
+            {
+                var set = new HashSet<int>();
+                set.Add(triangles[f * 3]);
+                set.Add(triangles[f * 3 + 1]);
+                set.Add(triangles[f * 3 + 2]);
+                result[f] = set;
+            }
+            return result;
+        }
+
+        static bool FacesShareVertex(Dictionary<int, HashSet<int>> faceVerts, int fA, int fB)
+        {
+            if (!faceVerts.TryGetValue(fA, out var setA)) return false;
+            if (!faceVerts.TryGetValue(fB, out var setB)) return false;
+            foreach (int v in setA)
+                if (setB.Contains(v)) return true;
+            return false;
+        }
+
+        // ════════════════════════════════════════════════════════════
+        //  Overlap detection: grid rasterization + vertex-sharing filter
+        //  Only flags faces sharing a cell with a NON-ADJACENT face.
+        // ════════════════════════════════════════════════════════════
+
+        static HashSet<int> DetectOverlap(
+            UvShell shell, Vector2[] uv0, int[] triangles,
+            Dictionary<int, HashSet<int>> faceVerts)
         {
             var overlapping = new HashSet<int>();
 
-            // Compute shell UV bounds
             Vector2 bMin = shell.boundsMin;
             Vector2 bMax = shell.boundsMax;
             float rangeX = bMax.x - bMin.x;
             float rangeY = bMax.y - bMin.y;
             if (rangeX < 1e-8f || rangeY < 1e-8f) return overlapping;
 
-            // Scale grid to shell bounds
+            int gridRes = kGridResolution;
             float invX = gridRes / rangeX;
             float invY = gridRes / rangeY;
 
-            // Grid cell → list of faces that cover it
-            // For memory efficiency, use a dictionary for sparse grid
+            // Rasterize face AABBs onto grid (sparse dictionary)
             var cellFaces = new Dictionary<long, List<int>>();
 
             foreach (int f in shell.faceIndices)
@@ -194,16 +232,10 @@ namespace LightmapUvTool
 
                 Vector2 a = uv0[i0], b = uv0[i1], c = uv0[i2];
 
-                // AABB of triangle in grid coords
-                float minGx = Mathf.Min(a.x, Mathf.Min(b.x, c.x));
-                float maxGx = Mathf.Max(a.x, Mathf.Max(b.x, c.x));
-                float minGy = Mathf.Min(a.y, Mathf.Min(b.y, c.y));
-                float maxGy = Mathf.Max(a.y, Mathf.Max(b.y, c.y));
-
-                int gxMin = Mathf.Clamp((int)((minGx - bMin.x) * invX), 0, gridRes - 1);
-                int gxMax = Mathf.Clamp((int)((maxGx - bMin.x) * invX), 0, gridRes - 1);
-                int gyMin = Mathf.Clamp((int)((minGy - bMin.y) * invY), 0, gridRes - 1);
-                int gyMax = Mathf.Clamp((int)((maxGy - bMin.y) * invY), 0, gridRes - 1);
+                int gxMin = Mathf.Clamp((int)((Mathf.Min(a.x, Mathf.Min(b.x, c.x)) - bMin.x) * invX), 0, gridRes - 1);
+                int gxMax = Mathf.Clamp((int)((Mathf.Max(a.x, Mathf.Max(b.x, c.x)) - bMin.x) * invX), 0, gridRes - 1);
+                int gyMin = Mathf.Clamp((int)((Mathf.Min(a.y, Mathf.Min(b.y, c.y)) - bMin.y) * invY), 0, gridRes - 1);
+                int gyMax = Mathf.Clamp((int)((Mathf.Max(a.y, Mathf.Max(b.y, c.y)) - bMin.y) * invY), 0, gridRes - 1);
 
                 for (int gy = gyMin; gy <= gyMax; gy++)
                 {
@@ -220,13 +252,23 @@ namespace LightmapUvTool
                 }
             }
 
-            // Cells with >1 face → those faces are overlapping
+            // For each cell with >1 face, check if any pair shares NO vertex.
+            // Only those non-adjacent pairs indicate true UV0 overlap.
             foreach (var kv in cellFaces)
             {
-                if (kv.Value.Count > 1)
+                var list = kv.Value;
+                if (list.Count < 2) continue;
+
+                for (int i = 0; i < list.Count; i++)
                 {
-                    foreach (int f in kv.Value)
-                        overlapping.Add(f);
+                    for (int j = i + 1; j < list.Count; j++)
+                    {
+                        if (!FacesShareVertex(faceVerts, list[i], list[j]))
+                        {
+                            overlapping.Add(list[i]);
+                            overlapping.Add(list[j]);
+                        }
+                    }
                 }
             }
 
@@ -237,17 +279,17 @@ namespace LightmapUvTool
         //  Face adjacency graph: two faces adjacent if they share an edge
         // ════════════════════════════════════════════════════════════
 
-        static Dictionary<int, List<int>> BuildFaceAdjacency(List<int> faceIndices, int[] triangles)
+        static Dictionary<int, List<int>> BuildFaceAdjacency(
+            List<int> faceIndices, int[] triangles)
         {
-            var adjacency = new Dictionary<int, List<int>>();
-            var edgeToFace = new Dictionary<long, int>();
+            var adjacency = new Dictionary<int, List<int>>(faceIndices.Count);
+            var edgeToFace = new Dictionary<long, int>(faceIndices.Count * 3);
 
             foreach (int f in faceIndices)
             {
-                adjacency[f] = new List<int>();
+                adjacency[f] = new List<int>(3);
 
                 int i0 = triangles[f * 3], i1 = triangles[f * 3 + 1], i2 = triangles[f * 3 + 2];
-                // 3 edges per face
                 TryAddEdge(edgeToFace, adjacency, i0, i1, f);
                 TryAddEdge(edgeToFace, adjacency, i1, i2, f);
                 TryAddEdge(edgeToFace, adjacency, i2, i0, f);
@@ -256,18 +298,15 @@ namespace LightmapUvTool
             return adjacency;
         }
 
-        static void TryAddEdge(Dictionary<long, int> edgeToFace, Dictionary<int, List<int>> adjacency,
-            int v0, int v1, int face)
+        static void TryAddEdge(Dictionary<long, int> edgeToFace,
+            Dictionary<int, List<int>> adjacency, int v0, int v1, int face)
         {
-            // Canonical edge key: smaller vertex first
             long key = v0 < v1 ? ((long)v0 << 32) | (uint)v1 : ((long)v1 << 32) | (uint)v0;
 
             if (edgeToFace.TryGetValue(key, out int otherFace))
             {
-                // Edge shared → faces are adjacent
-                if (!adjacency[face].Contains(otherFace))
-                    adjacency[face].Add(otherFace);
-                if (adjacency.ContainsKey(otherFace) && !adjacency[otherFace].Contains(face))
+                adjacency[face].Add(otherFace);
+                if (adjacency.ContainsKey(otherFace))
                     adjacency[otherFace].Add(face);
             }
             else
@@ -280,9 +319,10 @@ namespace LightmapUvTool
         //  Flood-fill → connected components (Approach A)
         // ════════════════════════════════════════════════════════════
 
-        static List<List<int>> FloodFillComponents(List<int> faceIndices, Dictionary<int, List<int>> adjacency)
+        static List<List<int>> FloodFillComponents(
+            List<int> faceIndices, Dictionary<int, List<int>> adjacency)
         {
-            var visited = new HashSet<int>();
+            var visited = new HashSet<int>(faceIndices.Count);
             var components = new List<List<int>>();
 
             foreach (int startFace in faceIndices)
@@ -336,94 +376,83 @@ namespace LightmapUvTool
             foreach (int f in overlappingFaces)
             {
                 int i0 = triangles[f * 3], i1 = triangles[f * 3 + 1], i2 = triangles[f * 3 + 2];
-                if (i0 >= vertices.Length || i1 >= vertices.Length || i2 >= vertices.Length) continue;
+                if (i0 >= vertices.Length || i1 >= vertices.Length || i2 >= vertices.Length)
+                    continue;
                 faceCentroids[f] = (vertices[i0] + vertices[i1] + vertices[i2]) / 3f;
             }
 
             if (faceCentroids.Count < 2) return null;
 
-            // K-means k=2 on 3D centroids of overlapping faces
-            // Initialize: pick two most distant points
-            Vector3 c0 = Vector3.zero, c1 = Vector3.zero;
-            float maxDist = -1f;
+            // K-means k=2: initialize with most-distant pair
             var faceList = new List<int>(faceCentroids.Keys);
-
-            // Start with first face centroid
-            c0 = faceCentroids[faceList[0]];
-
-            // Find farthest from c0
+            Vector3 c0 = faceCentroids[faceList[0]];
+            Vector3 c1 = c0;
+            float maxDist = -1f;
             foreach (int f in faceList)
             {
                 float d = (faceCentroids[f] - c0).sqrMagnitude;
                 if (d > maxDist) { maxDist = d; c1 = faceCentroids[f]; }
             }
 
-            if (maxDist < 1e-10f) return null; // all faces at same 3D position
+            if (maxDist < 1e-10f) return null;
 
-            // Run K-means iterations
-            var assignment = new Dictionary<int, int>(); // face → cluster (0 or 1)
+            // Iterate
+            var assignment = new Dictionary<int, int>(faceList.Count);
             for (int iter = 0; iter < 20; iter++)
             {
-                // Assign each overlapping face to nearest centroid
                 bool changed = false;
                 foreach (int f in faceList)
                 {
-                    float d0 = (faceCentroids[f] - c0).sqrMagnitude;
-                    float d1 = (faceCentroids[f] - c1).sqrMagnitude;
-                    int newCluster = d0 <= d1 ? 0 : 1;
-                    if (!assignment.TryGetValue(f, out int old) || old != newCluster)
+                    int cl = (faceCentroids[f] - c0).sqrMagnitude
+                          <= (faceCentroids[f] - c1).sqrMagnitude ? 0 : 1;
+                    if (!assignment.TryGetValue(f, out int old) || old != cl)
                     {
-                        assignment[f] = newCluster;
+                        assignment[f] = cl;
                         changed = true;
                     }
                 }
 
                 if (!changed && iter > 0) break;
 
-                // Recompute centroids
-                Vector3 sum0 = Vector3.zero, sum1 = Vector3.zero;
+                Vector3 s0 = Vector3.zero, s1 = Vector3.zero;
                 int n0 = 0, n1 = 0;
                 foreach (int f in faceList)
                 {
-                    if (assignment[f] == 0) { sum0 += faceCentroids[f]; n0++; }
-                    else { sum1 += faceCentroids[f]; n1++; }
+                    if (assignment[f] == 0) { s0 += faceCentroids[f]; n0++; }
+                    else { s1 += faceCentroids[f]; n1++; }
                 }
 
-                if (n0 > 0) c0 = sum0 / n0;
-                if (n1 > 0) c1 = sum1 / n1;
+                if (n0 > 0) c0 = s0 / n0;
+                if (n1 > 0) c1 = s1 / n1;
             }
 
-            // Check we have faces in both clusters
-            int count0 = 0, count1 = 0;
+            // Check both clusters non-empty
+            int cnt0 = 0, cnt1 = 0;
             foreach (var kv in assignment)
             {
-                if (kv.Value == 0) count0++;
-                else count1++;
+                if (kv.Value == 0) cnt0++;
+                else cnt1++;
             }
-            if (count0 == 0 || count1 == 0) return null; // degenerate split
+            if (cnt0 == 0 || cnt1 == 0) return null;
 
-            // Propagate cluster assignment to non-overlapping faces via adjacency BFS
-            // Each non-overlapping face gets the cluster of its nearest overlapping neighbor
+            // Propagate via adjacency BFS
             var faceCluster = new Dictionary<int, int>(assignment);
-            var propagateQueue = new Queue<int>();
-
-            // Seed: overlapping faces already assigned
+            var queue = new Queue<int>();
             foreach (var kv in assignment)
-                propagateQueue.Enqueue(kv.Key);
+                queue.Enqueue(kv.Key);
 
-            while (propagateQueue.Count > 0)
+            while (queue.Count > 0)
             {
-                int f = propagateQueue.Dequeue();
-                int cluster = faceCluster[f];
-
+                int f = queue.Dequeue();
+                int cl = faceCluster[f];
                 if (adjacency.TryGetValue(f, out var neighbors))
                 {
                     foreach (int n in neighbors)
                     {
                         if (!faceCluster.ContainsKey(n))
                         {
-                            faceCluster[n] = cluster;
-                            propagateQueue.Enqueue(n);
+                            faceCluster[n] = cl;
+                            queue.Enqueue(n);
                         }
                     }
                 }
@@ -441,7 +470,6 @@ namespace LightmapUvTool
                 }
                 else
                 {
-                    // Face not reached by BFS — assign to nearest cluster by 3D centroid
                     int i0 = triangles[f * 3], i1 = triangles[f * 3 + 1], i2 = triangles[f * 3 + 2];
                     if (i0 < vertices.Length && i1 < vertices.Length && i2 < vertices.Length)
                     {
@@ -459,7 +487,6 @@ namespace LightmapUvTool
             }
 
             if (part0.Count == 0 || part1.Count == 0) return null;
-
             return new List<List<int>> { part0, part1 };
         }
 
@@ -467,7 +494,8 @@ namespace LightmapUvTool
         //  Helpers
         // ════════════════════════════════════════════════════════════
 
-        static Vector3 ComputePartitionCentroid(List<int> faceIndices, int[] triangles, Vector3[] vertices)
+        static Vector3 ComputePartitionCentroid(
+            List<int> faceIndices, int[] triangles, Vector3[] vertices)
         {
             Vector3 sum = Vector3.zero;
             int count = 0;
