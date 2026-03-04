@@ -616,6 +616,24 @@ namespace LightmapUvTool
                 }
             }
 
+            // Pre-build per-partition BVHs for source shells with overlap
+            // partitionBvh[si][pi] = BVH containing only faces of partition pi
+            var partitionBvh = new TriangleBvh2D[srcShells.Count][];
+            for (int si = 0; si < srcShells.Count; si++)
+            {
+                var pr = srcPartitions[si];
+                if (pr.hasOverlap && pr.partitionCount > 1)
+                {
+                    partitionBvh[si] = new TriangleBvh2D[pr.partitionCount];
+                    for (int pi = 0; pi < pr.partitionCount; pi++)
+                    {
+                        var faces = SpatialPartitioner.GetPartitionFaces(srcShells[si], pr, pi);
+                        if (faces.Length > 0)
+                            partitionBvh[si][pi] = new TriangleBvh2D(triUv0A, triUv0B, triUv0C, faces);
+                    }
+                }
+            }
+
             // ── Phase 1b: Precompute similarity transform per source shell ──
             var srcTransforms = new SimilarityTransform[srcShells.Count];
             for (int si = 0; si < srcShells.Count; si++)
@@ -1060,15 +1078,45 @@ namespace LightmapUvTool
                         int localFixes = 0;
 
                         // Select BVH for UV0 projection
+                        // When source shell has UV0 overlap with partitions,
+                        // use partition-specific BVH to avoid picking faces
+                        // from the wrong spatial side.
                         TriangleBvh2D mergedUv0Bvh = null;
+                        int matchedPartIdPass1 = -1;
                         if (constrained && chosenSrc >= 0)
-                            mergedUv0Bvh = shellUv0Bvh[chosenSrc];
+                        {
+                            var pr = srcPartitions[chosenSrc];
+                            if (pr.hasOverlap && pr.partitionCount > 1
+                                && partitionBvh[chosenSrc] != null)
+                            {
+                                Vector3 tgtC3D = result.targetShellCentroids[tsi];
+                                matchedPartIdPass1 = SpatialPartitioner.MatchPartition(pr, tgtC3D);
+                                if (matchedPartIdPass1 >= 0
+                                    && partitionBvh[chosenSrc][matchedPartIdPass1] != null)
+                                    mergedUv0Bvh = partitionBvh[chosenSrc][matchedPartIdPass1];
+                                else
+                                    mergedUv0Bvh = shellUv0Bvh[chosenSrc];
+                            }
+                            else
+                            {
+                                mergedUv0Bvh = shellUv0Bvh[chosenSrc];
+                            }
+                        }
                         else if (!constrained)
                             mergedUv0Bvh = globalUv0Bvh;
 
-                        // Constrained face list for linear fallback
-                        int searchCount = constrained && srcFacesChosen != null
-                            ? srcFacesChosen.Count : srcTriCount;
+                        // Constrained face list for linear fallback / 3D search
+                        // When partition is active, narrow to partition faces only
+                        List<int> searchFaces = srcFacesChosen;
+                        if (constrained && matchedPartIdPass1 >= 0 && chosenSrc >= 0)
+                        {
+                            var partFaces = SpatialPartitioner.GetPartitionFaces(
+                                srcShells[chosenSrc], srcPartitions[chosenSrc], matchedPartIdPass1);
+                            if (partFaces.Length > 0)
+                                searchFaces = new List<int>(partFaces);
+                        }
+                        int searchCount = constrained && searchFaces != null
+                            ? searchFaces.Count : srcTriCount;
 
                         foreach (int vi in tShell.vertexIndices)
                         {
@@ -1097,7 +1145,7 @@ namespace LightmapUvTool
                                 bestFUv0 = -1; bestU_uv0 = 0; bestV_uv0 = 0; bestW_uv0 = 0;
                                 for (int fi = 0; fi < searchCount; fi++)
                                 {
-                                    int f = constrained ? srcFacesChosen[fi] : fi;
+                                    int f = constrained ? searchFaces[fi] : fi;
                                     float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
                                         out float u, out float v, out float w);
                                     if (dSq < bestDSqUv0)
@@ -1111,7 +1159,7 @@ namespace LightmapUvTool
                             int bestF3D = -1; float bestU_3d = 0, bestV_3d = 0, bestW_3d = 0;
                             for (int fi = 0; fi < searchCount; fi++)
                             {
-                                int f = constrained ? srcFacesChosen[fi] : fi;
+                                int f = constrained ? searchFaces[fi] : fi;
                                 if (Vector3.Dot(triNormal[f], tNrm) < kBackfaceDot) continue;
                                 float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
                                     out float u, out float v, out float w);
