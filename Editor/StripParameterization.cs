@@ -14,6 +14,20 @@ namespace LightmapUvTool
         const float kAspectThreshold = 3f;     // length/width ratio for ribbon detection
         const float kPcaVarianceThreshold = 0.70f; // PCA first component explains >70% variance
         const float kNormalDotThreshold = 0f;  // dot(srcNrm, tgtNrm) > 0 = same side
+        const float kParamTriAreaEpsilon = 1e-10f;
+
+        struct ParamVertex
+        {
+            public Vector2 param;
+            public Vector2 uv2;
+        }
+
+        struct ParamTriangle
+        {
+            public int i0, i1, i2;
+            public Vector2 p0, p1, p2;
+            public Vector3 normal;
+        }
 
         /// <summary>
         /// Detect if a shell is ribbon-like based on 3D vertex positions.
@@ -237,9 +251,9 @@ namespace LightmapUvTool
             Vector3 principalAxis, Vector3 secondaryAxis, Vector3 centroid)
         {
             var result = new Dictionary<int, Vector2>();
-
-            // Parametrize source shell: (t_along, t_across, faceNormal)
-            var srcSamples = new List<(Vector2 param, Vector2 uv2, Vector3 normal)>();
+            var srcParamVertices = new Dictionary<int, ParamVertex>();
+            var srcParamTriangles = new List<ParamTriangle>();
+            int degenerateParamTriangles = 0;
 
             foreach (int f in sourceShell.faceIndices)
             {
@@ -247,40 +261,47 @@ namespace LightmapUvTool
                 if (i0 >= srcVertices.Length || i1 >= srcVertices.Length || i2 >= srcVertices.Length) continue;
                 if (i0 >= srcUv2.Length || i1 >= srcUv2.Length || i2 >= srcUv2.Length) continue;
 
+                ParamVertex v0 = GetOrCreateParamVertex(i0, srcVertices, srcUv2, srcParamVertices,
+                    centroid, principalAxis, secondaryAxis);
+                ParamVertex v1 = GetOrCreateParamVertex(i1, srcVertices, srcUv2, srcParamVertices,
+                    centroid, principalAxis, secondaryAxis);
+                ParamVertex v2 = GetOrCreateParamVertex(i2, srcVertices, srcUv2, srcParamVertices,
+                    centroid, principalAxis, secondaryAxis);
+
+                float paramArea2 = SignedArea2D(v0.param, v1.param, v2.param);
                 Vector3 faceNrm = Vector3.Cross(
                     srcVertices[i1] - srcVertices[i0],
                     srcVertices[i2] - srcVertices[i0]).normalized;
 
-                Vector3 pos3D = (srcVertices[i0] + srcVertices[i1] + srcVertices[i2]) / 3f;
-                Vector3 offset = pos3D - centroid;
-                float tAlong = Vector3.Dot(offset, principalAxis);
-                float tAcross = Vector3.Dot(offset, secondaryAxis);
-
-                Vector2 uv2Val = (srcUv2[i0] + srcUv2[i1] + srcUv2[i2]) / 3f;
-                srcSamples.Add((new Vector2(tAlong, tAcross), uv2Val, faceNrm));
-
-                for (int j = 0; j < 3; j++)
+                if (Mathf.Abs(paramArea2) < kParamTriAreaEpsilon)
                 {
-                    int vi = srcTriangles[f * 3 + j];
-                    Vector3 vPos = srcVertices[vi];
-                    Vector3 vOff = vPos - centroid;
-                    float vAlong = Vector3.Dot(vOff, principalAxis);
-                    float vAcross = Vector3.Dot(vOff, secondaryAxis);
-                    srcSamples.Add((new Vector2(vAlong, vAcross), srcUv2[vi], faceNrm));
+                    degenerateParamTriangles++;
+                    continue;
                 }
+
+                srcParamTriangles.Add(new ParamTriangle
+                {
+                    i0 = i0,
+                    i1 = i1,
+                    i2 = i2,
+                    p0 = v0.param,
+                    p1 = v1.param,
+                    p2 = v2.param,
+                    normal = faceNrm
+                });
             }
 
-            if (srcSamples.Count == 0) return result;
+            if (srcParamTriangles.Count == 0)
+            {
+                UvtLog.Warn("[StripParameterization] TransferNormalFiltered: all param-triangles degenerate, transfer skipped.");
+                return result;
+            }
 
             foreach (int vi in targetShell.vertexIndices)
             {
                 if (vi >= tgtVertices.Length) continue;
 
-                Vector3 tPos = tgtVertices[vi];
-                Vector3 tOffset = tPos - centroid;
-                Vector2 tParam = new Vector2(
-                    Vector3.Dot(tOffset, principalAxis),
-                    Vector3.Dot(tOffset, secondaryAxis));
+                Vector2 tParam = GetParam(tgtVertices[vi], centroid, principalAxis, secondaryAxis);
 
                 Vector3 tNrm = (tgtNormals != null && vi < tgtNormals.Length)
                     ? tgtNormals[vi] : Vector3.zero;
@@ -290,36 +311,124 @@ namespace LightmapUvTool
                 float bestDSqAny = float.MaxValue;
                 Vector2 bestUv2Any = Vector2.zero;
 
-                foreach (var sample in srcSamples)
+                foreach (var tri in srcParamTriangles)
                 {
-                    float dSq = (sample.param - tParam).sqrMagnitude;
+                    float dSq = PointToTri2D(tParam, tri.p0, tri.p1, tri.p2, out float u, out float v, out float w);
+                    ParamVertex s0 = srcParamVertices[tri.i0];
+                    ParamVertex s1 = srcParamVertices[tri.i1];
+                    ParamVertex s2 = srcParamVertices[tri.i2];
+                    Vector2 uv2 = s0.uv2 * u + s1.uv2 * v + s2.uv2 * w;
 
-                    // Unfiltered best (fallback)
                     if (dSq < bestDSqAny)
                     {
                         bestDSqAny = dSq;
-                        bestUv2Any = sample.uv2;
+                        bestUv2Any = uv2;
                     }
 
-                    // Normal-filtered best
-                    if (tNrm.sqrMagnitude > 0.5f && sample.normal.sqrMagnitude > 0.5f)
+                    if (tNrm.sqrMagnitude > 0.5f && tri.normal.sqrMagnitude > 0.5f)
                     {
-                        if (Vector3.Dot(sample.normal, tNrm) > kNormalDotThreshold)
+                        if (Vector3.Dot(tri.normal, tNrm) > kNormalDotThreshold && dSq < bestDSqFiltered)
                         {
-                            if (dSq < bestDSqFiltered)
-                            {
-                                bestDSqFiltered = dSq;
-                                bestUv2Filtered = sample.uv2;
-                            }
+                            bestDSqFiltered = dSq;
+                            bestUv2Filtered = uv2;
                         }
                     }
                 }
 
-                // Prefer normal-filtered; fallback to unfiltered
-                result[vi] = bestDSqFiltered < float.MaxValue ? bestUv2Filtered : bestUv2Any;
+                if (bestDSqAny < float.MaxValue)
+                    result[vi] = bestDSqFiltered < float.MaxValue ? bestUv2Filtered : bestUv2Any;
+            }
+
+            if (degenerateParamTriangles > 0)
+            {
+                UvtLog.Verbose(
+                    $"[StripParameterization] TransferNormalFiltered: skipped {degenerateParamTriangles} degenerate param-triangles " +
+                    $"(used {srcParamTriangles.Count}).");
             }
 
             return result;
+        }
+
+        static ParamVertex GetOrCreateParamVertex(int vi, Vector3[] srcVertices, Vector2[] srcUv2,
+            Dictionary<int, ParamVertex> srcParamVertices,
+            Vector3 centroid, Vector3 principalAxis, Vector3 secondaryAxis)
+        {
+            if (srcParamVertices.TryGetValue(vi, out ParamVertex value))
+                return value;
+
+            value = new ParamVertex
+            {
+                param = GetParam(srcVertices[vi], centroid, principalAxis, secondaryAxis),
+                uv2 = srcUv2[vi]
+            };
+            srcParamVertices[vi] = value;
+            return value;
+        }
+
+        static Vector2 GetParam(Vector3 pos, Vector3 centroid, Vector3 principalAxis, Vector3 secondaryAxis)
+        {
+            Vector3 offset = pos - centroid;
+            return new Vector2(
+                Vector3.Dot(offset, principalAxis),
+                Vector3.Dot(offset, secondaryAxis));
+        }
+
+        static float SignedArea2D(Vector2 a, Vector2 b, Vector2 c)
+        {
+            return (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+        }
+
+        static float PointToTri2D(Vector2 p, Vector2 a, Vector2 b, Vector2 c,
+            out float u, out float v, out float w)
+        {
+            Vector2 ab = b - a, ac = c - a, ap = p - a;
+            float d00 = Vector2.Dot(ab, ab), d01 = Vector2.Dot(ab, ac);
+            float d11 = Vector2.Dot(ac, ac), d20 = Vector2.Dot(ap, ab);
+            float d21 = Vector2.Dot(ap, ac);
+            float denom = d00 * d11 - d01 * d01;
+
+            if (Mathf.Abs(denom) < 1e-12f)
+            {
+                u = 1f; v = 0f; w = 0f;
+                return (p - a).sqrMagnitude;
+            }
+
+            float bV = (d11 * d20 - d01 * d21) / denom;
+            float bW = (d00 * d21 - d01 * d20) / denom;
+            float bU = 1f - bV - bW;
+
+            if (bU >= 0f && bV >= 0f && bW >= 0f)
+            {
+                u = bU; v = bV; w = bW;
+                Vector2 proj = a * u + b * v + c * w;
+                return (p - proj).sqrMagnitude;
+            }
+
+            float best = float.MaxValue;
+            u = 1f; v = 0f; w = 0f;
+
+            {
+                float t = Mathf.Clamp01(Vector2.Dot(p - a, ab) / Mathf.Max(d00, 1e-12f));
+                Vector2 q = a + ab * t;
+                float dSq = (p - q).sqrMagnitude;
+                if (dSq < best) { best = dSq; u = 1f - t; v = t; w = 0f; }
+            }
+            {
+                float t = Mathf.Clamp01(Vector2.Dot(p - a, ac) / Mathf.Max(d11, 1e-12f));
+                Vector2 q = a + ac * t;
+                float dSq = (p - q).sqrMagnitude;
+                if (dSq < best) { best = dSq; u = 1f - t; v = 0f; w = t; }
+            }
+            {
+                Vector2 bc = c - b;
+                float bcL = Vector2.Dot(bc, bc);
+                float t = Mathf.Clamp01(Vector2.Dot(p - b, bc) / Mathf.Max(bcL, 1e-12f));
+                Vector2 q = b + bc * t;
+                float dSq = (p - q).sqrMagnitude;
+                if (dSq < best) { best = dSq; u = 0f; v = 1f - t; w = t; }
+            }
+
+            return best;
         }
     }
 }

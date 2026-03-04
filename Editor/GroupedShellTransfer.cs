@@ -1654,6 +1654,10 @@ namespace LightmapUvTool
                         // ── Approach C: Strip parameterization for ribbon shells ──
                         if (srcIsRibbon[chosenSrc] && partResult.hasOverlap)
                         {
+                            int issuesBeforeStrip = bestMergedIssues;
+                            float stretchBeforeStrip = ComputeShellStretchMedian(
+                                tShell.faceIndices, tgtTris, tUv0, bestMergedUv2);
+
                             var candidateStrip = StripParameterization.TransferNormalFiltered(
                                 tShell, srcShells[chosenSrc],
                                 tVerts, tNormals, srcVerts, srcUv0, srcUv2, srcTris,
@@ -1662,6 +1666,18 @@ namespace LightmapUvTool
                                 srcRibbonCentroid[chosenSrc]);
 
                             int issuesStrip = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, candidateStrip);
+                            float stretchAfterStrip = ComputeShellStretchMedian(
+                                tShell.faceIndices, tgtTris, tUv0, candidateStrip);
+
+                            string beforeStr = float.IsNaN(stretchBeforeStrip)
+                                ? "n/a"
+                                : stretchBeforeStrip.ToString("F4");
+                            string afterStr = float.IsNaN(stretchAfterStrip)
+                                ? "n/a"
+                                : stretchAfterStrip.ToString("F4");
+                            UvtLog.Verbose($"[GroupedTransfer]   t{tsi}: strip metrics issues {issuesBeforeStrip}->{issuesStrip}, " +
+                                $"stretch(median areaUV2/areaUV0) {beforeStr}->{afterStr}");
+
                             if (issuesStrip < bestMergedIssues)
                             {
                                 bestMergedIssues = issuesStrip;
@@ -2102,6 +2118,37 @@ namespace LightmapUvTool
                 }
             }
             return issues;
+        }
+
+        static float ComputeShellStretchMedian(List<int> faceIndices, int[] tris, Vector2[] uv0,
+            Dictionary<int, Vector2> candidateUv2)
+        {
+            if (candidateUv2 == null || candidateUv2.Count == 0)
+                return float.NaN;
+
+            var ratios = new List<float>(faceIndices.Count);
+            foreach (int f in faceIndices)
+            {
+                int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
+                if (i0 >= uv0.Length || i1 >= uv0.Length || i2 >= uv0.Length) continue;
+                if (!candidateUv2.TryGetValue(i0, out var a2) ||
+                    !candidateUv2.TryGetValue(i1, out var b2) ||
+                    !candidateUv2.TryGetValue(i2, out var c2))
+                    continue;
+
+                var a0 = uv0[i0]; var b0 = uv0[i1]; var c0 = uv0[i2];
+                float area0 = Mathf.Abs(SignedArea2D(a0, b0, c0));
+                if (area0 < 1e-10f) continue;
+
+                float area2 = Mathf.Abs(SignedArea2D(a2, b2, c2));
+                ratios.Add(area2 / area0);
+            }
+
+            if (ratios.Count == 0)
+                return float.NaN;
+
+            ratios.Sort();
+            return ratios[ratios.Count / 2];
         }
 
         // ═══════════════════════════════════════════════════════════
