@@ -1588,6 +1588,82 @@ namespace LightmapUvTool
                         force3DUsedRegions.Add((fMin, fMax));
                     }
 
+                    // ── Coherence fix: detect outlier vertices outside matched source's UV2 AABB ──
+                    // Some vertices (especially in degenerate/mixed shells) escape the matched
+                    // source's UV2 region, creating long diagonal lines in UV2 space.
+                    // If the majority of vertices are inside the correct region, re-project
+                    // the outliers using the matched source's constrained UV0 lookup.
+                    if (bestMergedUv2 != null && bestMergedUv2.Count > 1 && chosenSrc >= 0)
+                    {
+                        const float kUv2Margin = 0.005f;
+                        Vector2 sMin = srcUv2Min[chosenSrc];
+                        Vector2 sMax = srcUv2Max[chosenSrc];
+
+                        int insideCount = 0;
+                        var outsideVerts = new List<int>();
+                        foreach (var kv in bestMergedUv2)
+                        {
+                            Vector2 uv2 = kv.Value;
+                            if (uv2.x >= sMin.x - kUv2Margin && uv2.x <= sMax.x + kUv2Margin &&
+                                uv2.y >= sMin.y - kUv2Margin && uv2.y <= sMax.y + kUv2Margin)
+                                insideCount++;
+                            else
+                                outsideVerts.Add(kv.Key);
+                        }
+
+                        if (outsideVerts.Count > 0 && insideCount > outsideVerts.Count)
+                        {
+                            var cBvh = shellUv0Bvh[chosenSrc];
+                            var cFaces = srcShells[chosenSrc].faceIndices;
+                            int coherenceFixed = 0;
+
+                            foreach (int vi in outsideVerts)
+                            {
+                                if (vi >= tUv0.Length) continue;
+                                Vector2 tUv = tUv0[vi];
+                                int bestF = -1;
+                                float bestU = 0, bestV = 0, bestW = 0;
+
+                                if (cBvh != null)
+                                {
+                                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                                        ? tNormals[vi] : Vector3.zero;
+                                    var hit = tNrm.sqrMagnitude > 0.5f
+                                        ? cBvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, 0.0f)
+                                        : cBvh.FindNearest(tUv);
+                                    bestF = hit.faceIndex;
+                                    bestU = hit.u; bestV = hit.v; bestW = hit.w;
+                                }
+                                else
+                                {
+                                    float bestDSq = float.MaxValue;
+                                    for (int fi = 0; fi < cFaces.Count; fi++)
+                                    {
+                                        int f = cFaces[fi];
+                                        float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
+                                            out float u, out float v, out float w);
+                                        if (dSq < bestDSq)
+                                        { bestDSq = dSq; bestF = f; bestU = u; bestV = v; bestW = w; }
+                                        if (bestDSq < 1e-8f) break;
+                                    }
+                                }
+
+                                if (bestF >= 0)
+                                {
+                                    bestMergedUv2[vi] = triUv2A[bestF] * bestU
+                                                      + triUv2B[bestF] * bestV
+                                                      + triUv2C[bestF] * bestW;
+                                    coherenceFixed++;
+                                }
+                            }
+
+                            if (coherenceFixed > 0)
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: coherence fix " +
+                                    $"({coherenceFixed}/{outsideVerts.Count} outlier verts " +
+                                    $"re-projected to src{chosenSrc})");
+                        }
+                    }
+
                     chosenUv2 = bestMergedUv2;
                     shellsMerged++;
                     result.targetShellMethod[tsi] = 2; // merged
