@@ -380,11 +380,16 @@ namespace LightmapUvTool
         }
 
         // ════════════════════════════════════════════════════════════
-        //  Forced split by face normal direction (Approach B)
-        //  K-means (k=2) on overlapping face normals, then propagate
-        //  to all faces via adjacency. This separates front/back of
-        //  thin belts where 3D positions are nearly identical.
+        //  Forced split by sharp-edge flood-fill (Approach B)
+        //  Flood-fill through adjacency but STOP at sharp edges where
+        //  adjacent face normals differ significantly (dot < threshold).
+        //  For belts: front faces connected by smooth edges form one
+        //  component, back faces form another. Works for curved belts
+        //  because the gradual normal change along each side is smooth,
+        //  but the front-to-back transition is always sharp (~180°).
         // ════════════════════════════════════════════════════════════
+
+        const float kSharpEdgeDot = 0.0f; // dot < 0 means normals differ by >90°
 
         static Vector3 ComputeFaceNormal(int f, int[] triangles, Vector3[] vertices)
         {
@@ -401,119 +406,81 @@ namespace LightmapUvTool
         {
             if (overlappingFaces.Count < 2) return null;
 
-            // Compute face normals for overlapping faces
-            var faceNormals = new Dictionary<int, Vector3>();
-            foreach (int f in overlappingFaces)
+            // Compute face normals for ALL faces in the shell
+            var faceNormals = new Dictionary<int, Vector3>(shell.faceIndices.Count);
+            foreach (int f in shell.faceIndices)
             {
                 var n = ComputeFaceNormal(f, triangles, vertices);
-                if (n.sqrMagnitude > 0.5f)
-                    faceNormals[f] = n;
+                faceNormals[f] = n.sqrMagnitude > 0.5f ? n : Vector3.up;
             }
 
-            if (faceNormals.Count < 2) return null;
+            // Flood-fill with sharp-edge stopping:
+            // Two adjacent faces are "smooth-connected" if dot(nrm_A, nrm_B) >= kSharpEdgeDot.
+            // This separates front/back of belts even when the belt curves,
+            // because the front-to-back edge always has a sharp normal change.
+            var visited = new HashSet<int>(shell.faceIndices.Count);
+            var components = new List<List<int>>();
 
-            // K-means k=2 on face normals
-            // Initialize: pick two most-opposite normals
-            var faceList = new List<int>(faceNormals.Keys);
-            Vector3 c0 = faceNormals[faceList[0]];
-            Vector3 c1 = c0;
-            float minDot = 2f;
-            foreach (int f in faceList)
+            foreach (int startFace in shell.faceIndices)
             {
-                float dot = Vector3.Dot(faceNormals[f], c0);
-                if (dot < minDot) { minDot = dot; c1 = faceNormals[f]; }
-            }
+                if (visited.Contains(startFace)) continue;
 
-            // If all normals point the same way, try 3D position fallback
-            if (minDot > 0.5f)
-                return ForceSplitByPosition(shell, overlappingFaces, adjacency, triangles, vertices);
+                var component = new List<int>();
+                var queue = new Queue<int>();
+                queue.Enqueue(startFace);
+                visited.Add(startFace);
 
-            // Iterate K-means on normals
-            var assignment = new Dictionary<int, int>(faceList.Count);
-            for (int iter = 0; iter < 20; iter++)
-            {
-                bool changed = false;
-                foreach (int f in faceList)
+                while (queue.Count > 0)
                 {
-                    float d0 = Vector3.Dot(faceNormals[f], c0);
-                    float d1 = Vector3.Dot(faceNormals[f], c1);
-                    int cl = d0 >= d1 ? 0 : 1;
-                    if (!assignment.TryGetValue(f, out int old) || old != cl)
+                    int f = queue.Dequeue();
+                    component.Add(f);
+
+                    if (!adjacency.TryGetValue(f, out var neighbors)) continue;
+
+                    Vector3 nrmF = faceNormals[f];
+                    foreach (int nb in neighbors)
                     {
-                        assignment[f] = cl;
-                        changed = true;
-                    }
-                }
+                        if (visited.Contains(nb)) continue;
 
-                if (!changed && iter > 0) break;
-
-                // Recompute cluster centers (average normal, re-normalized)
-                Vector3 s0 = Vector3.zero, s1 = Vector3.zero;
-                foreach (int f in faceList)
-                {
-                    if (assignment[f] == 0) s0 += faceNormals[f];
-                    else s1 += faceNormals[f];
-                }
-                if (s0.sqrMagnitude > 1e-8f) c0 = s0.normalized;
-                if (s1.sqrMagnitude > 1e-8f) c1 = s1.normalized;
-            }
-
-            // Check both clusters non-empty
-            int cnt0 = 0, cnt1 = 0;
-            foreach (var kv in assignment)
-            {
-                if (kv.Value == 0) cnt0++;
-                else cnt1++;
-            }
-            if (cnt0 == 0 || cnt1 == 0) return null;
-
-            // Propagate via adjacency BFS — assign each unassigned face
-            // to the cluster of its nearest assigned neighbor
-            var faceCluster = new Dictionary<int, int>(assignment);
-            var queue = new Queue<int>();
-            foreach (var kv in assignment)
-                queue.Enqueue(kv.Key);
-
-            while (queue.Count > 0)
-            {
-                int f = queue.Dequeue();
-                int cl = faceCluster[f];
-                if (adjacency.TryGetValue(f, out var neighbors))
-                {
-                    foreach (int n in neighbors)
-                    {
-                        if (!faceCluster.ContainsKey(n))
+                        // Only cross if edge is smooth (normals agree)
+                        Vector3 nrmN = faceNormals[nb];
+                        if (Vector3.Dot(nrmF, nrmN) >= kSharpEdgeDot)
                         {
-                            faceCluster[n] = cl;
-                            queue.Enqueue(n);
+                            visited.Add(nb);
+                            queue.Enqueue(nb);
                         }
                     }
                 }
+
+                components.Add(component);
             }
 
-            // Build partition lists
-            var part0 = new List<int>();
-            var part1 = new List<int>();
-            foreach (int f in shell.faceIndices)
+            // Need exactly 2 components for front/back split.
+            // If we got more (e.g., belt with side panels), merge smallest into nearest.
+            if (components.Count < 2) return null;
+
+            if (components.Count == 2)
+                return components;
+
+            // More than 2: keep the two largest, merge rest by normal similarity
+            components.Sort((a, b) => b.Count.CompareTo(a.Count));
+            var mainA = components[0];
+            var mainB = components[1];
+
+            Vector3 nrmA = ComputePartitionNormal(mainA, triangles, vertices);
+            Vector3 nrmB = ComputePartitionNormal(mainB, triangles, vertices);
+
+            for (int ci = 2; ci < components.Count; ci++)
             {
-                if (faceCluster.TryGetValue(f, out int cl))
-                {
-                    if (cl == 0) part0.Add(f);
-                    else part1.Add(f);
-                }
+                Vector3 nrmC = ComputePartitionNormal(components[ci], triangles, vertices);
+                if (Vector3.Dot(nrmC, nrmA) >= Vector3.Dot(nrmC, nrmB))
+                    mainA.AddRange(components[ci]);
                 else
-                {
-                    // Fallback: assign by normal similarity
-                    var fn = ComputeFaceNormal(f, triangles, vertices);
-                    if (Vector3.Dot(fn, c0) >= Vector3.Dot(fn, c1))
-                        part0.Add(f);
-                    else
-                        part1.Add(f);
-                }
+                    mainB.AddRange(components[ci]);
             }
 
-            if (part0.Count == 0 || part1.Count == 0) return null;
-            return new List<List<int>> { part0, part1 };
+            if (mainA.Count == 0 || mainB.Count == 0) return null;
+            return new List<List<int>> { mainA, mainB };
         }
 
         // Fallback: 3D position K-means (for cases where normals are uniform)
