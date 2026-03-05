@@ -63,9 +63,11 @@ namespace LightmapUvTool
         int  pvLod     = 0;
         bool showWire = true, showBorder;
         float fillAlpha = 0.25f;
-        bool toggleHoverSpotUv = true;
-        bool togglePickShellUv;
-        bool lockSelection;
+        bool hoverSpot3D;
+        bool hoverHitValid;
+        int hoveredShell = -1;
+        Vector2 uvSpot;
+        Vector3 hoverWorldPos;
 
         // Checker mode (user toggle, independent from CheckerTexturePreview.IsActive)
         bool checkerEnabled;
@@ -115,16 +117,45 @@ namespace LightmapUvTool
 
         // Preview cache: mesh instanceID -> boundary edge index pairs (a0,b0,a1,b1,...)
         readonly Dictionary<int, int[]> boundaryEdgeCache = new Dictionary<int, int[]>();
-        readonly Dictionary<int, PreviewShellCache> previewShellCache = new Dictionary<int, PreviewShellCache>();
+        readonly PreviewShellCache previewShellCache = new PreviewShellCache();
 
-        ShellUvHit hoveredShell;
-        ShellUvHit selectedShell;
-        bool hasHoveredShell;
-        bool hasSelectedShell;
-        int lastHitMeshId = -1;
-        int lastHitShellId = -1;
+        class PreviewShellCache
+        {
+            readonly Dictionary<long, int[]> faceToShellByMeshAndChannel = new Dictionary<long, int[]>();
 
-        const int TRI_PICK_BUDGET = 6000;
+            public void Clear() => faceToShellByMeshAndChannel.Clear();
+
+            public int[] GetFaceToShell(Mesh mesh, int channel, Vector2[] uv, int[] triangles)
+            {
+                if (mesh == null || uv == null || triangles == null) return null;
+                long key = (((long)mesh.GetInstanceID()) << 8) ^ (uint)channel;
+                if (faceToShellByMeshAndChannel.TryGetValue(key, out var cached))
+                    return cached;
+
+                int faceCount = triangles.Length / 3;
+                var faceToShell = new int[faceCount];
+                for (int i = 0; i < faceToShell.Length; i++) faceToShell[i] = -1;
+
+                try
+                {
+                    var shells = UvShellExtractor.Extract(uv, triangles);
+                    foreach (var shell in shells)
+                    {
+                        if (shell?.faceIndices == null) continue;
+                        foreach (int f in shell.faceIndices)
+                            if (f >= 0 && f < faceToShell.Length)
+                                faceToShell[f] = shell.shellId;
+                    }
+                }
+                catch
+                {
+                    // Keep -1 mapping when shell extraction fails.
+                }
+
+                faceToShellByMeshAndChannel[key] = faceToShell;
+                return faceToShell;
+            }
+        }
 
         // ─── Mesh Entry ───
         class MeshEntry
@@ -230,6 +261,9 @@ namespace LightmapUvTool
 
         void OnEnable()
         {
+            SceneView.duringSceneGui -= OnSceneGUI;
+            SceneView.duringSceneGui += OnSceneGUI;
+
             var sh = Shader.Find("Hidden/Internal-Colored");
             if (sh == null) return;
             glMat = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };
@@ -245,11 +279,14 @@ namespace LightmapUvTool
 
         void OnDisable()
         {
-            RestoreAllPreviews();
+            SceneView.duringSceneGui -= OnSceneGUI;
+            if (checkerEnabled) CheckerTexturePreview.Restore();
+            checkerEnabled = false;
             if (lodGroup != null) lodGroup.ForceLOD(-1);
             CleanupWorkingMeshes();
             boundaryEdgeCache.Clear();
             previewShellCache.Clear();
+            ClearHoverState(false);
             if (canvasRT) { canvasRT.Release(); DestroyImmediate(canvasRT); canvasRT = null; }
             if (glMat) DestroyImmediate(glMat);
             if (texMat) DestroyImmediate(texMat);
@@ -340,12 +377,9 @@ namespace LightmapUvTool
             uv0Reports.Clear();
             boundaryEdgeCache.Clear();
             previewShellCache.Clear();
-            hasHoveredShell = false;
-            hasSelectedShell = false;
-            lastHitMeshId = -1;
-            lastHitShellId = -1;
             uv0Analyzed = false;
             uv0Welded = false;
+            ClearHoverState(false);
             if (lodGroup == null) return;
             var lods = lodGroup.GetLODs();
             for (int li = 0; li < lods.Length; li++)
@@ -386,6 +420,7 @@ namespace LightmapUvTool
                 return;
 
             pvLod = clamped;
+            ClearHoverState(false);
 
             // Keep scene model LOD in sync with window preview LOD.
             if (lodGroup != null)
@@ -854,6 +889,13 @@ namespace LightmapUvTool
             // ── Overlay toggles ──
             showWire   = GUILayout.Toggle(showWire,   "Wire", EditorStyles.toolbarButton, GUILayout.Width(36));
             showBorder = GUILayout.Toggle(showBorder, "Bdr",  EditorStyles.toolbarButton, GUILayout.Width(30));
+            bool hoverNext = GUILayout.Toggle(hoverSpot3D, "Hover Spot (3D)", EditorStyles.toolbarButton, GUILayout.Width(98));
+            if (hoverNext != hoverSpot3D)
+            {
+                hoverSpot3D = hoverNext;
+                if (!hoverSpot3D) ClearHoverState();
+                SceneView.RepaintAll();
+            }
 
             GUILayout.Space(4);
             toggleHoverSpotUv = GUILayout.Toggle(toggleHoverSpotUv, "Spot", EditorStyles.toolbarButton, GUILayout.Width(36));
@@ -1070,7 +1112,185 @@ namespace LightmapUvTool
 
                 RenderTexture.active = prevRT;
                 GUI.DrawTexture(canvasRect, canvasRT, ScaleMode.StretchToFill, false);
+                DrawHoverSpotInCanvas(cx, cy, sz);
             }
+        }
+
+        void DrawHoverSpotInCanvas(float ox, float oy, float sz)
+        {
+            if (!hoverSpot3D || !hoverHitValid) return;
+
+            float x = ox + uvSpot.x * sz;
+            float y = oy + (1f - uvSpot.y) * sz;
+
+            Handles.BeginGUI();
+            var prev = Handles.color;
+            Handles.color = new Color(1f, .75f, .2f, .95f);
+            Handles.DrawSolidDisc(new Vector3(x, y, 0f), Vector3.forward, 4f);
+            Handles.color = prev;
+            Handles.EndGUI();
+        }
+
+        void OnSceneGUI(SceneView sv)
+        {
+            if (!hoverSpot3D || sv == null)
+            {
+                if (hoverHitValid) ClearHoverState();
+                return;
+            }
+
+            Event e = Event.current;
+            if (e == null)
+                return;
+
+            var ray = HandleUtility.GUIPointToWorldRay(e.mousePosition);
+            bool hadHit = hoverHitValid;
+            Vector2 prevUv = uvSpot;
+            int prevShell = hoveredShell;
+
+            hoverHitValid = TryRaycastPreview(ray, out var hit);
+            if (hoverHitValid)
+            {
+                hoverWorldPos = hit.worldPos;
+                uvSpot = hit.uv;
+                hoveredShell = hit.shellId;
+            }
+            else
+            {
+                hoveredShell = -1;
+            }
+
+            if (!hoverHitValid && hadHit)
+                Repaint();
+            else if (hoverHitValid && (!hadHit || prevShell != hoveredShell || (prevUv - uvSpot).sqrMagnitude > 1e-8f))
+                Repaint();
+
+            if (!hoverHitValid)
+                return;
+
+            float size = HandleUtility.GetHandleSize(hoverWorldPos) * 0.06f;
+            Handles.color = new Color(1f, .75f, .2f, .95f);
+            Handles.SphereHandleCap(0, hoverWorldPos, Quaternion.identity, size, EventType.Repaint);
+            Handles.DotHandleCap(0, hoverWorldPos, Quaternion.identity, size * 0.65f, EventType.Repaint);
+        }
+
+        struct HoverHit
+        {
+            public float distance;
+            public Vector3 worldPos;
+            public Vector2 uv;
+            public int shellId;
+        }
+
+        bool TryRaycastPreview(Ray ray, out HoverHit bestHit)
+        {
+            bestHit = default;
+            bestHit.distance = float.PositiveInfinity;
+
+            var entries = ForLod(pvLod);
+            bool found = false;
+            foreach (var entry in entries)
+            {
+                Mesh mesh = DMesh(entry);
+                if (mesh == null) continue;
+
+                Matrix4x4 l2w;
+                if (entry.renderer != null) l2w = entry.renderer.localToWorldMatrix;
+                else if (entry.meshFilter != null) l2w = entry.meshFilter.transform.localToWorldMatrix;
+                else continue;
+
+                Bounds worldBounds = TransformBounds(mesh.bounds, l2w);
+                if (!worldBounds.IntersectRay(ray, out float aabbDistance)) continue;
+                if (aabbDistance > bestHit.distance) continue;
+
+                Vector3[] v = mesh.vertices;
+                int[] tri = mesh.triangles;
+                Vector2[] uv = RdUv(mesh, pvChannel);
+                if (v == null || tri == null || uv == null) continue;
+                int[] faceToShell = previewShellCache.GetFaceToShell(mesh, pvChannel, uv, tri);
+
+                for (int f = 0; f + 2 < tri.Length; f += 3)
+                {
+                    int i0 = tri[f];
+                    int i1 = tri[f + 1];
+                    int i2 = tri[f + 2];
+                    if (i0 < 0 || i1 < 0 || i2 < 0 || i0 >= v.Length || i1 >= v.Length || i2 >= v.Length) continue;
+                    if (i0 >= uv.Length || i1 >= uv.Length || i2 >= uv.Length) continue;
+
+                    Vector3 p0 = l2w.MultiplyPoint3x4(v[i0]);
+                    Vector3 p1 = l2w.MultiplyPoint3x4(v[i1]);
+                    Vector3 p2 = l2w.MultiplyPoint3x4(v[i2]);
+
+                    if (!RayTriangleMollerTrumbore(ray, p0, p1, p2, out float t, out float b1, out float b2))
+                        continue;
+                    if (t < 0f || t >= bestHit.distance)
+                        continue;
+
+                    float b0 = 1f - b1 - b2;
+                    Vector2 hitUv = uv[i0] * b0 + uv[i1] * b1 + uv[i2] * b2;
+
+                    bestHit.distance = t;
+                    bestHit.worldPos = ray.origin + ray.direction * t;
+                    bestHit.uv = hitUv;
+                    bestHit.shellId = (faceToShell != null && (f / 3) < faceToShell.Length) ? faceToShell[f / 3] : -1;
+                    found = true;
+                }
+            }
+
+            return found;
+        }
+
+        static Bounds TransformBounds(Bounds localBounds, Matrix4x4 l2w)
+        {
+            Vector3 c = localBounds.center;
+            Vector3 e = localBounds.extents;
+            Vector3 min = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
+            Vector3 max = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
+
+            for (int ix = -1; ix <= 1; ix += 2)
+            for (int iy = -1; iy <= 1; iy += 2)
+            for (int iz = -1; iz <= 1; iz += 2)
+            {
+                Vector3 corner = c + Vector3.Scale(e, new Vector3(ix, iy, iz));
+                Vector3 wc = l2w.MultiplyPoint3x4(corner);
+                min = Vector3.Min(min, wc);
+                max = Vector3.Max(max, wc);
+            }
+
+            Bounds b = new Bounds((min + max) * 0.5f, max - min);
+            return b;
+        }
+
+        static bool RayTriangleMollerTrumbore(Ray ray, Vector3 v0, Vector3 v1, Vector3 v2, out float t, out float u, out float v)
+        {
+            t = 0f; u = 0f; v = 0f;
+            const float eps = 1e-7f;
+            Vector3 e1 = v1 - v0;
+            Vector3 e2 = v2 - v0;
+            Vector3 p = Vector3.Cross(ray.direction, e2);
+            float det = Vector3.Dot(e1, p);
+            if (Mathf.Abs(det) < eps) return false;
+
+            float invDet = 1f / det;
+            Vector3 s = ray.origin - v0;
+            u = Vector3.Dot(s, p) * invDet;
+            if (u < 0f || u > 1f) return false;
+
+            Vector3 q = Vector3.Cross(s, e1);
+            v = Vector3.Dot(ray.direction, q) * invDet;
+            if (v < 0f || (u + v) > 1f) return false;
+
+            t = Vector3.Dot(e2, q) * invDet;
+            return t >= 0f;
+        }
+
+        void ClearHoverState(bool repaint = true)
+        {
+            hoverHitValid = false;
+            hoveredShell = -1;
+            uvSpot = Vector2.zero;
+            hoverWorldPos = Vector3.zero;
+            if (repaint) Repaint();
         }
 
         void FitToUvBounds()
@@ -1723,7 +1943,10 @@ namespace LightmapUvTool
             var ee = ForLod(pvLod);
             int tV = 0, tT = 0;
             foreach (var e in ee) { Mesh m = DMesh(e); if (m == null) continue; tV += m.vertexCount; tT += m.triangles.Length / 3; }
-            EditorGUILayout.LabelField("LOD" + pvLod + " | " + ee.Count + " mesh | V:" + tV + " T:" + tT + " | " + (pvChannel == 0 ? "UV0 (MainTex)" : "UV1 (Lightmap)"), EditorStyles.miniLabel);
+            string hoverInfo = hoverHitValid
+                ? $" | Hover UV: {uvSpot.x:F4},{uvSpot.y:F4} Shell:{hoveredShell}"
+                : (hoverSpot3D ? " | Hover UV: --" : string.Empty);
+            EditorGUILayout.LabelField("LOD" + pvLod + " | " + ee.Count + " mesh | V:" + tV + " T:" + tT + " | " + (pvChannel == 0 ? "UV0 (MainTex)" : "UV1 (Lightmap)") + hoverInfo, EditorStyles.miniLabel);
 
             GUILayout.FlexibleSpace();
 
@@ -2762,6 +2985,7 @@ namespace LightmapUvTool
             srcCache.Clear();
             shellTransformCache.Clear();
             previewShellCache.Clear();
+            ClearHoverState(false);
             UvtLog.Info("[Reset] All working copies destroyed and restored to FBX originals");
             Repaint();
         }
