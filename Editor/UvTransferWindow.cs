@@ -117,6 +117,45 @@ namespace LightmapUvTool
 
         // Preview cache: mesh instanceID -> boundary edge index pairs (a0,b0,a1,b1,...)
         readonly Dictionary<int, int[]> boundaryEdgeCache = new Dictionary<int, int[]>();
+        readonly Dictionary<PreviewShellCacheKey, PreviewShellCacheEntry> previewShellCache =
+            new Dictionary<PreviewShellCacheKey, PreviewShellCacheEntry>();
+
+        struct PreviewShellCacheKey : IEquatable<PreviewShellCacheKey>
+        {
+            public int meshInstanceId;
+            public int pvChannel;
+            public int pvLod;
+            public int trianglesHash;
+
+            public bool Equals(PreviewShellCacheKey other)
+            {
+                return meshInstanceId == other.meshInstanceId
+                    && pvChannel == other.pvChannel
+                    && pvLod == other.pvLod
+                    && trianglesHash == other.trianglesHash;
+            }
+
+            public override bool Equals(object obj) => obj is PreviewShellCacheKey other && Equals(other);
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    int h = meshInstanceId;
+                    h = (h * 397) ^ pvChannel;
+                    h = (h * 397) ^ pvLod;
+                    h = (h * 397) ^ trianglesHash;
+                    return h;
+                }
+            }
+        }
+
+        sealed class PreviewShellCacheEntry
+        {
+            public List<UvShell> shells;
+            public Dictionary<int, int> faceToShell = new Dictionary<int, int>();
+            public Dictionary<int, Rect> shellBboxes = new Dictionary<int, Rect>();
+            public Dictionary<int, List<int>> shellFaceIndices = new Dictionary<int, List<int>>();
         readonly PreviewShellCache previewShellCache = new PreviewShellCache();
 
         class PreviewShellCache
@@ -284,6 +323,7 @@ namespace LightmapUvTool
             checkerEnabled = false;
             if (lodGroup != null) lodGroup.ForceLOD(-1);
             CleanupWorkingMeshes();
+            InvalidatePreviewCaches();
             boundaryEdgeCache.Clear();
             previewShellCache.Clear();
             ClearHoverState(false);
@@ -375,6 +415,7 @@ namespace LightmapUvTool
             srcCache.Clear();
             shellTransformCache.Clear();
             uv0Reports.Clear();
+            InvalidatePreviewCaches();
             boundaryEdgeCache.Clear();
             previewShellCache.Clear();
             uv0Analyzed = false;
@@ -420,6 +461,7 @@ namespace LightmapUvTool
                 return;
 
             pvLod = clamped;
+            InvalidatePreviewCaches();
             ClearHoverState(false);
 
             // Keep scene model LOD in sync with window preview LOD.
@@ -874,7 +916,12 @@ namespace LightmapUvTool
                 GUI.backgroundColor = new Color(.85f,.75f,.95f);
                 int ci = pvChannel == 0 ? 0 : 1;
                 ci = GUILayout.Toolbar(ci, new[]{"UV0 (MainTex)","UV1 (Lightmap)"}, EditorStyles.toolbarButton, GUILayout.Width(220));
-                pvChannel = ci == 0 ? 0 : 1;
+                int newChannel = ci == 0 ? 0 : 1;
+                if (newChannel != pvChannel)
+                {
+                    pvChannel = newChannel;
+                    InvalidatePreviewCaches();
+                }
                 GUI.backgroundColor = bg;
             }
 
@@ -1087,12 +1134,14 @@ namespace LightmapUvTool
                                 GlFillSt(cx,cy,sz, uvs,tri,fN,uN, stats);
                                 break;
                             case FillMode.Shells:
+                                GlFillSh(cx,cy,sz, mesh, uvs,tri,fN,uN, idx);
                                 GlFillSh(cx,cy,sz, uvs,tri,fN,uN, idx, hoverShellId, selectedShellId);
                                 break;
                             case FillMode.None:
                                 break;
                             default:
                                 if (fillMode != FillMode.None)
+                                    GlFillSh(cx,cy,sz, mesh, uvs,tri,fN,uN, idx);
                                     GlFillSh(cx,cy,sz, uvs,tri,fN,uN, idx, hoverShellId, selectedShellId);
                                 break;
                         }
@@ -1418,6 +1467,86 @@ namespace LightmapUvTool
         }
 
         static Vector2[] RdUv(Mesh m, int ch) { var l = new List<Vector2>(); m.GetUVs(ch, l); return l.Count > 0 ? l.ToArray() : null; }
+
+        int ComputeTrianglesVersionHash(Mesh mesh, int[] triangles)
+        {
+            unchecked
+            {
+                int h = mesh != null ? mesh.vertexCount : 0;
+                h = (h * 397) ^ (mesh != null ? mesh.subMeshCount : 0);
+                h = (h * 397) ^ (triangles != null ? triangles.Length : 0);
+                if (triangles != null)
+                {
+                    for (int i = 0; i < triangles.Length; i++)
+                        h = (h * 31) ^ triangles[i];
+                }
+                return h;
+            }
+        }
+
+        PreviewShellCacheEntry GetOrCreatePreviewShellCache(Mesh mesh, Vector2[] uv, int[] triangles)
+        {
+            if (mesh == null || uv == null || triangles == null)
+                return null;
+
+            var key = new PreviewShellCacheKey
+            {
+                meshInstanceId = mesh.GetInstanceID(),
+                pvChannel = pvChannel,
+                pvLod = pvLod,
+                trianglesHash = ComputeTrianglesVersionHash(mesh, triangles)
+            };
+
+            if (previewShellCache.TryGetValue(key, out var cached))
+                return cached;
+
+            List<UvShell> shells;
+            try { shells = UvShellExtractor.Extract(uv, triangles); }
+            catch { return null; }
+
+            var entry = new PreviewShellCacheEntry { shells = shells };
+            foreach (var sh in shells)
+            {
+                float minX = float.MaxValue, minY = float.MaxValue;
+                float maxX = float.MinValue, maxY = float.MinValue;
+                var faces = new List<int>();
+                foreach (int f in sh.faceIndices)
+                {
+                    entry.faceToShell[f] = sh.shellId;
+                    faces.Add(f);
+                    int a0 = triangles[f * 3];
+                    int a1 = triangles[f * 3 + 1];
+                    int a2 = triangles[f * 3 + 2];
+                    if (!TOk(uv, uv.Length, a0, a1, a2))
+                        continue;
+
+                    ExpandBounds(ref minX, ref minY, ref maxX, ref maxY, uv[a0]);
+                    ExpandBounds(ref minX, ref minY, ref maxX, ref maxY, uv[a1]);
+                    ExpandBounds(ref minX, ref minY, ref maxX, ref maxY, uv[a2]);
+                }
+                if (minX <= maxX && minY <= maxY)
+                    entry.shellBboxes[sh.shellId] = Rect.MinMaxRect(minX, minY, maxX, maxY);
+                entry.shellFaceIndices[sh.shellId] = faces;
+            }
+
+            previewShellCache[key] = entry;
+            return entry;
+        }
+
+        static void ExpandBounds(ref float minX, ref float minY, ref float maxX, ref float maxY, Vector2 uv)
+        {
+            minX = Mathf.Min(minX, uv.x);
+            maxX = Mathf.Max(maxX, uv.x);
+            minY = Mathf.Min(minY, uv.y);
+            maxY = Mathf.Max(maxY, uv.y);
+        }
+
+        void InvalidatePreviewCaches()
+        {
+            boundaryEdgeCache.Clear();
+            previewShellCache.Clear();
+        }
+
         static bool UOk(Vector2 u) => u.x >= UV_LO && u.x <= UV_HI && u.y >= UV_LO && u.y <= UV_HI && !float.IsNaN(u.x) && !float.IsNaN(u.y) && !float.IsInfinity(u.x) && !float.IsInfinity(u.y);
         static bool TOk(Vector2[] u, int n, int a, int b, int c) => a>=0&&a<n&&b>=0&&b<n&&c>=0&&c<n && UOk(u[a])&&UOk(u[b])&&UOk(u[c]);
         static void Vx(float ox, float oy, float sz, Vector2 u) => GL.Vertex3(ox+u.x*sz, oy+(1f-u.y)*sz, 0);
@@ -1528,6 +1657,13 @@ namespace LightmapUvTool
             GL.End();
         }
 
+        void GlFillSh(float ox, float oy, float sz, Mesh mesh, Vector2[] uv, int[] t, int fN, int uN, int off)
+        {
+            var cache = GetOrCreatePreviewShellCache(mesh, uv, t);
+            if (cache == null || cache.shells == null)
+                return;
+
+            var sh = cache.shells;
         void GlDrawUvSpot(float ox, float oy, float sz)
         {
             ShellUvHit hit;
@@ -2142,6 +2278,7 @@ namespace LightmapUvTool
             uv0Welded = meshoptOptimized > 0 || edgeWelded > 0;
             UvtLog.Info($"[UV0Fix] Optimized: {meshoptOptimized} meshopt, {edgeWelded} UV edge weld");
 
+            InvalidatePreviewCaches();
             ExecAnalyzeUv0();
         }
 
@@ -2288,6 +2425,7 @@ namespace LightmapUvTool
             }
             catch (Exception ex) { UvtLog.Error("[Repack] " + ex); }
             finally { EditorUtility.ClearProgressBar(); }
+            InvalidatePreviewCaches();
             Repaint();
         }
 
@@ -2355,6 +2493,7 @@ namespace LightmapUvTool
             }
             catch (Exception ex) { UvtLog.Error("[Transfer] LOD" + tLod + ": " + ex); }
             finally { EditorUtility.ClearProgressBar(); }
+            InvalidatePreviewCaches();
             Repaint();
         }
 
@@ -2984,6 +3123,7 @@ namespace LightmapUvTool
             uv0Reports.Clear();
             srcCache.Clear();
             shellTransformCache.Clear();
+            InvalidatePreviewCaches();
             previewShellCache.Clear();
             ClearHoverState(false);
             UvtLog.Info("[Reset] All working copies destroyed and restored to FBX originals");
@@ -3020,6 +3160,7 @@ namespace LightmapUvTool
                 e.fbxMesh != null && AssetDatabase.GetAssetPath(e.fbxMesh) == selectedFbxPath);
             if (touchesLoaded) Refresh();
 
+            InvalidatePreviewCaches();
             UpdateSelectedSidecar();
             Repaint();
         }
