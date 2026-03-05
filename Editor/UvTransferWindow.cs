@@ -66,6 +66,9 @@ namespace LightmapUvTool
 
         // Checker mode (user toggle, independent from CheckerTexturePreview.IsActive)
         bool checkerEnabled;
+        bool shellColorPreviewEnabled;
+        readonly ShellColorModelPreview.PreviewShellCache previewShellCache =
+            new ShellColorModelPreview.PreviewShellCache();
 
         // Selection tracking — UV2 reset for arbitrary selected model
         string selectedSidecarPath;
@@ -86,6 +89,8 @@ namespace LightmapUvTool
 
         Material glMat;
         Material texMat;
+
+        string previewConflictNotice;
 
         // Preview cache: mesh instanceID -> boundary edge index pairs (a0,b0,a1,b1,...)
         readonly Dictionary<int, int[]> boundaryEdgeCache = new Dictionary<int, int[]>();
@@ -191,11 +196,11 @@ namespace LightmapUvTool
 
         void OnDisable()
         {
-            if (checkerEnabled) CheckerTexturePreview.Restore();
-            checkerEnabled = false;
+            RestoreAllPreviews();
             if (lodGroup != null) lodGroup.ForceLOD(-1);
             CleanupWorkingMeshes();
             boundaryEdgeCache.Clear();
+            previewShellCache.Clear();
             if (canvasRT) { canvasRT.Release(); DestroyImmediate(canvasRT); canvasRT = null; }
             if (glMat) DestroyImmediate(glMat);
             if (texMat) DestroyImmediate(texMat);
@@ -215,6 +220,9 @@ namespace LightmapUvTool
             // Re-apply checker to new selection
             if (checkerEnabled)
                 ReapplyCheckerToSelection();
+
+            if (shellColorPreviewEnabled)
+                ReapplyShellColorPreview();
 
             UpdateSelectedSidecar();
             Repaint();
@@ -275,12 +283,14 @@ namespace LightmapUvTool
 
         void Refresh()
         {
+            RestoreAllPreviews();
             meshEntries.Clear();
             hasRepack = hasTransfer = false;
             srcCache.Clear();
             shellTransformCache.Clear();
             uv0Reports.Clear();
             boundaryEdgeCache.Clear();
+            previewShellCache.Clear();
             uv0Analyzed = false;
             uv0Welded = false;
             if (lodGroup == null) return;
@@ -328,6 +338,9 @@ namespace LightmapUvTool
             if (lodGroup != null)
                 lodGroup.ForceLOD(clamped);
 
+            if (shellColorPreviewEnabled)
+                ReapplyShellColorPreview();
+
             Repaint();
         }
 
@@ -351,6 +364,8 @@ namespace LightmapUvTool
             // ── Right: toolbar + canvas + status ──
             EditorGUILayout.BeginVertical();
             DrawToolbar();
+            if (!string.IsNullOrEmpty(previewConflictNotice))
+                EditorGUILayout.HelpBox(previewConflictNotice, MessageType.Info);
             DrawCanvas();
             DrawStatusBar();
             EditorGUILayout.EndVertical();
@@ -805,6 +820,17 @@ namespace LightmapUvTool
                 if (GUILayout.Button(ckLbl, EditorStyles.toolbarButton, GUILayout.Width(66)))
                     ToggleChecker();
                 GUI.backgroundColor = bg2;
+            }
+
+            GUILayout.Space(4);
+
+            {
+                var bg4 = GUI.backgroundColor;
+                if (shellColorPreviewEnabled) GUI.backgroundColor = new Color(.35f,.85f,.4f);
+                string shellLbl = shellColorPreviewEnabled ? "■ Color Shells on Model" : "▶ Color Shells on Model";
+                if (GUILayout.Button(shellLbl, EditorStyles.toolbarButton, GUILayout.Width(162)))
+                    ToggleShellColorPreview();
+                GUI.backgroundColor = bg4;
             }
 
             // ── Right side ──
@@ -1809,12 +1835,22 @@ namespace LightmapUvTool
 
         void ToggleChecker()
         {
+            previewConflictNotice = null;
+
             if (checkerEnabled)
             {
                 checkerEnabled = false;
                 CheckerTexturePreview.Restore();
                 Repaint();
                 return;
+            }
+
+            if (shellColorPreviewEnabled)
+            {
+                shellColorPreviewEnabled = false;
+                ShellColorModelPreview.Restore();
+                previewConflictNotice = "Checker включен: Color Shells on Model временно отключен (взаимоисключающие превью).";
+                UvtLog.Info("[Preview] Checker enabled, shell-color preview disabled.");
             }
 
             checkerEnabled = true;
@@ -1839,12 +1875,76 @@ namespace LightmapUvTool
 
             if (entries.Count == 0)
             {
+                checkerEnabled = false;
                 UvtLog.Warn("[Checker] No meshes with UV2. Run Repack first.");
                 return;
             }
             CheckerTexturePreview.Apply(entries);
             UpdateSelectedSidecar();
             Repaint();
+        }
+
+        void ToggleShellColorPreview()
+        {
+            previewConflictNotice = null;
+
+            if (shellColorPreviewEnabled)
+            {
+                shellColorPreviewEnabled = false;
+                ShellColorModelPreview.Restore();
+                Repaint();
+                return;
+            }
+
+            if (checkerEnabled)
+            {
+                checkerEnabled = false;
+                CheckerTexturePreview.Restore();
+                previewConflictNotice = "Color Shells on Model включен: Checker временно отключен (взаимоисключающие превью).";
+                UvtLog.Info("[Preview] Shell-color preview enabled, checker disabled.");
+            }
+
+            shellColorPreviewEnabled = true;
+            ReapplyShellColorPreview();
+            Repaint();
+        }
+
+        void ReapplyShellColorPreview()
+        {
+            if (!shellColorPreviewEnabled) return;
+
+            var entries = new List<(Renderer renderer, Mesh sourceMesh)>();
+            foreach (var e in ForLod(pvLod))
+            {
+                if (!e.include || e.renderer == null) continue;
+                Mesh mesh = e.transferredMesh ?? e.repackedMesh ?? e.originalMesh ?? e.fbxMesh;
+                if (mesh == null) continue;
+                entries.Add((e.renderer, mesh));
+            }
+
+            if (entries.Count == 0)
+            {
+                UvtLog.Warn("[ShellColorPreview] No renderers found for current LOD.");
+                shellColorPreviewEnabled = false;
+                ShellColorModelPreview.Restore();
+                return;
+            }
+
+            var palette = new Color32[pal.Length];
+            for (int i = 0; i < pal.Length; i++) palette[i] = pal[i];
+            ShellColorModelPreview.Apply(entries, palette, previewShellCache);
+        }
+
+        void RestoreAllPreviews()
+        {
+            if (checkerEnabled || CheckerTexturePreview.IsActive)
+                CheckerTexturePreview.Restore();
+            if (shellColorPreviewEnabled || ShellColorModelPreview.IsActive)
+                ShellColorModelPreview.Restore();
+
+            checkerEnabled = false;
+            shellColorPreviewEnabled = false;
+            previewConflictNotice = null;
         }
 
         // ════════════════════════════════════════════════════════════
@@ -2232,6 +2332,7 @@ namespace LightmapUvTool
 
         void ResetWorkingCopies()
         {
+            RestoreAllPreviews();
             foreach (var e in meshEntries)
             {
                 // Destroy working mesh clones before resetting references
@@ -2254,6 +2355,7 @@ namespace LightmapUvTool
             uv0Reports.Clear();
             srcCache.Clear();
             shellTransformCache.Clear();
+            previewShellCache.Clear();
             UvtLog.Info("[Reset] All working copies destroyed and restored to FBX originals");
             Repaint();
         }
@@ -2280,11 +2382,8 @@ namespace LightmapUvTool
             UvtLog.Info($"[Reset] Deleted sidecar for '{selectedResetLabel}', reimported FBX");
 
             // Update checker if it's still active
-            if (checkerEnabled)
-            {
-                CheckerTexturePreview.Restore();
-                ReapplyCheckerToSelection();
-            }
+            if (checkerEnabled) ReapplyCheckerToSelection();
+            if (shellColorPreviewEnabled) ReapplyShellColorPreview();
 
             // Refresh loaded LODGroup if it references the same FBX
             bool touchesLoaded = meshEntries.Any(e =>
@@ -2336,7 +2435,7 @@ namespace LightmapUvTool
             ResetWorkingCopies();
 
             // Clear checker
-            if (checkerEnabled) { CheckerTexturePreview.Restore(); checkerEnabled = false; }
+            RestoreAllPreviews();
 
             AssetDatabase.Refresh();
             UvtLog.Info($"[Reset] Full pipeline state reset: {deleted} sidecar(s) deleted, {fbxPaths.Count} FBX reimported");
@@ -2378,7 +2477,6 @@ namespace LightmapUvTool
 
             AssetDatabase.Refresh();
             UvtLog.Info($"[Reset] Deleted {deleted} sidecar(s), reimported {fbxPaths.Count} FBX");
-            if (checkerEnabled) CheckerTexturePreview.Restore();
             Refresh();
             Repaint();
         }
