@@ -78,6 +78,24 @@ namespace LightmapUvTool
         bool foldOutput = true;
         bool foldUv0Analysis = false;
         bool foldRepackSettings = true;
+        bool foldShellDebug = false;
+
+        class ShellDebugHit
+        {
+            public MeshEntry entry;
+            public Mesh mesh;
+            public UvShell shell;
+            public int shellId;
+            public int uvChannel;
+            public Vector2 hoverUv;
+            public int tileU;
+            public int tileV;
+            public Vector2 localUv;
+            public int drawIndex;
+        }
+
+        ShellDebugHit hoveredShell;
+        ShellDebugHit selectedShell;
 
         // Sidebar
         Vector2 sideScroll, reportScroll;
@@ -353,6 +371,7 @@ namespace LightmapUvTool
             DrawToolbar();
             DrawCanvas();
             DrawStatusBar();
+            DrawShellDebugPanel();
             EditorGUILayout.EndVertical();
 
             EditorGUILayout.EndHorizontal();
@@ -836,7 +855,7 @@ namespace LightmapUvTool
         void DrawCanvas()
         {
             var ee = ForLod(pvLod);
-            if (ee.Count == 0) { EditorGUILayout.HelpBox("No meshes for this LOD.", MessageType.Info); return; }
+            if (ee.Count == 0) { EditorGUILayout.HelpBox("No meshes for this LOD.", MessageType.Info); hoveredShell = null; return; }
 
             var draws = new List<ValueTuple<Mesh, MeshEntry, int>>();
             for (int i = 0; i < ee.Count; i++)
@@ -844,7 +863,7 @@ namespace LightmapUvTool
                 Mesh m = DMesh(ee[i]);
                 if (m != null) draws.Add(new ValueTuple<Mesh, MeshEntry, int>(m, ee[i], i));
             }
-            if (draws.Count == 0) return;
+            if (draws.Count == 0) { hoveredShell = null; return; }
 
             var canvasRect = GUILayoutUtility.GetRect(GUIContent.none, GUIStyle.none,
                 GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
@@ -856,6 +875,7 @@ namespace LightmapUvTool
             float cx = (canvasRect.width - sz) * 0.5f + canvasPan.x;
             float cy = (canvasRect.height - sz) * 0.5f + canvasPan.y;
 
+            hoveredShell = FindShellAtMouse(draws, canvasRect, cx, cy, sz);
             HandleCanvasInput(canvasRect, baseSz, sz, cx, cy);
 
             if (Event.current.type == EventType.Repaint && glMat != null)
@@ -898,7 +918,6 @@ namespace LightmapUvTool
 
                     if (bgTex == null && (checkerEnabled || fillMode != FillMode.None || pvChannel == 1))
                     {
-                        // Fallback checker if no texture was found.
                         float baseAlpha = pvChannel == 1
                             ? 0.24f
                             : (checkerEnabled ? 0.33333f : fillAlpha * 0.45f);
@@ -906,7 +925,6 @@ namespace LightmapUvTool
                         GlCheckerBg(cx, cy, sz, 8, checkerAlpha, pvChannel == 1);
                     }
 
-                    // UDIM tile backgrounds (slightly darker)
                     GL.Begin(GL.QUADS);
                     GL.Color(new Color(.10f,.10f,.10f));
                     for (int tu = -1; tu <= 3; tu++)
@@ -940,7 +958,6 @@ namespace LightmapUvTool
                         bool hasValidation = entry.validationReport?.perTriangle != null
                                              && entry.validationReport.perTriangle.Length > 0;
 
-                        // Fill
                         switch (fillMode)
                         {
                             case FillMode.ShellMatch when hasShellMatch:
@@ -958,7 +975,6 @@ namespace LightmapUvTool
                             case FillMode.None:
                                 break;
                             default:
-                                // fallback: show shells if requested mode has no data
                                 if (fillMode != FillMode.None)
                                     GlFillSh(cx,cy,sz, uvs,tri,fN,uN, idx);
                                 break;
@@ -998,20 +1014,7 @@ namespace LightmapUvTool
                     else { if (uv.x < minU) minU = uv.x; if (uv.x > maxU) maxU = uv.x; if (uv.y < minV) minV = uv.y; if (uv.y > maxV) maxV = uv.y; }
                 }
             }
-            float pad = 0.05f;
-            minU -= pad; maxU += pad; minV -= pad; maxV += pad;
-            float rangeU = Mathf.Max(maxU - minU, 0.1f);
-            float rangeV = Mathf.Max(maxV - minV, 0.1f);
-            float W = lastCanvasRect.width, H = lastCanvasRect.height;
-            if (W < 1 || H < 1) { canvasZoom = 1f; canvasPan = Vector2.zero; return; }
-            float baseSz = Mathf.Max(64, Mathf.Min(W, H));
-            canvasZoom = Mathf.Clamp(Mathf.Min(W / (baseSz * rangeU), H / (baseSz * rangeV)), 0.1f, 20f);
-            float sz = baseSz * canvasZoom;
-            float centerU = (minU + maxU) * 0.5f;
-            float centerV = (minV + maxV) * 0.5f;
-            canvasPan.x = sz * (0.5f - centerU);
-            canvasPan.y = sz * (centerV - 0.5f);
-            Repaint();
+            FocusUvBounds(minU, minV, maxU, maxV);
         }
 
         void HandleCanvasInput(Rect canvasRect, float baseSz, float sz, float cx, float cy)
@@ -1046,6 +1049,119 @@ namespace LightmapUvTool
 
             if (e.type == EventType.MouseDown && e.button == 2 && e.clickCount == 2 && canvasRect.Contains(e.mousePosition))
             { FitToUvBounds(); e.Use(); }
+
+            if (!canvasPanning && e.type == EventType.MouseDown && e.button == 0 && !e.alt && canvasRect.Contains(e.mousePosition))
+            {
+                selectedShell = hoveredShell != null ? CloneHit(hoveredShell) : null;
+                Repaint();
+                e.Use();
+            }
+        }
+
+        ShellDebugHit FindShellAtMouse(List<ValueTuple<Mesh, MeshEntry, int>> draws, Rect canvasRect, float cx, float cy, float sz)
+        {
+            var mouse = Event.current.mousePosition;
+            if (!canvasRect.Contains(mouse)) return null;
+
+            Vector2 local = mouse - canvasRect.position;
+            var uvPoint = new Vector2((local.x - cx) / sz, 1f - ((local.y - cy) / sz));
+
+            foreach (var item in draws)
+            {
+                Mesh mesh = item.Item1;
+                var uvs = RdUv(mesh, pvChannel);
+                var tri = mesh.triangles;
+                if (uvs == null || tri == null || tri.Length < 3) continue;
+                if (uvPoint.x < UV_LO || uvPoint.x > UV_HI || uvPoint.y < UV_LO || uvPoint.y > UV_HI) continue;
+
+                List<UvShell> shells;
+                try { shells = UvShellExtractor.Extract(uvs, tri); }
+                catch { continue; }
+
+                for (int f = 0; f < tri.Length / 3; f++)
+                {
+                    int a = tri[f * 3];
+                    int b = tri[f * 3 + 1];
+                    int c = tri[f * 3 + 2];
+                    if (!TOk(uvs, uvs.Length, a, b, c)) continue;
+                    if (!PointInTriangle(uvPoint, uvs[a], uvs[b], uvs[c])) continue;
+
+                    UvShell shell = null;
+                    for (int si = 0; si < shells.Count; si++)
+                    {
+                        if (shells[si].faceIndices.Contains(f)) { shell = shells[si]; break; }
+                    }
+                    if (shell == null) return null;
+
+                    return BuildHit(item.Item2, mesh, shell, uvPoint, item.Item3);
+                }
+            }
+            return null;
+        }
+
+        ShellDebugHit BuildHit(MeshEntry entry, Mesh mesh, UvShell shell, Vector2 uvPoint, int drawIndex)
+        {
+            int tu = Mathf.FloorToInt(uvPoint.x);
+            int tv = Mathf.FloorToInt(uvPoint.y);
+            return new ShellDebugHit
+            {
+                entry = entry,
+                mesh = mesh,
+                shell = shell,
+                shellId = shell.shellId,
+                uvChannel = pvChannel,
+                hoverUv = uvPoint,
+                tileU = tu,
+                tileV = tv,
+                localUv = new Vector2(uvPoint.x - tu, uvPoint.y - tv),
+                drawIndex = drawIndex
+            };
+        }
+
+        static ShellDebugHit CloneHit(ShellDebugHit src)
+        {
+            if (src == null) return null;
+            return new ShellDebugHit
+            {
+                entry = src.entry,
+                mesh = src.mesh,
+                shell = src.shell,
+                shellId = src.shellId,
+                uvChannel = src.uvChannel,
+                hoverUv = src.hoverUv,
+                tileU = src.tileU,
+                tileV = src.tileV,
+                localUv = src.localUv,
+                drawIndex = src.drawIndex
+            };
+        }
+
+        static bool PointInTriangle(Vector2 p, Vector2 a, Vector2 b, Vector2 c)
+        {
+            float s1 = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+            float s2 = (c.x - b.x) * (p.y - b.y) - (c.y - b.y) * (p.x - b.x);
+            float s3 = (a.x - c.x) * (p.y - c.y) - (a.y - c.y) * (p.x - c.x);
+            bool hasNeg = (s1 < 0f) || (s2 < 0f) || (s3 < 0f);
+            bool hasPos = (s1 > 0f) || (s2 > 0f) || (s3 > 0f);
+            return !(hasNeg && hasPos);
+        }
+
+        void FocusUvBounds(float minU, float minV, float maxU, float maxV)
+        {
+            float pad = 0.05f;
+            minU -= pad; maxU += pad; minV -= pad; maxV += pad;
+            float rangeU = Mathf.Max(maxU - minU, 0.1f);
+            float rangeV = Mathf.Max(maxV - minV, 0.1f);
+            float W = lastCanvasRect.width, H = lastCanvasRect.height;
+            if (W < 1 || H < 1) { canvasZoom = 1f; canvasPan = Vector2.zero; return; }
+            float baseSz = Mathf.Max(64, Mathf.Min(W, H));
+            canvasZoom = Mathf.Clamp(Mathf.Min(W / (baseSz * rangeU), H / (baseSz * rangeV)), 0.1f, 20f);
+            float sz = baseSz * canvasZoom;
+            float centerU = (minU + maxU) * 0.5f;
+            float centerV = (minV + maxV) * 0.5f;
+            canvasPan.x = sz * (0.5f - centerU);
+            canvasPan.y = sz * (centerV - 0.5f);
+            Repaint();
         }
 
         // ── GL helpers ──
@@ -1411,6 +1527,102 @@ namespace LightmapUvTool
             var r = GUILayoutUtility.GetRect(9, 9, GUILayout.Width(9));
             EditorGUI.DrawRect(r, c);
             EditorGUILayout.LabelField(l, EditorStyles.miniLabel, GUILayout.Width(18));
+        }
+
+        void DrawShellDebugPanel()
+        {
+            foldShellDebug = EditorGUILayout.Foldout(foldShellDebug, "Shell Debug", true);
+            if (!foldShellDebug) return;
+
+            EditorGUI.indentLevel++;
+            DrawShellHitInfo("Hovered", hoveredShell);
+            GUILayout.Space(4);
+            DrawShellHitInfo("Selected", selectedShell);
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Select hovered"))
+            {
+                if (hoveredShell != null) selectedShell = CloneHit(hoveredShell);
+            }
+            if (GUILayout.Button("Clear selection"))
+                selectedShell = null;
+            using (new EditorGUI.DisabledScope(selectedShell == null || selectedShell.shell == null))
+            {
+                if (GUILayout.Button("Focus") && selectedShell?.shell != null)
+                {
+                    var bmin = selectedShell.shell.boundsMin;
+                    var bmax = selectedShell.shell.boundsMax;
+                    FocusUvBounds(bmin.x, bmin.y, bmax.x, bmax.y);
+                }
+            }
+            EditorGUILayout.EndHorizontal();
+
+            if (fillMode == FillMode.ShellMatch && selectedShell?.entry?.shellTransferResult?.vertexToSourceShell != null && selectedShell.shell != null)
+            {
+                var map = selectedShell.entry.shellTransferResult.vertexToSourceShell;
+                var freq = new Dictionary<int, int>();
+                int total = 0;
+                foreach (int v in selectedShell.shell.vertexIndices)
+                {
+                    if (v < 0 || v >= map.Length) continue;
+                    int src = map[v];
+                    if (!freq.ContainsKey(src)) freq[src] = 0;
+                    freq[src]++;
+                    total++;
+                }
+
+                EditorGUILayout.Space(4);
+                EditorGUILayout.LabelField("ShellMatch top-3 source shells:", EditorStyles.miniBoldLabel);
+                if (total <= 0)
+                {
+                    EditorGUILayout.LabelField("Нет данных по вершинам.", EditorStyles.miniLabel);
+                }
+                else
+                {
+                    foreach (var kv in freq.OrderByDescending(k => k.Value).ThenBy(k => k.Key).Take(3))
+                    {
+                        float pct = kv.Value * 100f / total;
+                        EditorGUILayout.LabelField($"sourceShellId={kv.Key}: {kv.Value} ({pct:F1}%)", EditorStyles.miniLabel);
+                    }
+                }
+            }
+
+            if (selectedShell?.entry?.validationReport?.perTriangle != null && selectedShell.shell != null)
+            {
+                int issues = 0;
+                var perTri = selectedShell.entry.validationReport.perTriangle;
+                foreach (int f in selectedShell.shell.faceIndices)
+                {
+                    if (f < 0 || f >= perTri.Length) continue;
+                    if (perTri[f] != TransferValidator.TriIssue.None) issues++;
+                }
+                EditorGUILayout.Space(2);
+                EditorGUILayout.LabelField($"Проблемных трис в selected shell: {issues}", EditorStyles.miniLabel);
+            }
+            EditorGUI.indentLevel--;
+        }
+
+        void DrawShellHitInfo(string label, ShellDebugHit hit)
+        {
+            EditorGUILayout.LabelField(label, EditorStyles.miniBoldLabel);
+            if (hit == null || hit.shell == null)
+            {
+                EditorGUILayout.LabelField("—", EditorStyles.miniLabel);
+                return;
+            }
+
+            var shell = hit.shell;
+            var bmin = shell.boundsMin;
+            var bmax = shell.boundsMax;
+            EditorGUILayout.LabelField($"shellId: {hit.shellId}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"mesh: {hit.mesh?.name ?? "<null>"}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"uv channel: UV{hit.uvChannel}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"boundsMin/boundsMax: ({bmin.x:F3}, {bmin.y:F3}) / ({bmax.x:F3}, {bmax.y:F3})", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"bboxArea: {shell.bboxArea:F6}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"faces count: {shell.faceIndices.Count}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"vertices count: {shell.vertexIndices.Count}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"UDIM tile: ({hit.tileU}, {hit.tileV})", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"local in tile: ({hit.localUv.x:F3}, {hit.localUv.y:F3})", EditorStyles.miniLabel);
         }
 
         Mesh DMesh(MeshEntry e)
