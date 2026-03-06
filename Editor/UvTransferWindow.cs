@@ -235,7 +235,10 @@ namespace LightmapUvTool
         // ════════════════════════════════════════════════════════════
 
         const float UV_LO = -4f, UV_HI = 5f;
-        const int BATCH = 800, MAX_TRI = 12000;
+        const int BATCH = 800;
+        // Preview draw budget per mesh. 12k was too low for complex LOD0 meshes and
+        // caused truncated fill/wire while boundary-only overlay still looked complete.
+        const int MAX_TRI = 500000;
 
         static readonly Color[] pal = {
             new Color(.20f,.60f,1f),  new Color(1f,.40f,.20f),
