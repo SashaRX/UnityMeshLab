@@ -55,7 +55,7 @@ Shader "Hidden/LightmapUvTool/SpotProjection"
 
                 // Единый стиль с UV-канвой: мягкий spot больше перекрестья
                 float crossLen = _SpotRadius;
-                float lineW = _SpotRadius * 0.08;
+                float lineW = _SpotRadius * 0.12;
                 float spotInnerR = _SpotRadius * 0.55;
                 float spotOuterR = _SpotRadius * 1.35;
 
@@ -71,13 +71,13 @@ Shader "Hidden/LightmapUvTool/SpotProjection"
                 float feather = 1.0 - smoothstep(spotInnerR, spotOuterR, dist);
                 float spot = saturate(max(core, feather * 0.7));
 
-                float spotA = spot * 0.42;
+                float spotA = spot * 0.42; // spot цвета _SpotColor (#FFBC51)
                 float crossA = cross;
                 float a = saturate(max(spotA, crossA)) * _SpotColor.a;
                 if (a <= 0.001) discard;
 
                 fixed3 crossCol = _SpotColor.rgb;
-                fixed3 spotCol = fixed3(1.0, 1.0, 1.0);
+                fixed3 spotCol = _SpotColor.rgb;
 
                 // Перекрестье должно оставаться читаемым поверх пятна
                 fixed3 rgb = lerp(spotCol, crossCol, cross);

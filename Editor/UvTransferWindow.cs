@@ -1234,7 +1234,7 @@ namespace LightmapUvTool
 
             spotMat.SetVector("_SpotUv", new Vector4(projUv.x, projUv.y, 0f, 0f));
             spotMat.SetFloat("_SpotRadius", 0.012f);
-            spotMat.SetColor("_SpotColor", new Color(1f, .75f, .2f, 1f));
+            spotMat.SetColor("_SpotColor", new Color32(0xFF, 0xBC, 0x51, 0xFF));
             spotMat.SetFloat("_UseUv2", pvChannel == 1 ? 1f : 0f);
 
             var entries = ForLod(pvLod);
@@ -1853,10 +1853,11 @@ namespace LightmapUvTool
             float crossR = Mathf.Max(0.012f * sz, 4f);
             float spotOuterR = crossR * 1.35f; // spot гарантированно больше перекрестья
             float spotInnerR = crossR * 0.55f;
+            float crossHalfW = Mathf.Max(1.5f, crossR * 0.12f); // толщина перекрестья в UV как в сцене
 
-            Color crossColor = new Color(1f, 0.78f, 0.2f, 1f);
-            Color spotCenter = new Color(1f, 1f, 1f, 0.42f);
-            Color spotOuter = new Color(1f, 1f, 1f, 0f);
+            Color markerColor = new Color32(0xFF, 0xBC, 0x51, 0xFF); // #FFBC51
+            Color spotCenter = new Color(markerColor.r, markerColor.g, markerColor.b, 0.42f);
+            Color spotOuter = new Color(markerColor.r, markerColor.g, markerColor.b, 0f);
 
             // Spot (мягкий круг) — больше перекрестья
             int segments = 48;
@@ -1890,11 +1891,19 @@ namespace LightmapUvTool
             }
             GL.End();
 
-            // Crosshair
-            GL.Begin(GL.LINES);
-            GL.Color(crossColor);
-            GL.Vertex3(px - crossR, py, 0); GL.Vertex3(px + crossR, py, 0);
-            GL.Vertex3(px, py - crossR, 0); GL.Vertex3(px, py + crossR, 0);
+            // Crosshair (той же толщины и цвета, что и в shader)
+            GL.Begin(GL.QUADS);
+            GL.Color(markerColor);
+            // horizontal
+            GL.Vertex3(px - crossR, py - crossHalfW, 0);
+            GL.Vertex3(px + crossR, py - crossHalfW, 0);
+            GL.Vertex3(px + crossR, py + crossHalfW, 0);
+            GL.Vertex3(px - crossR, py + crossHalfW, 0);
+            // vertical
+            GL.Vertex3(px - crossHalfW, py - crossR, 0);
+            GL.Vertex3(px + crossHalfW, py - crossR, 0);
+            GL.Vertex3(px + crossHalfW, py + crossR, 0);
+            GL.Vertex3(px - crossHalfW, py + crossR, 0);
             GL.End();
         }
 
