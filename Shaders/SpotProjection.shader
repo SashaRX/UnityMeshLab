@@ -3,7 +3,7 @@ Shader "Hidden/LightmapUvTool/SpotProjection"
     Properties
     {
         _SpotUv ("Spot UV", Vector) = (0,0,0,0)
-        _SpotRadius ("Spot Radius", Range(0.001, 0.25)) = 0.02
+        _SpotRadius ("Spot Radius", Range(0.001, 0.25)) = 0.008
         _SpotColor ("Spot Color", Color) = (1,0.75,0.2,0.95)
         _UseUv2 ("Use UV2", Float) = 1
     }
@@ -52,9 +52,23 @@ Shader "Hidden/LightmapUvTool/SpotProjection"
             {
                 float2 d = i.uv - _SpotUv.xy;
                 float dist = length(d);
-                float ring = 1.0 - smoothstep(_SpotRadius * 0.65, _SpotRadius, dist);
-                float core = 1.0 - smoothstep(0.0, _SpotRadius * 0.35, dist);
-                float a = saturate(ring * 0.9 + core * 0.65) * _SpotColor.a;
+
+                // Crosshair style: thin lines along U and V axes + small center dot
+                float lineW = _SpotRadius * 0.08;
+                float armLen = _SpotRadius;
+                float dotR = _SpotRadius * 0.18;
+
+                float dx = abs(d.x);
+                float dy = abs(d.y);
+
+                // Horizontal arm: thin in Y, within armLen in X
+                float hArm = step(dy, lineW) * step(dx, armLen) * (1.0 - smoothstep(lineW * 0.5, lineW, dy));
+                // Vertical arm: thin in X, within armLen in Y
+                float vArm = step(dx, lineW) * step(dy, armLen) * (1.0 - smoothstep(lineW * 0.5, lineW, dx));
+                // Center dot
+                float dot = 1.0 - smoothstep(dotR * 0.5, dotR, dist);
+
+                float a = saturate(max(max(hArm, vArm), dot)) * _SpotColor.a;
                 if (a <= 0.001) discard;
                 return fixed4(_SpotColor.rgb, a);
             }

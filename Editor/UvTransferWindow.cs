@@ -1227,8 +1227,8 @@ namespace LightmapUvTool
                 return;
 
             spotMat.SetVector("_SpotUv", new Vector4(projUv.x, projUv.y, 0f, 0f));
-            spotMat.SetFloat("_SpotRadius", 0.035f);
-            spotMat.SetColor("_SpotColor", new Color(1f, .75f, .2f, .95f));
+            spotMat.SetFloat("_SpotRadius", 0.012f);
+            spotMat.SetColor("_SpotColor", new Color(1f, .75f, .2f, 1f));
             spotMat.SetFloat("_UseUv2", pvChannel == 1 ? 1f : 0f);
 
             var entries = ForLod(pvLod);
@@ -1838,7 +1838,7 @@ namespace LightmapUvTool
             float px = ox + drawUv.x * sz;
             float py = oy + (1f - drawUv.y) * sz;
             // Use same UV-space radius as 3D spot shader, converted to pixels
-            float r = Mathf.Max(0.035f * sz, 4f);
+            float r = Mathf.Max(0.012f * sz, 4f);
 
             GL.Begin(GL.LINES);
             GL.Color(Color.black);
