@@ -1234,7 +1234,7 @@ namespace LightmapUvTool
 
             spotMat.SetVector("_SpotUv", new Vector4(projUv.x, projUv.y, 0f, 0f));
             spotMat.SetFloat("_SpotRadius", 0.012f);
-            spotMat.SetColor("_SpotColor", new Color(1f, .75f, .2f, 1f));
+            spotMat.SetColor("_SpotColor", new Color32(0xFF, 0xBC, 0x51, 0xFF));
             spotMat.SetFloat("_UseUv2", pvChannel == 1 ? 1f : 0f);
 
             var entries = ForLod(pvLod);
@@ -1818,30 +1818,24 @@ namespace LightmapUvTool
 
         void GlDrawUvSpot(float ox, float oy, float sz)
         {
-            ShellUvHit hit;
-            bool hasHit = hasHoveredShell;
-            if (hasSelectedShell)
-            {
-                hit = selectedShell;
-                hasHit = true;
-            }
-            else
-            {
-                hit = hoveredShell;
-            }
-
+            // Приоритет как в OnSceneGUI: 3D hover > selected shell > hovered shell > canvas spot.
+            // Это важно при overlap/ре-проекции, чтобы UV spot не пропадал из-за устаревшего selected/hovered.
             Vector2 drawUv;
-            if (hasHit)
+            if (hoverHitValid)
             {
-                drawUv = hit.uvHit;
+                drawUv = uvSpot;
+            }
+            else if (hasSelectedShell)
+            {
+                drawUv = selectedShell.uvHit;
+            }
+            else if (hasHoveredShell)
+            {
+                drawUv = hoveredShell.uvHit;
             }
             else if (canvasSpotValid)
             {
                 drawUv = canvasSpotUv;
-            }
-            else if (hoverHitValid)
-            {
-                drawUv = uvSpot;
             }
             else
             {
@@ -1850,41 +1844,60 @@ namespace LightmapUvTool
 
             float px = ox + drawUv.x * sz;
             float py = oy + (1f - drawUv.y) * sz;
-            float r = Mathf.Max(0.012f * sz, 4f);
+            float crossR = Mathf.Max(0.012f * sz, 4f);
+            float spotOuterR = crossR * 1.35f; // spot гарантированно больше перекрестья
+            float spotInnerR = crossR * 0.55f;
+            float crossHalfW = Mathf.Max(1.5f, crossR * 0.12f); // толщина перекрестья в UV как в сцене
 
-            // Glow: soft halo via layered quads with decreasing alpha
-            Color glowBase = new Color(1f, .75f, .2f, 1f);
-            float hw = 1f; // half-width of glow band
-            for (int layer = 3; layer >= 0; layer--)
+            Color markerColor = new Color32(0xFF, 0xBC, 0x51, 0xFF); // #FFBC51
+            Color spotCenter = new Color(markerColor.r, markerColor.g, markerColor.b, 0.42f);
+            Color spotOuter = new Color(markerColor.r, markerColor.g, markerColor.b, 0f);
+
+            // Spot (мягкий круг) — больше перекрестья
+            int segments = 48;
+            GL.Begin(GL.TRIANGLES);
+            for (int i = 0; i < segments; i++)
             {
-                float t = (layer + 1) / 4f;
-                float extent = r * (1f + t * 1.5f); // 1.0r .. 2.5r
-                float alpha = 0.08f * (4 - layer);   // 0.32, 0.24, 0.16, 0.08
-                Color c = new Color(glowBase.r, glowBase.g, glowBase.b, alpha);
+                float a0 = (i / (float)segments) * Mathf.PI * 2f;
+                float a1 = ((i + 1) / (float)segments) * Mathf.PI * 2f;
+                Vector2 d0 = new Vector2(Mathf.Cos(a0), Mathf.Sin(a0));
+                Vector2 d1 = new Vector2(Mathf.Cos(a1), Mathf.Sin(a1));
 
-                GL.Begin(GL.QUADS);
-                GL.Color(c);
-                // Horizontal glow band
-                GL.Vertex3(px - extent, py - hw, 0);
-                GL.Vertex3(px + extent, py - hw, 0);
-                GL.Vertex3(px + extent, py + hw, 0);
-                GL.Vertex3(px - extent, py + hw, 0);
-                // Vertical glow band
-                GL.Vertex3(px - hw, py - extent, 0);
-                GL.Vertex3(px + hw, py - extent, 0);
-                GL.Vertex3(px + hw, py + extent, 0);
-                GL.Vertex3(px - hw, py + extent, 0);
-                GL.End();
+                Vector3 c = new Vector3(px, py, 0f);
+                Vector3 i0 = new Vector3(px + d0.x * spotInnerR, py + d0.y * spotInnerR, 0f);
+                Vector3 i1 = new Vector3(px + d1.x * spotInnerR, py + d1.y * spotInnerR, 0f);
+                Vector3 o0 = new Vector3(px + d0.x * spotOuterR, py + d0.y * spotOuterR, 0f);
+                Vector3 o1 = new Vector3(px + d1.x * spotOuterR, py + d1.y * spotOuterR, 0f);
+
+                // inner core
+                GL.Color(spotCenter); GL.Vertex(c);
+                GL.Color(spotCenter); GL.Vertex(i0);
+                GL.Color(spotCenter); GL.Vertex(i1);
+
+                // feather to outer radius
+                GL.Color(spotCenter); GL.Vertex(i0);
+                GL.Color(spotOuter);  GL.Vertex(o0);
+                GL.Color(spotOuter);  GL.Vertex(o1);
+
+                GL.Color(spotCenter); GL.Vertex(i0);
+                GL.Color(spotOuter);  GL.Vertex(o1);
+                GL.Color(spotCenter); GL.Vertex(i1);
             }
+            GL.End();
 
-            // Crosshair: single crisp orange cross with dark outline
-            GL.Begin(GL.LINES);
-            GL.Color(new Color(0f, 0f, 0f, 0.6f));
-            GL.Vertex3(px - r - 1f, py, 0); GL.Vertex3(px + r + 1f, py, 0);
-            GL.Vertex3(px, py - r - 1f, 0); GL.Vertex3(px, py + r + 1f, 0);
-            GL.Color(glowBase);
-            GL.Vertex3(px - r, py, 0); GL.Vertex3(px + r, py, 0);
-            GL.Vertex3(px, py - r, 0); GL.Vertex3(px, py + r, 0);
+            // Crosshair (той же толщины и цвета, что и в shader)
+            GL.Begin(GL.QUADS);
+            GL.Color(markerColor);
+            // horizontal
+            GL.Vertex3(px - crossR, py - crossHalfW, 0);
+            GL.Vertex3(px + crossR, py - crossHalfW, 0);
+            GL.Vertex3(px + crossR, py + crossHalfW, 0);
+            GL.Vertex3(px - crossR, py + crossHalfW, 0);
+            // vertical
+            GL.Vertex3(px - crossHalfW, py - crossR, 0);
+            GL.Vertex3(px + crossHalfW, py - crossR, 0);
+            GL.Vertex3(px + crossHalfW, py + crossR, 0);
+            GL.Vertex3(px - crossHalfW, py + crossR, 0);
             GL.End();
         }
 

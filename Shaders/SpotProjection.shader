@@ -53,24 +53,35 @@ Shader "Hidden/LightmapUvTool/SpotProjection"
                 float2 d = i.uv - _SpotUv.xy;
                 float dist = length(d);
 
-                // Crosshair style: thin lines along U and V axes + small center dot
-                float lineW = _SpotRadius * 0.08;
-                float armLen = _SpotRadius;
-                float dotR = _SpotRadius * 0.18;
+                // Единый стиль с UV-канвой: мягкий spot больше перекрестья
+                float crossLen = _SpotRadius;
+                float lineW = _SpotRadius * 0.12;
+                float spotInnerR = _SpotRadius * 0.55;
+                float spotOuterR = _SpotRadius * 1.35;
 
                 float dx = abs(d.x);
                 float dy = abs(d.y);
 
-                // Horizontal arm: thin in Y, within armLen in X
-                float hArm = step(dy, lineW) * step(dx, armLen) * (1.0 - smoothstep(lineW * 0.5, lineW, dy));
-                // Vertical arm: thin in X, within armLen in Y
-                float vArm = step(dx, lineW) * step(dy, armLen) * (1.0 - smoothstep(lineW * 0.5, lineW, dx));
-                // Center dot
-                float dot = 1.0 - smoothstep(dotR * 0.5, dotR, dist);
+                float hArm = step(dy, lineW) * step(dx, crossLen) * (1.0 - smoothstep(lineW * 0.5, lineW, dy));
+                float vArm = step(dx, lineW) * step(dy, crossLen) * (1.0 - smoothstep(lineW * 0.5, lineW, dx));
+                float cross = saturate(max(hArm, vArm));
 
-                float a = saturate(max(max(hArm, vArm), dot)) * _SpotColor.a;
+                // Soft spot: плотный центр + мягкое затухание к внешнему радиусу
+                float core = 1.0 - smoothstep(0.0, spotInnerR, dist);
+                float feather = 1.0 - smoothstep(spotInnerR, spotOuterR, dist);
+                float spot = saturate(max(core, feather * 0.7));
+
+                float spotA = spot * 0.42; // spot цвета _SpotColor (#FFBC51)
+                float crossA = cross;
+                float a = saturate(max(spotA, crossA)) * _SpotColor.a;
                 if (a <= 0.001) discard;
-                return fixed4(_SpotColor.rgb, a);
+
+                fixed3 crossCol = _SpotColor.rgb;
+                fixed3 spotCol = _SpotColor.rgb;
+
+                // Перекрестье должно оставаться читаемым поверх пятна
+                fixed3 rgb = lerp(spotCol, crossCol, cross);
+                return fixed4(rgb, a);
             }
             ENDCG
         }
