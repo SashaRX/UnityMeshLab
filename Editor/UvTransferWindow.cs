@@ -1850,23 +1850,39 @@ namespace LightmapUvTool
 
             float px = ox + drawUv.x * sz;
             float py = oy + (1f - drawUv.y) * sz;
-            // Use same UV-space radius as 3D spot shader, converted to pixels
             float r = Mathf.Max(0.012f * sz, 4f);
-            float gr = r * 1.6f;
 
-            // Glow (larger, semi-transparent)
-            GL.Begin(GL.LINES);
-            GL.Color(new Color(1f, .75f, .2f, .18f));
-            GL.Vertex3(px - gr, py, 0); GL.Vertex3(px + gr, py, 0);
-            GL.Vertex3(px, py - gr, 0); GL.Vertex3(px, py + gr, 0);
-            GL.End();
+            // Glow: soft halo via layered quads with decreasing alpha
+            Color glowBase = new Color(1f, .75f, .2f, 1f);
+            float hw = 1f; // half-width of glow band
+            for (int layer = 3; layer >= 0; layer--)
+            {
+                float t = (layer + 1) / 4f;
+                float extent = r * (1f + t * 1.5f); // 1.0r .. 2.5r
+                float alpha = 0.08f * (4 - layer);   // 0.32, 0.24, 0.16, 0.08
+                Color c = new Color(glowBase.r, glowBase.g, glowBase.b, alpha);
 
-            // Crosshair
+                GL.Begin(GL.QUADS);
+                GL.Color(c);
+                // Horizontal glow band
+                GL.Vertex3(px - extent, py - hw, 0);
+                GL.Vertex3(px + extent, py - hw, 0);
+                GL.Vertex3(px + extent, py + hw, 0);
+                GL.Vertex3(px - extent, py + hw, 0);
+                // Vertical glow band
+                GL.Vertex3(px - hw, py - extent, 0);
+                GL.Vertex3(px + hw, py - extent, 0);
+                GL.Vertex3(px + hw, py + extent, 0);
+                GL.Vertex3(px - hw, py + extent, 0);
+                GL.End();
+            }
+
+            // Crosshair: single crisp orange cross with dark outline
             GL.Begin(GL.LINES);
-            GL.Color(Color.black);
+            GL.Color(new Color(0f, 0f, 0f, 0.6f));
             GL.Vertex3(px - r - 1f, py, 0); GL.Vertex3(px + r + 1f, py, 0);
             GL.Vertex3(px, py - r - 1f, 0); GL.Vertex3(px, py + r + 1f, 0);
-            GL.Color(new Color(1f, .75f, .2f, 1f));
+            GL.Color(glowBase);
             GL.Vertex3(px - r, py, 0); GL.Vertex3(px + r, py, 0);
             GL.Vertex3(px, py - r, 0); GL.Vertex3(px, py + r, 0);
             GL.End();
