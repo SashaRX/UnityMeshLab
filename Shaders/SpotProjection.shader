@@ -53,24 +53,44 @@ Shader "Hidden/LightmapUvTool/SpotProjection"
                 float2 d = i.uv - _SpotUv.xy;
                 float dist = length(d);
 
-                // Crosshair style: thin lines along U and V axes + small center dot
+                // Unified style: crosshair + spot ring (ring чуть больше перекрестья)
+                float crossLen = _SpotRadius;
                 float lineW = _SpotRadius * 0.08;
-                float armLen = _SpotRadius;
-                float dotR = _SpotRadius * 0.18;
+                float ringR = _SpotRadius * 1.18;
+                float ringW = _SpotRadius * 0.09;
+                float outlineMul = 1.35;
 
                 float dx = abs(d.x);
                 float dy = abs(d.y);
 
-                // Horizontal arm: thin in Y, within armLen in X
-                float hArm = step(dy, lineW) * step(dx, armLen) * (1.0 - smoothstep(lineW * 0.5, lineW, dy));
-                // Vertical arm: thin in X, within armLen in Y
-                float vArm = step(dx, lineW) * step(dy, armLen) * (1.0 - smoothstep(lineW * 0.5, lineW, dx));
-                // Center dot
-                float dot = 1.0 - smoothstep(dotR * 0.5, dotR, dist);
+                // Cross
+                float hArm = step(dy, lineW) * step(dx, crossLen) * (1.0 - smoothstep(lineW * 0.5, lineW, dy));
+                float vArm = step(dx, lineW) * step(dy, crossLen) * (1.0 - smoothstep(lineW * 0.5, lineW, dx));
+                float cross = saturate(max(hArm, vArm));
 
-                float a = saturate(max(max(hArm, vArm), dot)) * _SpotColor.a;
+                // Ring
+                float ringOuter = 1.0 - smoothstep(ringR, ringR + ringW, dist);
+                float ringInner = 1.0 - smoothstep(max(0.0001, ringR - ringW), ringR, dist);
+                float ring = saturate(ringOuter * (1.0 - ringInner));
+
+                float fill = saturate(max(cross, ring));
+
+                // Dark outline to match UV canvas style
+                float hArmOut = step(dy, lineW * outlineMul) * step(dx, crossLen + lineW) * (1.0 - smoothstep(lineW * 0.5, lineW * outlineMul, dy));
+                float vArmOut = step(dx, lineW * outlineMul) * step(dy, crossLen + lineW) * (1.0 - smoothstep(lineW * 0.5, lineW * outlineMul, dx));
+                float crossOut = saturate(max(hArmOut, vArmOut));
+
+                float ringOuterOut = 1.0 - smoothstep(ringR, ringR + ringW * outlineMul, dist);
+                float ringInnerOut = 1.0 - smoothstep(max(0.0001, ringR - ringW * outlineMul), ringR, dist);
+                float ringOut = saturate(ringOuterOut * (1.0 - ringInnerOut));
+
+                float outline = saturate(max(crossOut, ringOut) - fill);
+
+                float a = saturate(max(fill, outline * 0.8)) * _SpotColor.a;
                 if (a <= 0.001) discard;
-                return fixed4(_SpotColor.rgb, a);
+
+                fixed3 rgb = lerp(fixed3(0, 0, 0), _SpotColor.rgb, fill);
+                return fixed4(rgb, a);
             }
             ENDCG
         }

@@ -1850,7 +1850,8 @@ namespace LightmapUvTool
 
             float px = ox + drawUv.x * sz;
             float py = oy + (1f - drawUv.y) * sz;
-            float r = Mathf.Max(0.012f * sz, 4f);
+            float crossR = Mathf.Max(0.012f * sz, 4f);
+            float spotR = crossR * 1.18f; // spot чуть больше перекрестья
 
             // Glow: soft halo via layered quads with decreasing alpha
             Color glowBase = new Color(1f, .75f, .2f, 1f);
@@ -1858,7 +1859,7 @@ namespace LightmapUvTool
             for (int layer = 3; layer >= 0; layer--)
             {
                 float t = (layer + 1) / 4f;
-                float extent = r * (1f + t * 1.5f); // 1.0r .. 2.5r
+                float extent = spotR * (1f + t * 1.5f); // 1.0r .. 2.5r
                 float alpha = 0.08f * (4 - layer);   // 0.32, 0.24, 0.16, 0.08
                 Color c = new Color(glowBase.r, glowBase.g, glowBase.b, alpha);
 
@@ -1880,11 +1881,37 @@ namespace LightmapUvTool
             // Crosshair: single crisp orange cross with dark outline
             GL.Begin(GL.LINES);
             GL.Color(new Color(0f, 0f, 0f, 0.6f));
-            GL.Vertex3(px - r - 1f, py, 0); GL.Vertex3(px + r + 1f, py, 0);
-            GL.Vertex3(px, py - r - 1f, 0); GL.Vertex3(px, py + r + 1f, 0);
+            GL.Vertex3(px - crossR - 1f, py, 0); GL.Vertex3(px + crossR + 1f, py, 0);
+            GL.Vertex3(px, py - crossR - 1f, 0); GL.Vertex3(px, py + crossR + 1f, 0);
             GL.Color(glowBase);
-            GL.Vertex3(px - r, py, 0); GL.Vertex3(px + r, py, 0);
-            GL.Vertex3(px, py - r, 0); GL.Vertex3(px, py + r, 0);
+            GL.Vertex3(px - crossR, py, 0); GL.Vertex3(px + crossR, py, 0);
+            GL.Vertex3(px, py - crossR, 0); GL.Vertex3(px, py + crossR, 0);
+            GL.End();
+
+            // Spot поверх перекрестья: кольцо в том же стиле и чуть больше
+            int segments = 40;
+            float ringW = Mathf.Max(1.5f, crossR * 0.08f);
+            GL.Begin(GL.LINES);
+            GL.Color(new Color(0f, 0f, 0f, 0.6f));
+            for (int i = 0; i < segments; i++)
+            {
+                float a0 = (i / (float)segments) * Mathf.PI * 2f;
+                float a1 = ((i + 1) / (float)segments) * Mathf.PI * 2f;
+                Vector2 d0 = new Vector2(Mathf.Cos(a0), Mathf.Sin(a0));
+                Vector2 d1 = new Vector2(Mathf.Cos(a1), Mathf.Sin(a1));
+                GL.Vertex3(px + d0.x * (spotR + ringW), py + d0.y * (spotR + ringW), 0);
+                GL.Vertex3(px + d1.x * (spotR + ringW), py + d1.y * (spotR + ringW), 0);
+            }
+            GL.Color(glowBase);
+            for (int i = 0; i < segments; i++)
+            {
+                float a0 = (i / (float)segments) * Mathf.PI * 2f;
+                float a1 = ((i + 1) / (float)segments) * Mathf.PI * 2f;
+                Vector2 d0 = new Vector2(Mathf.Cos(a0), Mathf.Sin(a0));
+                Vector2 d1 = new Vector2(Mathf.Cos(a1), Mathf.Sin(a1));
+                GL.Vertex3(px + d0.x * spotR, py + d0.y * spotR, 0);
+                GL.Vertex3(px + d1.x * spotR, py + d1.y * spotR, 0);
+            }
             GL.End();
         }
 
