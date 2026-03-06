@@ -1134,16 +1134,16 @@ namespace LightmapUvTool
 
                 RenderTexture.active = prevRT;
                 GUI.DrawTexture(canvasRect, canvasRT, ScaleMode.StretchToFill, false);
-                DrawHoverSpotInCanvas(cx, cy, sz);
+                DrawHoverSpotInCanvas(canvasRect, cx, cy, sz);
             }
         }
 
-        void DrawHoverSpotInCanvas(float ox, float oy, float sz)
+        void DrawHoverSpotInCanvas(Rect canvasRect, float ox, float oy, float sz)
         {
             if (!spotMode || !hoverHitValid) return;
 
-            float x = ox + uvSpot.x * sz;
-            float y = oy + (1f - uvSpot.y) * sz;
+            float x = canvasRect.x + ox + uvSpot.x * sz;
+            float y = canvasRect.y + oy + (1f - uvSpot.y) * sz;
 
             Handles.BeginGUI();
             var prev = Handles.color;
