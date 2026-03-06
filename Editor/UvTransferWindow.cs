@@ -63,10 +63,8 @@ namespace LightmapUvTool
         int  pvLod     = 0;
         bool showWire = true, showBorder;
         float fillAlpha = 0.25f;
-        bool toggleHoverSpotUv = true;
-        bool togglePickShellUv;
         bool lockSelection;
-        bool hoverSpot3D;
+        bool spotMode;
         bool hoverHitValid;
         int hoveredShellId = -1;
         Vector2 uvSpot;
@@ -906,17 +904,15 @@ namespace LightmapUvTool
             // ── Overlay toggles ──
             showWire   = GUILayout.Toggle(showWire,   "Wire", EditorStyles.toolbarButton, GUILayout.Width(36));
             showBorder = GUILayout.Toggle(showBorder, "Bdr",  EditorStyles.toolbarButton, GUILayout.Width(30));
-            bool hoverNext = GUILayout.Toggle(hoverSpot3D, "Hover Spot (3D)", EditorStyles.toolbarButton, GUILayout.Width(98));
-            if (hoverNext != hoverSpot3D)
+            bool spotNext = GUILayout.Toggle(spotMode, "Spot", EditorStyles.toolbarButton, GUILayout.Width(52));
+            if (spotNext != spotMode)
             {
-                hoverSpot3D = hoverNext;
-                if (!hoverSpot3D) ClearHoverState();
+                spotMode = spotNext;
+                if (!spotMode) ClearHoverState();
                 SceneView.RepaintAll();
             }
 
             GUILayout.Space(4);
-            toggleHoverSpotUv = GUILayout.Toggle(toggleHoverSpotUv, "Spot", EditorStyles.toolbarButton, GUILayout.Width(36));
-            togglePickShellUv = GUILayout.Toggle(togglePickShellUv, "Pick", EditorStyles.toolbarButton, GUILayout.Width(36));
             lockSelection = GUILayout.Toggle(lockSelection, "Lock", EditorStyles.toolbarButton, GUILayout.Width(40));
             using (new EditorGUI.DisabledScope(!hasSelectedShell))
             {
@@ -1121,7 +1117,7 @@ namespace LightmapUvTool
                         }
                         if (showWire) GlWr(cx,cy,sz, uvs,tri,fN,uN);
                     }
-                    if (toggleHoverSpotUv)
+                    if (spotMode)
                         GlDrawUvSpot(cx, cy, sz);
                 }
                 catch (Exception ex) { UvtLog.Warn("[UV] GL: " + ex.Message); }
@@ -1135,7 +1131,7 @@ namespace LightmapUvTool
 
         void DrawHoverSpotInCanvas(float ox, float oy, float sz)
         {
-            if (!hoverSpot3D || !hoverHitValid) return;
+            if (!spotMode || !hoverHitValid) return;
 
             float x = ox + uvSpot.x * sz;
             float y = oy + (1f - uvSpot.y) * sz;
@@ -1150,7 +1146,7 @@ namespace LightmapUvTool
 
         void OnSceneGUI(SceneView sv)
         {
-            if (!hoverSpot3D || sv == null)
+            if (!spotMode || sv == null)
             {
                 if (hoverHitValid) ClearHoverState();
                 return;
@@ -1364,7 +1360,7 @@ namespace LightmapUvTool
             if (e.type == EventType.MouseDown && e.button == 2 && e.clickCount == 2 && canvasRect.Contains(e.mousePosition))
             { FitToUvBounds(); e.Use(); }
 
-            if (!toggleHoverSpotUv && !togglePickShellUv)
+            if (!spotMode)
                 return;
 
             if (!canvasRect.Contains(e.mousePosition))
@@ -1388,7 +1384,7 @@ namespace LightmapUvTool
                 }
             }
 
-            if (togglePickShellUv && e.type == EventType.MouseDown && e.button == 0 && !e.alt)
+            if (spotMode && e.type == EventType.MouseDown && e.button == 0 && !e.alt)
             {
                 if (hasHoveredShell)
                 {
@@ -2069,7 +2065,7 @@ namespace LightmapUvTool
             foreach (var e in ee) { Mesh m = DMesh(e); if (m == null) continue; tV += m.vertexCount; tT += m.triangles.Length / 3; }
             string hoverInfo = hoverHitValid
                 ? $" | Hover UV: {uvSpot.x:F4},{uvSpot.y:F4} Shell:{hoveredShellId}"
-                : (hoverSpot3D ? " | Hover UV: --" : string.Empty);
+                : (spotMode ? " | Hover UV: --" : string.Empty);
             EditorGUILayout.LabelField("LOD" + pvLod + " | " + ee.Count + " mesh | V:" + tV + " T:" + tT + " | " + (pvChannel == 0 ? "UV0 (MainTex)" : "UV1 (Lightmap)") + hoverInfo, EditorStyles.miniLabel);
 
             GUILayout.FlexibleSpace();
