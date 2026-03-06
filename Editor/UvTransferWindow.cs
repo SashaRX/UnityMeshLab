@@ -1399,7 +1399,6 @@ namespace LightmapUvTool
 
             if (!spotMode)
                 return;
-            }
 
             if (!canvasRect.Contains(e.mousePosition))
             {

@@ -1288,6 +1288,8 @@ namespace LightmapUvTool
                     // The ray/nearest picks the correct source shell. Each source shell
                     // is a single side of overlapping geometry, so its full UV0→UV2
                     // similarity transform is valid and preserves aspect ratios.
+                    // Prefer xform over interpolation on ties (<=) because xform
+                    // preserves shell shape while interpolation distorts aspect ratios.
                     if (bestRaySrc >= 0 && srcTransforms[bestRaySrc].valid)
                     {
                         var xf = srcTransforms[bestRaySrc];
@@ -1299,30 +1301,8 @@ namespace LightmapUvTool
                         }
                         int issuesXf = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, candidateXf);
 
-                        // Guard: reject if transform extrapolates into another source's UV2
-                        if (issuesXf < int.MaxValue && candidateXf.Count > 0)
-                        {
-                            Vector2 xfMin = new Vector2(float.MaxValue, float.MaxValue);
-                            Vector2 xfMax = new Vector2(float.MinValue, float.MinValue);
-                            foreach (var kv in candidateXf)
-                            {
-                                xfMin = Vector2.Min(xfMin, kv.Value);
-                                xfMax = Vector2.Max(xfMax, kv.Value);
-                            }
-                            for (int si = 0; si < srcShells.Count; si++)
-                            {
-                                if (si == bestRaySrc) continue;
-                                if (xfMin.x < srcUv2Max[si].x && xfMax.x > srcUv2Min[si].x &&
-                                    xfMin.y < srcUv2Max[si].y && xfMax.y > srcUv2Min[si].y)
-                                {
-                                    issuesXf = int.MaxValue;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (issuesXf < bestRayIssues
-                            || (issuesXf == bestRayIssues && candidateXf.Count > (bestRayUv2 != null ? bestRayUv2.Count : 0)))
+                        // Prefer xform on equal issues (preserves aspect ratio vs interp)
+                        if (issuesXf <= bestRayIssues)
                         {
                             bestRayUv2 = candidateXf;
                             bestRayIssues = issuesXf;
