@@ -69,6 +69,8 @@ namespace LightmapUvTool
         int hoveredShellId = -1;
         Vector2 uvSpot;
         Vector3 hoverWorldPos;
+        bool canvasSpotValid;
+        Vector2 canvasSpotUv;
 
         // Checker mode (user toggle, independent from CheckerTexturePreview.IsActive)
         bool checkerEnabled;
@@ -113,6 +115,7 @@ namespace LightmapUvTool
 
         Material glMat;
         Material texMat;
+        Material spotMat;
 
         string previewConflictNotice;
 
@@ -232,7 +235,10 @@ namespace LightmapUvTool
         // ════════════════════════════════════════════════════════════
 
         const float UV_LO = -4f, UV_HI = 5f;
-        const int BATCH = 800, MAX_TRI = 12000;
+        const int BATCH = 800;
+        // Preview draw budget per mesh. 12k was too low for complex LOD0 meshes and
+        // caused truncated fill/wire while boundary-only overlay still looked complete.
+        const int MAX_TRI = 500000;
 
         static readonly Color[] pal = {
             new Color(.20f,.60f,1f),  new Color(1f,.40f,.20f),
@@ -286,6 +292,10 @@ namespace LightmapUvTool
             var texShader = Shader.Find("Unlit/Transparent");
             if (texShader != null)
                 texMat = new Material(texShader) { hideFlags = HideFlags.HideAndDontSave };
+
+            var spotShader = Shader.Find("Hidden/LightmapUvTool/SpotProjection");
+            if (spotShader != null)
+                spotMat = new Material(spotShader) { hideFlags = HideFlags.HideAndDontSave };
         }
 
         void OnDisable()
@@ -303,8 +313,10 @@ namespace LightmapUvTool
             if (canvasRT) { canvasRT.Release(); DestroyImmediate(canvasRT); canvasRT = null; }
             if (glMat) DestroyImmediate(glMat);
             if (texMat) DestroyImmediate(texMat);
+            if (spotMat) DestroyImmediate(spotMat);
             glMat = null;
             texMat = null;
+            spotMat = null;
         }
 
         void OnSelectionChange()
@@ -1071,8 +1083,6 @@ namespace LightmapUvTool
                     {
                         Mesh mesh = item.Item1;
                         MeshEntry entry = item.Item2;
-                        int idx = item.Item3;
-
                         var uvs = RdUv(mesh, pvChannel);
                         var tri = mesh.triangles;
                         if (uvs == null || tri == null) continue;
@@ -1127,16 +1137,16 @@ namespace LightmapUvTool
 
                 RenderTexture.active = prevRT;
                 GUI.DrawTexture(canvasRect, canvasRT, ScaleMode.StretchToFill, false);
-                DrawHoverSpotInCanvas(cx, cy, sz);
+                DrawHoverSpotInCanvas(canvasRect, cx, cy, sz);
             }
         }
 
-        void DrawHoverSpotInCanvas(float ox, float oy, float sz)
+        void DrawHoverSpotInCanvas(Rect canvasRect, float ox, float oy, float sz)
         {
             if (!spotMode || !hoverHitValid) return;
 
-            float x = ox + uvSpot.x * sz;
-            float y = oy + (1f - uvSpot.y) * sz;
+            float x = canvasRect.x + ox + uvSpot.x * sz;
+            float y = canvasRect.y + oy + (1f - uvSpot.y) * sz;
 
             Handles.BeginGUI();
             var prev = Handles.color;
@@ -1183,10 +1193,33 @@ namespace LightmapUvTool
             if (!hoverHitValid)
                 return;
 
-            float size = HandleUtility.GetHandleSize(hoverWorldPos) * 0.06f;
-            Handles.color = new Color(1f, .75f, .2f, .95f);
-            Handles.SphereHandleCap(0, hoverWorldPos, Quaternion.identity, size, EventType.Repaint);
-            Handles.DotHandleCap(0, hoverWorldPos, Quaternion.identity, size * 0.65f, EventType.Repaint);
+            DrawSpotProjectionInScene();
+        }
+
+        void DrawSpotProjectionInScene()
+        {
+            if (!hoverHitValid || spotMat == null || Event.current.type != EventType.Repaint)
+                return;
+
+            spotMat.SetVector("_SpotUv", new Vector4(uvSpot.x, uvSpot.y, 0f, 0f));
+            spotMat.SetFloat("_SpotRadius", 0.035f);
+            spotMat.SetColor("_SpotColor", new Color(1f, .75f, .2f, .95f));
+            spotMat.SetFloat("_UseUv2", pvChannel == 1 ? 1f : 0f);
+
+            var entries = ForLod(pvLod);
+            foreach (var entry in entries)
+            {
+                var mesh = DMesh(entry);
+                if (mesh == null) continue;
+
+                Matrix4x4 l2w;
+                if (entry.renderer != null) l2w = entry.renderer.localToWorldMatrix;
+                else if (entry.meshFilter != null) l2w = entry.meshFilter.transform.localToWorldMatrix;
+                else continue;
+
+                spotMat.SetPass(0);
+                Graphics.DrawMeshNow(mesh, l2w);
+            }
         }
 
         struct HoverHit
@@ -1305,6 +1338,8 @@ namespace LightmapUvTool
             hoveredShellId = -1;
             uvSpot = Vector2.zero;
             hoverWorldPos = Vector3.zero;
+            canvasSpotValid = false;
+            canvasSpotUv = Vector2.zero;
             if (repaint) Repaint();
         }
 
@@ -1364,17 +1399,21 @@ namespace LightmapUvTool
 
             if (!spotMode)
                 return;
+            }
 
             if (!canvasRect.Contains(e.mousePosition))
             {
                 if (!lockSelection)
                     hasHoveredShell = false;
+                canvasSpotValid = false;
                 return;
             }
 
             Vector2 localPos = e.mousePosition - canvasRect.position;
             // mouse -> uv: u = (x-cx)/sz, v = 1-(y-cy)/sz
             Vector2 uv = new Vector2((localPos.x - cx) / sz, 1f - ((localPos.y - cy) / sz));
+            canvasSpotUv = uv;
+            canvasSpotValid = true;
 
             if (!lockSelection)
             {
@@ -1684,10 +1723,27 @@ namespace LightmapUvTool
             {
                 hit = hoveredShell;
             }
-            if (!hasHit) return;
 
-            float px = ox + hit.uvHit.x * sz;
-            float py = oy + (1f - hit.uvHit.y) * sz;
+            Vector2 drawUv;
+            if (hasHit)
+            {
+                drawUv = hit.uvHit;
+            }
+            else if (canvasSpotValid)
+            {
+                drawUv = canvasSpotUv;
+            }
+            else if (hoverHitValid)
+            {
+                drawUv = uvSpot;
+            }
+            else
+            {
+                return;
+            }
+
+            float px = ox + drawUv.x * sz;
+            float py = oy + (1f - drawUv.y) * sz;
             float r = 6f;
 
             GL.Begin(GL.LINES);
@@ -1876,7 +1932,32 @@ namespace LightmapUvTool
         }
 
 
-        void GlFillSh(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, int off, int hoverShellId, int selectedShellId)
+        int GetShellColorKey(UvShell shell, MeshEntry entry)
+        {
+            var map = entry?.shellTransferResult?.vertexToSourceShell;
+            if (map != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
+            {
+                var freq = new Dictionary<int, int>();
+                foreach (int v in shell.vertexIndices)
+                {
+                    if (v < 0 || v >= map.Length) continue;
+                    int srcShell = map[v];
+                    if (srcShell < 0) continue;
+                    if (!freq.ContainsKey(srcShell)) freq[srcShell] = 0;
+                    freq[srcShell]++;
+                }
+
+                if (freq.Count > 0)
+                    return freq.OrderByDescending(k => k.Value).ThenBy(k => k.Key).First().Key;
+            }
+
+            int meshSeed = 0;
+            var mesh = entry != null ? DMesh(entry) : null;
+            if (mesh != null) meshSeed = mesh.GetInstanceID();
+            return Mathf.Abs((shell.shellId * 73856093) ^ (meshSeed * 19349663));
+        }
+
+        void GlFillSh(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, MeshEntry entry, int hoverShellId, int selectedShellId)
         {
             var cache = GetPreviewShellCache(uv, t);
             if (cache == null || cache.shells == null) return;
@@ -1886,7 +1967,8 @@ namespace LightmapUvTool
             foreach (var s in cache.shells)
             {
                 if (tot>=MAX_TRI) break;
-                Color c = pal[(s.shellId+off*5)%pal.Length];
+                int colorKey = GetShellColorKey(s, entry);
+                Color c = pal[colorKey % pal.Length];
                 if (s.shellId == selectedShellId)
                     c = Color.Lerp(c, Color.white, 0.45f);
                 c.a = s.shellId == selectedShellId ? Mathf.Clamp01(fillAlpha * 1.85f) : fillAlpha;
@@ -2191,24 +2273,29 @@ namespace LightmapUvTool
         void DrawShellHitInfo(string label, ShellDebugHit hit)
         {
             EditorGUILayout.LabelField(label, EditorStyles.miniBoldLabel);
-            if (hit == null || hit.shell == null)
-            {
-                EditorGUILayout.LabelField("—", EditorStyles.miniLabel);
-                return;
-            }
 
-            var shell = hit.shell;
-            var bmin = shell.boundsMin;
-            var bmax = shell.boundsMax;
-            EditorGUILayout.LabelField($"shellId: {hit.shellId}", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"mesh: {hit.mesh?.name ?? "<null>"}", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"uv channel: UV{hit.uvChannel}", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"boundsMin/boundsMax: ({bmin.x:F3}, {bmin.y:F3}) / ({bmax.x:F3}, {bmax.y:F3})", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"bboxArea: {shell.bboxArea:F6}", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"faces count: {shell.faceIndices.Count}", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"vertices count: {shell.vertexIndices.Count}", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"UDIM tile: ({hit.tileU}, {hit.tileV})", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"local in tile: ({hit.localUv.x:F3}, {hit.localUv.y:F3})", EditorStyles.miniLabel);
+            bool hasHit = hit != null && hit.shell != null;
+            var shell = hasHit ? hit.shell : null;
+            var bmin = hasHit ? shell.boundsMin : Vector2.zero;
+            var bmax = hasHit ? shell.boundsMax : Vector2.zero;
+
+            EditorGUILayout.LabelField($"shellId: {(hasHit ? hit.shellId.ToString() : "—")}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"mesh: {(hasHit ? (hit.mesh?.name ?? "<null>") : "—")}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"uv channel: {(hasHit ? "UV" + hit.uvChannel : "—")}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField(
+                hasHit
+                    ? $"boundsMin/boundsMax: ({bmin.x:F3}, {bmin.y:F3}) / ({bmax.x:F3}, {bmax.y:F3})"
+                    : "boundsMin/boundsMax: —",
+                EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"bboxArea: {(hasHit ? shell.bboxArea.ToString("F6") : "—")}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"faces count: {(hasHit ? shell.faceIndices.Count.ToString() : "—")}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField($"vertices count: {(hasHit ? shell.vertexIndices.Count.ToString() : "—")}", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField(
+                hasHit ? $"UDIM tile: ({hit.tileU}, {hit.tileV})" : "UDIM tile: —",
+                EditorStyles.miniLabel);
+            EditorGUILayout.LabelField(
+                hasHit ? $"local in tile: ({hit.localUv.x:F3}, {hit.localUv.y:F3})" : "local in tile: —",
+                EditorStyles.miniLabel);
         }
 
         Mesh DMesh(MeshEntry e)
