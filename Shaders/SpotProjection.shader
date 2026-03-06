@@ -53,43 +53,38 @@ Shader "Hidden/LightmapUvTool/SpotProjection"
                 float2 d = i.uv - _SpotUv.xy;
                 float dist = length(d);
 
-                // Unified style: crosshair + spot ring (ring чуть больше перекрестья)
+                // Cross + мягкое spot-пятно поверх перекрестья (референс: мягкий круг)
                 float crossLen = _SpotRadius;
                 float lineW = _SpotRadius * 0.08;
-                float ringR = _SpotRadius * 1.18;
-                float ringW = _SpotRadius * 0.09;
                 float outlineMul = 1.35;
+
+                float spotInnerR = _SpotRadius * 0.55;
+                float spotOuterR = _SpotRadius * 1.25;
 
                 float dx = abs(d.x);
                 float dy = abs(d.y);
 
-                // Cross
                 float hArm = step(dy, lineW) * step(dx, crossLen) * (1.0 - smoothstep(lineW * 0.5, lineW, dy));
                 float vArm = step(dx, lineW) * step(dy, crossLen) * (1.0 - smoothstep(lineW * 0.5, lineW, dx));
                 float cross = saturate(max(hArm, vArm));
 
-                // Ring
-                float ringOuter = 1.0 - smoothstep(ringR, ringR + ringW, dist);
-                float ringInner = 1.0 - smoothstep(max(0.0001, ringR - ringW), ringR, dist);
-                float ring = saturate(ringOuter * (1.0 - ringInner));
-
-                float fill = saturate(max(cross, ring));
-
-                // Dark outline to match UV canvas style
                 float hArmOut = step(dy, lineW * outlineMul) * step(dx, crossLen + lineW) * (1.0 - smoothstep(lineW * 0.5, lineW * outlineMul, dy));
                 float vArmOut = step(dx, lineW * outlineMul) * step(dy, crossLen + lineW) * (1.0 - smoothstep(lineW * 0.5, lineW * outlineMul, dx));
                 float crossOut = saturate(max(hArmOut, vArmOut));
+                float outline = saturate(crossOut - cross);
 
-                float ringOuterOut = 1.0 - smoothstep(ringR, ringR + ringW * outlineMul, dist);
-                float ringInnerOut = 1.0 - smoothstep(max(0.0001, ringR - ringW * outlineMul), ringR, dist);
-                float ringOut = saturate(ringOuterOut * (1.0 - ringInnerOut));
+                // Soft spot: плотный центр + плавное затухание к краю
+                float core = 1.0 - smoothstep(0.0, spotInnerR, dist);
+                float feather = 1.0 - smoothstep(spotInnerR, spotOuterR, dist);
+                float spot = saturate(max(core, feather * 0.45));
 
-                float outline = saturate(max(crossOut, ringOut) - fill);
-
+                float fill = saturate(max(cross, spot));
                 float a = saturate(max(fill, outline * 0.8)) * _SpotColor.a;
                 if (a <= 0.001) discard;
 
-                fixed3 rgb = lerp(fixed3(0, 0, 0), _SpotColor.rgb, fill);
+                fixed3 spotCol = fixed3(1.0, 1.0, 1.0);
+                fixed3 rgb = lerp(fixed3(0, 0, 0), _SpotColor.rgb, cross);
+                rgb = lerp(rgb, spotCol, saturate(spot * 0.6));
                 return fixed4(rgb, a);
             }
             ENDCG

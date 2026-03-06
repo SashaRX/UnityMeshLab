@@ -1888,29 +1888,40 @@ namespace LightmapUvTool
             GL.Vertex3(px, py - crossR, 0); GL.Vertex3(px, py + crossR, 0);
             GL.End();
 
-            // Spot поверх перекрестья: кольцо в том же стиле и чуть больше
+            // Spot поверх перекрестья: мягкое пятно (как в референсе), чуть больше креста
             int segments = 40;
-            float ringW = Mathf.Max(1.5f, crossR * 0.08f);
-            GL.Begin(GL.LINES);
-            GL.Color(new Color(0f, 0f, 0f, 0.6f));
+            float spotInnerR = spotR * 0.45f;
+            float spotOuterR = spotR * 1.25f;
+            Color spotCenter = new Color(1f, 1f, 1f, 0.22f);
+            Color spotOuter = new Color(1f, 1f, 1f, 0.0f);
+
+            GL.Begin(GL.TRIANGLES);
             for (int i = 0; i < segments; i++)
             {
                 float a0 = (i / (float)segments) * Mathf.PI * 2f;
                 float a1 = ((i + 1) / (float)segments) * Mathf.PI * 2f;
                 Vector2 d0 = new Vector2(Mathf.Cos(a0), Mathf.Sin(a0));
                 Vector2 d1 = new Vector2(Mathf.Cos(a1), Mathf.Sin(a1));
-                GL.Vertex3(px + d0.x * (spotR + ringW), py + d0.y * (spotR + ringW), 0);
-                GL.Vertex3(px + d1.x * (spotR + ringW), py + d1.y * (spotR + ringW), 0);
-            }
-            GL.Color(glowBase);
-            for (int i = 0; i < segments; i++)
-            {
-                float a0 = (i / (float)segments) * Mathf.PI * 2f;
-                float a1 = ((i + 1) / (float)segments) * Mathf.PI * 2f;
-                Vector2 d0 = new Vector2(Mathf.Cos(a0), Mathf.Sin(a0));
-                Vector2 d1 = new Vector2(Mathf.Cos(a1), Mathf.Sin(a1));
-                GL.Vertex3(px + d0.x * spotR, py + d0.y * spotR, 0);
-                GL.Vertex3(px + d1.x * spotR, py + d1.y * spotR, 0);
+
+                Vector3 c = new Vector3(px, py, 0f);
+                Vector3 i0 = new Vector3(px + d0.x * spotInnerR, py + d0.y * spotInnerR, 0f);
+                Vector3 i1 = new Vector3(px + d1.x * spotInnerR, py + d1.y * spotInnerR, 0f);
+                Vector3 o0 = new Vector3(px + d0.x * spotOuterR, py + d0.y * spotOuterR, 0f);
+                Vector3 o1 = new Vector3(px + d1.x * spotOuterR, py + d1.y * spotOuterR, 0f);
+
+                // inner soft disc
+                GL.Color(spotCenter); GL.Vertex(c);
+                GL.Color(spotCenter); GL.Vertex(i0);
+                GL.Color(spotCenter); GL.Vertex(i1);
+
+                // feather ring
+                GL.Color(spotCenter); GL.Vertex(i0);
+                GL.Color(spotOuter);  GL.Vertex(o0);
+                GL.Color(spotOuter);  GL.Vertex(o1);
+
+                GL.Color(spotCenter); GL.Vertex(i0);
+                GL.Color(spotOuter);  GL.Vertex(o1);
+                GL.Color(spotCenter); GL.Vertex(i1);
             }
             GL.End();
         }
