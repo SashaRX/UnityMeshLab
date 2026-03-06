@@ -1818,30 +1818,24 @@ namespace LightmapUvTool
 
         void GlDrawUvSpot(float ox, float oy, float sz)
         {
-            ShellUvHit hit;
-            bool hasHit = hasHoveredShell;
-            if (hasSelectedShell)
-            {
-                hit = selectedShell;
-                hasHit = true;
-            }
-            else
-            {
-                hit = hoveredShell;
-            }
-
+            // Приоритет как в OnSceneGUI: 3D hover > selected shell > hovered shell > canvas spot.
+            // Это важно при overlap/ре-проекции, чтобы UV spot не пропадал из-за устаревшего selected/hovered.
             Vector2 drawUv;
-            if (hasHit)
+            if (hoverHitValid)
             {
-                drawUv = hit.uvHit;
+                drawUv = uvSpot;
+            }
+            else if (hasSelectedShell)
+            {
+                drawUv = selectedShell.uvHit;
+            }
+            else if (hasHoveredShell)
+            {
+                drawUv = hoveredShell.uvHit;
             }
             else if (canvasSpotValid)
             {
                 drawUv = canvasSpotUv;
-            }
-            else if (hoverHitValid)
-            {
-                drawUv = uvSpot;
             }
             else
             {
