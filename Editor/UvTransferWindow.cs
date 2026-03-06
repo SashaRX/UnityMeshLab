@@ -124,6 +124,14 @@ namespace LightmapUvTool
         readonly FaceToShellCache uvPreviewShellCache = new FaceToShellCache();
         readonly Dictionary<int, PreviewShellData> previewShellDataCache = new Dictionary<int, PreviewShellData>();
 
+        // Per-frame mesh data cache to avoid repeated allocations from mesh.triangles / GetUVs
+        readonly Dictionary<int, int[]> cachedTriangles = new Dictionary<int, int[]>();
+        readonly Dictionary<long, Vector2[]> cachedUvs = new Dictionary<long, Vector2[]>();
+
+        // Shell color key cache: (meshInstanceId, shellId) -> colorKey
+        readonly Dictionary<long, int> shellColorKeyCache = new Dictionary<long, int>();
+        bool shellColorKeyCacheDirty = true;
+
         ShellUvHit hoveredShell;
         ShellUvHit selectedShell;
         bool hasHoveredShell;
@@ -235,7 +243,7 @@ namespace LightmapUvTool
         // ════════════════════════════════════════════════════════════
 
         const float UV_LO = -4f, UV_HI = 5f;
-        const int BATCH = 800;
+        const int BATCH = 4000;
         // Preview draw budget per mesh. 12k was too low for complex LOD0 meshes and
         // caused truncated fill/wire while boundary-only overlay still looked complete.
         const int MAX_TRI = 500000;
@@ -309,6 +317,7 @@ namespace LightmapUvTool
             uvPreviewShellCache.Clear();
             previewShellDataCache.Clear();
             shellColorPreviewCache.Clear();
+            shellColorKeyCache.Clear();
             ClearHoverState(false);
             if (canvasRT) { canvasRT.Release(); DestroyImmediate(canvasRT); canvasRT = null; }
             if (glMat) DestroyImmediate(glMat);
@@ -404,6 +413,7 @@ namespace LightmapUvTool
             uvPreviewShellCache.Clear();
             previewShellDataCache.Clear();
             shellColorPreviewCache.Clear();
+            shellColorKeyCache.Clear();
             uv0Analyzed = false;
             uv0Welded = false;
             ClearHoverState(false);
@@ -1079,12 +1089,14 @@ namespace LightmapUvTool
 
                     GlGrid(cx, cy, sz);
 
+                    ClearFrameCaches();
+                    shellColorKeyCacheDirty = false;
                     foreach (var item in draws)
                     {
                         Mesh mesh = item.Item1;
                         MeshEntry entry = item.Item2;
-                        var uvs = RdUv(mesh, pvChannel);
-                        var tri = mesh.triangles;
+                        var uvs = RdUvCached(mesh, pvChannel);
+                        var tri = GetTrianglesCached(mesh);
                         if (uvs == null || tri == null) continue;
                         int uN = uvs.Length, fN = tri.Length / 3;
 
@@ -1289,8 +1301,8 @@ namespace LightmapUvTool
                 if (aabbDistance > bestHit.distance) continue;
 
                 Vector3[] v = mesh.vertices;
-                int[] tri = mesh.triangles;
-                Vector2[] uv = RdUv(mesh, pvChannel);
+                int[] tri = GetTrianglesCached(mesh);
+                Vector2[] uv = RdUvCached(mesh, pvChannel);
                 if (v == null || tri == null || uv == null) continue;
                 int[] faceToShell = uvPreviewShellCache.GetFaceToShell(mesh, pvChannel, uv, tri);
 
@@ -1390,7 +1402,7 @@ namespace LightmapUvTool
             {
                 var mesh = DMesh(entry);
                 if (mesh == null) continue;
-                var uvs = RdUv(mesh, pvChannel);
+                var uvs = RdUvCached(mesh, pvChannel);
                 if (uvs == null) continue;
                 foreach (var uv in uvs)
                 {
@@ -1514,8 +1526,8 @@ namespace LightmapUvTool
             foreach (var item in draws)
             {
                 Mesh mesh = item.Item1;
-                var uvs = RdUv(mesh, pvChannel);
-                var tri = mesh.triangles;
+                var uvs = RdUvCached(mesh, pvChannel);
+                var tri = GetTrianglesCached(mesh);
                 if (uvs == null || tri == null || tri.Length < 3) continue;
                 if (uvPoint.x < UV_LO || uvPoint.x > UV_HI || uvPoint.y < UV_LO || uvPoint.y > UV_HI) continue;
 
@@ -1641,6 +1653,30 @@ namespace LightmapUvTool
         }
 
         static Vector2[] RdUv(Mesh m, int ch) { var l = new List<Vector2>(); m.GetUVs(ch, l); return l.Count > 0 ? l.ToArray() : null; }
+
+        Vector2[] RdUvCached(Mesh m, int ch)
+        {
+            long key = ((long)m.GetInstanceID() << 8) ^ (uint)ch;
+            if (cachedUvs.TryGetValue(key, out var uv)) return uv;
+            uv = RdUv(m, ch);
+            cachedUvs[key] = uv;
+            return uv;
+        }
+
+        int[] GetTrianglesCached(Mesh m)
+        {
+            int id = m.GetInstanceID();
+            if (cachedTriangles.TryGetValue(id, out var tri)) return tri;
+            tri = m.triangles;
+            cachedTriangles[id] = tri;
+            return tri;
+        }
+
+        void ClearFrameCaches()
+        {
+            cachedTriangles.Clear();
+            cachedUvs.Clear();
+        }
         static bool UOk(Vector2 u) => u.x >= UV_LO && u.x <= UV_HI && u.y >= UV_LO && u.y <= UV_HI && !float.IsNaN(u.x) && !float.IsNaN(u.y) && !float.IsInfinity(u.x) && !float.IsInfinity(u.y);
         static bool TOk(Vector2[] u, int n, int a, int b, int c) => a>=0&&a<n&&b>=0&&b<n&&c>=0&&c<n && UOk(u[a])&&UOk(u[b])&&UOk(u[c]);
         static void Vx(float ox, float oy, float sz, Vector2 u) => GL.Vertex3(ox+u.x*sz, oy+(1f-u.y)*sz, 0);
@@ -1848,8 +1884,8 @@ namespace LightmapUvTool
             {
                 Mesh mesh = DMesh(entry);
                 if (mesh == null) continue;
-                var uvs = RdUv(mesh, pvChannel);
-                var tri = mesh.triangles;
+                var uvs = RdUvCached(mesh, pvChannel);
+                var tri = GetTrianglesCached(mesh);
                 if (uvs == null || tri == null || tri.Length < 3) continue;
 
                 var cache = GetPreviewShellCache(uvs, tri);
@@ -1975,27 +2011,44 @@ namespace LightmapUvTool
 
         int GetShellColorKey(UvShell shell, MeshEntry entry)
         {
+            int meshId = 0;
+            var mesh = entry != null ? DMesh(entry) : null;
+            if (mesh != null) meshId = mesh.GetInstanceID();
+
+            long cacheKey = ((long)meshId << 32) | (uint)shell.shellId;
+            if (!shellColorKeyCacheDirty && shellColorKeyCache.TryGetValue(cacheKey, out int cached))
+                return cached;
+
+            int result;
             var map = entry?.shellTransferResult?.vertexToSourceShell;
             if (map != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
             {
+                // Find most frequent source shell without LINQ
+                int bestKey = -1, bestCount = 0;
                 var freq = new Dictionary<int, int>();
                 foreach (int v in shell.vertexIndices)
                 {
                     if (v < 0 || v >= map.Length) continue;
                     int srcShell = map[v];
                     if (srcShell < 0) continue;
-                    if (!freq.ContainsKey(srcShell)) freq[srcShell] = 0;
-                    freq[srcShell]++;
+                    freq.TryGetValue(srcShell, out int c);
+                    c++;
+                    freq[srcShell] = c;
+                    if (c > bestCount || (c == bestCount && srcShell < bestKey))
+                    {
+                        bestCount = c;
+                        bestKey = srcShell;
+                    }
                 }
-
-                if (freq.Count > 0)
-                    return freq.OrderByDescending(k => k.Value).ThenBy(k => k.Key).First().Key;
+                result = bestKey >= 0 ? bestKey : Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
+            }
+            else
+            {
+                result = Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
             }
 
-            int meshSeed = 0;
-            var mesh = entry != null ? DMesh(entry) : null;
-            if (mesh != null) meshSeed = mesh.GetInstanceID();
-            return Mathf.Abs((shell.shellId * 73856093) ^ (meshSeed * 19349663));
+            shellColorKeyCache[cacheKey] = result;
+            return result;
         }
 
         void GlFillSh(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, MeshEntry entry, int hoverShellId, int selectedShellId)
@@ -2033,15 +2086,14 @@ namespace LightmapUvTool
 
         void GlFillSt(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, TriangleStatus[] st)
         {
-            int tot=0,b=0; Color cc=cNone; GL.Begin(GL.TRIANGLES); GL.Color(cc);
+            int tot=0,b=0; GL.Begin(GL.TRIANGLES);
             for (int f=0; f<fN&&tot<MAX_TRI; f++)
             {
                 int a0=t[f*3],a1=t[f*3+1],a2=t[f*3+2];
                 if (!TOk(uv,uN,a0,a1,a2)) continue;
-                Color nc = f<st.Length ? SC(st[f]) : cAccept;
-                if (nc.r!=cc.r||nc.g!=cc.g||nc.b!=cc.b) { GL.End(); GL.Begin(GL.TRIANGLES); cc=nc; GL.Color(cc); b=0; }
+                GL.Color(f<st.Length ? SC(st[f]) : cAccept);
                 Vx(ox,oy,sz,uv[a0]); Vx(ox,oy,sz,uv[a1]); Vx(ox,oy,sz,uv[a2]);
-                tot++; b++; if (b>=BATCH){GL.End();GL.Begin(GL.TRIANGLES);GL.Color(cc);b=0;}
+                tot++; b++; if (b>=BATCH){GL.End();GL.Begin(GL.TRIANGLES);b=0;}
             }
             GL.End();
         }
@@ -2142,7 +2194,7 @@ namespace LightmapUvTool
         void GlFillShellMatch(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, int[] vertShellMap)
         {
             if (vertShellMap == null) return;
-            int tot = 0, b = 0; Color cc = Color.clear;
+            int tot = 0, b = 0;
             GL.Begin(GL.TRIANGLES);
             for (int f = 0; f < fN && tot < MAX_TRI; f++)
             {
@@ -2151,11 +2203,10 @@ namespace LightmapUvTool
                 int sh = (a0 < vertShellMap.Length) ? vertShellMap[a0] : -1;
                 Color nc = sh < 0 ? new Color(0.3f, 0.3f, 0.3f, fillAlpha) :
                     new Color(pal[sh % pal.Length].r, pal[sh % pal.Length].g, pal[sh % pal.Length].b, fillAlpha * 1.5f);
-                if (nc.r != cc.r || nc.g != cc.g || nc.b != cc.b)
-                { GL.End(); GL.Begin(GL.TRIANGLES); cc = nc; GL.Color(cc); b = 0; }
+                GL.Color(nc);
                 Vx(ox, oy, sz, uv[a0]); Vx(ox, oy, sz, uv[a1]); Vx(ox, oy, sz, uv[a2]);
                 tot++; b++;
-                if (b >= BATCH) { GL.End(); GL.Begin(GL.TRIANGLES); GL.Color(cc); b = 0; }
+                if (b >= BATCH) { GL.End(); GL.Begin(GL.TRIANGLES); b = 0; }
             }
             GL.End();
         }
@@ -2163,7 +2214,7 @@ namespace LightmapUvTool
         void GlFillValidation(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, TransferValidator.TriIssue[] perTri)
         {
             if (perTri == null) return;
-            int tot = 0, b = 0; Color cc = Color.clear;
+            int tot = 0, b = 0;
             GL.Begin(GL.TRIANGLES);
             for (int f = 0; f < fN && tot < MAX_TRI; f++)
             {
@@ -2177,11 +2228,10 @@ namespace LightmapUvTool
                 else if ((fl & TransferValidator.TriIssue.OutOfBounds) != 0) nc = cValOOB;
                 else if ((fl & TransferValidator.TriIssue.TexelDensity) != 0) nc = cValTexel;
                 else nc = cValClean;
-                if (nc.r != cc.r || nc.g != cc.g || nc.b != cc.b)
-                { GL.End(); GL.Begin(GL.TRIANGLES); cc = nc; GL.Color(cc); b = 0; }
+                GL.Color(nc);
                 Vx(ox, oy, sz, uv[a0]); Vx(ox, oy, sz, uv[a1]); Vx(ox, oy, sz, uv[a2]);
                 tot++; b++;
-                if (b >= BATCH) { GL.End(); GL.Begin(GL.TRIANGLES); GL.Color(cc); b = 0; }
+                if (b >= BATCH) { GL.End(); GL.Begin(GL.TRIANGLES); b = 0; }
             }
             GL.End();
         }
@@ -3258,6 +3308,7 @@ namespace LightmapUvTool
             uvPreviewShellCache.Clear();
             previewShellDataCache.Clear();
             shellColorPreviewCache.Clear();
+            shellColorKeyCache.Clear();
             ClearHoverState(false);
             UvtLog.Info("[Reset] All working copies destroyed and restored to FBX originals");
             Repaint();
