@@ -889,7 +889,9 @@ namespace LightmapUvTool
                 GUI.backgroundColor = new Color(.85f,.75f,.95f);
                 int ci = pvChannel == 0 ? 0 : 1;
                 ci = GUILayout.Toolbar(ci, new[]{"UV0 (MainTex)","UV1 (Lightmap)"}, EditorStyles.toolbarButton, GUILayout.Width(220));
-                pvChannel = ci == 0 ? 0 : 1;
+                int newChannel = ci == 0 ? 0 : 1;
+                if (newChannel != pvChannel)
+                    OnPreviewChannelChanged(newChannel);
                 GUI.backgroundColor = bg;
             }
 
@@ -1398,6 +1400,27 @@ namespace LightmapUvTool
                 e.Use();
                 Repaint();
             }
+        }
+
+        void OnPreviewChannelChanged(int newChannel)
+        {
+            pvChannel = newChannel;
+
+            ClearHoverState(false);
+
+            hasHoveredShell = false;
+            hasSelectedShell = false;
+            hoveredShell = default;
+            selectedShell = default;
+
+            lastHitMeshId = -1;
+            lastHitShellId = -1;
+
+            hoveredShellDebug = null;
+            selectedShellDebug = null;
+
+            Repaint();
+            SceneView.RepaintAll();
         }
 
         ShellDebugHit FindShellAtMouse(List<ValueTuple<Mesh, MeshEntry, int>> draws, Rect canvasRect, float cx, float cy, float sz)
