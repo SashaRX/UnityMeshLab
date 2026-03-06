@@ -1851,50 +1851,15 @@ namespace LightmapUvTool
             float px = ox + drawUv.x * sz;
             float py = oy + (1f - drawUv.y) * sz;
             float crossR = Mathf.Max(0.012f * sz, 4f);
-            float spotR = crossR * 1.18f; // spot чуть больше перекрестья
+            float spotOuterR = crossR * 1.35f; // spot гарантированно больше перекрестья
+            float spotInnerR = crossR * 0.55f;
 
-            // Glow: soft halo via layered quads with decreasing alpha
-            Color glowBase = new Color(1f, .75f, .2f, 1f);
-            float hw = 1f; // half-width of glow band
-            for (int layer = 3; layer >= 0; layer--)
-            {
-                float t = (layer + 1) / 4f;
-                float extent = spotR * (1f + t * 1.5f); // 1.0r .. 2.5r
-                float alpha = 0.08f * (4 - layer);   // 0.32, 0.24, 0.16, 0.08
-                Color c = new Color(glowBase.r, glowBase.g, glowBase.b, alpha);
+            Color crossColor = new Color(1f, 0.78f, 0.2f, 1f);
+            Color spotCenter = new Color(1f, 1f, 1f, 0.42f);
+            Color spotOuter = new Color(1f, 1f, 1f, 0f);
 
-                GL.Begin(GL.QUADS);
-                GL.Color(c);
-                // Horizontal glow band
-                GL.Vertex3(px - extent, py - hw, 0);
-                GL.Vertex3(px + extent, py - hw, 0);
-                GL.Vertex3(px + extent, py + hw, 0);
-                GL.Vertex3(px - extent, py + hw, 0);
-                // Vertical glow band
-                GL.Vertex3(px - hw, py - extent, 0);
-                GL.Vertex3(px + hw, py - extent, 0);
-                GL.Vertex3(px + hw, py + extent, 0);
-                GL.Vertex3(px - hw, py + extent, 0);
-                GL.End();
-            }
-
-            // Crosshair: single crisp orange cross with dark outline
-            GL.Begin(GL.LINES);
-            GL.Color(new Color(0f, 0f, 0f, 0.6f));
-            GL.Vertex3(px - crossR - 1f, py, 0); GL.Vertex3(px + crossR + 1f, py, 0);
-            GL.Vertex3(px, py - crossR - 1f, 0); GL.Vertex3(px, py + crossR + 1f, 0);
-            GL.Color(glowBase);
-            GL.Vertex3(px - crossR, py, 0); GL.Vertex3(px + crossR, py, 0);
-            GL.Vertex3(px, py - crossR, 0); GL.Vertex3(px, py + crossR, 0);
-            GL.End();
-
-            // Spot поверх перекрестья: мягкое пятно (как в референсе), чуть больше креста
-            int segments = 40;
-            float spotInnerR = spotR * 0.45f;
-            float spotOuterR = spotR * 1.25f;
-            Color spotCenter = new Color(1f, 1f, 1f, 0.22f);
-            Color spotOuter = new Color(1f, 1f, 1f, 0.0f);
-
+            // Spot (мягкий круг) — больше перекрестья
+            int segments = 48;
             GL.Begin(GL.TRIANGLES);
             for (int i = 0; i < segments; i++)
             {
@@ -1909,12 +1874,12 @@ namespace LightmapUvTool
                 Vector3 o0 = new Vector3(px + d0.x * spotOuterR, py + d0.y * spotOuterR, 0f);
                 Vector3 o1 = new Vector3(px + d1.x * spotOuterR, py + d1.y * spotOuterR, 0f);
 
-                // inner soft disc
+                // inner core
                 GL.Color(spotCenter); GL.Vertex(c);
                 GL.Color(spotCenter); GL.Vertex(i0);
                 GL.Color(spotCenter); GL.Vertex(i1);
 
-                // feather ring
+                // feather to outer radius
                 GL.Color(spotCenter); GL.Vertex(i0);
                 GL.Color(spotOuter);  GL.Vertex(o0);
                 GL.Color(spotOuter);  GL.Vertex(o1);
@@ -1923,6 +1888,13 @@ namespace LightmapUvTool
                 GL.Color(spotOuter);  GL.Vertex(o1);
                 GL.Color(spotCenter); GL.Vertex(i1);
             }
+            GL.End();
+
+            // Crosshair
+            GL.Begin(GL.LINES);
+            GL.Color(crossColor);
+            GL.Vertex3(px - crossR, py, 0); GL.Vertex3(px + crossR, py, 0);
+            GL.Vertex3(px, py - crossR, 0); GL.Vertex3(px, py + crossR, 0);
             GL.End();
         }
 
