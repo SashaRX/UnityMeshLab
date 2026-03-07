@@ -1109,6 +1109,7 @@ namespace LightmapUvTool
                     Dictionary<int, Vector2> bestOverlapUv2 = null;
                     int bestOverlapIssues = int.MaxValue;
                     int bestOverlapCoverage = -1;
+                    int bestOverlapRayHits = -1;
                     float bestOverlapDistSq = float.MaxValue;
                     int bestOverlapSrc = chosenSrc;
                     string bestOverlapMethod = "";
@@ -1152,33 +1153,46 @@ namespace LightmapUvTool
                             srcUv2Min, srcUv2Max, groupMembers,
                             kRayMaxDist);
 
+                        // Count ray hits for this source — measures 3D proximity reliability.
+                        // Ray-based methods (ray+partition) use actual 3D raycasting, so more
+                        // hits = more vertices physically match this source. This is the most
+                        // reliable indicator of which source is correct for overlapping geometry.
+                        int rayHits = 0;
+                        foreach (var c in allCandidates)
+                        {
+                            if (c.method == "ray+partition" && c.coverage > rayHits)
+                                rayHits = c.coverage;
+                        }
+
                         var best = SelectBestCandidate(allCandidates, tShell.faceIndices, tgtTris, tUv0);
                         if (best.HasValue)
                         {
                             var b = best.Value;
                             float distSq = (tgtCentroid - srcCentroid3D[si]).sqrMagnitude;
 
-                            // Cross-LOD hint match: if previous LOD used this source for
-                            // the nearest belt at this position, strongly prefer it.
-                            // This ensures the same physical belt gets the same source
-                            // across all LOD levels, preventing checker-pattern jumps.
-                            bool isHintMatch = (si == hintSrc);
-                            bool bestIsHintMatch = (bestOverlapSrc == hintSrc);
-
                             bool betterIssues = b.issues < bestOverlapIssues;
                             bool sameIssues = b.issues == bestOverlapIssues;
+                            bool moreRayHits = rayHits > bestOverlapRayHits;
+                            bool sameRayHits = rayHits == bestOverlapRayHits;
+                            bool isHintMatch = (si == hintSrc);
+                            bool bestIsHintMatch = (bestOverlapSrc == hintSrc);
                             bool closer3D = distSq < bestOverlapDistSq;
 
-                            // Priority: issues → hint match → 3D distance
+                            // Priority: issues → ray hits → hint match → 3D distance
+                            // Ray hits are the strongest 3D signal — they prove vertices
+                            // physically correspond to this source. This is deterministic
+                            // across LODs because the same source mesh is used.
                             bool wins = betterIssues
-                                || (sameIssues && isHintMatch && !bestIsHintMatch)
-                                || (sameIssues && isHintMatch == bestIsHintMatch && closer3D);
+                                || (sameIssues && moreRayHits)
+                                || (sameIssues && sameRayHits && isHintMatch && !bestIsHintMatch)
+                                || (sameIssues && sameRayHits && isHintMatch == bestIsHintMatch && closer3D);
 
                             if (wins)
                             {
                                 bestOverlapUv2 = b.uv2;
                                 bestOverlapIssues = b.issues;
                                 bestOverlapCoverage = b.coverage;
+                                bestOverlapRayHits = rayHits;
                                 bestOverlapDistSq = distSq;
                                 bestOverlapSrc = si;
                                 bestOverlapMethod = b.method;
@@ -1192,8 +1206,10 @@ namespace LightmapUvTool
 
                         UvtLog.Info($"[GroupedTransfer]   t{tsi}: overlap unified " +
                             $"(best src{bestOverlapSrc}, {bestOverlapCoverage} cov, " +
-                            $"{bestOverlapIssues} issues, method={bestOverlapMethod}, " +
+                            $"{bestOverlapIssues} issues, rayHits={bestOverlapRayHits}, " +
+                            $"method={bestOverlapMethod}, " +
                             $"tried {groupMembers.Count} shells" +
+                            (hintSrc >= 0 ? $", hint=src{hintSrc}" : "") +
                             (tooManyIssues ? " → fall-through" : "") + ")");
 
                         if (!tooManyIssues)
