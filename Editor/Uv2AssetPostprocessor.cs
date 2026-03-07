@@ -444,7 +444,9 @@ namespace LightmapUvTool
             }
 
             mesh.RecalculateBounds();
-            mesh.UploadMeshData(false);
+            // NOTE: Do NOT call mesh.UploadMeshData() here — during OnPostprocessModel,
+            // Unity manages GPU upload internally. Calling it here can cause the
+            // verification pass to detect inconsistent state ("inconsistent result" error).
 
             UvtLog.Verbose($"[UV2 Postprocess] '{mesh.name}': replay {rawCount}→{optCount} verts " +
                           $"({entry.optimizedTriangles.Length / 3} tris, {subCount} submeshes)");

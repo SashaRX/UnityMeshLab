@@ -3044,6 +3044,29 @@ namespace LightmapUvTool
 
                 string meshName = e.fbxMesh != null ? e.fbxMesh.name : e.originalMesh.name;
 
+                // Carry forward existing fingerprint from sidecar when available.
+                // On repeat runs, e.fbxMesh is mf.sharedMesh which may have been
+                // modified by the postprocessor (replay changes vertex order),
+                // so recomputing would produce a hash that doesn't match the raw FBX.
+                // The original fingerprint (from the first run on a clean FBX) is still valid
+                // as long as the FBX file itself hasn't changed.
+                MeshFingerprint fp = null;
+                if (e.fbxMesh != null)
+                {
+                    var existingSidecar = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(
+                        Uv2DataAsset.GetSidecarPath(fbxPath));
+                    var existingEntry = existingSidecar != null ? existingSidecar.Find(meshName) : null;
+                    if (existingEntry?.sourceFingerprint != null && existingEntry.hasReplayData)
+                    {
+                        // Reuse fingerprint from previous run — it was computed from the raw FBX
+                        fp = existingEntry.sourceFingerprint;
+                    }
+                    else
+                    {
+                        fp = MeshFingerprint.Compute(e.fbxMesh);
+                    }
+                }
+
                 var sidecar = new SidecarEntry
                 {
                     name = meshName,
@@ -3056,7 +3079,7 @@ namespace LightmapUvTool
                     // Schema & provenance
                     schemaVersion = Uv2DataAsset.CurrentSchemaVersion,
                     toolVersion = Uv2DataAsset.ToolVersionStr,
-                    sourceFingerprint = e.fbxMesh != null ? MeshFingerprint.Compute(e.fbxMesh) : null,
+                    sourceFingerprint = fp,
                     targetUvChannel = pipeSettings.targetUvChannel,
                     stepMeshopt = e.wasWelded,
                     stepEdgeWeld = e.wasEdgeWelded,
