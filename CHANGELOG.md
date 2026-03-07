@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.30] - 2026-03-07
+
+### Fixed — Source claiming prevents same-source UV2 overlap in overlap groups
+- **Source claiming**: track which source shells are already used by earlier targets (both interp and merged). Overlap unified ranking prefers unclaimed sources to prevent multiple targets from mapping to the same source, which produces UV2 overlap artifacts.
+- **Ranking chain**: `issues → unclaimed → hint → vote winner → vote count → centroid distance`
+- Log shows `CLAIMED` when the best available source was already taken by another target.
+- Examples: LOD2 t81/t88 both picking src102, or t78/t99/t100 all picking src105 — now the second target is redirected to its next-best unclaimed source.
+
 ## [0.13.29] - 2026-03-07
 
 ### Fixed — Demote centroid distance to tiebreaker in overlap ranking

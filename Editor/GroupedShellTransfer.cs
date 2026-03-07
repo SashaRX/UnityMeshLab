@@ -1088,6 +1088,10 @@ namespace LightmapUvTool
             // Track UV2 AABBs of placed force3D shells to prevent mutual overlap
             var force3DUsedRegions = new List<(Vector2 min, Vector2 max)>();
 
+            // Track which source shells are already claimed by overlap group targets.
+            // Prevents multiple targets from mapping to the same source, which causes
+            // UV2 overlap (same-src) artifacts. Includes both interp and merged claims.
+            var overlapClaimedSources = new HashSet<int>();
 
 
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
@@ -1260,26 +1264,32 @@ namespace LightmapUvTool
 
                             bool betterIssues = b.issues < bestOverlapIssues;
                             bool sameIssues = b.issues == bestOverlapIssues;
+                            bool isUnclaimed = !overlapClaimedSources.Contains(si);
+                            bool bestIsUnclaimed = bestOverlapSrc < 0 || !overlapClaimedSources.Contains(bestOverlapSrc);
                             bool isHintMatch = (si == hintSrc);
                             bool bestIsHintMatch = (bestOverlapSrc == hintSrc);
                             bool isVoteWinner = (si == voteSrc && voteCount > 0);
                             bool bestIsVoteWinner = (bestOverlapSrc == voteSrc && voteCount > 0);
                             bool closerCentroid = centroidDistSq < bestOverlapCentroidDistSq - 1e-8f;
 
-                            // Priority: issues → hint → vote winner → vote count → centroid distance
-                            // Face-proximity voting is the most reliable geometric signal
-                            // because it compares individual faces (robust on simplified LODs).
-                            // Centroid distance can be misleading: a small nearby source shell
-                            // may have a closer centroid but its faces aren't the right match.
-                            // Cross-LOD hint provides consistency when votes are ambiguous.
+                            // Priority: issues → unclaimed → hint → vote winner → vote count → centroid
+                            // "Unclaimed" prevents multiple targets from using the same source
+                            // which would produce UV2 overlap (same-src) artifacts. A source
+                            // claimed by an earlier target (interp or merged) is deprioritized
+                            // so this target picks its next-best alternative.
                             bool wins = betterIssues
-                                || (sameIssues && isHintMatch && !bestIsHintMatch)
-                                || (sameIssues && isHintMatch == bestIsHintMatch
+                                || (sameIssues && isUnclaimed && !bestIsUnclaimed)
+                                || (sameIssues && isUnclaimed == bestIsUnclaimed
+                                    && isHintMatch && !bestIsHintMatch)
+                                || (sameIssues && isUnclaimed == bestIsUnclaimed
+                                    && isHintMatch == bestIsHintMatch
                                     && isVoteWinner && !bestIsVoteWinner)
-                                || (sameIssues && isHintMatch == bestIsHintMatch
+                                || (sameIssues && isUnclaimed == bestIsUnclaimed
+                                    && isHintMatch == bestIsHintMatch
                                     && isVoteWinner == bestIsVoteWinner
                                     && votes > srcVoteCount[bestOverlapSrc])
-                                || (sameIssues && isHintMatch == bestIsHintMatch
+                                || (sameIssues && isUnclaimed == bestIsUnclaimed
+                                    && isHintMatch == bestIsHintMatch
                                     && isVoteWinner == bestIsVoteWinner
                                     && votes == srcVoteCount[bestOverlapSrc]
                                     && closerCentroid);
@@ -1304,6 +1314,7 @@ namespace LightmapUvTool
                         float bestAreaR = (tgt3DArea > 1e-8f && srcGroupArea[bestOverlapSrc] > 1e-8f)
                             ? Mathf.Min(srcGroupArea[bestOverlapSrc], tgt3DArea) / Mathf.Max(srcGroupArea[bestOverlapSrc], tgt3DArea)
                             : 0f;
+                        bool bestWasClaimed = overlapClaimedSources.Contains(bestOverlapSrc);
                         UvtLog.Info($"[GroupedTransfer]   t{tsi}: overlap unified " +
                             $"(best src{bestOverlapSrc}, {bestOverlapCoverage} cov, " +
                             $"{bestOverlapIssues} issues, " +
@@ -1312,6 +1323,7 @@ namespace LightmapUvTool
                             $"method={bestOverlapMethod}, " +
                             $"tried {groupMembers.Count} shells" +
                             (hintSrc >= 0 ? $", hint=src{hintSrc}" : "") +
+                            (bestWasClaimed ? ", CLAIMED" : "") +
                             (tooManyIssues ? " → fall-through" : "") + ")");
 
                         if (!tooManyIssues)
@@ -1325,6 +1337,7 @@ namespace LightmapUvTool
                             result.targetShellToSourceShell[tsi] = bestOverlapSrc;
                             shellsMerged++;
                             result.targetShellMethod[tsi] = 2;
+                            overlapClaimedSources.Add(bestOverlapSrc);
 
                             continue;
                         }
@@ -1916,6 +1929,10 @@ namespace LightmapUvTool
                         transferred++;
                     }
 
+                    // Claim source for overlap group dedup — prevents other
+                    // targets from using the same source and creating UV2 overlap.
+                    if (chosenSrc >= 0 && srcShellOverlapMembers[chosenSrc] != null)
+                        overlapClaimedSources.Add(chosenSrc);
                 }
             }
 
