@@ -110,14 +110,11 @@ namespace LightmapUvTool
                     // Step 4: Approach B — split by face normal direction
                     var split = ForceSplitByNormal(
                         shell, overlappingFaces, adjacency, triangles, vertices);
-                    bool splitByNormal = split != null && split.Count == 2;
 
                     // Step 5: Approach C — split by UV0 winding direction (mirrored UV)
-                    if (!splitByNormal)
-                    {
+                    if (split == null || split.Count != 2)
                         split = ForceSplitByUv0Winding(
                             shell, overlappingFaces, adjacency, uv0, triangles, vertices);
-                    }
 
                     // Step 6: Approach D — split by 3D position K-means
                     if (split == null || split.Count != 2)
@@ -128,19 +125,15 @@ namespace LightmapUvTool
                     {
                         r.partitionCount = 2;
                         r.partitionCentroid = new Vector3[2];
-                        // Only use normal-based matching for Approach B (normal split).
-                        // For winding/position splits, normals are similar on both sides
-                        // (mirror symmetry) — centroid distance is more reliable.
-                        r.partitionNormal = splitByNormal ? new Vector3[2] : null;
+                        r.partitionNormal = new Vector3[2];
                         for (int ci = 0; ci < 2; ci++)
                         {
                             foreach (int f in split[ci])
                                 r.facePartitionId[f] = ci;
                             r.partitionCentroid[ci] = ComputePartitionCentroid(
                                 split[ci], triangles, vertices);
-                            if (splitByNormal)
-                                r.partitionNormal[ci] = ComputePartitionNormal(
-                                    split[ci], triangles, vertices);
+                            r.partitionNormal[ci] = ComputePartitionNormal(
+                                split[ci], triangles, vertices);
                         }
                     }
                     else

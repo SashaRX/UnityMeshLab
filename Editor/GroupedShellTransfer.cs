@@ -1429,8 +1429,8 @@ namespace LightmapUvTool
                     int bestMergedConsistencyFixes = 0;
                     bool bestWasConstrained = false;
 
-                    // force3D: partition-constrained first (prevents wandering into
-                    // wrong partition's UV2), fall back to all-source if issues remain.
+                    // force3D: try all-source first (to find UV2 space in a different
+                    // source region), fall back to constrained if overlap guard rejects.
                     // Normal merged: constrained first, all-source fallback (unchanged).
                     bool force3D = tgtForce3DFallback[tsi];
 
@@ -1439,16 +1439,16 @@ namespace LightmapUvTool
                         bool constrained;
                         if (force3D)
                         {
-                            // pass 0 = constrained (partition-aware), pass 1 = all-source fallback
+                            // pass 0 = all-source, pass 1 = constrained fallback
                             if (pass == 0)
                             {
-                                constrained = (srcFacesChosen != null);
+                                constrained = false;           // all-source first
                             }
                             else
                             {
-                                if (srcFacesChosen == null) break; // pass 0 was already all-source
-                                if (bestMergedIssues == 0) break;  // constrained was clean
-                                constrained = false;               // all-source fallback
+                                if (bestMergedIssues == 0) break;  // all-source was clean
+                                constrained = (srcFacesChosen != null);
+                                if (!constrained) break;       // no constrained faces
                             }
                         }
                         else
