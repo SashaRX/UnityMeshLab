@@ -260,9 +260,9 @@ namespace LightmapUvTool
         /// to produce the exact same optimized mesh every time.
         /// No MeshOptimizer or UvEdgeWeld calls — pure table-driven permutation.
         ///
-        /// When stored raw positions are available, performs order-independent matching:
-        /// reimported vertex → stored raw vertex → optimized vertex. This handles
-        /// vertex reordering between imports (e.g. when generateSecondaryUV is toggled).
+        /// Vertex order correctness: ApplyUv2ToFbx pre-disables generateSecondaryUV
+        /// before building the remap, so the reimported mesh seen here has the same
+        /// vertex order as e.fbxMesh had when the remap was computed.
         /// </summary>
         static bool ReplayOptimization(Mesh mesh, MeshUv2Entry entry)
         {
@@ -274,6 +274,7 @@ namespace LightmapUvTool
                 return false;
 
             // ── Hard validation ──
+            // Check UV2 length matches optimized vertex count
             if (entry.uv2.Length != optCount)
             {
                 UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': uv2.Length ({entry.uv2.Length}) != " +
@@ -281,6 +282,7 @@ namespace LightmapUvTool
                 return false;
             }
 
+            // Check sum of submesh tri counts matches optimizedTriangles length
             int totalTriIndices = 0;
             foreach (int c in entry.submeshTriangleCounts) totalTriIndices += c;
             if (totalTriIndices != entry.optimizedTriangles.Length)
@@ -290,7 +292,22 @@ namespace LightmapUvTool
                 return false;
             }
 
-            // Validate triangle indices
+            // Validate remap bounds and check for negative indices in triangles
+            for (int i = 0; i < rawCount; i++)
+            {
+                if (remap[i] < -1) // -1 is valid (removed vertex), anything less is corruption
+                {
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': remap[{i}]={remap[i]} is invalid — replay aborted.");
+                    return false;
+                }
+                if (remap[i] >= optCount)
+                {
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': remap[{i}]={remap[i]} >= optCount={optCount} — replay aborted.");
+                    return false;
+                }
+            }
+
+            // Validate triangle indices: no negative, no out-of-range
             int maxIdx = -1;
             for (int i = 0; i < entry.optimizedTriangles.Length; i++)
             {
@@ -309,132 +326,7 @@ namespace LightmapUvTool
                 return false;
             }
 
-            // ── Build permutation: reimported vertex → stored raw vertex ──
-            // The remap table was built for vertices in the order they appeared when
-            // the pipeline ran (e.fbxMesh). The reimported mesh may have a different
-            // vertex order (e.g. generateSecondaryUV toggled). If stored raw positions
-            // are available, match by position+UV0 to find the correct correspondence.
-            int[] perm = null; // perm[reimportedIdx] = storedRawIdx
-            bool hasStoredRaw = entry.vertPositions != null && entry.vertPositions.Length == remap.Length;
-
-            if (hasStoredRaw && remap.Length == rawCount)
-            {
-                var reimPos = mesh.vertices;
-                var reimUv0 = new List<Vector2>();
-                mesh.GetUVs(0, reimUv0);
-                bool hasUv0 = entry.vertUv0 != null && entry.vertUv0.Length == remap.Length
-                              && reimUv0.Count == rawCount;
-
-                // Build quantized position lookup for stored raw vertices
-                var posLookup = new Dictionary<(int, int, int), List<int>>();
-                for (int i = 0; i < remap.Length; i++)
-                {
-                    var key = QuantizePos(entry.vertPositions[i]);
-                    if (!posLookup.TryGetValue(key, out var list))
-                    {
-                        list = new List<int>(2);
-                        posLookup[key] = list;
-                    }
-                    list.Add(i);
-                }
-
-                perm = new int[rawCount];
-                for (int j = 0; j < rawCount; j++) perm[j] = -1;
-                int permMatched = 0;
-
-                for (int j = 0; j < rawCount; j++)
-                {
-                    var key = QuantizePos(reimPos[j]);
-                    if (!posLookup.TryGetValue(key, out var candidates)) continue;
-
-                    if (candidates.Count == 1)
-                    {
-                        perm[j] = candidates[0];
-                        permMatched++;
-                    }
-                    else if (hasUv0)
-                    {
-                        float bestDist = float.MaxValue;
-                        int bestIdx = -1;
-                        foreach (int ci in candidates)
-                        {
-                            float d = Vector2.SqrMagnitude(reimUv0[j] - entry.vertUv0[ci]);
-                            if (d < bestDist) { bestDist = d; bestIdx = ci; }
-                        }
-                        if (bestIdx >= 0) { perm[j] = bestIdx; permMatched++; }
-                    }
-                    else
-                    {
-                        perm[j] = candidates[0];
-                        permMatched++;
-                    }
-                }
-
-                // Nearest-neighbor fallback for bucket boundary misses
-                if (permMatched < rawCount)
-                {
-                    for (int j = 0; j < rawCount; j++)
-                    {
-                        if (perm[j] >= 0) continue;
-                        float bestDist = float.MaxValue;
-                        int bestIdx = -1;
-                        for (int k = 0; k < entry.vertPositions.Length; k++)
-                        {
-                            float d = Vector3.SqrMagnitude(reimPos[j] - entry.vertPositions[k]);
-                            if (d < bestDist) { bestDist = d; bestIdx = k; }
-                        }
-                        if (bestIdx >= 0 && bestDist < 1e-4f)
-                        {
-                            perm[j] = bestIdx;
-                            permMatched++;
-                        }
-                    }
-                }
-
-                if (permMatched < rawCount)
-                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': permutation matched {permMatched}/{rawCount} " +
-                                $"({rawCount - permMatched} unmatched reimported verts)");
-
-                // Check if permutation is identity (same order) — skip if so
-                bool isIdentity = true;
-                for (int j = 0; j < rawCount; j++)
-                {
-                    if (perm[j] != j) { isIdentity = false; break; }
-                }
-                if (isIdentity) perm = null; // no reordering needed
-            }
-
-            // Compose: composedRemap[reimportedIdx] = optimizedIdx
-            // If perm exists: composedRemap[j] = remap[perm[j]]
-            // If no perm (identity or no stored raw): composedRemap[j] = remap[j]
-            int[] composedRemap;
-            if (perm != null)
-            {
-                composedRemap = new int[rawCount];
-                for (int j = 0; j < rawCount; j++)
-                {
-                    int storedIdx = perm[j];
-                    composedRemap[j] = (storedIdx >= 0 && storedIdx < remap.Length) ? remap[storedIdx] : -1;
-                }
-                UvtLog.Verbose($"[UV2 Postprocess] '{mesh.name}': vertex order permutation applied");
-            }
-            else
-            {
-                composedRemap = remap;
-            }
-
-            // Validate composed remap bounds
-            for (int i = 0; i < rawCount; i++)
-            {
-                if (composedRemap[i] < -1 || composedRemap[i] >= optCount)
-                {
-                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': composedRemap[{i}]={composedRemap[i]} " +
-                                $"out of bounds (optCount={optCount}) — replay aborted.");
-                    return false;
-                }
-            }
-
-            // ── Read all channels from reimported mesh ──
+            // ── Read all channels from raw FBX mesh ──
             var rawPos     = mesh.vertices;
             var rawNormals = mesh.normals;
             var rawTangents = mesh.tangents;
@@ -442,6 +334,7 @@ namespace LightmapUvTool
             var rawBoneW   = mesh.boneWeights;
             var rawBindP   = mesh.bindposes;
 
+            // Read UV channels (0–7, skip channel 1 which is UV2 — we'll write that from sidecar)
             var rawUvs = new List<Vector2>[8];
             var rawUvDim = new int[8];
             for (int ch = 0; ch < 8; ch++)
@@ -454,7 +347,7 @@ namespace LightmapUvTool
                 mesh.GetUVs(ch, rawUvs[ch]);
             }
 
-            // ── Build optimized arrays via composed remap ──
+            // ── Build optimized arrays via remap ──
             var optPos = new Vector3[optCount];
             var optNormals = rawNormals != null && rawNormals.Length == rawCount ? new Vector3[optCount] : null;
             var optTangents = rawTangents != null && rawTangents.Length == rawCount ? new Vector4[optCount] : null;
@@ -465,13 +358,15 @@ namespace LightmapUvTool
             {
                 if (ch == 1) continue;
                 if (rawUvs[ch] != null && rawUvs[ch].Count == rawCount)
+                {
                     optUvs[ch] = new List<Vector2>(new Vector2[optCount]);
+                }
             }
 
             for (int i = 0; i < rawCount; i++)
             {
-                int dst = composedRemap[i];
-                if (dst < 0) continue;
+                int dst = remap[i];
+                if (dst < 0) continue; // vertex was removed (shouldn't happen with valid remap)
 
                 optPos[dst] = rawPos[i];
                 if (optNormals != null) optNormals[dst] = rawNormals[i];
@@ -504,18 +399,6 @@ namespace LightmapUvTool
                 UvtLog.Verbose($"[UV2 Postprocess] '{mesh.name}': filled {entry.orphanIndices.Length} orphan vertices from sidecar");
             }
 
-            // Restore bone data via composed remap
-            if (rawBoneW != null && rawBoneW.Length > 0)
-            {
-                var optBoneW = new BoneWeight[optCount];
-                for (int i = 0; i < rawCount; i++)
-                {
-                    int dst = composedRemap[i];
-                    if (dst >= 0) optBoneW[dst] = rawBoneW[i];
-                }
-                mesh.boneWeights = optBoneW; // Set early so it's available after vertex rebuild
-            }
-
             // ── Rebuild mesh ──
             // IMPORTANT: Do NOT use mesh.Clear() here. During OnPostprocessModel, Unity
             // allows mesh modifications regardless of isReadable. However, Clear() resets
@@ -537,13 +420,13 @@ namespace LightmapUvTool
                 mesh.SetUVs(ch, optUvs[ch]);
             }
 
-            // Restore bone/bind data
+            // Restore bone data
             if (rawBoneW != null && rawBoneW.Length > 0)
             {
                 var optBoneW = new BoneWeight[optCount];
                 for (int i = 0; i < rawCount; i++)
                 {
-                    int dst = composedRemap[i];
+                    int dst = remap[i];
                     if (dst >= 0) optBoneW[dst] = rawBoneW[i];
                 }
                 mesh.boneWeights = optBoneW;
@@ -570,8 +453,7 @@ namespace LightmapUvTool
             // verification pass to detect inconsistent state ("inconsistent result" error).
 
             UvtLog.Verbose($"[UV2 Postprocess] '{mesh.name}': replay {rawCount}→{optCount} verts " +
-                          $"({entry.optimizedTriangles.Length / 3} tris, {subCount} submeshes)" +
-                          (perm != null ? " [reordered]" : ""));
+                          $"({entry.optimizedTriangles.Length / 3} tris, {subCount} submeshes)");
             return true;
         }
 

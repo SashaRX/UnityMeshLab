@@ -3019,6 +3019,47 @@ namespace LightmapUvTool
         {
             if (lodGroup == null) return;
 
+            // ── Pre-import pass: ensure generateSecondaryUV is disabled ──
+            // After Reset, FBXs may have been imported with generateSecondaryUV=ON.
+            // OnPreprocessModel will disable it during the final reimport, but by then
+            // we've already built remap tables from e.fbxMesh (which has the ON order).
+            // To avoid vertex order mismatch, disable the setting and reimport first.
+            {
+                var fbxPathsToFix = new HashSet<string>();
+                foreach (var e in meshEntries)
+                {
+                    if (!e.include) continue;
+                    Mesh m = e.fbxMesh ?? e.originalMesh;
+                    if (m == null) continue;
+                    string p = AssetDatabase.GetAssetPath(m);
+                    if (string.IsNullOrEmpty(p)) continue;
+                    var imp = AssetImporter.GetAtPath(p) as ModelImporter;
+                    if (imp != null && imp.generateSecondaryUV)
+                        fbxPathsToFix.Add(p);
+                }
+
+                if (fbxPathsToFix.Count > 0)
+                {
+                    UvtLog.Info($"[Apply] Pre-import: disabling generateSecondaryUV on {fbxPathsToFix.Count} FBX(es) to match postprocessor vertex order");
+                    foreach (string p in fbxPathsToFix)
+                    {
+                        var imp = AssetImporter.GetAtPath(p) as ModelImporter;
+                        if (imp != null)
+                        {
+                            imp.generateSecondaryUV = false;
+                            imp.SaveAndReimport();
+                        }
+                    }
+
+                    // Re-read meshes from reimported FBXs so e.fbxMesh has the correct vertex order
+                    foreach (var e in meshEntries)
+                    {
+                        if (e.meshFilter != null && e.meshFilter.sharedMesh != null)
+                            e.fbxMesh = e.meshFilter.sharedMesh;
+                    }
+                }
+            }
+
             var fbxGroups = new Dictionary<string, List<SidecarEntry>>();
 
             foreach (var e in meshEntries)
@@ -3145,20 +3186,11 @@ namespace LightmapUvTool
                         }
                     }
 
-                    // Store raw FBX positions/UV0 alongside replay data.
-                    // The postprocessor needs these to handle vertex reordering between
-                    // imports (e.g. when generateSecondaryUV is toggled off by OnPreprocessModel,
-                    // Unity may reorder vertices even if the count stays the same).
-                    // ReplayOptimization matches reimported → stored-raw by position+UV0,
-                    // then composes with the stored remap for order-independent replay.
-                    if (sidecar.hasReplayData && e.fbxMesh != null)
-                    {
-                        sidecar.positions = e.fbxMesh.vertices;
-                        var rawUv0 = new List<Vector2>();
-                        e.fbxMesh.GetUVs(0, rawUv0);
-                        sidecar.uv0 = rawUv0.Count == e.fbxMesh.vertexCount ? rawUv0.ToArray() : null;
-                    }
-                    else if (sidecar.hasReplayData)
+                    // Skip large position/UV0 arrays when replay data is present —
+                    // ReplayOptimization + orphan fill handles all vertex mapping deterministically.
+                    // The pre-import pass in ApplyUv2ToFbx ensures generateSecondaryUV is disabled
+                    // before building the remap, so vertex order matches what the postprocessor sees.
+                    if (sidecar.hasReplayData)
                     {
                         sidecar.positions = null;
                         sidecar.uv0 = null;
@@ -3503,6 +3535,19 @@ namespace LightmapUvTool
             // Flush asset database so postprocessor won't find cached sidecars
             if (deleted > 0)
                 AssetDatabase.Refresh();
+
+            // Disable generateSecondaryUV before reimporting — ensures meshes have
+            // the same vertex order as they will during Apply (when OnPreprocessModel
+            // disables it). Without this, vertex order can change between Reset and Apply.
+            foreach (string fbxPath in fbxPaths)
+            {
+                var imp = AssetImporter.GetAtPath(fbxPath) as ModelImporter;
+                if (imp != null && imp.generateSecondaryUV)
+                {
+                    imp.generateSecondaryUV = false;
+                    UvtLog.Verbose($"[Reset] Disabled generateSecondaryUV on '{fbxPath}'");
+                }
+            }
 
             // Now reimport FBXs — postprocessor will find no sidecars → no UV2 injection
             foreach (string fbxPath in fbxPaths)
