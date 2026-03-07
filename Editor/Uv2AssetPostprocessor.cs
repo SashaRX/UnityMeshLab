@@ -274,6 +274,14 @@ namespace LightmapUvTool
                 return false;
 
             // ── Hard validation ──
+            // Remap length must match reimported vertex count
+            if (remap.Length != rawCount)
+            {
+                UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': remap.Length ({remap.Length}) != " +
+                            $"mesh.vertexCount ({rawCount}) — replay aborted.");
+                return false;
+            }
+
             // Check UV2 length matches optimized vertex count
             if (entry.uv2.Length != optCount)
             {
@@ -397,6 +405,31 @@ namespace LightmapUvTool
                         optUvs[0][dst] = entry.orphanUv0[k];
                 }
                 UvtLog.Verbose($"[UV2 Postprocess] '{mesh.name}': filled {entry.orphanIndices.Length} orphan vertices from sidecar");
+            }
+
+            // ── Detect unfilled vertices (would cause 3D stretching to origin) ──
+            {
+                int unfilled = 0;
+                // Build set of indices actually referenced by triangles
+                var referenced = new HashSet<int>();
+                for (int i = 0; i < entry.optimizedTriangles.Length; i++)
+                    referenced.Add(entry.optimizedTriangles[i]);
+
+                foreach (int idx in referenced)
+                {
+                    if (idx < optCount && optPos[idx] == Vector3.zero)
+                    {
+                        // Check if this is genuinely at origin or unfilled
+                        // by testing if ALL attributes are zero
+                        bool allZero = true;
+                        if (optNormals != null && optNormals[idx].sqrMagnitude > 0) allZero = false;
+                        if (allZero && optUvs[0] != null && optUvs[0][idx].sqrMagnitude > 0) allZero = false;
+                        if (allZero) unfilled++;
+                    }
+                }
+                if (unfilled > 0)
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': {unfilled} referenced vertices have zero " +
+                                $"position+normal+UV0 (likely unfilled — may cause 3D stretching)");
             }
 
             // ── Rebuild mesh ──

@@ -8,6 +8,14 @@
 //             split by face normal direction (K-means k=2 on face normals).
 //             This correctly separates front/back of thin belts/straps
 //             where 3D positions are nearly identical but normals differ.
+//
+// Approach C: UV0 winding direction split — partition by signed area of UV0
+//             triangles. Mirrored/symmetric UV layouts have opposite winding.
+//             Works for symmetric models (e.g. left/right sides of a vehicle).
+//
+// Approach D: 3D position K-means — split overlapping faces by spatial position.
+//             Catches remaining cases where normals are uniform but faces are
+//             at different 3D locations (e.g. repeated panels).
 
 using System.Collections.Generic;
 using UnityEngine;
@@ -102,6 +110,16 @@ namespace LightmapUvTool
                     // Step 4: Approach B — split by face normal direction
                     var split = ForceSplitByNormal(
                         shell, overlappingFaces, adjacency, triangles, vertices);
+
+                    // Step 5: Approach C — split by UV0 winding direction (mirrored UV)
+                    if (split == null || split.Count != 2)
+                        split = ForceSplitByUv0Winding(
+                            shell, overlappingFaces, adjacency, uv0, triangles, vertices);
+
+                    // Step 6: Approach D — split by 3D position K-means
+                    if (split == null || split.Count != 2)
+                        split = ForceSplitByPosition(
+                            shell, overlappingFaces, adjacency, triangles, vertices);
 
                     if (split != null && split.Count == 2)
                     {
@@ -481,6 +499,92 @@ namespace LightmapUvTool
 
             if (mainA.Count == 0 || mainB.Count == 0) return null;
             return new List<List<int>> { mainA, mainB };
+        }
+
+        // ════════════════════════════════════════════════════════════
+        //  UV0 winding direction split (Approach C)
+        //  For mirrored/symmetric UV: overlapping triangles have opposite
+        //  winding in UV0 space (positive vs negative signed area).
+        //  Seed overlapping faces by winding, then flood-fill non-overlapping
+        //  faces to nearest cluster.
+        // ════════════════════════════════════════════════════════════
+
+        static float Uv0SignedArea(int f, Vector2[] uv0, int[] triangles)
+        {
+            int i0 = triangles[f * 3], i1 = triangles[f * 3 + 1], i2 = triangles[f * 3 + 2];
+            if (i0 >= uv0.Length || i1 >= uv0.Length || i2 >= uv0.Length) return 0f;
+            Vector2 a = uv0[i0], b = uv0[i1], c = uv0[i2];
+            return (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+        }
+
+        static List<List<int>> ForceSplitByUv0Winding(
+            UvShell shell, HashSet<int> overlappingFaces,
+            Dictionary<int, List<int>> adjacency,
+            Vector2[] uv0, int[] triangles, Vector3[] vertices)
+        {
+            if (overlappingFaces.Count < 2) return null;
+
+            // Classify overlapping faces by UV0 winding
+            int posCount = 0, negCount = 0;
+            foreach (int f in overlappingFaces)
+            {
+                float area = Uv0SignedArea(f, uv0, triangles);
+                if (area > 1e-10f) posCount++;
+                else if (area < -1e-10f) negCount++;
+            }
+
+            // Need both positive and negative winding faces for a valid split
+            if (posCount == 0 || negCount == 0) return null;
+
+            // Seed: assign overlapping faces by winding direction
+            var faceCluster = new Dictionary<int, int>(shell.faceIndices.Count);
+            foreach (int f in overlappingFaces)
+            {
+                float area = Uv0SignedArea(f, uv0, triangles);
+                if (area > 1e-10f) faceCluster[f] = 0;
+                else if (area < -1e-10f) faceCluster[f] = 1;
+                // degenerate faces (area ≈ 0) left unassigned, filled by flood
+            }
+
+            // Flood-fill remaining faces from seeded overlapping faces
+            var queue = new Queue<int>();
+            foreach (var kv in faceCluster)
+                queue.Enqueue(kv.Key);
+
+            while (queue.Count > 0)
+            {
+                int f = queue.Dequeue();
+                int cl = faceCluster[f];
+                if (!adjacency.TryGetValue(f, out var neighbors)) continue;
+                foreach (int n in neighbors)
+                {
+                    if (!faceCluster.ContainsKey(n))
+                    {
+                        faceCluster[n] = cl;
+                        queue.Enqueue(n);
+                    }
+                }
+            }
+
+            // Build partition lists
+            var part0 = new List<int>();
+            var part1 = new List<int>();
+            foreach (int f in shell.faceIndices)
+            {
+                if (faceCluster.TryGetValue(f, out int cl))
+                {
+                    if (cl == 0) part0.Add(f);
+                    else part1.Add(f);
+                }
+                else
+                {
+                    // Unassigned (isolated degenerate) — put in partition 0
+                    part0.Add(f);
+                }
+            }
+
+            if (part0.Count == 0 || part1.Count == 0) return null;
+            return new List<List<int>> { part0, part1 };
         }
 
         // Fallback: 3D position K-means (for cases where normals are uniform)
