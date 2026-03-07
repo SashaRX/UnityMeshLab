@@ -1,11 +1,17 @@
 # Changelog
 
-## [0.13.27] - 2026-03-07
+## [0.13.28] - 2026-03-07
 
-### Fixed — Deterministic overlap shell matching for cross-LOD consistency
-- **Vote tie-breaking** (`GroupedShellTransfer.cs`): when two source shells receive identical vote counts in face-proximity voting, use 3D centroid distance as deterministic tiebreaker. Prevents belt/strap shells from flipping between sources across LODs.
-- **Cross-LOD hint promotion**: when the previous-LOD hint source has competitive votes (>=70% of winner), promote it to vote-winner status. Ensures thin geometry (belts, straps) stays consistent from LOD0 through LOD2.
-- **Deterministic iteration order**: sort Dictionary keys in dedup phase (`srcClaimants`) and overlap group members in `UvShellExtractor.FindOverlapGroups()`. Sort shell extraction by root face index for stable shell IDs.
+### Fixed — Multi-signal overlap shell ranking for cross-LOD stability
+- **3D centroid distance ranking**: primary geometric signal for overlap groups. Source shells significantly closer in 3D (back-projection check) win over farther ones. Uses 30% bucketed tolerance.
+- **3D area ratio matching**: prefer source shells with matching 3D triangle area. Catches mismatches where overlapping copies differ in surface area due to curvature/position.
+- **Cross-LOD hint priority**: hint from previous LOD breaks ties among centroid-equivalent sources, ensuring consistency when LOD2 geometry simplification causes face-proximity votes to pick wrong copy.
+- **Ranking chain**: `issues → centroid proximity → hint → area ratio → vote winner → vote count`
+- **Diagnostic logging**: overlap unified log now includes `dist3D` and `areaR` for debugging.
+
+### Fixed (0.13.27) — Deterministic overlap shell matching
+- **Vote tie-breaking**: use 3D centroid distance as deterministic tiebreaker when vote counts are identical.
+- **Deterministic iteration order**: sort Dictionary keys in dedup phase and overlap group members. Sort shell extraction by root face index for stable shell IDs.
 
 ## [0.13.11] - 2026-03-03
 

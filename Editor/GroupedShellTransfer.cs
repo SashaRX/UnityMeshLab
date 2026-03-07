@@ -1115,9 +1115,42 @@ namespace LightmapUvTool
                     int bestOverlapCoverage = -1;
                     int bestOverlapSrc = chosenSrc;
                     string bestOverlapMethod = "";
+                    float bestOverlapCentroidDistSq = float.MaxValue;
 
                     // Target 3D centroid for distance-based source selection
                     Vector3 tgtCentroid = result.targetShellCentroids[tsi];
+
+                    // Compute target 3D area for area-ratio comparison
+                    float tgt3DArea = 0f;
+                    foreach (int tfi in tShell.faceIndices)
+                    {
+                        int ti0 = tgtTris[tfi * 3], ti1 = tgtTris[tfi * 3 + 1], ti2 = tgtTris[tfi * 3 + 2];
+                        if (ti0 >= tVerts.Length || ti1 >= tVerts.Length || ti2 >= tVerts.Length) continue;
+                        tgt3DArea += Vector3.Cross(tVerts[ti1] - tVerts[ti0], tVerts[ti2] - tVerts[ti0]).magnitude;
+                    }
+                    tgt3DArea *= 0.5f;
+
+                    // Precompute source 3D area + centroid distance for each group member
+                    var srcGroupArea = new float[srcShells.Count];
+                    var srcGroupDistSq = new float[srcShells.Count];
+                    foreach (int si in groupMembers)
+                    {
+                        float area = 0f;
+                        foreach (int sfi in srcShells[si].faceIndices)
+                        {
+                            int s0 = srcTris[sfi * 3], s1 = srcTris[sfi * 3 + 1], s2 = srcTris[sfi * 3 + 2];
+                            if (s0 >= srcVerts.Length || s1 >= srcVerts.Length || s2 >= srcVerts.Length) continue;
+                            area += Vector3.Cross(srcVerts[s1] - srcVerts[s0], srcVerts[s2] - srcVerts[s0]).magnitude;
+                        }
+                        srcGroupArea[si] = area * 0.5f;
+                        srcGroupDistSq[si] = (srcCentroid3D[si] - tgtCentroid).sqrMagnitude;
+                    }
+
+                    // Find the closest source by centroid distance (for bucketed comparison)
+                    float minCentroidDistSq = float.MaxValue;
+                    foreach (int si in groupMembers)
+                        if (srcGroupDistSq[si] < minCentroidDistSq)
+                            minCentroidDistSq = srcGroupDistSq[si];
 
                     // ── Pre-pass: 3D face-proximity voting with normal alignment ──
                     // For each target face centroid, find the nearest source face centroid
@@ -1229,6 +1262,7 @@ namespace LightmapUvTool
                         {
                             var b = best.Value;
                             int votes = srcVoteCount[si];
+                            float centroidDistSq = srcGroupDistSq[si];
 
                             bool betterIssues = b.issues < bestOverlapIssues;
                             bool sameIssues = b.issues == bestOverlapIssues;
@@ -1237,16 +1271,44 @@ namespace LightmapUvTool
                             bool isVoteWinner = (si == voteSrc && voteCount > 0);
                             bool bestIsVoteWinner = (bestOverlapSrc == voteSrc && voteCount > 0);
 
-                            // Priority: issues → hint match → vote winner → vote count
-                            // Cross-LOD hint is the strongest signal for overlap groups:
-                            // LOD0 has full geometry and reliably identifies the correct
-                            // source. Lower LODs have simplified geometry where face-
-                            // proximity votes can unanimously pick a wrong overlapping
-                            // copy (all copies share the same 3D region). Trust LOD0.
+                            // Centroid distance bucketed comparison (30% tolerance).
+                            // Sources within the "close bucket" (<=1.3× minimum distance)
+                            // are considered equivalent — tiebroken by other signals.
+                            // Sources significantly farther lose to closer ones.
+                            float closeBucket = minCentroidDistSq * 1.69f + 1e-6f; // 1.3² = 1.69
+                            bool inCloseBucket = centroidDistSq <= closeBucket;
+                            bool bestInCloseBucket = bestOverlapCentroidDistSq <= closeBucket;
+                            bool centroidWins = inCloseBucket && !bestInCloseBucket;
+                            bool centroidEqual = inCloseBucket == bestInCloseBucket;
+
+                            // 3D area ratio: prefer source whose 3D area matches target.
+                            // Overlap copies at the same 3D region have similar areas;
+                            // copies at different positions may differ due to curvature.
+                            float areaRatio = (tgt3DArea > 1e-8f && srcGroupArea[si] > 1e-8f)
+                                ? Mathf.Min(srcGroupArea[si], tgt3DArea) / Mathf.Max(srcGroupArea[si], tgt3DArea)
+                                : 0f;
+                            float bestAreaRatio = (tgt3DArea > 1e-8f && bestOverlapSrc >= 0 && srcGroupArea[bestOverlapSrc] > 1e-8f)
+                                ? Mathf.Min(srcGroupArea[bestOverlapSrc], tgt3DArea) / Mathf.Max(srcGroupArea[bestOverlapSrc], tgt3DArea)
+                                : 0f;
+                            bool betterArea = areaRatio > bestAreaRatio + 0.15f;
+                            bool sameArea = !betterArea && areaRatio >= bestAreaRatio - 0.15f;
+
+                            // Priority: issues → centroid proximity → hint → area → vote → count
+                            // 1) Fewer issues always wins
+                            // 2) Significantly closer 3D centroid wins (back-projection check)
+                            // 3) Cross-LOD hint ensures consistency across LODs
+                            // 4) Better 3D area match (catches size mismatches)
+                            // 5) Face-proximity vote winner
+                            // 6) Higher vote count as final tiebreaker
                             bool wins = betterIssues
-                                || (sameIssues && isHintMatch && !bestIsHintMatch)
-                                || (sameIssues && isHintMatch == bestIsHintMatch && isVoteWinner && !bestIsVoteWinner)
-                                || (sameIssues && isHintMatch == bestIsHintMatch && isVoteWinner == bestIsVoteWinner
+                                || (sameIssues && centroidWins)
+                                || (sameIssues && centroidEqual && isHintMatch && !bestIsHintMatch)
+                                || (sameIssues && centroidEqual && isHintMatch == bestIsHintMatch
+                                    && betterArea)
+                                || (sameIssues && centroidEqual && isHintMatch == bestIsHintMatch
+                                    && sameArea && isVoteWinner && !bestIsVoteWinner)
+                                || (sameIssues && centroidEqual && isHintMatch == bestIsHintMatch
+                                    && sameArea && isVoteWinner == bestIsVoteWinner
                                     && votes > srcVoteCount[bestOverlapSrc]);
 
                             if (wins)
@@ -1256,6 +1318,7 @@ namespace LightmapUvTool
                                 bestOverlapCoverage = b.coverage;
                                 bestOverlapSrc = si;
                                 bestOverlapMethod = b.method;
+                                bestOverlapCentroidDistSq = centroidDistSq;
                             }
                         }
                     }
@@ -1264,10 +1327,15 @@ namespace LightmapUvTool
                     {
                         bool tooManyIssues = bestOverlapIssues > tShell.faceIndices.Count / 2;
 
+                        float bestSrcDist = Mathf.Sqrt(bestOverlapCentroidDistSq);
+                        float bestAreaR = (tgt3DArea > 1e-8f && srcGroupArea[bestOverlapSrc] > 1e-8f)
+                            ? Mathf.Min(srcGroupArea[bestOverlapSrc], tgt3DArea) / Mathf.Max(srcGroupArea[bestOverlapSrc], tgt3DArea)
+                            : 0f;
                         UvtLog.Info($"[GroupedTransfer]   t{tsi}: overlap unified " +
                             $"(best src{bestOverlapSrc}, {bestOverlapCoverage} cov, " +
                             $"{bestOverlapIssues} issues, " +
                             $"vote=src{voteSrc}({voteCount}/{totalVotes}), " +
+                            $"dist3D={bestSrcDist:F4}, areaR={bestAreaR:F2}, " +
                             $"method={bestOverlapMethod}, " +
                             $"tried {groupMembers.Count} shells" +
                             (hintSrc >= 0 ? $", hint=src{hintSrc}" : "") +
