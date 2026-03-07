@@ -1094,18 +1094,14 @@ namespace LightmapUvTool
                     Dictionary<int, Vector2> bestOverlapUv2 = null;
                     int bestOverlapIssues = int.MaxValue;
                     int bestOverlapCoverage = -1;
+                    float bestOverlapDistSq = float.MaxValue;
                     int bestOverlapSrc = chosenSrc;
                     string bestOverlapMethod = "";
 
-                    // Try preferred source (chosenSrc) first so it gets the tie-break advantage
-                    var sortedMembers = new List<int>(groupMembers.Count);
-                    foreach (int si in groupMembers)
-                    {
-                        if (si == chosenSrc) sortedMembers.Insert(0, si);
-                        else sortedMembers.Add(si);
-                    }
+                    // Target 3D centroid for distance-based source selection
+                    Vector3 tgtCentroid = result.targetShellCentroids[tsi];
 
-                    foreach (int si in sortedMembers)
+                    foreach (int si in groupMembers)
                     {
                         var allCandidates = GenerateOverlapCandidates(
                             tShell, si,
@@ -1119,27 +1115,30 @@ namespace LightmapUvTool
                             partitionXform[si],
                             srcTransforms[si],
                             srcIsRibbon[si], srcRibbonAxis[si], srcRibbonAxis2[si], srcRibbonCentroid[si],
-                            srcUv2Min, srcUv2Max, sortedMembers,
+                            srcUv2Min, srcUv2Max, groupMembers,
                             kRayMaxDist);
 
                         var best = SelectBestCandidate(allCandidates, tShell.faceIndices, tgtTris, tUv0);
                         if (best.HasValue)
                         {
                             var b = best.Value;
-                            // Preferred source (chosenSrc) wins ties: only replace if strictly
-                            // fewer issues, or same issues with significantly more coverage.
-                            // This ensures cross-LOD consistency for overlapping geometry.
-                            bool isPreferred = (bestOverlapSrc == chosenSrc);
+                            float distSq = (tgtCentroid - srcCentroid3D[si]).sqrMagnitude;
+
+                            // Primary: fewer issues wins.
+                            // Secondary (equal issues): closer 3D centroid wins.
+                            // 3D distance is deterministic across LODs (same source centroids,
+                            // similar target centroids), ensuring consistent source selection
+                            // for overlapping belt/strap geometry regardless of LOD level.
                             bool betterIssues = b.issues < bestOverlapIssues;
                             bool sameIssues = b.issues == bestOverlapIssues;
-                            bool moreCoverage = b.coverage > bestOverlapCoverage;
+                            bool closer3D = distSq < bestOverlapDistSq;
 
-                            if (betterIssues
-                                || (sameIssues && moreCoverage && !isPreferred))
+                            if (betterIssues || (sameIssues && closer3D))
                             {
                                 bestOverlapUv2 = b.uv2;
                                 bestOverlapIssues = b.issues;
                                 bestOverlapCoverage = b.coverage;
+                                bestOverlapDistSq = distSq;
                                 bestOverlapSrc = si;
                                 bestOverlapMethod = b.method;
                             }
