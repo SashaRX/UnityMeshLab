@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.32] - 2026-03-07
+
+### Fixed — Unfilled vertices after remap rebuild (3D stretching to origin)
+- **Root cause A — Order-dependent fingerprint hash**: `MeshFingerprint.Compute` used sequential FNV-1a over positions/UV0, which depends on vertex order. Unity's FBX reimport can reorder vertices without changing geometry, causing ALL meshes to appear stale on every reimport. Changed to order-independent hash (XOR of per-vertex FNV hashes). Existing sidecars will show stale once (transition), then stable after re-Apply.
+- **Root cause B — No used-tracking in `RebuildRemapFromPositions`**: When multiple raw vertices share the same position (UV seams, hard edges), all could match to the same stored vertex, leaving other optimized indices unfilled (zero position/normal/UV0 → 3D stretching). Added `usedStored[]` tracking with priority: unused+valid-remap > unused+invalid > used. Fixes 864/856/323 unfilled vertices on TrainСarriage LOD0/1/2.
+- **Normal-based disambiguation**: Added `vertNormals` to sidecar (raw FBX normals). When UV0 alone can't distinguish candidates at the same position (hard edges: same pos+UV0, different normal), normal dot product breaks ties.
+- **Fixed matched counter**: No longer double-counts vertices where `origRemap[j] == -1` (Pass 1 increments, Pass 2 re-processes since `newRemap[i] < 0`).
+
 ## [0.13.31] - 2026-03-07
 
 ### Fixed — Per-face composite UV2 for overlap groups spanning multiple sources

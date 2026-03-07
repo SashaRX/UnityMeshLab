@@ -2991,6 +2991,7 @@ namespace LightmapUvTool
             public bool symmetrySplit;
             public Vector3[] positions;
             public Vector2[] uv0;
+            public Vector3[] normals;
             // Deterministic replay (variant B)
             public int[] vertexRemap;
             public int optimizedVertexCount;
@@ -3192,6 +3193,7 @@ namespace LightmapUvTool
                     if (sidecar.hasReplayData)
                     {
                         sidecar.positions = e.fbxMesh.vertices;
+                        sidecar.normals = e.fbxMesh.normals;
                         var rawUv0List = new List<Vector2>();
                         e.fbxMesh.GetUVs(0, rawUv0List);
                         sidecar.uv0 = rawUv0List.Count == e.fbxMesh.vertexCount ? rawUv0List.ToArray() : null;
@@ -3243,6 +3245,7 @@ namespace LightmapUvTool
                             stepSymmetrySplit = entry.stepSymmetrySplit || entry.symmetrySplit,
                             vertPositions = entry.positions,
                             vertUv0 = entry.uv0,
+                            vertNormals = entry.normals,
                             vertexRemap = entry.vertexRemap,
                             optimizedVertexCount = entry.optimizedVertexCount,
                             optimizedTriangles = entry.optimizedTriangles,

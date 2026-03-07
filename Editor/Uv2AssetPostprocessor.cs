@@ -510,6 +510,7 @@ namespace LightmapUvTool
         {
             var storedPos = entry.vertPositions;
             var storedUv0 = entry.vertUv0;
+            var storedNormals = entry.vertNormals;
             int storedCount = storedPos.Length;
             int[] origRemap = entry.vertexRemap;
 
@@ -527,6 +528,10 @@ namespace LightmapUvTool
             mesh.GetUVs(0, newUv0);
             bool hasUv0 = storedUv0 != null && storedUv0.Length == storedCount && newUv0.Count == newCount;
 
+            var newNormals = mesh.normals;
+            bool hasNormals = storedNormals != null && storedNormals.Length == storedCount
+                              && newNormals != null && newNormals.Length == newCount;
+
             // Build quantized position lookup for stored (old) raw positions
             var posLookup = new Dictionary<(int, int, int), List<int>>();
             for (int i = 0; i < storedCount; i++)
@@ -540,9 +545,13 @@ namespace LightmapUvTool
                 list.Add(i);
             }
 
-            // Map newRaw[i] → oldRaw[j] by position + UV0 matching
+            // Map newRaw[i] → oldRaw[j] by position + UV0 + normal matching.
+            // Track used stored indices to ensure 1:1 mapping (prevents multiple
+            // new vertices from claiming the same stored vertex, which would leave
+            // other optimized indices unfilled and cause 3D stretching to origin).
             var newRemap = new int[newCount];
             for (int i = 0; i < newCount; i++) newRemap[i] = -1;
+            var usedStored = new bool[storedCount];
             int matched = 0;
 
             for (int i = 0; i < newCount; i++)
@@ -550,27 +559,15 @@ namespace LightmapUvTool
                 var key = QuantizePosForRemap(newPos[i]);
                 if (!posLookup.TryGetValue(key, out var candidates)) continue;
 
-                if (candidates.Count == 1)
+                int bestOld = PickBestCandidate(candidates, i, origRemap, usedStored,
+                    hasUv0 ? newUv0 : null, storedUv0,
+                    hasNormals ? newNormals : null, storedNormals);
+
+                if (bestOld >= 0)
                 {
-                    int oldIdx = candidates[0];
-                    newRemap[i] = origRemap[oldIdx];
-                    matched++;
-                }
-                else if (hasUv0)
-                {
-                    float bestDist = float.MaxValue;
-                    int bestOld = -1;
-                    foreach (int ci in candidates)
-                    {
-                        float d = Vector2.SqrMagnitude(newUv0[i] - storedUv0[ci]);
-                        if (d < bestDist) { bestDist = d; bestOld = ci; }
-                    }
-                    if (bestOld >= 0) { newRemap[i] = origRemap[bestOld]; matched++; }
-                }
-                else
-                {
-                    newRemap[i] = origRemap[candidates[0]];
-                    matched++;
+                    newRemap[i] = origRemap[bestOld];
+                    usedStored[bestOld] = true;
+                    if (origRemap[bestOld] >= 0) matched++;
                 }
             }
 
@@ -584,13 +581,15 @@ namespace LightmapUvTool
                     int bestOld = -1;
                     for (int j = 0; j < storedCount; j++)
                     {
+                        if (usedStored[j]) continue;
                         float d = Vector3.SqrMagnitude(newPos[i] - storedPos[j]);
                         if (d < bestDist) { bestDist = d; bestOld = j; }
                     }
                     if (bestOld >= 0 && bestDist < 1e-4f)
                     {
                         newRemap[i] = origRemap[bestOld];
-                        matched++;
+                        usedStored[bestOld] = true;
+                        if (origRemap[bestOld] >= 0) matched++;
                     }
                 }
             }
@@ -602,6 +601,53 @@ namespace LightmapUvTool
             UvtLog.Info($"[UV2 Postprocess] '{mesh.name}': rebuilt remap from stored positions " +
                         $"({matched}/{newCount} matched, stale fingerprint)");
             return newRemap;
+        }
+
+        /// <summary>
+        /// Pick the best stored vertex candidate for a new raw vertex.
+        /// Priority: unused with valid remap > unused with invalid remap > any remaining.
+        /// Among equal priority, prefer closest UV0; break ties with closest normal.
+        /// </summary>
+        static int PickBestCandidate(List<int> candidates, int newIdx, int[] origRemap, bool[] usedStored,
+                                      List<Vector2> newUv0, Vector2[] storedUv0,
+                                      Vector3[] newNormals, Vector3[] storedNormals)
+        {
+            if (candidates.Count == 1)
+            {
+                int ci = candidates[0];
+                return usedStored[ci] ? -1 : ci;
+            }
+
+            int bestOld = -1;
+            float bestScore = float.MaxValue;
+            int bestPriority = int.MaxValue; // lower = better: 0=unused+valid, 1=unused+invalid, 2=used
+
+            for (int k = 0; k < candidates.Count; k++)
+            {
+                int ci = candidates[k];
+                int priority = usedStored[ci] ? 2 : (origRemap[ci] >= 0 ? 0 : 1);
+                if (priority > bestPriority) continue;
+
+                float score = 0f;
+                if (newUv0 != null && storedUv0 != null)
+                    score = Vector2.SqrMagnitude(newUv0[newIdx] - storedUv0[ci]);
+
+                // Break UV0 ties with normal similarity (1 - dot → 0 is perfect match)
+                if (newNormals != null && storedNormals != null && score < 1e-8f)
+                {
+                    float dot = Vector3.Dot(newNormals[newIdx], storedNormals[ci]);
+                    score += (1f - dot) * 1e-9f; // tiny tiebreaker
+                }
+
+                if (priority < bestPriority || score < bestScore)
+                {
+                    bestPriority = priority;
+                    bestScore = score;
+                    bestOld = ci;
+                }
+            }
+
+            return bestOld;
         }
 
         static (int, int, int) QuantizePosForRemap(Vector3 pos)

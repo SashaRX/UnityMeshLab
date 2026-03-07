@@ -41,25 +41,31 @@ namespace LightmapUvTool
             for (int s = 0; s < mesh.subMeshCount; s++)
                 fp.submeshTriCounts[s] = mesh.GetTriangles(s).Length;
 
-            // FNV-1a hash over quantized positions
+            // Order-independent hash over quantized positions.
+            // Uses per-vertex FNV hash XORed together so vertex reordering
+            // during FBX reimport doesn't change the result.
             var positions = mesh.vertices;
-            uint posHash = 2166136261u;
+            uint posHash = 0u;
             for (int i = 0; i < positions.Length; i++)
             {
-                posHash = FnvStep(posHash, Mathf.RoundToInt(positions[i].x * 10000f));
-                posHash = FnvStep(posHash, Mathf.RoundToInt(positions[i].y * 10000f));
-                posHash = FnvStep(posHash, Mathf.RoundToInt(positions[i].z * 10000f));
+                uint vh = 2166136261u;
+                vh = FnvStep(vh, Mathf.RoundToInt(positions[i].x * 10000f));
+                vh = FnvStep(vh, Mathf.RoundToInt(positions[i].y * 10000f));
+                vh = FnvStep(vh, Mathf.RoundToInt(positions[i].z * 10000f));
+                posHash ^= vh;
             }
             fp.positionsHash = unchecked((int)posHash);
 
-            // FNV-1a hash over quantized UV0
+            // Order-independent hash over quantized UV0
             var uv0 = new List<Vector2>();
             mesh.GetUVs(0, uv0);
-            uint uvHash = 2166136261u;
+            uint uvHash = 0u;
             for (int i = 0; i < uv0.Count; i++)
             {
-                uvHash = FnvStep(uvHash, Mathf.RoundToInt(uv0[i].x * 10000f));
-                uvHash = FnvStep(uvHash, Mathf.RoundToInt(uv0[i].y * 10000f));
+                uint vh = 2166136261u;
+                vh = FnvStep(vh, Mathf.RoundToInt(uv0[i].x * 10000f));
+                vh = FnvStep(vh, Mathf.RoundToInt(uv0[i].y * 10000f));
+                uvHash ^= vh;
             }
             fp.uv0Hash = unchecked((int)uvHash);
 
@@ -103,6 +109,8 @@ namespace LightmapUvTool
         public Vector3[] vertPositions;
         /// <summary>Vertex UV0 at the time UV2 was computed (for disambiguation at shared positions).</summary>
         public Vector2[] vertUv0;
+        /// <summary>Vertex normals at the time UV2 was computed (for disambiguation at shared positions when UV0 is identical).</summary>
+        public Vector3[] vertNormals;
 
         // ── Deterministic replay data (variant B) ──
         /// <summary>
@@ -160,7 +168,7 @@ namespace LightmapUvTool
     public class Uv2DataAsset : ScriptableObject
     {
         public const int CurrentSchemaVersion = 2;
-        public const string ToolVersionStr = "0.13.20";
+        public const string ToolVersionStr = "0.13.32";
 
         public List<MeshUv2Entry> entries = new List<MeshUv2Entry>();
 
@@ -279,6 +287,7 @@ namespace LightmapUvTool
             dst.edgeWelded = src.edgeWelded;
             dst.vertPositions = src.vertPositions;
             dst.vertUv0 = src.vertUv0;
+            dst.vertNormals = src.vertNormals;
             dst.vertexRemap = src.vertexRemap;
             dst.optimizedVertexCount = src.optimizedVertexCount;
             dst.optimizedTriangles = src.optimizedTriangles;
