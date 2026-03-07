@@ -77,6 +77,20 @@ namespace LightmapUvTool
             public Vector3[] targetShellCentroids;
             public float[] targetShellMatchDistSqr;
             public int dedupConflicts;       // shells reassigned by dedup
+
+            // ─── Cross-LOD overlap hints ───
+            // Populated for merged shells to propagate source selection to subsequent LODs.
+            public List<OverlapSourceHint> overlapHints;
+        }
+
+        /// <summary>
+        /// Records which source shell was chosen for a merged target at a given 3D position.
+        /// Used to propagate consistent source selection across LOD levels.
+        /// </summary>
+        public struct OverlapSourceHint
+        {
+            public Vector3 centroid3D;
+            public int sourceShellIndex;
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -521,7 +535,8 @@ namespace LightmapUvTool
         //            fewer inverted/zero-area triangles.
         // ═══════════════════════════════════════════════════════════
 
-        public static TransferResult Transfer(Mesh targetMesh, Mesh sourceMesh)
+        public static TransferResult Transfer(Mesh targetMesh, Mesh sourceMesh,
+            List<OverlapSourceHint> previousLodHints = null)
         {
             var result = new TransferResult();
 
@@ -1101,6 +1116,25 @@ namespace LightmapUvTool
                     // Target 3D centroid for distance-based source selection
                     Vector3 tgtCentroid = result.targetShellCentroids[tsi];
 
+                    // Check for cross-LOD hint: find nearest previous-LOD merged shell
+                    // and prefer its source for consistent cross-LOD appearance.
+                    int hintSrc = -1;
+                    if (previousLodHints != null && previousLodHints.Count > 0)
+                    {
+                        float bestHintDistSq = float.MaxValue;
+                        foreach (var hint in previousLodHints)
+                        {
+                            // Only consider hints from the same overlap group
+                            if (!groupMembers.Contains(hint.sourceShellIndex)) continue;
+                            float d = (tgtCentroid - hint.centroid3D).sqrMagnitude;
+                            if (d < bestHintDistSq)
+                            {
+                                bestHintDistSq = d;
+                                hintSrc = hint.sourceShellIndex;
+                            }
+                        }
+                    }
+
                     foreach (int si in groupMembers)
                     {
                         var allCandidates = GenerateOverlapCandidates(
@@ -1124,16 +1158,23 @@ namespace LightmapUvTool
                             var b = best.Value;
                             float distSq = (tgtCentroid - srcCentroid3D[si]).sqrMagnitude;
 
-                            // Primary: fewer issues wins.
-                            // Secondary (equal issues): closer 3D centroid wins.
-                            // 3D distance is deterministic across LODs (same source centroids,
-                            // similar target centroids), ensuring consistent source selection
-                            // for overlapping belt/strap geometry regardless of LOD level.
+                            // Cross-LOD hint match: if previous LOD used this source for
+                            // the nearest belt at this position, strongly prefer it.
+                            // This ensures the same physical belt gets the same source
+                            // across all LOD levels, preventing checker-pattern jumps.
+                            bool isHintMatch = (si == hintSrc);
+                            bool bestIsHintMatch = (bestOverlapSrc == hintSrc);
+
                             bool betterIssues = b.issues < bestOverlapIssues;
                             bool sameIssues = b.issues == bestOverlapIssues;
                             bool closer3D = distSq < bestOverlapDistSq;
 
-                            if (betterIssues || (sameIssues && closer3D))
+                            // Priority: issues → hint match → 3D distance
+                            bool wins = betterIssues
+                                || (sameIssues && isHintMatch && !bestIsHintMatch)
+                                || (sameIssues && isHintMatch == bestIsHintMatch && closer3D);
+
+                            if (wins)
                             {
                                 bestOverlapUv2 = b.uv2;
                                 bestOverlapIssues = b.issues;
@@ -1789,6 +1830,23 @@ namespace LightmapUvTool
             if (oob > 0)
                 UvtLog.Warn($"[GroupedTransfer] '{targetMesh.name}': {oob} verts outside 0-1! " +
                     $"UV2=[{uvMin.x:F3},{uvMin.y:F3}]-[{uvMax.x:F3},{uvMax.y:F3}]");
+
+            // Populate cross-LOD overlap hints for subsequent LODs.
+            // Records (3D centroid, source shell) for each merged shell so the next
+            // LOD can match the same physical belt/strap to the same source.
+            var hints = new List<OverlapSourceHint>();
+            for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+            {
+                if (result.targetShellMethod[tsi] == 2 && result.targetShellToSourceShell[tsi] >= 0)
+                {
+                    hints.Add(new OverlapSourceHint
+                    {
+                        centroid3D = result.targetShellCentroids[tsi],
+                        sourceShellIndex = result.targetShellToSourceShell[tsi]
+                    });
+                }
+            }
+            result.overlapHints = hints;
 
             return result;
         }

@@ -2691,12 +2691,17 @@ namespace LightmapUvTool
             if (splitTargetsInSymmetryStep && lastSymmetrySplitLods.Any(i => i != sourceLodIndex))
                 UvtLog.Warn($"[Transfer] Target LODs modified by SymSplit: {string.Join(",", lastSymmetrySplitLods.Where(i => i != sourceLodIndex).OrderBy(i => i))}. Mapping stability may be lower.");
 
+            accumulatedOverlapHints.Clear();
             for (int li = 0; li < LodN; li++)
                 if (li != sourceLodIndex) ExecTransferLod(li);
         }
 
         Dictionary<int, GroupedShellTransfer.SourceShellInfo[]> shellTransformCache =
             new Dictionary<int, GroupedShellTransfer.SourceShellInfo[]>();
+
+        // Cross-LOD overlap hints: accumulated from previous LODs for consistent source selection.
+        List<GroupedShellTransfer.OverlapSourceHint> accumulatedOverlapHints =
+            new List<GroupedShellTransfer.OverlapSourceHint>();
 
         void ExecTransferLod(int tLod)
         {
@@ -2730,8 +2735,13 @@ namespace LightmapUvTool
                     }
                     if (srcInfos == null) continue;
 
-                    var tr = GroupedShellTransfer.Transfer(tM, sM);
+                    var tr = GroupedShellTransfer.Transfer(tM, sM,
+                        accumulatedOverlapHints.Count > 0 ? accumulatedOverlapHints : null);
                     if (tr.uv2 == null) continue;
+
+                    // Accumulate overlap hints for subsequent LODs
+                    if (tr.overlapHints != null && tr.overlapHints.Count > 0)
+                        accumulatedOverlapHints.AddRange(tr.overlapHints);
 
                     var om = Instantiate(tM); om.name = tM.name + "_uvTransfer";
                     om.SetUVs(pipeSettings.targetUvChannel, new List<Vector2>(tr.uv2));
