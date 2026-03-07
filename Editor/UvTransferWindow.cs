@@ -3186,14 +3186,15 @@ namespace LightmapUvTool
                         }
                     }
 
-                    // Skip large position/UV0 arrays when replay data is present —
-                    // ReplayOptimization + orphan fill handles all vertex mapping deterministically.
-                    // The pre-import pass in ApplyUv2ToFbx ensures generateSecondaryUV is disabled
-                    // before building the remap, so vertex order matches what the postprocessor sees.
+                    // Keep raw FBX positions + UV0 even with replay data — needed to
+                    // rebuild the remap if vertex order changes between runs (stale fingerprint).
+                    // positions/uv0 here are from e.originalMesh (optimized); we need the RAW FBX ones.
                     if (sidecar.hasReplayData)
                     {
-                        sidecar.positions = null;
-                        sidecar.uv0 = null;
+                        sidecar.positions = e.fbxMesh.vertices;
+                        var rawUv0List = new List<Vector2>();
+                        e.fbxMesh.GetUVs(0, rawUv0List);
+                        sidecar.uv0 = rawUv0List.Count == e.fbxMesh.vertexCount ? rawUv0List.ToArray() : null;
                     }
 
                     UvtLog.Verbose($"[Apply] '{meshName}': remap {e.fbxMesh.vertexCount}→{optimizedMesh.vertexCount} " +
@@ -3536,17 +3537,27 @@ namespace LightmapUvTool
             if (deleted > 0)
                 AssetDatabase.Refresh();
 
-            // Disable generateSecondaryUV before reimporting — ensures meshes have
-            // the same vertex order as they will during Apply (when OnPreprocessModel
-            // disables it). Without this, vertex order can change between Reset and Apply.
+            // Sync import settings with Apply — ensures meshes have the same vertex
+            // order as they will during Apply. Without this, vertex order can change
+            // between Reset and Apply, causing stale fingerprints and remap mismatches.
             foreach (string fbxPath in fbxPaths)
             {
                 var imp = AssetImporter.GetAtPath(fbxPath) as ModelImporter;
-                if (imp != null && imp.generateSecondaryUV)
+                if (imp == null) continue;
+                bool changed = false;
+                if (imp.generateSecondaryUV)
                 {
                     imp.generateSecondaryUV = false;
                     UvtLog.Verbose($"[Reset] Disabled generateSecondaryUV on '{fbxPath}'");
+                    changed = true;
                 }
+                if (imp.isReadable)
+                {
+                    imp.isReadable = false;
+                    UvtLog.Verbose($"[Reset] Disabled Read/Write on '{fbxPath}'");
+                    changed = true;
+                }
+                _ = changed; // settings applied during reimport below
             }
 
             // Now reimport FBXs — postprocessor will find no sidecars → no UV2 injection
