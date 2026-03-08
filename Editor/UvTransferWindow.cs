@@ -2288,11 +2288,42 @@ namespace LightmapUvTool
 
             int result;
 
-            // UV0 shell mapping — maps each preview shell's vertices to dominant
-            // UV0 shell and uses its descriptor hash, ensuring consistent colors
-            // across all LODs (source and target). Transfer mapping is reserved
-            // for ShellMatch fill mode only.
-            if (mesh != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
+            // Priority 1: Transfer mapping (target LODs) — uses source shell index
+            // from transfer result, then maps to source UV0 descriptor hash.
+            // Cleared by SwitchToPostApplyView after Apply/Reset.
+            var map = entry?.shellTransferResult?.vertexToSourceShell;
+            if (map != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
+            {
+                int bestKey = -1, bestCount = 0;
+                var freq = new Dictionary<int, int>();
+                foreach (int v in shell.vertexIndices)
+                {
+                    if (v < 0 || v >= map.Length) continue;
+                    int srcShell = map[v];
+                    if (srcShell < 0) continue;
+                    freq.TryGetValue(srcShell, out int c);
+                    c++;
+                    freq[srcShell] = c;
+                    if (c > bestCount || (c == bestCount && srcShell < bestKey))
+                    {
+                        bestCount = c;
+                        bestKey = srcShell;
+                    }
+                }
+                if (bestKey >= 0)
+                {
+                    var srcDescs = GetSourceDescriptors(entry);
+                    result = (srcDescs != null && bestKey < srcDescs.Length)
+                        ? Mathf.Abs(srcDescs[bestKey].stableHash)
+                        : bestKey;
+                }
+                else
+                {
+                    result = Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
+                }
+            }
+            // Priority 2: UV0 shell mapping — for source LOD or entries without transfer data.
+            else if (mesh != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
             {
                 var (v2s, descs) = GetUv0ShellMap(mesh);
                 if (v2s != null && descs != null)
@@ -3216,8 +3247,12 @@ namespace LightmapUvTool
             int faceCount = tris != null ? tris.Length / 3 : 0;
             if (faceCount == 0) return new int[0];
 
-            // UV0 shell descriptors — consistent across all LODs
+            // Extract UV0 shells for this mesh
             var (v2s, descs) = GetUv0ShellMap(mesh);
+
+            // Transfer mapping (target LODs): map vertices → source shell → source descriptor
+            var map = entry?.shellTransferResult?.vertexToSourceShell;
+            ShellDescriptor[] srcDescs = (map != null) ? GetSourceDescriptors(entry) : null;
 
             var faceKeys = new int[faceCount];
             for (int face = 0; face < faceCount; face++)
@@ -3225,6 +3260,18 @@ namespace LightmapUvTool
                 int triBase = face * 3;
                 int i0 = tris[triBase], i1 = tris[triBase + 1], i2 = tris[triBase + 2];
 
+                // Priority 1: Transfer mapping to source descriptors
+                if (map != null && srcDescs != null)
+                {
+                    int bestKey = VoteBestShell(map, mesh.vertexCount, i0, i1, i2);
+                    if (bestKey >= 0 && bestKey < srcDescs.Length)
+                    {
+                        faceKeys[face] = Mathf.Abs(srcDescs[bestKey].stableHash);
+                        continue;
+                    }
+                }
+
+                // Priority 2: UV0 shell descriptors
                 if (v2s != null && descs != null)
                 {
                     int bestKey = VoteBestShell(v2s, mesh.vertexCount, i0, i1, i2);
@@ -3266,6 +3313,12 @@ namespace LightmapUvTool
             fillMode = FillMode.Shells;
             fillAlpha = 0.15f;
             Refresh();
+            // Clear transfer mapping so shell colors reset to UV0-based
+            foreach (var e in meshEntries)
+            {
+                e.shellTransferResult = null;
+                e.restoredSourceDescriptors = null;
+            }
             shellColorKeyCache.Clear();
             shellColorKeyCacheDirty = true;
         }
