@@ -1829,15 +1829,14 @@ namespace LightmapUvTool
             var localPos = verts[vi0] * bary.x + verts[vi1] * bary.y + verts[vi2] * bary.z;
             var worldPos = tr.TransformPoint(localPos);
 
-            // Face normal at spot
-            var normal = Vector3.up;
-            if (normals != null && vi0 < normals.Length && vi1 < normals.Length && vi2 < normals.Length)
-            {
-                var localNormal = (normals[vi0] * bary.x + normals[vi1] * bary.y + normals[vi2] * bary.z).normalized;
-                normal = tr.TransformDirection(localNormal).normalized;
-            }
+            // Face normal (geometric, not interpolated)
+            var localEdge1 = verts[vi1] - verts[vi0];
+            var localEdge2 = verts[vi2] - verts[vi0];
+            var localFaceNormal = Vector3.Cross(localEdge1, localEdge2).normalized;
+            var faceNormal = tr.TransformDirection(localFaceNormal).normalized;
+            if (faceNormal.sqrMagnitude < 0.5f) faceNormal = Vector3.up;
 
-            // Calculate shell world-space bbox for appropriate camera distance
+            // Shell world-space bbox for ideal camera distance
             float idealDist = 1f;
             var cache = GetPreviewShellCache(mesh, pvChannel);
             if (cache != null && cache.shellById != null && cache.shellById.TryGetValue(uvHit.shellId, out var shell))
@@ -1861,19 +1860,21 @@ namespace LightmapUvTool
                     idealDist = Mathf.Max(shellBounds.extents.magnitude * 1.5f, 0.3f);
             }
 
-            // Mesh raycast along normal from spot to detect obstructions behind camera
+            // Raycast from face along its normal to find obstruction
+            const float skinOffset = 0.01f;
             float camDist = idealDist;
-            const float skinOffset = 0.05f;
-            float meshHitDist = MeshRaycastAll(worldPos + normal * skinOffset, normal, idealDist + skinOffset);
+            float meshHitDist = MeshRaycastAll(worldPos + faceNormal * skinOffset, faceNormal, idealDist);
             if (meshHitDist < float.MaxValue)
-                camDist = Mathf.Min(camDist, Mathf.Max(meshHitDist * 0.8f, 0.15f));
+                camDist = Mathf.Max(meshHitDist - skinOffset * 2f, 0.05f);
 
+            // Place camera along the face normal
             var sv = SceneView.lastActiveSceneView;
             if (sv == null) return;
 
-            sv.pivot = worldPos;
-            sv.size = camDist;
-            sv.rotation = Quaternion.LookRotation(-normal);
+            var camPos = worldPos + faceNormal * camDist;
+            sv.pivot = camPos;
+            sv.size = 0.01f; // minimal orbit radius so pivot ≈ camera position
+            sv.rotation = Quaternion.LookRotation(-faceNormal);
             sv.Repaint();
         }
 
