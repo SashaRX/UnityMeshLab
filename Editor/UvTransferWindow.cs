@@ -1882,7 +1882,7 @@ namespace LightmapUvTool
         static float MeshRaycastAll(Vector3 origin, Vector3 dir, float maxDist)
         {
             float closest = float.MaxValue;
-            var renderers = Object.FindObjectsOfType<MeshRenderer>();
+            var renderers = UnityEngine.Object.FindObjectsOfType<MeshRenderer>();
             foreach (var mr in renderers)
             {
                 if (!mr.enabled || !mr.gameObject.activeInHierarchy) continue;
