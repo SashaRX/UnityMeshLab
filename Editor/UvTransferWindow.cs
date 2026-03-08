@@ -1928,10 +1928,11 @@ namespace LightmapUvTool
                     float tx = ox + tu * sz;
                     float ty = oy - tv * sz;
 
-                    float u0 = (tu + offset.x) * tiling.x;
-                    float u1 = (tu + 1 + offset.x) * tiling.x;
-                    float v0 = (tv + offset.y) * tiling.y;
-                    float v1 = (tv + 1 + offset.y) * tiling.y;
+                    // texCoord = uv * tiling + offset  (Unity ST convention)
+                    float u0 = tu * tiling.x + offset.x;
+                    float u1 = (tu + 1) * tiling.x + offset.x;
+                    float v0 = tv * tiling.y + offset.y;
+                    float v1 = (tv + 1) * tiling.y + offset.y;
 
                     GL.TexCoord2(u0, v1); GL.Vertex3(tx, ty, 0);
                     GL.TexCoord2(u1, v1); GL.Vertex3(tx + sz, ty, 0);
@@ -1942,10 +1943,15 @@ namespace LightmapUvTool
             else
             {
                 float tx = ox, ty = oy;
-                GL.TexCoord2(offset.x * tiling.x, (1 + offset.y) * tiling.y); GL.Vertex3(tx, ty, 0);
-                GL.TexCoord2((1 + offset.x) * tiling.x, (1 + offset.y) * tiling.y); GL.Vertex3(tx + sz, ty, 0);
-                GL.TexCoord2((1 + offset.x) * tiling.x, offset.y * tiling.y); GL.Vertex3(tx + sz, ty + sz, 0);
-                GL.TexCoord2(offset.x * tiling.x, offset.y * tiling.y); GL.Vertex3(tx, ty + sz, 0);
+                // texCoord = uv * tiling + offset
+                float u0 = 0f * tiling.x + offset.x;
+                float u1 = 1f * tiling.x + offset.x;
+                float v0 = 0f * tiling.y + offset.y;
+                float v1 = 1f * tiling.y + offset.y;
+                GL.TexCoord2(u0, v1); GL.Vertex3(tx, ty, 0);
+                GL.TexCoord2(u1, v1); GL.Vertex3(tx + sz, ty, 0);
+                GL.TexCoord2(u1, v0); GL.Vertex3(tx + sz, ty + sz, 0);
+                GL.TexCoord2(u0, v0); GL.Vertex3(tx, ty + sz, 0);
             }
             GL.End();
         }
@@ -2717,6 +2723,7 @@ namespace LightmapUvTool
         {
             if (checkerEnabled) previewMode = PreviewMode.Checker;
             else if (shellColorPreviewEnabled) previewMode = PreviewMode.Shells3D;
+            else if (lightmapPreviewActive) previewMode = PreviewMode.Lightmap;
             else if (previewMode != PreviewMode.Lightmap) previewMode = PreviewMode.Off;
         }
 
@@ -2725,16 +2732,114 @@ namespace LightmapUvTool
             // Turn off current
             if (checkerEnabled) ToggleChecker();
             else if (shellColorPreviewEnabled) ToggleShellColorPreview();
+            RestoreLightmapPreview();
 
             previewMode = newMode;
             switch (newMode)
             {
                 case PreviewMode.Checker:  ToggleChecker(); break;
                 case PreviewMode.Shells3D: ToggleShellColorPreview(); break;
-                case PreviewMode.Lightmap: break; // handled in ResolveUvPreviewBackgroundTexture
+                case PreviewMode.Lightmap: ApplyLightmapPreview(); break;
                 case PreviewMode.Off:      break;
             }
             Repaint();
+        }
+
+        // ── Lightmap 3D preview ──
+        struct LightmapBackup
+        {
+            public Renderer renderer;
+            public Material[] origMaterials;
+            public MeshFilter meshFilter;
+            public Mesh origMesh;
+            public Mesh tempMesh;
+        }
+        readonly List<LightmapBackup> lightmapBackups = new List<LightmapBackup>();
+        Material lightmapPreviewMat;
+        bool lightmapPreviewActive;
+
+        void ApplyLightmapPreview()
+        {
+            RestoreLightmapPreview();
+            if (lodGroup == null) return;
+
+            var entries = ForLod(pvLod);
+            foreach (var e in entries)
+            {
+                var renderer = e.renderer;
+                if (renderer == null) continue;
+                int lmIdx = renderer.lightmapIndex;
+                if (lmIdx < 0 || lmIdx >= LightmapSettings.lightmaps.Length) continue;
+
+                var lmData = LightmapSettings.lightmaps[lmIdx];
+                if (lmData.lightmapColor == null) continue;
+
+                var so = renderer.lightmapScaleOffset; // (scaleX, scaleY, offsetX, offsetY)
+
+                if (lightmapPreviewMat == null)
+                {
+                    var shader = Shader.Find("Unlit/Texture");
+                    if (shader == null) continue;
+                    lightmapPreviewMat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
+                }
+
+                var mat = new Material(lightmapPreviewMat) { hideFlags = HideFlags.HideAndDontSave };
+                mat.mainTexture = lmData.lightmapColor;
+                // ST = (1,1,0,0) because we bake the transform into UV0 below
+                mat.mainTextureScale = Vector2.one;
+                mat.mainTextureOffset = Vector2.zero;
+
+                // Clone mesh and set UV0 = UV1 * scale + offset
+                var mf = renderer.GetComponent<MeshFilter>();
+                Mesh srcMesh = mf != null ? mf.sharedMesh : null;
+                Mesh tempMesh = null;
+                if (srcMesh != null)
+                {
+                    tempMesh = Object.Instantiate(srcMesh);
+                    tempMesh.name = srcMesh.name + "_LightmapPreview";
+                    tempMesh.hideFlags = HideFlags.HideAndDontSave;
+
+                    var uv1 = new List<Vector2>();
+                    srcMesh.GetUVs(1, uv1);
+                    if (uv1.Count == srcMesh.vertexCount)
+                    {
+                        var lmUvs = new Vector2[uv1.Count];
+                        for (int i = 0; i < uv1.Count; i++)
+                            lmUvs[i] = new Vector2(uv1[i].x * so.x + so.z, uv1[i].y * so.y + so.w);
+                        tempMesh.uv = lmUvs; // write to UV0
+                    }
+                }
+
+                var backup = new LightmapBackup
+                {
+                    renderer = renderer,
+                    origMaterials = renderer.sharedMaterials,
+                    meshFilter = mf,
+                    origMesh = mf != null ? mf.sharedMesh : null,
+                    tempMesh = tempMesh
+                };
+
+                if (mf != null && tempMesh != null) mf.sharedMesh = tempMesh;
+                var mats = new Material[renderer.sharedMaterials.Length];
+                for (int i = 0; i < mats.Length; i++) mats[i] = mat;
+                renderer.sharedMaterials = mats;
+                lightmapBackups.Add(backup);
+            }
+            lightmapPreviewActive = lightmapBackups.Count > 0;
+            SceneView.RepaintAll();
+        }
+
+        void RestoreLightmapPreview()
+        {
+            foreach (var b in lightmapBackups)
+            {
+                if (b.renderer != null) b.renderer.sharedMaterials = b.origMaterials;
+                if (b.meshFilter != null && b.origMesh != null) b.meshFilter.sharedMesh = b.origMesh;
+                if (b.tempMesh != null) DestroyImmediate(b.tempMesh);
+            }
+            lightmapBackups.Clear();
+            if (lightmapPreviewActive) SceneView.RepaintAll();
+            lightmapPreviewActive = false;
         }
 
         void Sw(string l, Color c)
@@ -3461,6 +3566,7 @@ namespace LightmapUvTool
                 CheckerTexturePreview.Restore();
             if (shellColorPreviewEnabled || ShellColorModelPreview.IsActive)
                 ShellColorModelPreview.Restore();
+            RestoreLightmapPreview();
 
             checkerEnabled = false;
             shellColorPreviewEnabled = false;

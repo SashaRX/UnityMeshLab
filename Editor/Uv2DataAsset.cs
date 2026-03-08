@@ -187,7 +187,7 @@ namespace LightmapUvTool
     public class Uv2DataAsset : ScriptableObject
     {
         public const int CurrentSchemaVersion = 2;
-        public const string ToolVersionStr = "0.13.48";
+        public const string ToolVersionStr = "0.13.49";
 
         public List<MeshUv2Entry> entries = new List<MeshUv2Entry>();
 
