@@ -12,6 +12,7 @@ Shader "Hidden/LightmapUvTool/SpotProjection"
         Tags { "Queue"="Transparent+100" "RenderType"="Transparent" }
         ZWrite Off
         ZTest LEqual
+        Offset -1, -1
         Cull Back
         Blend SrcAlpha OneMinusSrcAlpha
 

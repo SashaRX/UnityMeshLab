@@ -456,7 +456,7 @@ namespace LightmapUvTool
                 }
             }
 
-            if (LodN > 0) SetPreviewLod(pvLod);
+            if (LodN > 0) SetPreviewLod(pvLod, force: true);
             else pvLod = 0;
 
             TryRestoreShellMatchFromSidecar();
@@ -517,12 +517,12 @@ namespace LightmapUvTool
         List<MeshEntry> ForLod(int li) => meshEntries.Where(e => e.lodIndex == li && e.include).ToList();
         int LodN => lodGroup != null ? lodGroup.GetLODs().Length : 0;
 
-        void SetPreviewLod(int lodIndex)
+        void SetPreviewLod(int lodIndex, bool force = false)
         {
             if (LodN <= 0) return;
 
             int clamped = Mathf.Clamp(lodIndex, 0, LodN - 1);
-            if (pvLod == clamped)
+            if (!force && pvLod == clamped)
                 return;
 
             pvLod = clamped;
