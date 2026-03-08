@@ -63,7 +63,12 @@ namespace LightmapUvTool
         RenderTexture canvasRT;
         int  pvChannel = 1;
         int  pvLod     = 0;
-        bool showWire = true, showBorder;
+        bool showWire = true, showBorder = true;
+
+        // 3D preview / canvas background mode
+        enum PreviewMode { Off, Checker, Shells3D, Lightmap }
+        PreviewMode previewMode = PreviewMode.Off;
+        static readonly string[] previewModeLabels = { "Off", "Checker", "3D Shells", "Lightmap" };
         float fillAlpha = 0.25f;
         bool lockSelection;
         bool spotMode;
@@ -1000,22 +1005,7 @@ namespace LightmapUvTool
 
             GUILayout.Space(6);
 
-            // ── Fill mode dropdown + show/hide toggle ──
-            EditorGUILayout.LabelField("Fill:", EditorStyles.miniLabel, GUILayout.Width(24));
-            fillMode = (FillMode)EditorGUILayout.Popup((int)fillMode, fillModeLabels, EditorStyles.toolbarPopup, GUILayout.Width(80));
-            if (fillMode != FillMode.None) fillModeBeforeHide = fillMode;
-            {
-                bool fillVisible = fillMode != FillMode.None;
-                bool next = GUILayout.Toggle(fillVisible, fillVisible ? "\u25C9" : "\u25CB", EditorStyles.toolbarButton, GUILayout.Width(22));
-                if (next != fillVisible)
-                    fillMode = next ? fillModeBeforeHide : FillMode.None;
-            }
-
-            GUILayout.Space(4);
-
-            // ── Overlay toggles ──
-            showWire   = GUILayout.Toggle(showWire,   "Wire", EditorStyles.toolbarButton, GUILayout.Width(36));
-            showBorder = GUILayout.Toggle(showBorder, "Bdr",  EditorStyles.toolbarButton, GUILayout.Width(30));
+            // ── Spot / Lock / Clear ──
             bool spotNext = GUILayout.Toggle(spotMode, "Spot", EditorStyles.toolbarButton, GUILayout.Width(52));
             if (spotNext != spotMode)
             {
@@ -1023,8 +1013,6 @@ namespace LightmapUvTool
                 if (!spotMode) ClearHoverState();
                 SceneView.RepaintAll();
             }
-
-            GUILayout.Space(4);
             lockSelection = GUILayout.Toggle(lockSelection, "Lock", EditorStyles.toolbarButton, GUILayout.Width(40));
             using (new EditorGUI.DisabledScope(!hasSelectedShell))
             {
@@ -1037,35 +1025,15 @@ namespace LightmapUvTool
 
             GUILayout.Space(6);
 
-            // ── Zoom + alpha ──
+            // ── Zoom + Fit ──
             canvasZoom = EditorGUILayout.Slider(canvasZoom, .1f, 20f, GUILayout.Width(90));
             if (GUILayout.Button("Fit", EditorStyles.toolbarButton, GUILayout.Width(28)))
                 FitToUvBounds();
-            if (fillMode != FillMode.None)
-                fillAlpha = EditorGUILayout.Slider(fillAlpha, .05f, .6f, GUILayout.Width(70));
-
-            GUILayout.Space(6);
-
-            // ── 3D preview mode (mutually exclusive) ──
-            {
-                int cur = checkerEnabled ? 1 : shellColorPreviewEnabled ? 2 : 0;
-                var bg2 = GUI.backgroundColor;
-                if (cur != 0) GUI.backgroundColor = cur == 1 ? new Color(1f,.4f,.3f) : new Color(.35f,.85f,.4f);
-                int next = GUILayout.Toolbar(cur, new[]{"Off","Checker","3D Shells"}, EditorStyles.toolbarButton, GUILayout.Width(150));
-                GUI.backgroundColor = bg2;
-                if (next != cur)
-                {
-                    if (cur == 1) ToggleChecker();      // turn off checker
-                    else if (cur == 2) ToggleShellColorPreview(); // turn off shells
-                    if (next == 1) ToggleChecker();      // turn on checker
-                    else if (next == 2) ToggleShellColorPreview(); // turn on shells
-                }
-            }
 
             // ── Right side ──
             GUILayout.FlexibleSpace();
 
-            // ── Reset UV2 for selected model (visible when checker active + sidecar found) ──
+            // ── Reset UV2 for selected model ──
             if (selectedSidecarPath != null)
             {
                 var bg3 = GUI.backgroundColor;
@@ -1154,8 +1122,25 @@ namespace LightmapUvTool
                     Texture bgTex = ResolveUvPreviewBackgroundTexture(draws);
                     if (bgTex != null)
                     {
-                        float bgAlpha = checkerEnabled ? 0.33333f : 0.95f;
-                        GlTextureBg(cx, cy, sz, bgTex, new Vector2(1f, 1f), Vector2.zero, bgAlpha, occupiedTiles);
+                        float bgAlpha = checkerEnabled ? 0.33333f : (previewMode == PreviewMode.Lightmap ? 0.85f : 0.95f);
+                        Vector2 bgTiling = new Vector2(1f, 1f);
+                        Vector2 bgOffset = Vector2.zero;
+                        // For lightmap mode, use renderer's lightmapScaleOffset
+                        if (previewMode == PreviewMode.Lightmap)
+                        {
+                            foreach (var item in draws)
+                            {
+                                var renderer = item.Item2.renderer;
+                                if (renderer != null && renderer.lightmapIndex >= 0)
+                                {
+                                    var so = renderer.lightmapScaleOffset;
+                                    bgTiling = new Vector2(so.x, so.y);
+                                    bgOffset = new Vector2(so.z, so.w);
+                                    break;
+                                }
+                            }
+                        }
+                        GlTextureBg(cx, cy, sz, bgTex, bgTiling, bgOffset, bgAlpha, occupiedTiles);
                         glMat.SetPass(0);
                     }
 
@@ -1710,11 +1695,23 @@ namespace LightmapUvTool
             float rangeV = Mathf.Max(maxV - minV, 0.1f);
             float W = lastCanvasRect.width, H = lastCanvasRect.height;
             if (W < 1 || H < 1) { canvasZoom = 1f; canvasPan = Vector2.zero; return; }
+            // baseSz is min(W,H) — the 1:1 UV square side at zoom=1.
+            // To fit bounds, we need: baseSz * zoom * rangeU <= W and baseSz * zoom * rangeV <= H.
+            // Also account for non-square canvas: use the tighter constraint.
             float baseSz = Mathf.Max(64, Mathf.Min(W, H));
-            canvasZoom = Mathf.Clamp(Mathf.Min(W / (baseSz * rangeU), H / (baseSz * rangeV)), 0.1f, 20f);
+            float zoomU = W / (baseSz * rangeU);
+            float zoomV = H / (baseSz * rangeV);
+            // Apply 95% margin so UV doesn't touch edges
+            canvasZoom = Mathf.Clamp(Mathf.Min(zoomU, zoomV) * 0.95f, 0.1f, 20f);
             float sz = baseSz * canvasZoom;
             float centerU = (minU + maxU) * 0.5f;
             float centerV = (minV + maxV) * 0.5f;
+            // Center the bounds in the canvas. The canvas origin formula:
+            // cx = (W - sz) * 0.5 + panX, cy = (H - sz) * 0.5 + panY
+            // UV point at (u,v) maps to pixel: (cx + u*sz, cy + (1-v)*sz)
+            // We want center of bounds at center of canvas:
+            //   cx + centerU*sz = W/2 → panX = W/2 - (W-sz)/2 - centerU*sz = sz/2 - centerU*sz = sz*(0.5-centerU)
+            //   cy + (1-centerV)*sz = H/2 → panY = H/2 - (H-sz)/2 - (1-centerV)*sz = sz/2 - (1-centerV)*sz = sz*(centerV-0.5)
             canvasPan.x = sz * (0.5f - centerU);
             canvasPan.y = sz * (centerV - 0.5f);
             Repaint();
@@ -1842,6 +1839,23 @@ namespace LightmapUvTool
         {
             if (checkerEnabled)
                 return CheckerTexturePreview.GetCheckerTexture();
+
+            // Lightmap mode: show baked lightmap texture if available
+            if (previewMode == PreviewMode.Lightmap)
+            {
+                foreach (var item in draws)
+                {
+                    var renderer = item.Item2.renderer;
+                    if (renderer == null) continue;
+                    int lmIdx = renderer.lightmapIndex;
+                    if (lmIdx >= 0 && lmIdx < LightmapSettings.lightmaps.Length)
+                    {
+                        var lm = LightmapSettings.lightmaps[lmIdx];
+                        if (lm.lightmapColor != null) return lm.lightmapColor;
+                    }
+                }
+                return null;
+            }
 
             if (pvChannel == 1)
                 return null;
@@ -2616,29 +2630,110 @@ namespace LightmapUvTool
         void DrawStatusBar()
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+
+            // ── Fill mode dropdown + show/hide toggle ──
+            fillMode = (FillMode)EditorGUILayout.Popup((int)fillMode, fillModeLabels, EditorStyles.toolbarPopup, GUILayout.Width(80));
+            if (fillMode != FillMode.None) fillModeBeforeHide = fillMode;
+            {
+                bool fillVisible = fillMode != FillMode.None;
+                bool next = GUILayout.Toggle(fillVisible, fillVisible ? "\u25C9" : "\u25CB", EditorStyles.toolbarButton, GUILayout.Width(22));
+                if (next != fillVisible)
+                    fillMode = next ? fillModeBeforeHide : FillMode.None;
+            }
+
+            GUILayout.Space(2);
+
+            // ── Wire / Bdr toggles ──
+            showWire   = GUILayout.Toggle(showWire,   "Wire", EditorStyles.toolbarButton, GUILayout.Width(36));
+            showBorder = GUILayout.Toggle(showBorder, "Bdr",  EditorStyles.toolbarButton, GUILayout.Width(30));
+
+            GUILayout.Space(4);
+
+            // ── Fill alpha as thin progress-bar style slider ──
+            if (fillMode != FillMode.None)
+            {
+                var alphaRect = GUILayoutUtility.GetRect(80, 14, GUILayout.Width(80));
+                alphaRect.y += 2f;
+                alphaRect.height = 12f;
+                EditorGUI.DrawRect(alphaRect, new Color(0.15f, 0.15f, 0.15f));
+                var fillRect = new Rect(alphaRect.x, alphaRect.y, alphaRect.width * Mathf.InverseLerp(0.05f, 0.6f, fillAlpha), alphaRect.height);
+                EditorGUI.DrawRect(fillRect, new Color(0.35f, 0.55f, 0.85f, 0.7f));
+                var labelStyle = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleCenter, normal = { textColor = Color.white } };
+                GUI.Label(alphaRect, fillAlpha.ToString("F2"), labelStyle);
+                // Handle click and drag
+                var ev = Event.current;
+                if ((ev.type == EventType.MouseDown || ev.type == EventType.MouseDrag) && alphaRect.Contains(ev.mousePosition))
+                {
+                    fillAlpha = Mathf.Lerp(0.05f, 0.6f, Mathf.Clamp01((ev.mousePosition.x - alphaRect.x) / alphaRect.width));
+                    ev.Use();
+                    Repaint();
+                }
+            }
+
+            GUILayout.Space(4);
+
+            // ── Preview mode dropdown ──
+            {
+                SyncPreviewModeFromFlags();
+                var bg2 = GUI.backgroundColor;
+                if (previewMode != PreviewMode.Off) GUI.backgroundColor = previewMode == PreviewMode.Checker ? new Color(1f,.4f,.3f) : previewMode == PreviewMode.Lightmap ? new Color(.4f,.7f,1f) : new Color(.35f,.85f,.4f);
+                var newMode = (PreviewMode)EditorGUILayout.Popup((int)previewMode, previewModeLabels, EditorStyles.toolbarPopup, GUILayout.Width(80));
+                GUI.backgroundColor = bg2;
+                if (newMode != previewMode)
+                    ApplyPreviewMode(newMode);
+            }
+
+            GUILayout.Space(6);
+
+            // ── Status info ──
             var ee = ForLod(pvLod);
             int tV = 0, tT = 0;
             foreach (var e in ee) { Mesh m = DMesh(e); if (m == null) continue; tV += m.vertexCount; tT += m.triangles.Length / 3; }
             string hoverInfo = hoverHitValid
-                ? $" | Hover UV: {uvSpot.x:F4},{uvSpot.y:F4} Shell:{hoveredShellId}"
-                : (spotMode ? " | Hover UV: --" : string.Empty);
-            EditorGUILayout.LabelField("LOD" + pvLod + " | " + ee.Count + " mesh | V:" + tV + " T:" + tT + " | " + (pvChannel == 0 ? "UV0" : "UV1") + hoverInfo, EditorStyles.miniLabel);
+                ? $" | UV:{uvSpot.x:F3},{uvSpot.y:F3} S:{hoveredShellId}"
+                : (spotMode ? " | UV:--" : string.Empty);
+            EditorGUILayout.LabelField("LOD" + pvLod + " " + ee.Count + "m V:" + tV + " T:" + tT + " " + (pvChannel == 0 ? "UV0" : "UV1") + hoverInfo, EditorStyles.miniLabel);
 
             GUILayout.FlexibleSpace();
 
+            // ── Validation / status legend ──
             switch (fillMode)
             {
                 case FillMode.Validation:
-                    Sw("✓", cValClean); Sw("Str", cValStretch); Sw("0A", cValZero); Sw("OB", cValOOB); Sw("Txl", cValTexel); Sw("Ov", cValOverlap);
+                    Sw("\u2713", cValClean); Sw("Str", cValStretch); Sw("0A", cValZero); Sw("OB", cValOOB); Sw("Txl", cValTexel); Sw("Ov", cValOverlap);
                     break;
                 case FillMode.ShellMatch:
-                    EditorGUILayout.LabelField("Shell Match: color = source shell", EditorStyles.miniLabel);
+                    EditorGUILayout.LabelField("ShellMatch", EditorStyles.miniLabel, GUILayout.Width(70));
                     break;
                 case FillMode.Status:
                     Sw("Ok", cAccept); Sw("Am", cAmbig); Sw("Mi", cMis); Sw("Rj", cReject);
                     break;
             }
             EditorGUILayout.EndHorizontal();
+        }
+
+        void SyncPreviewModeFromFlags()
+        {
+            if (checkerEnabled) previewMode = PreviewMode.Checker;
+            else if (shellColorPreviewEnabled) previewMode = PreviewMode.Shells3D;
+            else if (previewMode != PreviewMode.Lightmap) previewMode = PreviewMode.Off;
+        }
+
+        void ApplyPreviewMode(PreviewMode newMode)
+        {
+            // Turn off current
+            if (checkerEnabled) ToggleChecker();
+            else if (shellColorPreviewEnabled) ToggleShellColorPreview();
+
+            previewMode = newMode;
+            switch (newMode)
+            {
+                case PreviewMode.Checker:  ToggleChecker(); break;
+                case PreviewMode.Shells3D: ToggleShellColorPreview(); break;
+                case PreviewMode.Lightmap: break; // handled in ResolveUvPreviewBackgroundTexture
+                case PreviewMode.Off:      break;
+            }
+            Repaint();
         }
 
         void Sw(string l, Color c)
@@ -3368,6 +3463,7 @@ namespace LightmapUvTool
 
             checkerEnabled = false;
             shellColorPreviewEnabled = false;
+            previewMode = PreviewMode.Off;
             previewConflictNotice = null;
         }
 
