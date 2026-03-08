@@ -44,9 +44,9 @@ namespace LightmapUvTool
                 int faceCount = tris != null ? tris.Length / 3 : 0;
                 if (faceCount == 0) return new int[0];
 
-                var uv2 = new List<Vector2>();
-                mesh.GetUVs(1, uv2);
-                Vector2[] uv = uv2.Count == mesh.vertexCount ? uv2.ToArray() : mesh.uv;
+                // Always use UV0 for shell coloring — UV0 is consistent across LODs
+                // (same texture coordinates), ensuring matching shell colors for LOD0/1/2.
+                Vector2[] uv = mesh.uv;
                 if (uv == null || uv.Length != mesh.vertexCount)
                     return new int[faceCount];
 
