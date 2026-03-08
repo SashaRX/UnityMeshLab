@@ -151,11 +151,30 @@ namespace LightmapUvTool
             {
                 if (!entry.sourceFingerprint.Matches(currentFp))
                 {
-                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': FBX geometry changed since sidecar was created " +
-                                $"(verts: {entry.sourceFingerprint.vertexCount}→{currentFp.vertexCount}, " +
-                                $"tris: {entry.sourceFingerprint.triangleCount}→{currentFp.triangleCount}). " +
-                                "Sidecar may be stale.");
-                    stats.stale = true;
+                    // Only mark stale if vertex/triangle counts actually differ.
+                    // Hash-only mismatches (same counts) are typically caused by
+                    // FBX importer floating-point non-determinism between reimports,
+                    // not real geometry changes. The original remap is still valid
+                    // in this case; marking stale would trigger RebuildRemapFromPositions
+                    // which can't cover all opt vertices (orphans + dedup collisions),
+                    // causing hundreds of unfilled vertices → mesh stretching to origin.
+                    bool countsChanged = entry.sourceFingerprint.vertexCount != currentFp.vertexCount
+                                      || entry.sourceFingerprint.triangleCount != currentFp.triangleCount;
+                    if (countsChanged)
+                    {
+                        UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': FBX geometry changed since sidecar was created " +
+                                    $"(verts: {entry.sourceFingerprint.vertexCount}→{currentFp.vertexCount}, " +
+                                    $"tris: {entry.sourceFingerprint.triangleCount}→{currentFp.triangleCount}). " +
+                                    "Sidecar may be stale.");
+                        stats.stale = true;
+                    }
+                    else
+                    {
+                        UvtLog.Verbose($"[UV2 Postprocess] '{mesh.name}': fingerprint hash mismatch but " +
+                                       $"vertex/triangle counts match ({currentFp.vertexCount} verts, " +
+                                       $"{currentFp.triangleCount} tris) — trusting original remap " +
+                                       "(likely FBX importer FP non-determinism).");
+                    }
                 }
             }
 
