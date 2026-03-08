@@ -3528,7 +3528,7 @@ namespace LightmapUvTool
                 if (candidates.Count == 1)
                 {
                     remap[i] = candidates[0];
-                    // Don't mark as used — multiple raw verts can map to same optimized vert (dedup)
+                    used[candidates[0]] = true;
                     matched++;
                 }
                 else if (hasUv0)
@@ -3540,20 +3540,21 @@ namespace LightmapUvTool
                         float d = Vector2.SqrMagnitude(rawUv0[i] - optUv0[ci]);
                         if (d < bestDist) { bestDist = d; bestIdx = ci; }
                     }
-                    if (bestIdx >= 0) { remap[i] = bestIdx; matched++; }
+                    if (bestIdx >= 0) { remap[i] = bestIdx; used[bestIdx] = true; matched++; }
                 }
                 else
                 {
                     // No UV0 — pick first candidate
                     remap[i] = candidates[0];
+                    used[candidates[0]] = true;
                     matched++;
                 }
             }
 
             // Pass 2: nearest-neighbor fallback for bucket boundary misses
             // and edge-welded vertices whose positions were averaged during optimization.
-            // Threshold 1e-2f (sqr) = ~0.1 unit max distance — generous enough for
-            // UvEdgeWeld position averaging while avoiding wrong matches.
+            // IMPORTANT: only map to optimized indices NOT already covered by pass 1,
+            // otherwise the approximate match would overwrite correct vertex data during replay.
             if (matched < rawCount)
             {
                 for (int i = 0; i < rawCount; i++)
@@ -3563,6 +3564,7 @@ namespace LightmapUvTool
                     int bestIdx = -1;
                     for (int j = 0; j < optCount; j++)
                     {
+                        if (used[j]) continue; // skip opt indices already covered by pass 1
                         float d = Vector3.SqrMagnitude(rawPos[i] - optPos[j]);
                         if (d < bestDist) { bestDist = d; bestIdx = j; }
                     }
