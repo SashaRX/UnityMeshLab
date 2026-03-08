@@ -446,6 +446,64 @@ namespace LightmapUvTool
             }
         }
 
+        /// <summary>Load per-model settings from sidecar if available.</summary>
+        void TryLoadSettingsFromSidecar()
+        {
+            if (string.IsNullOrEmpty(selectedSidecarPath)) return;
+            var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(selectedSidecarPath);
+            if (data?.toolSettings == null) return;
+            var s = data.toolSettings;
+
+            atlasResolution = s.atlasResolution;
+            shellPaddingPx = s.shellPaddingPx;
+            borderPaddingPx = s.borderPaddingPx;
+            repackPerMesh = s.repackPerMesh;
+            sourceLodIndex = Mathf.Clamp(s.sourceLodIndex, 0, Mathf.Max(0, LodN - 1));
+
+            pipeSettings.sourceUvChannel = s.sourceUvChannel;
+            pipeSettings.targetUvChannel = s.targetUvChannel;
+            pipeSettings.maxProjectionDistance = s.maxProjectionDistance;
+            pipeSettings.maxNormalAngle = s.maxNormalAngle;
+            pipeSettings.filterBySubmesh = s.filterBySubmesh;
+            pipeSettings.enableBorderRepair = s.enableBorderRepair;
+            pipeSettings.perimeterTolerance = s.perimeterTolerance;
+            pipeSettings.borderFuseTolerance = s.borderFuseTolerance;
+            pipeSettings.saveNewMeshAssets = s.saveNewMeshAssets;
+            if (!string.IsNullOrEmpty(s.savePath))
+                pipeSettings.savePath = s.savePath;
+        }
+
+        /// <summary>Save current settings into the sidecar asset.</summary>
+        void SaveSettingsToSidecar()
+        {
+            if (string.IsNullOrEmpty(selectedSidecarPath)) return;
+            var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(selectedSidecarPath);
+            if (data == null) return;
+
+            if (data.toolSettings == null)
+                data.toolSettings = new ToolSettings();
+            var s = data.toolSettings;
+
+            s.atlasResolution = atlasResolution;
+            s.shellPaddingPx = shellPaddingPx;
+            s.borderPaddingPx = borderPaddingPx;
+            s.repackPerMesh = repackPerMesh;
+            s.sourceLodIndex = sourceLodIndex;
+
+            s.sourceUvChannel = pipeSettings.sourceUvChannel;
+            s.targetUvChannel = pipeSettings.targetUvChannel;
+            s.maxProjectionDistance = pipeSettings.maxProjectionDistance;
+            s.maxNormalAngle = pipeSettings.maxNormalAngle;
+            s.filterBySubmesh = pipeSettings.filterBySubmesh;
+            s.enableBorderRepair = pipeSettings.enableBorderRepair;
+            s.perimeterTolerance = pipeSettings.perimeterTolerance;
+            s.borderFuseTolerance = pipeSettings.borderFuseTolerance;
+            s.saveNewMeshAssets = pipeSettings.saveNewMeshAssets;
+            s.savePath = pipeSettings.savePath;
+
+            EditorUtility.SetDirty(data);
+        }
+
         // ════════════════════════════════════════════════════════════
         //  Mesh Collection
         // ════════════════════════════════════════════════════════════
@@ -495,6 +553,7 @@ namespace LightmapUvTool
 
             TryRestoreShellMatchFromSidecar();
             UpdateSelectedSidecar();
+            TryLoadSettingsFromSidecar();
         }
 
         /// <summary>
@@ -3496,6 +3555,8 @@ namespace LightmapUvTool
                     if (i != sourceLodIndex && ForLod(i).Count > 0) { SetPreviewLod(i); break; }
 
                 UvtLog.Info("[Pipeline] Full pipeline complete.");
+                UpdateSelectedSidecar();
+                SaveSettingsToSidecar();
             }
             catch (Exception ex)
             {
@@ -4368,6 +4429,8 @@ namespace LightmapUvTool
 
             AssetDatabase.Refresh();
             UvtLog.Info($"[Apply] Done: {totalMeshes} mesh(es) across {fbxGroups.Count} FBX file(s)");
+            UpdateSelectedSidecar();
+            SaveSettingsToSidecar();
             CleanupWorkingMeshes();
             SwitchToPostApplyView();
             Repaint();

@@ -183,6 +183,32 @@ namespace LightmapUvTool
         public ShellDescriptor[] sourceShellDescriptors;
     }
 
+    /// <summary>
+    /// Per-model tool settings persisted in the sidecar asset.
+    /// Restored when the model is selected again.
+    /// </summary>
+    [Serializable]
+    public class ToolSettings
+    {
+        public int atlasResolution = 1024;
+        public int shellPaddingPx = 2;
+        public int borderPaddingPx = 0;
+        public bool repackPerMesh;
+        public int sourceLodIndex;
+
+        // Pipeline
+        public int sourceUvChannel = 1;
+        public int targetUvChannel = 1;
+        public float maxProjectionDistance = 0.5f;
+        public float maxNormalAngle = 80f;
+        public bool filterBySubmesh = true;
+        public bool enableBorderRepair = true;
+        public float perimeterTolerance = 0.05f;
+        public float borderFuseTolerance = 0.02f;
+        public bool saveNewMeshAssets = true;
+        public string savePath = "Assets/LightmapUvTool_Output";
+    }
+
     [CreateAssetMenu(menuName = "LightmapUvTool/UV2 Data (internal)", fileName = "uv2data")]
     public class Uv2DataAsset : ScriptableObject
     {
@@ -190,6 +216,7 @@ namespace LightmapUvTool
         public const string ToolVersionStr = "0.13.55";
 
         public List<MeshUv2Entry> entries = new List<MeshUv2Entry>();
+        public ToolSettings toolSettings;
 
         /// <summary>Find entry by mesh name, or null.</summary>
         public MeshUv2Entry Find(string meshName)
