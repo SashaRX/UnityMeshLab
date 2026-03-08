@@ -44,6 +44,7 @@ namespace LightmapUvTool
         Dictionary<int, SourceMeshData> srcCache = new Dictionary<int, SourceMeshData>();
 
         // UI
+        Dictionary<int, bool> lodFoldouts = new Dictionary<int, bool>();
         enum Tab { Setup, Repack, Transfer }
         Tab tab = Tab.Setup;
         bool hasRepack, hasTransfer;
@@ -626,7 +627,7 @@ namespace LightmapUvTool
 
             sourceLodIndex = EditorGUILayout.IntSlider("Source LOD", sourceLodIndex, 0, LodN - 1);
 
-            // ── Meshes (compact) ──
+            // ── Meshes (compact, foldable) ──
             EditorGUILayout.Space(2);
             for (int li = 0; li < LodN; li++)
             {
@@ -636,8 +637,12 @@ namespace LightmapUvTool
                 var c = GUI.contentColor;
                 if (src) GUI.contentColor = new Color(.4f,.85f,1f);
                 string header = (src ? "LOD " + li + " (Source)" : "LOD " + li + " (Target)") + "  [" + ee.Count + "]";
-                EditorGUILayout.LabelField(header, EditorStyles.miniBoldLabel);
+
+                if (!lodFoldouts.ContainsKey(li)) lodFoldouts[li] = false;
+                lodFoldouts[li] = EditorGUILayout.Foldout(lodFoldouts[li], header, true, EditorStyles.foldout);
                 GUI.contentColor = c;
+
+                if (!lodFoldouts[li]) continue;
 
                 foreach (var e in ee)
                 {
