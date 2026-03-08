@@ -171,10 +171,6 @@ namespace LightmapUvTool
         public Vector3[] optimizedNormals;
         /// <summary>All vertex tangents from the optimized mesh at Apply time.</summary>
         public Vector4[] optimizedTangents;
-        /// <summary>All vertex UV0 from the optimized mesh at Apply time.</summary>
-        public Vector2[] optimizedUv0;
-        /// <summary>All vertex colors from the optimized mesh at Apply time.</summary>
-        public Color32[] optimizedColors;
 
         // ── Shell descriptors (v0.14.0+) ──
         /// <summary>Stable shell descriptors for the target mesh UV0 shells.</summary>
@@ -333,8 +329,6 @@ namespace LightmapUvTool
             dst.optimizedPositions = src.optimizedPositions;
             dst.optimizedNormals = src.optimizedNormals;
             dst.optimizedTangents = src.optimizedTangents;
-            dst.optimizedUv0 = src.optimizedUv0;
-            dst.optimizedColors = src.optimizedColors;
             dst.shellDescriptors = src.shellDescriptors;
             dst.vertexToSourceShellDescriptor = src.vertexToSourceShellDescriptor;
             dst.targetShellToSourceShellDescriptor = src.targetShellToSourceShellDescriptor;

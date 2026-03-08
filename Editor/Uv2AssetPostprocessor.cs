@@ -428,62 +428,40 @@ namespace LightmapUvTool
 
             if (hasGroundTruth)
             {
-                // ALL vertex data from ground truth — guaranteed correct, bypasses remap entirely.
+                // Positions/normals/tangents from ground truth — these don't change during
+                // weld (meshopt dedup is byte-exact, EdgeWeld only removes vertices at same pos).
                 System.Array.Copy(entry.optimizedPositions, optPos, optCount);
                 if (optNormals != null && entry.optimizedNormals != null && entry.optimizedNormals.Length == optCount)
                     System.Array.Copy(entry.optimizedNormals, optNormals, optCount);
                 if (optTangents != null && entry.optimizedTangents != null && entry.optimizedTangents.Length == optCount)
                     System.Array.Copy(entry.optimizedTangents, optTangents, optCount);
-                if (optUvs[0] != null && entry.optimizedUv0 != null && entry.optimizedUv0.Length == optCount)
-                {
-                    for (int i = 0; i < optCount; i++)
-                        optUvs[0][i] = entry.optimizedUv0[i];
-                }
-                else
-                {
-                    // UV0 not in ground truth — use remap + orphan fill
-                    for (int i = 0; i < rawCount; i++)
-                    {
-                        int dst = remap[i];
-                        if (dst < 0 || optUvs[0] == null) continue;
-                        optUvs[0][dst] = rawUvs[0][i];
-                    }
-                    if (entry.orphanIndices != null)
-                    {
-                        for (int k = 0; k < entry.orphanIndices.Length; k++)
-                        {
-                            int dst = entry.orphanIndices[k];
-                            if (dst < 0 || dst >= optCount) continue;
-                            if (optUvs[0] != null && entry.orphanUv0 != null && k < entry.orphanUv0.Length)
-                                optUvs[0][dst] = entry.orphanUv0[k];
-                        }
-                    }
-                }
-                if (optColors != null && entry.optimizedColors != null && entry.optimizedColors.Length == optCount)
-                    System.Array.Copy(entry.optimizedColors, optColors, optCount);
-                else if (optColors != null)
-                {
-                    for (int i = 0; i < rawCount; i++)
-                    {
-                        int dst = remap[i];
-                        if (dst < 0) continue;
-                        optColors[dst] = rawColors[i];
-                    }
-                }
 
-                // UV channels 2-7 from remap (these change between Apply runs)
+                // UV channels, colors — from remap (UV0 is modified by weld, must come from raw FBX)
                 for (int i = 0; i < rawCount; i++)
                 {
                     int dst = remap[i];
                     if (dst < 0) continue;
-                    for (int ch = 2; ch < 8; ch++)
+                    if (optColors != null) optColors[dst] = rawColors[i];
+                    for (int ch = 0; ch < 8; ch++)
                     {
-                        if (optUvs[ch] == null) continue;
+                        if (ch == 1 || optUvs[ch] == null) continue;
                         optUvs[ch][dst] = rawUvs[ch][i];
                     }
                 }
 
-                UvtLog.Info($"[UV2 Postprocess] '{mesh.name}': using ground-truth vertex data ({optCount} verts)");
+                // Orphan UV0 fill (orphan positions/normals/tangents already in ground truth)
+                if (entry.orphanIndices != null && entry.orphanIndices.Length > 0)
+                {
+                    for (int k = 0; k < entry.orphanIndices.Length; k++)
+                    {
+                        int dst = entry.orphanIndices[k];
+                        if (dst < 0 || dst >= optCount) continue;
+                        if (optUvs[0] != null && entry.orphanUv0 != null && k < entry.orphanUv0.Length)
+                            optUvs[0][dst] = entry.orphanUv0[k];
+                    }
+                }
+
+                UvtLog.Info($"[UV2 Postprocess] '{mesh.name}': ground-truth geometry + remap UV ({optCount} verts)");
             }
             else
             {
