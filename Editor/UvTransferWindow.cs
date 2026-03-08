@@ -91,8 +91,6 @@ namespace LightmapUvTool
         bool foldOutput = true;
         bool foldUv0Analysis = false;
         bool foldRepackSettings = true;
-        bool foldShellDebug = false;
-
         class ShellDebugHit
         {
             public MeshEntry entry;
@@ -565,7 +563,6 @@ namespace LightmapUvTool
                 EditorGUILayout.HelpBox(previewConflictNotice, MessageType.Info);
             DrawCanvas();
             DrawStatusBar();
-            DrawShellDebugPanel();
             EditorGUILayout.EndVertical();
 
             EditorGUILayout.EndHorizontal();
@@ -1019,7 +1016,10 @@ namespace LightmapUvTool
             using (new EditorGUI.DisabledScope(!hasSelectedShell))
             {
                 if (GUILayout.Button("Clear", EditorStyles.toolbarButton, GUILayout.Width(42)))
+                {
                     hasSelectedShell = false;
+                    selectedShellDebug = null;
+                }
             }
 
             GUILayout.Space(6);
@@ -1217,6 +1217,10 @@ namespace LightmapUvTool
                 RenderTexture.active = prevRT;
                 GUI.DrawTexture(canvasRect, canvasRT, ScaleMode.StretchToFill, false);
             }
+
+            // ── Shell debug overlay (right side of canvas) ──
+            if (spotMode)
+                DrawShellDebugOverlay(canvasRect);
         }
 
         void OnSceneGUI(SceneView sv)
@@ -1567,6 +1571,11 @@ namespace LightmapUvTool
                 {
                     hasSelectedShell = false;
                 }
+                // Pin shell debug on click
+                if (hoveredShellDebug != null)
+                    selectedShellDebug = CloneHit(hoveredShellDebug);
+                else
+                    selectedShellDebug = null;
                 e.Use();
                 Repaint();
                 SceneView.RepaintAll();
@@ -2601,105 +2610,79 @@ namespace LightmapUvTool
             EditorGUILayout.LabelField(l, EditorStyles.miniLabel, GUILayout.Width(18));
         }
 
-        void DrawShellDebugPanel()
+        void DrawShellDebugOverlay(Rect canvasRect)
         {
-            foldShellDebug = EditorGUILayout.Foldout(foldShellDebug, "Shell Debug", true);
-            if (!foldShellDebug) return;
+            // Show selected (pinned by click), fall back to hovered
+            var hit = selectedShellDebug ?? hoveredShellDebug;
+            if (hit == null || hit.shell == null) return;
 
-            EditorGUI.indentLevel++;
-            DrawShellHitInfo("Hovered", hoveredShellDebug);
-            GUILayout.Space(4);
-            DrawShellHitInfo("Selected", selectedShellDebug);
+            bool pinned = selectedShellDebug != null;
+            var shell = hit.shell;
+            var bmin = shell.boundsMin;
+            var bmax = shell.boundsMax;
 
-            EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Select hovered"))
-            {
-                if (hoveredShellDebug != null) selectedShellDebug = CloneHit(hoveredShellDebug);
-            }
-            if (GUILayout.Button("Clear selection"))
-                selectedShellDebug = null;
-            using (new EditorGUI.DisabledScope(selectedShellDebug == null || selectedShellDebug.shell == null))
-            {
-                if (GUILayout.Button("Focus") && selectedShellDebug?.shell != null)
-                {
-                    var bmin = selectedShellDebug.shell.boundsMin;
-                    var bmax = selectedShellDebug.shell.boundsMax;
-                    FocusUvBounds(bmin.x, bmin.y, bmax.x, bmax.y);
-                }
-            }
-            EditorGUILayout.EndHorizontal();
+            var lines = new List<string>();
+            string header = pinned ? $"Shell {hit.shellId} (pinned)" : $"Shell {hit.shellId}";
+            lines.Add(header);
+            lines.Add($"{hit.mesh?.name ?? "?"}  UV{hit.uvChannel}");
+            lines.Add($"F:{shell.faceIndices.Count} V:{shell.vertexIndices.Count}");
+            lines.Add($"({bmin.x:F3},{bmin.y:F3})-({bmax.x:F3},{bmax.y:F3})");
+            lines.Add($"area {shell.bboxArea:F5}  UDIM({hit.tileU},{hit.tileV})");
 
-            if (fillMode == FillMode.ShellMatch && selectedShellDebug?.entry?.shellTransferResult?.vertexToSourceShell != null && selectedShellDebug.shell != null)
+            if (fillMode == FillMode.ShellMatch && hit.entry?.shellTransferResult?.vertexToSourceShell != null)
             {
-                var map = selectedShellDebug.entry.shellTransferResult.vertexToSourceShell;
+                var map = hit.entry.shellTransferResult.vertexToSourceShell;
                 var freq = new Dictionary<int, int>();
                 int total = 0;
-                foreach (int v in selectedShellDebug.shell.vertexIndices)
+                foreach (int v in shell.vertexIndices)
                 {
                     if (v < 0 || v >= map.Length) continue;
-                    int src = map[v];
-                    if (!freq.ContainsKey(src)) freq[src] = 0;
-                    freq[src]++;
-                    total++;
+                    freq.TryGetValue(map[v], out int c); freq[map[v]] = c + 1; total++;
                 }
-
-                EditorGUILayout.Space(4);
-                EditorGUILayout.LabelField("ShellMatch top-3 source shells:", EditorStyles.miniBoldLabel);
-                if (total <= 0)
+                if (total > 0)
                 {
-                    EditorGUILayout.LabelField("Нет данных по вершинам.", EditorStyles.miniLabel);
+                    lines.Add("---");
+                    foreach (var kv in freq.OrderByDescending(k => k.Value).Take(3))
+                        lines.Add($"src {kv.Key}: {kv.Value} ({kv.Value*100f/total:F0}%)");
+                }
+            }
+
+            if (hit.entry?.validationReport?.perTriangle != null)
+            {
+                int issues = 0;
+                var perTri = hit.entry.validationReport.perTriangle;
+                foreach (int f in shell.faceIndices)
+                    if (f >= 0 && f < perTri.Length && perTri[f] != TransferValidator.TriIssue.None) issues++;
+                if (issues > 0) lines.Add($"tri issues: {issues}");
+            }
+
+            // Measure and draw overlay
+            float lineH = 13f;
+            float pad = 6f;
+            float w = 200f;
+            float h = lines.Count * lineH + pad * 2f;
+            float x = canvasRect.xMax - w - 8f;
+            float y = canvasRect.yMin + 8f;
+            var bgRect = new Rect(x, y, w, h);
+
+            EditorGUI.DrawRect(bgRect, new Color(0f, 0f, 0f, 0.65f));
+
+            var style = new GUIStyle(EditorStyles.miniLabel) { normal = { textColor = Color.white } };
+            var pinnedStyle = new GUIStyle(style) { normal = { textColor = new Color(1f, .75f, .3f) } };
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                var lr = new Rect(x + pad, y + pad + i * lineH, w - pad * 2f, lineH);
+                if (lines[i] == "---")
+                {
+                    var sep = new Rect(lr.x, lr.y + lineH * 0.5f - 0.5f, lr.width, 1f);
+                    EditorGUI.DrawRect(sep, new Color(1f, 1f, 1f, 0.2f));
                 }
                 else
                 {
-                    foreach (var kv in freq.OrderByDescending(k => k.Value).ThenBy(k => k.Key).Take(3))
-                    {
-                        float pct = kv.Value * 100f / total;
-                        EditorGUILayout.LabelField($"sourceShellId={kv.Key}: {kv.Value} ({pct:F1}%)", EditorStyles.miniLabel);
-                    }
+                    GUI.Label(lr, lines[i], i == 0 && pinned ? pinnedStyle : style);
                 }
             }
-
-            if (selectedShellDebug?.entry?.validationReport?.perTriangle != null && selectedShellDebug.shell != null)
-            {
-                int issues = 0;
-                var perTri = selectedShellDebug.entry.validationReport.perTriangle;
-                foreach (int f in selectedShellDebug.shell.faceIndices)
-                {
-                    if (f < 0 || f >= perTri.Length) continue;
-                    if (perTri[f] != TransferValidator.TriIssue.None) issues++;
-                }
-                EditorGUILayout.Space(2);
-                EditorGUILayout.LabelField($"Проблемных трис в selected shell: {issues}", EditorStyles.miniLabel);
-            }
-            EditorGUI.indentLevel--;
-        }
-
-        void DrawShellHitInfo(string label, ShellDebugHit hit)
-        {
-            EditorGUILayout.LabelField(label, EditorStyles.miniBoldLabel);
-
-            bool hasHit = hit != null && hit.shell != null;
-            var shell = hasHit ? hit.shell : null;
-            var bmin = hasHit ? shell.boundsMin : Vector2.zero;
-            var bmax = hasHit ? shell.boundsMax : Vector2.zero;
-
-            EditorGUILayout.LabelField($"shellId: {(hasHit ? hit.shellId.ToString() : "—")}", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"mesh: {(hasHit ? (hit.mesh?.name ?? "<null>") : "—")}", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"uv channel: {(hasHit ? "UV" + hit.uvChannel : "—")}", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField(
-                hasHit
-                    ? $"boundsMin/boundsMax: ({bmin.x:F3}, {bmin.y:F3}) / ({bmax.x:F3}, {bmax.y:F3})"
-                    : "boundsMin/boundsMax: —",
-                EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"bboxArea: {(hasHit ? shell.bboxArea.ToString("F6") : "—")}", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"faces count: {(hasHit ? shell.faceIndices.Count.ToString() : "—")}", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField($"vertices count: {(hasHit ? shell.vertexIndices.Count.ToString() : "—")}", EditorStyles.miniLabel);
-            EditorGUILayout.LabelField(
-                hasHit ? $"UDIM tile: ({hit.tileU}, {hit.tileV})" : "UDIM tile: —",
-                EditorStyles.miniLabel);
-            EditorGUILayout.LabelField(
-                hasHit ? $"local in tile: ({hit.localUv.x:F3}, {hit.localUv.y:F3})" : "local in tile: —",
-                EditorStyles.miniLabel);
         }
 
         Mesh DMesh(MeshEntry e)
