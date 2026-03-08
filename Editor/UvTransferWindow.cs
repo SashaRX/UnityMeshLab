@@ -76,6 +76,7 @@ namespace LightmapUvTool
         PreviewMode previewMode = PreviewMode.Off;
         static readonly string[] previewModeLabels = { "Off", "Checker", "3D Shells", "Lightmap" };
         float fillAlpha = 0.25f;
+        float lmExposure = 1f;
         bool lockSelection;
         bool spotMode;
         bool hoverHitValid;
@@ -1190,7 +1191,8 @@ namespace LightmapUvTool
                         var bgTiles = (previewMode == PreviewMode.Lightmap)
                             ? new HashSet<Vector2Int> { new Vector2Int(0, 0) }
                             : occupiedTiles;
-                        GlTextureBg(cx, cy, sz, bgTex, bgTiling, bgOffset, bgAlpha, bgTiles);
+                        float bgExposure = previewMode == PreviewMode.Lightmap ? lmExposure : 1f;
+                        GlTextureBg(cx, cy, sz, bgTex, bgTiling, bgOffset, bgAlpha, bgTiles, bgExposure);
                         glMat.SetPass(0);
                     }
 
@@ -2165,12 +2167,13 @@ namespace LightmapUvTool
             GL.End();
         }
 
-        void GlTextureBg(float ox, float oy, float sz, Texture tex, Vector2 tiling, Vector2 offset, float alpha, HashSet<Vector2Int> occupiedTiles = null)
+        void GlTextureBg(float ox, float oy, float sz, Texture tex, Vector2 tiling, Vector2 offset, float alpha, HashSet<Vector2Int> occupiedTiles = null, float exposure = 1f)
         {
             if (tex == null || texMat == null) return;
 
+            float e = Mathf.Clamp(exposure, 0f, 10f);
             texMat.mainTexture = tex;
-            texMat.SetColor("_Color", new Color(1f, 1f, 1f, Mathf.Clamp01(alpha)));
+            texMat.SetColor("_Color", new Color(e, e, e, Mathf.Clamp01(alpha)));
             texMat.SetPass(0);
 
             GL.Begin(GL.QUADS);
@@ -2951,6 +2954,27 @@ namespace LightmapUvTool
                 GUI.backgroundColor = bg2;
                 if (newMode != previewMode)
                     ApplyPreviewMode(newMode);
+            }
+
+            // ── Lightmap exposure slider ──
+            if (previewMode == PreviewMode.Lightmap)
+            {
+                GUILayout.Space(2);
+                var expRect = GUILayoutUtility.GetRect(60, 14, GUILayout.Width(60));
+                expRect.y += 2f;
+                expRect.height = 12f;
+                EditorGUI.DrawRect(expRect, new Color(0.15f, 0.15f, 0.15f));
+                var expFillRect = new Rect(expRect.x, expRect.y, expRect.width * Mathf.InverseLerp(0f, 2f, lmExposure), expRect.height);
+                EditorGUI.DrawRect(expFillRect, new Color(0.85f, 0.7f, 0.3f, 0.7f));
+                var expLabelStyle = new GUIStyle(EditorStyles.miniLabel) { alignment = TextAnchor.MiddleCenter, normal = { textColor = Color.white } };
+                GUI.Label(expRect, "E:" + lmExposure.ToString("F2"), expLabelStyle);
+                var ev2 = Event.current;
+                if ((ev2.type == EventType.MouseDown || ev2.type == EventType.MouseDrag) && expRect.Contains(ev2.mousePosition))
+                {
+                    lmExposure = Mathf.Lerp(0f, 2f, Mathf.Clamp01((ev2.mousePosition.x - expRect.x) / expRect.width));
+                    ev2.Use();
+                    Repaint();
+                }
             }
 
             GUILayout.Space(6);
