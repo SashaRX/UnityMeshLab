@@ -45,6 +45,8 @@ namespace LightmapUvTool
 
         // UI
         Dictionary<int, bool> lodFoldouts = new Dictionary<int, bool>();
+        Dictionary<int, bool> transferLodFoldouts = new Dictionary<int, bool>();
+        Dictionary<int, bool> reportLodFoldouts = new Dictionary<int, bool>();
         enum Tab { Setup, Repack, Transfer }
         Tab tab = Tab.Setup;
         bool hasRepack, hasTransfer;
@@ -848,7 +850,7 @@ namespace LightmapUvTool
             if (lodGroup == null) { Warn("Set LODGroup first."); return; }
             if (!hasRepack) { Warn("Run Repack first."); return; }
 
-            // Status per LOD
+            // Status per LOD (collapsible, collapsed by default)
             for (int li = 0; li < LodN; li++)
             {
                 if (li == sourceLodIndex) continue;
@@ -857,8 +859,13 @@ namespace LightmapUvTool
                 bool done = ee.All(e => e.transferredMesh != null);
                 var cc = GUI.contentColor;
                 if (done) GUI.contentColor = new Color(.3f,.9f,.3f);
-                EditorGUILayout.LabelField((done ? "✓" : "○") + " LOD" + li + ": " + ee.Count + " mesh", EditorStyles.miniBoldLabel);
+
+                if (!transferLodFoldouts.ContainsKey(li)) transferLodFoldouts[li] = false;
+                string label = (done ? "✓" : "○") + " LOD" + li + ": " + ee.Count + " mesh";
+                transferLodFoldouts[li] = EditorGUILayout.Foldout(transferLodFoldouts[li], label, true, EditorStyles.foldout);
                 GUI.contentColor = cc;
+
+                if (!transferLodFoldouts[li]) continue;
 
                 foreach (var e in ee)
                 {
@@ -889,7 +896,11 @@ namespace LightmapUvTool
                     var ee = ForLod(li);
                     if (!ee.Any(e => e.shellTransferResult != null || e.report.HasValue)) continue;
 
-                    EditorGUILayout.LabelField("LOD" + li, EditorStyles.miniBoldLabel);
+                    if (!reportLodFoldouts.ContainsKey(li)) reportLodFoldouts[li] = false;
+                    reportLodFoldouts[li] = EditorGUILayout.Foldout(reportLodFoldouts[li], "LOD" + li, true, EditorStyles.foldout);
+
+                    if (!reportLodFoldouts[li]) continue;
+
                     foreach (var e in ee)
                     {
                         if (e.shellTransferResult != null)
