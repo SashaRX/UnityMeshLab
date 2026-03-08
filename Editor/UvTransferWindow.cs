@@ -3156,44 +3156,47 @@ namespace LightmapUvTool
         {
             if (lodGroup == null) return;
 
-            // ── Pre-import pass: ensure generateSecondaryUV is disabled ──
-            // After Reset, FBXs may have been imported with generateSecondaryUV=ON.
-            // OnPreprocessModel will disable it during the final reimport, but by then
-            // we've already built remap tables from e.fbxMesh (which has the ON order).
-            // To avoid vertex order mismatch, disable the setting and reimport first.
+            // ── Pre-import pass: get raw FBX meshes ──
+            // On repeat runs, e.fbxMesh = mf.sharedMesh may be the postprocessed mesh
+            // (ReplayOptimization changed vertex count/order). We MUST build the remap
+            // from the raw FBX mesh to get correct results. Reimport all FBXs with the
+            // postprocessor bypassed so e.fbxMesh has the true raw FBX vertex order.
             {
-                var fbxPathsToFix = new HashSet<string>();
+                var fbxPathSet = new HashSet<string>();
                 foreach (var e in meshEntries)
                 {
                     if (!e.include) continue;
                     Mesh m = e.fbxMesh ?? e.originalMesh;
                     if (m == null) continue;
                     string p = AssetDatabase.GetAssetPath(m);
-                    if (string.IsNullOrEmpty(p)) continue;
-                    var imp = AssetImporter.GetAtPath(p) as ModelImporter;
-                    if (imp != null && imp.generateSecondaryUV)
-                        fbxPathsToFix.Add(p);
+                    if (!string.IsNullOrEmpty(p)) fbxPathSet.Add(p);
                 }
 
-                if (fbxPathsToFix.Count > 0)
+                if (fbxPathSet.Count > 0)
                 {
-                    UvtLog.Info($"[Apply] Pre-import: disabling generateSecondaryUV on {fbxPathsToFix.Count} FBX(es) to match postprocessor vertex order");
-                    foreach (string p in fbxPathsToFix)
+                    UvtLog.Info($"[Apply] Pre-import: reimporting {fbxPathSet.Count} FBX(es) with bypass to get raw vertex order");
+                    foreach (string p in fbxPathSet)
                     {
                         var imp = AssetImporter.GetAtPath(p) as ModelImporter;
-                        if (imp != null)
-                        {
+                        if (imp == null) continue;
+
+                        if (imp.generateSecondaryUV)
                             imp.generateSecondaryUV = false;
-                            imp.SaveAndReimport();
-                        }
+
+                        // Bypass postprocessor so we get the unmodified FBX mesh
+                        Uv2AssetPostprocessor.bypassPaths.Add(p);
+                        imp.SaveAndReimport();
                     }
 
-                    // Re-read meshes from reimported FBXs so e.fbxMesh has the correct vertex order
+                    // Re-read meshes from reimported FBXs so e.fbxMesh has the raw vertex order
                     foreach (var e in meshEntries)
                     {
                         if (e.meshFilter != null && e.meshFilter.sharedMesh != null)
                             e.fbxMesh = e.meshFilter.sharedMesh;
                     }
+
+                    // Safety: clear any leftover bypass entries
+                    Uv2AssetPostprocessor.bypassPaths.Clear();
                 }
             }
 
@@ -3222,32 +3225,12 @@ namespace LightmapUvTool
 
                 string meshName = e.fbxMesh != null ? e.fbxMesh.name : e.originalMesh.name;
 
-                // Fingerprint: detect whether e.fbxMesh is raw FBX or postprocessed.
-                // On repeat runs, e.fbxMesh = mf.sharedMesh may be the postprocessed mesh
-                // (replay changes vertex count). If vertex count matches the stored remap
-                // length (= original raw count), the mesh is likely raw → compute fresh.
-                // If counts differ, the mesh is postprocessed → carry forward old fingerprint.
+                // Fingerprint: e.fbxMesh is guaranteed to be the raw FBX mesh
+                // (pre-import pass reimports with postprocessor bypassed).
                 MeshFingerprint fp = null;
                 if (e.fbxMesh != null)
                 {
-                    var existingSidecar = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(
-                        Uv2DataAsset.GetSidecarPath(fbxPath));
-                    var existingEntry = existingSidecar != null ? existingSidecar.Find(meshName) : null;
-                    bool meshLikelyRaw = existingEntry == null
-                        || !existingEntry.hasReplayData
-                        || existingEntry.vertexRemap == null
-                        || e.fbxMesh.vertexCount == existingEntry.vertexRemap.Length;
-
-                    if (!meshLikelyRaw && existingEntry?.sourceFingerprint != null)
-                    {
-                        // Postprocessed mesh — can't compute correct fingerprint, carry forward
-                        fp = existingEntry.sourceFingerprint;
-                    }
-                    else
-                    {
-                        // Raw FBX mesh — compute fresh fingerprint (uses current hash algorithm)
-                        fp = MeshFingerprint.Compute(e.fbxMesh);
-                    }
+                    fp = MeshFingerprint.Compute(e.fbxMesh);
                 }
 
                 var sidecar = new SidecarEntry

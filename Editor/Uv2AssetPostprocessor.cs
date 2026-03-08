@@ -15,6 +15,14 @@ namespace LightmapUvTool
         // Run well after Bakery and other postprocessors (default order = 0).
         public override int GetPostprocessOrder() => 10000;
 
+        /// <summary>
+        /// Paths to bypass during the next reimport. When ApplyUv2ToFbx needs the
+        /// raw FBX mesh (before any postprocessor modifications), it adds the FBX
+        /// path here and reimports. Both OnPreprocessModel and OnPostprocessModel
+        /// skip processing for bypassed paths, yielding the untouched FBX mesh.
+        /// </summary>
+        internal static readonly HashSet<string> bypassPaths = new HashSet<string>();
+
         struct ApplyStats
         {
             public int fbxVerts;              // vertex count from fresh FBX import
@@ -33,6 +41,10 @@ namespace LightmapUvTool
             var modelImporter = assetImporter as ModelImporter;
             if (modelImporter == null) return;
 
+            // Bypass: ApplyUv2ToFbx needs the raw FBX mesh without any modifications.
+            if (bypassPaths.Contains(assetPath))
+                return;
+
             string sidecarPath = Uv2DataAsset.GetSidecarPath(assetPath);
             if (!System.IO.File.Exists(sidecarPath)) return;
 
@@ -49,6 +61,14 @@ namespace LightmapUvTool
         void OnPostprocessModel(GameObject root)
         {
             string modelPath = assetPath;
+
+            // Bypass: ApplyUv2ToFbx needs the raw FBX mesh without any modifications.
+            if (bypassPaths.Remove(modelPath))
+            {
+                UvtLog.Verbose($"[UV2 Postprocess] Bypassed '{modelPath}' (raw FBX mesh requested)");
+                return;
+            }
+
             string sidecarPath = Uv2DataAsset.GetSidecarPath(modelPath);
 
             // Load sidecar without triggering import loop
