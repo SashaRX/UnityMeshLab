@@ -591,7 +591,11 @@ namespace LightmapUvTool
                     if (bestOld >= 0 && bestDist < 1e-4f)
                     {
                         newRemap[i] = origRemap[bestOld];
-                        if (origRemap[bestOld] >= 0) matched++;
+                        if (origRemap[bestOld] >= 0)
+                        {
+                            coveredOpt[origRemap[bestOld]] = true;
+                            matched++;
+                        }
                     }
                 }
             }
@@ -625,11 +629,10 @@ namespace LightmapUvTool
 
         /// <summary>
         /// Pick the best stored vertex candidate for a new raw vertex.
-        /// Priority: uncovered opt slot > already-covered opt slot > invalid (-1).
-        /// Among equal priority, prefer closest UV0.
-        /// Tracking coverage at OPTIMIZED level (not raw level) is critical:
-        /// - For true duplicates (same origRemap): all map to same opt slot, no penalty
-        /// - For seam splits (different origRemap): prefers uncovered opt slots
+        /// UV0 match is the PRIMARY signal (seam splits have very different UV0).
+        /// Coverage (uncovered opt slot) is a SECONDARY tiebreaker among UV0-close candidates.
+        /// This prevents duplicates (same UV0) from being pushed to wrong seam splits
+        /// just because their opt slot is already covered.
         /// </summary>
         static int PickBestCandidate(List<int> candidates, int newIdx, int[] origRemap, bool[] coveredOpt,
                                       List<Vector2> newUv0, Vector2[] storedUv0)
@@ -641,29 +644,55 @@ namespace LightmapUvTool
                 return candidates[0];
             }
 
+            bool hasUv = newUv0 != null && storedUv0 != null;
+
+            // Pass 1: find best UV0 distance among valid (non -1) candidates
+            float bestUv0Dist = float.MaxValue;
+            for (int k = 0; k < candidates.Count; k++)
+            {
+                int ci = candidates[k];
+                if (origRemap[ci] < 0) continue;
+                float d = hasUv ? Vector2.SqrMagnitude(newUv0[newIdx] - storedUv0[ci]) : 0f;
+                if (d < bestUv0Dist) bestUv0Dist = d;
+            }
+
+            // UV0 threshold: candidates within this range of the best are considered
+            // "UV0-equivalent" (same seam side). Seam splits differ by >> 0.01 in UV space.
+            // Use relative threshold so it works regardless of UV0 scale.
+            float uvThreshold = hasUv ? bestUv0Dist + 1e-6f : float.MaxValue;
+
+            // Pass 2: among UV0-close candidates, prefer uncovered opt slots
             int bestOld = -1;
             float bestScore = float.MaxValue;
-            int bestPriority = int.MaxValue; // 0=uncovered valid, 1=covered valid, 2=invalid(-1)
+            int bestPriority = int.MaxValue;
+            // Priority: 0=UV0 close + uncovered, 1=UV0 close + covered,
+            //           2=UV0 far + uncovered, 3=UV0 far + covered, 4=invalid(-1)
 
             for (int k = 0; k < candidates.Count; k++)
             {
                 int ci = candidates[k];
                 int opt = origRemap[ci];
+
+                float uvDist = hasUv ? Vector2.SqrMagnitude(newUv0[newIdx] - storedUv0[ci]) : 0f;
+                bool uvClose = uvDist <= uvThreshold;
+
                 int priority;
-                if (opt < 0) priority = 2; // invalid remap
-                else if (!coveredOpt[opt]) priority = 0; // uncovered opt slot — prefer this
-                else priority = 1; // already covered — OK but lower priority
+                if (opt < 0)
+                    priority = 4;
+                else if (uvClose && !coveredOpt[opt])
+                    priority = 0; // best: good UV0 match + uncovered
+                else if (uvClose)
+                    priority = 1; // good UV0 match + already covered (duplicate)
+                else if (!coveredOpt[opt])
+                    priority = 2; // bad UV0 match + uncovered (wrong seam side)
+                else
+                    priority = 3; // bad UV0 match + covered
 
                 if (priority > bestPriority) continue;
-
-                float score = 0f;
-                if (newUv0 != null && storedUv0 != null)
-                    score = Vector2.SqrMagnitude(newUv0[newIdx] - storedUv0[ci]);
-
-                if (priority < bestPriority || score < bestScore)
+                if (priority < bestPriority || uvDist < bestScore)
                 {
                     bestPriority = priority;
-                    bestScore = score;
+                    bestScore = uvDist;
                     bestOld = ci;
                 }
             }
