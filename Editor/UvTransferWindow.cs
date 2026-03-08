@@ -71,6 +71,8 @@ namespace LightmapUvTool
         Vector3 hoverWorldPos;
         bool canvasSpotValid;
         Vector2 canvasSpotUv;
+        double sceneSpotLastRaycastTime;
+        const double sceneSpotThrottleSec = 0.033; // ~30 fps
 
         // Checker mode (user toggle, independent from CheckerTexturePreview.IsActive)
         bool checkerEnabled;
@@ -1232,27 +1234,46 @@ namespace LightmapUvTool
             if (e == null)
                 return;
 
-            var ray = HandleUtility.GUIPointToWorldRay(e.mousePosition);
-            bool hadHit = hoverHitValid;
-            Vector2 prevUv = uvSpot;
-            int prevShell = hoveredShellId;
-
-            hoverHitValid = TryRaycastPreview(ray, out var hit);
-            if (hoverHitValid)
+            // Only raycast on MouseMove/MouseDrag, throttled to ~30fps.
+            // Layout/Repaint/other events reuse cached hit.
+            if (e.type == EventType.MouseMove || e.type == EventType.MouseDrag)
             {
-                hoverWorldPos = hit.worldPos;
-                uvSpot = hit.uv;
-                hoveredShellId = hit.shellId;
-            }
-            else
-            {
-                hoveredShellId = -1;
+                double now = EditorApplication.timeSinceStartup;
+                if (now - sceneSpotLastRaycastTime >= sceneSpotThrottleSec)
+                {
+                    sceneSpotLastRaycastTime = now;
+
+                    var ray = HandleUtility.GUIPointToWorldRay(e.mousePosition);
+                    bool hadHit = hoverHitValid;
+                    Vector2 prevUv = uvSpot;
+                    int prevShell = hoveredShellId;
+
+                    hoverHitValid = TryRaycastPreview(ray, out var hit);
+                    if (hoverHitValid)
+                    {
+                        hoverWorldPos = hit.worldPos;
+                        uvSpot = hit.uv;
+                        hoveredShellId = hit.shellId;
+                        sceneSpotCachedEntry = hit.meshEntry;
+                    }
+                    else
+                    {
+                        hoveredShellId = -1;
+                        sceneSpotCachedEntry = null;
+                    }
+
+                    if (!hoverHitValid && hadHit)
+                        Repaint();
+                    else if (hoverHitValid && (!hadHit || prevShell != hoveredShellId || (prevUv - uvSpot).sqrMagnitude > 1e-8f))
+                        Repaint();
+
+                    sv.Repaint(); // request Repaint pass so spot renders
+                }
             }
 
-            if (!hoverHitValid && hadHit)
-                Repaint();
-            else if (hoverHitValid && (!hadHit || prevShell != hoveredShellId || (prevUv - uvSpot).sqrMagnitude > 1e-8f))
-                Repaint();
+            // On Repaint — draw using cached data
+            if (e.type != EventType.Repaint)
+                return;
 
             // Determine which UV to project: 3D hover > selected shell > hovered shell > canvas spot
             Vector2 projUv;
@@ -1261,7 +1282,7 @@ namespace LightmapUvTool
             if (hoverHitValid)
             {
                 projUv = uvSpot;
-                projEntry = hit.meshEntry;
+                projEntry = sceneSpotCachedEntry;
                 hasProj = true;
             }
             else if (hasSelectedShell)
@@ -1279,7 +1300,7 @@ namespace LightmapUvTool
             else if (canvasSpotValid)
             {
                 projUv = canvasSpotUv;
-                projEntry = null; // no specific entry — draw on all
+                projEntry = null;
                 hasProj = true;
             }
             else
@@ -1293,6 +1314,7 @@ namespace LightmapUvTool
 
             DrawSpotProjectionInScene(projUv, projEntry);
         }
+        MeshEntry sceneSpotCachedEntry;
 
         void DrawSpotProjectionInScene(Vector2 projUv, MeshEntry limitEntry = null)
         {
