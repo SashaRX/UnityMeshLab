@@ -1484,7 +1484,7 @@ namespace LightmapUvTool
             bestHit = default;
             bestHit.distance = float.PositiveInfinity;
 
-            var entries = ForLod(pvLod);
+            var entries = FilteredEntries();
             bool found = false;
             foreach (var entry in entries)
             {
@@ -2340,9 +2340,26 @@ namespace LightmapUvTool
             return cached;
         }
 
-        bool TryPickUvHit(Vector2 uv, ref ShellUvHit hit)
+        /// <summary>Returns ForLod entries filtered by isolatedMeshGroup when per-mesh mode is active.</summary>
+        List<MeshEntry> FilteredEntries()
         {
             var ee = ForLod(pvLod);
+            if (!repackPerMesh || isolatedMeshGroup < 0) return ee;
+            var keys = BuildGroupKeys(pvLod);
+            if (isolatedMeshGroup >= keys.Count) return ee;
+            string isoKey = keys[isolatedMeshGroup];
+            var filtered = new List<MeshEntry>();
+            foreach (var e in ee)
+            {
+                string eKey = e.meshGroupKey ?? e.renderer.name;
+                if (eKey == isoKey) filtered.Add(e);
+            }
+            return filtered;
+        }
+
+        bool TryPickUvHit(Vector2 uv, ref ShellUvHit hit)
+        {
+            var ee = FilteredEntries();
             int checkedTri = 0;
             bool fallbackAssigned = false;
             ShellUvHit fallback = default;
