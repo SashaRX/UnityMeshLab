@@ -4057,14 +4057,44 @@ namespace LightmapUvTool
             // and Restore() would put back stale mesh references on MeshFilters.
             RestoreAllPreviews();
 
+            // 1. Delete sidecar
             if (AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(selectedSidecarPath) != null)
                 AssetDatabase.DeleteAsset(selectedSidecarPath);
 
+            // 2. Flush AssetDatabase BEFORE reimport — without this, the postprocessor's
+            //    LoadAssetAtPath may return a cached sidecar that was just deleted,
+            //    causing UV2 to be re-injected during reimport.
+            AssetDatabase.Refresh();
+
+            // 3. Sync import settings: disable generateSecondaryUV and Read/Write
+            //    so reimport produces a clean mesh without UV2.
+            {
+                var imp = AssetImporter.GetAtPath(selectedFbxPath) as ModelImporter;
+                if (imp != null)
+                {
+                    bool changed = false;
+                    if (imp.generateSecondaryUV)
+                    {
+                        imp.generateSecondaryUV = false;
+                        changed = true;
+                        UvtLog.Verbose($"[Reset] Disabled generateSecondaryUV on '{selectedFbxPath}'");
+                    }
+                    if (imp.isReadable)
+                    {
+                        imp.isReadable = false;
+                        changed = true;
+                        UvtLog.Verbose($"[Reset] Disabled Read/Write on '{selectedFbxPath}'");
+                    }
+                    _ = changed; // applied during reimport below
+                }
+            }
+
+            // 4. Reimport — postprocessor will find no sidecar → no UV2 injection
             AssetDatabase.ImportAsset(selectedFbxPath, ImportAssetOptions.ForceUpdate);
             AssetDatabase.Refresh();
             UvtLog.Info($"[Reset] Deleted sidecar for '{selectedResetLabel}', reimported FBX");
 
-            // Always refresh: after reimport mesh references may be stale
+            // 5. Full refresh: rebuild meshEntries from fresh meshes, clear all caches
             if (lodGroup != null)
                 SwitchToPostApplyView();
 
