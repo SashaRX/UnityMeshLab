@@ -1629,15 +1629,22 @@ namespace LightmapUvTool
                 }
                 // Pin shell debug on click
                 if (hoveredShellDebug != null)
-                {
                     selectedShellDebug = CloneHit(hoveredShellDebug);
-                    FocusSceneViewOnShell(selectedShellDebug);
-                }
                 else
                     selectedShellDebug = null;
                 e.Use();
                 Repaint();
                 SceneView.RepaintAll();
+            }
+
+            // Double-click on shell => focus SceneView camera on it
+            if (spotMode && e.type == EventType.MouseDown && e.clickCount == 2 && e.button == 0 && !e.alt)
+            {
+                if (selectedShellDebug != null)
+                {
+                    FocusSceneViewOnShell(selectedShellDebug);
+                    e.Use();
+                }
             }
         }
 
@@ -1736,8 +1743,7 @@ namespace LightmapUvTool
 
 
         /// <summary>
-        /// Move SceneView pivot to the 3D center of the selected shell (offset along normal).
-        /// After this, pressing F in Unity will frame the shell in 3D.
+        /// Focus SceneView camera on shell: pivot at center, camera looks along inverted normal.
         /// </summary>
         void FocusSceneViewOnShell(ShellDebugHit hit)
         {
@@ -1751,7 +1757,6 @@ namespace LightmapUvTool
             var tris = mesh.triangles;
             var tr = hit.entry.renderer.transform;
 
-            // Compute world-space bounds and average normal from shell faces
             var bounds = new Bounds();
             var avgNormal = Vector3.zero;
             bool first = true;
@@ -1776,20 +1781,20 @@ namespace LightmapUvTool
                     }
                 }
             }
-            if (first) return; // no valid faces
+            if (first) return;
 
             if (normalCount > 0) avgNormal = (avgNormal / normalCount).normalized;
             else avgNormal = Vector3.up;
 
-            // Pivot = center of shell + small offset along normal
-            float offset = bounds.extents.magnitude * 0.3f;
-            var pivot = bounds.center + avgNormal * offset;
-
             var sv = SceneView.lastActiveSceneView;
             if (sv == null) return;
 
-            sv.pivot = pivot;
-            sv.size = Mathf.Max(bounds.extents.magnitude * 1.5f, 0.5f);
+            // Pivot = exact center of the shell
+            sv.pivot = bounds.center;
+            // Size — tight fit around the shell
+            sv.size = Mathf.Max(bounds.extents.magnitude * 0.8f, 0.1f);
+            // Rotate camera to look along inverted normal (from outside toward surface)
+            sv.rotation = Quaternion.LookRotation(-avgNormal);
             sv.Repaint();
         }
 
