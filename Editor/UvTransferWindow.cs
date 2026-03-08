@@ -3882,7 +3882,13 @@ namespace LightmapUvTool
             // Refresh loaded LODGroup if it references the same FBX
             bool touchesLoaded = meshEntries.Any(e =>
                 e.fbxMesh != null && AssetDatabase.GetAssetPath(e.fbxMesh) == selectedFbxPath);
-            if (touchesLoaded) Refresh();
+            if (touchesLoaded)
+            {
+                fillMode = FillMode.Shells;
+                Refresh(restoreShellMatch: false);
+                shellColorKeyCache.Clear();
+                shellColorKeyCacheDirty = true;
+            }
 
             UpdateSelectedSidecar();
             Repaint();
@@ -3964,7 +3970,10 @@ namespace LightmapUvTool
 
             AssetDatabase.Refresh();
             UvtLog.Info($"[Reset] Full pipeline state reset: {deleted} sidecar(s) deleted, {fbxPaths.Count} FBX reimported");
-            Refresh();
+            fillMode = FillMode.Shells;
+            Refresh(restoreShellMatch: false);
+            shellColorKeyCache.Clear();
+            shellColorKeyCacheDirty = true;
             Repaint();
         }
 
@@ -4012,7 +4021,10 @@ namespace LightmapUvTool
 
             AssetDatabase.Refresh();
             UvtLog.Info($"[Reset] Deleted {deleted} sidecar(s), reimported {fbxPaths.Count} FBX");
-            Refresh();
+            fillMode = FillMode.Shells;
+            Refresh(restoreShellMatch: false);
+            shellColorKeyCache.Clear();
+            shellColorKeyCacheDirty = true;
             Repaint();
         }
 
