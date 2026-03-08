@@ -56,6 +56,31 @@ namespace LightmapUvTool
                 modelImporter.generateSecondaryUV = false;
                 UvtLog.Info($"[UV2 Preprocess] Disabled generateSecondaryUV on '{assetPath}' (sidecar provides UV2)");
             }
+
+            // Disable Unity's post-import mesh processing that can modify our reconstructed mesh:
+            // - weldVertices: merges vertices at same position, destroying UV seams we need
+            // - meshCompression: quantizes positions, causing vertex shifts
+            // - optimizeMeshPolygons/Vertices: reorders data (usually harmless but disable to be safe)
+            if (modelImporter.weldVertices)
+            {
+                modelImporter.weldVertices = false;
+                UvtLog.Info($"[UV2 Preprocess] Disabled weldVertices on '{assetPath}' (postprocessor manages mesh topology)");
+            }
+            if (modelImporter.meshCompression != ModelImporterMeshCompression.Off)
+            {
+                UvtLog.Info($"[UV2 Preprocess] Disabled meshCompression ({modelImporter.meshCompression}) on '{assetPath}'");
+                modelImporter.meshCompression = ModelImporterMeshCompression.Off;
+            }
+            if (modelImporter.optimizeMeshPolygons)
+            {
+                modelImporter.optimizeMeshPolygons = false;
+                UvtLog.Info($"[UV2 Preprocess] Disabled optimizeMeshPolygons on '{assetPath}'");
+            }
+            if (modelImporter.optimizeMeshVertices)
+            {
+                modelImporter.optimizeMeshVertices = false;
+                UvtLog.Info($"[UV2 Preprocess] Disabled optimizeMeshVertices on '{assetPath}'");
+            }
         }
 
         void OnPostprocessModel(GameObject root)
@@ -685,12 +710,24 @@ namespace LightmapUvTool
                 for (int i = 0; i < finalUv0.Count; i++)
                     if (finalUv0[i] == Vector2.zero) zeroUv0++;
 
+                // Check triangles — verify they match stored data
+                var finalTris = mesh.triangles;
+                int triMismatch = 0;
+                int triOutOfRange = 0;
+                for (int i = 0; i < finalTris.Length; i++)
+                {
+                    if (finalTris[i] < 0 || finalTris[i] >= mesh.vertexCount) triOutOfRange++;
+                    if (i < entry.optimizedTriangles.Length && finalTris[i] != entry.optimizedTriangles[i]) triMismatch++;
+                }
+                int triCountDiff = finalTris.Length - entry.optimizedTriangles.Length;
+
                 var sb = new System.Text.StringBuilder();
-                sb.Append($"[UV2 Postprocess] DIAG '{mesh.name}': {rawCount}→{optCount} verts, ");
+                sb.Append($"[UV2 Postprocess] DIAG '{mesh.name}': {rawCount}→{optCount} verts (mesh.vertexCount={mesh.vertexCount}), ");
                 sb.Append($"groundTruth={hasGroundTruth}, ");
                 sb.Append($"zeroPos={zeroCount}, zeroUv0={zeroUv0}/{finalUv0.Count}");
                 if (hasGroundTruth)
                     sb.Append($", maxPosDev={maxPosDev:E3} @idx{maxPosDevIdx}");
+                sb.Append($", tris={finalTris.Length}(expected={entry.optimizedTriangles.Length}, diff={triCountDiff}, mismatch={triMismatch}, OOB={triOutOfRange})");
 
                 // Sample a few positions for inspection
                 if (optCount > 0)
