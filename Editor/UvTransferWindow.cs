@@ -3153,13 +3153,14 @@ namespace LightmapUvTool
         {
             if (!shellColorPreviewEnabled) return;
 
-            var entries = new List<(Renderer renderer, Mesh sourceMesh)>();
+            var entries = new List<(Renderer renderer, Mesh sourceMesh, int[] faceColorKeys)>();
             foreach (var e in ForLod(pvLod))
             {
                 if (!e.include || e.renderer == null) continue;
                 Mesh mesh = e.transferredMesh ?? e.repackedMesh ?? e.originalMesh ?? e.fbxMesh;
                 if (mesh == null) continue;
-                entries.Add((e.renderer, mesh));
+                int[] faceKeys = BuildFaceColorKeys(mesh, e);
+                entries.Add((e.renderer, mesh, faceKeys));
             }
 
             if (entries.Count == 0)
@@ -3172,7 +3173,75 @@ namespace LightmapUvTool
 
             var palette = new Color32[pal.Length];
             for (int i = 0; i < pal.Length; i++) palette[i] = pal[i];
-            ShellColorModelPreview.Apply(entries, palette, shellColorPreviewCache);
+            ShellColorModelPreview.Apply(entries, palette);
+        }
+
+        /// <summary>
+        /// Build per-face color keys for 3D preview using the same logic as
+        /// 2D GetShellColorKey: transfer mapping → source descriptors when
+        /// available, UV0 descriptors otherwise.
+        /// </summary>
+        int[] BuildFaceColorKeys(Mesh mesh, MeshEntry entry)
+        {
+            int[] tris = mesh.triangles;
+            int faceCount = tris != null ? tris.Length / 3 : 0;
+            if (faceCount == 0) return new int[0];
+
+            // Extract UV0 shells for this mesh
+            var (v2s, descs) = GetUv0ShellMap(mesh);
+
+            // Transfer mapping (target LODs): map vertices → source shell → source descriptor
+            var map = entry?.shellTransferResult?.vertexToSourceShell;
+            ShellDescriptor[] srcDescs = (map != null) ? GetSourceDescriptors(entry) : null;
+
+            var faceKeys = new int[faceCount];
+            for (int face = 0; face < faceCount; face++)
+            {
+                int triBase = face * 3;
+                int i0 = tris[triBase], i1 = tris[triBase + 1], i2 = tris[triBase + 2];
+
+                // Priority 1: Transfer mapping to source descriptors
+                if (map != null && srcDescs != null)
+                {
+                    int bestKey = VoteBestShell(map, mesh.vertexCount, i0, i1, i2);
+                    if (bestKey >= 0 && bestKey < srcDescs.Length)
+                    {
+                        faceKeys[face] = Mathf.Abs(srcDescs[bestKey].stableHash);
+                        continue;
+                    }
+                }
+
+                // Priority 2: UV0 shell descriptors
+                if (v2s != null && descs != null)
+                {
+                    int bestKey = VoteBestShell(v2s, mesh.vertexCount, i0, i1, i2);
+                    if (bestKey >= 0 && bestKey < descs.Length)
+                    {
+                        faceKeys[face] = Mathf.Abs(descs[bestKey].stableHash);
+                        continue;
+                    }
+                }
+
+                faceKeys[face] = face; // fallback
+            }
+            return faceKeys;
+        }
+
+        /// <summary>Vote for the dominant shell among 3 triangle vertices.</summary>
+        static int VoteBestShell(int[] vertToShell, int vertCount, int i0, int i1, int i2)
+        {
+            int s0 = (i0 >= 0 && i0 < vertToShell.Length) ? vertToShell[i0] : -1;
+            int s1 = (i1 >= 0 && i1 < vertToShell.Length) ? vertToShell[i1] : -1;
+            int s2 = (i2 >= 0 && i2 < vertToShell.Length) ? vertToShell[i2] : -1;
+
+            // Majority vote for 3 vertices
+            if (s0 >= 0 && s0 == s1) return s0;
+            if (s0 >= 0 && s0 == s2) return s0;
+            if (s1 >= 0 && s1 == s2) return s1;
+            // No majority — return first valid
+            if (s0 >= 0) return s0;
+            if (s1 >= 0) return s1;
+            return s2;
         }
 
         void RestoreAllPreviews()
