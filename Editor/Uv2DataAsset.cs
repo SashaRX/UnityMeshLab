@@ -41,7 +41,12 @@ namespace LightmapUvTool
             for (int s = 0; s < mesh.subMeshCount; s++)
                 fp.submeshTriCounts[s] = mesh.GetTriangles(s).Length;
 
-            // FNV-1a hash over quantized positions
+            // Order-DEPENDENT hash over quantized positions.
+            // Must be order-dependent because vertex remap is order-dependent:
+            // if Unity reorders vertices on reimport, we MUST detect it as stale
+            // so RebuildRemapFromPositions runs. Order-independent hash would
+            // hide the reordering and cause the original remap to be applied to
+            // wrong vertices, causing catastrophic 3D stretching.
             var positions = mesh.vertices;
             uint posHash = 2166136261u;
             for (int i = 0; i < positions.Length; i++)
@@ -52,7 +57,7 @@ namespace LightmapUvTool
             }
             fp.positionsHash = unchecked((int)posHash);
 
-            // FNV-1a hash over quantized UV0
+            // Order-DEPENDENT hash over quantized UV0
             var uv0 = new List<Vector2>();
             mesh.GetUVs(0, uv0);
             uint uvHash = 2166136261u;
@@ -103,6 +108,8 @@ namespace LightmapUvTool
         public Vector3[] vertPositions;
         /// <summary>Vertex UV0 at the time UV2 was computed (for disambiguation at shared positions).</summary>
         public Vector2[] vertUv0;
+        /// <summary>Vertex normals at the time UV2 was computed (for disambiguation at shared positions when UV0 is identical).</summary>
+        public Vector3[] vertNormals;
 
         // ── Deterministic replay data (variant B) ──
         /// <summary>
@@ -160,7 +167,7 @@ namespace LightmapUvTool
     public class Uv2DataAsset : ScriptableObject
     {
         public const int CurrentSchemaVersion = 2;
-        public const string ToolVersionStr = "0.13.1";
+        public const string ToolVersionStr = "0.13.32";
 
         public List<MeshUv2Entry> entries = new List<MeshUv2Entry>();
 
@@ -279,6 +286,7 @@ namespace LightmapUvTool
             dst.edgeWelded = src.edgeWelded;
             dst.vertPositions = src.vertPositions;
             dst.vertUv0 = src.vertUv0;
+            dst.vertNormals = src.vertNormals;
             dst.vertexRemap = src.vertexRemap;
             dst.optimizedVertexCount = src.optimizedVertexCount;
             dst.optimizedTriangles = src.optimizedTriangles;

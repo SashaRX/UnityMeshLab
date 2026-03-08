@@ -67,16 +67,19 @@ namespace LightmapUvTool
                 list.Add(f);
             }
 
-            // Build shells
+            // Build shells — sort by root face index for deterministic shell IDs
+            var sortedRoots = new List<int>(groups.Keys);
+            sortedRoots.Sort();
             var shells = new List<UvShell>();
             int id = 0;
-            foreach (var kv in groups)
+            foreach (int root in sortedRoots)
             {
+                var faces = groups[root];
                 var shell = new UvShell { shellId = id++ };
-                shell.faceIndices = kv.Value;
+                shell.faceIndices = faces;
                 Vector2 mn = new Vector2(float.MaxValue, float.MaxValue);
                 Vector2 mx = new Vector2(float.MinValue, float.MinValue);
-                foreach (int f in kv.Value)
+                foreach (int f in faces)
                 {
                     for (int j = 0; j < 3; j++)
                     {
@@ -147,7 +150,10 @@ namespace LightmapUvTool
             var result = new List<List<int>>();
             foreach (var kv in groups)
                 if (kv.Value.Count > 1)
+                {
+                    kv.Value.Sort(); // deterministic order by shell index
                     result.Add(kv.Value);
+                }
             return result;
         }
 

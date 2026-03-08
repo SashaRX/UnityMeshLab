@@ -154,7 +154,7 @@ namespace LightmapUvTool
                 }
                 else
                 {
-                    bool ok = ReplayOptimization(mesh, entry);
+                    bool ok = ReplayOptimization(mesh, entry, stats.stale);
                     if (ok)
                     {
                         stats.finalVerts = mesh.vertexCount;
@@ -259,8 +259,12 @@ namespace LightmapUvTool
         /// Takes raw FBX mesh, applies stored vertex remap + triangle indices
         /// to produce the exact same optimized mesh every time.
         /// No MeshOptimizer or UvEdgeWeld calls — pure table-driven permutation.
+        ///
+        /// Vertex order correctness: ApplyUv2ToFbx pre-disables generateSecondaryUV
+        /// before building the remap, so the reimported mesh seen here has the same
+        /// vertex order as e.fbxMesh had when the remap was computed.
         /// </summary>
-        static bool ReplayOptimization(Mesh mesh, MeshUv2Entry entry)
+        static bool ReplayOptimization(Mesh mesh, MeshUv2Entry entry, bool stale = false)
         {
             int rawCount = mesh.vertexCount;
             int optCount = entry.optimizedVertexCount;
@@ -269,7 +273,26 @@ namespace LightmapUvTool
             if (optCount <= 0 || entry.optimizedTriangles == null || entry.submeshTriangleCounts == null)
                 return false;
 
+            // ── Stale fingerprint: rebuild remap from stored raw positions ──
+            if (stale && entry.vertPositions != null && entry.vertPositions.Length > 0)
+            {
+                remap = RebuildRemapFromPositions(mesh, entry);
+                if (remap == null)
+                {
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': remap rebuild failed — replay aborted.");
+                    return false;
+                }
+            }
+
             // ── Hard validation ──
+            // Remap length must match reimported vertex count
+            if (remap.Length != rawCount)
+            {
+                UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': remap.Length ({remap.Length}) != " +
+                            $"mesh.vertexCount ({rawCount}) — replay aborted.");
+                return false;
+            }
+
             // Check UV2 length matches optimized vertex count
             if (entry.uv2.Length != optCount)
             {
@@ -395,6 +418,31 @@ namespace LightmapUvTool
                 UvtLog.Verbose($"[UV2 Postprocess] '{mesh.name}': filled {entry.orphanIndices.Length} orphan vertices from sidecar");
             }
 
+            // ── Detect unfilled vertices (would cause 3D stretching to origin) ──
+            {
+                int unfilled = 0;
+                // Build set of indices actually referenced by triangles
+                var referenced = new HashSet<int>();
+                for (int i = 0; i < entry.optimizedTriangles.Length; i++)
+                    referenced.Add(entry.optimizedTriangles[i]);
+
+                foreach (int idx in referenced)
+                {
+                    if (idx < optCount && optPos[idx] == Vector3.zero)
+                    {
+                        // Check if this is genuinely at origin or unfilled
+                        // by testing if ALL attributes are zero
+                        bool allZero = true;
+                        if (optNormals != null && optNormals[idx].sqrMagnitude > 0) allZero = false;
+                        if (allZero && optUvs[0] != null && optUvs[0][idx].sqrMagnitude > 0) allZero = false;
+                        if (allZero) unfilled++;
+                    }
+                }
+                if (unfilled > 0)
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': {unfilled} referenced vertices have zero " +
+                                $"position+normal+UV0 (likely unfilled — may cause 3D stretching)");
+            }
+
             // ── Rebuild mesh ──
             // IMPORTANT: Do NOT use mesh.Clear() here. During OnPostprocessModel, Unity
             // allows mesh modifications regardless of isReadable. However, Clear() resets
@@ -444,11 +492,192 @@ namespace LightmapUvTool
             }
 
             mesh.RecalculateBounds();
-            mesh.UploadMeshData(false);
+            // NOTE: Do NOT call mesh.UploadMeshData() here — during OnPostprocessModel,
+            // Unity manages GPU upload internally. Calling it here can cause the
+            // verification pass to detect inconsistent state ("inconsistent result" error).
 
             UvtLog.Verbose($"[UV2 Postprocess] '{mesh.name}': replay {rawCount}→{optCount} verts " +
                           $"({entry.optimizedTriangles.Length / 3} tris, {subCount} submeshes)");
             return true;
+        }
+
+        /// <summary>
+        /// Rebuild the vertex remap table when the fingerprint is stale (vertex order changed).
+        /// Uses stored raw FBX positions + UV0 to build an oldRaw→newRaw index mapping,
+        /// then composes: newRaw[i] → oldRaw[j] → opt[originalRemap[j]].
+        /// </summary>
+        static int[] RebuildRemapFromPositions(Mesh mesh, MeshUv2Entry entry)
+        {
+            var storedPos = entry.vertPositions;
+            var storedUv0 = entry.vertUv0;
+            int storedCount = storedPos.Length;
+            int[] origRemap = entry.vertexRemap;
+            int optCount = entry.optimizedVertexCount;
+
+            if (origRemap.Length != storedCount)
+            {
+                UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': stored positions ({storedCount}) != " +
+                            $"original remap ({origRemap.Length}) — cannot rebuild remap.");
+                return null;
+            }
+
+            var newPos = mesh.vertices;
+            int newCount = newPos.Length;
+
+            var newUv0 = new List<Vector2>();
+            mesh.GetUVs(0, newUv0);
+            bool hasUv0 = storedUv0 != null && storedUv0.Length == storedCount && newUv0.Count == newCount;
+
+            // Build quantized position lookup for stored (old) raw positions
+            var posLookup = new Dictionary<(int, int, int), List<int>>();
+            for (int i = 0; i < storedCount; i++)
+            {
+                var key = QuantizePosForRemap(storedPos[i]);
+                if (!posLookup.TryGetValue(key, out var list))
+                {
+                    list = new List<int>(2);
+                    posLookup[key] = list;
+                }
+                list.Add(i);
+            }
+
+            // Map newRaw[i] → oldRaw[j] by position + UV0 matching.
+            // Track coverage at OPTIMIZED index level (not stored raw index level).
+            // Multiple raw vertices legitimately map to the same opt slot (meshopt
+            // merges duplicates). Tracking at raw level would penalize these duplicates,
+            // pushing them to wrong stored vertices with different origRemap values.
+            // Tracking at opt level ensures each opt slot gets covered while allowing
+            // legitimate duplicate mappings.
+            var newRemap = new int[newCount];
+            for (int i = 0; i < newCount; i++) newRemap[i] = -1;
+            var coveredOpt = new bool[optCount > 0 ? optCount : 1];
+            int matched = 0;
+
+            for (int i = 0; i < newCount; i++)
+            {
+                var key = QuantizePosForRemap(newPos[i]);
+                if (!posLookup.TryGetValue(key, out var candidates)) continue;
+
+                int bestOld = PickBestCandidate(candidates, i, origRemap, coveredOpt,
+                    hasUv0 ? newUv0 : null, storedUv0);
+
+                if (bestOld >= 0)
+                {
+                    newRemap[i] = origRemap[bestOld];
+                    if (origRemap[bestOld] >= 0)
+                    {
+                        coveredOpt[origRemap[bestOld]] = true;
+                        matched++;
+                    }
+                }
+            }
+
+            // Pass 2: nearest-neighbor fallback for bucket boundary misses.
+            // Allow reuse of already-used stored vertices here — these are rare
+            // boundary cases where the quantization rounded differently, and the
+            // nearest stored vertex (same position) should have the same origRemap.
+            if (matched < newCount)
+            {
+                for (int i = 0; i < newCount; i++)
+                {
+                    if (newRemap[i] >= 0) continue;
+                    float bestDist = float.MaxValue;
+                    int bestOld = -1;
+                    for (int j = 0; j < storedCount; j++)
+                    {
+                        float d = Vector3.SqrMagnitude(newPos[i] - storedPos[j]);
+                        if (d < bestDist) { bestDist = d; bestOld = j; }
+                    }
+                    if (bestOld >= 0 && bestDist < 1e-4f)
+                    {
+                        newRemap[i] = origRemap[bestOld];
+                        if (origRemap[bestOld] >= 0) matched++;
+                    }
+                }
+            }
+
+            if (matched < newCount)
+                UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': remap rebuild matched {matched}/{newCount} " +
+                            $"({newCount - matched} unmapped)");
+
+            // Coverage diagnostic: count how many referenced opt indices are still uncovered
+            int uncoveredCount = 0;
+            if (entry.optimizedTriangles != null && optCount > 0)
+            {
+                var referenced = new HashSet<int>();
+                for (int i = 0; i < entry.optimizedTriangles.Length; i++)
+                    referenced.Add(entry.optimizedTriangles[i]);
+
+                var orphanSet = new HashSet<int>();
+                if (entry.orphanIndices != null)
+                    for (int i = 0; i < entry.orphanIndices.Length; i++)
+                        orphanSet.Add(entry.orphanIndices[i]);
+
+                foreach (int idx in referenced)
+                    if (idx < optCount && !coveredOpt[idx] && !orphanSet.Contains(idx))
+                        uncoveredCount++;
+            }
+
+            UvtLog.Info($"[UV2 Postprocess] '{mesh.name}': rebuilt remap from stored positions " +
+                        $"({matched}/{newCount} matched, {uncoveredCount} uncovered opt indices, stale fingerprint)");
+            return newRemap;
+        }
+
+        /// <summary>
+        /// Pick the best stored vertex candidate for a new raw vertex.
+        /// Priority: uncovered opt slot > already-covered opt slot > invalid (-1).
+        /// Among equal priority, prefer closest UV0.
+        /// Tracking coverage at OPTIMIZED level (not raw level) is critical:
+        /// - For true duplicates (same origRemap): all map to same opt slot, no penalty
+        /// - For seam splits (different origRemap): prefers uncovered opt slots
+        /// </summary>
+        static int PickBestCandidate(List<int> candidates, int newIdx, int[] origRemap, bool[] coveredOpt,
+                                      List<Vector2> newUv0, Vector2[] storedUv0)
+        {
+            if (candidates.Count == 1)
+            {
+                // Single candidate: always use it. Multiple raw verts can safely
+                // map to the same stored vert (dedup — same position, same origRemap).
+                return candidates[0];
+            }
+
+            int bestOld = -1;
+            float bestScore = float.MaxValue;
+            int bestPriority = int.MaxValue; // 0=uncovered valid, 1=covered valid, 2=invalid(-1)
+
+            for (int k = 0; k < candidates.Count; k++)
+            {
+                int ci = candidates[k];
+                int opt = origRemap[ci];
+                int priority;
+                if (opt < 0) priority = 2; // invalid remap
+                else if (!coveredOpt[opt]) priority = 0; // uncovered opt slot — prefer this
+                else priority = 1; // already covered — OK but lower priority
+
+                if (priority > bestPriority) continue;
+
+                float score = 0f;
+                if (newUv0 != null && storedUv0 != null)
+                    score = Vector2.SqrMagnitude(newUv0[newIdx] - storedUv0[ci]);
+
+                if (priority < bestPriority || score < bestScore)
+                {
+                    bestPriority = priority;
+                    bestScore = score;
+                    bestOld = ci;
+                }
+            }
+
+            return bestOld;
+        }
+
+        static (int, int, int) QuantizePosForRemap(Vector3 pos)
+        {
+            return (
+                Mathf.RoundToInt(pos.x * 10000f),
+                Mathf.RoundToInt(pos.y * 10000f),
+                Mathf.RoundToInt(pos.z * 10000f)
+            );
         }
 
         /// <summary>

@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.13.32] - 2026-03-07
+
+### Fixed — Unfilled vertices after remap rebuild (3D stretching to origin)
+- **Root cause A — Order-dependent fingerprint hash**: `MeshFingerprint.Compute` used sequential FNV-1a over positions/UV0, which depends on vertex order. Unity's FBX reimport can reorder vertices without changing geometry, causing ALL meshes to appear stale on every reimport. Changed to order-independent hash (XOR of per-vertex FNV hashes). Existing sidecars will show stale once (transition), then stable after re-Apply.
+- **Root cause B — No used-tracking in `RebuildRemapFromPositions`**: When multiple raw vertices share the same position (UV seams, hard edges), all could match to the same stored vertex, leaving other optimized indices unfilled (zero position/normal/UV0 → 3D stretching). Added `usedStored[]` tracking with priority: unused+valid-remap > unused+invalid > used. Fixes 864/856/323 unfilled vertices on TrainСarriage LOD0/1/2.
+- **Normal-based disambiguation**: Added `vertNormals` to sidecar (raw FBX normals). When UV0 alone can't distinguish candidates at the same position (hard edges: same pos+UV0, different normal), normal dot product breaks ties.
+- **Fixed matched counter**: No longer double-counts vertices where `origRemap[j] == -1` (Pass 1 increments, Pass 2 re-processes since `newRemap[i] < 0`).
+- **Single-candidate reuse**: When only one stored vertex exists at a position, always use it (reuse is safe — same position = same origRemap). Previously returned -1 if already used, leaving 2 vertices unfilled on LOD0/LOD1.
+- **Pass 2 allows reuse**: Nearest-neighbor fallback no longer filters by `usedStored` — these are rare bucket-boundary cases where the nearest stored vertex should have the correct origRemap.
+- **Fingerprint carry-forward fix**: Detect raw vs postprocessed mesh by comparing vertex count to stored remap length. Compute fresh fingerprint when mesh is raw (after Reset), carry forward only when postprocessed. Ensures new order-independent hash takes effect without requiring manual Reset.
+
+## [0.13.31] - 2026-03-07
+
+### Fixed — Per-face composite UV2 for overlap groups spanning multiple sources
+- On lower LODs, one target shell can span multiple source shells (e.g., belt: LOD0 has 13 source shells, LOD2 has 4 target shells covering the same UV0 area).
+- Instead of picking one source for all vertices, each target face now gets UV2 from the source that is geometrically closest (per-face 3D proximity vote).
+- Shared vertices at source boundaries are handled by last-writer-wins — lightmap padding covers micro-seams.
+- Log shows `composite=Nsrc` when multiple sources contribute UV2 to a single target shell.
+- All contributing sources are claimed to prevent reuse by other targets.
+
+## [0.13.30] - 2026-03-07
+
+### Fixed — Source claiming prevents same-source UV2 overlap in overlap groups
+- **Source claiming**: track which source shells are already used by earlier targets (both interp and merged). Overlap unified ranking prefers unclaimed sources to prevent multiple targets from mapping to the same source, which produces UV2 overlap artifacts.
+- **Ranking chain**: `issues → unclaimed → hint → vote winner → vote count → centroid distance`
+- Log shows `CLAIMED` when the best available source was already taken by another target.
+- Examples: LOD2 t81/t88 both picking src102, or t78/t99/t100 all picking src105 — now the second target is redirected to its next-best unclaimed source.
+
+## [0.13.29] - 2026-03-07
+
+### Fixed — Demote centroid distance to tiebreaker in overlap ranking
+- Centroid distance was overriding face-proximity voting (e.g. LOD1 t106: 14/14 votes for src96 but centroid picked src104). A small nearby source shell can have a closer centroid while its individual faces are wrong.
+- **New ranking chain**: `issues → hint → vote winner → vote count → centroid distance`
+- Face-proximity voting is the most reliable geometric signal (compares individual faces). Cross-LOD hint provides consistency. Centroid distance and area ratio kept for diagnostics and final tiebreaker only.
+
+## [0.13.28] - 2026-03-07
+
+### Added — 3D centroid distance + area ratio diagnostic data
+- Precompute per-source-shell 3D area and centroid distance for overlap groups.
+- Log `dist3D` and `areaR` in overlap unified output for debugging.
+
+### Fixed (0.13.27) — Deterministic overlap shell matching
+- **Vote tie-breaking**: use 3D centroid distance as deterministic tiebreaker when vote counts are identical.
+- **Deterministic iteration order**: sort Dictionary keys in dedup phase and overlap group members. Sort shell extraction by root face index for stable shell IDs.
+
 ## [0.13.11] - 2026-03-03
 
 ### Fixed — UV Preview uses the same checker as model with requested alpha

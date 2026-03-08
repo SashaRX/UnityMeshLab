@@ -77,6 +77,20 @@ namespace LightmapUvTool
             public Vector3[] targetShellCentroids;
             public float[] targetShellMatchDistSqr;
             public int dedupConflicts;       // shells reassigned by dedup
+
+            // ─── Cross-LOD overlap hints ───
+            // Populated for merged shells to propagate source selection to subsequent LODs.
+            public List<OverlapSourceHint> overlapHints;
+        }
+
+        /// <summary>
+        /// Records which source shell was chosen for a merged target at a given 3D position.
+        /// Used to propagate consistent source selection across LOD levels.
+        /// </summary>
+        public struct OverlapSourceHint
+        {
+            public Vector3 centroid3D;
+            public int sourceShellIndex;
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -521,7 +535,8 @@ namespace LightmapUvTool
         //            fewer inverted/zero-area triangles.
         // ═══════════════════════════════════════════════════════════
 
-        public static TransferResult Transfer(Mesh targetMesh, Mesh sourceMesh)
+        public static TransferResult Transfer(Mesh targetMesh, Mesh sourceMesh,
+            List<OverlapSourceHint> previousLodHints = null)
         {
             var result = new TransferResult();
 
@@ -596,6 +611,78 @@ namespace LightmapUvTool
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
                 foreach (int f in tgtShells[tsi].faceIndices)
                     result.faceToTargetShell[f] = tsi;
+
+            // ── Spatial partitioning for overlapping UV0 shells ──
+            var srcPartitions = SpatialPartitioner.PartitionShells(
+                srcShells, srcUv0, srcTris, srcVerts);
+
+            // Pre-detect ribbon shells in source (for Approach C)
+            var srcIsRibbon = new bool[srcShells.Count];
+            var srcRibbonAxis = new Vector3[srcShells.Count];
+            var srcRibbonAxis2 = new Vector3[srcShells.Count];
+            var srcRibbonCentroid = new Vector3[srcShells.Count];
+            for (int si = 0; si < srcShells.Count; si++)
+            {
+                if (srcPartitions[si].hasOverlap)
+                {
+                    srcIsRibbon[si] = StripParameterization.IsRibbon(
+                        srcShells[si], srcVerts, srcTris,
+                        out srcRibbonAxis[si], out srcRibbonAxis2[si], out srcRibbonCentroid[si]);
+                }
+            }
+
+            // Pre-build per-partition BVHs for source shells with overlap
+            // partitionBvh[si][pi] = BVH containing only faces of partition pi
+            var partitionBvh = new TriangleBvh2D[srcShells.Count][];
+            for (int si = 0; si < srcShells.Count; si++)
+            {
+                var pr = srcPartitions[si];
+                if (pr.hasOverlap && pr.partitionCount > 1)
+                {
+                    partitionBvh[si] = new TriangleBvh2D[pr.partitionCount];
+                    for (int pi = 0; pi < pr.partitionCount; pi++)
+                    {
+                        var faces = SpatialPartitioner.GetPartitionFaces(srcShells[si], pr, pi);
+                        if (faces.Length > 0)
+                            partitionBvh[si][pi] = new TriangleBvh2D(triUv0A, triUv0B, triUv0C, faces);
+                    }
+                }
+            }
+
+            // Per-partition similarity transforms for overlapping shells
+            // Each partition has a unique UV0→UV2 mapping, so we can compute
+            // a clean transform that preserves aspect ratios (unlike per-vertex interp).
+            var partitionXform = new SimilarityTransform[srcShells.Count][];
+            for (int si = 0; si < srcShells.Count; si++)
+            {
+                var pr = srcPartitions[si];
+                if (pr.hasOverlap && pr.partitionCount > 1)
+                {
+                    partitionXform[si] = new SimilarityTransform[pr.partitionCount];
+                    for (int pi = 0; pi < pr.partitionCount; pi++)
+                    {
+                        var partFaces = SpatialPartitioner.GetPartitionFaces(srcShells[si], pr, pi);
+                        if (partFaces.Length == 0) continue;
+                        var partVertSet = new HashSet<int>();
+                        foreach (int f in partFaces)
+                        {
+                            partVertSet.Add(srcTris[f * 3]);
+                            partVertSet.Add(srcTris[f * 3 + 1]);
+                            partVertSet.Add(srcTris[f * 3 + 2]);
+                        }
+                        var partVertArr = new int[partVertSet.Count];
+                        partVertSet.CopyTo(partVertArr);
+
+                        var partFaceList = new List<int>(partFaces);
+                        float saUv0p = ComputeSignedArea(srcTris, srcUv0, partFaceList);
+                        float saUv2p = ComputeSignedArea(srcTris, srcUv2, partFaceList);
+                        bool mirroredP = saUv0p * saUv2p < 0f;
+
+                        partitionXform[si][pi] = ComputeSimilarityTransform(
+                            srcUv0, srcUv2, partVertArr, mirroredP);
+                    }
+                }
+            }
 
             // ── Phase 1b: Precompute similarity transform per source shell ──
             var srcTransforms = new SimilarityTransform[srcShells.Count];
@@ -714,7 +801,7 @@ namespace LightmapUvTool
             for (int si = 0; si < srcShells.Count; si++)
             {
                 var faces = srcShells[si].faceIndices;
-                if (faces.Count > kMinFacesForShellBvh)
+                if (faces.Count > kMinFacesForShellBvh || srcPartitions[si].hasOverlap)
                 {
                     shellBvh3DFaceMap[si] = faces.ToArray();
                     int fn = faces.Count;
@@ -734,6 +821,23 @@ namespace LightmapUvTool
                 }
             }
 
+            // Per-shell local face normals for 3D BVH normal-filtered queries
+            // Only built for shells with UV0 overlap (used by direct 3D projection path)
+            var shellBvh3DFaceNormals = new Vector3[srcShells.Count][];
+            for (int si = 0; si < srcShells.Count; si++)
+            {
+                if (shellBvh3D[si] != null && srcPartitions[si].hasOverlap)
+                {
+                    var faces = srcShells[si].faceIndices;
+                    var localNormals = new Vector3[faces.Count];
+                    for (int i = 0; i < faces.Count; i++)
+                        localNormals[i] = triNormal[faces[i]];
+                    shellBvh3DFaceNormals[si] = localNormals;
+                }
+            }
+
+            float kRayMaxDist = Mathf.Max(meshDiagonal * 0.1f, 0.01f);
+
             // Adaptive thresholds
             float kGoodDistSq = meshDiagonal > 0f
                 ? 0.001f * meshDiagonal * meshDiagonal
@@ -746,6 +850,12 @@ namespace LightmapUvTool
             foreach (var group in overlapGroups)
                 maxOverlapGroupSize = Mathf.Max(maxOverlapGroupSize, group.Count);
             int kMaxRetries = Mathf.Clamp(maxOverlapGroupSize + 2, 5, srcShells.Count);
+
+            // Build overlap group membership: srcShell → list of all group members
+            var srcShellOverlapMembers = new List<int>[srcShells.Count];
+            foreach (var group in overlapGroups)
+                foreach (int si in group)
+                    srcShellOverlapMembers[si] = group;
 
             UvtLog.Verbose($"[GroupedTransfer] Adaptive: meshDiag={meshDiagonal:F4}, " +
                 $"avgUv0Edge={avgUv0Edge:F6}, goodDistSq={kGoodDistSq:F6}, " +
@@ -865,16 +975,20 @@ namespace LightmapUvTool
                 var needsRematch = new List<int>();
                 int dedupConflicts = 0;
 
-                foreach (var kv in srcClaimants)
+                // Sort keys for deterministic iteration order
+                var sortedSrcKeys = new List<int>(srcClaimants.Keys);
+                sortedSrcKeys.Sort();
+                foreach (int srcKey in sortedSrcKeys)
                 {
-                    claimed.Add(kv.Key); // source is claimed regardless
-                    if (kv.Value.Count <= 1) continue;
+                    var claimants = srcClaimants[srcKey];
+                    claimed.Add(srcKey); // source is claimed regardless
+                    if (claimants.Count <= 1) continue;
 
                     // Multiple non-merged targets claim same source — keep best
-                    kv.Value.Sort((a, b) => a.avg3D.CompareTo(b.avg3D));
-                    for (int i = 1; i < kv.Value.Count; i++)
+                    claimants.Sort((a, b) => a.avg3D.CompareTo(b.avg3D));
+                    for (int i = 1; i < claimants.Count; i++)
                     {
-                        needsRematch.Add(kv.Value[i].tsi);
+                        needsRematch.Add(claimants[i].tsi);
                         dedupConflicts++;
                     }
                 }
@@ -974,6 +1088,12 @@ namespace LightmapUvTool
             // Track UV2 AABBs of placed force3D shells to prevent mutual overlap
             var force3DUsedRegions = new List<(Vector2 min, Vector2 max)>();
 
+            // Track which source shells are already claimed by overlap group targets.
+            // Prevents multiple targets from mapping to the same source, which causes
+            // UV2 overlap (same-src) artifacts. Includes both interp and merged claims.
+            var overlapClaimedSources = new HashSet<int>();
+
+
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
             {
                 var tShell = tgtShells[tsi];
@@ -986,6 +1106,314 @@ namespace LightmapUvTool
                 var srcFacesChosen = chosenSrc >= 0 ? srcShells[chosenSrc].faceIndices : null;
 
                 Dictionary<int, Vector2> chosenUv2;
+
+                // ── Unified overlap transfer for overlapping UV0 shells ──
+                // Only for MERGED shells — non-merged shells use standard interp/xform
+                // which stays within source UV2 convex hull and works better for normal geometry.
+                if (tgtIsMerged[tsi] && chosenSrc >= 0 && srcShellOverlapMembers[chosenSrc] != null)
+                {
+                    var groupMembers = srcShellOverlapMembers[chosenSrc];
+
+                    Dictionary<int, Vector2> bestOverlapUv2 = null;
+                    int bestOverlapIssues = int.MaxValue;
+                    int bestOverlapCoverage = -1;
+                    int bestOverlapSrc = chosenSrc;
+                    string bestOverlapMethod = "";
+                    float bestOverlapCentroidDistSq = float.MaxValue;
+
+                    // Target 3D centroid for distance-based source selection
+                    Vector3 tgtCentroid = result.targetShellCentroids[tsi];
+
+                    // Compute target 3D area for area-ratio comparison
+                    float tgt3DArea = 0f;
+                    foreach (int tfi in tShell.faceIndices)
+                    {
+                        int ti0 = tgtTris[tfi * 3], ti1 = tgtTris[tfi * 3 + 1], ti2 = tgtTris[tfi * 3 + 2];
+                        if (ti0 >= tVerts.Length || ti1 >= tVerts.Length || ti2 >= tVerts.Length) continue;
+                        tgt3DArea += Vector3.Cross(tVerts[ti1] - tVerts[ti0], tVerts[ti2] - tVerts[ti0]).magnitude;
+                    }
+                    tgt3DArea *= 0.5f;
+
+                    // Precompute source 3D area + centroid distance for each group member
+                    var srcGroupArea = new float[srcShells.Count];
+                    var srcGroupDistSq = new float[srcShells.Count];
+                    foreach (int si in groupMembers)
+                    {
+                        float area = 0f;
+                        foreach (int sfi in srcShells[si].faceIndices)
+                        {
+                            int s0 = srcTris[sfi * 3], s1 = srcTris[sfi * 3 + 1], s2 = srcTris[sfi * 3 + 2];
+                            if (s0 >= srcVerts.Length || s1 >= srcVerts.Length || s2 >= srcVerts.Length) continue;
+                            area += Vector3.Cross(srcVerts[s1] - srcVerts[s0], srcVerts[s2] - srcVerts[s0]).magnitude;
+                        }
+                        srcGroupArea[si] = area * 0.5f;
+                        srcGroupDistSq[si] = (srcCentroid3D[si] - tgtCentroid).sqrMagnitude;
+                    }
+
+                    // ── Pre-pass: 3D face-proximity voting with normal alignment ──
+                    // For each target face centroid, find the nearest source face centroid
+                    // (across all overlap group members) with aligned normal. Vote for that
+                    // source. The source with the most votes is the physically correct one.
+                    // This is deterministic across LODs because source faces are fixed.
+                    // Also record per-face source for composite UV2 building.
+                    var srcVoteCount = new int[srcShells.Count];
+                    int totalVotes = 0;
+                    var perFaceVoteSrc = new Dictionary<int, int>(); // faceIndex → sourceIndex
+
+                    foreach (int tfi in tShell.faceIndices)
+                    {
+                        int ti0 = tgtTris[tfi * 3], ti1 = tgtTris[tfi * 3 + 1], ti2 = tgtTris[tfi * 3 + 2];
+                        if (ti0 >= tVerts.Length || ti1 >= tVerts.Length || ti2 >= tVerts.Length) continue;
+
+                        Vector3 tFC = (tVerts[ti0] + tVerts[ti1] + tVerts[ti2]) / 3f;
+                        Vector3 tFN = Vector3.Cross(tVerts[ti1] - tVerts[ti0], tVerts[ti2] - tVerts[ti0]);
+                        if (tFN.sqrMagnitude < 1e-12f) continue;
+                        tFN.Normalize();
+
+                        float bestDistSq = float.MaxValue;
+                        int bestSrc = -1;
+
+                        foreach (int si in groupMembers)
+                        {
+                            foreach (int sfi in srcShells[si].faceIndices)
+                            {
+                                int s0 = srcTris[sfi * 3], s1 = srcTris[sfi * 3 + 1], s2 = srcTris[sfi * 3 + 2];
+                                if (s0 >= srcVerts.Length || s1 >= srcVerts.Length || s2 >= srcVerts.Length) continue;
+
+                                Vector3 sFC = (srcVerts[s0] + srcVerts[s1] + srcVerts[s2]) / 3f;
+                                float dSq = (tFC - sFC).sqrMagnitude;
+                                if (dSq >= bestDistSq) continue;
+
+                                Vector3 sFN = Vector3.Cross(srcVerts[s1] - srcVerts[s0], srcVerts[s2] - srcVerts[s0]);
+                                if (sFN.sqrMagnitude < 1e-12f) continue;
+                                sFN.Normalize();
+
+                                // Skip backfacing: only match faces pointing in a similar direction
+                                if (Vector3.Dot(tFN, sFN) < 0.3f) continue;
+
+                                bestDistSq = dSq;
+                                bestSrc = si;
+                            }
+                        }
+
+                        if (bestSrc >= 0)
+                        {
+                            srcVoteCount[bestSrc]++;
+                            totalVotes++;
+                            perFaceVoteSrc[tfi] = bestSrc;
+                        }
+                    }
+
+                    // Find vote winner — deterministic tie-breaking by 3D centroid
+                    // distance ensures stable results across LODs even when vote
+                    // counts are identical (common for thin belts/straps).
+                    int voteSrc = -1;
+                    int voteCount = 0;
+                    float voteWinnerDistSq = float.MaxValue;
+                    foreach (int si in groupMembers)
+                    {
+                        int votes = srcVoteCount[si];
+                        if (votes < voteCount) continue;
+                        float dSq = (srcCentroid3D[si] - tgtCentroid).sqrMagnitude;
+                        if (votes > voteCount || dSq < voteWinnerDistSq)
+                        {
+                            voteCount = votes;
+                            voteSrc = si;
+                            voteWinnerDistSq = dSq;
+                        }
+                    }
+
+                    // Check for cross-LOD hint: find nearest previous-LOD merged shell
+                    // and prefer its source for consistent cross-LOD appearance.
+                    int hintSrc = -1;
+                    if (previousLodHints != null && previousLodHints.Count > 0)
+                    {
+                        float bestHintDistSq = float.MaxValue;
+                        foreach (var hint in previousLodHints)
+                        {
+                            if (!groupMembers.Contains(hint.sourceShellIndex)) continue;
+                            float d = (tgtCentroid - hint.centroid3D).sqrMagnitude;
+                            if (d < bestHintDistSq)
+                            {
+                                bestHintDistSq = d;
+                                hintSrc = hint.sourceShellIndex;
+                            }
+                        }
+                    }
+
+                    // Collect valid UV2 candidates from all group members.
+                    // Each source produces UV2 for the target vertices via its own UV0→UV2 mapping.
+                    var validCandidates = new Dictionary<int, OverlapCandidate>();
+
+                    foreach (int si in groupMembers)
+                    {
+                        var allCandidates = GenerateOverlapCandidates(
+                            tShell, si,
+                            tVerts, tNormals, tUv0,
+                            srcShells, srcVerts, srcUv0, srcUv2, srcTris,
+                            triUv0A, triUv0B, triUv0C,
+                            triUv2A, triUv2B, triUv2C, triNormal,
+                            shellBvh3D[si], shellBvh3DFaceMap[si], shellBvh3DFaceNormals[si],
+                            partitionBvh[si],
+                            srcPartitions[si],
+                            partitionXform[si],
+                            srcTransforms[si],
+                            srcIsRibbon[si], srcRibbonAxis[si], srcRibbonAxis2[si], srcRibbonCentroid[si],
+                            srcUv2Min, srcUv2Max, groupMembers,
+                            kRayMaxDist);
+
+                        var best = SelectBestCandidate(allCandidates, tShell.faceIndices, tgtTris, tUv0);
+                        if (best.HasValue)
+                        {
+                            validCandidates[si] = best.Value;
+
+                            // Track best overall source (for fallback and logging)
+                            var b = best.Value;
+                            int votes = srcVoteCount[si];
+                            float centroidDistSq = srcGroupDistSq[si];
+
+                            bool betterIssues = b.issues < bestOverlapIssues;
+                            bool sameIssues = b.issues == bestOverlapIssues;
+                            bool isUnclaimed = !overlapClaimedSources.Contains(si);
+                            bool bestIsUnclaimed = bestOverlapSrc < 0 || !overlapClaimedSources.Contains(bestOverlapSrc);
+                            bool isHintMatch = (si == hintSrc);
+                            bool bestIsHintMatch = (bestOverlapSrc == hintSrc);
+                            bool isVoteWinner = (si == voteSrc && voteCount > 0);
+                            bool bestIsVoteWinner = (bestOverlapSrc == voteSrc && voteCount > 0);
+                            bool closerCentroid = centroidDistSq < bestOverlapCentroidDistSq - 1e-8f;
+
+                            bool wins = betterIssues
+                                || (sameIssues && isUnclaimed && !bestIsUnclaimed)
+                                || (sameIssues && isUnclaimed == bestIsUnclaimed
+                                    && isHintMatch && !bestIsHintMatch)
+                                || (sameIssues && isUnclaimed == bestIsUnclaimed
+                                    && isHintMatch == bestIsHintMatch
+                                    && isVoteWinner && !bestIsVoteWinner)
+                                || (sameIssues && isUnclaimed == bestIsUnclaimed
+                                    && isHintMatch == bestIsHintMatch
+                                    && isVoteWinner == bestIsVoteWinner
+                                    && votes > srcVoteCount[bestOverlapSrc])
+                                || (sameIssues && isUnclaimed == bestIsUnclaimed
+                                    && isHintMatch == bestIsHintMatch
+                                    && isVoteWinner == bestIsVoteWinner
+                                    && votes == srcVoteCount[bestOverlapSrc]
+                                    && closerCentroid);
+
+                            if (wins)
+                            {
+                                bestOverlapUv2 = b.uv2;
+                                bestOverlapIssues = b.issues;
+                                bestOverlapCoverage = b.coverage;
+                                bestOverlapSrc = si;
+                                bestOverlapMethod = b.method;
+                                bestOverlapCentroidDistSq = centroidDistSq;
+                            }
+                        }
+                    }
+
+                    if (bestOverlapUv2 != null && bestOverlapUv2.Count > 0)
+                    {
+                        bool tooManyIssues = bestOverlapIssues > tShell.faceIndices.Count / 2;
+
+                        // ── Build composite UV2 from per-face voting ──
+                        // On lower LODs, one target shell can span multiple source shells
+                        // (e.g., belt strap: LOD0 has 13 source shells, LOD2 has 4 target shells).
+                        // Instead of picking one source for all vertices, each face gets UV2
+                        // from the source that's geometrically closest (per-face vote).
+                        // Shared vertices at source boundaries may get reassigned — lightmap
+                        // padding handles the resulting micro-seams.
+                        var compositeUv2 = new Dictionary<int, Vector2>();
+                        var compositeUsedSources = new HashSet<int>();
+                        int compositeFaces = 0;
+
+                        foreach (int tfi in tShell.faceIndices)
+                        {
+                            int ti0 = tgtTris[tfi * 3], ti1 = tgtTris[tfi * 3 + 1], ti2 = tgtTris[tfi * 3 + 2];
+                            if (ti0 >= tVerts.Length || ti1 >= tVerts.Length || ti2 >= tVerts.Length) continue;
+
+                            // Try voted source first, then best overall
+                            int faceSrc = perFaceVoteSrc.ContainsKey(tfi) ? perFaceVoteSrc[tfi] : -1;
+                            bool assigned = false;
+
+                            // Candidate sources in priority order: voted source, then best overall
+                            int[] tryOrder = (faceSrc >= 0 && faceSrc != bestOverlapSrc)
+                                ? new[] { faceSrc, bestOverlapSrc }
+                                : new[] { bestOverlapSrc };
+
+                            foreach (int src in tryOrder)
+                            {
+                                if (src < 0 || !validCandidates.ContainsKey(src)) continue;
+                                if (validCandidates[src].issues > tShell.faceIndices.Count / 2) continue;
+                                var srcUv2Map = validCandidates[src].uv2;
+                                if (srcUv2Map.ContainsKey(ti0) && srcUv2Map.ContainsKey(ti1) && srcUv2Map.ContainsKey(ti2))
+                                {
+                                    compositeUv2[ti0] = srcUv2Map[ti0];
+                                    compositeUv2[ti1] = srcUv2Map[ti1];
+                                    compositeUv2[ti2] = srcUv2Map[ti2];
+                                    compositeUsedSources.Add(src);
+                                    compositeFaces++;
+                                    assigned = true;
+                                    break;
+                                }
+                            }
+
+                            // Last resort: use best overall even if it doesn't have all 3 verts
+                            if (!assigned && bestOverlapUv2 != null)
+                            {
+                                if (bestOverlapUv2.ContainsKey(ti0)) compositeUv2[ti0] = bestOverlapUv2[ti0];
+                                if (bestOverlapUv2.ContainsKey(ti1)) compositeUv2[ti1] = bestOverlapUv2[ti1];
+                                if (bestOverlapUv2.ContainsKey(ti2)) compositeUv2[ti2] = bestOverlapUv2[ti2];
+                                compositeUsedSources.Add(bestOverlapSrc);
+                            }
+                        }
+
+                        // Fill any remaining gaps from best overall
+                        foreach (var kv in bestOverlapUv2)
+                            if (!compositeUv2.ContainsKey(kv.Key))
+                                compositeUv2[kv.Key] = kv.Value;
+
+                        // Determine primary source (most faces contributed) for hint/log
+                        int primarySrc = bestOverlapSrc;
+
+                        float bestSrcDist = Mathf.Sqrt(bestOverlapCentroidDistSq);
+                        float bestAreaR = (tgt3DArea > 1e-8f && srcGroupArea[bestOverlapSrc] > 1e-8f)
+                            ? Mathf.Min(srcGroupArea[bestOverlapSrc], tgt3DArea) / Mathf.Max(srcGroupArea[bestOverlapSrc], tgt3DArea)
+                            : 0f;
+                        string compositeInfo = compositeUsedSources.Count > 1
+                            ? $", composite={compositeUsedSources.Count}src"
+                            : "";
+                        UvtLog.Info($"[GroupedTransfer]   t{tsi}: overlap unified " +
+                            $"(best src{bestOverlapSrc}, {bestOverlapCoverage} cov, " +
+                            $"{bestOverlapIssues} issues, " +
+                            $"vote=src{voteSrc}({voteCount}/{totalVotes}), " +
+                            $"dist3D={bestSrcDist:F4}, areaR={bestAreaR:F2}, " +
+                            $"method={bestOverlapMethod}, " +
+                            $"tried {groupMembers.Count} shells" +
+                            (hintSrc >= 0 ? $", hint=src{hintSrc}" : "") +
+                            compositeInfo +
+                            (tooManyIssues ? " → fall-through" : "") + ")");
+
+                        if (!tooManyIssues)
+                        {
+                            foreach (var kv in compositeUv2)
+                            {
+                                result.uv2[kv.Key] = kv.Value;
+                                result.vertexToSourceShell[kv.Key] = primarySrc;
+                                transferred++;
+                            }
+                            result.targetShellToSourceShell[tsi] = primarySrc;
+                            shellsMerged++;
+                            result.targetShellMethod[tsi] = 2;
+                            foreach (int src in compositeUsedSources)
+                                overlapClaimedSources.Add(src);
+
+                            continue;
+                        }
+                        // Fall through: update chosenSrc to best source from overlap analysis
+                        chosenSrc = bestOverlapSrc;
+                        srcFacesChosen = srcShells[chosenSrc].faceIndices;
+                    }
+                }
 
                 if (tgtIsMerged[tsi])
                 {
@@ -1005,6 +1433,7 @@ namespace LightmapUvTool
                     // source region), fall back to constrained if overlap guard rejects.
                     // Normal merged: constrained first, all-source fallback (unchanged).
                     bool force3D = tgtForce3DFallback[tsi];
+
                     for (int pass = 0; pass < 2; pass++)
                     {
                         bool constrained;
@@ -1033,6 +1462,9 @@ namespace LightmapUvTool
                             {
                                 if (srcFacesChosen == null) break; // pass 0 was already all-source
                                 if (bestMergedIssues == 0) break;  // constrained was clean
+                                // Small/degenerate shells: stay constrained to avoid
+                                // wandering into wrong source's UV2 region
+                                if (tShell.faceIndices.Count <= 4) break;
                                 constrained = false;               // all-source
                             }
                         }
@@ -1041,15 +1473,39 @@ namespace LightmapUvTool
                         int localFixes = 0;
 
                         // Select BVH for UV0 projection
-                        TriangleBvh2D mergedUv0Bvh = null;
+                        // When source shell has UV0 overlap with partitions,
+                        // use PER-VERTEX partition BVH based on each vertex's
+                        // normal direction (front→front partition, back→back).
+                        TriangleBvh2D defaultUv0Bvh = null;
+                        bool hasPartitions = false;
+                        SpatialPartitioner.ShellPartitionResult srcPR = null;
                         if (constrained && chosenSrc >= 0)
-                            mergedUv0Bvh = shellUv0Bvh[chosenSrc];
+                        {
+                            srcPR = srcPartitions[chosenSrc];
+                            hasPartitions = srcPR.hasOverlap && srcPR.partitionCount > 1
+                                && partitionBvh[chosenSrc] != null;
+                            defaultUv0Bvh = shellUv0Bvh[chosenSrc];
+                        }
                         else if (!constrained)
-                            mergedUv0Bvh = globalUv0Bvh;
+                            defaultUv0Bvh = globalUv0Bvh;
 
-                        // Constrained face list for linear fallback
-                        int searchCount = constrained && srcFacesChosen != null
-                            ? srcFacesChosen.Count : srcTriCount;
+                        // Default face list for 3D search (no partition)
+                        List<int> defaultSearchFaces = srcFacesChosen;
+                        int defaultSearchCount = constrained && defaultSearchFaces != null
+                            ? defaultSearchFaces.Count : srcTriCount;
+
+                        // Pre-compute partition face lists for per-vertex 3D search
+                        List<int>[] partFaceLists = null;
+                        if (hasPartitions && constrained)
+                        {
+                            partFaceLists = new List<int>[srcPR.partitionCount];
+                            for (int pi = 0; pi < srcPR.partitionCount; pi++)
+                            {
+                                var faces = SpatialPartitioner.GetPartitionFaces(
+                                    srcShells[chosenSrc], srcPR, pi);
+                                partFaceLists[pi] = new List<int>(faces);
+                            }
+                        }
 
                         foreach (int vi in tShell.vertexIndices)
                         {
@@ -1059,15 +1515,25 @@ namespace LightmapUvTool
                             Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                                 ? tNormals[vi] : Vector3.up;
 
+                            // Per-vertex partition selection based on vertex normal
+                            TriangleBvh2D vertexBvh = defaultUv0Bvh;
+                            int vertexPid = -1;
+                            if (hasPartitions)
+                            {
+                                vertexPid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                                if (vertexPid >= 0 && partitionBvh[chosenSrc][vertexPid] != null)
+                                    vertexBvh = partitionBvh[chosenSrc][vertexPid];
+                            }
+
                             // ── UV0 projection (primary, with BVH + normal filtering) ──
                             float bestDSqUv0;
                             int bestFUv0; float bestU_uv0, bestV_uv0, bestW_uv0;
 
-                            if (mergedUv0Bvh != null)
+                            if (vertexBvh != null)
                             {
                                 var hitUv0 = tNrm.sqrMagnitude > 0.5f
-                                    ? mergedUv0Bvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, kBackfaceDot)
-                                    : mergedUv0Bvh.FindNearest(tUv);
+                                    ? vertexBvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, kBackfaceDot)
+                                    : vertexBvh.FindNearest(tUv);
                                 bestFUv0 = hitUv0.faceIndex;
                                 bestU_uv0 = hitUv0.u; bestV_uv0 = hitUv0.v; bestW_uv0 = hitUv0.w;
                                 bestDSqUv0 = hitUv0.distSq;
@@ -1076,9 +1542,13 @@ namespace LightmapUvTool
                             {
                                 bestDSqUv0 = float.MaxValue;
                                 bestFUv0 = -1; bestU_uv0 = 0; bestV_uv0 = 0; bestW_uv0 = 0;
+                                var searchFaces = (partFaceLists != null && vertexPid >= 0)
+                                    ? partFaceLists[vertexPid] : defaultSearchFaces;
+                                int searchCount = constrained && searchFaces != null
+                                    ? searchFaces.Count : srcTriCount;
                                 for (int fi = 0; fi < searchCount; fi++)
                                 {
-                                    int f = constrained ? srcFacesChosen[fi] : fi;
+                                    int f = constrained ? searchFaces[fi] : fi;
                                     float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
                                         out float u, out float v, out float w);
                                     if (dSq < bestDSqUv0)
@@ -1087,12 +1557,17 @@ namespace LightmapUvTool
                                 }
                             }
 
-                            // ── 3D projection (secondary, with backface filter) ──
+                            // ── 3D projection — also partition-constrained ──
+                            var search3DFaces = (partFaceLists != null && vertexPid >= 0)
+                                ? partFaceLists[vertexPid] : defaultSearchFaces;
+                            int search3DCount = constrained && search3DFaces != null
+                                ? search3DFaces.Count : srcTriCount;
+
                             float bestDSq3D = float.MaxValue;
                             int bestF3D = -1; float bestU_3d = 0, bestV_3d = 0, bestW_3d = 0;
-                            for (int fi = 0; fi < searchCount; fi++)
+                            for (int fi = 0; fi < search3DCount; fi++)
                             {
-                                int f = constrained ? srcFacesChosen[fi] : fi;
+                                int f = constrained ? search3DFaces[fi] : fi;
                                 if (Vector3.Dot(triNormal[f], tNrm) < kBackfaceDot) continue;
                                 float dSq = PointToTri3D(tPos, triPosA[f], triPosB[f], triPosC[f],
                                     out float u, out float v, out float w);
@@ -1196,81 +1671,99 @@ namespace LightmapUvTool
                         }
                     }
 
-                    // ── Pass 2: UV0-only constrained fallback for broken force3D ──
-                    // When 3D projection fails on thin wrapping geometry (belt, strap),
-                    // UV0 interpolation constrained to the source shell gives UV2 that
-                    // matches the source LOD0 layout. Same-source overlap is correct
-                    // for tiling geometry — both shells sample the same lightmap texels.
+                    // ── Pass 2: Unified overlap fallback for broken force3D/merged ──
+                    // Uses GenerateOverlapCandidates which tries all strategies:
+                    // ray+partition, partition-UV0-interp, partition-xform, strip-param, full-xform
                     if (force3D && bestMergedIssues > tShell.faceIndices.Count / 2
                         && chosenSrc >= 0 && srcFacesChosen != null)
                     {
-                        var candidateUv0 = new Dictionary<int, Vector2>();
-                        int localFixesUv0 = 0;
+                        var overlapCandidates = GenerateOverlapCandidates(
+                            tShell, chosenSrc,
+                            tVerts, tNormals, tUv0,
+                            srcShells, srcVerts, srcUv0, srcUv2, srcTris,
+                            triUv0A, triUv0B, triUv0C,
+                            triUv2A, triUv2B, triUv2C, triNormal,
+                            shellBvh3D[chosenSrc], shellBvh3DFaceMap[chosenSrc],
+                            shellBvh3DFaceNormals[chosenSrc],
+                            partitionBvh[chosenSrc],
+                            srcPartitions[chosenSrc],
+                            partitionXform[chosenSrc],
+                            srcTransforms[chosenSrc],
+                            srcIsRibbon[chosenSrc], srcRibbonAxis[chosenSrc],
+                            srcRibbonAxis2[chosenSrc], srcRibbonCentroid[chosenSrc],
+                            srcUv2Min, srcUv2Max, null,
+                            kRayMaxDist);
 
-                        // Use source shell's UV0 BVH for lookup
-                        TriangleBvh2D uv0Bvh = shellUv0Bvh[chosenSrc];
+                        var bestOverlap = SelectBestCandidate(
+                            overlapCandidates, tShell.faceIndices, tgtTris, tUv0);
 
-                        foreach (int vi in tShell.vertexIndices)
+                        if (bestOverlap.HasValue && bestOverlap.Value.issues < bestMergedIssues)
                         {
-                            if (vi >= tUv0.Length) continue;
-                            Vector2 tUv = tUv0[vi];
-
-                            int bestF = -1;
-                            float bestU = 0, bestV = 0, bestW = 0;
-                            float bestDSq = float.MaxValue;
-
-                            // Inverted normal filter: force3D shells have normals opposing
-                            // the source. Negate target normal so the filter finds the
-                            // correct opposing source face (belt -X → finds source +X).
-                            // Falls back to nearest-any if no opposing face found.
-                            Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
-                                ? tNormals[vi] : Vector3.up;
-
-                            if (uv0Bvh != null)
-                            {
-                                var hit = tNrm.sqrMagnitude > 0.5f
-                                    ? uv0Bvh.FindNearestNormalFiltered(tUv, -tNrm, triNormal, kBackfaceDot)
-                                    : uv0Bvh.FindNearest(tUv);
-                                bestF = hit.faceIndex;
-                                bestU = hit.u; bestV = hit.v; bestW = hit.w;
-                                bestDSq = hit.distSq;
-                            }
-                            else
-                            {
-                                // Linear fallback over source faces
-                                for (int fi = 0; fi < srcFacesChosen.Count; fi++)
-                                {
-                                    int f = srcFacesChosen[fi];
-                                    float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
-                                        out float u, out float v, out float w);
-                                    if (dSq < bestDSq)
-                                    { bestDSq = dSq; bestF = f; bestU = u; bestV = v; bestW = w; }
-                                    if (bestDSq < 1e-8f) break;
-                                }
-                            }
-
-                            if (bestF >= 0)
-                            {
-                                // UV0 interpolation → UV2 (NO 3D override)
-                                candidateUv0[vi] = triUv2A[bestF] * bestU
-                                                 + triUv2B[bestF] * bestV
-                                                 + triUv2C[bestF] * bestW;
-                            }
-                        }
-
-                        int issuesUv0 = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, candidateUv0);
-
-                        // Accept if better than 3D result. NO overlap guard — same-source
-                        // overlap is correct for tiling geometry.
-                        if (issuesUv0 < bestMergedIssues)
-                        {
-                            bestMergedIssues = issuesUv0;
-                            bestMergedUv2 = candidateUv0;
-                            bestMergedConsistencyFixes = localFixesUv0;
+                            bestMergedIssues = bestOverlap.Value.issues;
+                            bestMergedUv2 = bestOverlap.Value.uv2;
+                            bestMergedConsistencyFixes = 0;
                             bestWasConstrained = true;
 
-                            UvtLog.Info($"[GroupedTransfer]   t{tsi}: UV0-interp fallback " +
-                                $"({issuesUv0} issues, was 3D-primary)");
+                            UvtLog.Info($"[GroupedTransfer]   t{tsi}: overlap fallback " +
+                                $"({bestOverlap.Value.method}, {bestOverlap.Value.issues} issues)");
+                        }
+
+                        // Also try inverted normal filter as last resort
+                        // (catches cases where normals oppose source)
+                        if (bestMergedIssues > tShell.faceIndices.Count / 2)
+                        {
+                            var candidateUv0 = new Dictionary<int, Vector2>();
+                            TriangleBvh2D uv0Bvh = shellUv0Bvh[chosenSrc];
+
+                            foreach (int vi in tShell.vertexIndices)
+                            {
+                                if (vi >= tUv0.Length) continue;
+                                Vector2 tUv = tUv0[vi];
+                                Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                                    ? tNormals[vi] : Vector3.up;
+
+                                int bestF = -1;
+                                float bestU = 0, bestV = 0, bestW = 0;
+
+                                if (uv0Bvh != null)
+                                {
+                                    var hit = tNrm.sqrMagnitude > 0.5f
+                                        ? uv0Bvh.FindNearestNormalFiltered(tUv, -tNrm, triNormal, kBackfaceDot)
+                                        : uv0Bvh.FindNearest(tUv);
+                                    bestF = hit.faceIndex;
+                                    bestU = hit.u; bestV = hit.v; bestW = hit.w;
+                                }
+                                else
+                                {
+                                    float bestDSq = float.MaxValue;
+                                    for (int fi = 0; fi < srcFacesChosen.Count; fi++)
+                                    {
+                                        int f = srcFacesChosen[fi];
+                                        float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
+                                            out float u, out float v, out float w);
+                                        if (dSq < bestDSq)
+                                        { bestDSq = dSq; bestF = f; bestU = u; bestV = v; bestW = w; }
+                                        if (bestDSq < 1e-8f) break;
+                                    }
+                                }
+
+                                if (bestF >= 0)
+                                    candidateUv0[vi] = triUv2A[bestF] * bestU
+                                                     + triUv2B[bestF] * bestV
+                                                     + triUv2C[bestF] * bestW;
+                            }
+
+                            int issuesUv0 = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, candidateUv0);
+                            if (issuesUv0 < bestMergedIssues)
+                            {
+                                bestMergedIssues = issuesUv0;
+                                bestMergedUv2 = candidateUv0;
+                                bestMergedConsistencyFixes = 0;
+                                bestWasConstrained = true;
+
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: inverted-normal fallback " +
+                                    $"({issuesUv0} issues)");
+                            }
                         }
                     }
 
@@ -1285,6 +1778,82 @@ namespace LightmapUvTool
                             fMax = Vector2.Max(fMax, kv.Value);
                         }
                         force3DUsedRegions.Add((fMin, fMax));
+                    }
+
+                    // ── Coherence fix: detect outlier vertices outside matched source's UV2 AABB ──
+                    // Some vertices (especially in degenerate/mixed shells) escape the matched
+                    // source's UV2 region, creating long diagonal lines in UV2 space.
+                    // If the majority of vertices are inside the correct region, re-project
+                    // the outliers using the matched source's constrained UV0 lookup.
+                    if (bestMergedUv2 != null && bestMergedUv2.Count > 1 && chosenSrc >= 0)
+                    {
+                        const float kUv2Margin = 0.005f;
+                        Vector2 sMin = srcUv2Min[chosenSrc];
+                        Vector2 sMax = srcUv2Max[chosenSrc];
+
+                        int insideCount = 0;
+                        var outsideVerts = new List<int>();
+                        foreach (var kv in bestMergedUv2)
+                        {
+                            Vector2 uv2 = kv.Value;
+                            if (uv2.x >= sMin.x - kUv2Margin && uv2.x <= sMax.x + kUv2Margin &&
+                                uv2.y >= sMin.y - kUv2Margin && uv2.y <= sMax.y + kUv2Margin)
+                                insideCount++;
+                            else
+                                outsideVerts.Add(kv.Key);
+                        }
+
+                        if (outsideVerts.Count > 0 && insideCount > outsideVerts.Count)
+                        {
+                            var cBvh = shellUv0Bvh[chosenSrc];
+                            var cFaces = srcShells[chosenSrc].faceIndices;
+                            int coherenceFixed = 0;
+
+                            foreach (int vi in outsideVerts)
+                            {
+                                if (vi >= tUv0.Length) continue;
+                                Vector2 tUv = tUv0[vi];
+                                int bestF = -1;
+                                float bestU = 0, bestV = 0, bestW = 0;
+
+                                if (cBvh != null)
+                                {
+                                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                                        ? tNormals[vi] : Vector3.zero;
+                                    var hit = tNrm.sqrMagnitude > 0.5f
+                                        ? cBvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, 0.0f)
+                                        : cBvh.FindNearest(tUv);
+                                    bestF = hit.faceIndex;
+                                    bestU = hit.u; bestV = hit.v; bestW = hit.w;
+                                }
+                                else
+                                {
+                                    float bestDSq = float.MaxValue;
+                                    for (int fi = 0; fi < cFaces.Count; fi++)
+                                    {
+                                        int f = cFaces[fi];
+                                        float dSq = PointToTri2D(tUv, triUv0A[f], triUv0B[f], triUv0C[f],
+                                            out float u, out float v, out float w);
+                                        if (dSq < bestDSq)
+                                        { bestDSq = dSq; bestF = f; bestU = u; bestV = v; bestW = w; }
+                                        if (bestDSq < 1e-8f) break;
+                                    }
+                                }
+
+                                if (bestF >= 0)
+                                {
+                                    bestMergedUv2[vi] = triUv2A[bestF] * bestU
+                                                      + triUv2B[bestF] * bestV
+                                                      + triUv2C[bestF] * bestW;
+                                    coherenceFixed++;
+                                }
+                            }
+
+                            if (coherenceFixed > 0)
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: coherence fix " +
+                                    $"({coherenceFixed}/{outsideVerts.Count} outlier verts " +
+                                    $"re-projected to src{chosenSrc})");
+                        }
                     }
 
                     chosenUv2 = bestMergedUv2;
@@ -1419,11 +1988,19 @@ namespace LightmapUvTool
 
                 // Write chosen UV2
                 int srcForLog = chosenSrc >= 0 ? chosenSrc : -1;
-                foreach (var kv in chosenUv2)
+                if (chosenUv2 != null)
                 {
-                    result.uv2[kv.Key] = kv.Value;
-                    result.vertexToSourceShell[kv.Key] = srcForLog;
-                    transferred++;
+                    foreach (var kv in chosenUv2)
+                    {
+                        result.uv2[kv.Key] = kv.Value;
+                        result.vertexToSourceShell[kv.Key] = srcForLog;
+                        transferred++;
+                    }
+
+                    // Claim source for overlap group dedup — prevents other
+                    // targets from using the same source and creating UV2 overlap.
+                    if (chosenSrc >= 0 && srcShellOverlapMembers[chosenSrc] != null)
+                        overlapClaimedSources.Add(chosenSrc);
                 }
             }
 
@@ -1457,6 +2034,23 @@ namespace LightmapUvTool
                 UvtLog.Warn($"[GroupedTransfer] '{targetMesh.name}': {oob} verts outside 0-1! " +
                     $"UV2=[{uvMin.x:F3},{uvMin.y:F3}]-[{uvMax.x:F3},{uvMax.y:F3}]");
 
+            // Populate cross-LOD overlap hints for subsequent LODs.
+            // Records (3D centroid, source shell) for each merged shell so the next
+            // LOD can match the same physical belt/strap to the same source.
+            var hints = new List<OverlapSourceHint>();
+            for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+            {
+                if (result.targetShellMethod[tsi] == 2 && result.targetShellToSourceShell[tsi] >= 0)
+                {
+                    hints.Add(new OverlapSourceHint
+                    {
+                        centroid3D = result.targetShellCentroids[tsi],
+                        sourceShellIndex = result.targetShellToSourceShell[tsi]
+                    });
+                }
+            }
+            result.overlapHints = hints;
+
             return result;
         }
 
@@ -1464,6 +2058,18 @@ namespace LightmapUvTool
         //  Count triangle issues (inverted + zero-area) for a UV2 candidate
         //  Used to pick between transform and interpolation per shell
         // ═══════════════════════════════════════════════════════════
+
+        static Vector3 ComputeShellAvgNormal(UvShell shell, Vector3[] normals)
+        {
+            if (normals == null || normals.Length == 0) return Vector3.up;
+            Vector3 sum = Vector3.zero;
+            foreach (int vi in shell.vertexIndices)
+            {
+                if (vi < normals.Length)
+                    sum += normals[vi];
+            }
+            return sum.sqrMagnitude > 1e-8f ? sum.normalized : Vector3.up;
+        }
 
         static int CountShellIssues(List<int> faceIndices, int[] tris, Vector2[] uv0,
             Dictionary<int, Vector2> candidateUv2)
@@ -1488,6 +2094,37 @@ namespace LightmapUvTool
                 }
             }
             return issues;
+        }
+
+        static float ComputeShellStretchMedian(List<int> faceIndices, int[] tris, Vector2[] uv0,
+            Dictionary<int, Vector2> candidateUv2)
+        {
+            if (candidateUv2 == null || candidateUv2.Count == 0)
+                return float.NaN;
+
+            var ratios = new List<float>(faceIndices.Count);
+            foreach (int f in faceIndices)
+            {
+                int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
+                if (i0 >= uv0.Length || i1 >= uv0.Length || i2 >= uv0.Length) continue;
+                if (!candidateUv2.TryGetValue(i0, out var a2) ||
+                    !candidateUv2.TryGetValue(i1, out var b2) ||
+                    !candidateUv2.TryGetValue(i2, out var c2))
+                    continue;
+
+                var a0 = uv0[i0]; var b0 = uv0[i1]; var c0 = uv0[i2];
+                float area0 = Mathf.Abs(SignedArea2D(a0, b0, c0));
+                if (area0 < 1e-10f) continue;
+
+                float area2 = Mathf.Abs(SignedArea2D(a2, b2, c2));
+                ratios.Add(area2 / area0);
+            }
+
+            if (ratios.Count == 0)
+                return float.NaN;
+
+            ratios.Sort();
+            return ratios[ratios.Count / 2];
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -1588,6 +2225,363 @@ namespace LightmapUvTool
                 area += (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
             }
             return (float)(area * 0.5);
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        //  Unified overlap candidate generation
+        //  Generates ALL candidate UV2 maps for a single source shell
+        //  and returns them ranked by quality (issues count).
+        // ═══════════════════════════════════════════════════════════
+
+        struct OverlapCandidate
+        {
+            public Dictionary<int, Vector2> uv2;
+            public int issues;
+            public int coverage;
+            public string method;
+        }
+
+        /// <summary>
+        /// Generate all overlap-aware UV2 candidates for a target shell
+        /// projected onto a single source shell. Tries (in order):
+        ///   1. Ray/nearest with partition filtering (3D→UV2)
+        ///   2. Partition-constrained UV0 interpolation (UV0→UV2 via partition BVH)
+        ///   3. Per-partition similarity transform (UV0→UV2 via partition xform)
+        ///   4. Strip parameterization (3D param space→UV2, normal-filtered)
+        ///   5. Full-shell similarity transform with cross-source UV2 guard
+        /// Returns candidates sorted by quality (ascending issues, descending coverage).
+        /// </summary>
+        static List<OverlapCandidate> GenerateOverlapCandidates(
+            UvShell tShell, int srcIdx,
+            // Target mesh data
+            Vector3[] tVerts, Vector3[] tNormals, Vector2[] tUv0,
+            // Source mesh data
+            List<UvShell> srcShells, Vector3[] srcVerts,
+            Vector2[] srcUv0, Vector2[] srcUv2, int[] srcTris,
+            // Pre-computed triangle arrays
+            Vector2[] triUv0A, Vector2[] triUv0B, Vector2[] triUv0C,
+            Vector2[] triUv2A, Vector2[] triUv2B, Vector2[] triUv2C,
+            Vector3[] triNormal,
+            // BVH structures
+            TriangleBvh srcBvh3D, int[] faceMap3D, Vector3[] faceNormals3D,
+            TriangleBvh2D[] perPartBvh,
+            // Partition & transform data
+            SpatialPartitioner.ShellPartitionResult srcPR,
+            SimilarityTransform[] perPartXform,
+            SimilarityTransform fullXform,
+            // Ribbon data
+            bool isRibbon, Vector3 ribbonAxis, Vector3 ribbonAxis2, Vector3 ribbonCentroid,
+            // Cross-source UV2 guard data
+            Vector2[] srcUv2Min, Vector2[] srcUv2Max, List<int> overlapGroupMembers,
+            // Thresholds
+            float kRayMaxDist)
+        {
+            var candidates = new List<OverlapCandidate>();
+            int[] tgtTris = null; // not needed — issues counted by caller
+
+            bool hasPart = srcPR != null && srcPR.hasOverlap && srcPR.partitionCount > 1
+                && perPartBvh != null;
+
+            // ── Candidate 1: Ray/nearest with partition filtering ──
+            if (srcBvh3D != null)
+            {
+                var uv2Map = new Dictionary<int, Vector2>();
+
+                foreach (int vi in tShell.vertexIndices)
+                {
+                    if (vi >= tVerts.Length) continue;
+                    Vector3 tPos = tVerts[vi];
+                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                        ? tNormals[vi] : Vector3.up;
+
+                    int vertexPid = -1;
+                    if (hasPart)
+                        vertexPid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+
+                    int hitFace = -1;
+                    Vector3 hitBary = Vector3.zero;
+
+                    // Primary: ray along normal (bidirectional)
+                    if (tNrm.sqrMagnitude > 0.5f)
+                    {
+                        var rayHit = srcBvh3D.RaycastBidirectional(
+                            tPos, tNrm.normalized, kRayMaxDist);
+                        if (rayHit.triangleIndex >= 0)
+                        {
+                            int gf = (rayHit.triangleIndex < faceMap3D.Length)
+                                ? faceMap3D[rayHit.triangleIndex] : -1;
+                            bool partOk = true;
+                            if (vertexPid >= 0 && gf >= 0 &&
+                                srcPR.facePartitionId.TryGetValue(gf, out int fp) &&
+                                fp != vertexPid)
+                                partOk = false;
+
+                            if (partOk)
+                            {
+                                hitFace = rayHit.triangleIndex;
+                                hitBary = rayHit.barycentric;
+                            }
+                        }
+                    }
+
+                    // Fallback: nearest-point with normal filter (dot > 0.3)
+                    if (hitFace < 0 && faceNormals3D != null)
+                    {
+                        var nearest = srcBvh3D.FindNearestNormalFiltered(
+                            tPos, tNrm, faceNormals3D, 0.3f);
+                        if (nearest.triangleIndex >= 0)
+                        {
+                            int gf = (nearest.triangleIndex < faceMap3D.Length)
+                                ? faceMap3D[nearest.triangleIndex] : -1;
+                            bool partOk = true;
+                            if (vertexPid >= 0 && gf >= 0 &&
+                                srcPR.facePartitionId.TryGetValue(gf, out int fp2) &&
+                                fp2 != vertexPid)
+                                partOk = false;
+
+                            if (partOk)
+                            {
+                                hitFace = nearest.triangleIndex;
+                                hitBary = nearest.barycentric;
+                            }
+                        }
+                    }
+
+                    // Partition-constrained UV0-interp fallback for rejected vertices
+                    if (hitFace < 0 && vertexPid >= 0 && vi < tUv0.Length
+                        && perPartBvh[vertexPid] != null)
+                    {
+                        var hit = perPartBvh[vertexPid].FindNearest(tUv0[vi]);
+                        if (hit.faceIndex >= 0)
+                        {
+                            uv2Map[vi] = triUv2A[hit.faceIndex] * hit.u
+                                       + triUv2B[hit.faceIndex] * hit.v
+                                       + triUv2C[hit.faceIndex] * hit.w;
+                            continue;
+                        }
+                    }
+
+                    if (hitFace >= 0 && hitFace < faceMap3D.Length)
+                    {
+                        int globalFace = faceMap3D[hitFace];
+                        uv2Map[vi] = triUv2A[globalFace] * hitBary.x
+                                   + triUv2B[globalFace] * hitBary.y
+                                   + triUv2C[globalFace] * hitBary.z;
+                    }
+                }
+
+                if (uv2Map.Count > 0)
+                    candidates.Add(new OverlapCandidate
+                    {
+                        uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
+                        method = "ray+partition"
+                    });
+            }
+
+            // ── Candidate 2: Partition-constrained UV0 interpolation ──
+            if (hasPart)
+            {
+                var uv2Map = new Dictionary<int, Vector2>();
+
+                foreach (int vi in tShell.vertexIndices)
+                {
+                    if (vi >= tUv0.Length || vi >= tVerts.Length) continue;
+                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                        ? tNormals[vi] : Vector3.up;
+                    Vector3 tPos = tVerts[vi];
+
+                    int pid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                    if (pid < 0 || perPartBvh[pid] == null) continue;
+
+                    var hit = perPartBvh[pid].FindNearest(tUv0[vi]);
+                    if (hit.faceIndex >= 0)
+                    {
+                        uv2Map[vi] = triUv2A[hit.faceIndex] * hit.u
+                                   + triUv2B[hit.faceIndex] * hit.v
+                                   + triUv2C[hit.faceIndex] * hit.w;
+                    }
+                }
+
+                if (uv2Map.Count > 0)
+                    candidates.Add(new OverlapCandidate
+                    {
+                        uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
+                        method = "partition-uv0-interp"
+                    });
+            }
+
+            // ── Candidate 3: Per-partition similarity transform ──
+            if (hasPart && perPartXform != null)
+            {
+                var uv2Map = new Dictionary<int, Vector2>();
+
+                foreach (int vi in tShell.vertexIndices)
+                {
+                    if (vi >= tUv0.Length || vi >= tVerts.Length) continue;
+                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                        ? tNormals[vi] : Vector3.up;
+                    Vector3 tPos = tVerts[vi];
+
+                    int pid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                    if (pid < 0 || !perPartXform[pid].valid) continue;
+
+                    uv2Map[vi] = perPartXform[pid].Apply(tUv0[vi]);
+                }
+
+                // Reject if any vertex goes outside 0-1 range
+                bool partXfRejected = false;
+                if (uv2Map.Count > 0)
+                {
+                    foreach (var kv in uv2Map)
+                    {
+                        Vector2 uv = kv.Value;
+                        if (uv.x < -0.01f || uv.x > 1.01f || uv.y < -0.01f || uv.y > 1.01f)
+                        {
+                            partXfRejected = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!partXfRejected && uv2Map.Count > 0)
+                    candidates.Add(new OverlapCandidate
+                    {
+                        uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
+                        method = "partition-xform"
+                    });
+            }
+
+            // ── Candidate 4: Strip parameterization (ribbons only) ──
+            if (isRibbon && srcPR != null && srcPR.hasOverlap)
+            {
+                var uv2Map = StripParameterization.TransferNormalFiltered(
+                    tShell, srcShells[srcIdx],
+                    tVerts, tNormals, srcVerts, srcUv0, srcUv2, srcTris,
+                    triUv2A, triUv2B, triUv2C,
+                    ribbonAxis, ribbonAxis2, ribbonCentroid);
+
+                if (uv2Map != null && uv2Map.Count > 0)
+                    candidates.Add(new OverlapCandidate
+                    {
+                        uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
+                        method = "strip-param"
+                    });
+            }
+
+            // ── Candidate 5: Full-shell similarity transform with cross-source guard ──
+            if (fullXform.valid)
+            {
+                var uv2Map = new Dictionary<int, Vector2>();
+                foreach (int vi in tShell.vertexIndices)
+                {
+                    if (vi >= tUv0.Length) continue;
+                    uv2Map[vi] = fullXform.Apply(tUv0[vi]);
+                }
+
+                // Guard: reject if xform result goes outside source shell's UV2 AABB
+                // (with margin) or outside 0-1 range, or overlaps another source's UV2
+                bool rejected = false;
+                if (uv2Map.Count > 0)
+                {
+                    Vector2 xfMin = new Vector2(float.MaxValue, float.MaxValue);
+                    Vector2 xfMax = new Vector2(float.MinValue, float.MinValue);
+                    foreach (var kv in uv2Map)
+                    {
+                        xfMin = Vector2.Min(xfMin, kv.Value);
+                        xfMax = Vector2.Max(xfMax, kv.Value);
+                    }
+
+                    // Reject if result goes outside 0-1 range (catches wild extrapolation)
+                    if (xfMin.x < -0.01f || xfMax.x > 1.01f ||
+                        xfMin.y < -0.01f || xfMax.y > 1.01f)
+                        rejected = true;
+
+                    // Reject if result overlaps another overlap-group member's UV2 region.
+                    // Only check shells in same overlap group (same UV0, different UV2) —
+                    // checking all source shells causes false positives from unrelated
+                    // shells that happen to be adjacent in UV2 packing.
+                    if (!rejected && overlapGroupMembers != null)
+                    {
+                        foreach (int si in overlapGroupMembers)
+                        {
+                            if (si == srcIdx) continue;
+                            if (xfMin.x < srcUv2Max[si].x && xfMax.x > srcUv2Min[si].x &&
+                                xfMin.y < srcUv2Max[si].y && xfMax.y > srcUv2Min[si].y)
+                            {
+                                rejected = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (!rejected && uv2Map.Count > 0)
+                    candidates.Add(new OverlapCandidate
+                    {
+                        uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
+                        method = "full-xform"
+                    });
+            }
+
+            return candidates;
+        }
+
+        /// <summary>
+        /// Score all candidates via CountShellIssues and return the best one.
+        /// Ties broken by coverage (more vertices covered wins).
+        /// Xform candidates only win on strictly fewer issues (not equal).
+        /// </summary>
+        static OverlapCandidate? SelectBestCandidate(
+            List<OverlapCandidate> candidates,
+            List<int> faceIndices, int[] tgtTris, Vector2[] tUv0)
+        {
+            if (candidates == null || candidates.Count == 0) return null;
+
+            // Score all candidates
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                var c = candidates[i];
+                c.issues = CountShellIssues(faceIndices, tgtTris, tUv0, c.uv2);
+                candidates[i] = c;
+            }
+
+            // Find best: fewest issues, then most coverage
+            // Xform-based methods must be strictly better to win over interp-based
+            int bestIdx = 0;
+            for (int i = 1; i < candidates.Count; i++)
+            {
+                var curr = candidates[i];
+                var best = candidates[bestIdx];
+
+                bool currIsXform = curr.method == "full-xform" || curr.method == "partition-xform";
+                bool bestIsXform = best.method == "full-xform" || best.method == "partition-xform";
+
+                if (curr.issues < best.issues)
+                {
+                    bestIdx = i;
+                }
+                else if (curr.issues == best.issues)
+                {
+                    // On equal issues: interp-based methods are preferred over xform
+                    // because interp stays within source UV2 convex hull.
+                    // Among same-type methods, prefer more coverage.
+                    if (currIsXform && !bestIsXform)
+                    {
+                        // xform doesn't win on tie — keep interp
+                    }
+                    else if (!currIsXform && bestIsXform)
+                    {
+                        // interp replaces xform on tie
+                        bestIdx = i;
+                    }
+                    else if (curr.coverage > best.coverage)
+                    {
+                        bestIdx = i;
+                    }
+                }
+            }
+
+            return candidates[bestIdx];
         }
 
         // Legacy overload
