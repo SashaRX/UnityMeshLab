@@ -34,6 +34,8 @@ namespace LightmapUvTool
         int atlasResolution = 1024;
         int shellPaddingPx  = 2;
         int borderPaddingPx = 0;
+        bool repackPerMesh;  // per-mesh repack: each mesh group packed to [0,1] independently
+        int  isolatedMeshGroup = -1; // -1 = show all, >=0 = isolate mesh group by index
 
         // UV0 analysis
         Dictionary<int, Uv0Report> uv0Reports = new Dictionary<int, Uv0Report>();
@@ -574,6 +576,7 @@ namespace LightmapUvTool
                 EditorGUILayout.HelpBox(previewConflictNotice, MessageType.Info);
             DrawCanvas();
             DrawStatusBar();
+            if (repackPerMesh) DrawMeshGroupBar();
             EditorGUILayout.EndVertical();
 
             EditorGUILayout.EndHorizontal();
@@ -702,6 +705,7 @@ namespace LightmapUvTool
 
             // ── Run Full Pipeline ──
             EditorGUILayout.Space(6);
+            repackPerMesh = EditorGUILayout.ToggleLeft("Per-mesh repack (each group → [0,1])", repackPerMesh);
             ColorBtn(new Color(.2f,.75f,.95f), "▶  Run Full Pipeline", 30, ExecFullPipeline);
             splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft(
                 "SymSplit target LODs (advanced / risky)",
@@ -824,7 +828,11 @@ namespace LightmapUvTool
             var src = ForLod(sourceLodIndex);
 
             EditorGUILayout.Space(4);
-            ColorBtn(new Color(.3f,.8f,.4f), "Repack All", 26, () => ExecRepack(src));
+            repackPerMesh = EditorGUILayout.ToggleLeft("Per-mesh repack (each group → [0,1])", repackPerMesh);
+            ColorBtn(new Color(.3f,.8f,.4f), "Repack All", 26, () => {
+                if (repackPerMesh) ExecRepackPerMesh(src);
+                else ExecRepack(src);
+            });
 
             if (src.Count > 1)
             {
@@ -1074,9 +1082,27 @@ namespace LightmapUvTool
             var ee = ForLod(pvLod);
             if (ee.Count == 0) { EditorGUILayout.HelpBox("No meshes for this LOD.", MessageType.Info); hoveredShellDebug = null; return; }
 
+            // Build mesh group keys for isolation filtering
+            List<string> canvasGroupKeys = null;
+            if (repackPerMesh && isolatedMeshGroup >= 0)
+            {
+                canvasGroupKeys = new List<string>();
+                foreach (var e in meshEntries.Where(me => me.lodIndex == pvLod && me.include))
+                {
+                    string key = e.meshGroupKey ?? e.renderer.name;
+                    if (!canvasGroupKeys.Contains(key)) canvasGroupKeys.Add(key);
+                }
+            }
+
             var draws = new List<ValueTuple<Mesh, MeshEntry, int>>();
             for (int i = 0; i < ee.Count; i++)
             {
+                // Filter by isolated mesh group
+                if (canvasGroupKeys != null && isolatedMeshGroup >= 0 && isolatedMeshGroup < canvasGroupKeys.Count)
+                {
+                    string eKey = ee[i].meshGroupKey ?? ee[i].renderer.name;
+                    if (eKey != canvasGroupKeys[isolatedMeshGroup]) continue;
+                }
                 Mesh m = DMesh(ee[i]);
                 if (m != null) draws.Add(new ValueTuple<Mesh, MeshEntry, int>(m, ee[i], i));
             }
@@ -2745,6 +2771,47 @@ namespace LightmapUvTool
             EditorGUILayout.EndHorizontal();
         }
 
+        /// <summary>Mesh group isolation bar for per-mesh repack mode.</summary>
+        void DrawMeshGroupBar()
+        {
+            var ee = ForLod(pvLod);
+            if (ee.Count == 0) return;
+
+            // Build unique group keys in order
+            var groupKeys = new List<string>();
+            foreach (var e in meshEntries.Where(me => me.lodIndex == pvLod && me.include))
+            {
+                string key = e.meshGroupKey ?? e.renderer.name;
+                if (!groupKeys.Contains(key)) groupKeys.Add(key);
+            }
+            if (groupKeys.Count <= 1) return; // nothing to isolate
+
+            EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+
+            // "All" button
+            var bg = GUI.backgroundColor;
+            if (isolatedMeshGroup < 0) GUI.backgroundColor = new Color(.35f, .65f, 1f);
+            if (GUILayout.Button("All", EditorStyles.toolbarButton, GUILayout.Width(32)))
+                isolatedMeshGroup = -1;
+            GUI.backgroundColor = bg;
+
+            // Scrollable group buttons
+            for (int i = 0; i < groupKeys.Count; i++)
+            {
+                bool active = isolatedMeshGroup == i;
+                if (active) GUI.backgroundColor = new Color(.35f, .85f, .4f);
+                // Short label: just the group key (without LOD suffix)
+                string label = groupKeys[i];
+                if (label.Length > 24) label = label.Substring(0, 22) + "..";
+                if (GUILayout.Button(label, EditorStyles.toolbarButton))
+                    isolatedMeshGroup = active ? -1 : i; // toggle
+                if (active) GUI.backgroundColor = bg;
+            }
+
+            GUILayout.FlexibleSpace();
+            EditorGUILayout.EndHorizontal();
+        }
+
         void SyncPreviewModeFromFlags()
         {
             if (checkerEnabled) previewMode = PreviewMode.Checker;
@@ -3136,7 +3203,8 @@ namespace LightmapUvTool
 
                 EditorUtility.DisplayProgressBar("Full Pipeline", "Step 4/5: Repack...", 0.40f);
                 var src = ForLod(sourceLodIndex);
-                ExecRepack(src);
+                if (repackPerMesh) ExecRepackPerMesh(src);
+                else ExecRepack(src);
 
                 if (!hasRepack)
                 {
@@ -3212,6 +3280,36 @@ namespace LightmapUvTool
             }
             catch (Exception ex) { UvtLog.Error("[Repack] " + ex); }
             finally { EditorUtility.ClearProgressBar(); }
+            Repaint();
+        }
+
+        /// <summary>
+        /// Per-mesh repack: group source meshes by meshGroupKey, repack each group
+        /// independently into [0,1] UV space.
+        /// </summary>
+        void ExecRepackPerMesh(List<MeshEntry> entries)
+        {
+            // Group by meshGroupKey — meshes with same base name share one atlas
+            var groups = new Dictionary<string, List<MeshEntry>>();
+            foreach (var e in entries)
+            {
+                string key = e.meshGroupKey ?? e.renderer.name;
+                if (!groups.ContainsKey(key)) groups[key] = new List<MeshEntry>();
+                groups[key].Add(e);
+            }
+
+            int gi = 0, total = groups.Count;
+            foreach (var kv in groups)
+            {
+                EditorUtility.DisplayProgressBar("Per-mesh Repack",
+                    $"Group {gi + 1}/{total}: {kv.Key} ({kv.Value.Count} mesh)", (float)gi / total);
+                ExecRepack(kv.Value);
+                gi++;
+            }
+            EditorUtility.ClearProgressBar();
+
+            hasRepack = ForLod(sourceLodIndex).Any(e => e.repackedMesh != null);
+            UvtLog.Info($"[Repack] Per-mesh done: {total} groups repacked independently.");
             Repaint();
         }
 
