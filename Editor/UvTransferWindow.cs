@@ -3668,6 +3668,14 @@ namespace LightmapUvTool
             CleanupWorkingMeshes();
             fillMode = FillMode.Shells;
             Refresh();
+            // Clear transfer mapping so Shells view uses fresh UV-based coloring
+            foreach (var e in meshEntries)
+            {
+                e.shellTransferResult = null;
+                e.restoredSourceDescriptors = null;
+            }
+            shellColorKeyCache.Clear();
+            shellColorKeyCacheDirty = true;
             Repaint();
         }
 
