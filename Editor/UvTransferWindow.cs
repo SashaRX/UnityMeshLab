@@ -299,6 +299,8 @@ namespace LightmapUvTool
 
         void OnEnable()
         {
+            wantsMouseMove = true;
+
             SceneView.duringSceneGui -= OnSceneGUI;
             SceneView.duringSceneGui += OnSceneGUI;
 
@@ -1264,6 +1266,14 @@ namespace LightmapUvTool
 
                     sv.Repaint(); // request Repaint pass so spot renders
                 }
+            }
+            else if (e.type == EventType.MouseLeaveWindow && hoverHitValid)
+            {
+                // Cursor left SceneView — clear 3D hover so canvas spot takes priority
+                hoverHitValid = false;
+                hoveredShellId = -1;
+                sceneSpotCachedEntry = null;
+                Repaint();
             }
 
             // On Repaint — draw using cached data
