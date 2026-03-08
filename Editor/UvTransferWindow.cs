@@ -1192,8 +1192,7 @@ namespace LightmapUvTool
                             case FillMode.None:
                                 break;
                             default:
-                                if (fillMode != FillMode.None)
-                                    GlFillSh(cx,cy,sz, mesh, fN, uN, entry, hoverShellId, selectedShellId);
+                                // No fallback — if the selected mode has no data, draw nothing.
                                 break;
                         }
 
