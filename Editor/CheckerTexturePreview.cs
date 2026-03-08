@@ -7,9 +7,55 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 
 namespace LightmapUvTool
 {
+    /// <summary>
+    /// Safety hook: restores all preview materials on domain reload, play mode change,
+    /// scene save, and editor quit. Prevents checker/shell materials from leaking onto models.
+    /// </summary>
+    [InitializeOnLoad]
+    static class PreviewSafetyGuard
+    {
+        static PreviewSafetyGuard()
+        {
+            EditorApplication.playModeStateChanged += OnPlayModeChanged;
+            AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
+            EditorSceneManager.sceneSaving += OnSceneSaving;
+            EditorSceneManager.sceneClosing += OnSceneClosing;
+            EditorApplication.quitting += OnQuitting;
+        }
+
+        static void OnPlayModeChanged(PlayModeStateChange state)
+        {
+            if (state == PlayModeStateChange.ExitingEditMode ||
+                state == PlayModeStateChange.ExitingPlayMode)
+                RestoreAll();
+        }
+
+        static void OnBeforeAssemblyReload() => RestoreAll();
+        static void OnQuitting() => RestoreAll();
+
+        static void OnSceneSaving(UnityEngine.SceneManagement.Scene scene, string path)
+        {
+            RestoreAll();
+        }
+
+        static void OnSceneClosing(UnityEngine.SceneManagement.Scene scene, bool removingScene)
+        {
+            RestoreAll();
+        }
+
+        static void RestoreAll()
+        {
+            if (CheckerTexturePreview.IsActive)
+                CheckerTexturePreview.Restore();
+            if (ShellColorModelPreview.IsActive)
+                ShellColorModelPreview.Restore();
+        }
+    }
+
     public static class CheckerTexturePreview
     {
         // ── Generated assets ──

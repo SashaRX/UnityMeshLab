@@ -316,6 +316,13 @@ namespace LightmapUvTool
         {
             wantsMouseMove = true;
 
+            // Safety: restore any preview state left from prior session (crash, domain reload)
+            if (CheckerTexturePreview.IsActive) CheckerTexturePreview.Restore();
+            if (ShellColorModelPreview.IsActive) ShellColorModelPreview.Restore();
+            checkerEnabled = false;
+            shellColorPreviewEnabled = false;
+            previewMode = PreviewMode.Off;
+
             SceneView.duringSceneGui -= OnSceneGUI;
             SceneView.duringSceneGui += OnSceneGUI;
 
@@ -347,8 +354,7 @@ namespace LightmapUvTool
         void OnDisable()
         {
             SceneView.duringSceneGui -= OnSceneGUI;
-            if (checkerEnabled) CheckerTexturePreview.Restore();
-            checkerEnabled = false;
+            RestoreAllPreviews();
             if (lodGroup != null) lodGroup.ForceLOD(-1);
             CleanupWorkingMeshes();
             boundaryEdgeCache.Clear();
@@ -559,6 +565,8 @@ namespace LightmapUvTool
             if (lodGroup != null)
                 lodGroup.ForceLOD(clamped);
 
+            if (checkerEnabled)
+                ReapplyCheckerToSelection();
             if (shellColorPreviewEnabled)
                 ReapplyShellColorPreview();
 
