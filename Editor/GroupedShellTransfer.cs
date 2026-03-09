@@ -2414,6 +2414,70 @@ namespace LightmapUvTool
                 }
             }
 
+            // ── Post-transfer UV2 AABB safety net for merged shells ──
+            // Catch any vertex whose UV2 escaped the matched source's UV2 region.
+            // This can happen through multiple code paths (overlap composite, standard
+            // merged all-source fallback, 3D projection, etc.). Re-project outlier
+            // vertices using the source's UV0 BVH to bring them back into the correct region.
+            {
+                int totalOutlierVerts = 0;
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    if (result.targetShellMethod[tsi] != 2) continue; // only merged shells
+                    int src = result.targetShellToSourceShell[tsi];
+                    if (src < 0) continue;
+
+                    Vector2 sMin = srcUv2Min[src];
+                    Vector2 sMax = srcUv2Max[src];
+                    Vector2 sSize = sMax - sMin;
+                    float padX = sSize.x * 0.2f;
+                    float padY = sSize.y * 0.2f;
+                    Vector2 allowMin = sMin - new Vector2(padX, padY);
+                    Vector2 allowMax = sMax + new Vector2(padX, padY);
+
+                    var tShell = tgtShells[tsi];
+                    int shellOutliers = 0;
+
+                    foreach (int vi in tShell.vertexIndices)
+                    {
+                        if (vi >= result.uv2.Length) continue;
+                        Vector2 uv = result.uv2[vi];
+                        if (uv.x >= allowMin.x && uv.x <= allowMax.x &&
+                            uv.y >= allowMin.y && uv.y <= allowMax.y)
+                            continue; // within bounds
+
+                        // Outlier: re-project from source UV0 BVH
+                        if (vi < tUv0.Length && shellUv0Bvh[src] != null)
+                        {
+                            Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                                ? tNormals[vi] : Vector3.up;
+                            TriangleBvh2D.HitResult2D hit;
+                            if (tNrm.sqrMagnitude > 0.5f)
+                                hit = shellUv0Bvh[src].FindNearestNormalFiltered(
+                                    tUv0[vi], tNrm, triNormal, 0.0f);
+                            else
+                                hit = shellUv0Bvh[src].FindNearest(tUv0[vi]);
+
+                            if (hit.faceIndex >= 0)
+                            {
+                                int f = hit.faceIndex;
+                                result.uv2[vi] = triUv2A[f] * hit.u + triUv2B[f] * hit.v + triUv2C[f] * hit.w;
+                                shellOutliers++;
+                            }
+                        }
+                    }
+
+                    if (shellOutliers > 0)
+                    {
+                        UvtLog.Info($"[GroupedTransfer] Post-fix: t{tsi} — {shellOutliers} outlier " +
+                            $"verts re-projected to src{src} UV2 AABB");
+                        totalOutlierVerts += shellOutliers;
+                    }
+                }
+                if (totalOutlierVerts > 0)
+                    UvtLog.Info($"[GroupedTransfer] Post-fix total: {totalOutlierVerts} outlier verts corrected");
+            }
+
             result.verticesTransferred = transferred;
             result.shellsMatched = shellsMatched;
             result.shellsTransform = shellsTransform;
