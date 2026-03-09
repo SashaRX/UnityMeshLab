@@ -57,6 +57,23 @@ namespace LightmapUvTool
             public List<int> faceIndices;
         }
 
+        /// <summary>
+        /// Per-shell quality classification assigned after transfer.
+        /// </summary>
+        public enum ShellStatus
+        {
+            /// <summary>Transfer clean — 0 issues.</summary>
+            Accepted = 0,
+            /// <summary>Minor issues (&le;30% faces) — usable but imperfect.</summary>
+            Degraded = 1,
+            /// <summary>Severe issues (&gt;30% faces) — written but likely broken.</summary>
+            Poor = 2,
+            /// <summary>Rejected (&gt;50% face issues for merged) — UV2 not written.</summary>
+            Rejected = 3,
+            /// <summary>No source shell matched.</summary>
+            Unmatched = 4
+        }
+
         public class TransferResult
         {
             public Vector2[] uv2;
@@ -78,6 +95,9 @@ namespace LightmapUvTool
             public float[] targetShellMatchDistSqr;
             public int dedupConflicts;       // shells reassigned by dedup
             public int fragmentsMerged;      // target shell fragments merged pre-matching
+            public ShellStatus[] targetShellStatus; // per-shell quality classification
+            public int[] targetShellIssues;  // per-shell issue count (inverted/degenerate faces)
+            public int shellsRejected;       // shells where UV2 was not written (too many issues)
 
             // ─── Cross-LOD overlap hints ───
             // Populated for merged shells to propagate source selection to subsequent LODs.
@@ -265,11 +285,14 @@ namespace LightmapUvTool
             Vector3 tCentroid,
             int maxRetries, float goodDistSq,
             HashSet<int> excludeSources,
-            out int chosenSrc, out float chosenDistSq, out float chosenAvg3D)
+            out int chosenSrc, out float chosenDistSq, out float chosenAvg3D,
+            Vector3 tgtNormal = default, Vector3[] srcAvgNormal = null)
         {
             chosenSrc = -1;
             chosenDistSq = float.MaxValue;
             chosenAvg3D = float.MaxValue;
+
+            bool useNormal = srcAvgNormal != null && tgtNormal.sqrMagnitude > 0.5f;
 
             // Rank source shells by 3D centroid distance
             var ranked = new List<(int si, float distSq)>();
@@ -285,6 +308,7 @@ namespace LightmapUvTool
             var vertList = new List<int>(tShell.vertexIndices);
             int step = Mathf.Max(1, vertList.Count / kMaxSampleVerts);
 
+            float bestScore = float.MaxValue;
             int tries = Mathf.Min(maxRetries, ranked.Count);
             for (int attempt = 0; attempt < tries; attempt++)
             {
@@ -321,13 +345,31 @@ namespace LightmapUvTool
                 }
 
                 float avgDist = sampled > 0 ? totalDistSq / sampled : float.MaxValue;
-                if (avgDist < chosenAvg3D)
+
+                // Composite score: surface distance + normal penalty.
+                // normalDot ∈ [-1,1]: 1 = same direction, -1 = opposite.
+                // Additive penalty ensures wrong-side shells are penalized even
+                // when surface distance is near zero (thin belts/straps where
+                // front and back are equidistant in 3D).
+                float score = avgDist;
+                if (useNormal && si < srcAvgNormal.Length)
                 {
+                    float dot = Vector3.Dot(tgtNormal, srcAvgNormal[si]);
+                    float normalPenalty = Mathf.Max(0f, 1f - dot); // 0 for same dir, 2 for opposite
+                    score = avgDist + normalPenalty * goodDistSq * 10f;
+                }
+
+                if (score < bestScore)
+                {
+                    bestScore = score;
                     chosenSrc = si;
                     chosenDistSq = ranked[attempt].distSq;
                     chosenAvg3D = avgDist;
                 }
-                if (chosenAvg3D < goodDistSq) break;
+                // Early exit only when SCORE (including normal penalty) is good.
+                // Using raw avgDist would skip wrong-side shells that are close
+                // in 3D but have opposing normals (common with thin belts/straps).
+                if (bestScore < goodDistSq) break;
             }
         }
 
@@ -439,7 +481,8 @@ namespace LightmapUvTool
             int[] targetShellToSourceShell,
             float[] targetShellMatchDistSqr,
             float[] tgtChosenAvg3D,
-            Vector3[] targetShellCentroids)
+            Vector3[] targetShellCentroids,
+            bool[] tgtIsFragmentMerged = null)
         {
             const float wArea     = 0.20f;
             const float wNormal   = 0.30f;
@@ -455,6 +498,17 @@ namespace LightmapUvTool
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
             {
                 if (!tgtIsMerged[tsi]) continue;
+
+                // Skip fragment-merged shells: they combine tiling copies with
+                // identical UV0, so any single source would produce duplicate UV2.
+                // Keep them in merged mode so Phase 3 per-face voting assigns
+                // each fragment to a different source → unique UV2 regions.
+                if (tgtIsFragmentMerged != null && tgtIsFragmentMerged[tsi])
+                {
+                    UvtLog.Info($"[GroupedTransfer] Rescore: t{tsi} kept merged " +
+                        "(fragment-merged, per-face voting needed)");
+                    continue;
+                }
 
                 var tShell = tgtShells[tsi];
                 Vector3 tCentroid = targetShellCentroids[tsi];
@@ -605,10 +659,13 @@ namespace LightmapUvTool
             // same source shell and merge them into virtual shells to prevent
             // same-source conflicts in Phase 2b dedup.
             int fragMergeCount;
+            bool[] tgtIsFragmentMerged;
+            int[] tgtFragmentMergeSource;
             tgtShells = MergeFragmentShells(
                 tgtShells, tUv0, tgtTris, tVerts,
                 srcShells, srcUv0, srcTris, srcVerts,
-                out fragMergeCount);
+                out fragMergeCount, out tgtIsFragmentMerged,
+                out tgtFragmentMergeSource);
             if (fragMergeCount > 0)
                 result.fragmentsMerged = fragMergeCount;
 
@@ -881,6 +938,8 @@ namespace LightmapUvTool
             result.targetShellMethod = new int[tgtShells.Count]; // 0=interp, 1=xform, 2=merged
             result.targetShellCentroids = new Vector3[tgtShells.Count];
             result.targetShellMatchDistSqr = new float[tgtShells.Count];
+            result.targetShellStatus = new ShellStatus[tgtShells.Count];
+            result.targetShellIssues = new int[tgtShells.Count];
 
             var tgtChosenAvg3D = new float[tgtShells.Count];
             var tgtIsMerged = new bool[tgtShells.Count];
@@ -930,12 +989,30 @@ namespace LightmapUvTool
                 if (tN > 0) tCentroid /= tN;
                 result.targetShellCentroids[tsi] = tCentroid;
 
-                // Find best source shell (with BVH acceleration + subsampling)
-                FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
-                    triPosA, triPosB, triPosC,
-                    shellBvh3D, shellBvh3DFaceMap,
-                    tCentroid, kMaxRetries, kGoodDistSq, null,
-                    out int chosenSrc, out float chosenDistSq, out float chosenAvg3D);
+                // Fragment-merged shells: force to their merge source instead of
+                // searching by 3D centroid. The merge was identified by UV0 bbox
+                // containment — using a different source breaks the merge logic.
+                int chosenSrc;
+                float chosenDistSq;
+                float chosenAvg3D;
+                if (tgtIsFragmentMerged != null && tgtIsFragmentMerged[tsi]
+                    && tgtFragmentMergeSource != null && tgtFragmentMergeSource[tsi] >= 0)
+                {
+                    chosenSrc = tgtFragmentMergeSource[tsi];
+                    chosenDistSq = (tCentroid - srcCentroid3D[chosenSrc]).sqrMagnitude;
+                    chosenAvg3D = chosenDistSq; // approximate
+                    UvtLog.Info($"[GroupedTransfer] Phase2a: t{tsi} forced to merge source src{chosenSrc}");
+                }
+                else
+                {
+                    // Find best source shell (with BVH acceleration + subsampling)
+                    FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
+                        triPosA, triPosB, triPosC,
+                        shellBvh3D, shellBvh3DFaceMap,
+                        tCentroid, kMaxRetries, kGoodDistSq, null,
+                        out chosenSrc, out chosenDistSq, out chosenAvg3D,
+                        tgtAvgNormal[tsi], srcAvgNormal);
+                }
 
                 if (chosenSrc < 0) continue;
 
@@ -943,10 +1020,43 @@ namespace LightmapUvTool
                 result.targetShellMatchDistSqr[tsi] = chosenDistSq;
                 tgtChosenAvg3D[tsi] = chosenAvg3D;
 
-                // Detect merged shell via UV0 coverage (BVH + adaptive threshold)
-                tgtIsMerged[tsi] = DetectMergedShell(tShell, tUv0,
-                    srcShells[chosenSrc].faceIndices, triUv0A, triUv0B, triUv0C,
-                    shellUv0Bvh[chosenSrc], kUv0BadThreshold);
+                // Fragment-merged shells must stay merged: they combine tiling
+                // copies with identical UV0, so single-source interp would produce
+                // duplicate UV2 for each fragment part.
+                if (tgtIsFragmentMerged != null && tgtIsFragmentMerged[tsi])
+                {
+                    tgtIsMerged[tsi] = true;
+                }
+                else
+                {
+                    // Detect merged shell via UV0 coverage (BVH + adaptive threshold)
+                    tgtIsMerged[tsi] = DetectMergedShell(tShell, tUv0,
+                        srcShells[chosenSrc].faceIndices, triUv0A, triUv0B, triUv0C,
+                        shellUv0Bvh[chosenSrc], kUv0BadThreshold);
+                }
+            }
+
+            // ── Phase 2a-cov: 3D reverse-projection coverage check ──
+            // Дополняет UV0-based DetectMergedShell: проверяет, что геометрия
+            // target shell'а реально проецируется обратно на matched source shell в 3D.
+            // Шеллы с плохим 3D покрытием апгрейдятся в merged, чтобы использовать
+            // per-face 3D voting вместо UV0 интерполяции.
+            {
+                var srcNormals = sourceMesh.normals;
+                float coverageMaxDist = Mathf.Max(meshDiagonal * 0.05f, 0.01f);
+                float coverageMinDot = 0.5f; // ~60°
+
+                var cov3D = CoverageSplitSolver.ComputeShellCoverage3D(
+                    tgtShells, tVerts, tNormals, tgtTris,
+                    srcShells, srcVerts, srcNormals, srcTris,
+                    result.targetShellToSourceShell,
+                    coverageMaxDist, coverageMinDot);
+
+                int upgradedCount = CoverageSplitSolver.UpgradePoorCoverageToMerged(
+                    cov3D, tgtIsMerged, tgtIsFragmentMerged, 0.7f);
+
+                if (upgradedCount > 0)
+                    result.shellsMerged += upgradedCount;
             }
 
             // ── Phase 2a+: Rescore merged shells with multi-criteria matching ──
@@ -962,7 +1072,8 @@ namespace LightmapUvTool
                 result.targetShellToSourceShell,
                 result.targetShellMatchDistSqr,
                 tgtChosenAvg3D,
-                result.targetShellCentroids);
+                result.targetShellCentroids,
+                tgtIsFragmentMerged);
 
             // ── Phase 2b: Deduplicate — resolve same-source conflicts ──
             // When multiple non-merged target shells claim the same source shell
@@ -971,12 +1082,33 @@ namespace LightmapUvTool
             // Hoisted: used by Phase 3 overlap guard for merged shells
             var claimed = new HashSet<int>();
             {
-                // Build reverse map: source → list of non-merged target claimants
+                // Pre-claim sources used by fragment-merged shells — these are
+                // locked to their merge source and must not be taken by others.
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    if (tgtIsFragmentMerged != null && tsi < tgtIsFragmentMerged.Length
+                        && tgtIsFragmentMerged[tsi])
+                    {
+                        int src = result.targetShellToSourceShell[tsi];
+                        if (src >= 0) claimed.Add(src);
+                    }
+                }
+
+                // Build reverse map: source → list of target claimants
+                // Include ALL shells (merged or not) so their sources get claimed
+                // and other shells can't be rematched onto the same source.
+                // Merged shells use 3D voting and can work with any source,
+                // so they can be safely reassigned if evicted.
                 var srcClaimants = new Dictionary<int, List<(int tsi, float avg3D)>>();
                 for (int tsi = 0; tsi < tgtShells.Count; tsi++)
                 {
                     int src = result.targetShellToSourceShell[tsi];
-                    if (src < 0 || tgtIsMerged[tsi]) continue; // skip unmatched & merged
+                    if (src < 0) continue;
+                    // Fragment-merged shells must keep their original source —
+                    // they were identified by UV0 bbox containment in that specific
+                    // source. Reassigning breaks the merge and produces garbage UV2.
+                    if (tgtIsFragmentMerged != null && tsi < tgtIsFragmentMerged.Length
+                        && tgtIsFragmentMerged[tsi]) continue;
                     if (!srcClaimants.TryGetValue(src, out var list))
                     {
                         list = new List<(int, float)>();
@@ -995,11 +1127,66 @@ namespace LightmapUvTool
                 foreach (int srcKey in sortedSrcKeys)
                 {
                     var claimants = srcClaimants[srcKey];
+                    bool preClaimed = claimed.Contains(srcKey); // pre-claimed by fragment-merged
                     claimed.Add(srcKey); // source is claimed regardless
+
+                    if (preClaimed)
+                    {
+                        // Source already locked by fragment-merged shell — evict ALL
+                        // non-merged claimants (they must find a different source)
+                        foreach (var (tsi, _) in claimants)
+                        {
+                            needsRematch.Add(tsi);
+                            dedupConflicts++;
+                        }
+                        continue;
+                    }
+
                     if (claimants.Count <= 1) continue;
 
-                    // Multiple non-merged targets claim same source — keep best
-                    claimants.Sort((a, b) => a.avg3D.CompareTo(b.avg3D));
+                    // Multiple targets claim same source. Check if they are
+                    // non-overlapping UV0 fragments (LOD polygon deletion splits
+                    // a shell into pieces that cover different UV0 sub-regions).
+                    // If their UV0 bboxes don't overlap, each can independently
+                    // use standard UV0→UV2 interpolation from the same source —
+                    // no conflict, no eviction needed.
+                    bool hasUv0Overlap = false;
+                    for (int i = 0; i < claimants.Count && !hasUv0Overlap; i++)
+                    {
+                        var shellA = tgtShells[claimants[i].tsi];
+                        for (int j = i + 1; j < claimants.Count && !hasUv0Overlap; j++)
+                        {
+                            var shellB = tgtShells[claimants[j].tsi];
+                            if (shellA.boundsMin.x < shellB.boundsMax.x &&
+                                shellA.boundsMax.x > shellB.boundsMin.x &&
+                                shellA.boundsMin.y < shellB.boundsMax.y &&
+                                shellA.boundsMax.y > shellB.boundsMin.y)
+                            {
+                                hasUv0Overlap = true;
+                            }
+                        }
+                    }
+
+                    if (!hasUv0Overlap)
+                    {
+                        // Non-overlapping UV0 fragments sharing a source — allow all
+                        // to stay. Each fragment covers a distinct UV0 sub-region,
+                        // so standard interpolation produces correct UV2 per fragment.
+                        UvtLog.Info($"[GroupedTransfer] Dedup: src{srcKey} has " +
+                            $"{claimants.Count} non-overlapping UV0 fragments — allowing shared source");
+                        continue;
+                    }
+
+                    // Truly overlapping UV0 (tiling/symmetric) — evict as before.
+                    // Non-merged shells get priority (they need the specific UV0→UV2
+                    // mapping); merged shells use 3D voting and work with any source.
+                    claimants.Sort((a, b) =>
+                    {
+                        bool aM = tgtIsMerged[a.tsi];
+                        bool bM = tgtIsMerged[b.tsi];
+                        if (aM != bM) return aM ? 1 : -1; // non-merged first
+                        return a.avg3D.CompareTo(b.avg3D);
+                    });
                     for (int i = 1; i < claimants.Count; i++)
                     {
                         needsRematch.Add(claimants[i].tsi);
@@ -1029,7 +1216,8 @@ namespace LightmapUvTool
                                 shellBvh3D, shellBvh3DFaceMap,
                                 result.targetShellCentroids[tsi],
                                 kMaxRetries * 3, kGoodDistSq, claimed,
-                                out int newSrc, out float newDistSq, out float newAvg3D);
+                                out int newSrc, out float newDistSq, out float newAvg3D,
+                                tgtAvgNormal[tsi], srcAvgNormal);
 
                             if (newSrc >= 0)
                             {
@@ -1038,26 +1226,64 @@ namespace LightmapUvTool
                                     srcShells[newSrc].faceIndices, triUv0A, triUv0B, triUv0C,
                                     shellUv0Bvh[newSrc], kUv0BadThreshold);
 
+                                bool wasMerged = tgtIsMerged[tsi];
+
                                 // If reassignment would make a non-merged shell become merged,
-                                // force 3D-primary merged mode instead of reverting to
-                                // overlapping source. 3D projection naturally separates
-                                // targets at different 3D positions, avoiding same-source
-                                // UV2 overlap that causes lightmap seams.
-                                if (newIsMerged && !tgtIsMerged[tsi] && oldSrc >= 0)
+                                // check if the new source is in the same overlap group:
+                                // if so, accept the reassignment — each overlap group member
+                                // has its own UV2 region, so merged transfer will work correctly.
+                                // Only fall back to merged+3D for sources outside overlap groups.
+                                bool newSrcInOverlapGroup = oldSrc >= 0
+                                    && srcShellOverlapMembers[oldSrc] != null
+                                    && srcShellOverlapMembers[newSrc] != null
+                                    && srcShellOverlapMembers[oldSrc] == srcShellOverlapMembers[newSrc];
+
+                                if (newIsMerged && !wasMerged && oldSrc >= 0 && !newSrcInOverlapGroup)
                                 {
+                                    // Use the new (unclaimed) source instead of the
+                                    // conflicting old one — merged+3D works from any source.
                                     UvtLog.Info($"[GroupedTransfer] Dedup: t{tsi} → merged+3D " +
-                                        $"(src{oldSrc}, new src{newSrc} would force merged)");
-                                    tgtIsMerged[tsi] = true;
-                                    tgtForce3DFallback[tsi] = true;
-                                    claimed.Add(oldSrc);
-                                }
-                                else
-                                {
+                                        $"(src{oldSrc}→src{newSrc}, forced merged)");
                                     result.targetShellToSourceShell[tsi] = newSrc;
                                     result.targetShellMatchDistSqr[tsi] = newDistSq;
                                     tgtChosenAvg3D[tsi] = newAvg3D;
                                     claimed.Add(newSrc);
-                                    tgtIsMerged[tsi] = newIsMerged;
+                                    tgtIsMerged[tsi] = true;
+                                    tgtForce3DFallback[tsi] = true;
+                                }
+                                else if (newIsMerged && !wasMerged && oldSrc >= 0 && newSrcInOverlapGroup)
+                                {
+                                    // Accept reassignment within overlap group — different
+                                    // UV2 region, partition-aware transfer handles it.
+                                    UvtLog.Info($"[GroupedTransfer] Dedup: t{tsi} " +
+                                        $"reassigned src{oldSrc}→src{newSrc} " +
+                                        $"(overlap group, accepted merged)");
+                                    result.targetShellToSourceShell[tsi] = newSrc;
+                                    result.targetShellMatchDistSqr[tsi] = newDistSq;
+                                    tgtChosenAvg3D[tsi] = newAvg3D;
+                                    claimed.Add(newSrc);
+                                    tgtIsMerged[tsi] = true;
+                                }
+                                else
+                                {
+                                    bool isFragMergedLog = tgtIsFragmentMerged != null
+                                        && tsi < tgtIsFragmentMerged.Length
+                                        && tgtIsFragmentMerged[tsi];
+                                    if (wasMerged)
+                                        UvtLog.Info($"[GroupedTransfer] Dedup: merged t{tsi} " +
+                                            $"reassigned src{oldSrc}→src{newSrc} " +
+                                            $"(merged={isFragMergedLog || newIsMerged}" +
+                                            (isFragMergedLog ? ", fragMerged" : "") + ")");
+                                    result.targetShellToSourceShell[tsi] = newSrc;
+                                    result.targetShellMatchDistSqr[tsi] = newDistSq;
+                                    tgtChosenAvg3D[tsi] = newAvg3D;
+                                    claimed.Add(newSrc);
+                                    // Preserve merged status for fragment-merged shells:
+                                    // they need per-face voting regardless of UV0 coverage
+                                    bool isFragMerged = tgtIsFragmentMerged != null
+                                        && tsi < tgtIsFragmentMerged.Length
+                                        && tgtIsFragmentMerged[tsi];
+                                    tgtIsMerged[tsi] = isFragMerged || newIsMerged;
                                 }
                             }
                             else
@@ -1069,16 +1295,203 @@ namespace LightmapUvTool
                         needsRematch = stillNeedsRematch;
                     }
 
-                    // Any remaining unmatched — force to merged mode
+                    // Any remaining unmatched — try spreading across overlap group
+                    // before falling back to forced merged on original (duplicate) source.
+                    int spreadCount = 0;
+                    if (needsRematch.Count > 0)
+                    {
+                        // Count how many targets currently use each source
+                        var srcUsage = new Dictionary<int, int>();
+                        for (int tsi2 = 0; tsi2 < tgtShells.Count; tsi2++)
+                        {
+                            int s = result.targetShellToSourceShell[tsi2];
+                            if (s >= 0)
+                            {
+                                srcUsage.TryGetValue(s, out int cnt);
+                                srcUsage[s] = cnt + 1;
+                            }
+                        }
+
+                        var stillUnresolved = new List<int>();
+                        foreach (int tsi in needsRematch)
+                        {
+                            int curSrc = result.targetShellToSourceShell[tsi];
+                            if (curSrc < 0 || srcShellOverlapMembers[curSrc] == null)
+                            {
+                                stillUnresolved.Add(tsi);
+                                continue;
+                            }
+
+                            // Find overlap group member with minimum usage
+                            var group = srcShellOverlapMembers[curSrc];
+                            int bestAlt = -1;
+                            int bestUsage = int.MaxValue;
+                            float bestDist = float.MaxValue;
+                            Vector3 tCent = result.targetShellCentroids[tsi];
+                            foreach (int gsi in group)
+                            {
+                                int usage = 0;
+                                srcUsage.TryGetValue(gsi, out usage);
+                                float dist = (tCent - srcCentroid3D[gsi]).sqrMagnitude;
+                                // Prefer lower usage, then closer distance
+                                if (usage < bestUsage || (usage == bestUsage && dist < bestDist))
+                                {
+                                    bestAlt = gsi;
+                                    bestUsage = usage;
+                                    bestDist = dist;
+                                }
+                            }
+
+                            if (bestAlt >= 0 && bestAlt != curSrc)
+                            {
+                                UvtLog.Info($"[GroupedTransfer] Dedup spread: t{tsi} " +
+                                    $"src{curSrc}→src{bestAlt} (usage {bestUsage}, overlap group)");
+                                // Update usage counts
+                                srcUsage.TryGetValue(curSrc, out int oldCnt);
+                                srcUsage[curSrc] = Mathf.Max(0, oldCnt - 1);
+                                srcUsage.TryGetValue(bestAlt, out int newCnt);
+                                srcUsage[bestAlt] = newCnt + 1;
+
+                                result.targetShellToSourceShell[tsi] = bestAlt;
+                                result.targetShellMatchDistSqr[tsi] = bestDist;
+                                claimed.Add(bestAlt);
+                                tgtIsMerged[tsi] = true;
+                                spreadCount++;
+                            }
+                            else
+                            {
+                                stillUnresolved.Add(tsi);
+                            }
+                        }
+                        needsRematch = stillUnresolved;
+                    }
+
+                    // Any truly remaining unmatched — try to find an unclaimed
+                    // source to avoid same-source duplicates, then force merged.
                     foreach (int tsi in needsRematch)
                     {
+                        Vector3 tCent = result.targetShellCentroids[tsi];
+                        int bestUnclaimed = -1;
+                        float bestDist = float.MaxValue;
+                        for (int s = 0; s < srcShells.Count; s++)
+                        {
+                            if (claimed.Contains(s)) continue;
+                            float d = (tCent - srcCentroid3D[s]).sqrMagnitude;
+                            if (d < bestDist) { bestUnclaimed = s; bestDist = d; }
+                        }
+                        if (bestUnclaimed >= 0)
+                        {
+                            int oldSrc2 = result.targetShellToSourceShell[tsi];
+                            UvtLog.Info($"[GroupedTransfer] Dedup forced-merged: t{tsi} " +
+                                $"src{oldSrc2}→src{bestUnclaimed} (unclaimed)");
+                            result.targetShellToSourceShell[tsi] = bestUnclaimed;
+                            result.targetShellMatchDistSqr[tsi] = bestDist;
+                            claimed.Add(bestUnclaimed);
+                        }
                         tgtIsMerged[tsi] = true;
                     }
 
                     result.dedupConflicts = dedupConflicts;
                     if (dedupConflicts > 0)
                         UvtLog.Info($"[GroupedTransfer] Dedup: {dedupConflicts} same-source conflicts, " +
-                            $"{needsRematch.Count} forced merged");
+                            $"{spreadCount} spread, {needsRematch.Count} forced merged");
+                }
+            }
+
+            // Post-dedup diagnostic: check for remaining same-source duplicates.
+            // Distinguish allowed shared-source fragments (non-overlapping UV0)
+            // from true duplicates (overlapping UV0 — tiling/symmetric).
+            // Only true duplicates go into duplicateSources for Phase 3 constraint.
+            var duplicateSources = new HashSet<int>();
+            {
+                var srcToTargets = new Dictionary<int, List<int>>();
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    int src = result.targetShellToSourceShell[tsi];
+                    if (src < 0) continue;
+                    if (!srcToTargets.TryGetValue(src, out var list))
+                    {
+                        list = new List<int>();
+                        srcToTargets[src] = list;
+                    }
+                    list.Add(tsi);
+                }
+                foreach (var kv in srcToTargets)
+                {
+                    if (kv.Value.Count <= 1) continue;
+
+                    // Check if these targets have overlapping UV0 bboxes
+                    bool hasOverlap = false;
+                    for (int i = 0; i < kv.Value.Count && !hasOverlap; i++)
+                    {
+                        var sA = tgtShells[kv.Value[i]];
+                        for (int j = i + 1; j < kv.Value.Count && !hasOverlap; j++)
+                        {
+                            var sB = tgtShells[kv.Value[j]];
+                            if (sA.boundsMin.x < sB.boundsMax.x &&
+                                sA.boundsMax.x > sB.boundsMin.x &&
+                                sA.boundsMin.y < sB.boundsMax.y &&
+                                sA.boundsMax.y > sB.boundsMin.y)
+                            {
+                                hasOverlap = true;
+                            }
+                        }
+                    }
+
+                    var labels = new List<string>();
+                    foreach (int tsi in kv.Value)
+                        labels.Add($"t{tsi}(merged={tgtIsMerged[tsi]})");
+
+                    if (hasOverlap)
+                    {
+                        // True overlap — constrain Phase 3
+                        duplicateSources.Add(kv.Key);
+                        UvtLog.Warn($"[GroupedTransfer] POST-DEDUP DUPLICATE: src{kv.Key} " +
+                            $"claimed by {string.Join(", ", labels)}");
+                    }
+                    else
+                    {
+                        // Non-overlapping UV0 fragments sharing a source — expected
+                        UvtLog.Info($"[GroupedTransfer] Shared source (fragments): src{kv.Key} " +
+                            $"used by {string.Join(", ", labels)} — non-overlapping UV0, OK");
+                    }
+                }
+            }
+
+            // Log all target→source assignments for diagnostics
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.Append("[GroupedTransfer] Assignments:");
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    int src = result.targetShellToSourceShell[tsi];
+                    sb.Append($" t{tsi}→src{src}");
+                    if (tgtIsMerged[tsi]) sb.Append("(M)");
+                    if (tgtForce3DFallback[tsi]) sb.Append("(3D)");
+                }
+                UvtLog.Info(sb.ToString());
+            }
+
+            // Log overlap group assignment summary
+            if (overlapGroups.Count > 0)
+            {
+                foreach (var group in overlapGroups)
+                {
+                    // Count how many unique sources in this group are claimed by targets
+                    var groupSrcUsed = new HashSet<int>();
+                    int groupTargets = 0;
+                    for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                    {
+                        int src = result.targetShellToSourceShell[tsi];
+                        if (src >= 0 && group.Contains(src))
+                        {
+                            groupSrcUsed.Add(src);
+                            groupTargets++;
+                        }
+                    }
+                    if (groupTargets > 0)
+                        UvtLog.Info($"[GroupedTransfer] Overlap group [{string.Join(",", group)}]: " +
+                            $"{groupTargets} targets → {groupSrcUsed.Count}/{group.Count} unique sources");
                 }
             }
 
@@ -1124,9 +1537,21 @@ namespace LightmapUvTool
                 // ── Unified overlap transfer for overlapping UV0 shells ──
                 // Only for MERGED shells — non-merged shells use standard interp/xform
                 // which stays within source UV2 convex hull and works better for normal geometry.
+                bool isFragMergedShell = tgtIsFragmentMerged != null
+                    && tsi < tgtIsFragmentMerged.Length
+                    && tgtIsFragmentMerged[tsi];
                 if (tgtIsMerged[tsi] && chosenSrc >= 0 && srcShellOverlapMembers[chosenSrc] != null)
                 {
-                    var groupMembers = srcShellOverlapMembers[chosenSrc];
+                    // Fragment-merged shells OR duplicate-source shells: restrict to
+                    // ONLY their merge source. Fragment-merged need partition-aware
+                    // candidate generation but must not try other group members.
+                    // Duplicate-source shells share their source with a non-merged
+                    // sibling — trying other group members risks mixing UV2 regions
+                    // and creating cross-shell stretching artifacts.
+                    bool isDuplicateSrc = duplicateSources.Contains(chosenSrc);
+                    var groupMembers = (isFragMergedShell || isDuplicateSrc)
+                        ? new List<int> { chosenSrc }
+                        : srcShellOverlapMembers[chosenSrc];
 
                     Dictionary<int, Vector2> bestOverlapUv2 = null;
                     int bestOverlapIssues = int.MaxValue;
@@ -1296,22 +1721,50 @@ namespace LightmapUvTool
                             bool bestIsVoteWinner = (bestOverlapSrc == voteSrc && voteCount > 0);
                             bool closerCentroid = centroidDistSq < bestOverlapCentroidDistSq - 1e-8f;
 
-                            bool wins = betterIssues
-                                || (sameIssues && isUnclaimed && !bestIsUnclaimed)
-                                || (sameIssues && isUnclaimed == bestIsUnclaimed
-                                    && isHintMatch && !bestIsHintMatch)
-                                || (sameIssues && isUnclaimed == bestIsUnclaimed
-                                    && isHintMatch == bestIsHintMatch
-                                    && isVoteWinner && !bestIsVoteWinner)
-                                || (sameIssues && isUnclaimed == bestIsUnclaimed
-                                    && isHintMatch == bestIsHintMatch
-                                    && isVoteWinner == bestIsVoteWinner
-                                    && votes > srcVoteCount[bestOverlapSrc])
-                                || (sameIssues && isUnclaimed == bestIsUnclaimed
-                                    && isHintMatch == bestIsHintMatch
-                                    && isVoteWinner == bestIsVoteWinner
-                                    && votes == srcVoteCount[bestOverlapSrc]
-                                    && closerCentroid);
+                            // Strong vote: >50% of votes → prioritize over unclaimed/hint
+                            bool strongVote = voteCount > 0 && voteCount * 2 > totalVotes;
+
+                            bool wins = betterIssues;
+                            if (!wins && sameIssues)
+                            {
+                                if (strongVote)
+                                {
+                                    // Strong vote winner takes priority over unclaimed/hint
+                                    wins = isVoteWinner && !bestIsVoteWinner;
+                                    if (!wins)
+                                    {
+                                        wins = isVoteWinner == bestIsVoteWinner
+                                            && isUnclaimed && !bestIsUnclaimed;
+                                        if (!wins)
+                                            wins = isVoteWinner == bestIsVoteWinner
+                                                && isUnclaimed == bestIsUnclaimed
+                                                && closerCentroid;
+                                    }
+                                }
+                                else
+                                {
+                                    // Weak/no vote: original priority order
+                                    wins = isUnclaimed && !bestIsUnclaimed;
+                                    if (!wins)
+                                        wins = isUnclaimed == bestIsUnclaimed
+                                            && isHintMatch && !bestIsHintMatch;
+                                    if (!wins)
+                                        wins = isUnclaimed == bestIsUnclaimed
+                                            && isHintMatch == bestIsHintMatch
+                                            && isVoteWinner && !bestIsVoteWinner;
+                                    if (!wins)
+                                        wins = isUnclaimed == bestIsUnclaimed
+                                            && isHintMatch == bestIsHintMatch
+                                            && isVoteWinner == bestIsVoteWinner
+                                            && votes > srcVoteCount[bestOverlapSrc];
+                                    if (!wins)
+                                        wins = isUnclaimed == bestIsUnclaimed
+                                            && isHintMatch == bestIsHintMatch
+                                            && isVoteWinner == bestIsVoteWinner
+                                            && votes == srcVoteCount[bestOverlapSrc]
+                                            && closerCentroid;
+                                }
+                            }
 
                             if (wins)
                             {
@@ -1327,7 +1780,11 @@ namespace LightmapUvTool
 
                     if (bestOverlapUv2 != null && bestOverlapUv2.Count > 0)
                     {
-                        bool tooManyIssues = bestOverlapIssues > tShell.faceIndices.Count / 2;
+                        // Fragment-merged shells: each source covers only its fragment
+                        // (~1/N of faces), so global issue count is always high.
+                        // Per-face composite handles this — don't reject the entire path.
+                        bool tooManyIssues = !isFragMergedShell
+                            && bestOverlapIssues > tShell.faceIndices.Count / 2;
 
                         // ── Build composite UV2 from per-face voting ──
                         // On lower LODs, one target shell can span multiple source shells
@@ -1337,8 +1794,17 @@ namespace LightmapUvTool
                         // Shared vertices at source boundaries may get reassigned — lightmap
                         // padding handles the resulting micro-seams.
                         var compositeUv2 = new Dictionary<int, Vector2>();
+                        var compositeVertSrc = new Dictionary<int, int>(); // vertex → source that set it
                         var compositeUsedSources = new HashSet<int>();
                         int compositeFaces = 0;
+
+                        // Compute max allowed UV2 displacement for shared vertex overwrites.
+                        // Vertices shared between faces from different sources should not jump
+                        // across UV2 regions — that creates triangular protrusions.
+                        Vector2 bsMinC = srcUv2Min[bestOverlapSrc];
+                        Vector2 bsMaxC = srcUv2Max[bestOverlapSrc];
+                        float bsDiag = (bsMaxC - bsMinC).magnitude;
+                        float maxVertJump = bsDiag * 0.5f;
 
                         foreach (int tfi in tShell.faceIndices)
                         {
@@ -1357,13 +1823,29 @@ namespace LightmapUvTool
                             foreach (int src in tryOrder)
                             {
                                 if (src < 0 || !validCandidates.ContainsKey(src)) continue;
-                                if (validCandidates[src].issues > tShell.faceIndices.Count / 2) continue;
+                                // Skip high-issue sources unless fragment-merged (each
+                                // source covers only its fragment → high global issues expected)
+                                if (!isFragMergedShell
+                                    && validCandidates[src].issues > tShell.faceIndices.Count / 2)
+                                    continue;
                                 var srcUv2Map = validCandidates[src].uv2;
                                 if (srcUv2Map.ContainsKey(ti0) && srcUv2Map.ContainsKey(ti1) && srcUv2Map.ContainsKey(ti2))
                                 {
-                                    compositeUv2[ti0] = srcUv2Map[ti0];
-                                    compositeUv2[ti1] = srcUv2Map[ti1];
-                                    compositeUv2[ti2] = srcUv2Map[ti2];
+                                    // Write vertex UV2, but protect against cross-region jumps:
+                                    // if a vertex was already set by a different source and the
+                                    // new UV2 is far away, keep the old value to prevent protrusions.
+                                    int[] vis = { ti0, ti1, ti2 };
+                                    foreach (int vi in vis)
+                                    {
+                                        if (compositeVertSrc.TryGetValue(vi, out int prevSrc) && prevSrc != src)
+                                        {
+                                            float jump = (compositeUv2[vi] - srcUv2Map[vi]).magnitude;
+                                            if (jump > maxVertJump)
+                                                continue; // keep old value
+                                        }
+                                        compositeUv2[vi] = srcUv2Map[vi];
+                                        compositeVertSrc[vi] = src;
+                                    }
                                     compositeUsedSources.Add(src);
                                     compositeFaces++;
                                     assigned = true;
@@ -1374,9 +1856,12 @@ namespace LightmapUvTool
                             // Last resort: use best overall even if it doesn't have all 3 verts
                             if (!assigned && bestOverlapUv2 != null)
                             {
-                                if (bestOverlapUv2.ContainsKey(ti0)) compositeUv2[ti0] = bestOverlapUv2[ti0];
-                                if (bestOverlapUv2.ContainsKey(ti1)) compositeUv2[ti1] = bestOverlapUv2[ti1];
-                                if (bestOverlapUv2.ContainsKey(ti2)) compositeUv2[ti2] = bestOverlapUv2[ti2];
+                                if (bestOverlapUv2.ContainsKey(ti0) && !compositeUv2.ContainsKey(ti0))
+                                    { compositeUv2[ti0] = bestOverlapUv2[ti0]; compositeVertSrc[ti0] = bestOverlapSrc; }
+                                if (bestOverlapUv2.ContainsKey(ti1) && !compositeUv2.ContainsKey(ti1))
+                                    { compositeUv2[ti1] = bestOverlapUv2[ti1]; compositeVertSrc[ti1] = bestOverlapSrc; }
+                                if (bestOverlapUv2.ContainsKey(ti2) && !compositeUv2.ContainsKey(ti2))
+                                    { compositeUv2[ti2] = bestOverlapUv2[ti2]; compositeVertSrc[ti2] = bestOverlapSrc; }
                                 compositeUsedSources.Add(bestOverlapSrc);
                             }
                         }
@@ -1386,6 +1871,84 @@ namespace LightmapUvTool
                             if (!compositeUv2.ContainsKey(kv.Key))
                                 compositeUv2[kv.Key] = kv.Value;
 
+                        // ── Per-face outlier rejection ──
+                        // When per-face voting assigns faces to different overlap group
+                        // sources, some faces may land in a completely different UV2 region
+                        // (e.g., front side of belt mapped to back side's UV2). Detect and
+                        // replace these outlier faces with the best source's UV2.
+                        int outlierFacesFixed = 0;
+                        if (compositeUsedSources.Count > 1 && bestOverlapUv2 != null)
+                        {
+                            Vector2 bsMin = srcUv2Min[bestOverlapSrc];
+                            Vector2 bsMax = srcUv2Max[bestOverlapSrc];
+                            Vector2 bsSize = bsMax - bsMin;
+                            // Pad AABB by 50% of its dimensions to allow some flexibility
+                            float padX = bsSize.x * 0.5f;
+                            float padY = bsSize.y * 0.5f;
+                            Vector2 allowMin = bsMin - new Vector2(padX, padY);
+                            Vector2 allowMax = bsMax + new Vector2(padX, padY);
+
+                            foreach (int tfi in tShell.faceIndices)
+                            {
+                                int ti0 = tgtTris[tfi * 3], ti1 = tgtTris[tfi * 3 + 1], ti2 = tgtTris[tfi * 3 + 2];
+                                if (!compositeUv2.ContainsKey(ti0) || !compositeUv2.ContainsKey(ti1) || !compositeUv2.ContainsKey(ti2))
+                                    continue;
+                                Vector2 uv0 = compositeUv2[ti0], uv1 = compositeUv2[ti1], uv2f = compositeUv2[ti2];
+                                Vector2 centroid = (uv0 + uv1 + uv2f) / 3f;
+
+                                if (centroid.x < allowMin.x || centroid.x > allowMax.x ||
+                                    centroid.y < allowMin.y || centroid.y > allowMax.y)
+                                {
+                                    // Face UV2 centroid is outside the allowed region — replace
+                                    if (bestOverlapUv2.ContainsKey(ti0)) compositeUv2[ti0] = bestOverlapUv2[ti0];
+                                    if (bestOverlapUv2.ContainsKey(ti1)) compositeUv2[ti1] = bestOverlapUv2[ti1];
+                                    if (bestOverlapUv2.ContainsKey(ti2)) compositeUv2[ti2] = bestOverlapUv2[ti2];
+                                    outlierFacesFixed++;
+                                }
+                            }
+                            if (outlierFacesFixed > 0)
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: {outlierFacesFixed} outlier faces " +
+                                    $"replaced with best source UV2 (src{bestOverlapSrc})");
+                        }
+
+                        // ── Spatial coherence check for composite UV2 ──
+                        // If the composite UV2 AABB is much larger than the best single
+                        // source's UV2 region, the composite is placing faces in different
+                        // UV2 regions — this breaks lightmap continuity. Reject and
+                        // fall through to single-source transfer.
+                        bool compositeSpatiallyBroken = false;
+                        if (compositeUsedSources.Count > 1 && compositeUv2.Count > 0)
+                        {
+                            Vector2 compMin = new Vector2(float.MaxValue, float.MaxValue);
+                            Vector2 compMax = new Vector2(float.MinValue, float.MinValue);
+                            foreach (var kv in compositeUv2)
+                            {
+                                compMin = Vector2.Min(compMin, kv.Value);
+                                compMax = Vector2.Max(compMax, kv.Value);
+                            }
+                            float compArea = (compMax.x - compMin.x) * (compMax.y - compMin.y);
+
+                            // Best source's UV2 AABB area
+                            Vector2 bsMin2 = srcUv2Min[bestOverlapSrc];
+                            Vector2 bsMax2 = srcUv2Max[bestOverlapSrc];
+                            float bestSrcUv2Area = (bsMax2.x - bsMin2.x) * (bsMax2.y - bsMin2.y);
+
+                            // If composite AABB > 2× best source UV2 AABB, it's spanning
+                            // multiple UV2 regions → reject
+                            if (bestSrcUv2Area > 1e-8f && compArea > bestSrcUv2Area * 2.0f)
+                            {
+                                compositeSpatiallyBroken = true;
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: composite spatially broken " +
+                                    $"(compArea={compArea:F6} > 2×srcArea={bestSrcUv2Area:F6}), " +
+                                    $"falling back to single-source");
+
+                                // Replace composite with best single-source UV2
+                                compositeUv2 = bestOverlapUv2;
+                                compositeUsedSources.Clear();
+                                compositeUsedSources.Add(bestOverlapSrc);
+                            }
+                        }
+
                         // Determine primary source (most faces contributed) for hint/log
                         int primarySrc = bestOverlapSrc;
 
@@ -1394,7 +1957,136 @@ namespace LightmapUvTool
                             ? Mathf.Min(srcGroupArea[bestOverlapSrc], tgt3DArea) / Mathf.Max(srcGroupArea[bestOverlapSrc], tgt3DArea)
                             : 0f;
                         string compositeInfo = compositeUsedSources.Count > 1
-                            ? $", composite={compositeUsedSources.Count}src"
+                            ? $", composite={compositeUsedSources.Count}src/{compositeFaces}f"
+                            : "";
+                        string fragInfo = isFragMergedShell ? ", fragMerged" : "";
+                        string coherenceInfo = compositeSpatiallyBroken ? ", spatial-fix" : "";
+                        // ── Per-vertex outlier correction ──
+                        // After composite UV2 is built, check each vertex against the
+                        // best source's UV2 AABB. Vertices far outside are re-projected
+                        // via 3D BVH to prevent protrusions / spikes in the UV layout.
+                        int vertexOutliersFixed = 0;
+                        if (compositeUv2.Count > 0 && bestOverlapSrc >= 0)
+                        {
+                            Vector2 sMin = srcUv2Min[bestOverlapSrc];
+                            Vector2 sMax = srcUv2Max[bestOverlapSrc];
+                            Vector2 sSize = sMax - sMin;
+                            // Allow 30% margin beyond source UV2 AABB
+                            float marginX = sSize.x * 0.3f;
+                            float marginY = sSize.y * 0.3f;
+                            Vector2 allowMin = sMin - new Vector2(marginX, marginY);
+                            Vector2 allowMax = sMax + new Vector2(marginX, marginY);
+
+                            // Also compute median UV2 to detect outliers relative to shell center
+                            var allUvX = new List<float>(compositeUv2.Count);
+                            var allUvY = new List<float>(compositeUv2.Count);
+                            foreach (var kv in compositeUv2)
+                            {
+                                allUvX.Add(kv.Value.x);
+                                allUvY.Add(kv.Value.y);
+                            }
+                            allUvX.Sort(); allUvY.Sort();
+                            float medX = allUvX[allUvX.Count / 2];
+                            float medY = allUvY[allUvY.Count / 2];
+                            // Max distance from median: 2× source diagonal
+                            float srcDiag = sSize.magnitude;
+                            float maxMedianDist = srcDiag * 2.0f;
+
+                            var outlierVerts = new List<int>();
+                            foreach (var kv in compositeUv2)
+                            {
+                                Vector2 uv = kv.Value;
+                                bool outsideBounds = uv.x < allowMin.x || uv.x > allowMax.x ||
+                                                     uv.y < allowMin.y || uv.y > allowMax.y;
+                                bool farFromMedian = srcDiag > 1e-6f &&
+                                    new Vector2(uv.x - medX, uv.y - medY).magnitude > maxMedianDist;
+                                if (outsideBounds || farFromMedian)
+                                    outlierVerts.Add(kv.Key);
+                            }
+
+                            if (outlierVerts.Count > 0 && outlierVerts.Count < compositeUv2.Count)
+                            {
+                                // Re-project outliers via 3D BVH with normal filtering
+                                var bvh3D = shellBvh3D[bestOverlapSrc];
+                                var fMap3D = shellBvh3DFaceMap[bestOverlapSrc];
+                                var fNorm3D = shellBvh3DFaceNormals[bestOverlapSrc];
+
+                                foreach (int vi in outlierVerts)
+                                {
+                                    if (vi >= tVerts.Length) continue;
+                                    Vector3 tPos = tVerts[vi];
+                                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                                        ? tNormals[vi] : Vector3.up;
+
+                                    // Try ray + normal-filtered nearest
+                                    int hitFace = -1;
+                                    Vector3 hitBary = Vector3.zero;
+
+                                    if (bvh3D != null && tNrm.sqrMagnitude > 0.5f)
+                                    {
+                                        var rayHit = bvh3D.RaycastBidirectional(
+                                            tPos, tNrm.normalized, kRayMaxDist);
+                                        if (rayHit.triangleIndex >= 0)
+                                        {
+                                            hitFace = rayHit.triangleIndex;
+                                            hitBary = rayHit.barycentric;
+                                        }
+                                    }
+                                    if (hitFace < 0 && bvh3D != null && fNorm3D != null)
+                                    {
+                                        var nearest = bvh3D.FindNearestNormalFiltered(
+                                            tPos, tNrm, fNorm3D, 0.3f);
+                                        if (nearest.triangleIndex >= 0)
+                                        {
+                                            hitFace = nearest.triangleIndex;
+                                            hitBary = nearest.barycentric;
+                                        }
+                                    }
+                                    // Last resort: pure nearest
+                                    if (hitFace < 0 && bvh3D != null)
+                                    {
+                                        var nearest = bvh3D.FindNearest(tPos);
+                                        if (nearest.triangleIndex >= 0)
+                                        {
+                                            hitFace = nearest.triangleIndex;
+                                            hitBary = nearest.barycentric;
+                                        }
+                                    }
+
+                                    if (hitFace >= 0 && hitFace < fMap3D.Length)
+                                    {
+                                        int gf = fMap3D[hitFace];
+                                        Vector2 reprojected = triUv2A[gf] * hitBary.x
+                                                            + triUv2B[gf] * hitBary.y
+                                                            + triUv2C[gf] * hitBary.z;
+                                        // Only accept if reprojected UV2 is within bounds
+                                        if (reprojected.x >= allowMin.x && reprojected.x <= allowMax.x &&
+                                            reprojected.y >= allowMin.y && reprojected.y <= allowMax.y)
+                                        {
+                                            compositeUv2[vi] = reprojected;
+                                            vertexOutliersFixed++;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Compute composite UV2 AABB for diagnostics
+                        Vector2 compUv2Min = new Vector2(float.MaxValue, float.MaxValue);
+                        Vector2 compUv2Max = new Vector2(float.MinValue, float.MinValue);
+                        foreach (var kv in compositeUv2)
+                        {
+                            compUv2Min = Vector2.Min(compUv2Min, kv.Value);
+                            compUv2Max = Vector2.Max(compUv2Max, kv.Value);
+                        }
+                        Vector2 srcBbMin = srcUv2Min[bestOverlapSrc];
+                        Vector2 srcBbMax = srcUv2Max[bestOverlapSrc];
+                        string aabbInfo = compositeUv2.Count > 0
+                            ? $", uv2bb=[{compUv2Min.x:F3},{compUv2Min.y:F3}]-[{compUv2Max.x:F3},{compUv2Max.y:F3}]" +
+                              $" src=[{srcBbMin.x:F3},{srcBbMin.y:F3}]-[{srcBbMax.x:F3},{srcBbMax.y:F3}]"
+                            : "";
+                        string outlierInfo = vertexOutliersFixed > 0
+                            ? $", outliersFix={vertexOutliersFixed}"
                             : "";
                         UvtLog.Info($"[GroupedTransfer]   t{tsi}: overlap unified " +
                             $"(best src{bestOverlapSrc}, {bestOverlapCoverage} cov, " +
@@ -1404,8 +2096,13 @@ namespace LightmapUvTool
                             $"method={bestOverlapMethod}, " +
                             $"tried {groupMembers.Count} shells" +
                             (hintSrc >= 0 ? $", hint=src{hintSrc}" : "") +
-                            compositeInfo +
+                            compositeInfo + fragInfo + coherenceInfo + outlierInfo + aabbInfo +
                             (tooManyIssues ? " → fall-through" : "") + ")");
+
+                        // Recount issues after outlier correction
+                        if (vertexOutliersFixed > 0)
+                            bestOverlapIssues = CountShellIssues(
+                                tShell.faceIndices, tgtTris, tUv0, compositeUv2);
 
                         if (!tooManyIssues)
                         {
@@ -1416,6 +2113,7 @@ namespace LightmapUvTool
                                 transferred++;
                             }
                             result.targetShellToSourceShell[tsi] = primarySrc;
+                            result.targetShellIssues[tsi] = bestOverlapIssues;
                             shellsMerged++;
                             result.targetShellMethod[tsi] = 2;
                             foreach (int src in compositeUsedSources)
@@ -1446,7 +2144,11 @@ namespace LightmapUvTool
                     // force3D: try all-source first (to find UV2 space in a different
                     // source region), fall back to constrained if overlap guard rejects.
                     // Normal merged: constrained first, all-source fallback (unchanged).
+                    // Exception: duplicate-source shells must stay constrained even in
+                    // force3D mode — all-source would match the sibling target's faces.
                     bool force3D = tgtForce3DFallback[tsi];
+                    bool isDupSrc = chosenSrc >= 0 && duplicateSources.Contains(chosenSrc);
+                    if (isDupSrc) force3D = false; // force constrained-first for dup sources
 
                     for (int pass = 0; pass < 2; pass++)
                     {
@@ -1479,6 +2181,10 @@ namespace LightmapUvTool
                                 // Small/degenerate shells: stay constrained to avoid
                                 // wandering into wrong source's UV2 region
                                 if (tShell.faceIndices.Count <= 4) break;
+                                // Duplicate-source shells share their source with a
+                                // sibling target — all-source would find faces from
+                                // other shells and drag vertices to wrong UV2 regions.
+                                if (chosenSrc >= 0 && duplicateSources.Contains(chosenSrc)) break;
                                 constrained = false;               // all-source
                             }
                         }
@@ -1870,14 +2576,32 @@ namespace LightmapUvTool
                         }
                     }
 
-                    chosenUv2 = bestMergedUv2;
-                    shellsMerged++;
+                    int faceCount = tShell.faceIndices.Count;
+                    result.targetShellIssues[tsi] = bestMergedIssues;
                     result.targetShellMethod[tsi] = 2; // merged
-                    result.consistencyCorrected += bestMergedConsistencyFixes;
-                    string mergedLabel = force3D ? "3D-primary"
-                        : (bestWasConstrained ? "src-constrained" : "all-source");
-                    UvtLog.Info($"[GroupedTransfer]   t{tsi} merged({tShell.faceIndices.Count}f): " +
-                        $"{mergedLabel} ({bestMergedIssues} issues)");
+
+                    // Reject gate: if >50% faces have issues, don't write garbage UV2.
+                    if (bestMergedIssues > faceCount / 2)
+                    {
+                        chosenUv2 = null; // prevent write
+                        result.targetShellStatus[tsi] = ShellStatus.Rejected;
+                        result.shellsRejected++;
+                        shellsMerged++;
+                        result.consistencyCorrected += bestMergedConsistencyFixes;
+                        UvtLog.Warn($"[GroupedTransfer]   t{tsi} REJECTED({faceCount}f): " +
+                            $"{bestMergedIssues} issues (>{faceCount / 2} threshold) — UV2 not written");
+                        // Don't continue — fall through to "Write chosen UV2" with null chosenUv2
+                    }
+                    else
+                    {
+                        chosenUv2 = bestMergedUv2;
+                        shellsMerged++;
+                        result.consistencyCorrected += bestMergedConsistencyFixes;
+                        string mergedLabel = force3D ? "3D-primary"
+                            : (bestWasConstrained ? "src-constrained" : "all-source");
+                        UvtLog.Info($"[GroupedTransfer]   t{tsi} merged({faceCount}f): " +
+                            $"{mergedLabel} ({bestMergedIssues} issues)");
+                    }
                 }
                 else
                 {
@@ -1991,12 +2715,14 @@ namespace LightmapUvTool
                         chosenUv2 = uv2_transform;
                         shellsTransform++;
                         result.targetShellMethod[tsi] = 1; // xform
+                        result.targetShellIssues[tsi] = issuesTransform;
                     }
                     else
                     {
                         chosenUv2 = uv2_interp;
                         shellsInterpolation++;
                         result.targetShellMethod[tsi] = 0; // interp
+                        result.targetShellIssues[tsi] = issuesInterp;
                     }
                 }
 
@@ -2018,6 +2744,110 @@ namespace LightmapUvTool
                 }
             }
 
+            // ── Post-transfer UV2 AABB safety net for merged shells ──
+            // Catch any vertex whose UV2 escaped the matched source's UV2 region.
+            // This can happen through multiple code paths (overlap composite, standard
+            // merged all-source fallback, 3D projection, etc.). Re-project outlier
+            // vertices using the source's UV0 BVH to bring them back into the correct region.
+            {
+                int totalOutlierVerts = 0;
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    if (result.targetShellMethod[tsi] != 2) continue; // only merged shells
+                    int src = result.targetShellToSourceShell[tsi];
+                    if (src < 0) continue;
+
+                    Vector2 sMin = srcUv2Min[src];
+                    Vector2 sMax = srcUv2Max[src];
+                    Vector2 sSize = sMax - sMin;
+                    float padX = sSize.x * 0.2f;
+                    float padY = sSize.y * 0.2f;
+                    Vector2 allowMin = sMin - new Vector2(padX, padY);
+                    Vector2 allowMax = sMax + new Vector2(padX, padY);
+
+                    var tShell = tgtShells[tsi];
+                    int shellOutliers = 0;
+
+                    foreach (int vi in tShell.vertexIndices)
+                    {
+                        if (vi >= result.uv2.Length) continue;
+                        Vector2 uv = result.uv2[vi];
+                        if (uv.x >= allowMin.x && uv.x <= allowMax.x &&
+                            uv.y >= allowMin.y && uv.y <= allowMax.y)
+                            continue; // within bounds
+
+                        // Outlier: re-project from source UV0 BVH
+                        if (vi < tUv0.Length && shellUv0Bvh[src] != null)
+                        {
+                            Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                                ? tNormals[vi] : Vector3.up;
+                            TriangleBvh2D.HitResult2D hit;
+                            if (tNrm.sqrMagnitude > 0.5f)
+                                hit = shellUv0Bvh[src].FindNearestNormalFiltered(
+                                    tUv0[vi], tNrm, triNormal, 0.0f);
+                            else
+                                hit = shellUv0Bvh[src].FindNearest(tUv0[vi]);
+
+                            if (hit.faceIndex >= 0)
+                            {
+                                int f = hit.faceIndex;
+                                result.uv2[vi] = triUv2A[f] * hit.u + triUv2B[f] * hit.v + triUv2C[f] * hit.w;
+                                shellOutliers++;
+                            }
+                        }
+                    }
+
+                    if (shellOutliers > 0)
+                    {
+                        UvtLog.Info($"[GroupedTransfer] Post-fix: t{tsi} — {shellOutliers} outlier " +
+                            $"verts re-projected to src{src} UV2 AABB");
+                        totalOutlierVerts += shellOutliers;
+                    }
+                }
+                if (totalOutlierVerts > 0)
+                    UvtLog.Info($"[GroupedTransfer] Post-fix total: {totalOutlierVerts} outlier verts corrected");
+            }
+
+            // ── Classify all shells ──
+            int statusAccepted = 0, statusDegraded = 0, statusPoor = 0, statusRejected = 0, statusUnmatched = 0;
+            for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+            {
+                // Already classified as Rejected in the merge gate above
+                if (result.targetShellStatus[tsi] == ShellStatus.Rejected)
+                {
+                    statusRejected++;
+                    continue;
+                }
+
+                int src = result.targetShellToSourceShell[tsi];
+                if (src < 0)
+                {
+                    result.targetShellStatus[tsi] = ShellStatus.Unmatched;
+                    statusUnmatched++;
+                    continue;
+                }
+
+                int issues = result.targetShellIssues[tsi];
+                int faceCount = tgtShells[tsi].faceIndices.Count;
+                float ratio = faceCount > 0 ? (float)issues / faceCount : 0f;
+
+                if (issues == 0)
+                {
+                    result.targetShellStatus[tsi] = ShellStatus.Accepted;
+                    statusAccepted++;
+                }
+                else if (ratio <= 0.3f)
+                {
+                    result.targetShellStatus[tsi] = ShellStatus.Degraded;
+                    statusDegraded++;
+                }
+                else
+                {
+                    result.targetShellStatus[tsi] = ShellStatus.Poor;
+                    statusPoor++;
+                }
+            }
+
             result.verticesTransferred = transferred;
             result.shellsMatched = shellsMatched;
             result.shellsTransform = shellsTransform;
@@ -2034,6 +2864,19 @@ namespace LightmapUvTool
                 (result.consistencyCorrected > 0
                     ? $" (consistency-corrected:{result.consistencyCorrected})"
                     : ""));
+            // Shell quality summary
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.Append($"[GroupedTransfer] Quality: {statusAccepted} accepted");
+                if (statusDegraded > 0) sb.Append($", {statusDegraded} degraded");
+                if (statusPoor > 0) sb.Append($", {statusPoor} poor");
+                if (statusRejected > 0) sb.Append($", {statusRejected} rejected");
+                if (statusUnmatched > 0) sb.Append($", {statusUnmatched} unmatched");
+                if (statusRejected > 0 || statusPoor > 0)
+                    UvtLog.Warn(sb.ToString());
+                else
+                    UvtLog.Info(sb.ToString());
+            }
 
             // UV2 bounds check
             int oob = 0;
@@ -2446,6 +3289,8 @@ namespace LightmapUvTool
                 bool partXfRejected = false;
                 if (uv2Map.Count > 0)
                 {
+                    Vector2 pxMin = new Vector2(float.MaxValue, float.MaxValue);
+                    Vector2 pxMax = new Vector2(float.MinValue, float.MinValue);
                     foreach (var kv in uv2Map)
                     {
                         Vector2 uv = kv.Value;
@@ -2453,6 +3298,37 @@ namespace LightmapUvTool
                         {
                             partXfRejected = true;
                             break;
+                        }
+                        pxMin = Vector2.Min(pxMin, uv);
+                        pxMax = Vector2.Max(pxMax, uv);
+                    }
+
+                    // Reject if result extends too far beyond source's UV2 AABB.
+                    // Transform can extrapolate when target UV0 differs from source UV0,
+                    // placing vertices outside the source's UV2 region → protrusions.
+                    if (!partXfRejected && srcUv2Min != null && srcUv2Max != null)
+                    {
+                        Vector2 sMin = srcUv2Min[srcIdx];
+                        Vector2 sMax = srcUv2Max[srcIdx];
+                        Vector2 sSize = sMax - sMin;
+                        float margin = Mathf.Max(sSize.x, sSize.y) * 0.3f;
+                        if (pxMin.x < sMin.x - margin || pxMax.x > sMax.x + margin ||
+                            pxMin.y < sMin.y - margin || pxMax.y > sMax.y + margin)
+                            partXfRejected = true;
+                    }
+
+                    // Reject if result overlaps another overlap-group member's UV2 region
+                    if (!partXfRejected && overlapGroupMembers != null)
+                    {
+                        foreach (int si in overlapGroupMembers)
+                        {
+                            if (si == srcIdx) continue;
+                            if (pxMin.x < srcUv2Max[si].x && pxMax.x > srcUv2Min[si].x &&
+                                pxMin.y < srcUv2Max[si].y && pxMax.y > srcUv2Min[si].y)
+                            {
+                                partXfRejected = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -2509,6 +3385,18 @@ namespace LightmapUvTool
                     if (xfMin.x < -0.01f || xfMax.x > 1.01f ||
                         xfMin.y < -0.01f || xfMax.y > 1.01f)
                         rejected = true;
+
+                    // Reject if result extends too far beyond source's UV2 AABB
+                    if (!rejected && srcUv2Min != null && srcUv2Max != null)
+                    {
+                        Vector2 sMin = srcUv2Min[srcIdx];
+                        Vector2 sMax = srcUv2Max[srcIdx];
+                        Vector2 sSize = sMax - sMin;
+                        float margin = Mathf.Max(sSize.x, sSize.y) * 0.3f;
+                        if (xfMin.x < sMin.x - margin || xfMax.x > sMax.x + margin ||
+                            xfMin.y < sMin.y - margin || xfMax.y > sMax.y + margin)
+                            rejected = true;
+                    }
 
                     // Reject if result overlaps another overlap-group member's UV2 region.
                     // Only check shells in same overlap group (same UV0, different UV2) —
@@ -2615,13 +3503,17 @@ namespace LightmapUvTool
         /// Detect target shells that are UV0-contained fragments of a single source
         /// shell and merge them into virtual shells. Returns a new shell list
         /// (may be smaller than input). Sets mergeCount to number of fragments merged.
+        /// isFragmentMerged[i] is true for shells created by merging multiple fragments.
         /// </summary>
         static List<UvShell> MergeFragmentShells(
             List<UvShell> tgtShells, Vector2[] tUv0, int[] tgtTris, Vector3[] tVerts,
             List<UvShell> srcShells, Vector2[] srcUv0, int[] srcTris, Vector3[] srcVerts,
-            out int mergeCount)
+            out int mergeCount, out bool[] isFragmentMerged,
+            out int[] fragmentMergeSource)
         {
             mergeCount = 0;
+            isFragmentMerged = null;
+            fragmentMergeSource = null;
             int tgtCount = tgtShells.Count;
             int srcCount = srcShells.Count;
             if (tgtCount < 2 || srcCount == 0) return tgtShells;
@@ -2719,11 +3611,46 @@ namespace LightmapUvTool
             // Identify mergeable groups: ≥2 target shells contained by the same source.
             // Validate: combined UV0 area should be roughly comparable to source area.
             // LOD simplification reduces geometry, so allow generous tolerance.
+            //
+            // IMPORTANT: Skip source shells whose UV0 bbox overlaps with another
+            // source shell. Overlapping UV0 means the source has front/back or
+            // tiling geometry — target shells inside it may belong to DIFFERENT
+            // physical sides and must NOT be merged into one virtual shell.
+            var srcHasUv0Overlap = new bool[srcCount];
+            for (int si = 0; si < srcCount; si++)
+            {
+                for (int sj = si + 1; sj < srcCount; sj++)
+                {
+                    if (srcShells[si].boundsMin.x < srcShells[sj].boundsMax.x + bboxPad &&
+                        srcShells[si].boundsMax.x > srcShells[sj].boundsMin.x - bboxPad &&
+                        srcShells[si].boundsMin.y < srcShells[sj].boundsMax.y + bboxPad &&
+                        srcShells[si].boundsMax.y > srcShells[sj].boundsMin.y - bboxPad)
+                    {
+                        srcHasUv0Overlap[si] = true;
+                        srcHasUv0Overlap[sj] = true;
+                    }
+                }
+            }
+
+            const float kMaxFragSpreadFactor = 2.0f;
             var mergeGroups = new List<(int srcIdx, List<int> fragments)>();
             foreach (var kv in srcToFragments)
             {
                 var group = kv.Value;
                 if (group.Count < 2) continue;
+
+                // Source UV0 overlaps with other source shells (front/back belt,
+                // tiling). Fragments from different physical sides must NOT be
+                // merged — they need unique UV2 regions. Skip this group entirely;
+                // the additive normal penalty in FindBestSourceShell ensures each
+                // fragment matches the correct side, and dedup shared-source logic
+                // handles the rest.
+                if (srcHasUv0Overlap[kv.Key])
+                {
+                    UvtLog.Info($"[GroupedTransfer] Fragment merge: skipping src#{kv.Key} group " +
+                        $"({group.Count} shells) — UV0 overlap, individual matching preferred");
+                    continue;
+                }
 
                 float combinedArea = 0;
                 for (int i = 0; i < group.Count; i++)
@@ -2734,6 +3661,33 @@ namespace LightmapUvTool
                 {
                     float ratio = combinedArea / srcArea;
                     if (ratio < 0.15f || ratio > 3.0f) continue; // area mismatch → not fragments
+                }
+
+                // Guard: reject physically distant candidates (tiling instances, not fragments).
+                // True fragments from LOD splitting are near their parent source shell.
+                // Tiling instances share UV0 bbox but are far apart in 3D.
+                float maxFragDist = 0;
+                for (int i = 0; i < group.Count; i++)
+                    for (int j = i + 1; j < group.Count; j++)
+                    {
+                        float d = Vector3.Distance(tgtCentroid3D[group[i]], tgtCentroid3D[group[j]]);
+                        if (d > maxFragDist) maxFragDist = d;
+                    }
+
+                // Reference: source shell 3D bounding sphere diameter
+                Vector3 srcC = srcCentroid3D[kv.Key];
+                float maxR = 0;
+                foreach (int vi in srcShells[kv.Key].vertexIndices)
+                    if (vi < srcVerts.Length)
+                        maxR = Mathf.Max(maxR, Vector3.Distance(srcVerts[vi], srcC));
+                float srcDiameter = maxR * 2f;
+
+                if (srcDiameter > 1e-6f && maxFragDist > srcDiameter * kMaxFragSpreadFactor)
+                {
+                    UvtLog.Info($"[GroupedTransfer] Fragment merge: skipping src#{kv.Key} group " +
+                        $"({group.Count} shells) — fragment spread {maxFragDist:F4} > " +
+                        $"{kMaxFragSpreadFactor}× source diameter {srcDiameter:F4}");
+                    continue;
                 }
 
                 mergeGroups.Add((kv.Key, group));
@@ -2803,6 +3757,18 @@ namespace LightmapUvTool
 
             UvtLog.Info($"[GroupedTransfer] Fragment merge: {mergeGroups.Count} group(s), " +
                 $"{mergeCount} fragments merged, shells {tgtCount} → {newShells.Count}");
+
+            // Mark which output shells are fragment-merged (they appear first)
+            // and record which source shell each merged group belongs to.
+            isFragmentMerged = new bool[newShells.Count];
+            fragmentMergeSource = new int[newShells.Count];
+            for (int i = 0; i < newShells.Count; i++)
+                fragmentMergeSource[i] = -1;
+            for (int i = 0; i < mergeGroups.Count; i++)
+            {
+                isFragmentMerged[i] = true;
+                fragmentMergeSource[i] = mergeGroups[i].srcIdx;
+            }
 
             return newShells;
         }

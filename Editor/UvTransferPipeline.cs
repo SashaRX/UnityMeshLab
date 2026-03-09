@@ -21,6 +21,9 @@ namespace LightmapUvTool
             public float maxNormalAngle;
             public bool filterBySubmesh;
 
+            // Coverage split (Stage 2c)
+            public bool enableCoverageSplit;
+
             // Border repair
             public float perimeterTolerance;
             public float borderFuseTolerance;
@@ -37,6 +40,7 @@ namespace LightmapUvTool
                 maxProjectionDistance = 0.5f,
                 maxNormalAngle = 80f,
                 filterBySubmesh = true,
+                enableCoverageSplit = true,
                 perimeterTolerance = 0.05f,
                 borderFuseTolerance = 0.02f,
                 enableBorderRepair = true,
@@ -172,6 +176,25 @@ namespace LightmapUvTool
             }
             UvtLog.Verbose($"[Pipeline] LOD{lodIndex} shell assignment: " +
                       $"{assigned} assigned, {unassigned} unassigned");
+
+            // ── Stage 2c: Coverage Split ──
+            if (settings.enableCoverageSplit)
+            {
+                var coverageSettings = new CoverageSplitSolver.Settings
+                {
+                    maxReverseProjectionDistance = settings.maxProjectionDistance,
+                    minNormalDot = Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad),
+                    minUncoveredFraction = 0.05f,
+                    minFragmentSize = 2
+                };
+                var splitReport = CoverageSplitSolver.Solve(source, tr.state, coverageSettings);
+                if (splitReport.trianglesDetached > 0)
+                {
+                    UvtLog.Verbose($"[Pipeline] LOD{lodIndex} coverage split: " +
+                        $"{splitReport.trianglesDetached} detached, " +
+                        $"{splitReport.isolatesReassigned} reassigned");
+                }
+            }
 
             // ── Stage 3: Initial Transfer ──
             InitialUvTransferSolver.Solve(source, tr.state);
