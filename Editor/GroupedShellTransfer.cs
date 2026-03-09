@@ -265,11 +265,14 @@ namespace LightmapUvTool
             Vector3 tCentroid,
             int maxRetries, float goodDistSq,
             HashSet<int> excludeSources,
-            out int chosenSrc, out float chosenDistSq, out float chosenAvg3D)
+            out int chosenSrc, out float chosenDistSq, out float chosenAvg3D,
+            Vector3 tgtNormal = default, Vector3[] srcAvgNormal = null)
         {
             chosenSrc = -1;
             chosenDistSq = float.MaxValue;
             chosenAvg3D = float.MaxValue;
+
+            bool useNormal = srcAvgNormal != null && tgtNormal.sqrMagnitude > 0.5f;
 
             // Rank source shells by 3D centroid distance
             var ranked = new List<(int si, float distSq)>();
@@ -285,6 +288,7 @@ namespace LightmapUvTool
             var vertList = new List<int>(tShell.vertexIndices);
             int step = Mathf.Max(1, vertList.Count / kMaxSampleVerts);
 
+            float bestScore = float.MaxValue;
             int tries = Mathf.Min(maxRetries, ranked.Count);
             for (int attempt = 0; attempt < tries; attempt++)
             {
@@ -321,8 +325,21 @@ namespace LightmapUvTool
                 }
 
                 float avgDist = sampled > 0 ? totalDistSq / sampled : float.MaxValue;
-                if (avgDist < chosenAvg3D)
+
+                // Composite score: surface distance + normal penalty.
+                // normalDot ∈ [-1,1]: 1 = same direction, -1 = opposite.
+                // Penalty = (1 - normalDot) * avgDist scales with geometry size,
+                // so wrong-side shells (dot ≈ -1) get ~2× distance penalty.
+                float score = avgDist;
+                if (useNormal && si < srcAvgNormal.Length)
                 {
+                    float dot = Vector3.Dot(tgtNormal, srcAvgNormal[si]);
+                    score = avgDist * (1f + (1f - dot));
+                }
+
+                if (score < bestScore)
+                {
+                    bestScore = score;
                     chosenSrc = si;
                     chosenDistSq = ranked[attempt].distSq;
                     chosenAvg3D = avgDist;
@@ -966,7 +983,8 @@ namespace LightmapUvTool
                         triPosA, triPosB, triPosC,
                         shellBvh3D, shellBvh3DFaceMap,
                         tCentroid, kMaxRetries, kGoodDistSq, null,
-                        out chosenSrc, out chosenDistSq, out chosenAvg3D);
+                        out chosenSrc, out chosenDistSq, out chosenAvg3D,
+                        tgtAvgNormal[tsi], srcAvgNormal);
                 }
 
                 if (chosenSrc < 0) continue;
@@ -1108,7 +1126,8 @@ namespace LightmapUvTool
                                 shellBvh3D, shellBvh3DFaceMap,
                                 result.targetShellCentroids[tsi],
                                 kMaxRetries * 3, kGoodDistSq, claimed,
-                                out int newSrc, out float newDistSq, out float newAvg3D);
+                                out int newSrc, out float newDistSq, out float newAvg3D,
+                                tgtAvgNormal[tsi], srcAvgNormal);
 
                             if (newSrc >= 0)
                             {
