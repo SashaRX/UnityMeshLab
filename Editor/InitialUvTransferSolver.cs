@@ -567,6 +567,29 @@ namespace LightmapUvTool
                 }
 
                 int outlierIdx = DetectOutlierVertex(uvs, pos, shell, shellSpan);
+
+                // Diagnostic logging for all triangles (verbose)
+                {
+                    float[] eLenUV = new float[3], eLen3D = new float[3];
+                    for (int j = 0; j < 3; j++)
+                    {
+                        int j2 = (j + 1) % 3;
+                        eLenUV[j] = (uvs[j] - uvs[j2]).magnitude;
+                        eLen3D[j] = (pos[j] - pos[j2]).magnitude;
+                    }
+                    float r0 = eLen3D[0] > 1e-6f ? eLenUV[0] / eLen3D[0] : 0f;
+                    float r1 = eLen3D[1] > 1e-6f ? eLenUV[1] / eLen3D[1] : 0f;
+                    float r2 = eLen3D[2] > 1e-6f ? eLenUV[2] / eLen3D[2] : 0f;
+                    float rMin = Mathf.Min(r0, Mathf.Min(r1, r2));
+                    float rMax = Mathf.Max(r0, Mathf.Max(r1, r2));
+                    UvtLog.Verbose($"[Pass2 Diag] face={f} shell={assignedShell} " +
+                        $"uvEdges=[{eLenUV[0]:F5},{eLenUV[1]:F5},{eLenUV[2]:F5}] " +
+                        $"3dEdges=[{eLen3D[0]:F5},{eLen3D[1]:F5},{eLen3D[2]:F5}] " +
+                        $"ratios=[{r0:F3},{r1:F3},{r2:F3}] max/min={( rMin > 1e-8f ? rMax / rMin : 0f ):F2} " +
+                        $"outlier={outlierIdx} vis=[{vis[0]},{vis[1]},{vis[2]}] " +
+                        $"uvs=[({uvs[0].x:F4},{uvs[0].y:F4}),({uvs[1].x:F4},{uvs[1].y:F4}),({uvs[2].x:F4},{uvs[2].y:F4})]");
+                }
+
                 if (outlierIdx < 0) continue;
 
                 int outlierVi = vis[outlierIdx];
@@ -577,8 +600,15 @@ namespace LightmapUvTool
                 Vector2 neighborCenter = (uvs[(outlierIdx + 1) % 3] + uvs[(outlierIdx + 2) % 3]) * 0.5f;
                 Vector3 vPos = pos[outlierIdx];
 
+                UvtLog.Info($"[Pass2] Repairing face={f} outlierIdx={outlierIdx} vi={outlierVi} " +
+                    $"outlierUV=({uvs[outlierIdx].x:F4},{uvs[outlierIdx].y:F4}) " +
+                    $"neighborCenter=({neighborCenter.x:F4},{neighborCenter.y:F4}) " +
+                    $"shell={assignedShell} shellTriCount={shell.triangleIds.Count}");
+
                 Vector2 candidateUv = RepairOutlierVertex(
                     vPos, neighborCenter, shell, source);
+
+                UvtLog.Info($"[Pass2] Candidate UV=({candidateUv.x:F4},{candidateUv.y:F4})");
 
                 if (float.IsNaN(candidateUv.x)) continue; // repair failed
 
@@ -591,6 +621,10 @@ namespace LightmapUvTool
                         source, target, vertexToFaces, vis[0], vis[1], vis[2], null);
                     float metricAfter = EvaluateOneRingImpactMetric(
                         source, target, vertexToFaces, vis[0], vis[1], vis[2], proposal);
+
+                    UvtLog.Info($"[Pass2] Topology check vi={outlierVi} useCount={vertexUseCount[outlierVi]} " +
+                        $"metricBefore={metricBefore:F6} metricAfter={metricAfter:F6} " +
+                        $"accepted={metricAfter < metricBefore}");
 
                     if (metricAfter >= metricBefore) continue;
                 }
@@ -665,8 +699,8 @@ namespace LightmapUvTool
             float minRatio = Mathf.Min(ratios[0], Mathf.Min(ratios[1], ratios[2]));
             float maxRatio = Mathf.Max(ratios[0], Mathf.Max(ratios[1], ratios[2]));
 
-            // Threshold: if the worst edge has 5x the ratio of the best, flag it
-            if (minRatio < 1e-8f || maxRatio < minRatio * 5f) return -1;
+            // Threshold: if the worst edge has 3x the ratio of the best, flag it
+            if (minRatio < 1e-8f || maxRatio < minRatio * 3f) return -1;
 
             // The "good" edge has the smallest ratio — outlier is the vertex opposite it
             int minEdge = 0;
