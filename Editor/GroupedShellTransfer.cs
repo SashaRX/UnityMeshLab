@@ -1120,17 +1120,35 @@ namespace LightmapUvTool
                                 bool wasMerged = tgtIsMerged[tsi];
 
                                 // If reassignment would make a non-merged shell become merged,
-                                // force 3D-primary merged mode instead of reverting to
-                                // overlapping source. 3D projection naturally separates
-                                // targets at different 3D positions, avoiding same-source
-                                // UV2 overlap that causes lightmap seams.
-                                if (newIsMerged && !wasMerged && oldSrc >= 0)
+                                // check if the new source is in the same overlap group:
+                                // if so, accept the reassignment — each overlap group member
+                                // has its own UV2 region, so merged transfer will work correctly.
+                                // Only fall back to merged+3D for sources outside overlap groups.
+                                bool newSrcInOverlapGroup = oldSrc >= 0
+                                    && srcShellOverlapMembers[oldSrc] != null
+                                    && srcShellOverlapMembers[newSrc] != null
+                                    && srcShellOverlapMembers[oldSrc] == srcShellOverlapMembers[newSrc];
+
+                                if (newIsMerged && !wasMerged && oldSrc >= 0 && !newSrcInOverlapGroup)
                                 {
                                     UvtLog.Info($"[GroupedTransfer] Dedup: t{tsi} → merged+3D " +
                                         $"(src{oldSrc}, new src{newSrc} would force merged)");
                                     tgtIsMerged[tsi] = true;
                                     tgtForce3DFallback[tsi] = true;
                                     claimed.Add(oldSrc);
+                                }
+                                else if (newIsMerged && !wasMerged && oldSrc >= 0 && newSrcInOverlapGroup)
+                                {
+                                    // Accept reassignment within overlap group — different
+                                    // UV2 region, partition-aware transfer handles it.
+                                    UvtLog.Info($"[GroupedTransfer] Dedup: t{tsi} " +
+                                        $"reassigned src{oldSrc}→src{newSrc} " +
+                                        $"(overlap group, accepted merged)");
+                                    result.targetShellToSourceShell[tsi] = newSrc;
+                                    result.targetShellMatchDistSqr[tsi] = newDistSq;
+                                    tgtChosenAvg3D[tsi] = newAvg3D;
+                                    claimed.Add(newSrc);
+                                    tgtIsMerged[tsi] = true;
                                 }
                                 else
                                 {
