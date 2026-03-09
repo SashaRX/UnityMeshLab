@@ -797,7 +797,7 @@ namespace LightmapUvTool
 
             // ── Build BVH structures for accelerated lookups ──
             const int kMinFacesForShellBvh = 16;
-            const float kNormalDotMin = 0.3f; // reject near-perpendicular/backfaces in UV0 lookups (aligned with kBackfaceDot)
+            const float kNormalDotMin = 0.0f; // reject backfaces in UV0 lookups
 
             // Global UV0 2D BVH (for merged all-source transfer)
             var globalUv0Bvh = new TriangleBvh2D(triUv0A, triUv0B, triUv0C);
@@ -1835,7 +1835,7 @@ namespace LightmapUvTool
                                     Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                                         ? tNormals[vi] : Vector3.zero;
                                     var hit = tNrm.sqrMagnitude > 0.5f
-                                        ? cBvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, kBackfaceDot)
+                                        ? cBvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, 0.0f)
                                         : cBvh.FindNearest(tUv);
                                     bestF = hit.faceIndex;
                                     bestU = hit.u; bestV = hit.v; bestW = hit.w;
@@ -2017,69 +2017,6 @@ namespace LightmapUvTool
                         overlapClaimedSources.Add(chosenSrc);
                 }
             }
-
-            // ── UV2 winding correction pass ──────────────────────────────
-            // Detect triangles where UV2 winding is inverted relative to UV0.
-            // This can happen when interpolation binds to wrong-facing source
-            // triangles (thin walls, LOD simplification artifacts).
-            // Fix by reflecting the inverted vertex across the opposite edge.
-            int windingFixed = 0;
-            for (int tsi = 0; tsi < tgtShells.Count; tsi++)
-            {
-                var tShell = tgtShells[tsi];
-                foreach (int f in tShell.faceIndices)
-                {
-                    int i0 = tgtTris[f * 3], i1 = tgtTris[f * 3 + 1], i2 = tgtTris[f * 3 + 2];
-                    if (i0 >= tUv0.Length || i1 >= tUv0.Length || i2 >= tUv0.Length) continue;
-
-                    Vector2 a0 = tUv0[i0], b0 = tUv0[i1], c0 = tUv0[i2];
-                    float saUv0 = (b0.x - a0.x) * (c0.y - a0.y) - (c0.x - a0.x) * (b0.y - a0.y);
-                    if (Mathf.Abs(saUv0) < 1e-10f) continue; // degenerate in UV0
-
-                    Vector2 a2 = result.uv2[i0], b2 = result.uv2[i1], c2 = result.uv2[i2];
-                    float saUv2 = (b2.x - a2.x) * (c2.y - a2.y) - (c2.x - a2.x) * (b2.y - a2.y);
-
-                    if (saUv0 * saUv2 < 0f) // winding mismatch
-                    {
-                        // Find the vertex furthest from the midpoint of the other two
-                        // and reflect it across that edge to fix winding.
-                        Vector2 mid01 = (a2 + b2) * 0.5f;
-                        Vector2 mid12 = (b2 + c2) * 0.5f;
-                        Vector2 mid02 = (a2 + c2) * 0.5f;
-                        float d0 = (c2 - mid01).sqrMagnitude;
-                        float d1 = (a2 - mid12).sqrMagnitude;
-                        float d2 = (b2 - mid02).sqrMagnitude;
-
-                        if (d0 >= d1 && d0 >= d2)
-                        {
-                            // Reflect c2 across line a2-b2
-                            Vector2 dir = b2 - a2;
-                            float t = Vector2.Dot(c2 - a2, dir) / Mathf.Max(dir.sqrMagnitude, 1e-12f);
-                            Vector2 foot = a2 + dir * t;
-                            result.uv2[i2] = 2f * foot - c2;
-                        }
-                        else if (d1 >= d2)
-                        {
-                            // Reflect a2 across line b2-c2
-                            Vector2 dir = c2 - b2;
-                            float t = Vector2.Dot(a2 - b2, dir) / Mathf.Max(dir.sqrMagnitude, 1e-12f);
-                            Vector2 foot = b2 + dir * t;
-                            result.uv2[i0] = 2f * foot - a2;
-                        }
-                        else
-                        {
-                            // Reflect b2 across line a2-c2
-                            Vector2 dir = c2 - a2;
-                            float t = Vector2.Dot(b2 - a2, dir) / Mathf.Max(dir.sqrMagnitude, 1e-12f);
-                            Vector2 foot = a2 + dir * t;
-                            result.uv2[i1] = 2f * foot - b2;
-                        }
-                        windingFixed++;
-                    }
-                }
-            }
-            if (windingFixed > 0)
-                UvtLog.Info($"[GroupedTransfer] '{targetMesh.name}': fixed {windingFixed} inverted UV2 triangles");
 
             result.verticesTransferred = transferred;
             result.shellsMatched = shellsMatched;
