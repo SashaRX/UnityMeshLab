@@ -1678,6 +1678,46 @@ namespace LightmapUvTool
                             if (!compositeUv2.ContainsKey(kv.Key))
                                 compositeUv2[kv.Key] = kv.Value;
 
+                        // ── Per-face outlier rejection ──
+                        // When per-face voting assigns faces to different overlap group
+                        // sources, some faces may land in a completely different UV2 region
+                        // (e.g., front side of belt mapped to back side's UV2). Detect and
+                        // replace these outlier faces with the best source's UV2.
+                        int outlierFacesFixed = 0;
+                        if (compositeUsedSources.Count > 1 && bestOverlapUv2 != null)
+                        {
+                            Vector2 bsMin = srcUv2Min[bestOverlapSrc];
+                            Vector2 bsMax = srcUv2Max[bestOverlapSrc];
+                            Vector2 bsSize = bsMax - bsMin;
+                            // Pad AABB by 50% of its dimensions to allow some flexibility
+                            float padX = bsSize.x * 0.5f;
+                            float padY = bsSize.y * 0.5f;
+                            Vector2 allowMin = bsMin - new Vector2(padX, padY);
+                            Vector2 allowMax = bsMax + new Vector2(padX, padY);
+
+                            foreach (int tfi in tShell.faceIndices)
+                            {
+                                int ti0 = tgtTris[tfi * 3], ti1 = tgtTris[tfi * 3 + 1], ti2 = tgtTris[tfi * 3 + 2];
+                                if (!compositeUv2.ContainsKey(ti0) || !compositeUv2.ContainsKey(ti1) || !compositeUv2.ContainsKey(ti2))
+                                    continue;
+                                Vector2 uv0 = compositeUv2[ti0], uv1 = compositeUv2[ti1], uv2f = compositeUv2[ti2];
+                                Vector2 centroid = (uv0 + uv1 + uv2f) / 3f;
+
+                                if (centroid.x < allowMin.x || centroid.x > allowMax.x ||
+                                    centroid.y < allowMin.y || centroid.y > allowMax.y)
+                                {
+                                    // Face UV2 centroid is outside the allowed region — replace
+                                    if (bestOverlapUv2.ContainsKey(ti0)) compositeUv2[ti0] = bestOverlapUv2[ti0];
+                                    if (bestOverlapUv2.ContainsKey(ti1)) compositeUv2[ti1] = bestOverlapUv2[ti1];
+                                    if (bestOverlapUv2.ContainsKey(ti2)) compositeUv2[ti2] = bestOverlapUv2[ti2];
+                                    outlierFacesFixed++;
+                                }
+                            }
+                            if (outlierFacesFixed > 0)
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: {outlierFacesFixed} outlier faces " +
+                                    $"replaced with best source UV2 (src{bestOverlapSrc})");
+                        }
+
                         // ── Spatial coherence check for composite UV2 ──
                         // If the composite UV2 AABB is much larger than the best single
                         // source's UV2 region, the composite is placing faces in different
@@ -1696,9 +1736,9 @@ namespace LightmapUvTool
                             float compArea = (compMax.x - compMin.x) * (compMax.y - compMin.y);
 
                             // Best source's UV2 AABB area
-                            Vector2 bsMin = srcUv2Min[bestOverlapSrc];
-                            Vector2 bsMax = srcUv2Max[bestOverlapSrc];
-                            float bestSrcUv2Area = (bsMax.x - bsMin.x) * (bsMax.y - bsMin.y);
+                            Vector2 bsMin2 = srcUv2Min[bestOverlapSrc];
+                            Vector2 bsMax2 = srcUv2Max[bestOverlapSrc];
+                            float bestSrcUv2Area = (bsMax2.x - bsMin2.x) * (bsMax2.y - bsMin2.y);
 
                             // If composite AABB > 2× best source UV2 AABB, it's spanning
                             // multiple UV2 regions → reject
