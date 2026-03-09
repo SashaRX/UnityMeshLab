@@ -181,8 +181,8 @@ namespace LightmapUvTool
                 primsRecovered++;
             }
 
-            UvtLog.Verbose($"[BorderRepairAdapter] Source prim recovery: {primsRecovered} ok, {primsFailed} failed " +
-                          $"(of {state.faceCount} target faces)");
+            UvtLog.Info($"[BorderRepairAdapter] Source prim recovery: {primsRecovered} ok, {primsFailed} failed " +
+                      $"(of {state.faceCount} target faces)");
 
             return state;
         }
