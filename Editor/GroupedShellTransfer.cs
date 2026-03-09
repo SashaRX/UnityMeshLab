@@ -1049,10 +1049,6 @@ namespace LightmapUvTool
                                         $"(src{oldSrc}, new src{newSrc} would force merged)");
                                     tgtIsMerged[tsi] = true;
                                     tgtForce3DFallback[tsi] = true;
-                                    // Clear source so Phase 3 merged path uses all-source only
-                                    // (constrained on oldSrc would land in the same UV2 region
-                                    // as the dedup winner, recreating the same-src overlap).
-                                    result.targetShellToSourceShell[tsi] = -1;
                                     claimed.Add(oldSrc);
                                 }
                                 else
@@ -1073,12 +1069,10 @@ namespace LightmapUvTool
                         needsRematch = stillNeedsRematch;
                     }
 
-                    // Any remaining unmatched — force to merged mode with no source
-                    // (all-source BVH will find UV2 from nearest 3D geometry)
+                    // Any remaining unmatched — force to merged mode
                     foreach (int tsi in needsRematch)
                     {
                         tgtIsMerged[tsi] = true;
-                        result.targetShellToSourceShell[tsi] = -1;
                     }
 
                     result.dedupConflicts = dedupConflicts;
@@ -1086,45 +1080,6 @@ namespace LightmapUvTool
                         UvtLog.Info($"[GroupedTransfer] Dedup: {dedupConflicts} same-source conflicts, " +
                             $"{needsRematch.Count} forced merged");
                 }
-            }
-
-            // ── Phase 2c: Post-dedup sweep — eliminate ALL remaining same-source pairs ──
-            // Dedup (Phase 2b) only checks non-merged shells. This sweep catches:
-            // - merged vs non-merged pairs sharing the same source
-            // - any residual same-source pairs from rescore or overlap assignment
-            {
-                // Build source → owner (first target that claims it)
-                var srcOwner = new Dictionary<int, int>();
-                int sweepFixed = 0;
-                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
-                {
-                    int src = result.targetShellToSourceShell[tsi];
-                    if (src < 0) continue;
-
-                    if (srcOwner.TryGetValue(src, out int existing))
-                    {
-                        // Same-source conflict — force the shell with worse 3D distance to merged+3D
-                        float distExisting = tgtChosenAvg3D[existing];
-                        float distCurrent = tgtChosenAvg3D[tsi];
-                        int victim = distCurrent > distExisting ? tsi : existing;
-                        int keeper = victim == tsi ? existing : tsi;
-
-                        if (!tgtIsMerged[victim] || result.targetShellToSourceShell[victim] >= 0)
-                        {
-                            tgtIsMerged[victim] = true;
-                            tgtForce3DFallback[victim] = true;
-                            result.targetShellToSourceShell[victim] = -1;
-                            srcOwner[src] = keeper;
-                            sweepFixed++;
-                        }
-                    }
-                    else
-                    {
-                        srcOwner[src] = tsi;
-                    }
-                }
-                if (sweepFixed > 0)
-                    UvtLog.Info($"[GroupedTransfer] Post-dedup sweep: {sweepFixed} same-source pairs fixed");
             }
 
             // ── Phase 3: Transfer UV2 using final source assignments ──
