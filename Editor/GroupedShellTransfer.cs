@@ -3627,6 +3627,7 @@ namespace LightmapUvTool
                 }
             }
 
+            const float kMaxFragSpreadFactor = 2.0f;
             var mergeGroups = new List<(int srcIdx, List<int> fragments)>();
             foreach (var kv in srcToFragments)
             {
@@ -3635,16 +3636,13 @@ namespace LightmapUvTool
 
                 // Source UV0 overlaps with other source shells — fragments
                 // may be on different physical sides (front/back belt, tiling).
-                // Instead of skipping entirely, validate using 3D normals:
-                // if all fragments face the same direction they're on one side
-                // and can be safely merged. Only skip if normals diverge.
+                // Sub-group by 3D normal direction: fragments on the same side
+                // get merged together, different sides stay separate.
                 if (srcHasUv0Overlap[kv.Key])
                 {
-                    bool normalsConsistent = true;
-                    Vector3 refNormal = Vector3.zero;
-                    bool hasRef = false;
-
-                    for (int i = 0; i < group.Count && normalsConsistent; i++)
+                    // Compute average normal per fragment
+                    var fragNormals = new Vector3[group.Count];
+                    for (int i = 0; i < group.Count; i++)
                     {
                         int ti = group[i];
                         Vector3 avgN = Vector3.zero;
@@ -3654,22 +3652,89 @@ namespace LightmapUvTool
                             if (i0 >= tVerts.Length || i1 >= tVerts.Length || i2 >= tVerts.Length) continue;
                             avgN += Vector3.Cross(tVerts[i1] - tVerts[i0], tVerts[i2] - tVerts[i0]);
                         }
-                        if (avgN.sqrMagnitude < 1e-12f) continue;
-                        avgN.Normalize();
-
-                        if (!hasRef) { refNormal = avgN; hasRef = true; }
-                        else if (Vector3.Dot(refNormal, avgN) < 0.5f)
-                            normalsConsistent = false;
+                        fragNormals[i] = avgN.sqrMagnitude > 1e-12f ? avgN.normalized : Vector3.zero;
                     }
 
-                    if (!normalsConsistent)
+                    // Cluster fragments by normal direction (greedy: dot > 0.5 = same cluster)
+                    var clusterOf = new int[group.Count];
+                    for (int i = 0; i < group.Count; i++) clusterOf[i] = -1;
+                    int nextCluster = 0;
+                    for (int i = 0; i < group.Count; i++)
                     {
-                        UvtLog.Info($"[GroupedTransfer] Fragment merge: skipping src#{kv.Key} group " +
-                            $"({group.Count} shells) — UV0 overlap + divergent normals (front/back)");
-                        continue;
+                        if (clusterOf[i] >= 0) continue;
+                        if (fragNormals[i] == Vector3.zero) { clusterOf[i] = nextCluster++; continue; }
+                        clusterOf[i] = nextCluster;
+                        for (int j = i + 1; j < group.Count; j++)
+                        {
+                            if (clusterOf[j] >= 0) continue;
+                            if (fragNormals[j] == Vector3.zero) continue;
+                            if (Vector3.Dot(fragNormals[i], fragNormals[j]) >= 0.5f)
+                                clusterOf[j] = nextCluster;
+                        }
+                        nextCluster++;
                     }
+                    // Assign unclustered (zero-normal) fragments to nearest cluster
+                    for (int i = 0; i < group.Count; i++)
+                    {
+                        if (clusterOf[i] >= 0) continue;
+                        clusterOf[i] = 0; // fallback
+                    }
+
+                    // Build sub-groups per cluster
+                    var subGroups = new Dictionary<int, List<int>>();
+                    for (int i = 0; i < group.Count; i++)
+                    {
+                        if (!subGroups.TryGetValue(clusterOf[i], out var sg))
+                        {
+                            sg = new List<int>();
+                            subGroups[clusterOf[i]] = sg;
+                        }
+                        sg.Add(group[i]);
+                    }
+
+                    // Each sub-group with ≥2 fragments → validate and add as merge group
+                    // Singles remain as-is (handled by dedup shared-source logic)
+                    int subMerged = 0;
+                    foreach (var sg in subGroups.Values)
+                    {
+                        if (sg.Count < 2) continue;
+
+                        // Validate area ratio for this sub-group
+                        float subArea = 0;
+                        for (int i = 0; i < sg.Count; i++)
+                            subArea += tgtUv0Area[sg[i]];
+                        float srcArea2 = srcUv0Area[kv.Key];
+                        if (srcArea2 > 1e-8f && subArea > 1e-8f)
+                        {
+                            float ratio = subArea / srcArea2;
+                            if (ratio < 0.05f || ratio > 3.0f) continue;
+                        }
+
+                        // Validate 3D spread for sub-group
+                        float maxSubDist = 0;
+                        for (int i = 0; i < sg.Count; i++)
+                            for (int j = i + 1; j < sg.Count; j++)
+                            {
+                                float d = Vector3.Distance(tgtCentroid3D[sg[i]], tgtCentroid3D[sg[j]]);
+                                if (d > maxSubDist) maxSubDist = d;
+                            }
+                        Vector3 srcC2 = srcCentroid3D[kv.Key];
+                        float maxR2 = 0;
+                        foreach (int vi in srcShells[kv.Key].vertexIndices)
+                            if (vi < srcVerts.Length)
+                                maxR2 = Mathf.Max(maxR2, Vector3.Distance(srcVerts[vi], srcC2));
+                        float srcDiam2 = maxR2 * 2f;
+                        if (srcDiam2 > 1e-6f && maxSubDist > srcDiam2 * kMaxFragSpreadFactor)
+                            continue;
+
+                        mergeGroups.Add((kv.Key, sg));
+                        subMerged += sg.Count;
+                    }
+
                     UvtLog.Info($"[GroupedTransfer] Fragment merge: src#{kv.Key} group " +
-                        $"({group.Count} shells) — UV0 overlap but normals consistent, allowing merge");
+                        $"({group.Count} shells) — UV0 overlap, {nextCluster} normal cluster(s), " +
+                        $"{subMerged} fragments sub-grouped for merge");
+                    continue; // already added sub-groups above, skip normal path
                 }
 
                 float combinedArea = 0;
@@ -3702,7 +3767,6 @@ namespace LightmapUvTool
                         maxR = Mathf.Max(maxR, Vector3.Distance(srcVerts[vi], srcC));
                 float srcDiameter = maxR * 2f;
 
-                const float kMaxFragSpreadFactor = 2.0f;
                 if (srcDiameter > 1e-6f && maxFragDist > srcDiameter * kMaxFragSpreadFactor)
                 {
                     UvtLog.Info($"[GroupedTransfer] Fragment merge: skipping src#{kv.Key} group " +
