@@ -57,6 +57,23 @@ namespace LightmapUvTool
             public List<int> faceIndices;
         }
 
+        /// <summary>
+        /// Per-shell quality classification assigned after transfer.
+        /// </summary>
+        public enum ShellStatus
+        {
+            /// <summary>Transfer clean — 0 issues.</summary>
+            Accepted = 0,
+            /// <summary>Minor issues (&le;30% faces) — usable but imperfect.</summary>
+            Degraded = 1,
+            /// <summary>Severe issues (&gt;30% faces) — written but likely broken.</summary>
+            Poor = 2,
+            /// <summary>Rejected (&gt;50% face issues for merged) — UV2 not written.</summary>
+            Rejected = 3,
+            /// <summary>No source shell matched.</summary>
+            Unmatched = 4
+        }
+
         public class TransferResult
         {
             public Vector2[] uv2;
@@ -78,6 +95,9 @@ namespace LightmapUvTool
             public float[] targetShellMatchDistSqr;
             public int dedupConflicts;       // shells reassigned by dedup
             public int fragmentsMerged;      // target shell fragments merged pre-matching
+            public ShellStatus[] targetShellStatus; // per-shell quality classification
+            public int[] targetShellIssues;  // per-shell issue count (inverted/degenerate faces)
+            public int shellsRejected;       // shells where UV2 was not written (too many issues)
 
             // ─── Cross-LOD overlap hints ───
             // Populated for merged shells to propagate source selection to subsequent LODs.
@@ -913,6 +933,8 @@ namespace LightmapUvTool
             result.targetShellMethod = new int[tgtShells.Count]; // 0=interp, 1=xform, 2=merged
             result.targetShellCentroids = new Vector3[tgtShells.Count];
             result.targetShellMatchDistSqr = new float[tgtShells.Count];
+            result.targetShellStatus = new ShellStatus[tgtShells.Count];
+            result.targetShellIssues = new int[tgtShells.Count];
 
             var tgtChosenAvg3D = new float[tgtShells.Count];
             var tgtIsMerged = new bool[tgtShells.Count];
@@ -1831,6 +1853,7 @@ namespace LightmapUvTool
                                 transferred++;
                             }
                             result.targetShellToSourceShell[tsi] = primarySrc;
+                            result.targetShellIssues[tsi] = bestOverlapIssues;
                             shellsMerged++;
                             result.targetShellMethod[tsi] = 2;
                             foreach (int src in compositeUsedSources)
@@ -2285,14 +2308,32 @@ namespace LightmapUvTool
                         }
                     }
 
-                    chosenUv2 = bestMergedUv2;
-                    shellsMerged++;
+                    int faceCount = tShell.faceIndices.Count;
+                    result.targetShellIssues[tsi] = bestMergedIssues;
                     result.targetShellMethod[tsi] = 2; // merged
-                    result.consistencyCorrected += bestMergedConsistencyFixes;
-                    string mergedLabel = force3D ? "3D-primary"
-                        : (bestWasConstrained ? "src-constrained" : "all-source");
-                    UvtLog.Info($"[GroupedTransfer]   t{tsi} merged({tShell.faceIndices.Count}f): " +
-                        $"{mergedLabel} ({bestMergedIssues} issues)");
+
+                    // Reject gate: if >50% faces have issues, don't write garbage UV2.
+                    if (bestMergedIssues > faceCount / 2)
+                    {
+                        chosenUv2 = null; // prevent write
+                        result.targetShellStatus[tsi] = ShellStatus.Rejected;
+                        result.shellsRejected++;
+                        shellsMerged++;
+                        result.consistencyCorrected += bestMergedConsistencyFixes;
+                        UvtLog.Warn($"[GroupedTransfer]   t{tsi} REJECTED({faceCount}f): " +
+                            $"{bestMergedIssues} issues (>{faceCount / 2} threshold) — UV2 not written");
+                        // Don't continue — fall through to "Write chosen UV2" with null chosenUv2
+                    }
+                    else
+                    {
+                        chosenUv2 = bestMergedUv2;
+                        shellsMerged++;
+                        result.consistencyCorrected += bestMergedConsistencyFixes;
+                        string mergedLabel = force3D ? "3D-primary"
+                            : (bestWasConstrained ? "src-constrained" : "all-source");
+                        UvtLog.Info($"[GroupedTransfer]   t{tsi} merged({faceCount}f): " +
+                            $"{mergedLabel} ({bestMergedIssues} issues)");
+                    }
                 }
                 else
                 {
@@ -2406,12 +2447,14 @@ namespace LightmapUvTool
                         chosenUv2 = uv2_transform;
                         shellsTransform++;
                         result.targetShellMethod[tsi] = 1; // xform
+                        result.targetShellIssues[tsi] = issuesTransform;
                     }
                     else
                     {
                         chosenUv2 = uv2_interp;
                         shellsInterpolation++;
                         result.targetShellMethod[tsi] = 0; // interp
+                        result.targetShellIssues[tsi] = issuesInterp;
                     }
                 }
 
@@ -2497,6 +2540,46 @@ namespace LightmapUvTool
                     UvtLog.Info($"[GroupedTransfer] Post-fix total: {totalOutlierVerts} outlier verts corrected");
             }
 
+            // ── Classify all shells ──
+            int statusAccepted = 0, statusDegraded = 0, statusPoor = 0, statusRejected = 0, statusUnmatched = 0;
+            for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+            {
+                // Already classified as Rejected in the merge gate above
+                if (result.targetShellStatus[tsi] == ShellStatus.Rejected)
+                {
+                    statusRejected++;
+                    continue;
+                }
+
+                int src = result.targetShellToSourceShell[tsi];
+                if (src < 0)
+                {
+                    result.targetShellStatus[tsi] = ShellStatus.Unmatched;
+                    statusUnmatched++;
+                    continue;
+                }
+
+                int issues = result.targetShellIssues[tsi];
+                int faceCount = tgtShells[tsi].faceIndices.Count;
+                float ratio = faceCount > 0 ? (float)issues / faceCount : 0f;
+
+                if (issues == 0)
+                {
+                    result.targetShellStatus[tsi] = ShellStatus.Accepted;
+                    statusAccepted++;
+                }
+                else if (ratio <= 0.3f)
+                {
+                    result.targetShellStatus[tsi] = ShellStatus.Degraded;
+                    statusDegraded++;
+                }
+                else
+                {
+                    result.targetShellStatus[tsi] = ShellStatus.Poor;
+                    statusPoor++;
+                }
+            }
+
             result.verticesTransferred = transferred;
             result.shellsMatched = shellsMatched;
             result.shellsTransform = shellsTransform;
@@ -2513,6 +2596,19 @@ namespace LightmapUvTool
                 (result.consistencyCorrected > 0
                     ? $" (consistency-corrected:{result.consistencyCorrected})"
                     : ""));
+            // Shell quality summary
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.Append($"[GroupedTransfer] Quality: {statusAccepted} accepted");
+                if (statusDegraded > 0) sb.Append($", {statusDegraded} degraded");
+                if (statusPoor > 0) sb.Append($", {statusPoor} poor");
+                if (statusRejected > 0) sb.Append($", {statusRejected} rejected");
+                if (statusUnmatched > 0) sb.Append($", {statusUnmatched} unmatched");
+                if (statusRejected > 0 || statusPoor > 0)
+                    UvtLog.Warn(sb.ToString());
+                else
+                    UvtLog.Info(sb.ToString());
+            }
 
             // UV2 bounds check
             int oob = 0;
