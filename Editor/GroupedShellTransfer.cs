@@ -797,7 +797,7 @@ namespace LightmapUvTool
 
             // ── Build BVH structures for accelerated lookups ──
             const int kMinFacesForShellBvh = 16;
-            const float kNormalDotMin = 0.0f; // reject backfaces in UV0 lookups
+            const float kNormalDotMin = 0.3f; // reject near-perpendicular/backfaces in UV0 lookups (aligned with kBackfaceDot)
 
             // Global UV0 2D BVH (for merged all-source transfer)
             var globalUv0Bvh = new TriangleBvh2D(triUv0A, triUv0B, triUv0C);
@@ -1049,7 +1049,7 @@ namespace LightmapUvTool
                                         $"(src{oldSrc}, new src{newSrc} would force merged)");
                                     tgtIsMerged[tsi] = true;
                                     tgtForce3DFallback[tsi] = true;
-                                    claimed.Add(oldSrc);
+                                    if (oldSrc >= 0) claimed.Add(oldSrc); // guard against -1 pollution
                                 }
                                 else
                                 {
@@ -1835,7 +1835,7 @@ namespace LightmapUvTool
                                     Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                                         ? tNormals[vi] : Vector3.zero;
                                     var hit = tNrm.sqrMagnitude > 0.5f
-                                        ? cBvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, 0.0f)
+                                        ? cBvh.FindNearestNormalFiltered(tUv, tNrm, triNormal, kBackfaceDot)
                                         : cBvh.FindNearest(tUv);
                                     bestF = hit.faceIndex;
                                     bestU = hit.u; bestV = hit.v; bestW = hit.w;
@@ -2017,6 +2017,69 @@ namespace LightmapUvTool
                         overlapClaimedSources.Add(chosenSrc);
                 }
             }
+
+            // ── UV2 winding correction pass ──────────────────────────────
+            // Detect triangles where UV2 winding is inverted relative to UV0.
+            // This can happen when interpolation binds to wrong-facing source
+            // triangles (thin walls, LOD simplification artifacts).
+            // Fix by reflecting the inverted vertex across the opposite edge.
+            int windingFixed = 0;
+            for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+            {
+                var tShell = tgtShells[tsi];
+                foreach (int f in tShell.faceIndices)
+                {
+                    int i0 = tgtTris[f * 3], i1 = tgtTris[f * 3 + 1], i2 = tgtTris[f * 3 + 2];
+                    if (i0 >= tUv0.Length || i1 >= tUv0.Length || i2 >= tUv0.Length) continue;
+
+                    Vector2 a0 = tUv0[i0], b0 = tUv0[i1], c0 = tUv0[i2];
+                    float saUv0 = (b0.x - a0.x) * (c0.y - a0.y) - (c0.x - a0.x) * (b0.y - a0.y);
+                    if (Mathf.Abs(saUv0) < 1e-10f) continue; // degenerate in UV0
+
+                    Vector2 a2 = result.uv2[i0], b2 = result.uv2[i1], c2 = result.uv2[i2];
+                    float saUv2 = (b2.x - a2.x) * (c2.y - a2.y) - (c2.x - a2.x) * (b2.y - a2.y);
+
+                    if (saUv0 * saUv2 < 0f) // winding mismatch
+                    {
+                        // Find the vertex furthest from the midpoint of the other two
+                        // and reflect it across that edge to fix winding.
+                        Vector2 mid01 = (a2 + b2) * 0.5f;
+                        Vector2 mid12 = (b2 + c2) * 0.5f;
+                        Vector2 mid02 = (a2 + c2) * 0.5f;
+                        float d0 = (c2 - mid01).sqrMagnitude;
+                        float d1 = (a2 - mid12).sqrMagnitude;
+                        float d2 = (b2 - mid02).sqrMagnitude;
+
+                        if (d0 >= d1 && d0 >= d2)
+                        {
+                            // Reflect c2 across line a2-b2
+                            Vector2 dir = b2 - a2;
+                            float t = Vector2.Dot(c2 - a2, dir) / Mathf.Max(dir.sqrMagnitude, 1e-12f);
+                            Vector2 foot = a2 + dir * t;
+                            result.uv2[i2] = 2f * foot - c2;
+                        }
+                        else if (d1 >= d2)
+                        {
+                            // Reflect a2 across line b2-c2
+                            Vector2 dir = c2 - b2;
+                            float t = Vector2.Dot(a2 - b2, dir) / Mathf.Max(dir.sqrMagnitude, 1e-12f);
+                            Vector2 foot = b2 + dir * t;
+                            result.uv2[i0] = 2f * foot - a2;
+                        }
+                        else
+                        {
+                            // Reflect b2 across line a2-c2
+                            Vector2 dir = c2 - a2;
+                            float t = Vector2.Dot(b2 - a2, dir) / Mathf.Max(dir.sqrMagnitude, 1e-12f);
+                            Vector2 foot = a2 + dir * t;
+                            result.uv2[i1] = 2f * foot - b2;
+                        }
+                        windingFixed++;
+                    }
+                }
+            }
+            if (windingFixed > 0)
+                UvtLog.Info($"[GroupedTransfer] '{targetMesh.name}': fixed {windingFixed} inverted UV2 triangles");
 
             result.verticesTransferred = transferred;
             result.shellsMatched = shellsMatched;
@@ -2671,26 +2734,45 @@ namespace LightmapUvTool
             }
 
             // For each target shell, find the best-matching source shell whose UV0
-            // bbox fully contains the target's UV0 bbox. Use 3D centroid distance
-            // as tiebreaker when multiple sources contain the target.
-            const float bboxPad = 0.002f; // small padding for float imprecision
+            // bbox significantly overlaps the target's UV0 bbox.
+            // Use adaptive padding based on source shell size, and require ≥70%
+            // overlap of the target bbox area. This catches fragments that extend
+            // slightly beyond source bounds due to LOD simplification vertex
+            // interpolation. 3D centroid distance is used as tiebreaker.
+            const float kBboxOverlapMin = 0.70f; // target bbox must overlap ≥70% with source
             var tgtToSrcContainer = new int[tgtCount];
             for (int ti = 0; ti < tgtCount; ti++) tgtToSrcContainer[ti] = -1;
 
             for (int ti = 0; ti < tgtCount; ti++)
             {
                 var t = tgtShells[ti];
+                float tW = t.boundsMax.x - t.boundsMin.x;
+                float tH = t.boundsMax.y - t.boundsMin.y;
+                float tArea = Mathf.Max(tW * tH, 1e-12f);
+
                 int bestSrc = -1;
                 float bestDist = float.MaxValue;
 
                 for (int si = 0; si < srcCount; si++)
                 {
                     var s = srcShells[si];
-                    // UV0 bbox containment: target fully inside source
-                    if (t.boundsMin.x < s.boundsMin.x - bboxPad) continue;
-                    if (t.boundsMin.y < s.boundsMin.y - bboxPad) continue;
-                    if (t.boundsMax.x > s.boundsMax.x + bboxPad) continue;
-                    if (t.boundsMax.y > s.boundsMax.y + bboxPad) continue;
+                    // Adaptive padding: 5% of source shell bbox diagonal
+                    float sW = s.boundsMax.x - s.boundsMin.x;
+                    float sH = s.boundsMax.y - s.boundsMin.y;
+                    float pad = Mathf.Max(Mathf.Sqrt(sW * sW + sH * sH) * 0.05f, 0.002f);
+
+                    // Compute AABB intersection area
+                    float ix0 = Mathf.Max(t.boundsMin.x, s.boundsMin.x - pad);
+                    float iy0 = Mathf.Max(t.boundsMin.y, s.boundsMin.y - pad);
+                    float ix1 = Mathf.Min(t.boundsMax.x, s.boundsMax.x + pad);
+                    float iy1 = Mathf.Min(t.boundsMax.y, s.boundsMax.y + pad);
+                    float overlapW = ix1 - ix0;
+                    float overlapH = iy1 - iy0;
+                    if (overlapW <= 0 || overlapH <= 0) continue; // no overlap
+
+                    float overlapArea = overlapW * overlapH;
+                    float overlapRatio = overlapArea / tArea;
+                    if (overlapRatio < kBboxOverlapMin) continue; // insufficient overlap
 
                     float dist = Vector3.SqrMagnitude(tgtCentroid3D[ti] - srcCentroid3D[si]);
                     if (dist < bestDist)
