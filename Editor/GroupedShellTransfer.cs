@@ -439,7 +439,8 @@ namespace LightmapUvTool
             int[] targetShellToSourceShell,
             float[] targetShellMatchDistSqr,
             float[] tgtChosenAvg3D,
-            Vector3[] targetShellCentroids)
+            Vector3[] targetShellCentroids,
+            bool[] tgtIsFragmentMerged = null)
         {
             const float wArea     = 0.20f;
             const float wNormal   = 0.30f;
@@ -455,6 +456,17 @@ namespace LightmapUvTool
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
             {
                 if (!tgtIsMerged[tsi]) continue;
+
+                // Skip fragment-merged shells: they combine tiling copies with
+                // identical UV0, so any single source would produce duplicate UV2.
+                // Keep them in merged mode so Phase 3 per-face voting assigns
+                // each fragment to a different source → unique UV2 regions.
+                if (tgtIsFragmentMerged != null && tgtIsFragmentMerged[tsi])
+                {
+                    UvtLog.Info($"[GroupedTransfer] Rescore: t{tsi} kept merged " +
+                        "(fragment-merged, per-face voting needed)");
+                    continue;
+                }
 
                 var tShell = tgtShells[tsi];
                 Vector3 tCentroid = targetShellCentroids[tsi];
@@ -605,10 +617,11 @@ namespace LightmapUvTool
             // same source shell and merge them into virtual shells to prevent
             // same-source conflicts in Phase 2b dedup.
             int fragMergeCount;
+            bool[] tgtIsFragmentMerged;
             tgtShells = MergeFragmentShells(
                 tgtShells, tUv0, tgtTris, tVerts,
                 srcShells, srcUv0, srcTris, srcVerts,
-                out fragMergeCount);
+                out fragMergeCount, out tgtIsFragmentMerged);
             if (fragMergeCount > 0)
                 result.fragmentsMerged = fragMergeCount;
 
@@ -962,7 +975,8 @@ namespace LightmapUvTool
                 result.targetShellToSourceShell,
                 result.targetShellMatchDistSqr,
                 tgtChosenAvg3D,
-                result.targetShellCentroids);
+                result.targetShellCentroids,
+                tgtIsFragmentMerged);
 
             // ── Phase 2b: Deduplicate — resolve same-source conflicts ──
             // When multiple non-merged target shells claim the same source shell
@@ -2690,13 +2704,15 @@ namespace LightmapUvTool
         /// Detect target shells that are UV0-contained fragments of a single source
         /// shell and merge them into virtual shells. Returns a new shell list
         /// (may be smaller than input). Sets mergeCount to number of fragments merged.
+        /// isFragmentMerged[i] is true for shells created by merging multiple fragments.
         /// </summary>
         static List<UvShell> MergeFragmentShells(
             List<UvShell> tgtShells, Vector2[] tUv0, int[] tgtTris, Vector3[] tVerts,
             List<UvShell> srcShells, Vector2[] srcUv0, int[] srcTris, Vector3[] srcVerts,
-            out int mergeCount)
+            out int mergeCount, out bool[] isFragmentMerged)
         {
             mergeCount = 0;
+            isFragmentMerged = null;
             int tgtCount = tgtShells.Count;
             int srcCount = srcShells.Count;
             if (tgtCount < 2 || srcCount == 0) return tgtShells;
@@ -2906,6 +2922,11 @@ namespace LightmapUvTool
 
             UvtLog.Info($"[GroupedTransfer] Fragment merge: {mergeGroups.Count} group(s), " +
                 $"{mergeCount} fragments merged, shells {tgtCount} → {newShells.Count}");
+
+            // Mark which output shells are fragment-merged (they appear first)
+            isFragmentMerged = new bool[newShells.Count];
+            for (int i = 0; i < mergeGroups.Count; i++)
+                isFragmentMerged[i] = true;
 
             return newShells;
         }
