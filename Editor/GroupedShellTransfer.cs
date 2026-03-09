@@ -1833,6 +1833,133 @@ namespace LightmapUvTool
                             : "";
                         string fragInfo = isFragMergedShell ? ", fragMerged" : "";
                         string coherenceInfo = compositeSpatiallyBroken ? ", spatial-fix" : "";
+                        // ── Per-vertex outlier correction ──
+                        // After composite UV2 is built, check each vertex against the
+                        // best source's UV2 AABB. Vertices far outside are re-projected
+                        // via 3D BVH to prevent protrusions / spikes in the UV layout.
+                        int vertexOutliersFixed = 0;
+                        if (compositeUv2.Count > 0 && bestOverlapSrc >= 0)
+                        {
+                            Vector2 sMin = srcUv2Min[bestOverlapSrc];
+                            Vector2 sMax = srcUv2Max[bestOverlapSrc];
+                            Vector2 sSize = sMax - sMin;
+                            // Allow 30% margin beyond source UV2 AABB
+                            float marginX = sSize.x * 0.3f;
+                            float marginY = sSize.y * 0.3f;
+                            Vector2 allowMin = sMin - new Vector2(marginX, marginY);
+                            Vector2 allowMax = sMax + new Vector2(marginX, marginY);
+
+                            // Also compute median UV2 to detect outliers relative to shell center
+                            var allUvX = new List<float>(compositeUv2.Count);
+                            var allUvY = new List<float>(compositeUv2.Count);
+                            foreach (var kv in compositeUv2)
+                            {
+                                allUvX.Add(kv.Value.x);
+                                allUvY.Add(kv.Value.y);
+                            }
+                            allUvX.Sort(); allUvY.Sort();
+                            float medX = allUvX[allUvX.Count / 2];
+                            float medY = allUvY[allUvY.Count / 2];
+                            // Max distance from median: 2× source diagonal
+                            float srcDiag = sSize.magnitude;
+                            float maxMedianDist = srcDiag * 2.0f;
+
+                            var outlierVerts = new List<int>();
+                            foreach (var kv in compositeUv2)
+                            {
+                                Vector2 uv = kv.Value;
+                                bool outsideBounds = uv.x < allowMin.x || uv.x > allowMax.x ||
+                                                     uv.y < allowMin.y || uv.y > allowMax.y;
+                                bool farFromMedian = srcDiag > 1e-6f &&
+                                    new Vector2(uv.x - medX, uv.y - medY).magnitude > maxMedianDist;
+                                if (outsideBounds || farFromMedian)
+                                    outlierVerts.Add(kv.Key);
+                            }
+
+                            if (outlierVerts.Count > 0 && outlierVerts.Count < compositeUv2.Count)
+                            {
+                                // Re-project outliers via 3D BVH with normal filtering
+                                var bvh3D = shellBvh3D[bestOverlapSrc];
+                                var fMap3D = shellBvh3DFaceMap[bestOverlapSrc];
+                                var fNorm3D = shellBvh3DFaceNormals[bestOverlapSrc];
+
+                                foreach (int vi in outlierVerts)
+                                {
+                                    if (vi >= tVerts.Length) continue;
+                                    Vector3 tPos = tVerts[vi];
+                                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
+                                        ? tNormals[vi] : Vector3.up;
+
+                                    // Try ray + normal-filtered nearest
+                                    int hitFace = -1;
+                                    Vector3 hitBary = Vector3.zero;
+
+                                    if (bvh3D != null && tNrm.sqrMagnitude > 0.5f)
+                                    {
+                                        var rayHit = bvh3D.RaycastBidirectional(
+                                            tPos, tNrm.normalized, kRayMaxDist);
+                                        if (rayHit.triangleIndex >= 0)
+                                        {
+                                            hitFace = rayHit.triangleIndex;
+                                            hitBary = rayHit.barycentric;
+                                        }
+                                    }
+                                    if (hitFace < 0 && bvh3D != null && fNorm3D != null)
+                                    {
+                                        var nearest = bvh3D.FindNearestNormalFiltered(
+                                            tPos, tNrm, fNorm3D, 0.3f);
+                                        if (nearest.triangleIndex >= 0)
+                                        {
+                                            hitFace = nearest.triangleIndex;
+                                            hitBary = nearest.barycentric;
+                                        }
+                                    }
+                                    // Last resort: pure nearest
+                                    if (hitFace < 0 && bvh3D != null)
+                                    {
+                                        var nearest = bvh3D.FindNearest(tPos);
+                                        if (nearest.triangleIndex >= 0)
+                                        {
+                                            hitFace = nearest.triangleIndex;
+                                            hitBary = nearest.barycentric;
+                                        }
+                                    }
+
+                                    if (hitFace >= 0 && hitFace < fMap3D.Length)
+                                    {
+                                        int gf = fMap3D[hitFace];
+                                        Vector2 reprojected = triUv2A[gf] * hitBary.x
+                                                            + triUv2B[gf] * hitBary.y
+                                                            + triUv2C[gf] * hitBary.z;
+                                        // Only accept if reprojected UV2 is within bounds
+                                        if (reprojected.x >= allowMin.x && reprojected.x <= allowMax.x &&
+                                            reprojected.y >= allowMin.y && reprojected.y <= allowMax.y)
+                                        {
+                                            compositeUv2[vi] = reprojected;
+                                            vertexOutliersFixed++;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Compute composite UV2 AABB for diagnostics
+                        Vector2 compUv2Min = new Vector2(float.MaxValue, float.MaxValue);
+                        Vector2 compUv2Max = new Vector2(float.MinValue, float.MinValue);
+                        foreach (var kv in compositeUv2)
+                        {
+                            compUv2Min = Vector2.Min(compUv2Min, kv.Value);
+                            compUv2Max = Vector2.Max(compUv2Max, kv.Value);
+                        }
+                        Vector2 srcBbMin = srcUv2Min[bestOverlapSrc];
+                        Vector2 srcBbMax = srcUv2Max[bestOverlapSrc];
+                        string aabbInfo = compositeUv2.Count > 0
+                            ? $", uv2bb=[{compUv2Min.x:F3},{compUv2Min.y:F3}]-[{compUv2Max.x:F3},{compUv2Max.y:F3}]" +
+                              $" src=[{srcBbMin.x:F3},{srcBbMin.y:F3}]-[{srcBbMax.x:F3},{srcBbMax.y:F3}]"
+                            : "";
+                        string outlierInfo = vertexOutliersFixed > 0
+                            ? $", outliersFix={vertexOutliersFixed}"
+                            : "";
                         UvtLog.Info($"[GroupedTransfer]   t{tsi}: overlap unified " +
                             $"(best src{bestOverlapSrc}, {bestOverlapCoverage} cov, " +
                             $"{bestOverlapIssues} issues, " +
@@ -1841,8 +1968,13 @@ namespace LightmapUvTool
                             $"method={bestOverlapMethod}, " +
                             $"tried {groupMembers.Count} shells" +
                             (hintSrc >= 0 ? $", hint=src{hintSrc}" : "") +
-                            compositeInfo + fragInfo + coherenceInfo +
+                            compositeInfo + fragInfo + coherenceInfo + outlierInfo + aabbInfo +
                             (tooManyIssues ? " → fall-through" : "") + ")");
+
+                        // Recount issues after outlier correction
+                        if (vertexOutliersFixed > 0)
+                            bestOverlapIssues = CountShellIssues(
+                                tShell.faceIndices, tgtTris, tUv0, compositeUv2);
 
                         if (!tooManyIssues)
                         {
