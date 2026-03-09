@@ -1082,6 +1082,29 @@ namespace LightmapUvTool
                 }
             }
 
+            // Log overlap group assignment summary
+            if (overlapGroups.Count > 0)
+            {
+                foreach (var group in overlapGroups)
+                {
+                    // Count how many unique sources in this group are claimed by targets
+                    var groupSrcUsed = new HashSet<int>();
+                    int groupTargets = 0;
+                    for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                    {
+                        int src = result.targetShellToSourceShell[tsi];
+                        if (src >= 0 && group.Contains(src))
+                        {
+                            groupSrcUsed.Add(src);
+                            groupTargets++;
+                        }
+                    }
+                    if (groupTargets > 0)
+                        UvtLog.Info($"[GroupedTransfer] Overlap group [{string.Join(",", group)}]: " +
+                            $"{groupTargets} targets → {groupSrcUsed.Count}/{group.Count} unique sources");
+                }
+            }
+
             // ── Phase 3: Transfer UV2 using final source assignments ──
             // Verbose: dump per-shell matching for diagnostics
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
@@ -2734,6 +2757,34 @@ namespace LightmapUvTool
                 {
                     float ratio = combinedArea / srcArea;
                     if (ratio < 0.15f || ratio > 3.0f) continue; // area mismatch → not fragments
+                }
+
+                // Guard: reject physically distant candidates (tiling instances, not fragments).
+                // True fragments from LOD splitting are near their parent source shell.
+                // Tiling instances share UV0 bbox but are far apart in 3D.
+                float maxFragDist = 0;
+                for (int i = 0; i < group.Count; i++)
+                    for (int j = i + 1; j < group.Count; j++)
+                    {
+                        float d = Vector3.Distance(tgtCentroid3D[group[i]], tgtCentroid3D[group[j]]);
+                        if (d > maxFragDist) maxFragDist = d;
+                    }
+
+                // Reference: source shell 3D bounding sphere diameter
+                Vector3 srcC = srcCentroid3D[kv.Key];
+                float maxR = 0;
+                foreach (int vi in srcShells[kv.Key].vertexIndices)
+                    if (vi < srcVerts.Length)
+                        maxR = Mathf.Max(maxR, Vector3.Distance(srcVerts[vi], srcC));
+                float srcDiameter = maxR * 2f;
+
+                const float kMaxFragSpreadFactor = 2.0f;
+                if (srcDiameter > 1e-6f && maxFragDist > srcDiameter * kMaxFragSpreadFactor)
+                {
+                    UvtLog.Info($"[GroupedTransfer] Fragment merge: skipping src#{kv.Key} group " +
+                        $"({group.Count} shells) — fragment spread {maxFragDist:F4} > " +
+                        $"{kMaxFragSpreadFactor}× source diameter {srcDiameter:F4}");
+                    continue;
                 }
 
                 mergeGroups.Add((kv.Key, group));
