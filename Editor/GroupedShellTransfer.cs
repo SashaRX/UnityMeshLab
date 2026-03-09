@@ -2966,11 +2966,41 @@ namespace LightmapUvTool
             // Identify mergeable groups: ≥2 target shells contained by the same source.
             // Validate: combined UV0 area should be roughly comparable to source area.
             // LOD simplification reduces geometry, so allow generous tolerance.
+            //
+            // IMPORTANT: Skip source shells whose UV0 bbox overlaps with another
+            // source shell. Overlapping UV0 means the source has front/back or
+            // tiling geometry — target shells inside it may belong to DIFFERENT
+            // physical sides and must NOT be merged into one virtual shell.
+            var srcHasUv0Overlap = new bool[srcCount];
+            for (int si = 0; si < srcCount; si++)
+            {
+                for (int sj = si + 1; sj < srcCount; sj++)
+                {
+                    if (srcShells[si].boundsMin.x < srcShells[sj].boundsMax.x + bboxPad &&
+                        srcShells[si].boundsMax.x > srcShells[sj].boundsMin.x - bboxPad &&
+                        srcShells[si].boundsMin.y < srcShells[sj].boundsMax.y + bboxPad &&
+                        srcShells[si].boundsMax.y > srcShells[sj].boundsMin.y - bboxPad)
+                    {
+                        srcHasUv0Overlap[si] = true;
+                        srcHasUv0Overlap[sj] = true;
+                    }
+                }
+            }
+
             var mergeGroups = new List<(int srcIdx, List<int> fragments)>();
             foreach (var kv in srcToFragments)
             {
                 var group = kv.Value;
                 if (group.Count < 2) continue;
+
+                // Skip source shells with UV0 overlap — fragments may be
+                // on different physical sides (front/back belt, tiling panels)
+                if (srcHasUv0Overlap[kv.Key])
+                {
+                    UvtLog.Info($"[GroupedTransfer] Fragment merge: skipping src#{kv.Key} group " +
+                        $"({group.Count} shells) — source has UV0 overlap with other shells");
+                    continue;
+                }
 
                 float combinedArea = 0;
                 for (int i = 0; i < group.Count; i++)
