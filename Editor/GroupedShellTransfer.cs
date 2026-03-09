@@ -1093,6 +1093,47 @@ namespace LightmapUvTool
                 }
             }
 
+            // Post-dedup diagnostic: check for remaining same-source duplicates
+            {
+                var srcToTargets = new Dictionary<int, List<int>>();
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    int src = result.targetShellToSourceShell[tsi];
+                    if (src < 0) continue;
+                    if (!srcToTargets.TryGetValue(src, out var list))
+                    {
+                        list = new List<int>();
+                        srcToTargets[src] = list;
+                    }
+                    list.Add(tsi);
+                }
+                foreach (var kv in srcToTargets)
+                {
+                    if (kv.Value.Count > 1)
+                    {
+                        var merged = new List<string>();
+                        foreach (int tsi in kv.Value)
+                            merged.Add($"t{tsi}(merged={tgtIsMerged[tsi]})");
+                        UvtLog.Warn($"[GroupedTransfer] POST-DEDUP DUPLICATE: src{kv.Key} " +
+                            $"claimed by {string.Join(", ", merged)}");
+                    }
+                }
+            }
+
+            // Log all target→source assignments for diagnostics
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.Append("[GroupedTransfer] Assignments:");
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    int src = result.targetShellToSourceShell[tsi];
+                    sb.Append($" t{tsi}→src{src}");
+                    if (tgtIsMerged[tsi]) sb.Append("(M)");
+                    if (tgtForce3DFallback[tsi]) sb.Append("(3D)");
+                }
+                UvtLog.Info(sb.ToString());
+            }
+
             // Log overlap group assignment summary
             if (overlapGroups.Count > 0)
             {
