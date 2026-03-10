@@ -230,8 +230,6 @@ namespace LightmapUvTool
             /// E.g. "InnerDoor_A_01_Base_LOD0" → "InnerDoor_A_01_Base"
             /// </summary>
             public string meshGroupKey;
-            /// <summary>Source shell descriptors restored from sidecar, for stable ShellMatch coloring.</summary>
-            public ShellDescriptor[] restoredSourceDescriptors;
         }
 
         struct ShellUvHit
@@ -605,9 +603,6 @@ namespace LightmapUvTool
                     tr.verticesTransferred = transferred;
 
                     e.shellTransferResult = tr;
-
-                    // Also store source descriptors for stable ShellMatch coloring
-                    e.restoredSourceDescriptors = entry.sourceShellDescriptors;
                 }
             }
         }
@@ -2580,47 +2575,6 @@ namespace LightmapUvTool
 
 
         /// <summary>Get source shell descriptors for ShellMatch coloring. Returns null if unavailable.</summary>
-        ShellDescriptor[] GetSourceDescriptors(MeshEntry entry)
-        {
-            if (entry == null) return null;
-
-            // Restored from sidecar
-            if (entry.restoredSourceDescriptors != null)
-                return entry.restoredSourceDescriptors;
-
-            // Live: compute from source mesh and cache on entry
-            if (entry.lodIndex == sourceLodIndex) return null; // source LOD doesn't have "source descriptors"
-
-            var srcEntries = ForLod(sourceLodIndex);
-            MeshEntry se = null;
-            if (!string.IsNullOrEmpty(entry.meshGroupKey))
-                se = srcEntries.FirstOrDefault(s => s.meshGroupKey == entry.meshGroupKey);
-            if (se == null)
-            {
-                int ti = ForLod(entry.lodIndex).IndexOf(entry);
-                se = ti < srcEntries.Count ? srcEntries[ti] : (srcEntries.Count > 0 ? srcEntries[0] : null);
-            }
-            if (se == null) return null;
-
-            Mesh srcMesh = se.repackedMesh ?? se.originalMesh;
-            if (srcMesh == null) return null;
-
-            var srcUv0 = new List<Vector2>();
-            srcMesh.GetUVs(0, srcUv0);
-            if (srcUv0.Count != srcMesh.vertexCount) return null;
-
-            try
-            {
-                var srcShells = UvShellExtractor.Extract(srcUv0.ToArray(), srcMesh.triangles, computeDescriptors: true);
-                var descs = new ShellDescriptor[srcShells.Count];
-                for (int i = 0; i < srcShells.Count; i++)
-                    descs[i] = srcShells[i].descriptor;
-                entry.restoredSourceDescriptors = descs; // cache for next frame
-                return descs;
-            }
-            catch { return null; }
-        }
-
         /// <summary>
         /// Get or build UV0 shell mapping for a mesh: vertex→uv0ShellIndex + descriptors.
         /// Used so ALL LODs (including source) derive shell colors from UV0,
@@ -4046,7 +4000,6 @@ namespace LightmapUvTool
             {
                 e.shellTransferResult = null;
                 e.borderRepairReport = null;
-                e.restoredSourceDescriptors = null;
             }
             shellColorKeyCache.Clear();
             shellColorKeyCacheDirty = true;
@@ -4618,7 +4571,6 @@ namespace LightmapUvTool
                 if (e.fbxMesh != null) e.originalMesh = e.fbxMesh;
                 e.shellTransferResult = null;
                 e.borderRepairReport = null;
-                e.restoredSourceDescriptors = null;
                 e.wasWelded = false;
                 e.wasEdgeWelded = false;
                 e.wasSymmetrySplit = false;
