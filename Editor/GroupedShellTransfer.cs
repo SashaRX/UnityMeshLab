@@ -310,6 +310,8 @@ namespace LightmapUvTool
             int step = Mathf.Max(1, vertList.Count / kMaxSampleVerts);
 
             float bestScore = float.MaxValue;
+            float bestNormalDot = useNormal ? -2f : 1f; // when not using normals, assume good
+            const float kMinDotForEarlyExit = 0.3f;
             int tries = Mathf.Min(maxRetries, ranked.Count);
             for (int attempt = 0; attempt < tries; attempt++)
             {
@@ -348,32 +350,31 @@ namespace LightmapUvTool
                 float avgDist = sampled > 0 ? totalDistSq / sampled : float.MaxValue;
 
                 // Composite score: surface distance × normal factor.
-                // normalDot ∈ [-1,1]: 1 = same direction, -1 = opposite.
-                // Multiplicative factor ensures wrong-side shells are penalized
-                // proportionally to distance — disambiguates equidistant surfaces
-                // (thin belts/straps) without overwhelming clearly-closer matches.
+                // Multiplicative factor disambiguates equidistant surfaces
+                // (thin belts/straps) without overwhelming clearly-closer matches
+                // (small detail shells on kiosks etc.).
                 float score = avgDist;
+                float candidateDot = 1f;
                 if (useNormal && si < srcAvgNormal.Length)
                 {
-                    float dot = Vector3.Dot(tgtNormal, srcAvgNormal[si]);
-                    // Multiplicative penalty: scales with distance so it disambiguates
-                    // equidistant surfaces (thin belts/straps) without overwhelming
-                    // clearly-closer matches (small detail shells on kiosks etc.).
+                    candidateDot = Vector3.Dot(tgtNormal, srcAvgNormal[si]);
                     // Factor: 1.0 when aligned (dot=1), 3.0 when opposite (dot=-1).
-                    score *= 1f + (1f - dot);
+                    score *= 1f + (1f - candidateDot);
                 }
 
                 if (score < bestScore)
                 {
                     bestScore = score;
+                    bestNormalDot = candidateDot;
                     chosenSrc = si;
                     chosenDistSq = ranked[attempt].distSq;
                     chosenAvg3D = avgDist;
                 }
-                // Early exit only when SCORE (including normal penalty) is good.
-                // Using raw avgDist would skip wrong-side shells that are close
-                // in 3D but have opposing normals (common with thin belts/straps).
-                if (bestScore < goodDistSq) break;
+                // Early exit requires BOTH good distance AND good normal alignment.
+                // With multiplicative penalty, even wrong-side shells have low scores
+                // when distance is small (thin belts), so we must also check that the
+                // best candidate has reasonable normal agreement before exiting.
+                if (bestScore < goodDistSq && bestNormalDot >= kMinDotForEarlyExit) break;
             }
         }
 
