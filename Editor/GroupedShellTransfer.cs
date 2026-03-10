@@ -2732,7 +2732,7 @@ namespace LightmapUvTool
                     // Diagnostic: break down issue types for debugging
                     if (issuesInterp > 0)
                     {
-                        int degCount = 0, flipCount = 0, missCount = 0;
+                        int degCount = 0, missCount = 0;
                         foreach (int fIdx in tShell.faceIndices)
                         {
                             int di0 = tgtTris[fIdx * 3], di1 = tgtTris[fIdx * 3 + 1], di2 = tgtTris[fIdx * 3 + 2];
@@ -2742,14 +2742,9 @@ namespace LightmapUvTool
                             { missCount++; continue; }
                             float dsa2 = SignedArea2D(da2, db2, dc2);
                             if (Mathf.Abs(dsa2) < 1e-10f) { degCount++; continue; }
-                            if (di0 < tUv0.Length && di1 < tUv0.Length && di2 < tUv0.Length)
-                            {
-                                float dsa0 = SignedArea2D(tUv0[di0], tUv0[di1], tUv0[di2]);
-                                if (dsa0 * dsa2 < 0f) flipCount++;
-                            }
                         }
                         UvtLog.Info($"[GroupedTransfer]   t{tsi}: interp {issuesInterp}/{tShell.faceIndices.Count}f " +
-                            $"issues (degen={degCount} flip={flipCount} miss={missCount})");
+                            $"issues (degen={degCount} miss={missCount})");
                     }
 
                     // ── Per-face repair for non-merged interpolation ──
@@ -2776,10 +2771,10 @@ namespace LightmapUvTool
                             float saUv0 = SignedArea2D(a0, b0, c0);
                             float saUv2 = SignedArea2D(a2, b2, c2);
 
-                            // Detect issue: degenerate UV2 or winding flip
+                            // Only repair degenerate UV2 faces (near-zero area).
+                            // Winding flip (UV0 vs UV2 opposite sign) is normal and not an error.
                             bool isDegenerate = Mathf.Abs(saUv2) < 1e-10f;
-                            bool isFlipped = !isDegenerate && saUv0 * saUv2 < 0f;
-                            if (!isDegenerate && !isFlipped) continue;
+                            if (!isDegenerate) continue;
 
                             // Find source face nearest to face centroid in UV0
                             Vector2 centroid = (a0 + b0 + c0) * (1f / 3f);
@@ -2814,9 +2809,8 @@ namespace LightmapUvTool
                             Vector2 nc2 = AffineUv0ToUv2(c0, sA0, sB0, sC0, sA2, sB2, sC2, invDet);
 
                             float newSa = SignedArea2D(na2, nb2, nc2);
-                            // Accept if: correct winding and non-degenerate
+                            // Accept if non-degenerate (winding direction doesn't matter)
                             if (Mathf.Abs(newSa) < 1e-10f) continue; // still degenerate
-                            if (Mathf.Abs(saUv0) >= 1e-10f && saUv0 * newSa < 0f) continue; // flipped
 
                             repairedUv2[i0] = na2;
                             repairedUv2[i1] = nb2;
@@ -3062,6 +3056,9 @@ namespace LightmapUvTool
         static int CountShellIssues(List<int> faceIndices, int[] tris, Vector2[] uv0,
             Dictionary<int, Vector2> candidateUv2)
         {
+            // Only count missing UV2 and degenerate faces as issues.
+            // Winding flip (UV0 vs UV2 opposite sign) is normal — UV0 and UV2 are
+            // independent coordinate spaces, so different winding is expected.
             int issues = 0;
             foreach (int f in faceIndices)
             {
@@ -3073,13 +3070,6 @@ namespace LightmapUvTool
 
                 float saUv2 = (b2.x - a2.x) * (c2.y - a2.y) - (c2.x - a2.x) * (b2.y - a2.y);
                 if (Mathf.Abs(saUv2) < 1e-10f) { issues++; continue; }
-
-                if (i0 < uv0.Length && i1 < uv0.Length && i2 < uv0.Length)
-                {
-                    var a0 = uv0[i0]; var b0 = uv0[i1]; var c0 = uv0[i2];
-                    float saUv0 = (b0.x - a0.x) * (c0.y - a0.y) - (c0.x - a0.x) * (b0.y - a0.y);
-                    if (saUv0 * saUv2 < 0f) issues++;
-                }
             }
             return issues;
         }
