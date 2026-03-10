@@ -43,7 +43,7 @@ namespace LightmapUvTool
                 enableCoverageSplit = true,
                 perimeterTolerance = 0.05f,
                 borderFuseTolerance = 0.02f,
-                enableBorderRepair = true,
+                enableBorderRepair = false,
                 saveNewMeshAssets = true,
                 savePath = "Assets/LightmapUvTool_Output"
             };
