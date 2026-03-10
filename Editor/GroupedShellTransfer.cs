@@ -2710,11 +2710,12 @@ namespace LightmapUvTool
                     }
                     int issuesInterp = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, uv2_interp);
 
-                    // ── Winding-flip repair for non-merged interpolation ──
-                    // Per-vertex interpolation can produce winding flips when adjacent target
-                    // vertices project to different source triangles with divergent UV2 layouts.
-                    // Fix: for each flipped face, re-project all 3 verts through a single source
-                    // face's affine UV0→UV2 map (which preserves winding by construction).
+                    // ── Per-face repair for non-merged interpolation ──
+                    // Per-vertex interpolation can produce issues when adjacent target vertices
+                    // project to different source triangles: winding flips (sign mismatch) or
+                    // degenerate UV2 faces (near-zero area from collapsed projections).
+                    // Fix: for each bad face, re-project all 3 verts through a single source
+                    // face's affine UV0→UV2 map (preserves winding + area by construction).
                     if (issuesInterp > 0)
                     {
                         var repairedUv2 = new Dictionary<int, Vector2>(uv2_interp);
@@ -2733,8 +2734,10 @@ namespace LightmapUvTool
                             float saUv0 = SignedArea2D(a0, b0, c0);
                             float saUv2 = SignedArea2D(a2, b2, c2);
 
-                            // Skip non-flipped and degenerate faces
-                            if (saUv0 * saUv2 >= 0f || Mathf.Abs(saUv2) < 1e-10f) continue;
+                            // Detect issue: degenerate UV2 or winding flip
+                            bool isDegenerate = Mathf.Abs(saUv2) < 1e-10f;
+                            bool isFlipped = !isDegenerate && saUv0 * saUv2 < 0f;
+                            if (!isDegenerate && !isFlipped) continue;
 
                             // Find source face nearest to face centroid in UV0
                             Vector2 centroid = (a0 + b0 + c0) * (1f / 3f);
@@ -2769,7 +2772,9 @@ namespace LightmapUvTool
                             Vector2 nc2 = AffineUv0ToUv2(c0, sA0, sB0, sC0, sA2, sB2, sC2, invDet);
 
                             float newSa = SignedArea2D(na2, nb2, nc2);
-                            if (saUv0 * newSa < 0f || Mathf.Abs(newSa) < 1e-10f) continue;
+                            // Accept if: correct winding and non-degenerate
+                            if (Mathf.Abs(newSa) < 1e-10f) continue; // still degenerate
+                            if (Mathf.Abs(saUv0) >= 1e-10f && saUv0 * newSa < 0f) continue; // flipped
 
                             repairedUv2[i0] = na2;
                             repairedUv2[i1] = nb2;
@@ -2783,7 +2788,7 @@ namespace LightmapUvTool
                             if (repairedIssues < issuesInterp)
                             {
                                 uv2_interp = repairedUv2;
-                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: winding repair " +
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: face repair " +
                                     $"{issuesInterp}→{repairedIssues} issues ({repairAttempts} faces re-projected)");
                                 issuesInterp = repairedIssues;
                             }
