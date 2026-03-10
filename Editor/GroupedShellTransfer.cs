@@ -2710,6 +2710,86 @@ namespace LightmapUvTool
                     }
                     int issuesInterp = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, uv2_interp);
 
+                    // ── Winding-flip repair for non-merged interpolation ──
+                    // Per-vertex interpolation can produce winding flips when adjacent target
+                    // vertices project to different source triangles with divergent UV2 layouts.
+                    // Fix: for each flipped face, re-project all 3 verts through a single source
+                    // face's affine UV0→UV2 map (which preserves winding by construction).
+                    if (issuesInterp > 0)
+                    {
+                        var repairedUv2 = new Dictionary<int, Vector2>(uv2_interp);
+                        int repairAttempts = 0;
+
+                        foreach (int fIdx in tShell.faceIndices)
+                        {
+                            int i0 = tgtTris[fIdx * 3], i1 = tgtTris[fIdx * 3 + 1], i2 = tgtTris[fIdx * 3 + 2];
+                            if (!repairedUv2.TryGetValue(i0, out var a2) ||
+                                !repairedUv2.TryGetValue(i1, out var b2) ||
+                                !repairedUv2.TryGetValue(i2, out var c2))
+                                continue;
+
+                            if (i0 >= tUv0.Length || i1 >= tUv0.Length || i2 >= tUv0.Length) continue;
+                            var a0 = tUv0[i0]; var b0 = tUv0[i1]; var c0 = tUv0[i2];
+                            float saUv0 = SignedArea2D(a0, b0, c0);
+                            float saUv2 = SignedArea2D(a2, b2, c2);
+
+                            // Skip non-flipped and degenerate faces
+                            if (saUv0 * saUv2 >= 0f || Mathf.Abs(saUv2) < 1e-10f) continue;
+
+                            // Find source face nearest to face centroid in UV0
+                            Vector2 centroid = (a0 + b0 + c0) * (1f / 3f);
+                            int srcF;
+                            if (srcBvh != null)
+                            {
+                                srcF = srcBvh.FindNearest(centroid).faceIndex;
+                            }
+                            else
+                            {
+                                srcF = -1;
+                                float bestDSq = float.MaxValue;
+                                for (int fi = 0; fi < srcFacesChosen.Count; fi++)
+                                {
+                                    int sf = srcFacesChosen[fi];
+                                    float dSq = PointToTri2D(centroid, triUv0A[sf], triUv0B[sf], triUv0C[sf],
+                                        out _, out _, out _);
+                                    if (dSq < bestDSq) { bestDSq = dSq; srcF = sf; }
+                                }
+                            }
+                            if (srcF < 0) continue;
+
+                            // Affine UV0→UV2 through the single source face (unclamped bary)
+                            Vector2 sA0 = triUv0A[srcF], sB0 = triUv0B[srcF], sC0 = triUv0C[srcF];
+                            float det = (sB0.x - sA0.x) * (sC0.y - sA0.y) - (sC0.x - sA0.x) * (sB0.y - sA0.y);
+                            if (Mathf.Abs(det) < 1e-12f) continue;
+                            float invDet = 1f / det;
+                            Vector2 sA2 = triUv2A[srcF], sB2 = triUv2B[srcF], sC2 = triUv2C[srcF];
+
+                            Vector2 na2 = AffineUv0ToUv2(a0, sA0, sB0, sC0, sA2, sB2, sC2, invDet);
+                            Vector2 nb2 = AffineUv0ToUv2(b0, sA0, sB0, sC0, sA2, sB2, sC2, invDet);
+                            Vector2 nc2 = AffineUv0ToUv2(c0, sA0, sB0, sC0, sA2, sB2, sC2, invDet);
+
+                            float newSa = SignedArea2D(na2, nb2, nc2);
+                            if (saUv0 * newSa < 0f || Mathf.Abs(newSa) < 1e-10f) continue;
+
+                            repairedUv2[i0] = na2;
+                            repairedUv2[i1] = nb2;
+                            repairedUv2[i2] = nc2;
+                            repairAttempts++;
+                        }
+
+                        if (repairAttempts > 0)
+                        {
+                            int repairedIssues = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, repairedUv2);
+                            if (repairedIssues < issuesInterp)
+                            {
+                                uv2_interp = repairedUv2;
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: winding repair " +
+                                    $"{issuesInterp}→{repairedIssues} issues ({repairAttempts} faces re-projected)");
+                                issuesInterp = repairedIssues;
+                            }
+                        }
+                    }
+
                     if (uv2_transform != null && issuesTransform < issuesInterp)
                     {
                         chosenUv2 = uv2_transform;
@@ -3069,6 +3149,23 @@ namespace LightmapUvTool
         static float SignedArea2D(Vector2 a, Vector2 b, Vector2 c)
         {
             return (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+        }
+
+        /// <summary>
+        /// Unclamped affine UV0→UV2 map through a single source triangle.
+        /// Computes raw barycentric coords in source UV0 triangle and applies them
+        /// to source UV2 triangle.  Preserves winding by construction.
+        /// </summary>
+        static Vector2 AffineUv0ToUv2(Vector2 p, Vector2 a0, Vector2 b0, Vector2 c0,
+            Vector2 a2, Vector2 b2, Vector2 c2, float invDet)
+        {
+            float dx = p.x - a0.x, dy = p.y - a0.y;
+            float bx = b0.x - a0.x, by = b0.y - a0.y;
+            float cx = c0.x - a0.x, cy = c0.y - a0.y;
+            float u = (dx * cy - cx * dy) * invDet; // weight for b0/b2
+            float v = (bx * dy - dx * by) * invDet; // weight for c0/c2
+            float w = 1f - u - v;                   // weight for a0/a2
+            return a2 * w + b2 * u + c2 * v;
         }
 
         static float ComputeSignedArea(int[] tris, Vector2[] uvs, List<int> faces)
