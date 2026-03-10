@@ -230,8 +230,6 @@ namespace LightmapUvTool
             /// E.g. "InnerDoor_A_01_Base_LOD0" → "InnerDoor_A_01_Base"
             /// </summary>
             public string meshGroupKey;
-            /// <summary>Source shell descriptors restored from sidecar, for stable ShellMatch coloring.</summary>
-            public ShellDescriptor[] restoredSourceDescriptors;
         }
 
         struct ShellUvHit
@@ -605,9 +603,6 @@ namespace LightmapUvTool
                     tr.verticesTransferred = transferred;
 
                     e.shellTransferResult = tr;
-
-                    // Also store source descriptors for stable ShellMatch coloring
-                    e.restoredSourceDescriptors = entry.sourceShellDescriptors;
                 }
             }
         }
@@ -1334,7 +1329,7 @@ namespace LightmapUvTool
                         switch (fillMode)
                         {
                             case FillMode.ShellMatch when hasShellMatch:
-                                GlFillShellMatch(cx,cy,sz, uvs,tri,fN,uN, entry.shellTransferResult.vertexToSourceShell, GetSourceDescriptors(entry));
+                                GlFillShellMatch(cx,cy,sz, uvs,tri,fN,uN, entry.shellTransferResult.vertexToSourceShell);
                                 break;
                             case FillMode.Validation when hasValidation:
                                 GlFillValidation(cx,cy,sz, uvs,tri,fN,uN, entry.validationReport.perTriangle);
@@ -2580,47 +2575,6 @@ namespace LightmapUvTool
 
 
         /// <summary>Get source shell descriptors for ShellMatch coloring. Returns null if unavailable.</summary>
-        ShellDescriptor[] GetSourceDescriptors(MeshEntry entry)
-        {
-            if (entry == null) return null;
-
-            // Restored from sidecar
-            if (entry.restoredSourceDescriptors != null)
-                return entry.restoredSourceDescriptors;
-
-            // Live: compute from source mesh and cache on entry
-            if (entry.lodIndex == sourceLodIndex) return null; // source LOD doesn't have "source descriptors"
-
-            var srcEntries = ForLod(sourceLodIndex);
-            MeshEntry se = null;
-            if (!string.IsNullOrEmpty(entry.meshGroupKey))
-                se = srcEntries.FirstOrDefault(s => s.meshGroupKey == entry.meshGroupKey);
-            if (se == null)
-            {
-                int ti = ForLod(entry.lodIndex).IndexOf(entry);
-                se = ti < srcEntries.Count ? srcEntries[ti] : (srcEntries.Count > 0 ? srcEntries[0] : null);
-            }
-            if (se == null) return null;
-
-            Mesh srcMesh = se.repackedMesh ?? se.originalMesh;
-            if (srcMesh == null) return null;
-
-            var srcUv0 = new List<Vector2>();
-            srcMesh.GetUVs(0, srcUv0);
-            if (srcUv0.Count != srcMesh.vertexCount) return null;
-
-            try
-            {
-                var srcShells = UvShellExtractor.Extract(srcUv0.ToArray(), srcMesh.triangles, computeDescriptors: true);
-                var descs = new ShellDescriptor[srcShells.Count];
-                for (int i = 0; i < srcShells.Count; i++)
-                    descs[i] = srcShells[i].descriptor;
-                entry.restoredSourceDescriptors = descs; // cache for next frame
-                return descs;
-            }
-            catch { return null; }
-        }
-
         /// <summary>
         /// Get or build UV0 shell mapping for a mesh: vertex→uv0ShellIndex + descriptors.
         /// Used so ALL LODs (including source) derive shell colors from UV0,
@@ -2684,9 +2638,9 @@ namespace LightmapUvTool
                 return result;
             }
 
-            // Priority 1: Transfer mapping (target LODs) — uses source shell index
-            // from transfer result, then maps to source UV0 descriptor hash.
-            // Cleared by SwitchToPostApplyView after Apply/Reset.
+            // Priority 1: Transfer mapping (target LODs) — majority vote over
+            // vertexToSourceShell returns the LOD0 shell index directly.
+            // Using raw index (not stableHash) guarantees color match across LODs.
             var map = entry?.shellTransferResult?.vertexToSourceShell;
             if (map != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
             {
@@ -2706,23 +2660,16 @@ namespace LightmapUvTool
                         bestKey = srcShell;
                     }
                 }
-                if (bestKey >= 0)
-                {
-                    var srcDescs = GetSourceDescriptors(entry);
-                    result = (srcDescs != null && bestKey < srcDescs.Length)
-                        ? Mathf.Abs(srcDescs[bestKey].stableHash)
-                        : bestKey;
-                }
-                else
-                {
-                    result = Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
-                }
+                result = bestKey >= 0
+                    ? bestKey
+                    : Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
             }
-            // Priority 2: UV0 shell mapping — for source LOD or entries without transfer data.
+            // Priority 2: UV0 shell index — for source LOD or entries without transfer data.
+            // Returns raw UV0 shell index (0-based) so LOD0 colors match target LODs.
             else if (mesh != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
             {
-                var (v2s, descs) = GetUv0ShellMap(mesh);
-                if (v2s != null && descs != null)
+                var (v2s, _) = GetUv0ShellMap(mesh);
+                if (v2s != null)
                 {
                     int bestKey = -1, bestCount = 0;
                     var freq = new Dictionary<int, int>();
@@ -2740,13 +2687,9 @@ namespace LightmapUvTool
                             bestKey = uv0Shell;
                         }
                     }
-                    result = (bestKey >= 0 && bestKey < descs.Length)
-                        ? Mathf.Abs(descs[bestKey].stableHash)
+                    result = bestKey >= 0
+                        ? bestKey
                         : Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
-                }
-                else if (shell.hasDescriptor)
-                {
-                    result = Mathf.Abs(shell.descriptor.stableHash);
                 }
                 else
                 {
@@ -2756,9 +2699,7 @@ namespace LightmapUvTool
             // Fallback: hash-based on shellId
             else
             {
-                result = shell.hasDescriptor
-                    ? Mathf.Abs(shell.descriptor.stableHash)
-                    : Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
+                result = Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
             }
 
             shellColorKeyCache[cacheKey] = result;
@@ -2907,7 +2848,7 @@ namespace LightmapUvTool
             if (!orient.ContainsKey(key)) orient[key] = (a, b);
         }
 
-        void GlFillShellMatch(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, int[] vertShellMap, ShellDescriptor[] sourceDescriptors = null)
+        void GlFillShellMatch(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, int[] vertShellMap)
         {
             if (vertShellMap == null) return;
             int tot = 0, b = 0;
@@ -2916,7 +2857,8 @@ namespace LightmapUvTool
             {
                 int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
                 if (!TOk(uv, uN, a0, a1, a2)) continue;
-                int sh = (a0 < vertShellMap.Length) ? vertShellMap[a0] : -1;
+                // Majority vote across 3 vertices for consistent face coloring
+                int sh = VoteBestShell(vertShellMap, uN, a0, a1, a2);
                 Color nc;
                 if (sh < 0)
                 {
@@ -2924,11 +2866,9 @@ namespace LightmapUvTool
                 }
                 else
                 {
-                    // Use source descriptor hash for stable color when available
-                    int colorKey = (sourceDescriptors != null && sh < sourceDescriptors.Length)
-                        ? Mathf.Abs(sourceDescriptors[sh].stableHash)
-                        : sh;
-                    Color pc = pal[colorKey % pal.Length];
+                    // Use raw LOD0 shell index directly — matches GetShellColorKey
+                    // and BuildFaceColorKeys for consistent colors across all views
+                    Color pc = pal[sh % pal.Length];
                     nc = new Color(pc.r, pc.g, pc.b, fillAlpha * 1.5f);
                 }
                 GL.Color(nc);
@@ -3976,8 +3916,9 @@ namespace LightmapUvTool
 
         /// <summary>
         /// Build per-face color keys for 3D preview using the same logic as
-        /// 2D GetShellColorKey: transfer mapping → source descriptors when
-        /// available, UV0 descriptors otherwise.
+        /// 2D GetShellColorKey: vertexToSourceShell majority vote → raw LOD0
+        /// shell index, UV0 shell index fallback. Unified key space ensures
+        /// matching colors between 2D and 3D previews and across LODs.
         /// </summary>
         int[] BuildFaceColorKeys(Mesh mesh, MeshEntry entry)
         {
@@ -3996,24 +3937,34 @@ namespace LightmapUvTool
                 return faceKeys;
             }
 
-            // Extract shells from UV2 (lightmap UV) — UV2 is transferred from LOD0,
-            // so UV2-based shells have consistent structure across LODs.
-            // Use shellId (sequential extraction order) for coloring — it's stable
-            // because Union-Find processes faces in triangle-buffer order.
-            var uv2List = new List<Vector2>();
-            mesh.GetUVs(1, uv2List);
-            Vector2[] uv = uv2List.Count == mesh.vertexCount ? uv2List.ToArray() : mesh.uv;
-            if (uv == null || uv.Length != mesh.vertexCount)
+            int vertCount = mesh.vertexCount;
+
+            // Priority 1: Transfer mapping — majority vote per face over
+            // vertexToSourceShell returns the LOD0 shell index directly.
+            var map = entry?.shellTransferResult?.vertexToSourceShell;
+            if (map != null && map.Length == vertCount)
+            {
+                for (int face = 0; face < faceCount; face++)
+                {
+                    int i0 = tris[face * 3], i1 = tris[face * 3 + 1], i2 = tris[face * 3 + 2];
+                    int key = VoteBestShell(map, vertCount, i0, i1, i2);
+                    faceKeys[face] = key >= 0 ? key : 0;
+                }
                 return faceKeys;
+            }
 
-            List<UvShell> shells;
-            try { shells = UvShellExtractor.Extract(uv, tris); }
-            catch { return faceKeys; }
-
-            foreach (var shell in shells)
-                foreach (int fi in shell.faceIndices)
-                    if (fi >= 0 && fi < faceCount)
-                        faceKeys[fi] = shell.shellId;
+            // Priority 2: UV0 shell index — same raw index used by LOD0.
+            var (v2s, _) = GetUv0ShellMap(mesh);
+            if (v2s != null)
+            {
+                for (int face = 0; face < faceCount; face++)
+                {
+                    int i0 = tris[face * 3], i1 = tris[face * 3 + 1], i2 = tris[face * 3 + 2];
+                    int key = VoteBestShell(v2s, vertCount, i0, i1, i2);
+                    faceKeys[face] = key >= 0 ? key : 0;
+                }
+                return faceKeys;
+            }
 
             return faceKeys;
         }
@@ -4049,7 +4000,6 @@ namespace LightmapUvTool
             {
                 e.shellTransferResult = null;
                 e.borderRepairReport = null;
-                e.restoredSourceDescriptors = null;
             }
             shellColorKeyCache.Clear();
             shellColorKeyCacheDirty = true;
@@ -4621,7 +4571,6 @@ namespace LightmapUvTool
                 if (e.fbxMesh != null) e.originalMesh = e.fbxMesh;
                 e.shellTransferResult = null;
                 e.borderRepairReport = null;
-                e.restoredSourceDescriptors = null;
                 e.wasWelded = false;
                 e.wasEdgeWelded = false;
                 e.wasSymmetrySplit = false;
@@ -4789,6 +4738,12 @@ namespace LightmapUvTool
             AssetDatabase.Refresh();
             UvtLog.Info($"[Reset] Full pipeline state reset: {deleted} sidecar(s) deleted, {fbxPaths.Count} FBX reimported");
             SwitchToPostApplyView();
+
+            // Enable post-reset coloring so fill colors visually change
+            postResetColoring = true;
+            shellColorKeyCache.Clear();
+            shellColorKeyCacheDirty = true;
+
             Repaint();
         }
 
@@ -4837,6 +4792,12 @@ namespace LightmapUvTool
             AssetDatabase.Refresh();
             UvtLog.Info($"[Reset] Deleted {deleted} sidecar(s), reimported {fbxPaths.Count} FBX");
             SwitchToPostApplyView();
+
+            // Enable post-reset coloring so fill colors visually change
+            postResetColoring = true;
+            shellColorKeyCache.Clear();
+            shellColorKeyCacheDirty = true;
+
             Repaint();
         }
 
