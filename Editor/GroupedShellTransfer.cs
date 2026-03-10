@@ -2837,6 +2837,47 @@ namespace LightmapUvTool
                         }
                     }
 
+                    // ── Shell-level mirror repair ──
+                    // When source-target UV0 are globally mirrored, ALL faces have flipped
+                    // winding and per-face repair can't fix it (every source face has the
+                    // same UV0→UV2 chirality). Fix by reflecting UV2 around the shell centroid.
+                    if (issuesInterp > 0 && issuesInterp == tShell.faceIndices.Count)
+                    {
+                        // Verify all issues are winding flips (not degenerate/missing)
+                        bool allFlips = true;
+                        foreach (int fIdx in tShell.faceIndices)
+                        {
+                            int mi0 = tgtTris[fIdx * 3], mi1 = tgtTris[fIdx * 3 + 1], mi2 = tgtTris[fIdx * 3 + 2];
+                            if (!uv2_interp.TryGetValue(mi0, out var ma2) ||
+                                !uv2_interp.TryGetValue(mi1, out var mb2) ||
+                                !uv2_interp.TryGetValue(mi2, out var mc2))
+                            { allFlips = false; break; }
+                            float msa2 = SignedArea2D(ma2, mb2, mc2);
+                            if (Mathf.Abs(msa2) < 1e-10f) { allFlips = false; break; }
+                        }
+
+                        if (allFlips)
+                        {
+                            // Reflect UV2.x around centroid → flips all windings
+                            Vector2 uv2Centroid = Vector2.zero;
+                            foreach (var kv in uv2_interp) uv2Centroid += kv.Value;
+                            uv2Centroid /= uv2_interp.Count;
+
+                            var mirroredUv2 = new Dictionary<int, Vector2>(uv2_interp.Count);
+                            foreach (var kv in uv2_interp)
+                                mirroredUv2[kv.Key] = new Vector2(2f * uv2Centroid.x - kv.Value.x, kv.Value.y);
+
+                            int mirrorIssues = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, mirroredUv2);
+                            if (mirrorIssues < issuesInterp)
+                            {
+                                uv2_interp = mirroredUv2;
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: shell mirror repair " +
+                                    $"{issuesInterp}→{mirrorIssues} issues (reflected UV2.x, {tShell.faceIndices.Count} all-flipped faces)");
+                                issuesInterp = mirrorIssues;
+                            }
+                        }
+                    }
+
                     if (uv2_transform != null && issuesTransform < issuesInterp)
                     {
                         chosenUv2 = uv2_transform;
