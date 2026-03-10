@@ -286,7 +286,8 @@ namespace LightmapUvTool
             int maxRetries, float goodDistSq,
             HashSet<int> excludeSources,
             out int chosenSrc, out float chosenDistSq, out float chosenAvg3D,
-            Vector3 tgtNormal = default, Vector3[] srcAvgNormal = null)
+            Vector3 tgtNormal = default, Vector3[] srcAvgNormal = null,
+            float meshDiag = 0f)
         {
             chosenSrc = -1;
             chosenDistSq = float.MaxValue;
@@ -355,8 +356,9 @@ namespace LightmapUvTool
                 if (useNormal && si < srcAvgNormal.Length)
                 {
                     float dot = Vector3.Dot(tgtNormal, srcAvgNormal[si]);
-                    float normalPenalty = Mathf.Max(0f, 1f - dot); // 0 for same dir, 2 for opposite
-                    score = avgDist + normalPenalty * goodDistSq * 10f;
+                    // Penalty: 0 when aligned (dot=1), meshDiagonal when opposite (dot=-1)
+                    float normalPenalty = meshDiag * (1f - dot) * 0.5f;
+                    score += normalPenalty;
                 }
 
                 if (score < bestScore)
@@ -1011,7 +1013,7 @@ namespace LightmapUvTool
                         shellBvh3D, shellBvh3DFaceMap,
                         tCentroid, kMaxRetries, kGoodDistSq, null,
                         out chosenSrc, out chosenDistSq, out chosenAvg3D,
-                        tgtAvgNormal[tsi], srcAvgNormal);
+                        tgtAvgNormal[tsi], srcAvgNormal, meshDiagonal);
                 }
 
                 if (chosenSrc < 0) continue;
@@ -1036,11 +1038,11 @@ namespace LightmapUvTool
                 }
             }
 
-            // ── Phase 2a-cov: 3D reverse-projection coverage check ──
-            // Дополняет UV0-based DetectMergedShell: проверяет, что геометрия
-            // target shell'а реально проецируется обратно на matched source shell в 3D.
-            // Шеллы с плохим 3D покрытием апгрейдятся в merged, чтобы использовать
-            // per-face 3D voting вместо UV0 интерполяции.
+            // ── Phase 2a-cov: 3D coverage check (diagnostic only) ──
+            // Coverage upgrade disabled: upgrading shells to merged changes their
+            // transfer mode from interp to 3D voting, which produces different UV2
+            // positions and causes visible UV2 jumps between LODs.
+            // Keeping the computation for diagnostics only.
             {
                 var srcNormals = sourceMesh.normals;
                 float coverageMaxDist = Mathf.Max(meshDiagonal * 0.05f, 0.01f);
@@ -1052,11 +1054,13 @@ namespace LightmapUvTool
                     result.targetShellToSourceShell,
                     coverageMaxDist, coverageMinDot);
 
-                int upgradedCount = CoverageSplitSolver.UpgradePoorCoverageToMerged(
-                    cov3D, tgtIsMerged, tgtIsFragmentMerged, 0.7f);
-
-                if (upgradedCount > 0)
-                    result.shellsMerged += upgradedCount;
+                // Log poor coverage shells for diagnostics, but do NOT upgrade to merged.
+                for (int tsi = 0; tsi < cov3D.Length; tsi++)
+                {
+                    if (!tgtIsMerged[tsi] && cov3D[tsi] < 0.7f && cov3D[tsi] > 0f)
+                        UvtLog.Verbose($"[CoverageSplit] Shell t{tsi}: 3D coverage " +
+                            $"{cov3D[tsi]:P0} < 70% (not upgrading to merged)");
+                }
             }
 
             // ── Phase 2a+: Rescore merged shells with multi-criteria matching ──
@@ -1094,16 +1098,16 @@ namespace LightmapUvTool
                     }
                 }
 
-                // Build reverse map: source → list of target claimants
-                // Include ALL shells (merged or not) so their sources get claimed
-                // and other shells can't be rematched onto the same source.
-                // Merged shells use 3D voting and can work with any source,
-                // so they can be safely reassigned if evicted.
+                // Build reverse map: source → list of non-merged target claimants.
+                // Merged shells are excluded from dedup — they use 3D voting and
+                // don't need a specific source. Including them would cause merged
+                // shells to claim sources and evict non-merged shells, changing
+                // their source assignments and causing UV2 position jumps between LODs.
                 var srcClaimants = new Dictionary<int, List<(int tsi, float avg3D)>>();
                 for (int tsi = 0; tsi < tgtShells.Count; tsi++)
                 {
                     int src = result.targetShellToSourceShell[tsi];
-                    if (src < 0) continue;
+                    if (src < 0 || tgtIsMerged[tsi]) continue; // skip unmatched & merged
                     // Fragment-merged shells must keep their original source —
                     // they were identified by UV0 bbox containment in that specific
                     // source. Reassigning breaks the merge and produces garbage UV2.
@@ -1217,7 +1221,7 @@ namespace LightmapUvTool
                                 result.targetShellCentroids[tsi],
                                 kMaxRetries * 3, kGoodDistSq, claimed,
                                 out int newSrc, out float newDistSq, out float newAvg3D,
-                                tgtAvgNormal[tsi], srcAvgNormal);
+                                tgtAvgNormal[tsi], srcAvgNormal, meshDiagonal);
 
                             if (newSrc >= 0)
                             {
@@ -2643,18 +2647,39 @@ namespace LightmapUvTool
                         {
                             // Check if extrapolated region crosses into another source
                             // shell's UV2 AABB — if so, force interp to prevent overlap.
+                            bool crossesOther = false;
                             for (int si = 0; si < srcShells.Count; si++)
                             {
                                 if (si == chosenSrc) continue;
                                 if (xfBMin.x < srcUv2Max[si].x && xfBMax.x > srcUv2Min[si].x &&
                                     xfBMin.y < srcUv2Max[si].y && xfBMax.y > srcUv2Min[si].y)
                                 {
+                                    crossesOther = true;
                                     issuesTransform = int.MaxValue;
                                     break;
                                 }
                             }
-                            if (issuesTransform < int.MaxValue)
+                            if (!crossesOther)
+                            {
+                                // Doesn't cross another shell, but still OOB — clamp to source AABB
+                                Vector2 cMin = srcBMin2 - new Vector2(kOobMargin, kOobMargin);
+                                Vector2 cMax = srcBMax2 + new Vector2(kOobMargin, kOobMargin);
+                                var oobKeys = new List<int>();
+                                foreach (var kv in uv2_transform)
+                                {
+                                    Vector2 uv = kv.Value;
+                                    if (uv.x < cMin.x || uv.x > cMax.x || uv.y < cMin.y || uv.y > cMax.y)
+                                        oobKeys.Add(kv.Key);
+                                }
+                                foreach (int vi in oobKeys)
+                                {
+                                    Vector2 uv = uv2_transform[vi];
+                                    uv.x = Mathf.Clamp(uv.x, cMin.x, cMax.x);
+                                    uv.y = Mathf.Clamp(uv.y, cMin.y, cMax.y);
+                                    uv2_transform[vi] = uv;
+                                }
                                 issuesTransform += xfOob;
+                            }
                         }
                     }
 
@@ -2706,8 +2731,11 @@ namespace LightmapUvTool
                         }
 
                         if (bestF >= 0)
-                            uv2_interp[vi] = triUv2A[bestF] * bestU + triUv2B[bestF] * bestV + triUv2C[bestF] * bestW;
+                            uv2_interp[vi] = triUv2A[bestF] * bestU
+                                           + triUv2B[bestF] * bestV
+                                           + triUv2C[bestF] * bestW;
                     }
+
                     int issuesInterp = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, uv2_interp);
 
                     if (uv2_transform != null && issuesTransform < issuesInterp)
@@ -2878,6 +2906,38 @@ namespace LightmapUvTool
                     UvtLog.Info(sb.ToString());
             }
 
+            // Per-shell UV2 fingerprint: hash of UV2 values for cross-branch comparison.
+            // Logs centroid + hash so users can diff logs between branches to find
+            // which specific shells produce different UV2.
+            {
+                var fpSb = new System.Text.StringBuilder();
+                fpSb.Append($"[GroupedTransfer] UV2 fingerprint '{targetMesh.name}':");
+                for (int tsi2 = 0; tsi2 < tgtShells.Count; tsi2++)
+                {
+                    var shell = tgtShells[tsi2];
+                    float sumX = 0, sumY = 0;
+                    int cnt = 0;
+                    uint hash = 2166136261u;
+                    foreach (int vi in shell.vertexIndices)
+                    {
+                        if (vi >= result.uv2.Length) continue;
+                        var uv = result.uv2[vi];
+                        sumX += uv.x; sumY += uv.y; cnt++;
+                        // Quantize to 5 decimal places for stable hash
+                        int qx = Mathf.RoundToInt(uv.x * 100000f);
+                        int qy = Mathf.RoundToInt(uv.y * 100000f);
+                        unchecked
+                        {
+                            hash = (hash ^ (uint)qx) * 16777619u;
+                            hash = (hash ^ (uint)qy) * 16777619u;
+                        }
+                    }
+                    if (cnt > 0)
+                        fpSb.Append($" t{tsi2}={hash:X8}({sumX / cnt:F4},{sumY / cnt:F4})");
+                }
+                UvtLog.Info(fpSb.ToString());
+            }
+
             // UV2 bounds check
             int oob = 0;
             Vector2 uvMin = Vector2.one * float.MaxValue, uvMax = Vector2.one * float.MinValue;
@@ -2931,6 +2991,9 @@ namespace LightmapUvTool
         static int CountShellIssues(List<int> faceIndices, int[] tris, Vector2[] uv0,
             Dictionary<int, Vector2> candidateUv2)
         {
+            // Only count missing UV2 and degenerate faces as issues.
+            // Winding flip (UV0 vs UV2 opposite sign) is normal — UV0 and UV2 are
+            // independent coordinate spaces, so different winding is expected.
             int issues = 0;
             foreach (int f in faceIndices)
             {
@@ -2942,13 +3005,6 @@ namespace LightmapUvTool
 
                 float saUv2 = (b2.x - a2.x) * (c2.y - a2.y) - (c2.x - a2.x) * (b2.y - a2.y);
                 if (Mathf.Abs(saUv2) < 1e-10f) { issues++; continue; }
-
-                if (i0 < uv0.Length && i1 < uv0.Length && i2 < uv0.Length)
-                {
-                    var a0 = uv0[i0]; var b0 = uv0[i1]; var c0 = uv0[i2];
-                    float saUv0 = (b0.x - a0.x) * (c0.y - a0.y) - (c0.x - a0.x) * (b0.y - a0.y);
-                    if (saUv0 * saUv2 < 0f) issues++;
-                }
             }
             return issues;
         }
@@ -3069,6 +3125,45 @@ namespace LightmapUvTool
         static float SignedArea2D(Vector2 a, Vector2 b, Vector2 c)
         {
             return (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+        }
+
+        /// <summary>
+        /// Affine UV0→UV2 map through a single source triangle with extrapolation limit.
+        /// Computes raw barycentric coords in source UV0 triangle and applies them
+        /// to source UV2 triangle. When any barycentric exceeds the extrapolation
+        /// limit, clamps all three to prevent thin-shell UV2 from crossing into
+        /// neighboring shells.  Preserves winding by construction.
+        /// </summary>
+        const float kAffineMaxExtrap = 0.5f;
+        static Vector2 AffineUv0ToUv2(Vector2 p, Vector2 a0, Vector2 b0, Vector2 c0,
+            Vector2 a2, Vector2 b2, Vector2 c2, float invDet)
+        {
+            float dx = p.x - a0.x, dy = p.y - a0.y;
+            float bx = b0.x - a0.x, by = b0.y - a0.y;
+            float cx = c0.x - a0.x, cy = c0.y - a0.y;
+            float u = (dx * cy - cx * dy) * invDet; // weight for b0/b2
+            float v = (bx * dy - dx * by) * invDet; // weight for c0/c2
+            float w = 1f - u - v;                   // weight for a0/a2
+
+            // Limit extrapolation to prevent thin-strip overlap
+            float minB = Mathf.Min(w, Mathf.Min(u, v));
+            float maxB = Mathf.Max(w, Mathf.Max(u, v));
+            if (minB < -kAffineMaxExtrap || maxB > 1f + kAffineMaxExtrap)
+            {
+                // Clamp barycentrics and renormalize
+                u = Mathf.Clamp(u, -kAffineMaxExtrap, 1f + kAffineMaxExtrap);
+                v = Mathf.Clamp(v, -kAffineMaxExtrap, 1f + kAffineMaxExtrap);
+                w = 1f - u - v;
+                // If w is also out of range, renormalize all
+                if (w < -kAffineMaxExtrap || w > 1f + kAffineMaxExtrap)
+                {
+                    w = Mathf.Clamp(w, -kAffineMaxExtrap, 1f + kAffineMaxExtrap);
+                    float s = u + v + w;
+                    if (Mathf.Abs(s) > 1e-8f) { float inv = 1f / s; u *= inv; v *= inv; w *= inv; }
+                }
+            }
+
+            return a2 * w + b2 * u + c2 * v;
         }
 
         static float ComputeSignedArea(int[] tris, Vector2[] uvs, List<int> faces)

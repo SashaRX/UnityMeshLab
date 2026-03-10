@@ -53,6 +53,11 @@ namespace LightmapUvTool
                 CheckerTexturePreview.Restore();
             if (ShellColorModelPreview.IsActive)
                 ShellColorModelPreview.Restore();
+
+            // Lightmap preview is per-window instance — find open windows and restore.
+            var windows = Resources.FindObjectsOfTypeAll<UvTransferWindow>();
+            foreach (var w in windows)
+                w.RestoreLightmapPreviewSafe();
         }
     }
 

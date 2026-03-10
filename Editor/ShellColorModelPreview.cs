@@ -44,9 +44,13 @@ namespace LightmapUvTool
                 int faceCount = tris != null ? tris.Length / 3 : 0;
                 if (faceCount == 0) return new int[0];
 
-                // Always use UV0 for shell coloring — UV0 is consistent across LODs
-                // (same texture coordinates), ensuring matching shell colors for LOD0/1/2.
-                Vector2[] uv = mesh.uv;
+                // Use UV2 (lightmap UV) for shell coloring when available.
+                // UV2 is transferred from LOD0, so UV2-based shells have consistent
+                // structure across LODs. UV0 topology changes between LODs due to
+                // face removal during simplification, causing shells to split/merge.
+                var uv2List = new List<Vector2>();
+                mesh.GetUVs(1, uv2List);
+                Vector2[] uv = uv2List.Count == mesh.vertexCount ? uv2List.ToArray() : mesh.uv;
                 if (uv == null || uv.Length != mesh.vertexCount)
                     return new int[faceCount];
 
@@ -58,15 +62,9 @@ namespace LightmapUvTool
                 for (int i = 0; i < triangleToShell.Length; i++) triangleToShell[i] = -1;
 
                 foreach (var shell in shells)
-                {
-                    // Use stable descriptor hash instead of raw shellId for consistent colors
-                    int colorKey = shell.hasDescriptor
-                        ? Mathf.Abs(shell.descriptor.stableHash)
-                        : shell.shellId;
                     foreach (int faceIndex in shell.faceIndices)
                         if (faceIndex >= 0 && faceIndex < triangleToShell.Length)
-                            triangleToShell[faceIndex] = colorKey;
-                }
+                            triangleToShell[faceIndex] = shell.shellId;
 
                 return triangleToShell;
             }

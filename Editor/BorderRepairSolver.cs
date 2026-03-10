@@ -123,6 +123,11 @@ namespace LightmapUvTool
                 }
             }
 
+            UvtLog.Info($"[BorderRepair] {report.totalBorderPrims} border prims: " +
+                       $"{report.repairedCount} repaired, " +
+                       $"{report.skippedAlreadyMatching} already OK, " +
+                       $"{report.markedBorderRisk} risk");
+
             return report;
         }
 

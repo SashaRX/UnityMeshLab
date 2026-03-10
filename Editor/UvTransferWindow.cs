@@ -222,6 +222,7 @@ namespace LightmapUvTool
             public TransferQualityEvaluator.TransferReport? report;
             public GroupedShellTransfer.TransferResult shellTransferResult;
             public TransferValidator.ValidationReport validationReport;
+            public BorderRepairAdapter.AdapterReport? borderRepairReport;
             public bool hasExistingUv2; // cached: FBX mesh already has UV2 (post-Apply)
             /// <summary>
             /// Name with LOD/COL suffixes stripped — used to isolate source↔target
@@ -315,10 +316,12 @@ namespace LightmapUvTool
         void OnEnable()
         {
             wantsMouseMove = true;
+            titleContent = new GUIContent("Lightmap UV Tool v" + Uv2DataAsset.ToolVersionStr);
 
             // Safety: restore any preview state left from prior session (crash, domain reload)
             if (CheckerTexturePreview.IsActive) CheckerTexturePreview.Restore();
             if (ShellColorModelPreview.IsActive) ShellColorModelPreview.Restore();
+            RestoreLightmapPreview();
             checkerEnabled = false;
             shellColorPreviewEnabled = false;
             previewMode = PreviewMode.Off;
@@ -371,10 +374,12 @@ namespace LightmapUvTool
             if (texMat) DestroyImmediate(texMat);
             if (spotMat) DestroyImmediate(spotMat);
             if (shellOverlayMat) DestroyImmediate(shellOverlayMat);
+            if (lightmapPreviewMat) DestroyImmediate(lightmapPreviewMat);
             glMat = null;
             texMat = null;
             spotMat = null;
             shellOverlayMat = null;
+            lightmapPreviewMat = null;
         }
 
         void OnSelectionChange()
@@ -629,6 +634,8 @@ namespace LightmapUvTool
                 ReapplyCheckerToSelection();
             if (shellColorPreviewEnabled)
                 ReapplyShellColorPreview();
+            if (lightmapPreviewActive)
+                ApplyLightmapPreview();
 
             Repaint();
             SceneView.RepaintAll();
@@ -1027,6 +1034,21 @@ namespace LightmapUvTool
                                     var r2 = GUILayoutUtility.GetRect(GUIContent.none, EditorStyles.miniLabel, GUILayout.Height(14));
                                     EditorGUI.LabelField(r2, $"Ov(same-src): {vr.overlapSameSrcTriCount} ({vr.overlapSameSrcPairs} pairs, ok)",
                                         EditorStyles.miniLabel);
+                                }
+                            }
+
+                            // Border Repair stats
+                            if (e.borderRepairReport.HasValue)
+                            {
+                                var br = e.borderRepairReport.Value;
+                                var rr = br.repairReport;
+                                if (rr.totalBorderPrims > 0)
+                                {
+                                    Bar("BdrFix", rr.repairedCount, rr.totalBorderPrims, new Color(.4f,.8f,.5f));
+                                    if (rr.skippedAlreadyMatching > 0)
+                                        Bar("BdrOK", rr.skippedAlreadyMatching, rr.totalBorderPrims, cAccept);
+                                    if (rr.markedBorderRisk > 0)
+                                        Bar("BdrRsk", rr.markedBorderRisk, rr.totalBorderPrims, new Color(.9f,.6f,.2f));
                                 }
                             }
                         }
@@ -3178,6 +3200,7 @@ namespace LightmapUvTool
             public MeshFilter meshFilter;
             public Mesh origMesh;
             public Mesh tempMesh;
+            public Material tempMat;
         }
         readonly List<LightmapBackup> lightmapBackups = new List<LightmapBackup>();
         Material lightmapPreviewMat;
@@ -3241,7 +3264,8 @@ namespace LightmapUvTool
                     origMaterials = renderer.sharedMaterials,
                     meshFilter = mf,
                     origMesh = mf != null ? mf.sharedMesh : null,
-                    tempMesh = tempMesh
+                    tempMesh = tempMesh,
+                    tempMat = mat
                 };
 
                 if (mf != null && tempMesh != null) mf.sharedMesh = tempMesh;
@@ -3254,6 +3278,9 @@ namespace LightmapUvTool
             SceneView.RepaintAll();
         }
 
+        /// <summary>Called by PreviewSafetyGuard on domain reload / play mode / scene save.</summary>
+        internal void RestoreLightmapPreviewSafe() => RestoreLightmapPreview();
+
         void RestoreLightmapPreview()
         {
             foreach (var b in lightmapBackups)
@@ -3261,6 +3288,7 @@ namespace LightmapUvTool
                 if (b.renderer != null) b.renderer.sharedMaterials = b.origMaterials;
                 if (b.meshFilter != null && b.origMesh != null) b.meshFilter.sharedMesh = b.origMesh;
                 if (b.tempMesh != null) DestroyImmediate(b.tempMesh);
+                if (b.tempMat != null) DestroyImmediate(b.tempMat);
             }
             lightmapBackups.Clear();
             if (lightmapPreviewActive) SceneView.RepaintAll();
@@ -3707,6 +3735,20 @@ namespace LightmapUvTool
                     if (tr.overlapHints != null && tr.overlapHints.Count > 0)
                         accumulatedOverlapHints.AddRange(tr.overlapHints);
 
+                    // ── Border Repair (Stages 4-6) ──
+                    // Runs after GroupedShellTransfer, modifies tr.uv2 in-place for border prims only.
+                    te.borderRepairReport = null;
+                    if (pipeSettings.enableBorderRepair)
+                    {
+                        var brSettings = new BorderRepairAdapter.Settings
+                        {
+                            perimeterTolerance = pipeSettings.perimeterTolerance,
+                            borderFuseTolerance = pipeSettings.borderFuseTolerance,
+                            maxNormalAngle = pipeSettings.maxNormalAngle
+                        };
+                        te.borderRepairReport = BorderRepairAdapter.Repair(tM, sM, tr.uv2, brSettings);
+                    }
+
                     var om = Instantiate(tM); om.name = tM.name + "_uvTransfer";
                     om.SetUVs(pipeSettings.targetUvChannel, new List<Vector2>(tr.uv2));
                     te.transferredMesh = om;
@@ -3954,42 +3996,25 @@ namespace LightmapUvTool
                 return faceKeys;
             }
 
-            // Extract UV0 shells for this mesh
-            var (v2s, descs) = GetUv0ShellMap(mesh);
+            // Extract shells from UV2 (lightmap UV) — UV2 is transferred from LOD0,
+            // so UV2-based shells have consistent structure across LODs.
+            // Use shellId (sequential extraction order) for coloring — it's stable
+            // because Union-Find processes faces in triangle-buffer order.
+            var uv2List = new List<Vector2>();
+            mesh.GetUVs(1, uv2List);
+            Vector2[] uv = uv2List.Count == mesh.vertexCount ? uv2List.ToArray() : mesh.uv;
+            if (uv == null || uv.Length != mesh.vertexCount)
+                return faceKeys;
 
-            // Transfer mapping (target LODs): map vertices → source shell → source descriptor
-            var map = entry?.shellTransferResult?.vertexToSourceShell;
-            ShellDescriptor[] srcDescs = (map != null) ? GetSourceDescriptors(entry) : null;
+            List<UvShell> shells;
+            try { shells = UvShellExtractor.Extract(uv, tris); }
+            catch { return faceKeys; }
 
-            for (int face = 0; face < faceCount; face++)
-            {
-                int triBase = face * 3;
-                int i0 = tris[triBase], i1 = tris[triBase + 1], i2 = tris[triBase + 2];
+            foreach (var shell in shells)
+                foreach (int fi in shell.faceIndices)
+                    if (fi >= 0 && fi < faceCount)
+                        faceKeys[fi] = shell.shellId;
 
-                // Priority 1: Transfer mapping to source descriptors
-                if (map != null && srcDescs != null)
-                {
-                    int bestKey = VoteBestShell(map, mesh.vertexCount, i0, i1, i2);
-                    if (bestKey >= 0 && bestKey < srcDescs.Length)
-                    {
-                        faceKeys[face] = Mathf.Abs(srcDescs[bestKey].stableHash);
-                        continue;
-                    }
-                }
-
-                // Priority 2: UV0 shell descriptors
-                if (v2s != null && descs != null)
-                {
-                    int bestKey = VoteBestShell(v2s, mesh.vertexCount, i0, i1, i2);
-                    if (bestKey >= 0 && bestKey < descs.Length)
-                    {
-                        faceKeys[face] = Mathf.Abs(descs[bestKey].stableHash);
-                        continue;
-                    }
-                }
-
-                faceKeys[face] = face; // fallback
-            }
             return faceKeys;
         }
 
@@ -4023,6 +4048,7 @@ namespace LightmapUvTool
             foreach (var e in meshEntries)
             {
                 e.shellTransferResult = null;
+                e.borderRepairReport = null;
                 e.restoredSourceDescriptors = null;
             }
             shellColorKeyCache.Clear();
@@ -4594,6 +4620,7 @@ namespace LightmapUvTool
 
                 if (e.fbxMesh != null) e.originalMesh = e.fbxMesh;
                 e.shellTransferResult = null;
+                e.borderRepairReport = null;
                 e.restoredSourceDescriptors = null;
                 e.wasWelded = false;
                 e.wasEdgeWelded = false;

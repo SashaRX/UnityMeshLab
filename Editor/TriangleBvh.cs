@@ -443,7 +443,18 @@ namespace LightmapUvTool
                 return b + w0 * (c - b);
             }
 
-            float denom = 1f / (va + vb + vc);
+            float denomSum = va + vb + vc;
+            if (denomSum < 1e-10f)
+            {
+                // Degenerate triangle — return nearest vertex
+                float da = (p - a).sqrMagnitude;
+                float db = (p - b).sqrMagnitude;
+                float dc = (p - c).sqrMagnitude;
+                if (da <= db && da <= dc) { bary = new Vector3(1, 0, 0); return a; }
+                if (db <= dc) { bary = new Vector3(0, 1, 0); return b; }
+                bary = new Vector3(0, 0, 1); return c;
+            }
+            float denom = 1f / denomSum;
             float sv = vb * denom;
             float sw = vc * denom;
             bary = new Vector3(1 - sv - sw, sv, sw);
