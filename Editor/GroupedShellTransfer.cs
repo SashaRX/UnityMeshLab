@@ -2862,6 +2862,115 @@ namespace LightmapUvTool
                     // UV0 vs UV2 winding mismatch is normal and does not indicate
                     // a transfer error. Reflecting UV2 breaks lightmap positioning.
 
+                    // ── Border repair: fix spanning faces + snap thin-shell UV2 ──
+                    // Per-vertex interpolation can match vertices of one target face to
+                    // different source triangles, causing the UV2 face to span across the
+                    // entire thin shell — crossing through neighboring shells' UV2 regions.
+                    // Two passes: (1) re-project spanning faces through a single source face,
+                    //             (2) snap all UV2 verts to nearest source UV2 triangle.
+                    if (chosenSrc >= 0 && srcFacesChosen != null && srcFacesChosen.Count > 0)
+                    {
+                        // Compute max source face UV2 diagonal (squared) for spanning detection
+                        float maxSrcFaceDiagSq = 0f;
+                        foreach (int f in srcFacesChosen)
+                        {
+                            Vector2 fMin2 = Vector2.Min(triUv2A[f], Vector2.Min(triUv2B[f], triUv2C[f]));
+                            Vector2 fMax2 = Vector2.Max(triUv2A[f], Vector2.Max(triUv2B[f], triUv2C[f]));
+                            float dSq = (fMax2 - fMin2).sqrMagnitude;
+                            if (dSq > maxSrcFaceDiagSq) maxSrcFaceDiagSq = dSq;
+                        }
+
+                        // Pass 1: re-project spanning faces through single source face
+                        if (maxSrcFaceDiagSq > 0f)
+                        {
+                            float spanThreshSq = maxSrcFaceDiagSq * 9f; // 3x max source face diagonal
+                            int spanRepairs = 0;
+                            foreach (int fIdx in tShell.faceIndices)
+                            {
+                                int si0 = tgtTris[fIdx * 3], si1 = tgtTris[fIdx * 3 + 1], si2 = tgtTris[fIdx * 3 + 2];
+                                if (!uv2_interp.TryGetValue(si0, out var fa2) ||
+                                    !uv2_interp.TryGetValue(si1, out var fb2) ||
+                                    !uv2_interp.TryGetValue(si2, out var fc2))
+                                    continue;
+
+                                Vector2 fMin2 = Vector2.Min(fa2, Vector2.Min(fb2, fc2));
+                                Vector2 fMax2 = Vector2.Max(fa2, Vector2.Max(fb2, fc2));
+                                if ((fMax2 - fMin2).sqrMagnitude <= spanThreshSq) continue;
+
+                                // Face spans too much UV2 — re-project through single source face
+                                if (si0 >= tUv0.Length || si1 >= tUv0.Length || si2 >= tUv0.Length) continue;
+                                var fa0 = tUv0[si0]; var fb0 = tUv0[si1]; var fc0 = tUv0[si2];
+                                Vector2 ctr = (fa0 + fb0 + fc0) * (1f / 3f);
+                                int srcF;
+                                if (srcBvh != null)
+                                    srcF = srcBvh.FindNearest(ctr).faceIndex;
+                                else
+                                {
+                                    srcF = -1; float bestD = float.MaxValue;
+                                    for (int fi = 0; fi < srcFacesChosen.Count; fi++)
+                                    {
+                                        int sf = srcFacesChosen[fi];
+                                        float d = PointToTri2D(ctr, triUv0A[sf], triUv0B[sf], triUv0C[sf], out _, out _, out _);
+                                        if (d < bestD) { bestD = d; srcF = sf; }
+                                    }
+                                }
+                                if (srcF < 0) continue;
+                                Vector2 sA0r = triUv0A[srcF], sB0r = triUv0B[srcF], sC0r = triUv0C[srcF];
+                                float detR = (sB0r.x - sA0r.x) * (sC0r.y - sA0r.y) - (sC0r.x - sA0r.x) * (sB0r.y - sA0r.y);
+                                if (Mathf.Abs(detR) < 1e-12f) continue;
+                                float invDetR = 1f / detR;
+                                Vector2 sA2r = triUv2A[srcF], sB2r = triUv2B[srcF], sC2r = triUv2C[srcF];
+                                uv2_interp[si0] = AffineUv0ToUv2(fa0, sA0r, sB0r, sC0r, sA2r, sB2r, sC2r, invDetR);
+                                uv2_interp[si1] = AffineUv0ToUv2(fb0, sA0r, sB0r, sC0r, sA2r, sB2r, sC2r, invDetR);
+                                uv2_interp[si2] = AffineUv0ToUv2(fc0, sA0r, sB0r, sC0r, sA2r, sB2r, sC2r, invDetR);
+                                spanRepairs++;
+                            }
+                            if (spanRepairs > 0)
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: border repair — {spanRepairs} spanning faces re-projected");
+                        }
+
+                        // Pass 2: snap UV2 vertices to nearest source UV2 triangle
+                        // For thin shells, the source UV2 footprint is a narrow strip; any
+                        // vertex outside this strip would overlap neighboring shells.
+                        // Compute source shell fill ratio to detect thin shells.
+                        float srcTriUv2Area = 0f;
+                        foreach (int f in srcFacesChosen)
+                            srcTriUv2Area += Mathf.Abs(SignedArea2D(triUv2A[f], triUv2B[f], triUv2C[f]));
+                        Vector2 srcShellSize = srcUv2Max[chosenSrc] - srcUv2Min[chosenSrc];
+                        float srcAabbArea = srcShellSize.x * srcShellSize.y;
+                        float fillRatio = (srcAabbArea > 1e-12f) ? srcTriUv2Area / srcAabbArea : 1f;
+
+                        if (fillRatio < 0.3f) // thin shell — snap all UV2 to source geometry
+                        {
+                            int snapped = 0;
+                            foreach (int vi in tShell.vertexIndices)
+                            {
+                                if (!uv2_interp.ContainsKey(vi)) continue;
+                                Vector2 uv2 = uv2_interp[vi];
+                                float bestDist = float.MaxValue;
+                                Vector2 bestPt = uv2;
+                                foreach (int f in srcFacesChosen)
+                                {
+                                    float d = PointToTri2D(uv2, triUv2A[f], triUv2B[f], triUv2C[f],
+                                        out float su, out float sv, out float sw);
+                                    if (d < bestDist)
+                                    {
+                                        bestDist = d;
+                                        bestPt = triUv2A[f] * su + triUv2B[f] * sv + triUv2C[f] * sw;
+                                    }
+                                }
+                                if (bestDist > 1e-14f) // outside source UV2 triangles
+                                {
+                                    uv2_interp[vi] = bestPt;
+                                    snapped++;
+                                }
+                            }
+                            if (snapped > 0)
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: border snap — {snapped}/{tShell.vertexIndices.Count} " +
+                                    $"verts snapped to source UV2 (fill={fillRatio:F3})");
+                        }
+                    }
+
                     if (uv2_transform != null && issuesTransform < issuesInterp)
                     {
                         chosenUv2 = uv2_transform;
@@ -3226,7 +3335,7 @@ namespace LightmapUvTool
         /// limit, clamps all three to prevent thin-shell UV2 from crossing into
         /// neighboring shells.  Preserves winding by construction.
         /// </summary>
-        const float kAffineMaxExtrap = 0.5f;
+        const float kAffineMaxExtrap = 0.0f;
         static Vector2 AffineUv0ToUv2(Vector2 p, Vector2 a0, Vector2 b0, Vector2 c0,
             Vector2 a2, Vector2 b2, Vector2 c2, float invDet)
         {
