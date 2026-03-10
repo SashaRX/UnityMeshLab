@@ -2902,6 +2902,38 @@ namespace LightmapUvTool
                     UvtLog.Info(sb.ToString());
             }
 
+            // Per-shell UV2 fingerprint: hash of UV2 values for cross-branch comparison.
+            // Logs centroid + hash so users can diff logs between branches to find
+            // which specific shells produce different UV2.
+            {
+                var fpSb = new System.Text.StringBuilder();
+                fpSb.Append($"[GroupedTransfer] UV2 fingerprint '{targetMesh.name}':");
+                for (int tsi2 = 0; tsi2 < tgtShells.Count; tsi2++)
+                {
+                    var shell = tgtShells[tsi2];
+                    float sumX = 0, sumY = 0;
+                    int cnt = 0;
+                    uint hash = 2166136261u;
+                    foreach (int vi in shell.vertexIndices)
+                    {
+                        if (vi >= result.uv2.Length) continue;
+                        var uv = result.uv2[vi];
+                        sumX += uv.x; sumY += uv.y; cnt++;
+                        // Quantize to 5 decimal places for stable hash
+                        int qx = Mathf.RoundToInt(uv.x * 100000f);
+                        int qy = Mathf.RoundToInt(uv.y * 100000f);
+                        unchecked
+                        {
+                            hash = (hash ^ (uint)qx) * 16777619u;
+                            hash = (hash ^ (uint)qy) * 16777619u;
+                        }
+                    }
+                    if (cnt > 0)
+                        fpSb.Append($" t{tsi2}={hash:X8}({sumX / cnt:F4},{sumY / cnt:F4})");
+                }
+                UvtLog.Info(fpSb.ToString());
+            }
+
             // UV2 bounds check
             int oob = 0;
             Vector2 uvMin = Vector2.one * float.MaxValue, uvMax = Vector2.one * float.MinValue;
