@@ -104,6 +104,9 @@ namespace LightmapUvTool
             // ── Resolve accumulated vertex UV ──
             ResolveVertexUv(vertAccum, target, hasUv0);
 
+            // ── Shell topology consistency: detect & fix displaced vertices ──
+            EnforceShellTopologyConsistency(source, target);
+
             // ── Detect UnavoidableMismatch: vertex shared by triangles in different shells ──
             DetectVertexConflicts(target);
 
@@ -873,6 +876,241 @@ namespace LightmapUvTool
         static float ComputeSignedArea(Vector2 a, Vector2 b, Vector2 c)
         {
             return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        }
+
+        /// <summary>
+        /// Shell topology consistency enforcement.
+        /// Detects vertices whose UV is inconsistent with their shell neighbors
+        /// (based on UV/3D edge ratio vs shell median) and repairs them via
+        /// Laplacian interpolation from consistent neighbors.
+        /// This prevents a single vertex from being displaced while the rest of the shell is correct.
+        /// </summary>
+        static void EnforceShellTopologyConsistency(SourceMeshData source, TargetTransferState target)
+        {
+            // Step 1: Build per-vertex adjacency within shell-assigned triangles
+            // and collect edge UV/3D ratios per shell
+            var vertNeighbors = new Dictionary<int, HashSet<int>>();
+            var vertexShellVotes = new Dictionary<int, Dictionary<int, int>>(); // vi → shellId → count
+            var vertexToFaces = new Dictionary<int, List<int>>();
+            var shellEdgeRatios = new Dictionary<int, List<float>>();
+            var edgeSet = new HashSet<long>();
+
+            for (int f = 0; f < target.faceCount; f++)
+            {
+                int shell = target.triangleShellAssignments[f];
+                if (shell < 0) continue;
+                if (target.triangleStatus[f] == TriangleStatus.Rejected) continue;
+
+                for (int j = 0; j < 3; j++)
+                {
+                    int vi = target.triangles[f * 3 + j];
+
+                    // Track vertex → faces
+                    if (!vertexToFaces.TryGetValue(vi, out var fList))
+                    {
+                        fList = new List<int>();
+                        vertexToFaces[vi] = fList;
+                    }
+                    fList.Add(f);
+
+                    // Track shell votes per vertex
+                    if (!vertexShellVotes.TryGetValue(vi, out var votes))
+                    {
+                        votes = new Dictionary<int, int>();
+                        vertexShellVotes[vi] = votes;
+                    }
+                    votes.TryGetValue(shell, out int cnt);
+                    votes[shell] = cnt + 1;
+
+                    // Build adjacency edges
+                    int v0 = vi;
+                    int v1 = target.triangles[f * 3 + (j + 1) % 3];
+
+                    if (!vertNeighbors.TryGetValue(v0, out var n0))
+                    {
+                        n0 = new HashSet<int>();
+                        vertNeighbors[v0] = n0;
+                    }
+                    n0.Add(v1);
+
+                    if (!vertNeighbors.TryGetValue(v1, out var n1))
+                    {
+                        n1 = new HashSet<int>();
+                        vertNeighbors[v1] = n1;
+                    }
+                    n1.Add(v0);
+
+                    // Collect edge ratio for shell (deduplicated)
+                    long edgeKey = v0 < v1 ? ((long)v0 << 32 | (uint)v1) : ((long)v1 << 32 | (uint)v0);
+                    if (edgeSet.Add(edgeKey))
+                    {
+                        float len3D = (target.vertices[v0] - target.vertices[v1]).magnitude;
+                        float lenUV = (target.targetUv[v0] - target.targetUv[v1]).magnitude;
+
+                        if (len3D > 1e-6f)
+                        {
+                            float ratio = lenUV / len3D;
+                            if (!shellEdgeRatios.TryGetValue(shell, out var ratios))
+                            {
+                                ratios = new List<float>();
+                                shellEdgeRatios[shell] = ratios;
+                            }
+                            ratios.Add(ratio);
+                        }
+                    }
+                }
+            }
+
+            // Step 2: Compute median edge ratio per shell
+            var shellRefRatio = new Dictionary<int, float>();
+            foreach (var kv in shellEdgeRatios)
+            {
+                var ratios = kv.Value;
+                if (ratios.Count < 3) continue; // need enough edges for meaningful median
+                ratios.Sort();
+                shellRefRatio[kv.Key] = ratios[ratios.Count / 2];
+            }
+
+            // Step 3: Detect and repair displaced vertices
+            int fixedCount = 0;
+            const float deviationThreshold = 3.0f;
+
+            foreach (var kv in vertNeighbors)
+            {
+                int vi = kv.Key;
+                var neighbors = kv.Value;
+
+                if (neighbors.Count < 2) continue;
+
+                // Determine vertex's primary shell (majority vote)
+                if (!vertexShellVotes.TryGetValue(vi, out var votes)) continue;
+                int bestShell = -1;
+                int bestVoteCount = 0;
+                foreach (var sv in votes)
+                {
+                    if (sv.Value > bestVoteCount)
+                    {
+                        bestVoteCount = sv.Value;
+                        bestShell = sv.Key;
+                    }
+                }
+                if (bestShell < 0) continue;
+                if (!shellRefRatio.TryGetValue(bestShell, out float refRatio)) continue;
+                if (refRatio < 1e-8f) continue;
+
+                // Check if ALL edges incident to this vertex deviate from reference
+                int badEdgeCount = 0;
+                int totalEdges = 0;
+
+                foreach (int ni in neighbors)
+                {
+                    float len3D = (target.vertices[vi] - target.vertices[ni]).magnitude;
+                    float lenUV = (target.targetUv[vi] - target.targetUv[ni]).magnitude;
+
+                    if (len3D < 1e-6f) continue;
+
+                    float ratio = lenUV / len3D;
+                    float deviation = ratio / refRatio;
+
+                    totalEdges++;
+                    if (deviation > deviationThreshold || deviation < 1f / deviationThreshold)
+                        badEdgeCount++;
+                }
+
+                // Only flag if ALL edges are bad — single vertex displaced
+                if (totalEdges < 2 || badEdgeCount < totalEdges) continue;
+
+                // Verify neighbors are consistent (their non-vi edges are fine)
+                int consistentNeighborCount = 0;
+                foreach (int ni in neighbors)
+                {
+                    if (!vertNeighbors.TryGetValue(ni, out var niNeighbors)) continue;
+
+                    int niBadEdges = 0;
+                    int niTotalEdges = 0;
+
+                    foreach (int nni in niNeighbors)
+                    {
+                        if (nni == vi) continue; // skip edge back to our vertex
+
+                        float len3D = (target.vertices[ni] - target.vertices[nni]).magnitude;
+                        float lenUV = (target.targetUv[ni] - target.targetUv[nni]).magnitude;
+
+                        if (len3D < 1e-6f) continue;
+
+                        float ratio = lenUV / len3D;
+                        float deviation = ratio / refRatio;
+
+                        niTotalEdges++;
+                        if (deviation > deviationThreshold || deviation < 1f / deviationThreshold)
+                            niBadEdges++;
+                    }
+
+                    // Neighbor is consistent if majority of its other edges are fine
+                    if (niTotalEdges > 0 && niBadEdges <= niTotalEdges / 2)
+                        consistentNeighborCount++;
+                }
+
+                // Need majority of neighbors to be consistent before we trust them
+                if (consistentNeighborCount < (neighbors.Count + 1) / 2) continue;
+
+                // Repair: Laplacian interpolation from neighbors weighted by inverse 3D distance
+                Vector2 newUv = Vector2.zero;
+                float totalWeight = 0f;
+
+                foreach (int ni in neighbors)
+                {
+                    float len3D = (target.vertices[vi] - target.vertices[ni]).magnitude;
+                    float w = 1f / Mathf.Max(len3D, 1e-6f);
+                    newUv += target.targetUv[ni] * w;
+                    totalWeight += w;
+                }
+
+                if (totalWeight < 1e-6f) continue;
+                newUv /= totalWeight;
+
+                // Safety: verify no triangle flip
+                bool wouldFlip = false;
+                if (vertexToFaces.TryGetValue(vi, out var facesOfVi))
+                {
+                    foreach (int f in facesOfVi)
+                    {
+                        int i0 = target.triangles[f * 3];
+                        int i1 = target.triangles[f * 3 + 1];
+                        int i2 = target.triangles[f * 3 + 2];
+
+                        Vector2 a = i0 == vi ? newUv : target.targetUv[i0];
+                        Vector2 b = i1 == vi ? newUv : target.targetUv[i1];
+                        Vector2 c = i2 == vi ? newUv : target.targetUv[i2];
+
+                        float areaBefore = ComputeSignedArea(
+                            target.targetUv[i0], target.targetUv[i1], target.targetUv[i2]);
+                        float areaAfter = ComputeSignedArea(a, b, c);
+
+                        if (Mathf.Abs(areaBefore) > 1e-9f && Mathf.Abs(areaAfter) > 1e-9f &&
+                            Mathf.Sign(areaBefore) != Mathf.Sign(areaAfter))
+                        {
+                            wouldFlip = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (wouldFlip) continue;
+
+                UvtLog.Verbose($"[ShellTopology] Fixed displaced vertex {vi}: " +
+                    $"({target.targetUv[vi].x:F4},{target.targetUv[vi].y:F4}) → ({newUv.x:F4},{newUv.y:F4}) " +
+                    $"shell={bestShell} badEdges={badEdgeCount}/{totalEdges} " +
+                    $"consistentNeighbors={consistentNeighborCount}/{neighbors.Count}");
+
+                target.targetUv[vi] = newUv;
+                fixedCount++;
+            }
+
+            if (fixedCount > 0)
+            {
+                UvtLog.Info($"[InitialUvTransfer] Shell topology enforcement fixed {fixedCount} displaced vertices");
+            }
         }
 
         /// <summary>
