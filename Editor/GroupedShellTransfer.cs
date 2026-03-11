@@ -1409,6 +1409,13 @@ namespace LightmapUvTool
             // Distinguish allowed shared-source fragments (non-overlapping UV0)
             // from true duplicates (overlapping UV0 — tiling/symmetric).
             // Only true duplicates go into duplicateSources for Phase 3 constraint.
+            //
+            // Also build fragment-restricted face lists and BVHs for shared sources
+            // with non-overlapping UV0 fragments. This prevents cross-fragment
+            // interpolation where a target vertex's UV0 is geometrically closer to
+            // the wrong fragment's faces, causing UV2 to jump to the wrong region.
+            var fragmentRestrictedFaces = new Dictionary<int, List<int>>();
+            var fragmentRestrictedBvh = new Dictionary<int, TriangleBvh2D>();
             var duplicateSources = new HashSet<int>();
             {
                 var srcToTargets = new Dictionary<int, List<int>>();
@@ -1461,6 +1468,41 @@ namespace LightmapUvTool
                         // Non-overlapping UV0 fragments sharing a source — expected
                         UvtLog.Info($"[GroupedTransfer] Shared source (fragments): src{kv.Key} " +
                             $"used by {string.Join(", ", labels)} — non-overlapping UV0, OK");
+
+                        // Build restricted face lists/BVHs so each target only searches
+                        // within its own UV0 sub-region of the shared source.
+                        // Without this, BVH FindNearest may return a triangle from the
+                        // wrong fragment, causing UV2 to jump to the wrong region.
+                        var allFaces = srcShells[kv.Key].faceIndices;
+                        foreach (int tsi2 in kv.Value)
+                        {
+                            var ts = tgtShells[tsi2];
+                            Vector2 sz = ts.boundsMax - ts.boundsMin;
+                            Vector2 pad = new Vector2(
+                                Mathf.Max(sz.x * 0.15f, 0.002f),
+                                Mathf.Max(sz.y * 0.15f, 0.002f));
+                            Vector2 aMin = ts.boundsMin - pad;
+                            Vector2 aMax = ts.boundsMax + pad;
+
+                            var restricted = new List<int>();
+                            foreach (int f in allFaces)
+                            {
+                                Vector2 fa = triUv0A[f], fb = triUv0B[f], fc = triUv0C[f];
+                                Vector2 fMin = Vector2.Min(fa, Vector2.Min(fb, fc));
+                                Vector2 fMax = Vector2.Max(fa, Vector2.Max(fb, fc));
+                                if (fMin.x <= aMax.x && fMax.x >= aMin.x &&
+                                    fMin.y <= aMax.y && fMax.y >= aMin.y)
+                                    restricted.Add(f);
+                            }
+
+                            if (restricted.Count > 0 && restricted.Count < allFaces.Count)
+                            {
+                                fragmentRestrictedFaces[tsi2] = restricted;
+                                if (restricted.Count >= kMinFacesForShellBvh)
+                                    fragmentRestrictedBvh[tsi2] = new TriangleBvh2D(
+                                        triUv0A, triUv0B, triUv0C, restricted.ToArray());
+                            }
+                        }
                     }
                 }
             }
@@ -1538,6 +1580,11 @@ namespace LightmapUvTool
 
                 shellsMatched++;
                 var srcFacesChosen = chosenSrc >= 0 ? srcShells[chosenSrc].faceIndices : null;
+
+                // Use fragment-restricted faces when this target shares a source
+                // with non-overlapping UV0 fragments (prevents cross-fragment UV2 bleed)
+                if (fragmentRestrictedFaces.TryGetValue(tsi, out var rFaces))
+                    srcFacesChosen = rFaces;
 
                 Dictionary<int, Vector2> chosenUv2;
 
@@ -2532,8 +2579,10 @@ namespace LightmapUvTool
 
                         if (outsideVerts.Count > 0 && insideCount > outsideVerts.Count)
                         {
-                            var cBvh = shellUv0Bvh[chosenSrc];
-                            var cFaces = srcShells[chosenSrc].faceIndices;
+                            var cBvh = fragmentRestrictedBvh.TryGetValue(tsi, out var crBvh)
+                                ? crBvh : shellUv0Bvh[chosenSrc];
+                            var cFaces = fragmentRestrictedFaces.TryGetValue(tsi, out var crFaces)
+                                ? crFaces : srcShells[chosenSrc].faceIndices;
                             int coherenceFixed = 0;
 
                             foreach (int vi in outsideVerts)
@@ -2688,7 +2737,10 @@ namespace LightmapUvTool
 
                     // Candidate B: per-vertex UV0 interpolation (BVH + normal filtering for thin details)
                     var uv2_interp = new Dictionary<int, Vector2>();
-                    var srcBvh = shellUv0Bvh[chosenSrc]; // may be null for small shells
+                    // Use fragment-restricted BVH when available (shared source with
+                    // non-overlapping UV0 fragments) to prevent cross-fragment UV2 bleed
+                    var srcBvh = fragmentRestrictedBvh.TryGetValue(tsi, out var rBvh)
+                        ? rBvh : shellUv0Bvh[chosenSrc]; // may be null for small shells
                     foreach (int vi in tShell.vertexIndices)
                     {
                         if (vi >= tUv0.Length) continue;
