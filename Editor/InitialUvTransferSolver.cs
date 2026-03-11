@@ -879,21 +879,17 @@ namespace LightmapUvTool
         }
 
         /// <summary>
-        /// Shell topology consistency enforcement.
-        /// Detects vertices whose UV is inconsistent with their shell neighbors
-        /// (based on UV/3D edge ratio vs shell median) and repairs them via
-        /// Laplacian interpolation from consistent neighbors.
-        /// This prevents a single vertex from being displaced while the rest of the shell is correct.
+        /// Shell topology consistency enforcement via Laplacian displacement detection.
+        /// For each vertex, computes where its neighbors "predict" it should be (weighted Laplacian).
+        /// If the actual UV is much farther from the prediction than the local edge scale,
+        /// the vertex is displaced and gets snapped to the Laplacian position.
+        /// Runs iteratively to handle cascading fixes.
         /// </summary>
         static void EnforceShellTopologyConsistency(SourceMeshData source, TargetTransferState target)
         {
-            // Step 1: Build per-vertex adjacency within shell-assigned triangles
-            // and collect edge UV/3D ratios per shell
+            // Step 1: Build per-vertex adjacency and face lists
             var vertNeighbors = new Dictionary<int, HashSet<int>>();
-            var vertexShellVotes = new Dictionary<int, Dictionary<int, int>>(); // vi → shellId → count
             var vertexToFaces = new Dictionary<int, List<int>>();
-            var shellEdgeRatios = new Dictionary<int, List<float>>();
-            var edgeSet = new HashSet<long>();
 
             for (int f = 0; f < target.faceCount; f++)
             {
@@ -905,7 +901,6 @@ namespace LightmapUvTool
                 {
                     int vi = target.triangles[f * 3 + j];
 
-                    // Track vertex → faces
                     if (!vertexToFaces.TryGetValue(vi, out var fList))
                     {
                         fList = new List<int>();
@@ -913,16 +908,6 @@ namespace LightmapUvTool
                     }
                     fList.Add(f);
 
-                    // Track shell votes per vertex
-                    if (!vertexShellVotes.TryGetValue(vi, out var votes))
-                    {
-                        votes = new Dictionary<int, int>();
-                        vertexShellVotes[vi] = votes;
-                    }
-                    votes.TryGetValue(shell, out int cnt);
-                    votes[shell] = cnt + 1;
-
-                    // Build adjacency edges
                     int v0 = vi;
                     int v1 = target.triangles[f * 3 + (j + 1) % 3];
 
@@ -939,177 +924,199 @@ namespace LightmapUvTool
                         vertNeighbors[v1] = n1;
                     }
                     n1.Add(v0);
+                }
+            }
 
-                    // Collect edge ratio for shell (deduplicated)
-                    long edgeKey = v0 < v1 ? ((long)v0 << 32 | (uint)v1) : ((long)v1 << 32 | (uint)v0);
-                    if (edgeSet.Add(edgeKey))
+            // Step 2: Iterative Laplacian displacement detection and repair
+            // Multiple passes to handle cascading fixes (max 3 iterations)
+            int totalFixed = 0;
+            const float displacementThreshold = 2.0f;
+
+            for (int iteration = 0; iteration < 3; iteration++)
+            {
+                int fixedThisPass = 0;
+
+                // Collect per-vertex: Laplacian prediction, displacement, local scale
+                var candidates = new List<(int vi, Vector2 newUv, float ratio)>();
+
+                foreach (var kv in vertNeighbors)
+                {
+                    int vi = kv.Key;
+                    var neighbors = kv.Value;
+
+                    if (neighbors.Count < 2) continue;
+
+                    Vector2 actualUv = target.targetUv[vi];
+                    if (float.IsNaN(actualUv.x) || float.IsNaN(actualUv.y)) continue;
+
+                    // Compute Laplacian prediction: weighted average of neighbors' UVs
+                    Vector2 predicted = Vector2.zero;
+                    float totalW = 0f;
+
+                    foreach (int ni in neighbors)
                     {
-                        float len3D = (target.vertices[v0] - target.vertices[v1]).magnitude;
-                        float lenUV = (target.targetUv[v0] - target.targetUv[v1]).magnitude;
+                        float len3D = (target.vertices[vi] - target.vertices[ni]).magnitude;
+                        float w = 1f / Mathf.Max(len3D, 1e-6f);
+                        predicted += target.targetUv[ni] * w;
+                        totalW += w;
+                    }
 
-                        if (len3D > 1e-6f)
+                    if (totalW < 1e-6f) continue;
+                    predicted /= totalW;
+
+                    // Displacement: how far actual UV is from Laplacian prediction
+                    float displacement = (actualUv - predicted).magnitude;
+
+                    // Local scale: average UV edge length of neighbors (excluding edges to vi)
+                    // This tells us what "normal" distances look like in this region
+                    float neighborEdgeSum = 0f;
+                    int neighborEdgeCount = 0;
+
+                    foreach (int ni in neighbors)
+                    {
+                        if (!vertNeighbors.TryGetValue(ni, out var niNeighbors)) continue;
+
+                        foreach (int nni in niNeighbors)
                         {
-                            float ratio = lenUV / len3D;
-                            if (!shellEdgeRatios.TryGetValue(shell, out var ratios))
+                            if (nni == vi) continue;
+                            float edgeLen = (target.targetUv[ni] - target.targetUv[nni]).magnitude;
+                            neighborEdgeSum += edgeLen;
+                            neighborEdgeCount++;
+                        }
+                    }
+
+                    if (neighborEdgeCount == 0) continue;
+                    float avgNeighborEdge = neighborEdgeSum / neighborEdgeCount;
+                    if (avgNeighborEdge < 1e-8f) continue;
+
+                    float ratio = displacement / avgNeighborEdge;
+
+                    if (ratio > displacementThreshold)
+                    {
+                        candidates.Add((vi, predicted, ratio));
+                    }
+                }
+
+                // Sort by ratio descending — fix worst outliers first
+                candidates.Sort((a, b) => b.ratio.CompareTo(a.ratio));
+
+                foreach (var (vi, newUv, ratio) in candidates)
+                {
+                    // Re-check displacement after previous fixes in this pass
+                    // (a neighbor might have been fixed, changing the situation)
+                    var neighbors = vertNeighbors[vi];
+                    Vector2 currentPredicted = Vector2.zero;
+                    float totalW = 0f;
+
+                    foreach (int ni in neighbors)
+                    {
+                        float len3D = (target.vertices[vi] - target.vertices[ni]).magnitude;
+                        float w = 1f / Mathf.Max(len3D, 1e-6f);
+                        currentPredicted += target.targetUv[ni] * w;
+                        totalW += w;
+                    }
+
+                    if (totalW < 1e-6f) continue;
+                    currentPredicted /= totalW;
+
+                    float currentDisplacement = (target.targetUv[vi] - currentPredicted).magnitude;
+
+                    // Recompute local scale
+                    float neighborEdgeSum = 0f;
+                    int neighborEdgeCount = 0;
+                    foreach (int ni in neighbors)
+                    {
+                        if (!vertNeighbors.TryGetValue(ni, out var niNeighbors)) continue;
+                        foreach (int nni in niNeighbors)
+                        {
+                            if (nni == vi) continue;
+                            neighborEdgeSum += (target.targetUv[ni] - target.targetUv[nni]).magnitude;
+                            neighborEdgeCount++;
+                        }
+                    }
+
+                    if (neighborEdgeCount == 0) continue;
+                    float avgNeighborEdge = neighborEdgeSum / neighborEdgeCount;
+                    if (avgNeighborEdge < 1e-8f) continue;
+
+                    if (currentDisplacement / avgNeighborEdge <= displacementThreshold) continue;
+
+                    // Verify neighbors are mostly consistent (not all displaced)
+                    int consistentCount = 0;
+                    foreach (int ni in neighbors)
+                    {
+                        if (!vertNeighbors.TryGetValue(ni, out var niNeighbors)) continue;
+
+                        // Compute neighbor's own Laplacian displacement (excluding vi)
+                        Vector2 niPredicted = Vector2.zero;
+                        float niTotalW = 0f;
+                        foreach (int nni in niNeighbors)
+                        {
+                            if (nni == vi) continue;
+                            float len3D = (target.vertices[ni] - target.vertices[nni]).magnitude;
+                            float w = 1f / Mathf.Max(len3D, 1e-6f);
+                            niPredicted += target.targetUv[nni] * w;
+                            niTotalW += w;
+                        }
+
+                        if (niTotalW < 1e-6f) continue;
+                        niPredicted /= niTotalW;
+
+                        float niDisplacement = (target.targetUv[ni] - niPredicted).magnitude;
+                        // Neighbor is consistent if its own displacement is small
+                        if (niDisplacement < avgNeighborEdge * displacementThreshold)
+                            consistentCount++;
+                    }
+
+                    // Need at least half of neighbors to be consistent
+                    if (consistentCount < (neighbors.Count + 1) / 2) continue;
+
+                    // Safety: verify no triangle flip
+                    bool wouldFlip = false;
+                    if (vertexToFaces.TryGetValue(vi, out var facesOfVi))
+                    {
+                        foreach (int f in facesOfVi)
+                        {
+                            int i0 = target.triangles[f * 3];
+                            int i1 = target.triangles[f * 3 + 1];
+                            int i2 = target.triangles[f * 3 + 2];
+
+                            Vector2 a = i0 == vi ? currentPredicted : target.targetUv[i0];
+                            Vector2 b = i1 == vi ? currentPredicted : target.targetUv[i1];
+                            Vector2 c = i2 == vi ? currentPredicted : target.targetUv[i2];
+
+                            float areaBefore = ComputeSignedArea(
+                                target.targetUv[i0], target.targetUv[i1], target.targetUv[i2]);
+                            float areaAfter = ComputeSignedArea(a, b, c);
+
+                            if (Mathf.Abs(areaBefore) > 1e-9f && Mathf.Abs(areaAfter) > 1e-9f &&
+                                Mathf.Sign(areaBefore) != Mathf.Sign(areaAfter))
                             {
-                                ratios = new List<float>();
-                                shellEdgeRatios[shell] = ratios;
+                                wouldFlip = true;
+                                break;
                             }
-                            ratios.Add(ratio);
                         }
                     }
+
+                    if (wouldFlip) continue;
+
+                    UvtLog.Info($"[ShellTopology] iter={iteration} Fixed vertex {vi}: " +
+                        $"({target.targetUv[vi].x:F4},{target.targetUv[vi].y:F4}) → " +
+                        $"({currentPredicted.x:F4},{currentPredicted.y:F4}) " +
+                        $"displacement/scale={currentDisplacement / avgNeighborEdge:F2} " +
+                        $"neighbors={neighbors.Count} consistent={consistentCount}");
+
+                    target.targetUv[vi] = currentPredicted;
+                    fixedThisPass++;
                 }
+
+                totalFixed += fixedThisPass;
+                if (fixedThisPass == 0) break; // converged
             }
 
-            // Step 2: Compute median edge ratio per shell
-            var shellRefRatio = new Dictionary<int, float>();
-            foreach (var kv in shellEdgeRatios)
+            if (totalFixed > 0)
             {
-                var ratios = kv.Value;
-                if (ratios.Count < 3) continue; // need enough edges for meaningful median
-                ratios.Sort();
-                shellRefRatio[kv.Key] = ratios[ratios.Count / 2];
-            }
-
-            // Step 3: Detect and repair displaced vertices
-            int fixedCount = 0;
-            const float deviationThreshold = 3.0f;
-
-            foreach (var kv in vertNeighbors)
-            {
-                int vi = kv.Key;
-                var neighbors = kv.Value;
-
-                if (neighbors.Count < 2) continue;
-
-                // Determine vertex's primary shell (majority vote)
-                if (!vertexShellVotes.TryGetValue(vi, out var votes)) continue;
-                int bestShell = -1;
-                int bestVoteCount = 0;
-                foreach (var sv in votes)
-                {
-                    if (sv.Value > bestVoteCount)
-                    {
-                        bestVoteCount = sv.Value;
-                        bestShell = sv.Key;
-                    }
-                }
-                if (bestShell < 0) continue;
-                if (!shellRefRatio.TryGetValue(bestShell, out float refRatio)) continue;
-                if (refRatio < 1e-8f) continue;
-
-                // Check if ALL edges incident to this vertex deviate from reference
-                int badEdgeCount = 0;
-                int totalEdges = 0;
-
-                foreach (int ni in neighbors)
-                {
-                    float len3D = (target.vertices[vi] - target.vertices[ni]).magnitude;
-                    float lenUV = (target.targetUv[vi] - target.targetUv[ni]).magnitude;
-
-                    if (len3D < 1e-6f) continue;
-
-                    float ratio = lenUV / len3D;
-                    float deviation = ratio / refRatio;
-
-                    totalEdges++;
-                    if (deviation > deviationThreshold || deviation < 1f / deviationThreshold)
-                        badEdgeCount++;
-                }
-
-                // Only flag if ALL edges are bad — single vertex displaced
-                if (totalEdges < 2 || badEdgeCount < totalEdges) continue;
-
-                // Verify neighbors are consistent (their non-vi edges are fine)
-                int consistentNeighborCount = 0;
-                foreach (int ni in neighbors)
-                {
-                    if (!vertNeighbors.TryGetValue(ni, out var niNeighbors)) continue;
-
-                    int niBadEdges = 0;
-                    int niTotalEdges = 0;
-
-                    foreach (int nni in niNeighbors)
-                    {
-                        if (nni == vi) continue; // skip edge back to our vertex
-
-                        float len3D = (target.vertices[ni] - target.vertices[nni]).magnitude;
-                        float lenUV = (target.targetUv[ni] - target.targetUv[nni]).magnitude;
-
-                        if (len3D < 1e-6f) continue;
-
-                        float ratio = lenUV / len3D;
-                        float deviation = ratio / refRatio;
-
-                        niTotalEdges++;
-                        if (deviation > deviationThreshold || deviation < 1f / deviationThreshold)
-                            niBadEdges++;
-                    }
-
-                    // Neighbor is consistent if majority of its other edges are fine
-                    if (niTotalEdges > 0 && niBadEdges <= niTotalEdges / 2)
-                        consistentNeighborCount++;
-                }
-
-                // Need majority of neighbors to be consistent before we trust them
-                if (consistentNeighborCount < (neighbors.Count + 1) / 2) continue;
-
-                // Repair: Laplacian interpolation from neighbors weighted by inverse 3D distance
-                Vector2 newUv = Vector2.zero;
-                float totalWeight = 0f;
-
-                foreach (int ni in neighbors)
-                {
-                    float len3D = (target.vertices[vi] - target.vertices[ni]).magnitude;
-                    float w = 1f / Mathf.Max(len3D, 1e-6f);
-                    newUv += target.targetUv[ni] * w;
-                    totalWeight += w;
-                }
-
-                if (totalWeight < 1e-6f) continue;
-                newUv /= totalWeight;
-
-                // Safety: verify no triangle flip
-                bool wouldFlip = false;
-                if (vertexToFaces.TryGetValue(vi, out var facesOfVi))
-                {
-                    foreach (int f in facesOfVi)
-                    {
-                        int i0 = target.triangles[f * 3];
-                        int i1 = target.triangles[f * 3 + 1];
-                        int i2 = target.triangles[f * 3 + 2];
-
-                        Vector2 a = i0 == vi ? newUv : target.targetUv[i0];
-                        Vector2 b = i1 == vi ? newUv : target.targetUv[i1];
-                        Vector2 c = i2 == vi ? newUv : target.targetUv[i2];
-
-                        float areaBefore = ComputeSignedArea(
-                            target.targetUv[i0], target.targetUv[i1], target.targetUv[i2]);
-                        float areaAfter = ComputeSignedArea(a, b, c);
-
-                        if (Mathf.Abs(areaBefore) > 1e-9f && Mathf.Abs(areaAfter) > 1e-9f &&
-                            Mathf.Sign(areaBefore) != Mathf.Sign(areaAfter))
-                        {
-                            wouldFlip = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (wouldFlip) continue;
-
-                UvtLog.Verbose($"[ShellTopology] Fixed displaced vertex {vi}: " +
-                    $"({target.targetUv[vi].x:F4},{target.targetUv[vi].y:F4}) → ({newUv.x:F4},{newUv.y:F4}) " +
-                    $"shell={bestShell} badEdges={badEdgeCount}/{totalEdges} " +
-                    $"consistentNeighbors={consistentNeighborCount}/{neighbors.Count}");
-
-                target.targetUv[vi] = newUv;
-                fixedCount++;
-            }
-
-            if (fixedCount > 0)
-            {
-                UvtLog.Info($"[InitialUvTransfer] Shell topology enforcement fixed {fixedCount} displaced vertices");
+                UvtLog.Info($"[InitialUvTransfer] Shell topology enforcement fixed {totalFixed} displaced vertices");
             }
         }
 
