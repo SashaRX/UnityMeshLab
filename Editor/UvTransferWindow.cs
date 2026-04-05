@@ -15,6 +15,9 @@ using System.Linq;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEditor;
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+using UnityEditor.Formats.Fbx.Exporter;
+#endif
 
 namespace LightmapUvTool
 {
@@ -1069,6 +1072,20 @@ namespace LightmapUvTool
                 ColorBtn(new Color(.9f,.3f,.3f), "Reset UV2 (delete sidecar)", 20, ResetUv2FromFbx);
                 EditorGUILayout.Space(2);
                 ColorBtn(new Color(.5f,.15f,.15f), "Reset Pipeline State", 20, ResetPipelineState);
+
+                // ── FBX Export ──
+                EditorGUILayout.Space(4);
+                H("FBX Export");
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                ColorBtn(new Color(.4f,.7f,.95f), "Export as New FBX", 24, () => ExportFbx(false));
+                EditorGUILayout.Space(2);
+                ColorBtn(new Color(.95f,.6f,.2f), "Overwrite Source FBX", 24, () => ExportFbx(true));
+#else
+                EditorGUILayout.HelpBox(
+                    "Install com.unity.formats.fbx package to enable FBX export.\n" +
+                    "Window → Package Manager → + → Add package by name → com.unity.formats.fbx",
+                    MessageType.Info);
+#endif
 
                 EditorGUILayout.Space(4);
                 H("Legacy Save");
@@ -3744,6 +3761,117 @@ namespace LightmapUvTool
             }
             UvtLog.Info("[Save] " + n + " refs updated");
         }
+
+        // ════════════════════════════════════════════════════════════
+        //  FBX Export
+        // ════════════════════════════════════════════════════════════
+
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        void ExportFbx(bool overwriteSource)
+        {
+            if (lodGroup == null) { UvtLog.Error("[FBX Export] No LODGroup loaded."); return; }
+
+            // Group processed meshes by their source FBX path
+            var fbxGroups = new Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>>();
+            foreach (var e in meshEntries)
+            {
+                if (!e.include) continue;
+                Mesh resultMesh = e.lodIndex == sourceLodIndex ? e.repackedMesh : e.transferredMesh;
+                if (resultMesh == null) continue;
+
+                Mesh pathMesh = e.fbxMesh ?? e.originalMesh;
+                string fbxPath = pathMesh != null ? AssetDatabase.GetAssetPath(pathMesh) : null;
+                if (string.IsNullOrEmpty(fbxPath)) continue;
+
+                if (!fbxGroups.ContainsKey(fbxPath))
+                    fbxGroups[fbxPath] = new List<(MeshEntry, Mesh)>();
+                fbxGroups[fbxPath].Add((e, resultMesh));
+            }
+
+            if (fbxGroups.Count == 0)
+            {
+                UvtLog.Error("[FBX Export] No processed meshes to export.");
+                return;
+            }
+
+            foreach (var kv in fbxGroups)
+            {
+                string sourceFbxPath = kv.Key;
+                var entries = kv.Value;
+
+                string exportPath;
+                if (overwriteSource)
+                {
+                    if (!EditorUtility.DisplayDialog("Overwrite Source FBX",
+                        "This will overwrite:\n" + sourceFbxPath +
+                        "\n\nA backup (.fbx.bak) will be created. Continue?",
+                        "Overwrite", "Cancel"))
+                        continue;
+
+                    exportPath = sourceFbxPath;
+
+                    // Create backup
+                    string fullSource = System.IO.Path.GetFullPath(sourceFbxPath);
+                    string backupPath = fullSource + ".bak";
+                    try { System.IO.File.Copy(fullSource, backupPath, true); }
+                    catch (Exception ex) { UvtLog.Error("[FBX Export] Backup failed: " + ex.Message); continue; }
+                }
+                else
+                {
+                    string dir = System.IO.Path.GetDirectoryName(sourceFbxPath);
+                    string baseName = System.IO.Path.GetFileNameWithoutExtension(sourceFbxPath);
+                    string defaultName = baseName + "_uv2.fbx";
+                    exportPath = EditorUtility.SaveFilePanel(
+                        "Export FBX", dir, defaultName, "fbx");
+                    if (string.IsNullOrEmpty(exportPath)) continue;
+
+                    // Convert absolute path to Assets-relative if inside project
+                    string dataPath = Application.dataPath;
+                    if (exportPath.StartsWith(dataPath))
+                        exportPath = "Assets" + exportPath.Substring(dataPath.Length);
+                }
+
+                // Build a temporary GameObject hierarchy with processed meshes
+                var tempRoot = new GameObject("__FbxExportTemp__");
+                try
+                {
+                    foreach (var (entry, resultMesh) in entries)
+                    {
+                        var child = new GameObject(resultMesh.name);
+                        child.transform.SetParent(tempRoot.transform, false);
+
+                        // Copy transform from original renderer
+                        if (entry.renderer != null)
+                        {
+                            child.transform.position = entry.renderer.transform.position;
+                            child.transform.rotation = entry.renderer.transform.rotation;
+                            child.transform.localScale = entry.renderer.transform.lossyScale;
+                        }
+
+                        var mf = child.AddComponent<MeshFilter>();
+                        mf.sharedMesh = resultMesh;
+
+                        var mr = child.AddComponent<MeshRenderer>();
+                        if (entry.renderer != null)
+                            mr.sharedMaterials = entry.renderer.sharedMaterials;
+                    }
+
+                    ModelExporter.ExportObject(exportPath, tempRoot);
+                    UvtLog.Info("[FBX Export] Exported " + entries.Count + " mesh(es) -> " + exportPath);
+                }
+                catch (Exception ex)
+                {
+                    UvtLog.Error("[FBX Export] Export failed: " + ex);
+                }
+                finally
+                {
+                    DestroyImmediate(tempRoot);
+                }
+            }
+
+            AssetDatabase.Refresh();
+        }
+#endif
 
         // ════════════════════════════════════════════════════════════
         //  Checker Preview
