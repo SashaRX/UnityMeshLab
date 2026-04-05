@@ -27,7 +27,7 @@ jobs:
           - os: macos-latest
             artifact: libxatlas-unity.dylib
             plugin_dir: Plugins/macOS
-            cmake_args: '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64'
+            cmake_args: '-DCMAKE_OSX_ARCHITECTURES=x86_64\;arm64'
 
     runs-on: ${{ matrix.os }}
     name: Build (${{ matrix.os }})
