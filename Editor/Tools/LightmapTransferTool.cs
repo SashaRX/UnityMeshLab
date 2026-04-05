@@ -822,6 +822,40 @@ namespace LightmapUvTool
             return null;
         }
 
+        /// <summary>
+        /// Copy non-trivial UV channels from source mesh to export mesh.
+        /// Preserves channels that have meaningful data (not empty, not all 0, not all 1).
+        /// Only copies channels missing from exportMesh; does not overwrite existing data.
+        /// </summary>
+        static void PreserveUvChannels(Mesh exportMesh, Mesh sourceMesh)
+        {
+            if (sourceMesh.vertexCount != exportMesh.vertexCount) return;
+            for (int ch = 0; ch < 8; ch++)
+            {
+                // Skip if export mesh already has this channel
+                var attr = (VertexAttribute)((int)VertexAttribute.TexCoord0 + ch);
+                if (exportMesh.HasVertexAttribute(attr)) continue;
+                if (!sourceMesh.HasVertexAttribute(attr)) continue;
+
+                var uv = new List<Vector2>();
+                sourceMesh.GetUVs(ch, uv);
+                if (uv.Count == 0) continue;
+
+                // Skip trivial data: all zeros or all ones
+                bool allZero = true, allOne = true;
+                for (int i = 0; i < uv.Count; i++)
+                {
+                    var v = uv[i];
+                    if (v.x != 0f || v.y != 0f) allZero = false;
+                    if (v.x != 1f || v.y != 1f) allOne = false;
+                    if (!allZero && !allOne) break;
+                }
+                if (allZero || allOne) continue;
+
+                exportMesh.SetUVs(ch, uv);
+            }
+        }
+
         void ExportFbx(bool overwriteSource)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
@@ -854,7 +888,13 @@ namespace LightmapUvTool
                         "Overwrite", "Cancel")) continue;
                     exportPath = sourceFbxPath;
                     string fullSource = System.IO.Path.GetFullPath(sourceFbxPath);
-                    try { System.IO.File.Copy(fullSource, fullSource + ".bak", true); }
+                    string fullMeta = fullSource + ".meta";
+                    try
+                    {
+                        System.IO.File.Copy(fullSource, fullSource + ".bak", true);
+                        if (System.IO.File.Exists(fullMeta))
+                            System.IO.File.Copy(fullMeta, fullSource + ".meta.bak", true);
+                    }
                     catch (Exception ex) { UvtLog.Error("[FBX Export] Backup failed: " + ex.Message); continue; }
                 }
                 else
@@ -873,17 +913,35 @@ namespace LightmapUvTool
                 {
                     foreach (var (entry, resultMesh) in entries)
                     {
+                        // Build export mesh: start from result, restore missing UV channels from original
+                        var exportMesh = UnityEngine.Object.Instantiate(resultMesh);
+                        Mesh srcUvMesh = entry.fbxMesh ?? entry.originalMesh;
+                        if (srcUvMesh != null)
+                            PreserveUvChannels(exportMesh, srcUvMesh);
+
                         string objName = entry.fbxMesh != null ? entry.fbxMesh.name : resultMesh.name;
                         var child = new GameObject(objName);
                         child.transform.SetParent(tempRoot.transform, false);
                         var mf = child.AddComponent<MeshFilter>();
-                        mf.sharedMesh = resultMesh;
+                        mf.sharedMesh = exportMesh;
                         var mr = child.AddComponent<MeshRenderer>();
                         if (entry.renderer != null) mr.sharedMaterials = entry.renderer.sharedMaterials;
                     }
                     var exportOptions = new ExportModelOptions { ExportFormat = ExportFormat.Binary };
                     ModelExporter.ExportObjects(exportPath, new UnityEngine.Object[] { tempRoot }, exportOptions);
                     UvtLog.Info("[FBX Export] Exported (binary) " + entries.Count + " mesh(es) -> " + exportPath);
+
+                    // Restore original .meta to preserve import settings and GUID
+                    if (overwriteSource)
+                    {
+                        string fullMeta = System.IO.Path.GetFullPath(sourceFbxPath) + ".meta";
+                        string metaBak = fullMeta + ".bak";
+                        if (System.IO.File.Exists(metaBak))
+                        {
+                            System.IO.File.Copy(metaBak, fullMeta, true);
+                            System.IO.File.Delete(metaBak);
+                        }
+                    }
                 }
                 catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); }
                 finally { UnityEngine.Object.DestroyImmediate(tempRoot); }
