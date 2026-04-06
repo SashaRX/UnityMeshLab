@@ -130,6 +130,9 @@ namespace LightmapUvTool
                 var lg = go.GetComponentInParent<LODGroup>();
                 if (lg != null && lg != ctx.LodGroup)
                 {
+                    // Restore preview before switching LODGroup
+                    if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
+                        ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
                     ctx.Refresh(lg);
                     ActiveTool?.OnRefresh();
                 }
@@ -501,6 +504,9 @@ namespace LightmapUvTool
             ctx.PreviewLod = clamped;
             canvas.ClearHoverState();
             if (ctx.LodGroup != null) ctx.LodGroup.ForceLOD(clamped);
+            // Reapply active 3D preview to new LOD's renderers
+            if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
+                ApplyPreviewMode(canvas.CurrentPreviewMode);
             Repaint();
         }
 
