@@ -151,6 +151,23 @@ namespace LightmapUvTool
                     _cachedLodCount = ctx.LodCount;
                     ActiveTool?.OnRefresh();
                 }
+                else if (lg == null && ctx.LodGroup != null)
+                {
+                    // Selected object has no LODGroup — clear context only if it
+                    // has mesh-relevant components or LOD children, so clicking a
+                    // Light or Camera doesn't disrupt the workflow.
+                    bool hasMeshRelevance = go.GetComponent<MeshFilter>() != null
+                                         || go.GetComponent<MeshRenderer>() != null
+                                         || LodGenerationTool.FindLodSiblings(go) != null;
+                    if (hasMeshRelevance)
+                    {
+                        if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
+                            ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
+                        ctx.Refresh(null);
+                        _cachedLodCount = 0;
+                        ActiveTool?.OnRefresh();
+                    }
+                }
             }
 
             UpdateSelectedSidecar();

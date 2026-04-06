@@ -208,7 +208,53 @@ namespace LightmapUvTool
             ctx.LodGroup = (LODGroup)EditorGUILayout.ObjectField("LODGroup", ctx.LodGroup, typeof(LODGroup), true);
             if (EditorGUI.EndChangeCheck()) { ctx.Refresh(ctx.LodGroup); OnRefresh(); }
 
-            if (ctx.LodGroup == null) { EditorGUILayout.HelpBox("Assign LODGroup or select a GameObject.", MessageType.Info); return; }
+            if (ctx.LodGroup == null)
+            {
+                var selected = Selection.activeGameObject;
+                var siblings = LodGenerationTool.FindLodSiblings(selected);
+
+                if (siblings != null && siblings.Count > 0)
+                {
+                    EditorGUILayout.HelpBox(
+                        "LOD objects detected but no LODGroup assigned. Create one to continue.",
+                        MessageType.Info);
+                    EditorGUILayout.Space(4);
+                    EditorGUILayout.LabelField("Detected LODs", EditorStyles.boldLabel);
+                    foreach (var (go, lodIndex) in siblings)
+                    {
+                        var renderers = go.GetComponentsInChildren<Renderer>();
+                        int tris = 0;
+                        foreach (var r in renderers)
+                        {
+                            var mf = r.GetComponent<MeshFilter>();
+                            if (mf != null && mf.sharedMesh != null)
+                                tris += mf.sharedMesh.triangles.Length / 3;
+                        }
+                        EditorGUILayout.LabelField(
+                            $"  LOD{lodIndex}: {go.name}  ({renderers.Length} renderer{(renderers.Length != 1 ? "s" : "")}, {tris:N0} tris)",
+                            EditorStyles.miniLabel);
+                    }
+
+                    EditorGUILayout.Space(6);
+                    var bgc = GUI.backgroundColor;
+                    GUI.backgroundColor = new Color(.4f, .8f, .4f);
+                    if (GUILayout.Button("Add LOD Group", GUILayout.Height(28)))
+                    {
+                        var lodGroup = LodGenerationTool.CreateLodGroupStatic(siblings);
+                        ctx.Refresh(lodGroup);
+                        OnRefresh();
+                        requestRepaint?.Invoke();
+                    }
+                    GUI.backgroundColor = bgc;
+                }
+                else
+                {
+                    EditorGUILayout.HelpBox(
+                        "Assign LODGroup or select a GameObject with LOD children.",
+                        MessageType.Info);
+                }
+                return;
+            }
 
             ctx.SourceLodIndex = EditorGUILayout.IntSlider("Source LOD", ctx.SourceLodIndex, 0, ctx.LodCount - 1);
 

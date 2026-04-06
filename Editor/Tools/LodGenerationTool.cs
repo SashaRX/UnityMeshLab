@@ -465,7 +465,7 @@ namespace LightmapUvTool
         /// base name but with different LOD indices. Returns null if the name doesn't
         /// match the LOD pattern.
         /// </summary>
-        static List<(GameObject go, int lodIndex)> FindLodSiblings(GameObject go)
+        internal static List<(GameObject go, int lodIndex)> FindLodSiblings(GameObject go)
         {
             if (go == null) return null;
 
@@ -511,7 +511,7 @@ namespace LightmapUvTool
             return null;
         }
 
-        void CreateLodGroup(List<(GameObject go, int lodIndex)> siblings)
+        internal static LODGroup CreateLodGroupStatic(List<(GameObject go, int lodIndex)> siblings)
         {
             var lodRoot = siblings[0].go.transform.parent.gameObject;
 
@@ -528,10 +528,16 @@ namespace LightmapUvTool
             lodGroup.SetLODs(lods);
             lodGroup.RecalculateBounds();
 
+            return lodGroup;
+        }
+
+        void CreateLodGroup(List<(GameObject go, int lodIndex)> siblings)
+        {
+            var lodGroup = CreateLodGroupStatic(siblings);
             ctx.Refresh(lodGroup);
             requestRepaint?.Invoke();
 
-            UvtLog.Info($"[LOD Gen] Created LODGroup on '{lodRoot.name}' with {siblings.Count} LODs.");
+            UvtLog.Info($"[LOD Gen] Created LODGroup on '{lodGroup.gameObject.name}' with {siblings.Count} LODs.");
         }
     }
 }
