@@ -51,6 +51,7 @@ namespace LightmapUvTool
         // ── Post-processing ──
         int   blurIterations = 0;
         float blurStrength   = 0.5f;
+        bool  faceAreaCorrection = false;
 
         // ── Results ──
         Dictionary<Mesh, float[]> bakedRawAO;    // raw bake result (before blur)
@@ -146,6 +147,11 @@ namespace LightmapUvTool
                 groundOffset = Mathf.Max(0, groundOffset);
                 EditorGUI.indentLevel--;
             }
+
+            EditorGUILayout.Space(4);
+            faceAreaCorrection = EditorGUILayout.Toggle(
+                new GUIContent("Face-Area Fix", "Fix large flat polygons where all vertices are in occlusion but the surface is open. Enable only for low-poly meshes with large quads."),
+                faceAreaCorrection);
 
             EditorGUILayout.Space(8);
 
@@ -243,7 +249,8 @@ namespace LightmapUvTool
                 maxRadius       = maxRadius,
                 intensity       = intensity,
                 groundPlane     = groundPlane,
-                groundOffset    = groundOffset
+                groundOffset    = groundOffset,
+                faceAreaCorrection = faceAreaCorrection
             };
 
             var sw = Stopwatch.StartNew();
@@ -275,7 +282,12 @@ namespace LightmapUvTool
             foreach (var kvp in bakedRawAO)
                 bakedFinalAO[kvp.Key] = (float[])kvp.Value.Clone();
             ApplyBlurInternal();
-            if (previewActive) UpdatePreviewColors();
+            if (previewActive)
+            {
+                // Re-create preview with updated blur results
+                RestorePreview();
+                ActivatePreview();
+            }
             requestRepaint?.Invoke();
         }
 

@@ -27,6 +27,7 @@ namespace LightmapUvTool
         public float intensity    = 1.0f;
         public bool groundPlane   = true;
         public float groundOffset = 0.01f;
+        public bool faceAreaCorrection = false;
     }
 
     public static class VertexAOBaker
@@ -594,8 +595,9 @@ namespace LightmapUvTool
 
                 // Face-area correction: fix large polygons where all vertices
                 // are in occlusion but the surface itself is mostly open.
-                ao = FaceAreaCorrection(ao, mesh, xform, bvh, directions, maxDist,
-                    normalOffset, settings, groundY);
+                if (settings.faceAreaCorrection)
+                    ao = FaceAreaCorrection(ao, mesh, xform, bvh, directions, maxDist,
+                        normalOffset, settings, groundY);
 
                 result[mesh] = ao;
             }
