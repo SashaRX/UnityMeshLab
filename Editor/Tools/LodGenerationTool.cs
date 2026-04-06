@@ -88,11 +88,11 @@ namespace LightmapUvTool
                     }
 
                     EditorGUILayout.Space(6);
-                    var bg = GUI.backgroundColor;
+                    var bgc = GUI.backgroundColor;
                     GUI.backgroundColor = new Color(.4f, .8f, .4f);
                     if (GUILayout.Button("Create LODGroup", GUILayout.Height(28)))
                         CreateLodGroup(siblings);
-                    GUI.backgroundColor = bg;
+                    GUI.backgroundColor = bgc;
                 }
                 else
                 {
