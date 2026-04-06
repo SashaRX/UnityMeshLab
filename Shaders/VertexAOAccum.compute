@@ -1,0 +1,92 @@
+// VertexAOAccum.compute — GPU vertex AO accumulation via depth-map hemisphere sampling.
+// Two kernels: AccumulateAO (per direction) and FinalizeAO (compute final AO values).
+
+#pragma kernel AccumulateAO
+#pragma kernel FinalizeAO
+
+// ── Buffers ──
+StructuredBuffer<float3>   _Positions;
+StructuredBuffer<float3>   _Normals;
+RWStructuredBuffer<uint2>  _AOCounters;  // (occluded, sampled) per vertex
+RWStructuredBuffer<float>  _AOResult;    // final AO per vertex
+
+// ── Depth texture from current direction ──
+Texture2D<float> _DepthTex;
+
+// ── Uniforms ──
+float4x4 _VP;
+float3   _SampleDir;
+float    _DepthBias;
+float    _NormalOffset;
+float    _Intensity;
+uint     _VertexCount;
+uint     _DepthTexSize;
+
+// ══════════════════════════════════════════════════════════
+// Kernel 0: AccumulateAO — dispatch once per hemisphere direction
+// ══════════════════════════════════════════════════════════
+
+[numthreads(64, 1, 1)]
+void AccumulateAO(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _VertexCount) return;
+
+    float3 pos    = _Positions[id.x];
+    float3 normal = _Normals[id.x];
+
+    // Backface cull: vertex faces away from sample direction → skip
+    float ndot = dot(_SampleDir, normal);
+    if (ndot <= 0.0) return;
+
+    // Offset position along normal to avoid self-intersection
+    float3 offsetPos = pos + normal * _NormalOffset;
+
+    // Project to clip space
+    float4 clip = mul(_VP, float4(offsetPos, 1.0));
+    float3 ndc  = clip.xyz / clip.w;
+
+    // NDC → UV (0..1)
+    float2 uv = ndc.xy * 0.5 + 0.5;
+
+    // Vertex depth (normalized: 0=near, 1=far)
+    float vertexDepth = ndc.z;
+
+    // Out of bounds → not occluded from this direction
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+    {
+        InterlockedAdd(_AOCounters[id.x].y, 1u); // sampled++
+        return;
+    }
+
+    // Sample depth texture
+    int2 texCoord = int2(uv * (float)_DepthTexSize);
+    texCoord = clamp(texCoord, int2(0, 0), int2(_DepthTexSize - 1, _DepthTexSize - 1));
+    float sampledDepth = _DepthTex.Load(int3(texCoord, 0));
+
+    // Compare: vertex is occluded if something closer blocks it
+    if (vertexDepth > sampledDepth + _DepthBias)
+    {
+        InterlockedAdd(_AOCounters[id.x].x, 1u); // occluded++
+    }
+    InterlockedAdd(_AOCounters[id.x].y, 1u); // sampled++
+}
+
+// ══════════════════════════════════════════════════════════
+// Kernel 1: FinalizeAO — dispatch once after all directions
+// ══════════════════════════════════════════════════════════
+
+[numthreads(64, 1, 1)]
+void FinalizeAO(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _VertexCount) return;
+
+    uint occluded = _AOCounters[id.x].x;
+    uint sampled  = _AOCounters[id.x].y;
+
+    float ao = 1.0;
+    if (sampled > 0)
+        ao = 1.0 - (float)occluded / (float)sampled;
+
+    ao = pow(saturate(ao), _Intensity);
+    _AOResult[id.x] = ao;
+}

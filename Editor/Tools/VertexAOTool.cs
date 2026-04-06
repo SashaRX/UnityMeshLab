@@ -1,0 +1,401 @@
+// VertexAOTool.cs — Vertex AO baking tool (IUvTool tab).
+// GPU depth-map hemisphere sampling with ground plane, blur, and channel-select output.
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using UnityEngine;
+using UnityEditor;
+
+namespace LightmapUvTool
+{
+    public class VertexAOTool : IUvTool
+    {
+        UvToolContext ctx;
+        UvCanvasView canvas;
+        Action requestRepaint;
+
+        public string ToolName  => "Vertex AO";
+        public string ToolId    => "vertex_ao";
+        public int    ToolOrder => 50;
+
+        public Action RequestRepaint { set => requestRepaint = value; }
+
+        // ── Settings ──
+        static readonly int[] sampleCounts    = { 64, 128, 256, 512 };
+        static readonly string[] sampleLabels = { "64", "128", "256", "512" };
+        static readonly int[] resolutions     = { 256, 512, 1024 };
+        static readonly string[] resLabels    = { "256", "512", "1024" };
+        static readonly string[] channelNames =
+        {
+            "Vertex Color R", "Vertex Color G", "Vertex Color B", "Vertex Color A",
+            "UV0 X", "UV0 Y", "UV1 X", "UV1 Y", "UV2 X", "UV2 Y",
+            "UV3 X", "UV3 Y", "UV4 X", "UV4 Y"
+        };
+
+        int sampleCountIndex = 2;   // 256
+        int resolutionIndex  = 1;   // 512
+        float maxRadius      = 10f;
+        float intensity      = 1.0f;
+        bool  groundPlane    = true;
+        float groundOffset   = 0.01f;
+        int   targetChannel  = 0;   // VertexColorR
+
+        // ── Post-processing ──
+        int   blurIterations = 0;
+        float blurStrength   = 0.5f;
+
+        // ── Results ──
+        Dictionary<Mesh, float[]> bakedRawAO;    // raw bake result (before blur)
+        Dictionary<Mesh, float[]> bakedFinalAO;   // after blur
+        float bakeTimeSeconds;
+        int   bakedVertexCount;
+
+        // ── Preview ──
+        bool previewActive;
+        List<(MeshFilter mf, Mesh originalMesh, Material[] originalMats)> previewBackups
+            = new List<(MeshFilter, Mesh, Material[])>();
+        Material previewMaterial;
+
+        // ── Lifecycle ──
+
+        public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
+        {
+            this.ctx = ctx;
+            this.canvas = canvas;
+        }
+
+        public void OnDeactivate()
+        {
+            RestorePreview();
+            ClearResults();
+        }
+
+        public void OnRefresh()
+        {
+            RestorePreview();
+            ClearResults();
+        }
+
+        void ClearResults()
+        {
+            bakedRawAO = null;
+            bakedFinalAO = null;
+            bakedVertexCount = 0;
+        }
+
+        // ── UI ──
+
+        public void OnDrawSidebar()
+        {
+            EditorGUILayout.Space(8);
+            EditorGUILayout.LabelField("Vertex AO Baker", EditorStyles.boldLabel);
+            EditorGUILayout.Space(4);
+
+            if (ctx.LodGroup == null)
+            {
+                EditorGUILayout.HelpBox(
+                    "Select a LODGroup to bake vertex ambient occlusion.",
+                    MessageType.Info);
+                return;
+            }
+
+            // Target channel
+            targetChannel = EditorGUILayout.Popup(
+                new GUIContent("Target Channel", "Channel to store AO values. Existing data in other channels/components is preserved."),
+                targetChannel, channelNames);
+
+            EditorGUILayout.Space(4);
+
+            // Bake settings
+            sampleCountIndex = EditorGUILayout.Popup(
+                new GUIContent("Sample Count", "Number of hemisphere directions to sample. Higher = smoother AO, slower bake."),
+                sampleCountIndex, sampleLabels);
+            resolutionIndex = EditorGUILayout.Popup(
+                new GUIContent("Resolution", "Depth map resolution per sample. Higher = sharper shadow edges."),
+                resolutionIndex, resLabels);
+            maxRadius = EditorGUILayout.Slider(
+                new GUIContent("Radius", "Maximum occlusion distance. Objects beyond this radius don't contribute to AO."),
+                maxRadius, 0.1f, 100f);
+            intensity = EditorGUILayout.Slider(
+                new GUIContent("Intensity", "AO contrast. >1 = darker shadows, <1 = softer."),
+                intensity, 0.5f, 3.0f);
+
+            // Ground plane
+            EditorGUILayout.Space(4);
+            groundPlane = EditorGUILayout.Toggle(
+                new GUIContent("Ground Plane", "Add virtual ground plane below object for bottom occlusion."),
+                groundPlane);
+            if (groundPlane)
+            {
+                EditorGUI.indentLevel++;
+                groundOffset = EditorGUILayout.FloatField(
+                    new GUIContent("Offset", "Distance below mesh bounds minimum."),
+                    groundOffset);
+                groundOffset = Mathf.Max(0, groundOffset);
+                EditorGUI.indentLevel--;
+            }
+
+            EditorGUILayout.Space(8);
+
+            // Bake button
+            var bgc = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(.4f, .8f, .4f);
+            if (GUILayout.Button("Bake Vertex AO", GUILayout.Height(28)))
+                ExecuteBake();
+            GUI.backgroundColor = bgc;
+
+            // Results
+            if (bakedFinalAO != null && bakedFinalAO.Count > 0)
+            {
+                EditorGUILayout.Space(8);
+                EditorGUILayout.LabelField("Results", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField(
+                    $"  {bakedVertexCount:N0} vertices, {sampleCounts[sampleCountIndex]} samples, {bakeTimeSeconds:F1}s",
+                    EditorStyles.miniLabel);
+                EditorGUILayout.LabelField(
+                    $"  Target: {channelNames[targetChannel]}",
+                    EditorStyles.miniLabel);
+
+                // Post-processing
+                EditorGUILayout.Space(4);
+                EditorGUILayout.LabelField("Post-Processing", EditorStyles.boldLabel);
+                blurIterations = EditorGUILayout.IntSlider(
+                    new GUIContent("Blur Iterations", "Smooth AO across neighboring vertices. More iterations = softer result."),
+                    blurIterations, 0, 10);
+                blurStrength = EditorGUILayout.Slider(
+                    new GUIContent("Blur Strength", "Blend factor per iteration. 1 = full neighbor average."),
+                    blurStrength, 0f, 1f);
+                if (GUILayout.Button("Apply Blur"))
+                    ApplyBlur();
+
+                EditorGUILayout.Space(8);
+
+                // Preview toggle
+                bool newPreview = EditorGUILayout.Toggle(
+                    new GUIContent("Preview in Scene", "Show baked AO as vertex colors in the Scene view."),
+                    previewActive);
+                if (newPreview != previewActive)
+                {
+                    if (newPreview) ActivatePreview();
+                    else RestorePreview();
+                }
+
+                EditorGUILayout.Space(4);
+
+                // Apply / Clear buttons
+                EditorGUILayout.BeginHorizontal();
+                GUI.backgroundColor = new Color(.3f, .85f, .4f);
+                if (GUILayout.Button("Apply to Mesh", GUILayout.Height(24)))
+                    ApplyToMesh();
+                GUI.backgroundColor = new Color(.9f, .3f, .3f);
+                if (GUILayout.Button("Clear", GUILayout.Height(24)))
+                {
+                    RestorePreview();
+                    ClearResults();
+                    requestRepaint?.Invoke();
+                }
+                GUI.backgroundColor = bgc;
+                EditorGUILayout.EndHorizontal();
+            }
+        }
+
+        // ── Bake ──
+
+        void ExecuteBake()
+        {
+            RestorePreview();
+
+            var entries = ctx.MeshEntries
+                .Where(e => e.lodIndex == ctx.SourceLodIndex && e.include && e.renderer != null)
+                .ToList();
+
+            if (entries.Count == 0)
+            {
+                UvtLog.Warn("[Vertex AO] No source meshes found.");
+                return;
+            }
+
+            var meshList = new List<(Mesh mesh, Matrix4x4 transform)>();
+            foreach (var e in entries)
+            {
+                Mesh mesh = e.originalMesh ?? e.fbxMesh;
+                if (mesh == null) continue;
+                meshList.Add((mesh, e.renderer.transform.localToWorldMatrix));
+            }
+
+            var settings = new VertexAOSettings
+            {
+                sampleCount     = sampleCounts[sampleCountIndex],
+                depthResolution = resolutions[resolutionIndex],
+                maxRadius       = maxRadius,
+                intensity       = intensity,
+                groundPlane     = groundPlane,
+                groundOffset    = groundOffset
+            };
+
+            var sw = Stopwatch.StartNew();
+            bakedRawAO = VertexAOBaker.BakeMultiMesh(meshList, settings);
+            sw.Stop();
+            bakeTimeSeconds = (float)sw.Elapsed.TotalSeconds;
+
+            // Apply initial blur
+            bakedFinalAO = new Dictionary<Mesh, float[]>();
+            bakedVertexCount = 0;
+            foreach (var kvp in bakedRawAO)
+            {
+                bakedFinalAO[kvp.Key] = (float[])kvp.Value.Clone();
+                bakedVertexCount += kvp.Value.Length;
+            }
+            if (blurIterations > 0)
+                ApplyBlurInternal();
+
+            UvtLog.Info($"[Vertex AO] Baked {bakedVertexCount} vertices in {bakeTimeSeconds:F1}s");
+            requestRepaint?.Invoke();
+        }
+
+        void ApplyBlur()
+        {
+            if (bakedRawAO == null) return;
+            // Reset to raw, then apply blur
+            bakedFinalAO = new Dictionary<Mesh, float[]>();
+            foreach (var kvp in bakedRawAO)
+                bakedFinalAO[kvp.Key] = (float[])kvp.Value.Clone();
+            ApplyBlurInternal();
+            if (previewActive) UpdatePreviewColors();
+            requestRepaint?.Invoke();
+        }
+
+        void ApplyBlurInternal()
+        {
+            if (blurIterations <= 0 || bakedFinalAO == null) return;
+            foreach (var mesh in bakedFinalAO.Keys.ToList())
+            {
+                bakedFinalAO[mesh] = VertexAOBaker.BlurAO(
+                    bakedFinalAO[mesh], mesh.triangles, mesh.vertexCount,
+                    blurIterations, blurStrength);
+            }
+        }
+
+        // ── Apply ──
+
+        void ApplyToMesh()
+        {
+            if (bakedFinalAO == null) return;
+            RestorePreview();
+
+            var channel = (AOTargetChannel)targetChannel;
+            foreach (var kvp in bakedFinalAO)
+            {
+                Undo.RecordObject(kvp.Key, "Apply Vertex AO");
+                VertexAOBaker.WriteToChannel(kvp.Key, kvp.Value, channel);
+                EditorUtility.SetDirty(kvp.Key);
+            }
+
+            UvtLog.Info($"[Vertex AO] Applied to {bakedFinalAO.Count} mesh(es) → {channelNames[targetChannel]}");
+        }
+
+        // ── Preview ──
+
+        void ActivatePreview()
+        {
+            if (bakedFinalAO == null || previewActive) return;
+
+            if (previewMaterial == null)
+            {
+                var sh = Shader.Find("Hidden/Internal-Colored");
+                previewMaterial = new Material(sh)
+                {
+                    hideFlags = HideFlags.HideAndDontSave
+                };
+                previewMaterial.SetInt("_SrcBlend", (int)BlendMode.One);
+                previewMaterial.SetInt("_DstBlend", (int)BlendMode.Zero);
+                previewMaterial.SetInt("_Cull", (int)CullMode.Back);
+                previewMaterial.SetInt("_ZWrite", 1);
+            }
+
+            foreach (var e in ctx.MeshEntries)
+            {
+                if (e.lodIndex != ctx.SourceLodIndex || !e.include || e.renderer == null) continue;
+                var mf = e.meshFilter;
+                if (mf == null) continue;
+                Mesh mesh = e.originalMesh ?? e.fbxMesh;
+                if (mesh == null || !bakedFinalAO.ContainsKey(mesh)) continue;
+
+                var mr = e.renderer as MeshRenderer;
+                if (mr == null) continue;
+
+                // Backup
+                previewBackups.Add((mf, mf.sharedMesh, mr.sharedMaterials));
+
+                // Clone mesh with AO in vertex colors
+                var clone = UnityEngine.Object.Instantiate(mesh);
+                clone.hideFlags = HideFlags.HideAndDontSave;
+                var colors = new Color32[clone.vertexCount];
+                var ao = bakedFinalAO[mesh];
+                for (int i = 0; i < colors.Length; i++)
+                {
+                    byte v = (byte)(Mathf.Clamp01(ao[i]) * 255f);
+                    colors[i] = new Color32(v, v, v, 255);
+                }
+                clone.colors32 = colors;
+                mf.sharedMesh = clone;
+
+                var mats = new Material[mr.sharedMaterials.Length];
+                for (int i = 0; i < mats.Length; i++)
+                    mats[i] = previewMaterial;
+                mr.sharedMaterials = mats;
+            }
+
+            previewActive = true;
+            SceneView.RepaintAll();
+        }
+
+        void RestorePreview()
+        {
+            if (!previewActive) return;
+
+            foreach (var (mf, originalMesh, originalMats) in previewBackups)
+            {
+                if (mf == null) continue;
+                if (mf.sharedMesh != null && mf.sharedMesh != originalMesh)
+                    UnityEngine.Object.DestroyImmediate(mf.sharedMesh);
+                mf.sharedMesh = originalMesh;
+                var mr = mf.GetComponent<MeshRenderer>();
+                if (mr != null) mr.sharedMaterials = originalMats;
+            }
+            previewBackups.Clear();
+            previewActive = false;
+            SceneView.RepaintAll();
+        }
+
+        void UpdatePreviewColors()
+        {
+            if (!previewActive || bakedFinalAO == null) return;
+            // Update preview clone colors without re-creating everything
+            foreach (var (mf, originalMesh, _) in previewBackups)
+            {
+                if (mf == null || mf.sharedMesh == null) continue;
+                if (!bakedFinalAO.TryGetValue(originalMesh, out var ao)) continue;
+                var clone = mf.sharedMesh;
+                var colors = new Color32[clone.vertexCount];
+                for (int i = 0; i < colors.Length && i < ao.Length; i++)
+                {
+                    byte v = (byte)(Mathf.Clamp01(ao[i]) * 255f);
+                    colors[i] = new Color32(v, v, v, 255);
+                }
+                clone.colors32 = colors;
+            }
+            SceneView.RepaintAll();
+        }
+
+        // ── Unused interface ──
+
+        public void OnDrawToolbarExtra() { }
+        public void OnDrawStatusBar() { }
+        public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float sz) { }
+        public IEnumerable<UvCanvasView.FillModeEntry> GetFillModes() { yield break; }
+        public void OnSceneGUI(SceneView sv) { }
+    }
+}
