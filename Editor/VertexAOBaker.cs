@@ -39,7 +39,10 @@ namespace LightmapUvTool
                 return new Dictionary<Mesh, float[]>();
 
             if (!SystemInfo.supportsComputeShaders)
+            {
+                UvtLog.Warn("[Vertex AO] Compute shaders not supported (GPU: " + SystemInfo.graphicsDeviceType + "). Switch to DX11/DX12/Vulkan/Metal for GPU bake.");
                 return BakeMultiMeshCPU(meshes, settings);
+            }
 
             return BakeMultiMeshGPU(meshes, settings);
         }

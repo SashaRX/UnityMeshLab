@@ -28,12 +28,12 @@ namespace LightmapUvTool
         static readonly string[] sampleLabels = { "64", "128", "256", "512" };
         static readonly int[] resolutions     = { 256, 512, 1024 };
         static readonly string[] resLabels    = { "256", "512", "1024" };
-        static readonly string[] channelNames =
-        {
-            "Vertex Color R", "Vertex Color G", "Vertex Color B", "Vertex Color A",
-            "UV0 X", "UV0 Y", "UV1 X", "UV1 Y", "UV2 X", "UV2 Y",
-            "UV3 X", "UV3 Y", "UV4 X", "UV4 Y"
-        };
+        static readonly string[] channelTypeNames = { "Vertex Color", "UV0", "UV1", "UV2", "UV3", "UV4" };
+        static readonly string[] colorCompNames  = { "R", "G", "B", "A" };
+        static readonly string[] uvCompNames     = { "X", "Y" };
+
+        int channelType = 0;  // 0=VertexColor, 1-5=UV0-UV4
+        int channelComp = 0;  // 0=R/X, 1=G/Y, 2=B, 3=A
 
         int sampleCountIndex = 2;   // 256
         int resolutionIndex  = 1;   // 512
@@ -41,7 +41,12 @@ namespace LightmapUvTool
         float intensity      = 1.0f;
         bool  groundPlane    = true;
         float groundOffset   = 0.01f;
-        int   targetChannel  = 0;   // VertexColorR
+        AOTargetChannel TargetChannel =>
+            channelType == 0
+                ? (AOTargetChannel)channelComp
+                : (AOTargetChannel)(4 + (channelType - 1) * 2 + channelComp);
+
+        string TargetChannelName => channelTypeNames[channelType] + " " + (channelType == 0 ? colorCompNames : uvCompNames)[channelComp];
 
         // ── Post-processing ──
         int   blurIterations = 0;
@@ -102,10 +107,14 @@ namespace LightmapUvTool
                 return;
             }
 
-            // Target channel
-            targetChannel = EditorGUILayout.Popup(
-                new GUIContent("Target Channel", "Channel to store AO values. Existing data in other channels/components is preserved."),
-                targetChannel, channelNames);
+            // Target channel — two combo boxes
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.PrefixLabel(new GUIContent("Target", "Channel to store AO values."));
+            channelType = EditorGUILayout.Popup(channelType, channelTypeNames);
+            var compNames = channelType == 0 ? colorCompNames : uvCompNames;
+            if (channelComp >= compNames.Length) channelComp = 0;
+            channelComp = EditorGUILayout.Popup(channelComp, compNames);
+            EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.Space(4);
 
@@ -156,7 +165,7 @@ namespace LightmapUvTool
                     $"  {bakedVertexCount:N0} vertices, {sampleCounts[sampleCountIndex]} samples, {bakeTimeSeconds:F1}s",
                     EditorStyles.miniLabel);
                 EditorGUILayout.LabelField(
-                    $"  Target: {channelNames[targetChannel]}",
+                    $"  Target: {TargetChannelName}",
                     EditorStyles.miniLabel);
 
                 // Post-processing
@@ -287,14 +296,14 @@ namespace LightmapUvTool
             if (bakedFinalAO == null) return;
             RestorePreview();
 
-            var channel = (AOTargetChannel)targetChannel;
+            var channel = TargetChannel;
             foreach (var kvp in bakedFinalAO)
             {
                 VertexAOBaker.WriteToChannel(kvp.Key, kvp.Value, channel);
                 EditorUtility.SetDirty(kvp.Key);
             }
 
-            UvtLog.Info($"[Vertex AO] Applied to {bakedFinalAO.Count} mesh(es) → {channelNames[targetChannel]}");
+            UvtLog.Info($"[Vertex AO] Applied to {bakedFinalAO.Count} mesh(es) → {TargetChannelName}");
         }
 
         // ── Preview ──
