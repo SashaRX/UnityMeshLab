@@ -1353,8 +1353,254 @@ namespace LightmapUvTool
                 if (canvas.HoverHitValid) canvas.ClearHoverState();
                 return;
             }
-            // Scene raycast for spot mode delegated to UvTransferWindow (kept for now)
-            // Full implementation requires porting the raycast + shell overlay logic
+
+            Event e = Event.current;
+            if (e == null) return;
+
+            // Raycast on MouseMove/MouseDrag, throttled to ~30fps
+            if (e.type == EventType.MouseMove || e.type == EventType.MouseDrag)
+            {
+                double now = EditorApplication.timeSinceStartup;
+                if (now - sceneSpotLastRaycastTime >= sceneSpotThrottleSec)
+                {
+                    sceneSpotLastRaycastTime = now;
+                    var ray = HandleUtility.GUIPointToWorldRay(e.mousePosition);
+                    bool hadHit = canvas.HoverHitValid;
+                    int prevShell = canvas.HoveredShellId;
+
+                    canvas.HoverHitValid = TryRaycastPreview(ray, out var hit);
+                    if (canvas.HoverHitValid)
+                    {
+                        canvas.HoverWorldPos = hit.worldPos;
+                        canvas.UvSpot = hit.uv;
+                        canvas.HoveredShellId = hit.shellId;
+                        sceneSpotCachedEntry = hit.meshEntry;
+                    }
+                    else
+                    {
+                        canvas.HoveredShellId = -1;
+                        sceneSpotCachedEntry = null;
+                    }
+
+                    if (canvas.HoverHitValid != hadHit || canvas.HoveredShellId != prevShell)
+                        requestRepaint?.Invoke();
+                    sv.Repaint();
+                }
+            }
+            else if (e.type == EventType.MouseLeaveWindow && canvas.HoverHitValid)
+            {
+                canvas.HoverHitValid = false;
+                canvas.HoveredShellId = -1;
+                sceneSpotCachedEntry = null;
+                requestRepaint?.Invoke();
+            }
+
+            if (e.type != EventType.Repaint) return;
+
+            // Draw selected shell overlay in 3D
+            DrawSelectedShellOverlay3D();
+
+            // Draw spot projection on all meshes
+            Vector2 projUv;
+            MeshEntry projEntry = null;
+            bool hasProj = false;
+
+            if (canvas.HoverHitValid)
+            {
+                projUv = canvas.UvSpot; projEntry = sceneSpotCachedEntry; hasProj = true;
+            }
+            else if (canvas.HasSelectedShell)
+            {
+                projUv = canvas.SelectedShell.uvHit; projEntry = canvas.SelectedShell.meshEntry; hasProj = true;
+            }
+            else if (canvas.HasHoveredShell)
+            {
+                projUv = canvas.HoveredShell.uvHit; projEntry = canvas.HoveredShell.meshEntry; hasProj = true;
+            }
+            else if (canvas.CanvasSpotValid)
+            {
+                projUv = canvas.CanvasSpotUv; hasProj = true;
+            }
+            else projUv = default;
+
+            if (hasProj) DrawSpotProjectionInScene(projUv, projEntry);
+        }
+
+        MeshEntry sceneSpotCachedEntry;
+
+        // ── 3D Spot Projection ──
+        void EnsureSpotMaterials()
+        {
+            if (spotMat == null)
+            {
+                var sh = Shader.Find("Hidden/LightmapUvTool/SpotProjection");
+                if (sh != null) spotMat = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };
+            }
+            if (shellOverlayMat == null)
+            {
+                var sh = Shader.Find("Hidden/Internal-Colored");
+                if (sh != null)
+                {
+                    shellOverlayMat = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };
+                    shellOverlayMat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                    shellOverlayMat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                    shellOverlayMat.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Back);
+                    shellOverlayMat.SetInt("_ZWrite", 0);
+                    shellOverlayMat.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.LessEqual);
+                }
+            }
+        }
+
+        Material spotMat, shellOverlayMat;
+
+        void DrawSpotProjectionInScene(Vector2 projUv, MeshEntry limitEntry = null)
+        {
+            EnsureSpotMaterials();
+            if (spotMat == null) return;
+
+            spotMat.SetVector("_SpotUv", new Vector4(projUv.x, projUv.y, 0f, 0f));
+            spotMat.SetFloat("_SpotRadius", 0.012f);
+            spotMat.SetColor("_SpotColor", new Color32(0xFF, 0xBC, 0x51, 0xFF));
+            spotMat.SetFloat("_UseUv2", ctx.PreviewUvChannel == 1 ? 1f : 0f);
+
+            foreach (var entry in ctx.ForLod(ctx.PreviewLod))
+            {
+                if (limitEntry != null && entry != limitEntry) continue;
+                var mesh = ctx.DMesh(entry);
+                if (mesh == null) continue;
+                if (entry.renderer == null) continue;
+                spotMat.SetPass(0);
+                Graphics.DrawMeshNow(mesh, entry.renderer.localToWorldMatrix);
+            }
+        }
+
+        void DrawSelectedShellOverlay3D()
+        {
+            EnsureSpotMaterials();
+            var hit = canvas.SelectedShellDebug;
+            if (hit?.shell == null || hit.entry?.renderer == null || shellOverlayMat == null) return;
+
+            var mesh = hit.mesh ?? hit.entry.originalMesh;
+            if (mesh == null) return;
+
+            var verts = mesh.vertices;
+            var tris = mesh.triangles;
+
+            shellOverlayMat.SetPass(0);
+            GL.PushMatrix();
+            GL.MultMatrix(hit.entry.renderer.transform.localToWorldMatrix);
+
+            GL.Begin(GL.TRIANGLES);
+            GL.Color(new Color(0.2f, 0.6f, 1f, 0.25f));
+            foreach (int face in hit.shell.faceIndices)
+            {
+                int i0 = face * 3;
+                if (i0 + 2 >= tris.Length) continue;
+                GL.Vertex(verts[tris[i0]]); GL.Vertex(verts[tris[i0 + 1]]); GL.Vertex(verts[tris[i0 + 2]]);
+            }
+            GL.End();
+
+            GL.Begin(GL.LINES);
+            GL.Color(new Color(0.1f, 0.4f, 1f, 0.7f));
+            foreach (int face in hit.shell.faceIndices)
+            {
+                int i0 = face * 3;
+                if (i0 + 2 >= tris.Length) continue;
+                var a = verts[tris[i0]]; var b = verts[tris[i0 + 1]]; var c = verts[tris[i0 + 2]];
+                GL.Vertex(a); GL.Vertex(b); GL.Vertex(b); GL.Vertex(c); GL.Vertex(c); GL.Vertex(a);
+            }
+            GL.End();
+
+            GL.PopMatrix();
+        }
+
+        // ── Raycast ──
+        struct SceneHit
+        {
+            public float distance;
+            public Vector3 worldPos;
+            public Vector2 uv;
+            public int shellId;
+            public MeshEntry meshEntry;
+        }
+
+        bool TryRaycastPreview(Ray ray, out SceneHit bestHit)
+        {
+            bestHit = default;
+            bestHit.distance = float.PositiveInfinity;
+            bool found = false;
+
+            foreach (var entry in ctx.ForLod(ctx.PreviewLod))
+            {
+                Mesh mesh = ctx.DMesh(entry);
+                if (mesh == null || entry.renderer == null) continue;
+
+                Matrix4x4 l2w = entry.renderer.localToWorldMatrix;
+                Bounds wb = TransformBounds(mesh.bounds, l2w);
+                if (!wb.IntersectRay(ray, out float aabbDist) || aabbDist > bestHit.distance) continue;
+
+                var v = mesh.vertices;
+                var tri = canvas.GetTrianglesCached(mesh);
+                var uv = canvas.RdUvCached(mesh, ctx.PreviewUvChannel);
+                if (v == null || tri == null || uv == null) continue;
+                int[] faceToShell = ctx.UvPreviewShellCache.GetFaceToShell(mesh, ctx.PreviewUvChannel, uv, tri);
+
+                for (int f = 0; f + 2 < tri.Length; f += 3)
+                {
+                    int i0 = tri[f], i1 = tri[f + 1], i2 = tri[f + 2];
+                    if (i0 >= v.Length || i1 >= v.Length || i2 >= v.Length) continue;
+                    if (i0 >= uv.Length || i1 >= uv.Length || i2 >= uv.Length) continue;
+
+                    Vector3 p0 = l2w.MultiplyPoint3x4(v[i0]);
+                    Vector3 p1 = l2w.MultiplyPoint3x4(v[i1]);
+                    Vector3 p2 = l2w.MultiplyPoint3x4(v[i2]);
+
+                    if (!RayTriMT(ray, p0, p1, p2, out float t, out float b1, out float b2)) continue;
+                    if (t < 0f || t >= bestHit.distance) continue;
+
+                    float b0 = 1f - b1 - b2;
+                    bestHit.distance = t;
+                    bestHit.worldPos = ray.origin + ray.direction * t;
+                    bestHit.uv = uv[i0] * b0 + uv[i1] * b1 + uv[i2] * b2;
+                    bestHit.shellId = (faceToShell != null && f / 3 < faceToShell.Length) ? faceToShell[f / 3] : -1;
+                    bestHit.meshEntry = entry;
+                    found = true;
+                }
+            }
+            return found;
+        }
+
+        static Bounds TransformBounds(Bounds b, Matrix4x4 m)
+        {
+            Vector3 c = b.center, e = b.extents;
+            Vector3 mn = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
+            Vector3 mx = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
+            for (int ix = -1; ix <= 1; ix += 2)
+            for (int iy = -1; iy <= 1; iy += 2)
+            for (int iz = -1; iz <= 1; iz += 2)
+            {
+                Vector3 w = m.MultiplyPoint3x4(c + Vector3.Scale(e, new Vector3(ix, iy, iz)));
+                mn = Vector3.Min(mn, w); mx = Vector3.Max(mx, w);
+            }
+            return new Bounds((mn + mx) * 0.5f, mx - mn);
+        }
+
+        static bool RayTriMT(Ray ray, Vector3 v0, Vector3 v1, Vector3 v2, out float t, out float u, out float v)
+        {
+            t = u = v = 0f;
+            Vector3 e1 = v1 - v0, e2 = v2 - v0;
+            Vector3 p = Vector3.Cross(ray.direction, e2);
+            float det = Vector3.Dot(e1, p);
+            if (Mathf.Abs(det) < 1e-7f) return false;
+            float inv = 1f / det;
+            Vector3 s = ray.origin - v0;
+            u = Vector3.Dot(s, p) * inv;
+            if (u < 0f || u > 1f) return false;
+            Vector3 q = Vector3.Cross(s, e1);
+            v = Vector3.Dot(ray.direction, q) * inv;
+            if (v < 0f || u + v > 1f) return false;
+            t = Vector3.Dot(e2, q) * inv;
+            return true;
         }
 
         // ════════════════════════════════════════════════════════════
