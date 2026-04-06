@@ -1,6 +1,6 @@
 {
   "name": "com.sasharx.lightmap-uv-tool",
-  "version": "0.15.10",
+  "version": "0.15.11",
   "displayName": "Mesh Lab",
   "description": "Unity Editor tool suite: UV2 lightmap transfer, LOD generation, UV analysis, and FBX export with binary format support.",
   "unity": "2020.3",
