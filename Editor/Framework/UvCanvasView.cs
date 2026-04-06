@@ -898,48 +898,10 @@ namespace LightmapUvTool
             long cacheKey = ((long)meshId << 32) | (uint)shell.shellId;
             if (!ctx.ShellColorKeyCacheDirty && ctx.ShellColorKeyCache.TryGetValue(cacheKey, out int cc)) return cc;
 
-            int result;
-            if (ctx.PostResetColoring)
-            {
-                result = ShellBBoxHash(shell, mesh);
-                ctx.ShellColorKeyCache[cacheKey] = result;
-                return result;
-            }
-            var map = entry?.shellTransferResult?.vertexToSourceShell;
-            if (map != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
-            {
-                int bestKey = -1, bestCount = 0;
-                var freq = new Dictionary<int, int>();
-                foreach (int v in shell.vertexIndices)
-                {
-                    if (v < 0 || v >= map.Length) continue;
-                    int srcShell = map[v]; if (srcShell < 0) continue;
-                    freq.TryGetValue(srcShell, out int c2); c2++;
-                    freq[srcShell] = c2;
-                    if (c2 > bestCount || (c2 == bestCount && srcShell < bestKey)) { bestCount = c2; bestKey = srcShell; }
-                }
-                result = bestKey >= 0 ? bestKey : ShellBBoxHash(shell, mesh);
-            }
-            else if (mesh != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
-            {
-                var (v2s, _) = GetUv0ShellMap(ctx, mesh);
-                if (v2s != null)
-                {
-                    int bestKey = -1, bestCount = 0;
-                    var freq = new Dictionary<int, int>();
-                    foreach (int v in shell.vertexIndices)
-                    {
-                        if (v < 0 || v >= v2s.Length) continue;
-                        int uv0Shell = v2s[v]; if (uv0Shell < 0) continue;
-                        freq.TryGetValue(uv0Shell, out int c2); c2++;
-                        freq[uv0Shell] = c2;
-                        if (c2 > bestCount || (c2 == bestCount && uv0Shell < bestKey)) { bestCount = c2; bestKey = uv0Shell; }
-                    }
-                    result = bestKey >= 0 ? bestKey : ShellBBoxHash(shell, mesh);
-                }
-                else result = ShellBBoxHash(shell, mesh);
-            }
-            else result = ShellBBoxHash(shell, mesh);
+            // Always use UV bounding-box hash for maximum cross-LOD consistency.
+            // Previous strategies (shellTransferResult, UV0 shell map) produced
+            // extraction-order-dependent keys that changed between LODs.
+            int result = ShellBBoxHash(shell, mesh);
             ctx.ShellColorKeyCache[cacheKey] = result;
             return result;
         }
