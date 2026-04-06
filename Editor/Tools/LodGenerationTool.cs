@@ -63,7 +63,44 @@ namespace LightmapUvTool
 
             if (ctx.LodGroup == null)
             {
-                EditorGUILayout.HelpBox("Assign a LODGroup in the UV2 Transfer tab first.", MessageType.Info);
+                // Try to detect LOD siblings from the current selection
+                var selected = Selection.activeGameObject;
+                var siblings = FindLodSiblings(selected);
+
+                if (siblings != null && siblings.Count > 0)
+                {
+                    EditorGUILayout.HelpBox("LOD objects detected — create a LODGroup to continue.", MessageType.Info);
+                    EditorGUILayout.Space(4);
+                    EditorGUILayout.LabelField("Detected LODs", EditorStyles.boldLabel);
+                    foreach (var (go, lodIndex) in siblings)
+                    {
+                        var renderers = go.GetComponentsInChildren<Renderer>();
+                        int tris = 0;
+                        foreach (var r in renderers)
+                        {
+                            var mf = r.GetComponent<MeshFilter>();
+                            if (mf != null && mf.sharedMesh != null)
+                                tris += mf.sharedMesh.triangles.Length / 3;
+                        }
+                        EditorGUILayout.LabelField(
+                            $"  LOD{lodIndex}: {go.name}  ({renderers.Length} renderer{(renderers.Length != 1 ? "s" : "")}, {tris:N0} tris)",
+                            EditorStyles.miniLabel);
+                    }
+
+                    EditorGUILayout.Space(6);
+                    var bg = GUI.backgroundColor;
+                    GUI.backgroundColor = new Color(.4f, .8f, .4f);
+                    if (GUILayout.Button("Create LODGroup", GUILayout.Height(28)))
+                        CreateLodGroup(siblings);
+                    GUI.backgroundColor = bg;
+                }
+                else
+                {
+                    EditorGUILayout.HelpBox(
+                        "Assign a LODGroup in the UV2 Transfer tab first.\n" +
+                        "Or select a GameObject with a LOD suffix (e.g. MyObject_LOD0) to auto-detect LOD siblings.",
+                        MessageType.Info);
+                }
                 return;
             }
 
@@ -341,5 +378,96 @@ namespace LightmapUvTool
         }
 
         public void OnSceneGUI(SceneView sv) { }
+
+        // ── Auto-detect LOD siblings ──
+
+        /// <summary>
+        /// Given a GameObject whose name ends with a LOD suffix (e.g. Gazebo_LOD0),
+        /// find all sibling GameObjects under the same parent that share the same
+        /// base name but with different LOD indices. Returns null if the name doesn't
+        /// match the LOD pattern.
+        /// </summary>
+        static List<(GameObject go, int lodIndex)> FindLodSiblings(GameObject go)
+        {
+            if (go == null) return null;
+
+            // Match trailing LOD suffix: _LOD0, -LOD1, LOD2, etc.
+            var m = Regex.Match(go.name, @"^(.+?)([_\-\s]*)LOD(\d+)$", RegexOptions.IgnoreCase);
+            if (!m.Success) return null;
+
+            string baseName = m.Groups[1].Value;
+            string separator = m.Groups[2].Value;
+
+            var parent = go.transform.parent;
+            var results = new List<(GameObject, int)>();
+
+            if (parent == null)
+            {
+                // Root-level objects — search all root GameObjects in the scene
+                var roots = go.scene.GetRootGameObjects();
+                foreach (var root in roots)
+                {
+                    var rm = Regex.Match(root.name, @"^(.+?)[_\-\s]*LOD(\d+)$", RegexOptions.IgnoreCase);
+                    if (rm.Success && string.Equals(rm.Groups[1].Value, baseName, System.StringComparison.OrdinalIgnoreCase))
+                        results.Add((root, int.Parse(rm.Groups[2].Value)));
+                }
+            }
+            else
+            {
+                for (int i = 0; i < parent.childCount; i++)
+                {
+                    var child = parent.GetChild(i).gameObject;
+                    var cm = Regex.Match(child.name, @"^(.+?)[_\-\s]*LOD(\d+)$", RegexOptions.IgnoreCase);
+                    if (cm.Success && string.Equals(cm.Groups[1].Value, baseName, System.StringComparison.OrdinalIgnoreCase))
+                        results.Add((child, int.Parse(cm.Groups[2].Value)));
+                }
+            }
+
+            results.Sort((a, b) => a.Item2.CompareTo(b.Item2));
+            return results.Count > 0 ? results : null;
+        }
+
+        void CreateLodGroup(List<(GameObject go, int lodIndex)> siblings)
+        {
+            var parent = siblings[0].go.transform.parent;
+            string baseName = Regex.Replace(siblings[0].go.name, @"[_\-\s]*LOD\d+$", "", RegexOptions.IgnoreCase);
+
+            GameObject lodRoot;
+            if (parent != null)
+            {
+                lodRoot = parent.gameObject;
+            }
+            else
+            {
+                // Root-level objects — create a new parent
+                lodRoot = new GameObject(baseName);
+                Undo.RegisterCreatedObjectUndo(lodRoot, "Create LODGroup");
+                foreach (var (go, _) in siblings)
+                {
+                    Undo.SetTransformParent(go.transform, lodRoot.transform, "Create LODGroup");
+                }
+            }
+
+            var lodGroup = Undo.AddComponent<LODGroup>(lodRoot);
+
+            int maxLod = siblings[siblings.Count - 1].lodIndex;
+            var lods = new LOD[maxLod + 1];
+            for (int i = 0; i <= maxLod; i++)
+                lods[i] = new LOD(Mathf.Pow(0.5f, i + 1), new Renderer[0]);
+
+            foreach (var (go, lodIndex) in siblings)
+            {
+                var renderers = go.GetComponentsInChildren<Renderer>();
+                lods[lodIndex] = new LOD(lods[lodIndex].screenRelativeTransitionHeight, renderers);
+            }
+
+            lodGroup.SetLODs(lods);
+            lodGroup.RecalculateBounds();
+
+            ctx.Refresh(lodGroup);
+            requestRepaint?.Invoke();
+
+            UvtLog.Info($"[LOD Gen] Created LODGroup on '{lodRoot.name}' with {siblings.Count} LODs.");
+        }
     }
 }
