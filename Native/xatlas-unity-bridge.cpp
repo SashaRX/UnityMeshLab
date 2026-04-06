@@ -243,3 +243,104 @@ EXPORT int meshoptOptimize(
     *outVertexCount = (uint32_t)newVertexCount;
     return 0;
 }
+
+// ══════════════════════════════════════════════════════════════════
+// meshoptimizer — mesh simplification with attribute preservation
+//
+// Uses meshopt_simplifyWithAttributes to reduce triangle count while
+// preserving vertex attributes (normals, UVs) weighted by importance.
+//
+// vertexData:          interleaved vertex buffer, position MUST be first 12 bytes (float3)
+// vertexCount:         number of vertices
+// vertexStride:        bytes per vertex (must be >= 12)
+// indices:             input index buffer (triangles)
+// indexCount:          number of indices (must be multiple of 3)
+// attributes:          float array of per-vertex attributes (e.g. normal xyz + uv2 xy)
+// attributeStride:     bytes per vertex in the attribute array
+// attributeWeights:    importance weight per scalar attribute
+// attributeCount:      number of scalar attributes (max 16)
+// targetRatio:         fraction of triangles to keep (0.0–1.0)
+// targetError:         maximum allowed simplification error
+// options:             meshopt simplify flags (LockBorder=1, ErrorAbsolute=2, Sparse=4, Prune=8)
+// outIndices:          caller-allocated buffer, indexCount uint32s (only outIndexCount used)
+// outIndexCount:       receives actual output index count
+// outResultError:      receives achieved error (can be NULL)
+//
+// Returns: 0 = OK, 1 = null pointer, 2 = stride < 12, 3 = indexCount not multiple of 3,
+//          4 = attributeCount too large
+// ══════════════════════════════════════════════════════════════════
+
+EXPORT int meshoptSimplify(
+    const unsigned char* vertexData,
+    uint32_t             vertexCount,
+    uint32_t             vertexStride,
+    const uint32_t*      indices,
+    uint32_t             indexCount,
+    const float*         attributes,
+    uint32_t             attributeStride,
+    const float*         attributeWeights,
+    uint32_t             attributeCount,
+    float                targetRatio,
+    float                targetError,
+    uint32_t             options,
+    uint32_t*            outIndices,
+    uint32_t*            outIndexCount,
+    float*               outResultError)
+{
+    // ── Validation ──
+    if (!vertexData || !indices || !outIndices || !outIndexCount)
+        return 1;
+    if (vertexStride < 12)
+        return 2;
+    if (indexCount % 3 != 0)
+        return 3;
+    if (attributeCount > 16)
+        return 4;
+    if (vertexCount == 0 || indexCount == 0) {
+        *outIndexCount = 0;
+        if (outResultError) *outResultError = 0.0f;
+        return 0;
+    }
+
+    // Compute target index count from ratio
+    size_t targetIndexCount = (size_t)(indexCount * targetRatio);
+    // Round down to multiple of 3
+    targetIndexCount = (targetIndexCount / 3) * 3;
+    if (targetIndexCount < 3) targetIndexCount = 3;
+
+    float resultError = 0.0f;
+
+    size_t newIndexCount;
+    if (attributes && attributeWeights && attributeCount > 0) {
+        newIndexCount = meshopt_simplifyWithAttributes(
+            outIndices,
+            indices, indexCount,
+            reinterpret_cast<const float*>(vertexData),
+            vertexCount, vertexStride,
+            attributes, attributeStride,
+            attributeWeights, attributeCount,
+            nullptr,  // vertex_lock — not used, border locking via options flag
+            targetIndexCount, targetError,
+            options,
+            &resultError);
+    } else {
+        newIndexCount = meshopt_simplify(
+            outIndices,
+            indices, indexCount,
+            reinterpret_cast<const float*>(vertexData),
+            vertexCount, vertexStride,
+            targetIndexCount, targetError,
+            options,
+            &resultError);
+    }
+
+    // ── Post-simplify optimization ──
+    meshopt_optimizeVertexCache(outIndices, outIndices, newIndexCount, vertexCount);
+    meshopt_optimizeOverdraw(outIndices, outIndices, newIndexCount,
+        reinterpret_cast<const float*>(vertexData),
+        vertexCount, vertexStride, 1.05f);
+
+    *outIndexCount = (uint32_t)newIndexCount;
+    if (outResultError) *outResultError = resultError;
+    return 0;
+}

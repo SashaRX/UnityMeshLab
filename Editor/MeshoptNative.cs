@@ -26,5 +26,34 @@ namespace LightmapUvTool
             byte[]   outVertexData,
             uint[]   outIndices,
             out uint outVertexCount);
+
+        /// <summary>
+        /// Mesh simplification with attribute preservation via meshopt_simplifyWithAttributes.
+        /// Reduces triangle count while respecting weighted vertex attributes (normals, UVs).
+        /// Returns: 0=OK, 1=null ptr, 2=stride&lt;12, 3=indexCount%3!=0, 4=attributeCount&gt;16.
+        /// </summary>
+        [DllImport(DLL)]
+        public static extern int meshoptSimplify(
+            byte[]    vertexData,
+            uint      vertexCount,
+            uint      vertexStride,
+            uint[]    indices,
+            uint      indexCount,
+            float[]   attributes,
+            uint      attributeStride,
+            float[]   attributeWeights,
+            uint      attributeCount,
+            float     targetRatio,
+            float     targetError,
+            uint      options,
+            uint[]    outIndices,
+            out uint  outIndexCount,
+            out float outResultError);
+
+        // meshopt simplify option flags (match meshoptimizer.h enum)
+        public const uint SimplifyLockBorder    = 1;
+        public const uint SimplifyErrorAbsolute = 2;
+        public const uint SimplifySparse        = 4;
+        public const uint SimplifyPrune         = 8;
     }
 }

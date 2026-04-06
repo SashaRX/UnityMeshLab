@@ -1,7 +1,9 @@
 {
   "name": "LightmapUvTool.Editor",
   "rootNamespace": "LightmapUvTool",
-  "references": [],
+  "references": [
+    "Unity.Formats.Fbx.Editor"
+  ],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],
   "allowUnsafeCode": true,
@@ -9,6 +11,12 @@
   "precompiledReferences": [],
   "autoReferenced": true,
   "defineConstraints": [],
-  "versionDefines": [],
+  "versionDefines": [
+    {
+      "name": "com.unity.formats.fbx",
+      "expression": "",
+      "define": "LIGHTMAP_UV_TOOL_FBX_EXPORTER"
+    }
+  ],
   "noEngineReferences": false
 }

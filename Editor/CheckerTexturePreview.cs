@@ -54,10 +54,10 @@ namespace LightmapUvTool
             if (ShellColorModelPreview.IsActive)
                 ShellColorModelPreview.Restore();
 
-            // Lightmap preview is per-window instance — find open windows and restore.
-            var windows = Resources.FindObjectsOfTypeAll<UvTransferWindow>();
-            foreach (var w in windows)
-                w.RestoreLightmapPreviewSafe();
+            // Lightmap preview is per-window instance — find open Mesh Lab windows and restore.
+            var hubs = Resources.FindObjectsOfTypeAll<UvToolHub>();
+            foreach (var h in hubs)
+                h.RestoreLightmapPreviewSafe();
         }
     }
 

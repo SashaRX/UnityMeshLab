@@ -87,7 +87,7 @@ git clone https://github.com/SashaRX/UnityLodUvLightmapTransfer.git com.sasharx.
 
 ## Usage
 
-1. Open **Tools → Lightmap UV Tool**
+1. Open **Tools → Mesh Lab**
 2. Select a `LODGroup` in the scene
 3. Configure atlas size, padding, and transfer settings
 4. Run the full pipeline or execute stages individually
