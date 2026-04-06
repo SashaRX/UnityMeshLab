@@ -2118,7 +2118,6 @@ namespace LightmapUvTool
             if (src.bindposes   != null && src.bindposes.Length   > 0) dst.bindposes   = src.bindposes;
             for (int ch = 0; ch < 8; ch++)
             {
-                if (ch == 2) continue;
                 var attr = (VertexAttribute)((int)VertexAttribute.TexCoord0 + ch);
                 if (!src.HasVertexAttribute(attr)) continue;
                 int dim = src.GetVertexAttributeDimension(attr);
