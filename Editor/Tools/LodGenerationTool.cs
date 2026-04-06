@@ -1,5 +1,8 @@
 // LodGenerationTool.cs — LOD generation via meshoptimizer simplification.
 // Preserves UV2 lightmap coordinates with configurable weights.
+//
+// Workflow: UV2 Transfer (Analyze → Weld → Repack → Transfer) → LOD Gen → Export FBX
+// Generation continues after the last existing LOD level automatically.
 
 using System;
 using System.Collections.Generic;
@@ -37,7 +40,6 @@ namespace LightmapUvTool
 
         // ── Results ──
         List<GeneratedLodInfo> lastResults = new List<GeneratedLodInfo>();
-        // Generated meshes per source FBX path for FBX export
         Dictionary<string, List<(MeshEntry entry, Mesh generatedMesh, string meshName)>> generatedPerFbx
             = new Dictionary<string, List<(MeshEntry, Mesh, string)>>();
 
@@ -71,18 +73,29 @@ namespace LightmapUvTool
                 return;
             }
 
-            // Source info
-            var sourceMeshes = ctx.MeshEntries
-                .Where(e => e.include && e.lodIndex == ctx.SourceLodIndex)
-                .ToList();
+            // ── Workflow hint ──
+            bool hasRepack = ctx.MeshEntries.Any(e => e.repackedMesh != null);
+            bool hasTransfer = ctx.MeshEntries.Any(e => e.transferredMesh != null);
+            if (!hasRepack && !hasTransfer)
+            {
+                EditorGUILayout.HelpBox(
+                    "Recommended workflow:\n" +
+                    "1. UV2 Transfer tab: Analyze → Weld → Repack → Transfer\n" +
+                    "2. LOD Gen tab: Generate new LOD levels\n" +
+                    "3. Export to FBX\n\n" +
+                    "You can also generate LODs from raw meshes without UV2 processing.",
+                    MessageType.Info);
+            }
 
             // ── LOD Polycount Table ──
-            EditorGUILayout.LabelField("Current LODs", EditorStyles.boldLabel);
-            int totalSrcTris = 0;
+            EditorGUILayout.LabelField("Existing LODs", EditorStyles.boldLabel);
+            int sourceTris = 0;
+            int lastExistingLod = -1;
             for (int li = 0; li < ctx.LodCount; li++)
             {
                 var ee = ctx.ForLod(li);
                 if (ee.Count == 0) continue;
+                lastExistingLod = li;
                 int lodTris = 0, lodVerts = 0;
                 foreach (var e in ee)
                 {
@@ -91,27 +104,56 @@ namespace LightmapUvTool
                     lodTris += m.triangles.Length / 3;
                     lodVerts += m.vertexCount;
                 }
-                if (li == ctx.SourceLodIndex) totalSrcTris = lodTris;
+                if (li == ctx.SourceLodIndex) sourceTris = lodTris;
                 bool isSrc = li == ctx.SourceLodIndex;
                 string prefix = isSrc ? "► " : "  ";
-                float pct = totalSrcTris > 0 ? (float)lodTris / totalSrcTris * 100f : 100f;
-                EditorGUILayout.LabelField($"{prefix}LOD{li}: {lodTris:N0} tris, {lodVerts:N0} verts ({pct:F0}%)",
+                float pct = sourceTris > 0 ? (float)lodTris / sourceTris * 100f : 100f;
+                EditorGUILayout.LabelField(
+                    $"{prefix}LOD{li}: {lodTris:N0} tris  {lodVerts:N0} verts  ({pct:F0}%)",
                     isSrc ? EditorStyles.boldLabel : EditorStyles.miniLabel);
             }
 
-            EditorGUILayout.Space(6);
-            EditorGUILayout.LabelField("Generate New LODs", EditorStyles.boldLabel);
+            // First new LOD level = after last existing
+            int startLod = lastExistingLod + 1;
+
+            EditorGUILayout.Space(8);
+            EditorGUILayout.LabelField($"Generate LOD{startLod}+", EditorStyles.boldLabel);
 
             // ── Settings ──
-            generateLodCount = EditorGUILayout.IntSlider("LOD Count", generateLodCount, 1, 4);
+            generateLodCount = EditorGUILayout.IntSlider("Count", generateLodCount, 1, 4);
+
+            // Auto-suggest ratios based on last existing LOD's polycount
+            if (sourceTris > 0)
+            {
+                // Find last LOD's ratio relative to source
+                float lastRatio = 1f;
+                if (lastExistingLod > ctx.SourceLodIndex)
+                {
+                    int lastLodTris = 0;
+                    foreach (var e in ctx.ForLod(lastExistingLod))
+                    {
+                        Mesh m = e.repackedMesh ?? e.originalMesh ?? e.fbxMesh;
+                        if (m != null) lastLodTris += m.triangles.Length / 3;
+                    }
+                    lastRatio = sourceTris > 0 ? (float)lastLodTris / sourceTris : 0.25f;
+                }
+
+                // Auto-init ratios as halving from last existing
+                for (int i = 0; i < generateLodCount && i < generateLodRatios.Length; i++)
+                {
+                    if (generateLodRatios[i] >= lastRatio && lastRatio > 0.01f)
+                        generateLodRatios[i] = lastRatio * Mathf.Pow(0.5f, i + 1);
+                }
+            }
+
             for (int i = 0; i < generateLodCount && i < generateLodRatios.Length; i++)
             {
-                int targetLod = ctx.SourceLodIndex + i + 1;
-                int estTris = Mathf.RoundToInt(totalSrcTris * generateLodRatios[i]);
-                string existing = targetLod < ctx.LodCount ? " (exists!)" : "";
+                int targetLod = startLod + i;
                 generateLodRatios[i] = EditorGUILayout.Slider(
-                    $"  LOD{targetLod} ratio", generateLodRatios[i], 0.01f, 0.99f);
-                EditorGUILayout.LabelField($"      ≈ {estTris:N0} tris{existing}", EditorStyles.miniLabel);
+                    $"  LOD{targetLod}", generateLodRatios[i], 0.001f, 0.99f);
+                int estTris = Mathf.RoundToInt(sourceTris * generateLodRatios[i]);
+                float estPct = sourceTris > 0 ? generateLodRatios[i] * 100f : 0;
+                EditorGUILayout.LabelField($"      ≈ {estTris:N0} tris ({estPct:F0}% of source)", EditorStyles.miniLabel);
             }
 
             EditorGUILayout.Space(4);
@@ -122,24 +164,23 @@ namespace LightmapUvTool
             generateAddToLodGroup = EditorGUILayout.Toggle("Add to LODGroup", generateAddToLodGroup);
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            exportToFbx = EditorGUILayout.Toggle("Export to FBX", exportToFbx);
+            exportToFbx = EditorGUILayout.Toggle("Auto-export to FBX", exportToFbx);
 #endif
 
             EditorGUILayout.Space(6);
 
             // ── Generate button ──
-            var c = GUI.backgroundColor;
+            var bg = GUI.backgroundColor;
             GUI.backgroundColor = new Color(.7f, .4f, .95f);
-            if (GUILayout.Button("Generate LODs", GUILayout.Height(30)))
-                ExecGenerateLods();
-            GUI.backgroundColor = c;
+            if (GUILayout.Button($"Generate LOD{startLod}–LOD{startLod + generateLodCount - 1}", GUILayout.Height(30)))
+                ExecGenerateLods(startLod);
+            GUI.backgroundColor = bg;
 
             // ── FBX Export buttons (after generation) ──
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (generatedPerFbx.Count > 0)
             {
                 EditorGUILayout.Space(4);
-                EditorGUILayout.LabelField("FBX Export", EditorStyles.boldLabel);
                 GUI.backgroundColor = new Color(.4f, .7f, .95f);
                 if (GUILayout.Button("Export LODs as New FBX", GUILayout.Height(24)))
                     ExportGeneratedLods(false);
@@ -147,7 +188,7 @@ namespace LightmapUvTool
                 GUI.backgroundColor = new Color(.95f, .6f, .2f);
                 if (GUILayout.Button("Add LODs to Source FBX", GUILayout.Height(24)))
                     ExportGeneratedLods(true);
-                GUI.backgroundColor = c;
+                GUI.backgroundColor = bg;
             }
 #endif
 
@@ -155,18 +196,18 @@ namespace LightmapUvTool
             if (lastResults.Count > 0)
             {
                 EditorGUILayout.Space(6);
-                EditorGUILayout.LabelField("Results", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("Generated", EditorStyles.boldLabel);
                 foreach (var r in lastResults)
                 {
-                    float pct = r.originalTris > 0 ? (float)r.simplifiedTris / r.originalTris * 100f : 0;
+                    float pct = sourceTris > 0 ? (float)r.simplifiedTris / sourceTris * 100f : 0;
                     EditorGUILayout.LabelField(
-                        $"  LOD{r.lodLevel}: {r.meshName} — {r.originalTris} → {r.simplifiedTris} tris ({pct:F0}%), err={r.error:F4}",
+                        $"  LOD{r.lodLevel}: {r.meshName} — {r.simplifiedTris:N0} tris ({pct:F0}%)",
                         EditorStyles.miniLabel);
                 }
             }
         }
 
-        void ExecGenerateLods()
+        void ExecGenerateLods(int startLod)
         {
             if (ctx.LodGroup == null) return;
             lastResults.Clear();
@@ -183,7 +224,12 @@ namespace LightmapUvTool
 
             string savePath = ctx.PipeSettings.savePath;
             if (string.IsNullOrEmpty(savePath)) savePath = "Assets/LightmapUvTool_Output";
-            if (!AssetDatabase.IsValidFolder(savePath))
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            bool saveAsAsset = !exportToFbx;
+#else
+            bool saveAsAsset = true;
+#endif
+            if (saveAsAsset && !AssetDatabase.IsValidFolder(savePath))
             {
                 var par = System.IO.Path.GetDirectoryName(savePath);
                 var fld = System.IO.Path.GetFileName(savePath);
@@ -210,10 +256,10 @@ namespace LightmapUvTool
 
                     float progress = (float)lodIdx / generateLodCount;
                     EditorUtility.DisplayProgressBar("Generate LODs",
-                        $"LOD {lodIdx + 1}/{generateLodCount} (ratio {ratio:P0})", progress);
+                        $"LOD{startLod + lodIdx} (ratio {ratio:P0})", progress);
 
                     var lodRenderers = new List<Renderer>();
-                    int lodLevel = ctx.SourceLodIndex + lodIdx + 1;
+                    int lodLevel = startLod + lodIdx;
 
                     foreach (var (entry, srcMesh) in sourceMeshes)
                     {
@@ -225,12 +271,14 @@ namespace LightmapUvTool
                         string meshName = baseName + "_LOD" + lodLevel;
                         r.simplifiedMesh.name = meshName;
 
-                        // Preserve all UV channels from source
                         PreserveUvChannels(r.simplifiedMesh, entry.fbxMesh ?? entry.originalMesh);
 
-                        string assetPath = AssetDatabase.GenerateUniqueAssetPath(savePath + "/" + meshName + ".asset");
-                        AssetDatabase.CreateAsset(r.simplifiedMesh, assetPath);
-                        UvtLog.Info($"[GenerateLOD] {meshName}: {r.originalTriCount} → {r.simplifiedTriCount} tris, saved → {assetPath}");
+                        if (saveAsAsset)
+                        {
+                            string assetPath = AssetDatabase.GenerateUniqueAssetPath(savePath + "/" + meshName + ".asset");
+                            AssetDatabase.CreateAsset(r.simplifiedMesh, assetPath);
+                        }
+                        UvtLog.Info($"[GenerateLOD] {meshName}: {r.originalTriCount} → {r.simplifiedTriCount} tris");
 
                         lastResults.Add(new GeneratedLodInfo
                         {
@@ -241,7 +289,6 @@ namespace LightmapUvTool
                             lodLevel = lodLevel
                         });
 
-                        // Track for FBX export
                         Mesh pathMesh = entry.fbxMesh ?? entry.originalMesh;
                         string fbxPath = pathMesh != null ? AssetDatabase.GetAssetPath(pathMesh) : null;
                         if (!string.IsNullOrEmpty(fbxPath))
@@ -271,26 +318,18 @@ namespace LightmapUvTool
                     {
                         if (lodLevel < newLods.Count)
                         {
-                            // Replace existing LOD — destroy old renderers' GameObjects
+                            // Replace existing LOD
                             var oldRenderers = newLods[lodLevel].renderers;
                             if (oldRenderers != null)
-                            {
                                 foreach (var oldR in oldRenderers)
-                                {
                                     if (oldR != null && oldR.gameObject != null)
-                                    {
                                         Undo.DestroyObjectImmediate(oldR.gameObject);
-                                    }
-                                }
-                            }
-                            float existingHeight = newLods[lodLevel].screenRelativeTransitionHeight;
-                            newLods[lodLevel] = new LOD(existingHeight, lodRenderers.ToArray());
+                            newLods[lodLevel] = new LOD(newLods[lodLevel].screenRelativeTransitionHeight, lodRenderers.ToArray());
                         }
                         else
                         {
                             float baseHeight = newLods.Count > 0 ? newLods[newLods.Count - 1].screenRelativeTransitionHeight : 0.5f;
-                            float height = baseHeight * 0.5f;
-                            newLods.Add(new LOD(height, lodRenderers.ToArray()));
+                            newLods.Add(new LOD(baseHeight * 0.5f, lodRenderers.ToArray()));
                         }
                     }
                 }
@@ -305,14 +344,12 @@ namespace LightmapUvTool
             }
             finally { EditorUtility.ClearProgressBar(); }
 
-            // Auto-export to FBX if enabled
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (exportToFbx && generatedPerFbx.Count > 0)
                 ExportGeneratedLods(true);
 #endif
 
             ctx.Refresh(ctx.LodGroup);
-            OnRefresh();
             requestRepaint?.Invoke();
         }
 
@@ -331,7 +368,6 @@ namespace LightmapUvTool
                 if (addToSource)
                 {
                     exportPath = sourceFbxPath;
-                    // Backup
                     string fullSource = System.IO.Path.GetFullPath(sourceFbxPath);
                     string fullMeta = fullSource + ".meta";
                     try
@@ -353,22 +389,18 @@ namespace LightmapUvTool
                         exportPath = "Assets" + exportPath.Substring(dataPath.Length);
                 }
 
-                // Clone original FBX hierarchy
                 var tempRoot = UnityEngine.Object.Instantiate(fbxPrefab);
                 tempRoot.name = fbxPrefab.name;
                 try
                 {
-                    // Add generated LOD meshes as new children
                     foreach (var (entry, genMesh, meshName) in generated)
                     {
                         var child = new GameObject(meshName);
                         child.transform.SetParent(tempRoot.transform, false);
-                        // Copy transform from source renderer
                         if (entry.renderer != null)
                         {
-                            // Use local transform relative to LODGroup root
                             var srcT = entry.renderer.transform;
-                            var lodRoot = ctx.LodGroup.transform;
+                            var lodRoot = ctx.LodGroup != null ? ctx.LodGroup.transform : srcT.parent;
                             child.transform.localPosition = lodRoot.InverseTransformPoint(srcT.position);
                             child.transform.localRotation = Quaternion.Inverse(lodRoot.rotation) * srcT.rotation;
                             child.transform.localScale = srcT.localScale;
@@ -382,9 +414,8 @@ namespace LightmapUvTool
 
                     var exportOptions = new ExportModelOptions { ExportFormat = ExportFormat.Binary };
                     ModelExporter.ExportObjects(exportPath, new UnityEngine.Object[] { tempRoot }, exportOptions);
-                    UvtLog.Info("[FBX LOD Export] Exported " + generated.Count + " LOD mesh(es) -> " + exportPath);
+                    UvtLog.Info("[FBX LOD Export] " + generated.Count + " mesh(es) -> " + exportPath);
 
-                    // Restore .meta for overwrite
                     if (addToSource)
                     {
                         string metaBak = System.IO.Path.GetFullPath(sourceFbxPath) + ".meta.bak";
@@ -403,15 +434,9 @@ namespace LightmapUvTool
         }
 #endif
 
-        /// <summary>
-        /// Copy non-trivial UV channels from source to target mesh (if missing).
-        /// </summary>
         static void PreserveUvChannels(Mesh exportMesh, Mesh sourceMesh)
         {
             if (sourceMesh == null || exportMesh == null) return;
-            // For simplified meshes vertex count differs — can't copy per-vertex data directly.
-            // But we ensure the simplifier preserves attributes via its own pipeline.
-            // This method handles the case where the source has UV channels the simplifier didn't copy.
             if (sourceMesh.vertexCount != exportMesh.vertexCount) return;
             for (int ch = 0; ch < 8; ch++)
             {
@@ -431,7 +456,6 @@ namespace LightmapUvTool
 
         public void OnDrawToolbarExtra() { }
         public void OnDrawStatusBar() { }
-
         public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float sz) { }
 
         public IEnumerable<UvCanvasView.FillModeEntry> GetFillModes()
