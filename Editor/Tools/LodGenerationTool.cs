@@ -36,6 +36,11 @@ namespace LightmapUvTool
         // ── Results ──
         List<GeneratedLodInfo> lastResults = new List<GeneratedLodInfo>();
         List<GameObject> generatedObjects = new List<GameObject>();
+        int cachedLodSelectionId = -1;
+        int cachedRendererSelectionId = -1;
+        List<(GameObject go, int lodIndex, int rendererCount, int triangleCount)> cachedDetectedLods =
+            new List<(GameObject, int, int, int)>();
+        bool cachedSelectionHasRenderers;
 
         // Static accessor for cross-tool cleanup (e.g., after FBX export)
         internal static LodGenerationTool ActiveInstance { get; private set; }
@@ -58,7 +63,15 @@ namespace LightmapUvTool
         }
 
         public void OnDeactivate() { }
-        public void OnRefresh() { lastResults.Clear(); generatedObjects.Clear(); }
+        public void OnRefresh()
+        {
+            lastResults.Clear();
+            generatedObjects.Clear();
+            cachedLodSelectionId = -1;
+            cachedRendererSelectionId = -1;
+            cachedDetectedLods.Clear();
+            cachedSelectionHasRenderers = false;
+        }
 
         public void OnDrawSidebar()
         {
@@ -74,21 +87,14 @@ namespace LightmapUvTool
 
                 if (siblings != null && siblings.Count > 0)
                 {
+                    RefreshDetectedLodCache(selected, siblings);
                     EditorGUILayout.HelpBox("LOD objects detected — create a LODGroup to continue.", MessageType.Info);
                     EditorGUILayout.Space(4);
                     EditorGUILayout.LabelField("Detected LODs", EditorStyles.boldLabel);
-                    foreach (var (go, lodIndex) in siblings)
+                    foreach (var (go, lodIndex, rendererCount, triangleCount) in cachedDetectedLods)
                     {
-                        var renderers = go.GetComponentsInChildren<Renderer>();
-                        int tris = 0;
-                        foreach (var r in renderers)
-                        {
-                            var mf = r.GetComponent<MeshFilter>();
-                            if (mf != null && mf.sharedMesh != null)
-                                tris += mf.sharedMesh.triangles.Length / 3;
-                        }
                         EditorGUILayout.LabelField(
-                            $"  LOD{lodIndex}: {go.name}  ({renderers.Length} renderer{(renderers.Length != 1 ? "s" : "")}, {tris:N0} tris)",
+                            $"  LOD{lodIndex}: {go.name}  ({rendererCount} renderer{(rendererCount != 1 ? "s" : "")}, {triangleCount:N0} tris)",
                             EditorStyles.miniLabel);
                     }
 
@@ -99,7 +105,7 @@ namespace LightmapUvTool
                         CreateLodGroup(siblings);
                     GUI.backgroundColor = bgc;
                 }
-                else if (selected != null && selected.GetComponentsInChildren<Renderer>().Length > 0)
+                else if (selected != null && SelectionHasRenderers(selected))
                 {
                     EditorGUILayout.HelpBox(
                         "No LOD naming detected, but child renderers found.\n" +
@@ -156,7 +162,7 @@ namespace LightmapUvTool
                 {
                     Mesh m = e.repackedMesh ?? e.originalMesh ?? e.fbxMesh;
                     if (m == null) continue;
-                    lodTris += m.triangles.Length / 3;
+                    lodTris += GetTriangleCount(m);
                     lodVerts += m.vertexCount;
                 }
                 if (li == ctx.SourceLodIndex) sourceTris = lodTris;
@@ -183,7 +189,7 @@ namespace LightmapUvTool
                 foreach (var e in ctx.ForLod(lastExistingLod))
                 {
                     Mesh m = e.repackedMesh ?? e.originalMesh ?? e.fbxMesh;
-                    if (m != null) lastLodTris += m.triangles.Length / 3;
+                    if (m != null) lastLodTris += GetTriangleCount(m);
                 }
                 lastRatio = (float)lastLodTris / sourceTris;
 
@@ -353,8 +359,9 @@ namespace LightmapUvTool
                         var r = MeshSimplifier.Simplify(srcMesh, settings);
                         if (!r.ok) { UvtLog.Error($"[GenerateLOD] Failed on {srcMesh.name}: {r.error}"); continue; }
 
-                        float actualRatio = srcMesh.triangles.Length > 0
-                            ? (float)r.simplifiedTriCount / (srcMesh.triangles.Length / 3) : 1f;
+                        int sourceTriCount = GetTriangleCount(srcMesh);
+                        float actualRatio = sourceTriCount > 0
+                            ? (float)r.simplifiedTriCount / sourceTriCount : 1f;
                         bool hitLimit = actualRatio > ratio * 1.2f;
                         if (hitLimit)
                             UvtLog.Warn($"[GenerateLOD] LOD{lodLevel}: target {ratio:P0} but got {actualRatio:P0} — increase Target Error");
@@ -561,17 +568,6 @@ namespace LightmapUvTool
             var renderers = root.GetComponentsInChildren<Renderer>();
             if (renderers.Length == 0) return null;
 
-            // Rename children to add _LOD0 suffix if they don't already have one
-            foreach (var r in renderers)
-            {
-                var go = r.gameObject;
-                if (!Regex.IsMatch(go.name, @"[_\-\s]LOD\d+$", RegexOptions.IgnoreCase))
-                {
-                    Undo.RecordObject(go, "Rename to LOD0");
-                    go.name = go.name + "_LOD0";
-                }
-            }
-
             var lodGroup = Undo.AddComponent<LODGroup>(root);
             lodGroup.SetLODs(new[] { new LOD(0.01f, renderers) });
             lodGroup.RecalculateBounds();
@@ -586,6 +582,48 @@ namespace LightmapUvTool
             requestRepaint?.Invoke();
 
             UvtLog.Info($"[LOD Gen] Created LODGroup on '{lodGroup.gameObject.name}' with {siblings.Count} LODs.");
+        }
+
+        void RefreshDetectedLodCache(GameObject selected, List<(GameObject go, int lodIndex)> siblings)
+        {
+            int selectionId = selected != null ? selected.GetInstanceID() : -1;
+            if (selectionId == cachedLodSelectionId && cachedDetectedLods.Count == siblings.Count)
+                return;
+
+            cachedLodSelectionId = selectionId;
+            cachedDetectedLods.Clear();
+            foreach (var (go, lodIndex) in siblings)
+            {
+                var renderers = go.GetComponentsInChildren<Renderer>();
+                int tris = 0;
+                foreach (var r in renderers)
+                {
+                    var mf = r.GetComponent<MeshFilter>();
+                    tris += GetTriangleCount(mf != null ? mf.sharedMesh : null);
+                }
+                cachedDetectedLods.Add((go, lodIndex, renderers.Length, tris));
+            }
+        }
+
+        bool SelectionHasRenderers(GameObject selected)
+        {
+            int selectionId = selected != null ? selected.GetInstanceID() : -1;
+            if (selectionId != cachedRendererSelectionId)
+            {
+                cachedRendererSelectionId = selectionId;
+                cachedSelectionHasRenderers = selected != null && selected.GetComponentInChildren<Renderer>() != null;
+            }
+            return cachedSelectionHasRenderers;
+        }
+
+        static int GetTriangleCount(Mesh mesh)
+        {
+            if (mesh == null) return 0;
+            long indexCount = 0;
+            int subMeshCount = mesh.subMeshCount;
+            for (int i = 0; i < subMeshCount; i++)
+                indexCount += mesh.GetIndexCount(i);
+            return (int)(indexCount / 3L);
         }
     }
 }

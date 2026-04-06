@@ -52,6 +52,11 @@ namespace LightmapUvTool
 
         // ── Sidecar ──
         string selectedSidecarPath, selectedFbxPath, selectedResetLabel;
+        int setupLodSelectionId = -1;
+        int setupRendererSelectionId = -1;
+        bool setupSelectionHasRenderers;
+        List<(GameObject go, int lodIndex, int rendererCount, int triangleCount)> cachedSetupDetectedLods =
+            new List<(GameObject, int, int, int)>();
 
         // ── Transfer cache ──
         Dictionary<int, GroupedShellTransfer.SourceShellInfo[]> shellTransformCache =
@@ -99,6 +104,10 @@ namespace LightmapUvTool
             uv0Reports.Clear();
             uv0Analyzed = uv0Welded = false;
             shellTransformCache.Clear();
+            setupLodSelectionId = -1;
+            setupRendererSelectionId = -1;
+            setupSelectionHasRenderers = false;
+            cachedSetupDetectedLods.Clear();
             TryRestoreShellMatchFromSidecar();
             UpdateSelectedSidecar();
             TryLoadSettingsFromSidecar();
@@ -215,23 +224,16 @@ namespace LightmapUvTool
 
                 if (siblings != null && siblings.Count > 0)
                 {
+                    RefreshSetupSelectionCache(selected, siblings);
                     EditorGUILayout.HelpBox(
                         "LOD objects detected but no LODGroup assigned. Create one to continue.",
                         MessageType.Info);
                     EditorGUILayout.Space(4);
                     EditorGUILayout.LabelField("Detected LODs", EditorStyles.boldLabel);
-                    foreach (var (go, lodIndex) in siblings)
+                    foreach (var (go, lodIndex, rendererCount, triangleCount) in cachedSetupDetectedLods)
                     {
-                        var renderers = go.GetComponentsInChildren<Renderer>();
-                        int tris = 0;
-                        foreach (var r in renderers)
-                        {
-                            var mf = r.GetComponent<MeshFilter>();
-                            if (mf != null && mf.sharedMesh != null)
-                                tris += mf.sharedMesh.triangles.Length / 3;
-                        }
                         EditorGUILayout.LabelField(
-                            $"  LOD{lodIndex}: {go.name}  ({renderers.Length} renderer{(renderers.Length != 1 ? "s" : "")}, {tris:N0} tris)",
+                            $"  LOD{lodIndex}: {go.name}  ({rendererCount} renderer{(rendererCount != 1 ? "s" : "")}, {triangleCount:N0} tris)",
                             EditorStyles.miniLabel);
                     }
 
@@ -247,7 +249,7 @@ namespace LightmapUvTool
                     }
                     GUI.backgroundColor = bgc;
                 }
-                else if (selected != null && selected.GetComponentsInChildren<Renderer>().Length > 0)
+                else if (selected != null && SetupSelectionHasRenderers(selected))
                 {
                     EditorGUILayout.HelpBox(
                         "No LOD naming detected, but child renderers found.\n" +
@@ -301,7 +303,7 @@ namespace LightmapUvTool
                     if (name.Length > 22) name = name.Substring(0, 20) + "..";
                     EditorGUILayout.LabelField(badge + name, EditorStyles.miniLabel, GUILayout.MinWidth(60));
                     var m = e.originalMesh;
-                    EditorGUILayout.LabelField("V:" + m.vertexCount + " T:" + (m.triangles.Length / 3), EditorStyles.miniLabel, GUILayout.Width(80));
+                    EditorGUILayout.LabelField("V:" + m.vertexCount + " T:" + GetTriangleCount(m), EditorStyles.miniLabel, GUILayout.Width(80));
                     EditorGUILayout.EndHorizontal();
                 }
             }
@@ -971,16 +973,22 @@ namespace LightmapUvTool
             }
             if (fbxGroups.Count == 0) { UvtLog.Error("[FBX Export] No processed meshes to export."); return; }
 
+            bool allGroupsSucceeded = true;
             foreach (var kv in fbxGroups)
             {
                 string sourceFbxPath = kv.Key;
                 var entries = kv.Value;
                 string exportPath;
+                bool groupSucceeded = false;
                 if (overwriteSource)
                 {
                     if (!EditorUtility.DisplayDialog("Overwrite Source FBX",
                         "This will overwrite:\n" + sourceFbxPath + "\n\nA backup (.fbx.bak) will be created. Continue?",
-                        "Overwrite", "Cancel")) continue;
+                        "Overwrite", "Cancel"))
+                    {
+                        allGroupsSucceeded = false;
+                        continue;
+                    }
                     exportPath = sourceFbxPath;
                     string fullSource = System.IO.Path.GetFullPath(sourceFbxPath);
                     string fullMeta = fullSource + ".meta";
@@ -990,14 +998,18 @@ namespace LightmapUvTool
                         if (System.IO.File.Exists(fullMeta))
                             System.IO.File.Copy(fullMeta, fullSource + ".meta.bak", true);
                     }
-                    catch (Exception ex) { UvtLog.Error("[FBX Export] Backup failed: " + ex.Message); continue; }
+                    catch (Exception ex) { UvtLog.Error("[FBX Export] Backup failed: " + ex.Message); allGroupsSucceeded = false; continue; }
                 }
                 else
                 {
                     string dir = System.IO.Path.GetDirectoryName(sourceFbxPath);
                     string baseName = System.IO.Path.GetFileNameWithoutExtension(sourceFbxPath);
                     exportPath = EditorUtility.SaveFilePanel("Export FBX", dir, baseName + "_uv2.fbx", "fbx");
-                    if (string.IsNullOrEmpty(exportPath)) continue;
+                    if (string.IsNullOrEmpty(exportPath))
+                    {
+                        allGroupsSucceeded = false;
+                        continue;
+                    }
                     string dataPath = Application.dataPath;
                     if (exportPath.StartsWith(dataPath))
                         exportPath = "Assets" + exportPath.Substring(dataPath.Length);
@@ -1005,7 +1017,7 @@ namespace LightmapUvTool
 
                 // Clone original FBX hierarchy and replace only the meshes
                 var fbxPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(sourceFbxPath);
-                if (fbxPrefab == null) { UvtLog.Error("[FBX Export] Cannot load FBX prefab: " + sourceFbxPath); continue; }
+                if (fbxPrefab == null) { UvtLog.Error("[FBX Export] Cannot load FBX prefab: " + sourceFbxPath); allGroupsSucceeded = false; continue; }
                 var tempRoot = UnityEngine.Object.Instantiate(fbxPrefab);
                 tempRoot.name = fbxPrefab.name;
 
@@ -1079,7 +1091,7 @@ namespace LightmapUvTool
                         for (int ci = tempRoot.transform.childCount - 1; ci >= 0; ci--)
                         {
                             var ch = tempRoot.transform.GetChild(ci);
-                            if (ch.name.Contains("_COL"))
+                            if (IsCollisionNodeName(ch.name))
                                 UnityEngine.Object.DestroyImmediate(ch.gameObject);
                         }
                     }
@@ -1114,6 +1126,7 @@ namespace LightmapUvTool
                     ModelExporter.ExportObjects(exportPath, new UnityEngine.Object[] { tempRoot }, exportOptions);
                     int totalExported = entries.Count + collisionMeshCount;
                     UvtLog.Info("[FBX Export] Exported (binary) " + totalExported + " mesh(es) -> " + exportPath);
+                    groupSucceeded = true;
                     // Restore original .meta and clean up .bak files
                     if (overwriteSource)
                     {
@@ -1136,8 +1149,11 @@ namespace LightmapUvTool
                             System.IO.File.Delete(metaBakMeta);
                     }
                 }
-                catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); }
+                catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); allGroupsSucceeded = false; }
                 finally { UnityEngine.Object.DestroyImmediate(tempRoot); }
+
+                if (!groupSucceeded)
+                    allGroupsSucceeded = false;
 
                 // Prevent the sidecar postprocessor from applying stale UV2 remap data
                 // to the overwritten FBX — the UV2 is already baked into the exported mesh.
@@ -1147,10 +1163,62 @@ namespace LightmapUvTool
 
             // Clean up scene-generated LOD objects from LodGenerationTool.
             // These are now embedded in the exported FBX and would duplicate on reimport.
-            LodGenerationTool.ActiveInstance?.ClearGeneratedLods();
+            if (overwriteSource && allGroupsSucceeded)
+                LodGenerationTool.ActiveInstance?.ClearGeneratedLods();
 
             AssetDatabase.Refresh();
 #endif
+        }
+
+        void RefreshSetupSelectionCache(GameObject selected, List<(GameObject go, int lodIndex)> siblings)
+        {
+            int selectionId = selected != null ? selected.GetInstanceID() : -1;
+            if (selectionId == setupLodSelectionId && cachedSetupDetectedLods.Count == siblings.Count)
+                return;
+
+            setupLodSelectionId = selectionId;
+            cachedSetupDetectedLods.Clear();
+            foreach (var (go, lodIndex) in siblings)
+            {
+                var renderers = go.GetComponentsInChildren<Renderer>();
+                int tris = 0;
+                foreach (var r in renderers)
+                {
+                    var mf = r.GetComponent<MeshFilter>();
+                    tris += GetTriangleCount(mf != null ? mf.sharedMesh : null);
+                }
+                cachedSetupDetectedLods.Add((go, lodIndex, renderers.Length, tris));
+            }
+        }
+
+        bool SetupSelectionHasRenderers(GameObject selected)
+        {
+            int selectionId = selected != null ? selected.GetInstanceID() : -1;
+            if (selectionId != setupRendererSelectionId)
+            {
+                setupRendererSelectionId = selectionId;
+                setupSelectionHasRenderers = selected != null && selected.GetComponentInChildren<Renderer>() != null;
+            }
+            return setupSelectionHasRenderers;
+        }
+
+        static int GetTriangleCount(Mesh mesh)
+        {
+            if (mesh == null) return 0;
+            long indexCount = 0;
+            int subMeshCount = mesh.subMeshCount;
+            for (int i = 0; i < subMeshCount; i++)
+                indexCount += mesh.GetIndexCount(i);
+            return (int)(indexCount / 3L);
+        }
+
+        static bool IsCollisionNodeName(string nodeName)
+        {
+            if (string.IsNullOrEmpty(nodeName)) return false;
+            return System.Text.RegularExpressions.Regex.IsMatch(
+                nodeName,
+                @"_COL(?:_Hull\d+)?$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
 
         void GenerateLods()
