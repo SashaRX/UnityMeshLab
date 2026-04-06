@@ -168,16 +168,17 @@ namespace LightmapUvTool
                     $"  Target: {TargetChannelName}",
                     EditorStyles.miniLabel);
 
-                // Post-processing
+                // Post-processing — blur updates preview in real-time
                 EditorGUILayout.Space(4);
                 EditorGUILayout.LabelField("Post-Processing", EditorStyles.boldLabel);
+                EditorGUI.BeginChangeCheck();
                 blurIterations = EditorGUILayout.IntSlider(
-                    new GUIContent("Blur Iterations", "Smooth AO across neighboring vertices. More iterations = softer result."),
+                    new GUIContent("Blur", "Smooth AO across neighboring vertices. More iterations = softer result."),
                     blurIterations, 0, 10);
                 blurStrength = EditorGUILayout.Slider(
-                    new GUIContent("Blur Strength", "Blend factor per iteration. 1 = full neighbor average."),
+                    new GUIContent("Strength", "Blend factor per iteration. 1 = full neighbor average."),
                     blurStrength, 0f, 1f);
-                if (GUILayout.Button("Apply Blur"))
+                if (EditorGUI.EndChangeCheck())
                     ApplyBlur();
 
                 EditorGUILayout.Space(8);
@@ -327,7 +328,7 @@ namespace LightmapUvTool
 
             foreach (var e in ctx.MeshEntries)
             {
-                if (e.lodIndex != ctx.SourceLodIndex || !e.include || e.renderer == null) continue;
+                if (!e.include || e.renderer == null) continue;
                 var mf = e.meshFilter;
                 if (mf == null) continue;
                 Mesh mesh = e.originalMesh ?? e.fbxMesh;
