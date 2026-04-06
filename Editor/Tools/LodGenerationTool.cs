@@ -75,16 +75,44 @@ namespace LightmapUvTool
             var sourceMeshes = ctx.MeshEntries
                 .Where(e => e.include && e.lodIndex == ctx.SourceLodIndex)
                 .ToList();
-            int srcCount = sourceMeshes.Count;
-            int srcWithRepack = sourceMeshes.Count(e => e.repackedMesh != null);
-            EditorGUILayout.LabelField($"Source: LOD{ctx.SourceLodIndex} — {srcCount} mesh(es), {srcWithRepack} repacked", EditorStyles.miniLabel);
+
+            // ── LOD Polycount Table ──
+            EditorGUILayout.LabelField("Current LODs", EditorStyles.boldLabel);
+            int totalSrcTris = 0;
+            for (int li = 0; li < ctx.LodCount; li++)
+            {
+                var ee = ctx.ForLod(li);
+                if (ee.Count == 0) continue;
+                int lodTris = 0, lodVerts = 0;
+                foreach (var e in ee)
+                {
+                    Mesh m = e.repackedMesh ?? e.originalMesh ?? e.fbxMesh;
+                    if (m == null) continue;
+                    lodTris += m.triangles.Length / 3;
+                    lodVerts += m.vertexCount;
+                }
+                if (li == ctx.SourceLodIndex) totalSrcTris = lodTris;
+                bool isSrc = li == ctx.SourceLodIndex;
+                string prefix = isSrc ? "► " : "  ";
+                float pct = totalSrcTris > 0 ? (float)lodTris / totalSrcTris * 100f : 100f;
+                EditorGUILayout.LabelField($"{prefix}LOD{li}: {lodTris:N0} tris, {lodVerts:N0} verts ({pct:F0}%)",
+                    isSrc ? EditorStyles.boldLabel : EditorStyles.miniLabel);
+            }
 
             EditorGUILayout.Space(6);
+            EditorGUILayout.LabelField("Generate New LODs", EditorStyles.boldLabel);
 
             // ── Settings ──
             generateLodCount = EditorGUILayout.IntSlider("LOD Count", generateLodCount, 1, 4);
             for (int i = 0; i < generateLodCount && i < generateLodRatios.Length; i++)
-                generateLodRatios[i] = EditorGUILayout.Slider("  LOD" + (ctx.SourceLodIndex + i + 1) + " ratio", generateLodRatios[i], 0.01f, 0.99f);
+            {
+                int targetLod = ctx.SourceLodIndex + i + 1;
+                int estTris = Mathf.RoundToInt(totalSrcTris * generateLodRatios[i]);
+                string existing = targetLod < ctx.LodCount ? " (exists!)" : "";
+                generateLodRatios[i] = EditorGUILayout.Slider(
+                    $"  LOD{targetLod} ratio", generateLodRatios[i], 0.01f, 0.99f);
+                EditorGUILayout.LabelField($"      ≈ {estTris:N0} tris{existing}", EditorStyles.miniLabel);
+            }
 
             EditorGUILayout.Space(4);
             generateTargetError = EditorGUILayout.Slider("Target Error", generateTargetError, 0.001f, 0.5f);
@@ -241,11 +269,29 @@ namespace LightmapUvTool
 
                     if (generateAddToLodGroup && lodRenderers.Count > 0)
                     {
-                        float baseHeight = newLods.Count > 0 ? newLods[newLods.Count - 1].screenRelativeTransitionHeight : 0.5f;
-                        float height = baseHeight * 0.5f;
-                        var newLod = new LOD(height, lodRenderers.ToArray());
-                        if (lodLevel < newLods.Count) newLods.Insert(lodLevel, newLod);
-                        else newLods.Add(newLod);
+                        if (lodLevel < newLods.Count)
+                        {
+                            // Replace existing LOD — destroy old renderers' GameObjects
+                            var oldRenderers = newLods[lodLevel].renderers;
+                            if (oldRenderers != null)
+                            {
+                                foreach (var oldR in oldRenderers)
+                                {
+                                    if (oldR != null && oldR.gameObject != null)
+                                    {
+                                        Undo.DestroyObjectImmediate(oldR.gameObject);
+                                    }
+                                }
+                            }
+                            float existingHeight = newLods[lodLevel].screenRelativeTransitionHeight;
+                            newLods[lodLevel] = new LOD(existingHeight, lodRenderers.ToArray());
+                        }
+                        else
+                        {
+                            float baseHeight = newLods.Count > 0 ? newLods[newLods.Count - 1].screenRelativeTransitionHeight : 0.5f;
+                            float height = baseHeight * 0.5f;
+                            newLods.Add(new LOD(height, lodRenderers.ToArray()));
+                        }
                     }
                 }
 
