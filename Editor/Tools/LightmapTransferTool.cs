@@ -1127,8 +1127,26 @@ namespace LightmapUvTool
             }
             finally { EditorUtility.ClearProgressBar(); }
 
-            ctx.Refresh(ctx.LodGroup);
-            OnRefresh();
+            // Add new LOD entries without destroying pipeline state
+            var currentLods2 = ctx.LodGroup.GetLODs();
+            for (int li = 0; li < currentLods2.Length; li++)
+            {
+                if (ctx.MeshEntries.Any(e => e.lodIndex == li)) continue;
+                if (currentLods2[li].renderers == null) continue;
+                foreach (var r in currentLods2[li].renderers)
+                {
+                    if (r == null) continue;
+                    var mf2 = r.GetComponent<MeshFilter>();
+                    if (mf2 == null || mf2.sharedMesh == null) continue;
+                    ctx.MeshEntries.Add(new MeshEntry
+                    {
+                        lodIndex = li, renderer = r, meshFilter = mf2,
+                        originalMesh = mf2.sharedMesh, fbxMesh = mf2.sharedMesh,
+                        meshGroupKey = UvToolContext.ExtractGroupKey(r.name)
+                    });
+                }
+            }
+            ctx.ClearAllCaches();
             requestRepaint?.Invoke();
         }
 
