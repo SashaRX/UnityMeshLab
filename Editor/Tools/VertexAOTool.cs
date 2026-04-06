@@ -51,6 +51,8 @@ namespace LightmapUvTool
         // ── Post-processing ──
         int   blurIterations = 0;
         float blurStrength   = 0.5f;
+        bool  blurCrossHardEdges = true;
+        bool  blurCrossUvSeams   = true;
         bool  faceAreaCorrection = false;
         bool  backfaceCulling = true;
 
@@ -209,6 +211,12 @@ namespace LightmapUvTool
                 blurStrength = EditorGUILayout.Slider(
                     new GUIContent("Strength", "Blend factor per iteration. 1 = full neighbor average."),
                     blurStrength, 0f, 1f);
+                blurCrossHardEdges = EditorGUILayout.Toggle(
+                    new GUIContent("Cross Hard Edges", "Blur across hard edges (vertices with different normals at same position)."),
+                    blurCrossHardEdges);
+                blurCrossUvSeams = EditorGUILayout.Toggle(
+                    new GUIContent("Cross UV Seams", "Blur across UV shell boundaries (vertices with different UV0 at same position)."),
+                    blurCrossUvSeams);
                 if (EditorGUI.EndChangeCheck())
                     ApplyBlur();
 
@@ -322,9 +330,15 @@ namespace LightmapUvTool
             if (blurIterations <= 0 || bakedFinalAO == null) return;
             foreach (var mesh in bakedFinalAO.Keys.ToList())
             {
+                var uv0List = new List<Vector2>();
+                mesh.GetUVs(0, uv0List);
+                var uv0Arr = uv0List.Count == mesh.vertexCount ? uv0List.ToArray() : null;
+
                 bakedFinalAO[mesh] = VertexAOBaker.BlurAO(
                     bakedFinalAO[mesh], mesh.triangles, mesh.vertexCount,
-                    blurIterations, blurStrength, mesh.vertices);
+                    blurIterations, blurStrength,
+                    mesh.vertices, mesh.normals, uv0Arr,
+                    blurCrossHardEdges, blurCrossUvSeams);
             }
         }
 
