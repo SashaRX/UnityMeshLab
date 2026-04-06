@@ -3,6 +3,8 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEditor;
@@ -161,26 +163,28 @@ namespace LightmapUvTool
             var tris  = mesh.triangles;
             int vertCount = verts.Length;
 
-            // Per-vertex correction accumulator (weighted sum)
-            var correction  = new float[vertCount];
-            var totalWeight = new float[vertCount];
+            // Per-vertex correction accumulator (weighted sum) — use double for atomic add
+            var correction  = new double[vertCount];
+            var totalWeight = new double[vertCount];
 
-            // Median edge length to define "large" triangle threshold
+            // Median area to define "large" triangle threshold
             float medianArea = ComputeMedianTriArea(verts, tris, xform);
             float largeThreshold = medianArea * 4f;
 
-            for (int t = 0; t < tris.Length; t += 3)
+            int triCount = tris.Length / 3;
+            Parallel.For(0, triCount, ti =>
             {
+                int t = ti * 3;
                 int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
                 Vector3 p0 = xform.MultiplyPoint3x4(verts[i0]);
                 Vector3 p1 = xform.MultiplyPoint3x4(verts[i1]);
                 Vector3 p2 = xform.MultiplyPoint3x4(verts[i2]);
 
                 float area = Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5f;
-                if (area < largeThreshold) continue;
+                if (area < largeThreshold) return;
 
                 Vector3 faceNorm = Vector3.Cross(p1 - p0, p2 - p0).normalized;
-                if (faceNorm.sqrMagnitude < 0.001f) continue;
+                if (faceNorm.sqrMagnitude < 0.001f) return;
 
                 // Sample points inside triangle: centroid + 3 edge midpoints
                 var samplePoints = new Vector3[]
@@ -219,47 +223,56 @@ namespace LightmapUvTool
                     }
                 }
 
-                if (surfaceSamples == 0) continue;
+                if (surfaceSamples == 0) return;
                 surfaceAO /= surfaceSamples;
                 surfaceAO = Mathf.Pow(Mathf.Clamp01(surfaceAO), settings.intensity);
 
                 float vertexAvgAO = (ao[i0] + ao[i1] + ao[i2]) / 3f;
+                if (surfaceAO <= vertexAvgAO + 0.05f) return;
 
-                // Only correct when surface is significantly brighter than vertices
-                if (surfaceAO <= vertexAvgAO + 0.05f) continue;
+                double weight = area / medianArea;
+                double sao = surfaceAO;
 
-                // Weight by area ratio (larger faces get stronger correction)
-                float weight = area / medianArea;
-
+                // Atomic accumulation via Interlocked — lock-free
                 int[] faceVerts = { i0, i1, i2 };
                 foreach (int vi in faceVerts)
                 {
-                    // Blend vertex AO towards surface AO
-                    correction[vi]  += surfaceAO * weight;
-                    totalWeight[vi] += weight;
+                    InterlockedAddDouble(ref correction[vi], sao * weight);
+                    InterlockedAddDouble(ref totalWeight[vi], weight);
                 }
-            }
+            });
 
             // Apply corrections
-            var result = (float[])ao.Clone();
-            int corrected = 0;
+            var correctedAO = (float[])ao.Clone();
+            int correctedCount = 0;
             for (int v = 0; v < vertCount; v++)
             {
                 if (totalWeight[v] <= 0) continue;
-                float targetAO = correction[v] / totalWeight[v];
+                float targetAO = (float)(correction[v] / totalWeight[v]);
                 // Only brighten, never darken
-                if (targetAO > result[v])
+                if (targetAO > correctedAO[v])
                 {
-                    float blend = Mathf.Clamp01(totalWeight[v] / (totalWeight[v] + 1f));
-                    result[v] = Mathf.Lerp(result[v], targetAO, blend);
-                    corrected++;
+                    float blend = Mathf.Clamp01((float)(totalWeight[v] / (totalWeight[v] + 1.0)));
+                    correctedAO[v] = Mathf.Lerp(correctedAO[v], targetAO, blend);
+                    correctedCount++;
                 }
             }
 
-            if (corrected > 0)
-                UvtLog.Info($"[Vertex AO] Face-area correction: {corrected} vertices adjusted.");
+            if (correctedCount > 0)
+                UvtLog.Info($"[Vertex AO] Face-area correction: {correctedCount} vertices adjusted.");
 
-            return result;
+            return correctedAO;
+        }
+
+        static void InterlockedAddDouble(ref double location, double value)
+        {
+            double initial, computed;
+            do
+            {
+                initial = location;
+                computed = initial + value;
+            }
+            while (initial != Interlocked.CompareExchange(ref location, computed, initial));
         }
 
         static float ComputeMedianTriArea(Vector3[] verts, int[] tris, Matrix4x4 xform)
@@ -527,31 +540,34 @@ namespace LightmapUvTool
                 var ao = new float[verts.Length];
                 float maxDist = settings.maxRadius > 0 ? settings.maxRadius : float.MaxValue;
 
+                // Transform verts/normals to world space once (main thread)
+                var worldPos  = new Vector3[verts.Length];
+                var worldNorm = new Vector3[verts.Length];
                 for (int v = 0; v < verts.Length; v++)
                 {
-                    if (v % 100 == 0 && EditorUtility.DisplayCancelableProgressBar("Baking Vertex AO (CPU)",
-                        $"Vertex {processed + v}/{totalVerts}", (float)(processed + v) / totalVerts))
-                    {
-                        EditorUtility.ClearProgressBar();
-                        result[mesh] = ao;
-                        return result;
-                    }
+                    worldPos[v]  = xform.MultiplyPoint3x4(verts[v]);
+                    worldNorm[v] = xform.MultiplyVector(norms[v]).normalized;
+                }
 
-                    Vector3 pos = xform.MultiplyPoint3x4(verts[v]);
-                    Vector3 norm = xform.MultiplyVector(norms[v]).normalized;
-                    Vector3 origin = pos + norm * normalOffset;
+                // Parallel bake — BVH is read-only, each vertex is independent
+                int progressCounter = 0;
+                bool cancelled = false;
+
+                Parallel.For(0, verts.Length, (v, loopState) =>
+                {
+                    if (cancelled) { loopState.Stop(); return; }
+
+                    Vector3 origin = worldPos[v] + worldNorm[v] * normalOffset;
 
                     int occluded = 0, sampled = 0;
                     for (int d = 0; d < directions.Length; d++)
                     {
-                        if (Vector3.Dot(directions[d], norm) <= 0) continue;
+                        if (Vector3.Dot(directions[d], worldNorm[v]) <= 0) continue;
                         sampled++;
 
-                        // BVH raycast
                         var hit = bvh.Raycast(origin, directions[d], maxDist);
                         if (hit.triangleIndex >= 0) { occluded++; continue; }
 
-                        // Ground plane intersection
                         if (settings.groundPlane && directions[d].y < -0.001f)
                         {
                             float t = (groundY - origin.y) / directions[d].y;
@@ -561,7 +577,19 @@ namespace LightmapUvTool
 
                     float aoVal = sampled > 0 ? 1f - (float)occluded / sampled : 1f;
                     ao[v] = Mathf.Pow(Mathf.Clamp01(aoVal), settings.intensity);
+
+                    Interlocked.Increment(ref progressCounter);
+                });
+
+                // Progress bar on main thread (poll after parallel completes per mesh)
+                if (EditorUtility.DisplayCancelableProgressBar("Baking Vertex AO (CPU, parallel)",
+                    $"Mesh {processed + verts.Length}/{totalVerts} vertices", (float)(processed + verts.Length) / totalVerts))
+                {
+                    EditorUtility.ClearProgressBar();
+                    result[mesh] = ao;
+                    return result;
                 }
+
                 processed += verts.Length;
 
                 // Face-area correction: fix large polygons where all vertices
