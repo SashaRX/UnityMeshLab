@@ -15,7 +15,7 @@ FetchContent_Declare(
 FetchContent_Declare(
     meshoptimizer
     GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
-    GIT_TAG        v0.22
+    GIT_TAG        v1.1
     GIT_SHALLOW    TRUE
 )
 set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
