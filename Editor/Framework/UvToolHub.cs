@@ -534,6 +534,13 @@ namespace LightmapUvTool
 
             canvas.CurrentPreviewMode = newMode;
 
+            // Ensure fill is visible in preview modes
+            if (newMode != UvCanvasView.PreviewMode.Off)
+            {
+                canvas.FillHidden = false;
+                if (canvas.FillAlpha < 0.3f) canvas.FillAlpha = 0.45f;
+            }
+
             switch (newMode)
             {
                 case UvCanvasView.PreviewMode.Checker:
