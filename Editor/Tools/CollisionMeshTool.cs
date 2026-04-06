@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.IO;
 using UnityEngine;
 using UnityEditor;
 
@@ -349,16 +350,37 @@ namespace LightmapUvTool
             }
 
             Undo.CollapseUndoOperations(undoGroup);
+            AssetDatabase.SaveAssets();
             UvtLog.Info("Collision meshes applied to scene.");
         }
+
+        const string AppliedMeshAssetFolder = "Assets/LightmapUvTool/GeneratedCollisionMeshes";
 
         static Mesh CreateAppliedMeshCopy(Mesh source, string fallbackName)
         {
             if (source == null) return null;
 
+            string meshName = string.IsNullOrEmpty(source.name) ? fallbackName : source.name + "_Applied";
             var instance = UnityEngine.Object.Instantiate(source);
-            instance.name = string.IsNullOrEmpty(source.name) ? fallbackName : source.name + "_Applied";
-            return instance;
+            instance.name = meshName;
+
+            EnsureAppliedMeshFolderExists();
+            string assetPath = AssetDatabase.GenerateUniqueAssetPath(Path.Combine(AppliedMeshAssetFolder, meshName + ".asset"));
+            AssetDatabase.CreateAsset(instance, assetPath.Replace('\\', '/'));
+            return AssetDatabase.LoadAssetAtPath<Mesh>(assetPath.Replace('\\', '/'));
+        }
+
+        static void EnsureAppliedMeshFolderExists()
+        {
+            if (AssetDatabase.IsValidFolder("Assets/LightmapUvTool"))
+            {
+                if (!AssetDatabase.IsValidFolder(AppliedMeshAssetFolder))
+                    AssetDatabase.CreateFolder("Assets/LightmapUvTool", "GeneratedCollisionMeshes");
+                return;
+            }
+
+            AssetDatabase.CreateFolder("Assets", "LightmapUvTool");
+            AssetDatabase.CreateFolder("Assets/LightmapUvTool", "GeneratedCollisionMeshes");
         }
 
         void RemoveFromScene()
