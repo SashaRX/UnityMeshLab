@@ -20,7 +20,7 @@ namespace LightmapUvTool
         public UvTransferPipeline.PipelineSettings PipeSettings =
             UvTransferPipeline.PipelineSettings.Default;
 
-        public int AtlasResolution = 1024;
+        public int AtlasResolution = 256;
         public int ShellPaddingPx  = 2;
         public int BorderPaddingPx = 0;
         public bool RepackPerMesh;

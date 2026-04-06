@@ -28,10 +28,10 @@ namespace LightmapUvTool
         // ── Settings ──
         int generateLodCount = 2;
         float[] generateLodRatios = { 0.5f, 0.25f, 0.125f, 0.0625f };
-        float generateTargetError = 0.05f;
-        float generateUv2Weight = 100f;
+        float generateTargetError = 0.2f;
+        float generateUv2Weight = 20f;
         float generateNormalWeight = 1f;
-        bool generateLockBorder = true;
+        bool generateLockBorder = false;
 
         // ── Results ──
         List<GeneratedLodInfo> lastResults = new List<GeneratedLodInfo>();
