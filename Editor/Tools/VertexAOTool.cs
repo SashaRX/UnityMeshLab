@@ -49,10 +49,13 @@ namespace LightmapUvTool
         string TargetChannelName => channelTypeNames[channelType] + " " + (channelType == 0 ? colorCompNames : uvCompNames)[channelComp];
 
         // ── Post-processing ──
+        int   blurMode = 0;  // 0=Topology, 1=3D Spatial
+        static readonly string[] blurModeNames = { "Topology", "3D Spatial" };
         int   blurIterations = 0;
         float blurStrength   = 0.5f;
         bool  blurCrossHardEdges = true;
         bool  blurCrossUvSeams   = true;
+        float blur3DRadius = 0.1f;
         float ppBrightness = 0f;   // -1..1
         float ppContrast   = 1f;   // 0..3
         bool  faceAreaCorrection = false;
@@ -203,28 +206,40 @@ namespace LightmapUvTool
                     $"  Target: {TargetChannelName}",
                     EditorStyles.miniLabel);
 
-                // Post-processing — blur updates preview in real-time
+                // Post-processing — all controls update preview in real-time
                 EditorGUILayout.Space(4);
                 EditorGUILayout.LabelField("Post-Processing", EditorStyles.boldLabel);
                 EditorGUI.BeginChangeCheck();
+                blurMode = EditorGUILayout.Popup(
+                    new GUIContent("Blur Mode", "Topology = mesh edges. 3D Spatial = distance in 3D, ignores topology/seams/meshes."),
+                    blurMode, blurModeNames);
                 blurIterations = EditorGUILayout.IntSlider(
-                    new GUIContent("Blur", "Smooth AO across neighboring vertices. More iterations = softer result."),
+                    new GUIContent("Blur", "Smooth AO. More iterations = softer result."),
                     blurIterations, 0, 10);
                 blurStrength = EditorGUILayout.Slider(
                     new GUIContent("Strength", "Blend factor per iteration. 1 = full neighbor average."),
                     blurStrength, 0f, 1f);
-                blurCrossHardEdges = EditorGUILayout.Toggle(
-                    new GUIContent("Cross Hard Edges", "Blur across hard edges (vertices with different normals at same position)."),
-                    blurCrossHardEdges);
-                blurCrossUvSeams = EditorGUILayout.Toggle(
-                    new GUIContent("Cross UV Seams", "Blur across UV shell boundaries (vertices with different UV0 at same position)."),
-                    blurCrossUvSeams);
+                if (blurMode == 0)
+                {
+                    blurCrossHardEdges = EditorGUILayout.Toggle(
+                        new GUIContent("Cross Hard Edges", "Blur across hard edges (different normals)."),
+                        blurCrossHardEdges);
+                    blurCrossUvSeams = EditorGUILayout.Toggle(
+                        new GUIContent("Cross UV Seams", "Blur across UV shell boundaries."),
+                        blurCrossUvSeams);
+                }
+                else
+                {
+                    blur3DRadius = EditorGUILayout.Slider(
+                        new GUIContent("Radius", "3D search radius. Larger = more smoothing, slower."),
+                        blur3DRadius, 0.01f, 2f);
+                }
                 EditorGUILayout.Space(4);
                 ppBrightness = EditorGUILayout.Slider(
-                    new GUIContent("Brightness", "Shift AO values. Positive = lighter, negative = darker."),
+                    new GUIContent("Brightness", "Shift AO values. + lighter, - darker."),
                     ppBrightness, -1f, 1f);
                 ppContrast = EditorGUILayout.Slider(
-                    new GUIContent("Contrast", "AO contrast around midpoint 0.5. >1 = more contrast, <1 = flatter."),
+                    new GUIContent("Contrast", "AO contrast around 0.5. >1 = sharper, <1 = flatter."),
                     ppContrast, 0f, 3f);
                 if (EditorGUI.EndChangeCheck())
                     ApplyBlur();
@@ -345,15 +360,26 @@ namespace LightmapUvTool
             {
                 foreach (var mesh in bakedFinalAO.Keys.ToList())
                 {
-                    var uv0List = new List<Vector2>();
-                    mesh.GetUVs(0, uv0List);
-                    var uv0Arr = uv0List.Count == mesh.vertexCount ? uv0List.ToArray() : null;
+                    if (blurMode == 1)
+                    {
+                        // 3D Spatial blur — ignores topology
+                        bakedFinalAO[mesh] = VertexAOBaker.BlurAO3D(
+                            bakedFinalAO[mesh], mesh.vertices,
+                            blurIterations, blurStrength, blur3DRadius);
+                    }
+                    else
+                    {
+                        // Topology blur — follows mesh edges
+                        var uv0List = new List<Vector2>();
+                        mesh.GetUVs(0, uv0List);
+                        var uv0Arr = uv0List.Count == mesh.vertexCount ? uv0List.ToArray() : null;
 
-                    bakedFinalAO[mesh] = VertexAOBaker.BlurAO(
-                        bakedFinalAO[mesh], mesh.triangles, mesh.vertexCount,
-                        blurIterations, blurStrength,
-                        mesh.vertices, mesh.normals, uv0Arr,
-                        blurCrossHardEdges, blurCrossUvSeams);
+                        bakedFinalAO[mesh] = VertexAOBaker.BlurAO(
+                            bakedFinalAO[mesh], mesh.triangles, mesh.vertexCount,
+                            blurIterations, blurStrength,
+                            mesh.vertices, mesh.normals, uv0Arr,
+                            blurCrossHardEdges, blurCrossUvSeams);
+                    }
                 }
             }
 
