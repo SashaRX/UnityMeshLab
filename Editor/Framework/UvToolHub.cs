@@ -43,7 +43,9 @@ namespace LightmapUvTool
             wantsMouseMove = true;
             titleContent = new GUIContent("Mesh Lab v" + Uv2DataAsset.ToolVersionStr);
 
-            // Safety: restore any preview state left from prior session
+            // Safety: if the window was closed while a preview was active (e.g., checker
+            // materials on renderers), the static IsActive flag persists across editor
+            // sessions via SessionState. Restore here cleans up orphaned materials.
             if (CheckerTexturePreview.IsActive) CheckerTexturePreview.Restore();
             if (ShellColorModelPreview.IsActive) ShellColorModelPreview.Restore();
 
@@ -85,6 +87,13 @@ namespace LightmapUvTool
 
         void OnDisable()
         {
+            // Cleanup order matters:
+            // 1. Deactivate active tool (lets it restore its own preview state)
+            // 2. Restore all remaining previews (checker, shell color, lightmap)
+            // 3. Reset LOD forcing so the scene renders normally
+            // 4. Cleanup canvas GL resources
+            // 5. Destroy working meshes and restore fbxMesh on MeshFilter
+
             SceneView.duringSceneGui -= OnSceneGUI;
 
             ActiveTool?.OnDeactivate();
@@ -105,7 +114,8 @@ namespace LightmapUvTool
 
             canvas?.Cleanup();
 
-            // Cleanup working meshes — restore fbxMesh on MeshFilter first
+            // Cleanup working meshes — restore fbxMesh on MeshFilter first.
+            // originalMesh != fbxMesh only when welding or symmetry-split created a clone.
             if (ctx?.MeshEntries != null)
             {
                 foreach (var e in ctx.MeshEntries)

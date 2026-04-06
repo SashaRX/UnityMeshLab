@@ -9,6 +9,11 @@ using UnityEditor;
 
 namespace LightmapUvTool
 {
+    /// <summary>
+    /// Shared state container — one instance per <see cref="UvToolHub"/> window.
+    /// Created in <c>OnEnable</c>, populated by <see cref="Refresh"/>.
+    /// All tools receive a reference via <see cref="IUvTool.OnActivate"/>.
+    /// </summary>
     public class UvToolContext
     {
         // ── Selection ──
@@ -31,6 +36,11 @@ namespace LightmapUvTool
         public int PreviewLod;
 
         // ── Caches (shared across tools) ──
+        // All caches are keyed by mesh instance ID or composite key (ID + channel).
+        // They become stale when mesh topology changes (weld, symmetry-split,
+        // repack, transfer) or when the LODGroup selection changes.
+        // ClearAllCaches() is the safe invalidation path after any mesh mutation;
+        // Refresh() also clears all caches as part of full re-initialization.
         public readonly FaceToShellCache UvPreviewShellCache = new FaceToShellCache();
         public readonly Dictionary<int, SourceMeshData> SrcCache = new Dictionary<int, SourceMeshData>();
         public readonly Dictionary<int, int[]> BoundaryEdgeCache = new Dictionary<int, int[]>();
@@ -40,11 +50,15 @@ namespace LightmapUvTool
         public readonly Dictionary<int, (int[] vertToShell, ShellDescriptor[] descs)> Uv0ShellMapCache
             = new Dictionary<int, (int[] vertToShell, ShellDescriptor[] descs)>();
 
+        /// <summary>Lazy-invalidation flag for shell color fill mode. Set true on any cache clear; checked by the canvas fill renderer.</summary>
         public bool ShellColorKeyCacheDirty = true;
         public bool PostResetColoring;
 
         // ── Pipeline state ──
-        public bool HasRepack, HasTransfer;
+        /// <summary>True after successful UV2 repack of the source LOD. Enables the Transfer tab and affects <see cref="DMesh"/> selection. Reset on Refresh or ResetPipelineState.</summary>
+        public bool HasRepack;
+        /// <summary>True after successful UV2 transfer to target LODs. Enables the Apply button. Reset on Refresh or ResetPipelineState.</summary>
+        public bool HasTransfer;
 
         // ── Events ──
         public event Action OnMeshEntriesChanged;
@@ -145,7 +159,11 @@ namespace LightmapUvTool
             return keys;
         }
 
-        /// <summary>Returns the display mesh for a MeshEntry depending on pipeline state.</summary>
+        /// <summary>
+        /// Returns the display mesh for a MeshEntry depending on pipeline state.
+        /// Priority: repackedMesh for source LOD when viewing UV2, transferredMesh
+        /// for target LODs when viewing UV2, otherwise originalMesh.
+        /// </summary>
         public Mesh DMesh(MeshEntry e)
         {
             if (e.lodIndex == SourceLodIndex && e.repackedMesh != null && PreviewUvChannel == 1) return e.repackedMesh;

@@ -60,6 +60,9 @@ namespace LightmapUvTool
             new List<GroupedShellTransfer.OverlapSourceHint>();
 
         // ── Preview ──
+        // Three mutually-exclusive preview modes. Only one should be active at a time.
+        // lightmapBackups stores original renderer materials for restoration when
+        // lightmap preview is active.
         bool checkerEnabled, shellColorPreviewEnabled;
         readonly ShellColorModelPreview.PreviewShellCache shellColorPreviewCache =
             new ShellColorModelPreview.PreviewShellCache();
@@ -1193,6 +1196,8 @@ namespace LightmapUvTool
         void ResetWorkingCopies()
         {
             RestoreAllPreviews();
+            // Destroy all working mesh copies and restore fbxMesh on MeshFilters.
+            // Does NOT delete sidecar assets — use ResetUv2FromFbx for that.
             foreach (var e in ctx.MeshEntries)
             {
                 // Restore original mesh on MeshFilter before destroying working copies
@@ -1216,6 +1221,10 @@ namespace LightmapUvTool
             requestRepaint?.Invoke();
         }
 
+        /// <summary>
+        /// Deletes sidecar assets (.uv2data) and reimports FBX files to restore
+        /// original UV2 state. Triggers a full Refresh + OnRefresh cycle.
+        /// </summary>
         void ResetUv2FromFbx()
         {
             if (ctx.LodGroup == null) return;
@@ -1284,6 +1293,10 @@ namespace LightmapUvTool
             requestRepaint?.Invoke();
         }
 
+        /// <summary>
+        /// Restores all three preview systems (checker, shell color, lightmap)
+        /// and resets their flags. Safe to call even if no preview is active.
+        /// </summary>
         void RestoreAllPreviews()
         {
             // Restore checker (may be activated from tool or from UvToolHub)
