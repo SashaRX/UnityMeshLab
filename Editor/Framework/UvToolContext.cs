@@ -82,6 +82,35 @@ namespace LightmapUvTool
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
 
+        /// <summary>
+        /// Remove LOD slots whose renderers are all null or empty.
+        /// Also strips null renderers from remaining slots.
+        /// </summary>
+        public static bool CompactLodArray(LODGroup lodGroup)
+        {
+            if (lodGroup == null) return false;
+            var lods = lodGroup.GetLODs();
+            var compacted = new List<LOD>();
+            bool changed = false;
+            foreach (var lod in lods)
+            {
+                if (lod.renderers == null || lod.renderers.Length == 0)
+                { changed = true; continue; }
+                var valid = lod.renderers.Where(r => r != null).ToArray();
+                if (valid.Length == 0)
+                { changed = true; continue; }
+                if (valid.Length != lod.renderers.Length) changed = true;
+                compacted.Add(new LOD(lod.screenRelativeTransitionHeight, valid));
+            }
+            if (changed)
+            {
+                Undo.RecordObject(lodGroup, "Compact LOD Array");
+                lodGroup.SetLODs(compacted.ToArray());
+                UvtLog.Info($"[Context] Compacted LOD array: {lods.Length} → {compacted.Count} slots.");
+            }
+            return changed;
+        }
+
         public void Refresh(LODGroup lodGroup)
         {
             MeshEntries.Clear();
@@ -98,6 +127,7 @@ namespace LightmapUvTool
             LodGroup = lodGroup;
             if (LodGroup == null) return;
 
+            CompactLodArray(LodGroup);
             var lods = LodGroup.GetLODs();
             for (int li = 0; li < lods.Length; li++)
             {
