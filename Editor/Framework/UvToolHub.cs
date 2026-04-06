@@ -169,6 +169,7 @@ namespace LightmapUvTool
                     {
                         if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
                             ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
+                        ctx.LodGroup.ForceLOD(-1);
                         RestoreWorkingMeshes();
                         ctx.Refresh(null);
                         _cachedLodCount = 0;
