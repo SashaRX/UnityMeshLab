@@ -393,25 +393,44 @@ namespace LightmapUvTool
 
             // Match trailing LOD suffix: _LOD0, -LOD1, LOD2, etc.
             var m = Regex.Match(go.name, @"^(.+?)([_\-\s]*)LOD(\d+)$", RegexOptions.IgnoreCase);
-            if (!m.Success) return null;
-
-            string baseName = m.Groups[1].Value;
-            string separator = m.Groups[2].Value;
-
-            var parent = go.transform.parent;
-            if (parent == null) return null; // Root-level objects need a common parent
-
-            var results = new List<(GameObject, int)>();
-            for (int i = 0; i < parent.childCount; i++)
+            if (m.Success)
             {
-                var child = parent.GetChild(i).gameObject;
-                var cm = Regex.Match(child.name, @"^(.+?)[_\-\s]*LOD(\d+)$", RegexOptions.IgnoreCase);
-                if (cm.Success && string.Equals(cm.Groups[1].Value, baseName, System.StringComparison.OrdinalIgnoreCase))
-                    results.Add((child, int.Parse(cm.Groups[2].Value)));
+                // Selected object has LOD suffix — search siblings
+                string baseName = m.Groups[1].Value;
+                var parent = go.transform.parent;
+                if (parent == null) return null;
+
+                var results = new List<(GameObject, int)>();
+                for (int i = 0; i < parent.childCount; i++)
+                {
+                    var child = parent.GetChild(i).gameObject;
+                    var cm = Regex.Match(child.name, @"^(.+?)[_\-\s]*LOD(\d+)$", RegexOptions.IgnoreCase);
+                    if (cm.Success && string.Equals(cm.Groups[1].Value, baseName, System.StringComparison.OrdinalIgnoreCase))
+                        results.Add((child, int.Parse(cm.Groups[2].Value)));
+                }
+
+                results.Sort((a, b) => a.Item2.CompareTo(b.Item2));
+                return results.Count > 0 ? results : null;
             }
 
-            results.Sort((a, b) => a.Item2.CompareTo(b.Item2));
-            return results.Count > 0 ? results : null;
+            // Selected object does NOT have LOD suffix — search its children
+            // Handles prefab pattern: Parent (Pallet_13) → Children (Pallet_LOD0, Pallet_LOD1, ...)
+            var childResults = new List<(GameObject, int)>();
+            for (int i = 0; i < go.transform.childCount; i++)
+            {
+                var child = go.transform.GetChild(i).gameObject;
+                var cm = Regex.Match(child.name, @"^(.+?)[_\-\s]*LOD(\d+)$", RegexOptions.IgnoreCase);
+                if (cm.Success)
+                    childResults.Add((child, int.Parse(cm.Groups[2].Value)));
+            }
+
+            if (childResults.Count > 0)
+            {
+                childResults.Sort((a, b) => a.Item2.CompareTo(b.Item2));
+                return childResults;
+            }
+
+            return null;
         }
 
         void CreateLodGroup(List<(GameObject go, int lodIndex)> siblings)
