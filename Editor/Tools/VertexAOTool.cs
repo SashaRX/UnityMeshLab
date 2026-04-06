@@ -49,22 +49,26 @@ namespace LightmapUvTool
         string TargetChannelName => channelTypeNames[channelType] + " " + (channelType == 0 ? colorCompNames : uvCompNames)[channelComp];
 
         // ── Post-processing ──
-        int   blurMode = 0;  // 0=Topology, 1=3D Spatial
-        static readonly string[] blurModeNames = { "Topology", "3D Spatial" };
-        int   blurIterations = 0;
-        float blurStrength   = 0.5f;
-        bool  blurCrossHardEdges = true;
-        bool  blurCrossUvSeams   = true;
-        float blur3DRadius = 0.1f;
-        float ppBrightness = 0f;   // -1..1
-        float ppContrast   = 1f;   // 0..3
-        float ppMinAO      = 0f;   // 0..1
-        bool  faceAreaCorrection = false;
+        // Topology blur
+        int   topoBlurIter = 0;
+        float topoBlurStr  = 0.5f;
+        bool  topoCrossHardEdges = true;
+        bool  topoCrossUvSeams   = true;
+        // 3D Spatial blur
+        int   spatialBlurIter = 0;
+        float spatialBlurStr  = 0.5f;
+        float spatialBlurRadius = 0.1f;
+        // Face-area correction + levels
+        float faceAreaStrength = 0f;
+        float ppBrightness = 0f;
+        float ppContrast   = 1f;
+        // Bake settings
         bool  backfaceCulling = true;
 
         // ── Results ──
-        Dictionary<Mesh, float[]> bakedRawAO;    // raw bake result (before blur)
-        Dictionary<Mesh, float[]> bakedFinalAO;   // after blur
+        Dictionary<Mesh, float[]> bakedRawAO;       // raw vertex AO (no face-area fix)
+        Dictionary<Mesh, float[]> bakedFaceAreaAO;  // face-area corrected AO
+        Dictionary<Mesh, float[]> bakedFinalAO;     // after blend + blur + brightness/contrast
         float bakeTimeSeconds;
         int   bakedVertexCount;
 
@@ -180,11 +184,8 @@ namespace LightmapUvTool
 
             EditorGUILayout.Space(4);
             backfaceCulling = EditorGUILayout.Toggle(
-                new GUIContent("Backface Culling", "Ignore hits on back side of triangles. Reduces false occlusion on thin walls and single-sided geometry."),
+                new GUIContent("Backface Culling", "Ignore hits on back side of triangles. Reduces false occlusion on thin walls."),
                 backfaceCulling);
-            faceAreaCorrection = EditorGUILayout.Toggle(
-                new GUIContent("Face-Area Fix", "Fix large flat polygons where all vertices are in occlusion but the surface is open. Enable only for low-poly meshes with large quads."),
-                faceAreaCorrection);
 
             EditorGUILayout.Space(8);
 
@@ -211,40 +212,53 @@ namespace LightmapUvTool
                 EditorGUILayout.Space(4);
                 EditorGUILayout.LabelField("Post-Processing", EditorStyles.boldLabel);
                 EditorGUI.BeginChangeCheck();
-                blurMode = EditorGUILayout.Popup(
-                    new GUIContent("Blur Mode", "Topology = mesh edges. 3D Spatial = distance in 3D, ignores topology/seams/meshes."),
-                    blurMode, blurModeNames);
-                blurIterations = EditorGUILayout.IntSlider(
-                    new GUIContent("Blur", "Smooth AO. More iterations = softer result."),
-                    blurIterations, 0, 10);
-                blurStrength = EditorGUILayout.Slider(
-                    new GUIContent("Strength", "Blend factor per iteration. 1 = full neighbor average."),
-                    blurStrength, 0f, 1f);
-                if (blurMode == 0)
+
+                // Face-area correction blend
+                faceAreaStrength = EditorGUILayout.Slider(
+                    new GUIContent("Face-Area Fix", "Blend raw AO with face-area corrected. Fixes black polygons with open surfaces."),
+                    faceAreaStrength, 0f, 1f);
+
+                // Topology blur
+                EditorGUILayout.Space(2);
+                topoBlurIter = EditorGUILayout.IntSlider(
+                    new GUIContent("Topo Blur", "Topology blur along mesh edges."),
+                    topoBlurIter, 0, 10);
+                if (topoBlurIter > 0)
                 {
-                    blurCrossHardEdges = EditorGUILayout.Toggle(
-                        new GUIContent("Cross Hard Edges", "Blur across hard edges (different normals)."),
-                        blurCrossHardEdges);
-                    blurCrossUvSeams = EditorGUILayout.Toggle(
-                        new GUIContent("Cross UV Seams", "Blur across UV shell boundaries."),
-                        blurCrossUvSeams);
+                    topoBlurStr = EditorGUILayout.Slider(
+                        new GUIContent("  Strength", "Blend factor per iteration."),
+                        topoBlurStr, 0f, 1f);
+                    topoCrossHardEdges = EditorGUILayout.Toggle(
+                        new GUIContent("  Cross Hard Edges", "Blur across hard edges."),
+                        topoCrossHardEdges);
+                    topoCrossUvSeams = EditorGUILayout.Toggle(
+                        new GUIContent("  Cross UV Seams", "Blur across UV shell boundaries."),
+                        topoCrossUvSeams);
                 }
-                else
+
+                // 3D Spatial blur
+                EditorGUILayout.Space(2);
+                spatialBlurIter = EditorGUILayout.IntSlider(
+                    new GUIContent("3D Blur", "3D spatial blur — ignores topology, crosses all seams."),
+                    spatialBlurIter, 0, 10);
+                if (spatialBlurIter > 0)
                 {
-                    blur3DRadius = EditorGUILayout.Slider(
-                        new GUIContent("Radius", "3D search radius. Larger = more smoothing, slower."),
-                        blur3DRadius, 0.01f, 2f);
+                    spatialBlurStr = EditorGUILayout.Slider(
+                        new GUIContent("  Strength", "Blend factor per iteration."),
+                        spatialBlurStr, 0f, 1f);
+                    spatialBlurRadius = EditorGUILayout.Slider(
+                        new GUIContent("  Radius", "3D search radius in world units."),
+                        spatialBlurRadius, 0.01f, 2f);
                 }
-                EditorGUILayout.Space(4);
+
+                // Levels
+                EditorGUILayout.Space(2);
                 ppBrightness = EditorGUILayout.Slider(
                     new GUIContent("Brightness", "Shift AO values. + lighter, - darker."),
                     ppBrightness, -1f, 1f);
                 ppContrast = EditorGUILayout.Slider(
                     new GUIContent("Contrast", "AO contrast around 0.5. >1 = sharper, <1 = flatter."),
                     ppContrast, 0f, 3f);
-                ppMinAO = EditorGUILayout.Slider(
-                    new GUIContent("Min AO", "Minimum AO value. Prevents fully black areas in enclosed spaces."),
-                    ppMinAO, 0f, 1f);
                 if (EditorGUI.EndChangeCheck())
                     ApplyBlur();
 
@@ -310,25 +324,26 @@ namespace LightmapUvTool
                 intensity       = intensity,
                 groundPlane     = groundPlane,
                 groundOffset    = groundOffset,
-                faceAreaCorrection = faceAreaCorrection,
+                faceAreaCorrection = false, // raw first
                 backfaceCulling = backfaceCulling
             };
 
             var sw = Stopwatch.StartNew();
             bakedRawAO = VertexAOBaker.BakeMultiMesh(meshList, settings);
+
+            // Compute face-area correction from raw AO
+            settings.faceAreaCorrection = true;
+            bakedFaceAreaAO = VertexAOBaker.BakeMultiMesh(meshList, settings);
             sw.Stop();
             bakeTimeSeconds = (float)sw.Elapsed.TotalSeconds;
 
-            // Apply initial blur
-            bakedFinalAO = new Dictionary<Mesh, float[]>();
+            // Count vertices
             bakedVertexCount = 0;
             foreach (var kvp in bakedRawAO)
-            {
-                bakedFinalAO[kvp.Key] = (float[])kvp.Value.Clone();
                 bakedVertexCount += kvp.Value.Length;
-            }
-            if (blurIterations > 0)
-                ApplyBlurInternal();
+
+            // Apply post-processing chain
+            ApplyBlurInternal();
 
             int lodCount = entries.Select(e => e.lodIndex).Distinct().Count();
             UvtLog.Info($"[Vertex AO] Baked {bakedVertexCount} vertices across {lodCount} LOD(s) in {bakeTimeSeconds:F1}s");
@@ -357,50 +372,63 @@ namespace LightmapUvTool
 
         void ApplyBlurInternal()
         {
-            if (bakedFinalAO == null) return;
+            if (bakedRawAO == null) return;
 
-            // Blur
-            if (blurIterations > 0)
+            // Start from raw or face-area-blended base
+            bakedFinalAO = new Dictionary<Mesh, float[]>();
+            foreach (var mesh in bakedRawAO.Keys)
             {
-                foreach (var mesh in bakedFinalAO.Keys.ToList())
+                var raw = bakedRawAO[mesh];
+                if (faceAreaStrength > 0f && bakedFaceAreaAO != null && bakedFaceAreaAO.TryGetValue(mesh, out var faa))
                 {
-                    if (blurMode == 1)
-                    {
-                        // 3D Spatial blur — ignores topology
-                        bakedFinalAO[mesh] = VertexAOBaker.BlurAO3D(
-                            bakedFinalAO[mesh], mesh.vertices,
-                            blurIterations, blurStrength, blur3DRadius);
-                    }
-                    else
-                    {
-                        // Topology blur — follows mesh edges
-                        var uv0List = new List<Vector2>();
-                        mesh.GetUVs(0, uv0List);
-                        var uv0Arr = uv0List.Count == mesh.vertexCount ? uv0List.ToArray() : null;
-
-                        bakedFinalAO[mesh] = VertexAOBaker.BlurAO(
-                            bakedFinalAO[mesh], mesh.triangles, mesh.vertexCount,
-                            blurIterations, blurStrength,
-                            mesh.vertices, mesh.normals, uv0Arr,
-                            blurCrossHardEdges, blurCrossUvSeams);
-                    }
+                    var blended = new float[raw.Length];
+                    for (int i = 0; i < raw.Length; i++)
+                        blended[i] = Mathf.Lerp(raw[i], faa[i], faceAreaStrength);
+                    bakedFinalAO[mesh] = blended;
+                }
+                else
+                {
+                    bakedFinalAO[mesh] = (float[])raw.Clone();
                 }
             }
 
-            // Brightness / Contrast / Min AO
-            if (ppBrightness != 0f || ppContrast != 1f || ppMinAO > 0f)
+            // 1. Topology blur
+            if (topoBlurIter > 0)
+            {
+                foreach (var mesh in bakedFinalAO.Keys.ToList())
+                {
+                    var uv0List = new List<Vector2>();
+                    mesh.GetUVs(0, uv0List);
+                    var uv0Arr = uv0List.Count == mesh.vertexCount ? uv0List.ToArray() : null;
+
+                    bakedFinalAO[mesh] = VertexAOBaker.BlurAO(
+                        bakedFinalAO[mesh], mesh.triangles, mesh.vertexCount,
+                        topoBlurIter, topoBlurStr,
+                        mesh.vertices, mesh.normals, uv0Arr,
+                        topoCrossHardEdges, topoCrossUvSeams);
+                }
+            }
+
+            // 2. 3D Spatial blur (stacks on top of topology blur)
+            if (spatialBlurIter > 0)
+            {
+                foreach (var mesh in bakedFinalAO.Keys.ToList())
+                {
+                    bakedFinalAO[mesh] = VertexAOBaker.BlurAO3D(
+                        bakedFinalAO[mesh], mesh.vertices,
+                        spatialBlurIter, spatialBlurStr, spatialBlurRadius);
+                }
+            }
+
+            // 3. Brightness / Contrast
+            if (ppBrightness != 0f || ppContrast != 1f)
             {
                 foreach (var mesh in bakedFinalAO.Keys.ToList())
                 {
                     var ao = bakedFinalAO[mesh];
                     for (int i = 0; i < ao.Length; i++)
                     {
-                        float v = ao[i];
-                        // Min AO: remap [0,1] → [minAO,1]
-                        if (ppMinAO > 0f)
-                            v = ppMinAO + v * (1f - ppMinAO);
-                        // Contrast around 0.5 midpoint, then brightness offset
-                        v = (v - 0.5f) * ppContrast + 0.5f + ppBrightness;
+                        float v = (ao[i] - 0.5f) * ppContrast + 0.5f + ppBrightness;
                         ao[i] = Mathf.Clamp01(v);
                     }
                 }
