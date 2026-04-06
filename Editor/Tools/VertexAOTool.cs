@@ -108,6 +108,24 @@ namespace LightmapUvTool
                 return;
             }
 
+            // Bake mode indicator
+            bool gpuAvailable = SystemInfo.supportsComputeShaders;
+            if (gpuAvailable)
+            {
+                EditorGUILayout.HelpBox(
+                    "GPU mode (" + SystemInfo.graphicsDeviceType + ") — depth-map hemisphere sampling via compute shader.",
+                    MessageType.None);
+            }
+            else
+            {
+                EditorGUILayout.HelpBox(
+                    "CPU mode (" + SystemInfo.graphicsDeviceType + " — no compute support). " +
+                    "Switch to DX11/DX12/Vulkan/Metal for GPU acceleration.",
+                    MessageType.Warning);
+            }
+
+            EditorGUILayout.Space(4);
+
             // Target channel — two combo boxes
             EditorGUILayout.BeginHorizontal();
             EditorGUILayout.PrefixLabel(new GUIContent("Target", "Channel to store AO values."));
@@ -123,9 +141,12 @@ namespace LightmapUvTool
             sampleCountIndex = EditorGUILayout.Popup(
                 new GUIContent("Sample Count", "Number of hemisphere directions to sample. Higher = smoother AO, slower bake."),
                 sampleCountIndex, sampleLabels);
-            resolutionIndex = EditorGUILayout.Popup(
-                new GUIContent("Resolution", "Depth map resolution per sample. Higher = sharper shadow edges."),
-                resolutionIndex, resLabels);
+            if (gpuAvailable)
+            {
+                resolutionIndex = EditorGUILayout.Popup(
+                    new GUIContent("Resolution", "Depth map resolution per sample. Higher = sharper shadow edges. GPU only."),
+                    resolutionIndex, resLabels);
+            }
             maxRadius = EditorGUILayout.Slider(
                 new GUIContent("Radius", "Maximum occlusion distance. Objects beyond this radius don't contribute to AO."),
                 maxRadius, 0.1f, 100f);
