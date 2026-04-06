@@ -25,6 +25,7 @@ namespace LightmapUvTool
         float sideW = 300f;
         bool sideDragging;
         Vector2 sideScroll;
+        int _cachedLodCount;
 
         // ── Selection tracking ──
         string selectedSidecarPath;
@@ -143,6 +144,7 @@ namespace LightmapUvTool
                     if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
                         ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
                     ctx.Refresh(lg);
+                    _cachedLodCount = ctx.LodCount;
                     ActiveTool?.OnRefresh();
                 }
             }
@@ -157,6 +159,15 @@ namespace LightmapUvTool
             {
                 EditorGUILayout.HelpBox("No UV tools found. Ensure IUvTool implementations exist.", MessageType.Warning);
                 return;
+            }
+
+            // Detect LODGroup structural changes (e.g. LOD deleted externally)
+            if (ctx.LodGroup != null && ctx.LodCount != _cachedLodCount)
+            {
+                ctx.Refresh(ctx.LodGroup);
+                _cachedLodCount = ctx.LodCount;
+                ctx.PreviewLod = Mathf.Clamp(ctx.PreviewLod, 0, Mathf.Max(0, ctx.LodCount - 1));
+                ActiveTool?.OnRefresh();
             }
 
             DrawHubToolbar();
