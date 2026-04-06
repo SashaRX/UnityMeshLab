@@ -857,6 +857,8 @@ namespace LightmapUvTool
             }
         }
 
+        public void ExportFbxPublic(bool overwriteSource) => ExportFbx(overwriteSource);
+
         void ExportFbx(bool overwriteSource)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
