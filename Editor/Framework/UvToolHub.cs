@@ -25,6 +25,11 @@ namespace LightmapUvTool
         float sideW = 300f;
         bool sideDragging;
         Vector2 sideScroll;
+        int _cachedLodCount;
+        int _checkerUvChannel = 1;
+        bool _checkerColorMode;
+        bool _checkerShowR = true;
+        bool _checkerShowG = true;
 
         // ── Selection tracking ──
         string selectedSidecarPath;
@@ -143,6 +148,7 @@ namespace LightmapUvTool
                     if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
                         ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
                     ctx.Refresh(lg);
+                    _cachedLodCount = ctx.LodCount;
                     ActiveTool?.OnRefresh();
                 }
             }
@@ -157,6 +163,15 @@ namespace LightmapUvTool
             {
                 EditorGUILayout.HelpBox("No UV tools found. Ensure IUvTool implementations exist.", MessageType.Warning);
                 return;
+            }
+
+            // Detect LODGroup structural changes (e.g. LOD deleted externally)
+            if (ctx.LodGroup != null && ctx.LodCount != _cachedLodCount)
+            {
+                ctx.Refresh(ctx.LodGroup);
+                _cachedLodCount = ctx.LodCount;
+                ctx.PreviewLod = Mathf.Clamp(ctx.PreviewLod, 0, Mathf.Max(0, ctx.LodCount - 1));
+                ActiveTool?.OnRefresh();
             }
 
             DrawHubToolbar();
@@ -259,7 +274,22 @@ namespace LightmapUvTool
                 GUILayout.Space(8);
                 var sep = GUILayoutUtility.GetRect(1, 18, GUILayout.Width(1));
                 EditorGUI.DrawRect(sep, new Color(.5f, .5f, .5f, .6f));
-                GUILayout.Space(8);
+                GUILayout.Space(4);
+
+                // ── LOD tri count ──
+                int lodTris = 0;
+                foreach (var e in ctx.ForLod(ctx.PreviewLod))
+                {
+                    Mesh m = e.repackedMesh ?? e.originalMesh ?? e.fbxMesh;
+                    if (m != null) lodTris += m.triangles.Length / 3;
+                }
+                var triStyle = new GUIStyle(EditorStyles.toolbarButton) {
+                    normal = { textColor = new Color(.3f, 1f, .5f) },
+                    fontStyle = FontStyle.Bold,
+                    alignment = TextAnchor.MiddleCenter
+                };
+                GUILayout.Label("▲ " + lodTris.ToString("N0"), triStyle, GUILayout.Width(72));
+                GUILayout.Space(4);
             }
 
             // ── UV channel toggle ──
@@ -395,6 +425,76 @@ namespace LightmapUvTool
                 GUI.backgroundColor = bg2;
                 if (newMode != canvas.CurrentPreviewMode)
                     ApplyPreviewMode(newMode);
+            }
+
+            // ── Checker UV channel selector + color mode ──
+            if (canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Checker)
+            {
+                GUILayout.Space(2);
+                var bgCh = GUI.backgroundColor;
+                for (int ch = 0; ch < 8; ch++)
+                {
+                    // Check if any mesh has data on this channel
+                    bool hasData = false;
+                    foreach (var e in ctx.MeshEntries)
+                    {
+                        if (!e.include) continue;
+                        Mesh m = e.transferredMesh ?? e.repackedMesh ?? e.originalMesh ?? e.fbxMesh;
+                        if (m == null) continue;
+                        var test = new List<Vector2>();
+                        m.GetUVs(ch, test);
+                        if (test.Count > 0) { hasData = true; break; }
+                    }
+                    if (!hasData) continue;
+
+                    bool active = _checkerUvChannel == ch;
+                    GUI.backgroundColor = active ? new Color(1f, .45f, .3f) : new Color(.65f, .65f, .7f);
+                    if (GUILayout.Button("UV" + ch, EditorStyles.toolbarButton, GUILayout.Width(30)))
+                    {
+                        if (!active)
+                        {
+                            _checkerUvChannel = ch;
+                            _checkerColorMode = ch >= 2;
+                            ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
+                            ApplyPreviewMode(UvCanvasView.PreviewMode.Checker);
+                        }
+                    }
+                }
+                GUI.backgroundColor = bgCh;
+
+                GUILayout.Space(4);
+
+                // Color/Checker mode toggle
+                GUI.backgroundColor = _checkerColorMode ? new Color(.3f, .9f, .5f) : new Color(.65f, .65f, .7f);
+                if (GUILayout.Button(_checkerColorMode ? "Color" : "Grid", EditorStyles.toolbarButton, GUILayout.Width(38)))
+                {
+                    _checkerColorMode = !_checkerColorMode;
+                    ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
+                    ApplyPreviewMode(UvCanvasView.PreviewMode.Checker);
+                }
+                GUI.backgroundColor = bgCh;
+
+                // R/G channel mask (only in color mode)
+                if (_checkerColorMode)
+                {
+                    GUI.backgroundColor = _checkerShowR ? new Color(1f, .3f, .3f) : new Color(.4f, .4f, .4f);
+                    if (GUILayout.Button("R", EditorStyles.toolbarButton, GUILayout.Width(20)))
+                    {
+                        _checkerShowR = !_checkerShowR;
+                        if (!_checkerShowR && !_checkerShowG) _checkerShowG = true;
+                        ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
+                        ApplyPreviewMode(UvCanvasView.PreviewMode.Checker);
+                    }
+                    GUI.backgroundColor = _checkerShowG ? new Color(.3f, 1f, .3f) : new Color(.4f, .4f, .4f);
+                    if (GUILayout.Button("G", EditorStyles.toolbarButton, GUILayout.Width(20)))
+                    {
+                        _checkerShowG = !_checkerShowG;
+                        if (!_checkerShowR && !_checkerShowG) _checkerShowR = true;
+                        ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
+                        ApplyPreviewMode(UvCanvasView.PreviewMode.Checker);
+                    }
+                    GUI.backgroundColor = bgCh;
+                }
             }
 
             // ── Lightmap exposure slider ──
@@ -619,9 +719,9 @@ namespace LightmapUvTool
                             Mesh fallback = e.originalMesh ?? e.fbxMesh;
                             if (fallback != null)
                             {
-                                var testUv2 = new List<Vector2>();
-                                fallback.GetUVs(1, testUv2);
-                                if (testUv2.Count > 0) uvMesh = fallback;
+                                var testUv = new List<Vector2>();
+                                fallback.GetUVs(_checkerUvChannel, testUv);
+                                if (testUv.Count > 0) uvMesh = fallback;
                             }
                         }
                         if (uvMesh != null) checkerEntries.Add((e.renderer, uvMesh));
@@ -629,12 +729,13 @@ namespace LightmapUvTool
                     if (checkerEntries.Count > 0)
                     {
                         canvas.CheckerEnabled = true;
-                        CheckerTexturePreview.Apply(checkerEntries);
+                        CheckerTexturePreview.Apply(checkerEntries, _checkerUvChannel,
+                            _checkerColorMode, _checkerShowR, _checkerShowG);
                     }
                     else
                     {
                         canvas.CurrentPreviewMode = UvCanvasView.PreviewMode.Off;
-                        UvtLog.Warn("[Checker] No meshes with UV2.");
+                        UvtLog.Warn($"[Checker] No meshes with UV data on channel {_checkerUvChannel}.");
                     }
                     break;
 

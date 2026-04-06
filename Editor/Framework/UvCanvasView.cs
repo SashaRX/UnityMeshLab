@@ -854,6 +854,42 @@ namespace LightmapUvTool
             return tiles;
         }
 
+        /// <summary>
+        /// Compute a UV bounding-box hash for the shell — stable across LODs because
+        /// UV2 is transferred from source, and the bbox corners (min/max) are determined
+        /// by extreme vertices which survive simplification, unlike the centroid which
+        /// shifts when interior vertices are removed non-uniformly.
+        /// </summary>
+        static int ShellBBoxHash(UvShell shell, Mesh mesh, int uvChannel = 1)
+        {
+            if (shell?.vertexIndices == null || shell.vertexIndices.Count == 0 || mesh == null)
+                return shell?.shellId ?? 0;
+            var uvs = new List<Vector2>();
+            mesh.GetUVs(uvChannel, uvs);
+            if (uvs.Count != mesh.vertexCount)
+            {
+                mesh.GetUVs(0, uvs);
+                if (uvs.Count != mesh.vertexCount) return shell.shellId;
+            }
+            Vector2 mn = new Vector2(float.MaxValue, float.MaxValue);
+            Vector2 mx = new Vector2(float.MinValue, float.MinValue);
+            foreach (int vi in shell.vertexIndices)
+            {
+                if (vi < 0 || vi >= uvs.Count) continue;
+                var uv = uvs[vi];
+                if (uv.x < mn.x) mn.x = uv.x; if (uv.y < mn.y) mn.y = uv.y;
+                if (uv.x > mx.x) mx.x = uv.x; if (uv.y > mx.y) mx.y = uv.y;
+            }
+            // Hash bbox center — quantize at 100x for robustness
+            Vector2 center = (mn + mx) * 0.5f;
+            int qx = Mathf.RoundToInt(center.x * 100f);
+            int qy = Mathf.RoundToInt(center.y * 100f);
+            // Include bbox size to distinguish overlapping shells of different sizes
+            int qw = Mathf.RoundToInt((mx.x - mn.x) * 100f);
+            int qh = Mathf.RoundToInt((mx.y - mn.y) * 100f);
+            return Mathf.Abs((qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381));
+        }
+
         public int GetShellColorKey(UvToolContext ctx, UvShell shell, MeshEntry entry)
         {
             int meshId = 0;
@@ -861,48 +897,11 @@ namespace LightmapUvTool
             if (mesh != null) meshId = mesh.GetInstanceID();
             long cacheKey = ((long)meshId << 32) | (uint)shell.shellId;
             if (!ctx.ShellColorKeyCacheDirty && ctx.ShellColorKeyCache.TryGetValue(cacheKey, out int cc)) return cc;
-            int result;
-            if (ctx.PostResetColoring)
-            {
-                result = Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663) ^ 0x5F3759DF);
-                ctx.ShellColorKeyCache[cacheKey] = result;
-                return result;
-            }
-            var map = entry?.shellTransferResult?.vertexToSourceShell;
-            if (map != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
-            {
-                int bestKey = -1, bestCount = 0;
-                var freq = new Dictionary<int, int>();
-                foreach (int v in shell.vertexIndices)
-                {
-                    if (v < 0 || v >= map.Length) continue;
-                    int srcShell = map[v]; if (srcShell < 0) continue;
-                    freq.TryGetValue(srcShell, out int c2); c2++;
-                    freq[srcShell] = c2;
-                    if (c2 > bestCount || (c2 == bestCount && srcShell < bestKey)) { bestCount = c2; bestKey = srcShell; }
-                }
-                result = bestKey >= 0 ? bestKey : Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
-            }
-            else if (mesh != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
-            {
-                var (v2s, _) = GetUv0ShellMap(ctx, mesh);
-                if (v2s != null)
-                {
-                    int bestKey = -1, bestCount = 0;
-                    var freq = new Dictionary<int, int>();
-                    foreach (int v in shell.vertexIndices)
-                    {
-                        if (v < 0 || v >= v2s.Length) continue;
-                        int uv0Shell = v2s[v]; if (uv0Shell < 0) continue;
-                        freq.TryGetValue(uv0Shell, out int c2); c2++;
-                        freq[uv0Shell] = c2;
-                        if (c2 > bestCount || (c2 == bestCount && uv0Shell < bestKey)) { bestCount = c2; bestKey = uv0Shell; }
-                    }
-                    result = bestKey >= 0 ? bestKey : Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
-                }
-                else result = Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
-            }
-            else result = Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
+
+            // Always use UV bounding-box hash for maximum cross-LOD consistency.
+            // Previous strategies (shellTransferResult, UV0 shell map) produced
+            // extraction-order-dependent keys that changed between LODs.
+            int result = ShellBBoxHash(shell, mesh);
             ctx.ShellColorKeyCache[cacheKey] = result;
             return result;
         }

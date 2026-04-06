@@ -23,6 +23,14 @@ namespace LightmapUvTool
         /// </summary>
         internal static readonly HashSet<string> bypassPaths = new HashSet<string>();
 
+        /// <summary>
+        /// Paths where the FBX was overwritten with processed meshes (UV2 already baked in).
+        /// OnPreprocessModel still disables generateSecondaryUV etc. to preserve the baked UV2,
+        /// but OnPostprocessModel skips sidecar application to avoid corrupting the mesh
+        /// with stale remap data from the old topology.
+        /// </summary>
+        internal static readonly HashSet<string> fbxOverwritePaths = new HashSet<string>();
+
         struct ApplyStats
         {
             public int fbxVerts;              // vertex count from fresh FBX import
@@ -45,8 +53,9 @@ namespace LightmapUvTool
             if (bypassPaths.Contains(assetPath))
                 return;
 
+            bool isFbxOverwrite = fbxOverwritePaths.Contains(assetPath);
             string sidecarPath = Uv2DataAsset.GetSidecarPath(assetPath);
-            if (!System.IO.File.Exists(sidecarPath)) return;
+            if (!isFbxOverwrite && !System.IO.File.Exists(sidecarPath)) return;
 
             // Disable Unity's built-in lightmap UV generation — we provide our own UV2.
             // Unity's generator may split vertices along UV seams, changing vertex count
@@ -91,6 +100,14 @@ namespace LightmapUvTool
             if (bypassPaths.Remove(modelPath))
             {
                 UvtLog.Verbose($"[UV2 Postprocess] Bypassed '{modelPath}' (raw FBX mesh requested)");
+                return;
+            }
+
+            // FBX overwrite: UV2 is already baked into the FBX — skip sidecar application
+            // to avoid corrupting the mesh with stale remap data from the old topology.
+            if (fbxOverwritePaths.Remove(modelPath))
+            {
+                UvtLog.Info($"[UV2 Postprocess] Skipped sidecar for '{modelPath}' (FBX overwrite — UV2 already in file)");
                 return;
             }
 

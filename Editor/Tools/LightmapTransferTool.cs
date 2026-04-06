@@ -1030,6 +1030,11 @@ namespace LightmapUvTool
                 }
                 catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); }
                 finally { UnityEngine.Object.DestroyImmediate(tempRoot); }
+
+                // Prevent the sidecar postprocessor from applying stale UV2 remap data
+                // to the overwritten FBX — the UV2 is already baked into the exported mesh.
+                if (overwriteSource)
+                    Uv2AssetPostprocessor.fbxOverwritePaths.Add(sourceFbxPath);
             }
             AssetDatabase.Refresh();
 #endif

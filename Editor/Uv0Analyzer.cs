@@ -873,6 +873,33 @@ namespace LightmapUvTool
             var boneWeights = mesh.boneWeights;
             bool hasBW = boneWeights != null && boneWeights.Length == vertCount;
 
+            // Read UV channels 2-7 for interpolation during weld
+            const int UV_INTERP_START = 2;
+            const int UV_INTERP_END = 8;
+            var extraUvData = new List<Vector4>[UV_INTERP_END];
+            bool[] hasExtraUv = new bool[UV_INTERP_END];
+            for (int ch = UV_INTERP_START; ch < UV_INTERP_END; ch++)
+            {
+                var uvList = new List<Vector4>();
+                mesh.GetUVs(ch, uvList);
+                hasExtraUv[ch] = uvList.Count == vertCount;
+                extraUvData[ch] = hasExtraUv[ch] ? uvList : null;
+            }
+
+            // Build Union-Find group membership for UV2+ interpolation.
+            // groupMembers[root] = list of all original vertex indices in that group.
+            var groupMembers = new Dictionary<int, List<int>>();
+            for (int i = 0; i < vertCount; i++)
+            {
+                int root = Find(parent, i);
+                if (!groupMembers.TryGetValue(root, out var members))
+                {
+                    members = new List<int>();
+                    groupMembers[root] = members;
+                }
+                members.Add(i);
+            }
+
             var newVerts   = new Vector3[newVertCount];
             var newUv0     = new Vector2[newVertCount];
             Vector3[] newNormals  = hasNormals  ? new Vector3[newVertCount] : null;
@@ -880,18 +907,48 @@ namespace LightmapUvTool
             Vector2[] newUv1      = hasUv1      ? new Vector2[newVertCount] : null;
             Color[]   newColors   = hasColors   ? new Color[newVertCount]   : null;
             BoneWeight[] newBW    = hasBW       ? new BoneWeight[newVertCount] : null;
+            var newExtraUv = new List<Vector4>[UV_INTERP_END];
+            for (int ch = UV_INTERP_START; ch < UV_INTERP_END; ch++)
+                if (hasExtraUv[ch]) newExtraUv[ch] = new List<Vector4>(new Vector4[newVertCount]);
+
+            // Track which compact slots have been written (for averaging)
+            var slotWritten = new bool[newVertCount];
 
             for (int i = 0; i < vertCount; i++)
             {
                 int ni = compactMap[i];
                 if (ni < 0) continue;
-                newVerts[ni] = verts[i];
-                newUv0[ni]   = uv0[i];
-                if (hasNormals)  newNormals[ni]  = normals[i];
-                if (hasTangents) newTangents[ni] = tangents[i];
-                if (hasUv1)      newUv1[ni]      = uv1[i];
-                if (hasColors)   newColors[ni]   = colors[i];
-                if (hasBW)       newBW[ni]       = boneWeights[i];
+                if (!slotWritten[ni])
+                {
+                    // First vertex in this slot — copy UV0, UV1, and base attributes directly
+                    newVerts[ni] = verts[i];
+                    newUv0[ni]   = uv0[i];
+                    if (hasNormals)  newNormals[ni]  = normals[i];
+                    if (hasTangents) newTangents[ni] = tangents[i];
+                    if (hasUv1)      newUv1[ni]      = uv1[i];
+                    if (hasColors)   newColors[ni]   = colors[i];
+                    if (hasBW)       newBW[ni]       = boneWeights[i];
+
+                    // For UV2+: compute average across all members of the Union-Find group
+                    int root = Find(parent, i);
+                    var members = groupMembers[root];
+                    for (int ch = UV_INTERP_START; ch < UV_INTERP_END; ch++)
+                    {
+                        if (!hasExtraUv[ch]) continue;
+                        var srcUv = extraUvData[ch];
+                        Vector4 sum = Vector4.zero;
+                        int count = 0;
+                        for (int m = 0; m < members.Count; m++)
+                        {
+                            int mi = members[m];
+                            sum += srcUv[mi];
+                            count++;
+                        }
+                        newExtraUv[ch][ni] = count > 0 ? sum / count : srcUv[i];
+                    }
+
+                    slotWritten[ni] = true;
+                }
             }
 
             var result = new Mesh();
@@ -903,6 +960,8 @@ namespace LightmapUvTool
             if (hasUv1) result.SetUVs(1, newUv1);
             if (hasColors) result.colors = newColors;
             if (hasBW) result.boneWeights = newBW;
+            for (int ch = UV_INTERP_START; ch < UV_INTERP_END; ch++)
+                if (hasExtraUv[ch]) result.SetUVs(ch, newExtraUv[ch]);
 
             int subCount = mesh.subMeshCount;
             result.subMeshCount = subCount;

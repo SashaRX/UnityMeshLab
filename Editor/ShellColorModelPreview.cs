@@ -61,10 +61,37 @@ namespace LightmapUvTool
                 var triangleToShell = new int[faceCount];
                 for (int i = 0; i < triangleToShell.Length; i++) triangleToShell[i] = -1;
 
+                // Use UV bounding-box hash instead of shellId for stable colors across LODs.
+                // shellId is extraction-order dependent; bbox corners (min/max) are determined
+                // by extreme vertices which survive simplification, unlike centroids which
+                // shift when interior vertices are removed non-uniformly.
                 foreach (var shell in shells)
+                {
+                    Vector2 mn = new Vector2(float.MaxValue, float.MaxValue);
+                    Vector2 mx = new Vector2(float.MinValue, float.MinValue);
+                    if (shell.vertexIndices != null)
+                    {
+                        foreach (int vi in shell.vertexIndices)
+                        {
+                            if (vi >= 0 && vi < uv.Length)
+                            {
+                                var u = uv[vi];
+                                if (u.x < mn.x) mn.x = u.x; if (u.y < mn.y) mn.y = u.y;
+                                if (u.x > mx.x) mx.x = u.x; if (u.y > mx.y) mx.y = u.y;
+                            }
+                        }
+                    }
+                    Vector2 center = (mn + mx) * 0.5f;
+                    int qx = Mathf.RoundToInt(center.x * 100f);
+                    int qy = Mathf.RoundToInt(center.y * 100f);
+                    int qw = Mathf.RoundToInt((mx.x - mn.x) * 100f);
+                    int qh = Mathf.RoundToInt((mx.y - mn.y) * 100f);
+                    int stableKey = Mathf.Abs((qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381));
+
                     foreach (int faceIndex in shell.faceIndices)
                         if (faceIndex >= 0 && faceIndex < triangleToShell.Length)
-                            triangleToShell[faceIndex] = shell.shellId;
+                            triangleToShell[faceIndex] = stableKey;
+                }
 
                 return triangleToShell;
             }

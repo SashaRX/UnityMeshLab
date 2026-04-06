@@ -96,13 +96,22 @@ namespace LightmapUvTool
 
         /// <summary>
         /// Apply checker preview. Each entry = (renderer, meshWithUv2 or null to keep current).
+        /// uvChannel selects which TEXCOORD the shader reads (0-7, default 1 = UV2).
+        /// colorMode: true = display UV values as RGB color, false = checker texture.
+        /// showR/showG: channel mask for color mode.
         /// </summary>
-        public static void Apply(List<(Renderer renderer, Mesh meshWithUv2)> entries)
+        public static void Apply(List<(Renderer renderer, Mesh meshWithUv2)> entries,
+            int uvChannel = 1, bool colorMode = false, bool showR = true, bool showG = true)
         {
             if (isActive) Restore();
 
             EnsureAssets();
             backups.Clear();
+
+            checkerMat.SetFloat("_UVChannel", uvChannel);
+            checkerMat.SetFloat("_ColorMode", colorMode ? 1f : 0f);
+            checkerMat.SetFloat("_ShowR", showR ? 1f : 0f);
+            checkerMat.SetFloat("_ShowG", showG ? 1f : 0f);
 
             foreach (var (r, uvMesh) in entries)
             {
