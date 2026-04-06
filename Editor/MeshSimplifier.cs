@@ -268,7 +268,9 @@ namespace LightmapUvTool
 
             // ── Build output mesh ──
             var outMesh = new Mesh();
-            outMesh.indexFormat = sourceMesh.indexFormat;
+            outMesh.indexFormat = allOutPositions.Count > 65535
+                ? UnityEngine.Rendering.IndexFormat.UInt32
+                : sourceMesh.indexFormat;
             outMesh.name = sourceMesh.name;
 
             outMesh.SetVertices(allOutPositions);
