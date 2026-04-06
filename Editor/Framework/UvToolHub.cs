@@ -364,7 +364,7 @@ namespace LightmapUvTool
                 var newMode = (UvCanvasView.PreviewMode)EditorGUILayout.Popup((int)canvas.CurrentPreviewMode, previewModeLabels, EditorStyles.toolbarPopup, GUILayout.Width(80));
                 GUI.backgroundColor = bg2;
                 if (newMode != canvas.CurrentPreviewMode)
-                    canvas.CurrentPreviewMode = newMode;
+                    ApplyPreviewMode(newMode);
             }
 
             // ── Lightmap exposure slider ──
@@ -485,6 +485,63 @@ namespace LightmapUvTool
             canvas.ClearHoverState();
             if (ctx.LodGroup != null) ctx.LodGroup.ForceLOD(clamped);
             Repaint();
+        }
+
+        void ApplyPreviewMode(UvCanvasView.PreviewMode newMode)
+        {
+            // Turn off current preview
+            if (canvas.CheckerEnabled)
+            {
+                canvas.CheckerEnabled = false;
+                CheckerTexturePreview.Restore();
+            }
+            if (ShellColorModelPreview.IsActive)
+                ShellColorModelPreview.Restore();
+
+            canvas.CurrentPreviewMode = newMode;
+
+            switch (newMode)
+            {
+                case UvCanvasView.PreviewMode.Checker:
+                    var entries = new List<(Renderer renderer, Mesh meshWithUv2)>();
+                    foreach (var e in ctx.MeshEntries)
+                    {
+                        if (!e.include || e.renderer == null) continue;
+                        Mesh uvMesh = e.transferredMesh ?? e.repackedMesh;
+                        if (uvMesh == null)
+                        {
+                            Mesh fallback = e.originalMesh ?? e.fbxMesh;
+                            if (fallback != null)
+                            {
+                                var testUv2 = new List<Vector2>();
+                                fallback.GetUVs(1, testUv2);
+                                if (testUv2.Count > 0) uvMesh = fallback;
+                            }
+                        }
+                        if (uvMesh != null) entries.Add((e.renderer, uvMesh));
+                    }
+                    if (entries.Count > 0)
+                    {
+                        canvas.CheckerEnabled = true;
+                        CheckerTexturePreview.Apply(entries);
+                    }
+                    else
+                    {
+                        canvas.CurrentPreviewMode = UvCanvasView.PreviewMode.Off;
+                        UvtLog.Warn("[Checker] No meshes with UV2.");
+                    }
+                    break;
+
+                case UvCanvasView.PreviewMode.Shells3D:
+                    // Delegated to active tool's ToggleShellColorPreview if available
+                    UvtLog.Info("[Preview] 3D Shell coloring — use tool-specific preview.");
+                    break;
+
+                case UvCanvasView.PreviewMode.Off:
+                    break;
+            }
+            Repaint();
+            SceneView.RepaintAll();
         }
 
         void OnPreviewChannelChanged(int newChannel)
