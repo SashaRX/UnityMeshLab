@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEditor;
 
 namespace LightmapUvTool
