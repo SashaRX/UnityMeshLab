@@ -35,6 +35,7 @@ namespace LightmapUvTool
 
         // ── Results ──
         List<GeneratedLodInfo> lastResults = new List<GeneratedLodInfo>();
+        List<GameObject> generatedObjects = new List<GameObject>();
 
         struct GeneratedLodInfo
         {
@@ -53,7 +54,7 @@ namespace LightmapUvTool
         }
 
         public void OnDeactivate() { }
-        public void OnRefresh() { lastResults.Clear(); }
+        public void OnRefresh() { lastResults.Clear(); generatedObjects.Clear(); }
 
         public void OnDrawSidebar()
         {
@@ -220,14 +221,66 @@ namespace LightmapUvTool
                             EditorStyles.miniLabel);
                 }
 
-                // FBX export buttons are in the fixed sidebar footer
+                EditorGUILayout.Space(4);
+                var bgClear = GUI.backgroundColor;
+                GUI.backgroundColor = new Color(.9f, .3f, .3f);
+                if (GUILayout.Button("Clear Results", GUILayout.Height(20)))
+                    ClearGeneratedLods();
+                GUI.backgroundColor = bgClear;
             }
         }
 
 
+        void ClearGeneratedLods()
+        {
+            if (generatedObjects.Count == 0 && lastResults.Count == 0) return;
+
+            int undoGroup = Undo.GetCurrentGroup();
+
+            // Remove LOD slots that reference generated objects
+            if (ctx.LodGroup != null)
+            {
+                var lods = ctx.LodGroup.GetLODs();
+                var generatedSet = new HashSet<GameObject>();
+                foreach (var go in generatedObjects)
+                    if (go != null) generatedSet.Add(go);
+
+                var cleanedLods = new List<LOD>();
+                foreach (var lod in lods)
+                {
+                    if (lod.renderers == null || lod.renderers.Length == 0) continue;
+                    bool anyGenerated = false;
+                    foreach (var r in lod.renderers)
+                        if (r != null && generatedSet.Contains(r.gameObject))
+                        { anyGenerated = true; break; }
+                    if (!anyGenerated) cleanedLods.Add(lod);
+                }
+
+                if (cleanedLods.Count != lods.Length)
+                {
+                    Undo.RecordObject(ctx.LodGroup, "Clear Generated LODs");
+                    ctx.LodGroup.SetLODs(cleanedLods.ToArray());
+                }
+            }
+
+            // Destroy generated GameObjects (top-level ones destroy children too)
+            foreach (var go in generatedObjects)
+                if (go != null) Undo.DestroyObjectImmediate(go);
+
+            Undo.CollapseUndoOperations(undoGroup);
+
+            generatedObjects.Clear();
+            lastResults.Clear();
+
+            if (ctx.LodGroup != null)
+                ctx.Refresh(ctx.LodGroup);
+            requestRepaint?.Invoke();
+        }
+
         void ExecGenerateLods(int startLod)
         {
             if (ctx.LodGroup == null) return;
+            if (generatedObjects.Count > 0) ClearGeneratedLods();
             lastResults.Clear();
 
             var sourceMeshes = new List<(MeshEntry entry, Mesh mesh)>();
@@ -332,6 +385,7 @@ namespace LightmapUvTool
                             var mr = go.AddComponent<MeshRenderer>();
                             mr.sharedMaterials = entry.renderer.sharedMaterials;
                             Undo.RegisterCreatedObjectUndo(go, "Generate LOD");
+                            generatedObjects.Add(go);
                             lodRenderers.Add(mr);
                         }
                     }
