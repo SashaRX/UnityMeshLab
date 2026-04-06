@@ -944,16 +944,19 @@ namespace LightmapUvTool
                     ModelExporter.ExportObjects(exportPath, new UnityEngine.Object[] { tempRoot }, exportOptions);
                     UvtLog.Info("[FBX Export] Exported (binary) " + entries.Count + " mesh(es) -> " + exportPath);
 
-                    // Restore original .meta to preserve import settings and GUID
+                    // Restore original .meta and clean up .bak files
                     if (overwriteSource)
                     {
-                        string fullMeta = System.IO.Path.GetFullPath(sourceFbxPath) + ".meta";
-                        string metaBak = fullMeta + ".bak";
+                        string fullPath = System.IO.Path.GetFullPath(sourceFbxPath);
+                        string metaBak = fullPath + ".meta.bak";
                         if (System.IO.File.Exists(metaBak))
                         {
-                            System.IO.File.Copy(metaBak, fullMeta, true);
+                            System.IO.File.Copy(metaBak, fullPath + ".meta", true);
                             System.IO.File.Delete(metaBak);
                         }
+                        string fbxBak = fullPath + ".bak";
+                        if (System.IO.File.Exists(fbxBak))
+                            System.IO.File.Delete(fbxBak);
                     }
                 }
                 catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); }

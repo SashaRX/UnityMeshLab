@@ -80,10 +80,12 @@ namespace LightmapUvTool
             {
                 EditorGUILayout.HelpBox(
                     "Recommended workflow:\n" +
-                    "1. UV2 Transfer tab: Analyze → Weld → Repack → Transfer\n" +
-                    "2. LOD Gen tab: Generate new LOD levels\n" +
-                    "3. Export to FBX\n\n" +
-                    "You can also generate LODs from raw meshes without UV2 processing.",
+                    "1. UV2 Transfer: Analyze → Weld → Repack → Transfer\n" +
+                    "2. LOD Gen: Generate new LOD levels (uses repacked UV2)\n" +
+                    "3. Export FBX (Overwrite Source)\n\n" +
+                    "Important: Generate LODs BEFORE exporting FBX.\n" +
+                    "LODs are simplified from the repacked source mesh\n" +
+                    "which has the new UV2 lightmap coordinates.",
                     MessageType.Info);
             }
 
@@ -270,6 +272,11 @@ namespace LightmapUvTool
                         var r = MeshSimplifier.Simplify(srcMesh, settings);
                         if (!r.ok) { UvtLog.Error($"[GenerateLOD] Failed on {srcMesh.name}: {r.error}"); continue; }
 
+                        // Warn if error limit prevented reaching target ratio
+                        float actualRatio = srcMesh.triangles.Length > 0 ? (float)r.simplifiedTriCount / (srcMesh.triangles.Length / 3) : 1f;
+                        if (actualRatio > ratio * 1.5f)
+                            UvtLog.Warn($"[GenerateLOD] LOD{lodLevel}: target {ratio:P0} but got {actualRatio:P0} — increase Target Error to simplify further");
+
                         string baseName = entry.fbxMesh != null ? entry.fbxMesh.name : srcMesh.name;
                         baseName = System.Text.RegularExpressions.Regex.Replace(baseName, @"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$", "");
                         string meshName = baseName + "_LOD" + lodLevel;
@@ -397,6 +404,15 @@ namespace LightmapUvTool
                 tempRoot.name = fbxPrefab.name;
                 try
                 {
+                    // Remove existing children with same names to avoid duplicates
+                    var namesToAdd = new HashSet<string>(generated.Select(g => g.meshName));
+                    for (int i = tempRoot.transform.childCount - 1; i >= 0; i--)
+                    {
+                        var ch = tempRoot.transform.GetChild(i);
+                        if (namesToAdd.Contains(ch.name))
+                            UnityEngine.Object.DestroyImmediate(ch.gameObject);
+                    }
+
                     foreach (var (entry, genMesh, meshName) in generated)
                     {
                         var child = new GameObject(meshName);
@@ -422,13 +438,18 @@ namespace LightmapUvTool
 
                     if (addToSource)
                     {
-                        string metaBak = System.IO.Path.GetFullPath(sourceFbxPath) + ".meta.bak";
-                        string metaOrig = System.IO.Path.GetFullPath(sourceFbxPath) + ".meta";
+                        string fullPath = System.IO.Path.GetFullPath(sourceFbxPath);
+                        // Restore .meta
+                        string metaBak = fullPath + ".meta.bak";
                         if (System.IO.File.Exists(metaBak))
                         {
-                            System.IO.File.Copy(metaBak, metaOrig, true);
+                            System.IO.File.Copy(metaBak, fullPath + ".meta", true);
                             System.IO.File.Delete(metaBak);
                         }
+                        // Delete .fbx.bak to avoid Unity warning about orphan .meta
+                        string fbxBak = fullPath + ".bak";
+                        if (System.IO.File.Exists(fbxBak))
+                            System.IO.File.Delete(fbxBak);
                     }
                 }
                 catch (Exception ex) { UvtLog.Error("[FBX LOD Export] Failed: " + ex); }
