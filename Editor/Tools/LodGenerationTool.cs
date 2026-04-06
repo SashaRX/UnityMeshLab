@@ -202,14 +202,7 @@ namespace LightmapUvTool
             }
             if (sourceMeshes.Count == 0) { UvtLog.Error("[GenerateLOD] No source meshes found."); return; }
 
-            string savePath = ctx.PipeSettings.savePath;
-            if (string.IsNullOrEmpty(savePath)) savePath = "Assets/LightmapUvTool_Output";
-            if (!AssetDatabase.IsValidFolder(savePath))
-            {
-                var par = System.IO.Path.GetDirectoryName(savePath);
-                var fld = System.IO.Path.GetFileName(savePath);
-                if (!string.IsNullOrEmpty(par)) AssetDatabase.CreateFolder(par, fld);
-            }
+            // No .asset files — meshes live in memory, exported via FBX
 
             var lods = ctx.LodGroup.GetLODs();
             var newLods = new List<LOD>(lods);
@@ -252,9 +245,7 @@ namespace LightmapUvTool
                         string meshName = baseName + "_LOD" + lodLevel;
                         r.simplifiedMesh.name = meshName;
 
-                        // Save as asset
-                        string assetPath = AssetDatabase.GenerateUniqueAssetPath(savePath + "/" + meshName + ".asset");
-                        AssetDatabase.CreateAsset(r.simplifiedMesh, assetPath);
+                        // Mesh stays in memory — exported to FBX via sidebar footer button
                         UvtLog.Info($"[GenerateLOD] {meshName}: {r.originalTriCount} → {r.simplifiedTriCount} tris ({actualRatio:P0})");
 
                         lastResults.Add(new GeneratedLodInfo

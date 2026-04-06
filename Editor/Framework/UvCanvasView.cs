@@ -59,6 +59,9 @@ namespace LightmapUvTool
         public static readonly Color cValOverlap  = new Color(1f, .1f, .9f, .55f);
         public static readonly Color cValTexel    = new Color(.1f, .7f, .9f, .5f);
 
+        // Callbacks
+        public Action<ShellUvHit> OnDoubleClickShell;
+
         // Public state
         public float Zoom = 1f;
         public Vector2 Pan;
@@ -386,6 +389,11 @@ namespace LightmapUvTool
                 else if (!LockSelection) HasSelectedShell = false;
                 if (HoveredShellDebug != null) SelectedShellDebug = CloneHit(HoveredShellDebug);
                 else SelectedShellDebug = null;
+
+                // Double-click → focus SceneView camera on shell
+                if (e.clickCount == 2 && HasSelectedShell)
+                    OnDoubleClickShell?.Invoke(SelectedShell);
+
                 e.Use(); RequestRepaint?.Invoke(); SceneView.RepaintAll();
             }
         }

@@ -80,6 +80,7 @@ namespace LightmapUvTool
         {
             this.ctx = ctx;
             this.canvas = canvas;
+            canvas.OnDoubleClickShell = FocusSceneViewOnSpot;
             UpdateSelectedSidecar();
             TryLoadSettingsFromSidecar();
             TryRestoreShellMatchFromSidecar();
@@ -848,11 +849,23 @@ namespace LightmapUvTool
         }
 
         public void ExportFbxPublic(bool overwriteSource) => ExportFbx(overwriteSource);
+        public void ApplyUv2Public() => ApplyUv2ToFbx();
+        public void SaveAllPublic() => SaveAll();
 
         void ExportFbx(bool overwriteSource)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (ctx.LodGroup == null) { UvtLog.Error("[FBX Export] No LODGroup loaded."); return; }
+
+            // Find the source FBX path from source LOD entries
+            string sourceFbxFile = null;
+            foreach (var e in ctx.MeshEntries)
+            {
+                if (e.lodIndex != ctx.SourceLodIndex || e.fbxMesh == null) continue;
+                string p = AssetDatabase.GetAssetPath(e.fbxMesh);
+                if (!string.IsNullOrEmpty(p) && p.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                { sourceFbxFile = p; break; }
+            }
 
             var fbxGroups = new Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>>();
             foreach (var e in ctx.MeshEntries)
@@ -860,8 +873,12 @@ namespace LightmapUvTool
                 if (!e.include) continue;
                 Mesh resultMesh = GetResultMesh(e);
                 if (resultMesh == null) continue;
+                // Use source FBX path for all entries, not per-entry path
+                // (generated LODs have .asset paths, not FBX)
                 Mesh pathMesh = e.fbxMesh ?? e.originalMesh;
                 string fbxPath = pathMesh != null ? AssetDatabase.GetAssetPath(pathMesh) : null;
+                if (string.IsNullOrEmpty(fbxPath) || !fbxPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                    fbxPath = sourceFbxFile; // fallback to source FBX
                 if (string.IsNullOrEmpty(fbxPath)) continue;
                 if (!fbxGroups.ContainsKey(fbxPath))
                     fbxGroups[fbxPath] = new List<(MeshEntry, Mesh)>();
@@ -1622,6 +1639,62 @@ namespace LightmapUvTool
             if (v < 0f || u + v > 1f) return false;
             t = Vector3.Dot(e2, q) * inv;
             return true;
+        }
+
+        // ── Focus SceneView on double-clicked shell ──
+        void FocusSceneViewOnSpot(ShellUvHit uvHit)
+        {
+            if (uvHit.meshEntry?.renderer == null) return;
+            var mesh = ctx.DMesh(uvHit.meshEntry);
+            if (mesh == null) return;
+
+            var verts = mesh.vertices;
+            var tris = mesh.triangles;
+            var tr = uvHit.meshEntry.renderer.transform;
+
+            int i0 = uvHit.faceIndex * 3;
+            if (i0 + 2 >= tris.Length) return;
+            int vi0 = tris[i0], vi1 = tris[i0 + 1], vi2 = tris[i0 + 2];
+            if (vi0 >= verts.Length || vi1 >= verts.Length || vi2 >= verts.Length) return;
+
+            var bary = uvHit.barycentric;
+            var localPos = verts[vi0] * bary.x + verts[vi1] * bary.y + verts[vi2] * bary.z;
+            var worldPos = tr.TransformPoint(localPos);
+
+            var localEdge1 = verts[vi1] - verts[vi0];
+            var localEdge2 = verts[vi2] - verts[vi0];
+            var faceNormal = tr.TransformDirection(Vector3.Cross(localEdge1, localEdge2).normalized).normalized;
+            if (faceNormal.sqrMagnitude < 0.5f) faceNormal = Vector3.up;
+
+            // Shell bbox for ideal camera distance
+            float idealDist = 1f;
+            var cache = canvas.GetPreviewShellCache(ctx, mesh, ctx.PreviewUvChannel);
+            if (cache?.shellById != null && cache.shellById.TryGetValue(uvHit.shellId, out var shell))
+            {
+                bool first = true;
+                var sb = new Bounds();
+                foreach (int face in shell.faceIndices)
+                {
+                    int fi = face * 3;
+                    if (fi + 2 >= tris.Length) continue;
+                    for (int k = 0; k < 3; k++)
+                    {
+                        int vi = tris[fi + k];
+                        if (vi >= verts.Length) continue;
+                        var wp = tr.TransformPoint(verts[vi]);
+                        if (first) { sb = new Bounds(wp, Vector3.zero); first = false; }
+                        else sb.Encapsulate(wp);
+                    }
+                }
+                if (!first) idealDist = Mathf.Max(sb.extents.magnitude * 1.5f, 0.3f);
+            }
+
+            var sv = SceneView.lastActiveSceneView;
+            if (sv == null) return;
+            sv.pivot = worldPos + faceNormal * idealDist;
+            sv.size = 0.01f;
+            sv.rotation = Quaternion.LookRotation(-faceNormal);
+            sv.Repaint();
         }
 
         // ════════════════════════════════════════════════════════════

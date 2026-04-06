@@ -511,6 +511,18 @@ namespace LightmapUvTool
 #else
             EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.Info);
 #endif
+            EditorGUILayout.Space(2);
+            if (GUILayout.Button("Apply UV2 (sidecar)", EditorStyles.miniButton))
+            {
+                foreach (var tool in tools)
+                    if (tool is LightmapTransferTool ltt) { ltt.ApplyUv2Public(); break; }
+            }
+            EditorGUILayout.Space(1);
+            if (GUILayout.Button("Save Mesh Assets", EditorStyles.miniButton))
+            {
+                foreach (var tool in tools)
+                    if (tool is LightmapTransferTool ltt) { ltt.SaveAllPublic(); break; }
+            }
         }
 
         void DrawResizeHandle()
