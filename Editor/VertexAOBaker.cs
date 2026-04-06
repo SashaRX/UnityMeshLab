@@ -634,7 +634,6 @@ namespace LightmapUvTool
                     sinTheta * Mathf.Cos(phi),
                     cosTheta,
                     sinTheta * Mathf.Sin(phi));
-                    Mathf.Sin(theta) * Mathf.Sin(phi));
             }
             return dirs;
         }
