@@ -119,18 +119,23 @@ namespace LightmapUvTool
 
             canvas?.Cleanup();
 
-            // Cleanup working meshes — restore fbxMesh on MeshFilter first.
-            // originalMesh != fbxMesh only when welding or symmetry-split created a clone.
-            if (ctx?.MeshEntries != null)
+            RestoreWorkingMeshes();
+        }
+
+        /// <summary>
+        /// Restore fbxMesh on MeshFilter and destroy temporary working meshes.
+        /// Must be called before clearing or switching MeshEntries.
+        /// </summary>
+        void RestoreWorkingMeshes()
+        {
+            if (ctx?.MeshEntries == null) return;
+            foreach (var e in ctx.MeshEntries)
             {
-                foreach (var e in ctx.MeshEntries)
-                {
-                    if (e.meshFilter != null && e.fbxMesh != null)
-                        e.meshFilter.sharedMesh = e.fbxMesh;
-                    if (e.transferredMesh != null) { DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
-                    if (e.repackedMesh != null) { DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
-                    if (e.originalMesh != null && e.originalMesh != e.fbxMesh) { DestroyImmediate(e.originalMesh); e.originalMesh = null; }
-                }
+                if (e.meshFilter != null && e.fbxMesh != null)
+                    e.meshFilter.sharedMesh = e.fbxMesh;
+                if (e.transferredMesh != null) { DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
+                if (e.repackedMesh != null) { DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
+                if (e.originalMesh != null && e.originalMesh != e.fbxMesh) { DestroyImmediate(e.originalMesh); e.originalMesh = null; }
             }
         }
 
@@ -147,6 +152,7 @@ namespace LightmapUvTool
                     // Restore preview before switching LODGroup
                     if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
                         ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
+                    RestoreWorkingMeshes();
                     ctx.Refresh(lg);
                     _cachedLodCount = ctx.LodCount;
                     ActiveTool?.OnRefresh();
@@ -163,6 +169,7 @@ namespace LightmapUvTool
                     {
                         if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
                             ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
+                        RestoreWorkingMeshes();
                         ctx.Refresh(null);
                         _cachedLodCount = 0;
                         ActiveTool?.OnRefresh();
