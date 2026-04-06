@@ -183,41 +183,10 @@ namespace LightmapUvTool
                             EditorStyles.miniLabel);
                 }
 
-                // ── FBX Export button right here ──
-                EditorGUILayout.Space(4);
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-                GUI.backgroundColor = new Color(.95f, .6f, .2f);
-                if (GUILayout.Button("Overwrite Source FBX (all LODs)", GUILayout.Height(26)))
-                {
-                    // Delegate to LightmapTransferTool's ExportFbx via reflection-free approach:
-                    // find the tool and call its export method
-                    foreach (var tool in FindToolsInHub())
-                    {
-                        if (tool is LightmapTransferTool ltt)
-                        {
-                            ltt.ExportFbxPublic(true);
-                            break;
-                        }
-                    }
-                }
-                GUI.backgroundColor = bg;
-#else
-                EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.Info);
-#endif
+                // FBX export buttons are in the fixed sidebar footer
             }
         }
 
-        IEnumerable<IUvTool> FindToolsInHub()
-        {
-            var hubs = Resources.FindObjectsOfTypeAll<UvToolHub>();
-            if (hubs.Length == 0) yield break;
-            // Access tools via reflection since field is private
-            var fi = typeof(UvToolHub).GetField("tools", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            if (fi == null) yield break;
-            var tools = fi.GetValue(hubs[0]) as List<IUvTool>;
-            if (tools == null) yield break;
-            foreach (var t in tools) yield return t;
-        }
 
         void ExecGenerateLods(int startLod)
         {

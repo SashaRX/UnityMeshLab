@@ -159,6 +159,7 @@ namespace LightmapUvTool
             sideScroll = EditorGUILayout.BeginScrollView(sideScroll);
             ActiveTool?.OnDrawSidebar();
             EditorGUILayout.EndScrollView();
+            DrawSidebarFooter();
             EditorGUILayout.EndVertical();
 
             DrawResizeHandle();
@@ -481,6 +482,36 @@ namespace LightmapUvTool
         // ════��═══════════════════════════════��═══════════════════════
         //  Helpers
         // ════════════════════════════════════════════════════════════
+
+        void DrawSidebarFooter()
+        {
+            if (ctx.LodGroup == null) return;
+            EditorGUILayout.Space(2);
+            var r = GUILayoutUtility.GetRect(0, 1, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(r, new Color(.3f, .3f, .3f));
+            EditorGUILayout.Space(2);
+
+            var bg = GUI.backgroundColor;
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            GUI.backgroundColor = new Color(.95f, .6f, .2f);
+            if (GUILayout.Button("Overwrite Source FBX", GUILayout.Height(24)))
+            {
+                foreach (var tool in tools)
+                    if (tool is LightmapTransferTool ltt) { ltt.ExportFbxPublic(true); break; }
+            }
+            GUI.backgroundColor = bg;
+            EditorGUILayout.Space(2);
+            GUI.backgroundColor = new Color(.4f, .7f, .95f);
+            if (GUILayout.Button("Export as New FBX", GUILayout.Height(20)))
+            {
+                foreach (var tool in tools)
+                    if (tool is LightmapTransferTool ltt) { ltt.ExportFbxPublic(false); break; }
+            }
+            GUI.backgroundColor = bg;
+#else
+            EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.Info);
+#endif
+        }
 
         void DrawResizeHandle()
         {

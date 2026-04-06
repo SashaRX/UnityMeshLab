@@ -248,19 +248,6 @@ namespace LightmapUvTool
                 ColorBtn(new Color(.9f,.35f,.35f), "Reset All Working Copies", 20, ResetWorkingCopies);
             }
 
-            // ── Save / Export ──
-            EditorGUILayout.Space(6);
-            H("Save / Export");
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            ColorBtn(new Color(.95f,.6f,.2f), "Overwrite Source FBX", 24, () => ExportFbx(true));
-            EditorGUILayout.Space(2);
-            ColorBtn(new Color(.4f,.7f,.95f), "Export as New FBX", 20, () => ExportFbx(false));
-#else
-            EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.Info);
-#endif
-            EditorGUILayout.Space(2);
-            ColorBtn(new Color(.3f,.85f,.4f), "Apply UV2 to FBX (sidecar)", 20, ApplyUv2ToFbx);
-
             EditorGUILayout.Space(4);
             H("Repack");
             EditorGUILayout.BeginHorizontal();
