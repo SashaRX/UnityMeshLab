@@ -148,9 +148,14 @@ namespace LightmapUvTool
 
             for (int i = 0; i < generateLodCount && i < generateLodRatios.Length; i++)
             {
+                // Clamp: each LOD must have fewer tris than the previous
+                float maxRatio = i == 0 ? lastRatio * 0.99f : generateLodRatios[i - 1] * 0.99f;
+                if (maxRatio < 0.001f) maxRatio = 0.001f;
+                if (generateLodRatios[i] > maxRatio) generateLodRatios[i] = maxRatio * 0.5f;
+
                 int targetLod = startLod + i;
                 generateLodRatios[i] = EditorGUILayout.Slider(
-                    $"  LOD{targetLod}", generateLodRatios[i], 0.001f, 0.99f);
+                    $"  LOD{targetLod}", generateLodRatios[i], 0.001f, maxRatio);
                 int estTris = Mathf.RoundToInt(sourceTris * generateLodRatios[i]);
                 float estPct = sourceTris > 0 ? generateLodRatios[i] * 100f : 0;
                 EditorGUILayout.LabelField($"      ≈ {estTris:N0} tris ({estPct:F0}% of source)", EditorStyles.miniLabel);
