@@ -6,6 +6,7 @@ Shader "Hidden/LightmapUvTool/CheckerUV2"
         _CellLineWidth ("Cell Line Width", Range(0.001, 0.05)) = 0.015
         _CellLineAlpha ("Cell Line Alpha", Range(0, 1)) = 0.7
         _BorderWidth ("UV Border Width", Range(0.001, 0.02)) = 0.005
+        _UVChannel ("UV Channel", Float) = 1
     }
     SubShader
     {
@@ -23,11 +24,19 @@ Shader "Hidden/LightmapUvTool/CheckerUV2"
             float _CellLineWidth;
             float _CellLineAlpha;
             float _BorderWidth;
+            float _UVChannel;
 
             struct appdata
             {
                 float4 vertex : POSITION;
-                float2 uv2 : TEXCOORD1;
+                float2 uv0 : TEXCOORD0;
+                float2 uv1 : TEXCOORD1;
+                float2 uv2 : TEXCOORD2;
+                float2 uv3 : TEXCOORD3;
+                float2 uv4 : TEXCOORD4;
+                float2 uv5 : TEXCOORD5;
+                float2 uv6 : TEXCOORD6;
+                float2 uv7 : TEXCOORD7;
             };
 
             struct v2f
@@ -40,7 +49,15 @@ Shader "Hidden/LightmapUvTool/CheckerUV2"
             {
                 v2f o;
                 o.pos = UnityObjectToClipPos(v.vertex);
-                o.uv = v.uv2;
+                int ch = (int)_UVChannel;
+                if      (ch == 0) o.uv = v.uv0;
+                else if (ch == 1) o.uv = v.uv1;
+                else if (ch == 2) o.uv = v.uv2;
+                else if (ch == 3) o.uv = v.uv3;
+                else if (ch == 4) o.uv = v.uv4;
+                else if (ch == 5) o.uv = v.uv5;
+                else if (ch == 6) o.uv = v.uv6;
+                else              o.uv = v.uv7;
                 return o;
             }
 

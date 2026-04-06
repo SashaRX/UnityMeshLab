@@ -26,6 +26,7 @@ namespace LightmapUvTool
         bool sideDragging;
         Vector2 sideScroll;
         int _cachedLodCount;
+        int _checkerUvChannel = 1;
 
         // ── Selection tracking ──
         string selectedSidecarPath;
@@ -408,6 +409,41 @@ namespace LightmapUvTool
                     ApplyPreviewMode(newMode);
             }
 
+            // ── Checker UV channel selector ──
+            if (canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Checker)
+            {
+                GUILayout.Space(2);
+                var bgCh = GUI.backgroundColor;
+                for (int ch = 0; ch < 8; ch++)
+                {
+                    // Check if any mesh has data on this channel
+                    bool hasData = false;
+                    foreach (var e in ctx.MeshEntries)
+                    {
+                        if (!e.include) continue;
+                        Mesh m = e.transferredMesh ?? e.repackedMesh ?? e.originalMesh ?? e.fbxMesh;
+                        if (m == null) continue;
+                        var test = new List<Vector2>();
+                        m.GetUVs(ch, test);
+                        if (test.Count > 0) { hasData = true; break; }
+                    }
+                    if (!hasData) continue;
+
+                    bool active = _checkerUvChannel == ch;
+                    GUI.backgroundColor = active ? new Color(1f, .45f, .3f) : new Color(.65f, .65f, .7f);
+                    if (GUILayout.Button("UV" + ch, EditorStyles.toolbarButton, GUILayout.Width(30)))
+                    {
+                        if (!active)
+                        {
+                            _checkerUvChannel = ch;
+                            ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
+                            ApplyPreviewMode(UvCanvasView.PreviewMode.Checker);
+                        }
+                    }
+                }
+                GUI.backgroundColor = bgCh;
+            }
+
             // ── Lightmap exposure slider ──
             if (canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Lightmap)
             {
@@ -630,9 +666,9 @@ namespace LightmapUvTool
                             Mesh fallback = e.originalMesh ?? e.fbxMesh;
                             if (fallback != null)
                             {
-                                var testUv2 = new List<Vector2>();
-                                fallback.GetUVs(1, testUv2);
-                                if (testUv2.Count > 0) uvMesh = fallback;
+                                var testUv = new List<Vector2>();
+                                fallback.GetUVs(_checkerUvChannel, testUv);
+                                if (testUv.Count > 0) uvMesh = fallback;
                             }
                         }
                         if (uvMesh != null) checkerEntries.Add((e.renderer, uvMesh));
@@ -640,12 +676,12 @@ namespace LightmapUvTool
                     if (checkerEntries.Count > 0)
                     {
                         canvas.CheckerEnabled = true;
-                        CheckerTexturePreview.Apply(checkerEntries);
+                        CheckerTexturePreview.Apply(checkerEntries, _checkerUvChannel);
                     }
                     else
                     {
                         canvas.CurrentPreviewMode = UvCanvasView.PreviewMode.Off;
-                        UvtLog.Warn("[Checker] No meshes with UV2.");
+                        UvtLog.Warn($"[Checker] No meshes with UV data on channel {_checkerUvChannel}.");
                     }
                     break;
 

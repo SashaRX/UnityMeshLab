@@ -96,13 +96,16 @@ namespace LightmapUvTool
 
         /// <summary>
         /// Apply checker preview. Each entry = (renderer, meshWithUv2 or null to keep current).
+        /// uvChannel selects which TEXCOORD the shader reads (0-7, default 1 = UV2).
         /// </summary>
-        public static void Apply(List<(Renderer renderer, Mesh meshWithUv2)> entries)
+        public static void Apply(List<(Renderer renderer, Mesh meshWithUv2)> entries, int uvChannel = 1)
         {
             if (isActive) Restore();
 
             EnsureAssets();
             backups.Clear();
+
+            checkerMat.SetFloat("_UVChannel", uvChannel);
 
             foreach (var (r, uvMesh) in entries)
             {
