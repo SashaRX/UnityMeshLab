@@ -364,6 +364,7 @@ namespace LightmapUvTool
             if (ctx?.LodGroup == null || generatedMeshes.Count == 0) return;
 
             Transform t = ctx.LodGroup.transform;
+            Matrix4x4 matrix = t.localToWorldMatrix;
 
             for (int i = 0; i < generatedMeshes.Count; i++)
             {
@@ -371,10 +372,22 @@ namespace LightmapUvTool
                 if (mesh == null) continue;
 
                 Color c = UvCanvasView.pal[i % UvCanvasView.pal.Length];
-                c.a = 0.3f;
-
+                c.a = 0.6f;
                 Handles.color = c;
-                Handles.DrawWireMesh(mesh, t.position, t.rotation, t.lossyScale);
+
+                var verts = mesh.vertices;
+                var tris  = mesh.triangles;
+
+                for (int ti = 0; ti < tris.Length; ti += 3)
+                {
+                    Vector3 a = matrix.MultiplyPoint3x4(verts[tris[ti]]);
+                    Vector3 b = matrix.MultiplyPoint3x4(verts[tris[ti + 1]]);
+                    Vector3 c2 = matrix.MultiplyPoint3x4(verts[tris[ti + 2]]);
+
+                    Handles.DrawLine(a, b);
+                    Handles.DrawLine(b, c2);
+                    Handles.DrawLine(c2, a);
+                }
             }
         }
 
