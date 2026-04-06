@@ -324,7 +324,7 @@ namespace LightmapUvTool
             {
                 bakedFinalAO[mesh] = VertexAOBaker.BlurAO(
                     bakedFinalAO[mesh], mesh.triangles, mesh.vertexCount,
-                    blurIterations, blurStrength);
+                    blurIterations, blurStrength, mesh.vertices);
             }
         }
 

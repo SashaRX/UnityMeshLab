@@ -105,7 +105,8 @@ namespace LightmapUvTool
             }
         }
 
-        public static float[] BlurAO(float[] ao, int[] triangles, int vertexCount, int iterations, float strength)
+        public static float[] BlurAO(float[] ao, int[] triangles, int vertexCount, int iterations, float strength,
+            Vector3[] positions = null)
         {
             if (ao == null || iterations <= 0) return ao;
 
@@ -114,12 +115,45 @@ namespace LightmapUvTool
             for (int i = 0; i < vertexCount; i++)
                 neighbors[i] = new List<int>();
 
+            // Triangle-based adjacency
             for (int t = 0; t < triangles.Length; t += 3)
             {
                 int a = triangles[t], b = triangles[t + 1], c = triangles[t + 2];
                 AddNeighbor(neighbors, a, b);
                 AddNeighbor(neighbors, a, c);
                 AddNeighbor(neighbors, b, c);
+            }
+
+            // Connect vertices at same position (crosses UV seams / hard edges)
+            if (positions != null && positions.Length == vertexCount)
+            {
+                const float eps = 1e-6f;
+                var posMap = new Dictionary<long, List<int>>();
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    // Quantize position to grid for O(n) grouping
+                    long key = ((long)(positions[i].x / eps) * 73856093L) ^
+                               ((long)(positions[i].y / eps) * 19349663L) ^
+                               ((long)(positions[i].z / eps) * 83492791L);
+                    if (!posMap.TryGetValue(key, out var list))
+                    {
+                        list = new List<int>();
+                        posMap[key] = list;
+                    }
+                    list.Add(i);
+                }
+                foreach (var group in posMap.Values)
+                {
+                    if (group.Count < 2) continue;
+                    for (int i = 0; i < group.Count; i++)
+                        for (int j = i + 1; j < group.Count; j++)
+                        {
+                            if ((positions[group[i]] - positions[group[j]]).sqrMagnitude < eps * eps)
+                            {
+                                AddNeighbor(neighbors, group[i], group[j]);
+                            }
+                        }
+                }
             }
 
             float[] src = (float[])ao.Clone();
