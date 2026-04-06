@@ -309,7 +309,14 @@ namespace LightmapUvTool
                             generatedPerFbx[fbxPath].Add((entry, r.simplifiedMesh, meshName));
                         }
 
-                        if (generateAddToLodGroup && entry.renderer != null)
+                        // Only create scene GameObjects if NOT auto-exporting to FBX
+                        // (FBX reimport will create them from the exported file)
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                        bool createSceneObjects = generateAddToLodGroup && !exportToFbx;
+#else
+                        bool createSceneObjects = generateAddToLodGroup;
+#endif
+                        if (createSceneObjects && entry.renderer != null)
                         {
                             var go = new GameObject(meshName);
                             go.transform.SetParent(ctx.LodGroup.transform, false);
@@ -345,7 +352,12 @@ namespace LightmapUvTool
                     }
                 }
 
-                if (generateAddToLodGroup)
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                bool updateLodGroup = generateAddToLodGroup && !exportToFbx;
+#else
+                bool updateLodGroup = generateAddToLodGroup;
+#endif
+                if (updateLodGroup)
                 {
                     Undo.RecordObject(ctx.LodGroup, "Generate LODs");
                     ctx.LodGroup.SetLODs(newLods.ToArray());
@@ -360,7 +372,38 @@ namespace LightmapUvTool
                 ExportGeneratedLods(true);
 #endif
 
-            ctx.Refresh(ctx.LodGroup);
+            // Add new LOD entries WITHOUT destroying existing pipeline state
+            // (ctx.Refresh would clear repack/transfer/weld state on LOD0-2)
+            if (generateAddToLodGroup)
+            {
+                var lods = ctx.LodGroup.GetLODs();
+                for (int li = 0; li < lods.Length; li++)
+                {
+                    // Only add entries for LOD levels we don't already have
+                    if (ctx.MeshEntries.Any(e => e.lodIndex == li)) continue;
+                    if (lods[li].renderers == null) continue;
+                    foreach (var r in lods[li].renderers)
+                    {
+                        if (r == null) continue;
+                        var mf = r.GetComponent<MeshFilter>();
+                        if (mf == null || mf.sharedMesh == null) continue;
+                        var fbm = mf.sharedMesh;
+                        var uv2Check = new List<Vector2>();
+                        fbm.GetUVs(1, uv2Check);
+                        ctx.MeshEntries.Add(new MeshEntry
+                        {
+                            lodIndex = li,
+                            renderer = r,
+                            meshFilter = mf,
+                            originalMesh = fbm,
+                            fbxMesh = fbm,
+                            hasExistingUv2 = uv2Check.Count > 0,
+                            meshGroupKey = UvToolContext.ExtractGroupKey(r.name)
+                        });
+                    }
+                }
+            }
+            ctx.ClearAllCaches();
             requestRepaint?.Invoke();
         }
 
