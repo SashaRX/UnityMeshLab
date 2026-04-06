@@ -1195,14 +1195,33 @@ namespace LightmapUvTool
                 var attr = (VertexAttribute)((int)VertexAttribute.TexCoord0 + ch);
                 if (!src.HasVertexAttribute(attr)) continue;
                 int dim = src.GetVertexAttributeDimension(attr);
-                if (dim <= 2) { var uv = new List<Vector2>(); src.GetUVs(ch, uv); if (uv.Count > 0) dst.SetUVs(ch, uv); }
-                else if (dim == 3) { var uv = new List<Vector3>(); src.GetUVs(ch, uv); if (uv.Count > 0) dst.SetUVs(ch, uv); }
-                else { var uv = new List<Vector4>(); src.GetUVs(ch, uv); if (uv.Count > 0) dst.SetUVs(ch, uv); }
+                if (dim <= 2)
+                {
+                    var uv = new List<Vector2>(); src.GetUVs(ch, uv);
+                    if (uv.Count > 0 && !IsAllZero2(uv)) dst.SetUVs(ch, uv);
+                }
+                else if (dim == 3)
+                {
+                    var uv = new List<Vector3>(); src.GetUVs(ch, uv);
+                    if (uv.Count > 0) dst.SetUVs(ch, uv);
+                }
+                else
+                {
+                    var uv = new List<Vector4>(); src.GetUVs(ch, uv);
+                    if (uv.Count > 0) dst.SetUVs(ch, uv);
+                }
             }
             dst.subMeshCount = src.subMeshCount;
             for (int s = 0; s < src.subMeshCount; s++) dst.SetTriangles(src.GetTriangles(s), s);
             dst.bounds = src.bounds;
             return dst;
+        }
+
+        static bool IsAllZero2(List<Vector2> uv)
+        {
+            for (int i = 0; i < uv.Count; i++)
+                if (uv[i].x != 0f || uv[i].y != 0f) return false;
+            return true;
         }
     }
 }

@@ -2121,7 +2121,11 @@ namespace LightmapUvTool
                 var attr = (VertexAttribute)((int)VertexAttribute.TexCoord0 + ch);
                 if (!src.HasVertexAttribute(attr)) continue;
                 int dim = src.GetVertexAttributeDimension(attr);
-                if (dim <= 2)      { var uv = new List<Vector2>(); src.GetUVs(ch, uv); if (uv.Count > 0) dst.SetUVs(ch, uv); }
+                if (dim <= 2)
+                {
+                    var uv = new List<Vector2>(); src.GetUVs(ch, uv);
+                    if (uv.Count > 0 && !IsAllZeroUv2(uv)) dst.SetUVs(ch, uv);
+                }
                 else if (dim == 3) { var uv = new List<Vector3>(); src.GetUVs(ch, uv); if (uv.Count > 0) dst.SetUVs(ch, uv); }
                 else               { var uv = new List<Vector4>(); src.GetUVs(ch, uv); if (uv.Count > 0) dst.SetUVs(ch, uv); }
             }
@@ -2130,6 +2134,13 @@ namespace LightmapUvTool
                 dst.SetTriangles(src.GetTriangles(s), s);
             dst.bounds = src.bounds;
             return dst;
+        }
+
+        static bool IsAllZeroUv2(List<Vector2> uv)
+        {
+            for (int i = 0; i < uv.Count; i++)
+                if (uv[i].x != 0f || uv[i].y != 0f) return false;
+            return true;
         }
 
         static Vector2[] RdUv(Mesh m, int ch) { var l = new List<Vector2>(); m.GetUVs(ch, l); return l.Count > 0 ? l.ToArray() : null; }
