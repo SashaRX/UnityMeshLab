@@ -27,7 +27,7 @@ Shader "Hidden/LightmapUvTool/CheckerUV2"
             struct appdata
             {
                 float4 vertex : POSITION;
-                float2 uv2 : TEXCOORD2;
+                float2 uv2 : TEXCOORD1;
             };
 
             struct v2f
