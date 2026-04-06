@@ -326,25 +326,21 @@ namespace LightmapUvTool
                         EditorGUILayout.LabelField("UV0 welded", EditorStyles.miniLabel);
                 }
 
-                // ── Save / Export after Weld (before Repack) ──
-                bool anyWelded = ctx.MeshEntries.Any(e => e.wasWelded || e.wasEdgeWelded || e.wasSymmetrySplit);
-                if (anyWelded)
-                {
-                    EditorGUILayout.Space(6);
-                    H("Save / Export (post-weld)");
-                    ColorBtn(new Color(.3f,.85f,.4f), "Apply UV2 to FBX", 24, ApplyUv2ToFbx);
-                    EditorGUILayout.Space(2);
+                // ── Save / Export — always visible ──
+                EditorGUILayout.Space(6);
+                H("Save / Export");
+                ColorBtn(new Color(.3f,.85f,.4f), "Apply UV2 to FBX", 24, ApplyUv2ToFbx);
+                EditorGUILayout.Space(2);
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-                    ColorBtn(new Color(.4f,.7f,.95f), "Export as New FBX", 22, () => ExportFbx(false));
-                    EditorGUILayout.Space(2);
-                    ColorBtn(new Color(.95f,.6f,.2f), "Overwrite Source FBX", 22, () => ExportFbx(true));
+                ColorBtn(new Color(.4f,.7f,.95f), "Export as New FBX", 22, () => ExportFbx(false));
+                EditorGUILayout.Space(2);
+                ColorBtn(new Color(.95f,.6f,.2f), "Overwrite Source FBX", 22, () => ExportFbx(true));
 #else
-                    EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.Info);
+                EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.Info);
 #endif
-                    EditorGUILayout.Space(2);
-                    ColorBtn(new Color(.6f,.5f,.3f), "Save All Mesh Assets", 22, SaveAll);
-                    if (GUILayout.Button("Update LODGroup Refs", EditorStyles.miniButton)) UpdateRefs();
-                }
+                EditorGUILayout.Space(2);
+                ColorBtn(new Color(.6f,.5f,.3f), "Save All Mesh Assets", 22, SaveAll);
+                if (GUILayout.Button("Update LODGroup Refs", EditorStyles.miniButton)) UpdateRefs();
             }
         }
 
