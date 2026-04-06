@@ -95,6 +95,27 @@ namespace LightmapUvTool
                         CreateLodGroup(siblings);
                     GUI.backgroundColor = bgc;
                 }
+                else if (selected != null && selected.GetComponentsInChildren<Renderer>().Length > 0)
+                {
+                    EditorGUILayout.HelpBox(
+                        "No LOD naming detected, but child renderers found.\n" +
+                        "Create a LODGroup with all renderers as LOD0.",
+                        MessageType.Info);
+                    EditorGUILayout.Space(6);
+                    var bgc = GUI.backgroundColor;
+                    GUI.backgroundColor = new Color(.4f, .8f, .4f);
+                    if (GUILayout.Button("Add LOD Group", GUILayout.Height(28)))
+                    {
+                        var lodGroup = CreateLodGroupFromRenderers(selected);
+                        if (lodGroup != null)
+                        {
+                            ctx.Refresh(lodGroup);
+                            requestRepaint?.Invoke();
+                            UvtLog.Info($"[LOD Gen] Created LODGroup on '{selected.name}' with all renderers as LOD0.");
+                        }
+                    }
+                    GUI.backgroundColor = bgc;
+                }
                 else
                 {
                     EditorGUILayout.HelpBox(
@@ -526,6 +547,18 @@ namespace LightmapUvTool
             }
 
             lodGroup.SetLODs(lods);
+            lodGroup.RecalculateBounds();
+
+            return lodGroup;
+        }
+
+        internal static LODGroup CreateLodGroupFromRenderers(GameObject root)
+        {
+            var renderers = root.GetComponentsInChildren<Renderer>();
+            if (renderers.Length == 0) return null;
+
+            var lodGroup = Undo.AddComponent<LODGroup>(root);
+            lodGroup.SetLODs(new[] { new LOD(0.5f, renderers) });
             lodGroup.RecalculateBounds();
 
             return lodGroup;

@@ -247,10 +247,31 @@ namespace LightmapUvTool
                     }
                     GUI.backgroundColor = bgc;
                 }
+                else if (selected != null && selected.GetComponentsInChildren<Renderer>().Length > 0)
+                {
+                    EditorGUILayout.HelpBox(
+                        "No LOD naming detected, but child renderers found.\n" +
+                        "Create a LODGroup with all renderers as LOD0.",
+                        MessageType.Info);
+                    EditorGUILayout.Space(6);
+                    var bgc = GUI.backgroundColor;
+                    GUI.backgroundColor = new Color(.4f, .8f, .4f);
+                    if (GUILayout.Button("Add LOD Group", GUILayout.Height(28)))
+                    {
+                        var lodGroup = LodGenerationTool.CreateLodGroupFromRenderers(selected);
+                        if (lodGroup != null)
+                        {
+                            ctx.Refresh(lodGroup);
+                            OnRefresh();
+                            requestRepaint?.Invoke();
+                        }
+                    }
+                    GUI.backgroundColor = bgc;
+                }
                 else
                 {
                     EditorGUILayout.HelpBox(
-                        "Assign LODGroup or select a GameObject with LOD children.",
+                        "Assign LODGroup or select a GameObject.",
                         MessageType.Info);
                 }
                 return;
