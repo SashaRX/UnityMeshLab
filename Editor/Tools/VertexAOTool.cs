@@ -222,20 +222,19 @@ namespace LightmapUvTool
 
                 EditorGUILayout.Space(8);
 
-                // Preview toggle
-                bool newPreview = EditorGUILayout.Toggle(
-                    new GUIContent("Preview in Scene", "Show baked AO as vertex colors in the Scene view."),
-                    previewActive);
-                if (newPreview != previewActive)
-                {
-                    if (newPreview) ActivatePreview();
-                    else RestorePreview();
-                }
-
-                EditorGUILayout.Space(4);
-
-                // Apply / Clear buttons
+                // Preview / Apply / Clear — three buttons
                 EditorGUILayout.BeginHorizontal();
+
+                // Preview toggle button (highlighted when active)
+                var prevBg = GUI.backgroundColor;
+                GUI.backgroundColor = previewActive ? new Color(.3f, .7f, 1f) : Color.white;
+                if (GUILayout.Button(previewActive ? "Preview ON" : "Preview", GUILayout.Height(24)))
+                {
+                    if (previewActive) RestorePreview();
+                    else ActivatePreview();
+                }
+                GUI.backgroundColor = prevBg;
+
                 GUI.backgroundColor = new Color(.3f, .85f, .4f);
                 if (GUILayout.Button("Apply to Mesh", GUILayout.Height(24)))
                     ApplyToMesh();
@@ -305,6 +304,9 @@ namespace LightmapUvTool
 
             int lodCount = entries.Select(e => e.lodIndex).Distinct().Count();
             UvtLog.Info($"[Vertex AO] Baked {bakedVertexCount} vertices across {lodCount} LOD(s) in {bakeTimeSeconds:F1}s");
+
+            // Auto-enable preview after bake
+            ActivatePreview();
             requestRepaint?.Invoke();
         }
 
