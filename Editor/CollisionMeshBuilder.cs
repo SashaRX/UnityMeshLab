@@ -55,7 +55,10 @@ namespace LightmapUvTool
             result.resultError     = sr.resultError;
 
             if (result.mesh != null)
+            {
+                StripCollisionMesh(result.mesh);
                 result.mesh.name = sourceMesh.name + "_collision";
+            }
 
             return result;
         }
@@ -202,7 +205,6 @@ namespace LightmapUvTool
                     mesh.indexFormat = vCount > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
                     mesh.SetVertices(hullPositions);
                     mesh.SetTriangles(hullIdx, 0);
-                    mesh.RecalculateNormals();
                     mesh.RecalculateBounds();
                     mesh.UploadMeshData(false);
 
@@ -224,6 +226,21 @@ namespace LightmapUvTool
         /// Extract combined positions and triangles from a mesh (merging all submeshes).
         /// Useful for building collision data from multi-material meshes.
         /// </summary>
+        /// <summary>
+        /// Strip all channels except positions and triangles from a collision mesh.
+        /// Colliders only need geometry — normals, tangents, UVs, colors waste memory.
+        /// </summary>
+        static void StripCollisionMesh(Mesh mesh)
+        {
+            var positions = mesh.vertices;
+            var triangles = mesh.triangles;
+
+            mesh.Clear();
+            mesh.SetVertices(positions);
+            mesh.SetTriangles(triangles, 0);
+            mesh.RecalculateBounds();
+        }
+
         public static void ExtractMeshData(Mesh mesh, out Vector3[] positions, out int[] triangles)
         {
             positions = mesh.vertices;
