@@ -122,11 +122,10 @@ namespace LightmapUvTool
             // ── Settings ──
             generateLodCount = EditorGUILayout.IntSlider("Count", generateLodCount, 1, 4);
 
-            // Auto-suggest ratios based on last existing LOD's polycount
+            // Find last LOD's ratio relative to source
+            float lastRatio = 1f;
             if (sourceTris > 0)
             {
-                // Find last LOD's ratio relative to source
-                float lastRatio = 1f;
                 if (lastExistingLod > ctx.SourceLodIndex)
                 {
                     int lastLodTris = 0;
