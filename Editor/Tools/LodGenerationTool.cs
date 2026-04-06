@@ -141,7 +141,8 @@ namespace LightmapUvTool
                 generateLodRatios[i] = EditorGUILayout.Slider(
                     $"  LOD{targetLod}", generateLodRatios[i], 0.001f, maxRatio);
                 int estTris = Mathf.RoundToInt(sourceTris * generateLodRatios[i]);
-                EditorGUILayout.LabelField($"      ≈ {estTris:N0} tris ({generateLodRatios[i] * 100f:F0}% of source)", EditorStyles.miniLabel);
+                EditorGUILayout.LabelField($"      target ≈ {estTris:N0} tris ({generateLodRatios[i] * 100f:F0}% of source)", EditorStyles.miniLabel);
+                EditorGUILayout.LabelField("      (actual depends on Target Error, UV2 Weight, Lock Border)", EditorStyles.miniLabel);
             }
 
             EditorGUILayout.Space(4);
@@ -149,6 +150,12 @@ namespace LightmapUvTool
             generateUv2Weight = EditorGUILayout.Slider("UV2 Weight", generateUv2Weight, 0f, 500f);
             generateNormalWeight = EditorGUILayout.Slider("Normal Weight", generateNormalWeight, 0f, 10f);
             generateLockBorder = EditorGUILayout.Toggle("Lock Border", generateLockBorder);
+
+            if (generateTargetError < 0.1f && generateUv2Weight > 50f)
+                EditorGUILayout.HelpBox(
+                    "Low Target Error + High UV2 Weight may prevent reaching target polygon count. " +
+                    "Try: Target Error 0.1–0.3, UV2 Weight 10–30, Lock Border OFF.",
+                    MessageType.Warning);
 
             EditorGUILayout.Space(6);
 
