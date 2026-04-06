@@ -1106,6 +1106,9 @@ namespace LightmapUvTool
             RestoreAllPreviews();
             foreach (var e in ctx.MeshEntries)
             {
+                // Restore original mesh on MeshFilter before destroying working copies
+                if (e.meshFilter != null && e.fbxMesh != null)
+                    e.meshFilter.sharedMesh = e.fbxMesh;
                 if (e.transferredMesh != null) { UnityEngine.Object.DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
                 if (e.repackedMesh != null) { UnityEngine.Object.DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
                 if (e.originalMesh != null && e.originalMesh != e.fbxMesh) UnityEngine.Object.DestroyImmediate(e.originalMesh);
@@ -1194,9 +1197,20 @@ namespace LightmapUvTool
 
         void RestoreAllPreviews()
         {
-            if (checkerEnabled) { CheckerTexturePreview.Restore(); checkerEnabled = false; }
-            if (shellColorPreviewEnabled) { ShellColorModelPreview.Restore(); shellColorPreviewEnabled = false; }
+            // Restore checker (may be activated from tool or from UvToolHub)
+            if (checkerEnabled || canvas.CheckerEnabled || CheckerTexturePreview.IsActive)
+            {
+                CheckerTexturePreview.Restore();
+                checkerEnabled = false;
+                canvas.CheckerEnabled = false;
+            }
+            if (shellColorPreviewEnabled || ShellColorModelPreview.IsActive)
+            {
+                ShellColorModelPreview.Restore();
+                shellColorPreviewEnabled = false;
+            }
             if (lightmapPreviewActive) RestoreLightmapPreview();
+            canvas.CurrentPreviewMode = UvCanvasView.PreviewMode.Off;
         }
 
         void RestoreLightmapPreview()
