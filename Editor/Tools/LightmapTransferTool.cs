@@ -1013,7 +1013,9 @@ namespace LightmapUvTool
                         var r = MeshSimplifier.Simplify(srcMesh, settings);
                         if (!r.ok) { UvtLog.Error($"[GenerateLOD] Failed on {srcMesh.name}: {r.error}"); continue; }
 
-                        string meshName = srcMesh.name + "_LOD" + (ctx.SourceLodIndex + lodIdx + 1);
+                        string baseName = entry.fbxMesh != null ? entry.fbxMesh.name : srcMesh.name;
+                        baseName = System.Text.RegularExpressions.Regex.Replace(baseName, @"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$", "");
+                        string meshName = baseName + "_LOD" + (ctx.SourceLodIndex + lodIdx + 1);
                         r.simplifiedMesh.name = meshName;
                         string assetPath = AssetDatabase.GenerateUniqueAssetPath(savePath + "/" + meshName + ".asset");
                         AssetDatabase.CreateAsset(r.simplifiedMesh, assetPath);
