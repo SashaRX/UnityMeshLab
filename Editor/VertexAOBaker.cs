@@ -202,24 +202,25 @@ namespace LightmapUvTool
                 foreach (var pt in samplePoints)
                 {
                     Vector3 origin = pt + faceNorm * normalOffset;
-                    int occluded = 0, sampled = 0;
+                    float occW = 0f, totW = 0f;
 
                     for (int d = 0; d < directions.Length; d++)
                     {
-                        if (Vector3.Dot(directions[d], faceNorm) <= 0) continue;
-                        sampled++;
+                        float ndot = Vector3.Dot(directions[d], faceNorm);
+                        if (ndot <= 0) continue;
+                        totW += ndot;
                         var hit = bvh.Raycast(origin, directions[d], maxDist);
-                        if (hit.triangleIndex >= 0) { occluded++; continue; }
+                        if (hit.triangleIndex >= 0) { occW += ndot; continue; }
                         if (settings.groundPlane && directions[d].y < -0.001f)
                         {
                             float tt = (groundY - origin.y) / directions[d].y;
-                            if (tt > 0 && tt < maxDist) occluded++;
+                            if (tt > 0 && tt < maxDist) occW += ndot;
                         }
                     }
 
-                    if (sampled > 0)
+                    if (totW > 0)
                     {
-                        surfaceAO += 1f - (float)occluded / sampled;
+                        surfaceAO += 1f - occW / totW;
                         surfaceSamples++;
                     }
                 }
@@ -566,23 +567,26 @@ namespace LightmapUvTool
 
                     Vector3 origin = worldPos[v] + worldNorm[v] * normalOffset;
 
-                    int occluded = 0, sampled = 0;
+                    float occludedWeight = 0f, totalWeight = 0f;
                     for (int d = 0; d < directions.Length; d++)
                     {
-                        if (Vector3.Dot(directions[d], worldNorm[v]) <= 0) continue;
-                        sampled++;
+                        float ndot = Vector3.Dot(directions[d], worldNorm[v]);
+                        if (ndot <= 0) continue;
+
+                        // Cosine-weighted: rays near normal contribute more
+                        totalWeight += ndot;
 
                         var hit = bvh.Raycast(origin, directions[d], maxDist);
-                        if (hit.triangleIndex >= 0) { occluded++; continue; }
+                        if (hit.triangleIndex >= 0) { occludedWeight += ndot; continue; }
 
                         if (settings.groundPlane && directions[d].y < -0.001f)
                         {
                             float t = (groundY - origin.y) / directions[d].y;
-                            if (t > 0 && t < maxDist) { occluded++; }
+                            if (t > 0 && t < maxDist) { occludedWeight += ndot; }
                         }
                     }
 
-                    float aoVal = sampled > 0 ? 1f - (float)occluded / sampled : 1f;
+                    float aoVal = totalWeight > 0 ? 1f - occludedWeight / totalWeight : 1f;
                     ao[v] = Mathf.Pow(Mathf.Clamp01(aoVal), settings.intensity);
 
                     Interlocked.Increment(ref progressCounter);
