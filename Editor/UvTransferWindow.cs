@@ -3963,6 +3963,12 @@ namespace LightmapUvTool
                         string fbxBak = fullPath + ".bak";
                         if (System.IO.File.Exists(fbxBak))
                             System.IO.File.Delete(fbxBak);
+                        string fbxBakMeta = fbxBak + ".meta";
+                        if (System.IO.File.Exists(fbxBakMeta))
+                            System.IO.File.Delete(fbxBakMeta);
+                        string metaBakMeta = metaBak + ".meta";
+                        if (System.IO.File.Exists(metaBakMeta))
+                            System.IO.File.Delete(metaBakMeta);
                     }
                 }
                 catch (Exception ex)

@@ -7,6 +7,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEditor;
@@ -42,6 +43,7 @@ namespace LightmapUvTool
         List<GeneratedLodInfo> lastResults = new List<GeneratedLodInfo>();
         Dictionary<string, List<(MeshEntry entry, Mesh generatedMesh, string meshName)>> generatedPerFbx
             = new Dictionary<string, List<(MeshEntry, Mesh, string)>>();
+        bool autoExportDone;
 
         struct GeneratedLodInfo
         {
@@ -50,6 +52,9 @@ namespace LightmapUvTool
             public int simplifiedTris;
             public float error;
             public int lodLevel;
+            public float targetRatio;
+            public float actualRatio;
+            public bool hitErrorLimit;
         }
 
         public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
@@ -59,7 +64,7 @@ namespace LightmapUvTool
         }
 
         public void OnDeactivate() { }
-        public void OnRefresh() { lastResults.Clear(); generatedPerFbx.Clear(); }
+        public void OnRefresh() { lastResults.Clear(); generatedPerFbx.Clear(); autoExportDone = false; }
 
         public void OnDrawSidebar()
         {
@@ -115,7 +120,6 @@ namespace LightmapUvTool
                     isSrc ? EditorStyles.boldLabel : EditorStyles.miniLabel);
             }
 
-            // First new LOD level = after last existing
             int startLod = lastExistingLod + 1;
 
             EditorGUILayout.Space(8);
@@ -124,7 +128,6 @@ namespace LightmapUvTool
             // ── Settings ──
             generateLodCount = EditorGUILayout.IntSlider("Count", generateLodCount, 1, 4);
 
-            // Find last LOD's ratio relative to source
             float lastRatio = 1f;
             if (sourceTris > 0)
             {
@@ -139,7 +142,6 @@ namespace LightmapUvTool
                     lastRatio = sourceTris > 0 ? (float)lastLodTris / sourceTris : 0.25f;
                 }
 
-                // Auto-init ratios as halving from last existing
                 for (int i = 0; i < generateLodCount && i < generateLodRatios.Length; i++)
                 {
                     if (generateLodRatios[i] >= lastRatio && lastRatio > 0.01f)
@@ -149,7 +151,6 @@ namespace LightmapUvTool
 
             for (int i = 0; i < generateLodCount && i < generateLodRatios.Length; i++)
             {
-                // Clamp: each LOD must have fewer tris than the previous
                 float maxRatio = i == 0 ? lastRatio * 0.99f : generateLodRatios[i - 1] * 0.99f;
                 if (maxRatio < 0.001f) maxRatio = 0.001f;
                 if (generateLodRatios[i] > maxRatio) generateLodRatios[i] = maxRatio * 0.5f;
@@ -182,9 +183,9 @@ namespace LightmapUvTool
                 ExecGenerateLods(startLod);
             GUI.backgroundColor = bg;
 
-            // ── FBX Export buttons (after generation) ──
+            // ── Manual FBX Export buttons (only if auto-export didn't run) ──
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            if (generatedPerFbx.Count > 0)
+            if (generatedPerFbx.Count > 0 && !autoExportDone)
             {
                 EditorGUILayout.Space(4);
                 GUI.backgroundColor = new Color(.4f, .7f, .95f);
@@ -206,9 +207,14 @@ namespace LightmapUvTool
                 foreach (var r in lastResults)
                 {
                     float pct = sourceTris > 0 ? (float)r.simplifiedTris / sourceTris * 100f : 0;
+                    string warn = r.hitErrorLimit ? " ⚠" : "";
                     EditorGUILayout.LabelField(
-                        $"  LOD{r.lodLevel}: {r.meshName} — {r.simplifiedTris:N0} tris ({pct:F0}%)",
+                        $"  LOD{r.lodLevel}: {r.meshName} — {r.simplifiedTris:N0} tris ({pct:F0}%){warn}",
                         EditorStyles.miniLabel);
+                    if (r.hitErrorLimit)
+                        EditorGUILayout.LabelField(
+                            $"      target {r.targetRatio:P0}, got {r.actualRatio:P0} — increase Target Error",
+                            EditorStyles.miniLabel);
                 }
             }
         }
@@ -218,6 +224,7 @@ namespace LightmapUvTool
             if (ctx.LodGroup == null) return;
             lastResults.Clear();
             generatedPerFbx.Clear();
+            autoExportDone = false;
 
             var sourceMeshes = new List<(MeshEntry entry, Mesh mesh)>();
             foreach (var e in ctx.MeshEntries)
@@ -272,13 +279,13 @@ namespace LightmapUvTool
                         var r = MeshSimplifier.Simplify(srcMesh, settings);
                         if (!r.ok) { UvtLog.Error($"[GenerateLOD] Failed on {srcMesh.name}: {r.error}"); continue; }
 
-                        // Warn if error limit prevented reaching target ratio
                         float actualRatio = srcMesh.triangles.Length > 0 ? (float)r.simplifiedTriCount / (srcMesh.triangles.Length / 3) : 1f;
-                        if (actualRatio > ratio * 1.5f)
-                            UvtLog.Warn($"[GenerateLOD] LOD{lodLevel}: target {ratio:P0} but got {actualRatio:P0} — increase Target Error to simplify further");
+                        bool hitLimit = actualRatio > ratio * 1.2f;
+                        if (hitLimit)
+                            UvtLog.Warn($"[GenerateLOD] LOD{lodLevel}: target {ratio:P0} but got {actualRatio:P0} — increase Target Error");
 
                         string baseName = entry.fbxMesh != null ? entry.fbxMesh.name : srcMesh.name;
-                        baseName = System.Text.RegularExpressions.Regex.Replace(baseName, @"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$", "");
+                        baseName = Regex.Replace(baseName, @"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$", "");
                         string meshName = baseName + "_LOD" + lodLevel;
                         r.simplifiedMesh.name = meshName;
 
@@ -289,7 +296,7 @@ namespace LightmapUvTool
                             string assetPath = AssetDatabase.GenerateUniqueAssetPath(savePath + "/" + meshName + ".asset");
                             AssetDatabase.CreateAsset(r.simplifiedMesh, assetPath);
                         }
-                        UvtLog.Info($"[GenerateLOD] {meshName}: {r.originalTriCount} → {r.simplifiedTriCount} tris");
+                        UvtLog.Info($"[GenerateLOD] {meshName}: {r.originalTriCount} → {r.simplifiedTriCount} tris ({actualRatio:P0})");
 
                         lastResults.Add(new GeneratedLodInfo
                         {
@@ -297,7 +304,10 @@ namespace LightmapUvTool
                             originalTris = r.originalTriCount,
                             simplifiedTris = r.simplifiedTriCount,
                             error = r.resultError,
-                            lodLevel = lodLevel
+                            lodLevel = lodLevel,
+                            targetRatio = ratio,
+                            actualRatio = actualRatio,
+                            hitErrorLimit = hitLimit
                         });
 
                         Mesh pathMesh = entry.fbxMesh ?? entry.originalMesh;
@@ -310,7 +320,6 @@ namespace LightmapUvTool
                         }
 
                         // Only create scene GameObjects if NOT auto-exporting to FBX
-                        // (FBX reimport will create them from the exported file)
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
                         bool createSceneObjects = generateAddToLodGroup && !exportToFbx;
 #else
@@ -336,7 +345,6 @@ namespace LightmapUvTool
                     {
                         if (lodLevel < newLods.Count)
                         {
-                            // Replace existing LOD
                             var oldRenderers = newLods[lodLevel].renderers;
                             if (oldRenderers != null)
                                 foreach (var oldR in oldRenderers)
@@ -352,6 +360,7 @@ namespace LightmapUvTool
                     }
                 }
 
+                // Update LODGroup only in non-FBX path (FBX reimport handles it)
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
                 bool updateLodGroup = generateAddToLodGroup && !exportToFbx;
 #else
@@ -367,19 +376,26 @@ namespace LightmapUvTool
             }
             finally { EditorUtility.ClearProgressBar(); }
 
+            // ── FBX auto-export ──
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (exportToFbx && generatedPerFbx.Count > 0)
+            {
                 ExportGeneratedLods(true);
+                autoExportDone = true;
+
+                // After FBX reimport (inside ExportGeneratedLods), new children exist
+                // under the LODGroup. Assign them to LOD slots and update LODGroup.
+                if (generateAddToLodGroup)
+                    RebuildLodGroupFromChildren(startLod);
+            }
 #endif
 
             // Add new LOD entries WITHOUT destroying existing pipeline state
-            // (ctx.Refresh would clear repack/transfer/weld state on LOD0-2)
             if (generateAddToLodGroup)
             {
                 var currentLods = ctx.LodGroup.GetLODs();
                 for (int li = 0; li < currentLods.Length; li++)
                 {
-                    // Only add entries for LOD levels we don't already have
                     if (ctx.MeshEntries.Any(e => e.lodIndex == li)) continue;
                     if (currentLods[li].renderers == null) continue;
                     foreach (var r in currentLods[li].renderers)
@@ -405,6 +421,50 @@ namespace LightmapUvTool
             }
             ctx.ClearAllCaches();
             requestRepaint?.Invoke();
+        }
+
+        /// <summary>
+        /// After FBX reimport, find new child renderers under LODGroup and assign
+        /// them to the correct LOD slots based on their _LOD{N} suffix.
+        /// </summary>
+        void RebuildLodGroupFromChildren(int startLod)
+        {
+            if (ctx.LodGroup == null) return;
+            var currentLods = ctx.LodGroup.GetLODs();
+            var updatedLods = new List<LOD>(currentLods);
+
+            // Ensure enough LOD slots
+            int maxNeeded = startLod + generateLodCount;
+            while (updatedLods.Count < maxNeeded)
+            {
+                float baseH = updatedLods.Count > 0 ? updatedLods[updatedLods.Count - 1].screenRelativeTransitionHeight : 0.5f;
+                updatedLods.Add(new LOD(baseH * 0.5f, new Renderer[0]));
+            }
+
+            // Collect generated mesh names
+            var generatedNames = new HashSet<string>();
+            foreach (var kv in generatedPerFbx)
+                foreach (var (_, _, meshName) in kv.Value)
+                    generatedNames.Add(meshName);
+
+            // Find matching children and assign to LOD slots
+            foreach (Transform child in ctx.LodGroup.transform)
+            {
+                if (!generatedNames.Contains(child.name)) continue;
+                var r = child.GetComponent<Renderer>();
+                if (r == null) continue;
+                var match = Regex.Match(child.name, @"_LOD(\d+)$");
+                if (!match.Success) continue;
+                int lodLevel = int.Parse(match.Groups[1].Value);
+                if (lodLevel >= updatedLods.Count) continue;
+
+                var existing = updatedLods[lodLevel].renderers?.ToList() ?? new List<Renderer>();
+                if (!existing.Contains(r)) existing.Add(r);
+                updatedLods[lodLevel] = new LOD(updatedLods[lodLevel].screenRelativeTransitionHeight, existing.ToArray());
+            }
+
+            Undo.RecordObject(ctx.LodGroup, "Generate LODs");
+            ctx.LodGroup.SetLODs(updatedLods.ToArray());
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
@@ -460,14 +520,6 @@ namespace LightmapUvTool
                     {
                         var child = new GameObject(meshName);
                         child.transform.SetParent(tempRoot.transform, false);
-                        if (entry.renderer != null)
-                        {
-                            var srcT = entry.renderer.transform;
-                            var lodRoot = ctx.LodGroup != null ? ctx.LodGroup.transform : srcT.parent;
-                            child.transform.localPosition = lodRoot.InverseTransformPoint(srcT.position);
-                            child.transform.localRotation = Quaternion.Inverse(lodRoot.rotation) * srcT.rotation;
-                            child.transform.localScale = srcT.localScale;
-                        }
                         var mf = child.AddComponent<MeshFilter>();
                         mf.sharedMesh = genMesh;
                         var mr = child.AddComponent<MeshRenderer>();
@@ -479,20 +531,28 @@ namespace LightmapUvTool
                     ModelExporter.ExportObjects(exportPath, new UnityEngine.Object[] { tempRoot }, exportOptions);
                     UvtLog.Info("[FBX LOD Export] " + generated.Count + " mesh(es) -> " + exportPath);
 
+                    // Clean up ALL .bak files BEFORE AssetDatabase.Refresh
                     if (addToSource)
                     {
                         string fullPath = System.IO.Path.GetFullPath(sourceFbxPath);
-                        // Restore .meta
+                        // Restore original .meta
                         string metaBak = fullPath + ".meta.bak";
                         if (System.IO.File.Exists(metaBak))
                         {
                             System.IO.File.Copy(metaBak, fullPath + ".meta", true);
                             System.IO.File.Delete(metaBak);
                         }
-                        // Delete .fbx.bak to avoid Unity warning about orphan .meta
+                        // Delete .fbx.bak
                         string fbxBak = fullPath + ".bak";
                         if (System.IO.File.Exists(fbxBak))
                             System.IO.File.Delete(fbxBak);
+                        // Delete auto-created .bak.meta and .meta.bak.meta
+                        string fbxBakMeta = fbxBak + ".meta";
+                        if (System.IO.File.Exists(fbxBakMeta))
+                            System.IO.File.Delete(fbxBakMeta);
+                        string metaBakMeta = metaBak + ".meta";
+                        if (System.IO.File.Exists(metaBakMeta))
+                            System.IO.File.Delete(metaBakMeta);
                     }
                 }
                 catch (Exception ex) { UvtLog.Error("[FBX LOD Export] Failed: " + ex); }
