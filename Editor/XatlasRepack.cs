@@ -87,6 +87,50 @@ namespace LightmapUvTool
         }
 
         /// <summary>
+        /// Shift overlapping UV0 shells apart in a local UV array so xatlas
+        /// sees distinct chart shapes and packs them at separate UV2 positions.
+        /// Only modifies the provided uv0 array — does NOT touch the mesh.
+        /// Returns number of shells shifted.
+        /// </summary>
+        internal static int SeparateOverlappingShells(
+            Vector2[] uv0, List<UvShell> shells, List<List<int>> overlapGroups)
+        {
+            if (overlapGroups == null || overlapGroups.Count == 0)
+                return 0;
+
+            int shifted = 0;
+
+            foreach (var group in overlapGroups)
+            {
+                float maxWidth = 0f;
+                foreach (int si in group)
+                {
+                    float w = shells[si].boundsMax.x - shells[si].boundsMin.x;
+                    if (w > maxWidth) maxWidth = w;
+                }
+
+                float step = maxWidth + 2f;
+
+                for (int k = 1; k < group.Count; k++)
+                {
+                    float offsetU = step * k;
+                    var shell = shells[group[k]];
+                    foreach (int vi in shell.vertexIndices)
+                    {
+                        if ((uint)vi < (uint)uv0.Length)
+                            uv0[vi] = new Vector2(uv0[vi].x + offsetU, uv0[vi].y);
+                    }
+                    shifted++;
+                }
+            }
+
+            if (shifted > 0)
+                UvtLog.Info($"[xatlas] Separated {shifted} overlapping shell(s) in local UV0");
+
+            return shifted;
+        }
+
+        /// <summary>
         /// Convenience wrapper: repack UV0 shells into UV2, return packed UV2 array.
         /// Does NOT modify the original mesh.
         /// </summary>
@@ -141,6 +185,9 @@ namespace LightmapUvTool
 
             result.shellCount = shells.Count;
             result.overlapGroupCount = overlapGroups.Count;
+
+            // Shift overlapping shells apart so xatlas packs them separately.
+            SeparateOverlappingShells(uv0, shells, overlapGroups);
 
             // UV0 winding normalized by ExecWeldUv0.
             result.flippedShells = 0;
@@ -303,6 +350,9 @@ namespace LightmapUvTool
 
                 results[m].shellCount        = shells.Count;
                 results[m].overlapGroupCount  = overlapGroups.Count;
+
+                // Shift overlapping shells apart so xatlas packs them separately.
+                SeparateOverlappingShells(allUv0[m], allShells[m], allOverlap[m]);
             }
 
             // UV0 winding normalized by ExecWeldUv0.
