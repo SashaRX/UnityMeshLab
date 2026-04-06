@@ -162,8 +162,8 @@ namespace LightmapUvTool
                     // Selected object has no LODGroup — clear context only if it
                     // has mesh-relevant components or LOD children, so clicking a
                     // Light or Camera doesn't disrupt the workflow.
-                    bool hasMeshRelevance = go.GetComponent<MeshFilter>() != null
-                                         || go.GetComponent<MeshRenderer>() != null
+                    bool hasMeshRelevance = go.GetComponentInChildren<MeshFilter>() != null
+                                         || go.GetComponentInChildren<MeshRenderer>() != null
                                          || LodGenerationTool.FindLodSiblings(go) != null;
                     if (hasMeshRelevance)
                     {

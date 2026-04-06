@@ -971,6 +971,7 @@ namespace LightmapUvTool
             }
             if (fbxGroups.Count == 0) { UvtLog.Error("[FBX Export] No processed meshes to export."); return; }
 
+            bool exportSucceeded = false;
             foreach (var kv in fbxGroups)
             {
                 string sourceFbxPath = kv.Key;
@@ -1114,6 +1115,7 @@ namespace LightmapUvTool
                     ModelExporter.ExportObjects(exportPath, new UnityEngine.Object[] { tempRoot }, exportOptions);
                     int totalExported = entries.Count + collisionMeshCount;
                     UvtLog.Info("[FBX Export] Exported (binary) " + totalExported + " mesh(es) -> " + exportPath);
+                    exportSucceeded = true;
 
                     // Restore original .meta and clean up .bak files
                     if (overwriteSource)
@@ -1148,7 +1150,7 @@ namespace LightmapUvTool
 
             // Clean up scene-generated LOD and COL objects after export —
             // they are now embedded in the FBX and would otherwise duplicate.
-            if (ctx.LodGroup != null)
+            if (exportSucceeded && ctx.LodGroup != null)
             {
                 var lodGroupT = ctx.LodGroup.transform;
                 for (int ci = lodGroupT.childCount - 1; ci >= 0; ci--)
