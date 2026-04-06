@@ -971,7 +971,6 @@ namespace LightmapUvTool
             }
             if (fbxGroups.Count == 0) { UvtLog.Error("[FBX Export] No processed meshes to export."); return; }
 
-            int exportedCount = 0;
             foreach (var kv in fbxGroups)
             {
                 string sourceFbxPath = kv.Key;
@@ -1009,16 +1008,6 @@ namespace LightmapUvTool
                 if (fbxPrefab == null) { UvtLog.Error("[FBX Export] Cannot load FBX prefab: " + sourceFbxPath); continue; }
                 var tempRoot = UnityEngine.Object.Instantiate(fbxPrefab);
                 tempRoot.name = fbxPrefab.name;
-
-                // Rename LOD0 children in clone to match scene hierarchy
-                foreach (var mf in tempRoot.GetComponentsInChildren<MeshFilter>(true))
-                {
-                    if (mf.gameObject != tempRoot &&
-                        !System.Text.RegularExpressions.Regex.IsMatch(mf.gameObject.name, @"[_\-\s]LOD\d+$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-                    {
-                        mf.gameObject.name = mf.gameObject.name + "_LOD0";
-                    }
-                }
 
                 try
                 {
@@ -1125,8 +1114,6 @@ namespace LightmapUvTool
                     ModelExporter.ExportObjects(exportPath, new UnityEngine.Object[] { tempRoot }, exportOptions);
                     int totalExported = entries.Count + collisionMeshCount;
                     UvtLog.Info("[FBX Export] Exported (binary) " + totalExported + " mesh(es) -> " + exportPath);
-                    exportedCount++;
-
                     // Restore original .meta and clean up .bak files
                     if (overwriteSource)
                     {
@@ -1156,33 +1143,6 @@ namespace LightmapUvTool
                 // to the overwritten FBX — the UV2 is already baked into the exported mesh.
                 if (overwriteSource)
                     Uv2AssetPostprocessor.fbxOverwritePaths.Add(sourceFbxPath);
-            }
-
-            // Clean up scene-generated LOD and COL objects after export —
-            // they are now embedded in the FBX and would otherwise duplicate.
-            if (exportedCount == fbxGroups.Count && ctx.LodGroup != null)
-            {
-                var lodGroupT = ctx.LodGroup.transform;
-                for (int ci = lodGroupT.childCount - 1; ci >= 0; ci--)
-                {
-                    var child = lodGroupT.GetChild(ci);
-                    if (System.Text.RegularExpressions.Regex.IsMatch(child.name, @"_LOD[1-9]\d*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase) ||
-                        child.name.Contains("_COL"))
-                    {
-                        Undo.DestroyObjectImmediate(child.gameObject);
-                    }
-                }
-
-                // Reset LODGroup to keep only LOD0 — FBX reimport will recreate the full hierarchy
-                var lods = ctx.LodGroup.GetLODs();
-                if (lods.Length > 1)
-                {
-                    Undo.RecordObject(ctx.LodGroup, "Cleanup after FBX export");
-                    ctx.LodGroup.SetLODs(new[] { lods[0] });
-                }
-
-                ctx.Refresh(ctx.LodGroup);
-                OnRefresh();
             }
 
             AssetDatabase.Refresh();
