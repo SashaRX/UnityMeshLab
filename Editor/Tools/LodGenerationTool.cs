@@ -569,7 +569,7 @@ namespace LightmapUvTool
             }
 
             var lodGroup = Undo.AddComponent<LODGroup>(root);
-            lodGroup.SetLODs(new[] { new LOD(0.5f, renderers) });
+            lodGroup.SetLODs(new[] { new LOD(0.01f, renderers) });
             lodGroup.RecalculateBounds();
 
             return lodGroup;
