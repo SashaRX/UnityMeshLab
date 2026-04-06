@@ -861,10 +861,15 @@ namespace LightmapUvTool
             if (mesh != null) meshId = mesh.GetInstanceID();
             long cacheKey = ((long)meshId << 32) | (uint)shell.shellId;
             if (!ctx.ShellColorKeyCacheDirty && ctx.ShellColorKeyCache.TryGetValue(cacheKey, out int cc)) return cc;
+
+            // Use meshGroupKey for hashing — stable across LODs (e.g. "Mattress" for
+            // Mattress_LOD0, Mattress_LOD1, etc.) so the same shell gets the same color.
+            int groupHash = entry?.meshGroupKey?.GetHashCode() ?? 0;
+
             int result;
             if (ctx.PostResetColoring)
             {
-                result = Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663) ^ 0x5F3759DF);
+                result = Mathf.Abs((shell.shellId * 73856093) ^ (groupHash * 19349663) ^ 0x5F3759DF);
                 ctx.ShellColorKeyCache[cacheKey] = result;
                 return result;
             }
@@ -881,7 +886,7 @@ namespace LightmapUvTool
                     freq[srcShell] = c2;
                     if (c2 > bestCount || (c2 == bestCount && srcShell < bestKey)) { bestCount = c2; bestKey = srcShell; }
                 }
-                result = bestKey >= 0 ? bestKey : Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
+                result = bestKey >= 0 ? bestKey : Mathf.Abs((shell.shellId * 73856093) ^ (groupHash * 19349663));
             }
             else if (mesh != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
             {
@@ -898,11 +903,11 @@ namespace LightmapUvTool
                         freq[uv0Shell] = c2;
                         if (c2 > bestCount || (c2 == bestCount && uv0Shell < bestKey)) { bestCount = c2; bestKey = uv0Shell; }
                     }
-                    result = bestKey >= 0 ? bestKey : Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
+                    result = bestKey >= 0 ? bestKey : Mathf.Abs((shell.shellId * 73856093) ^ (groupHash * 19349663));
                 }
-                else result = Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
+                else result = Mathf.Abs((shell.shellId * 73856093) ^ (groupHash * 19349663));
             }
-            else result = Mathf.Abs((shell.shellId * 73856093) ^ (meshId * 19349663));
+            else result = Mathf.Abs((shell.shellId * 73856093) ^ (groupHash * 19349663));
             ctx.ShellColorKeyCache[cacheKey] = result;
             return result;
         }
