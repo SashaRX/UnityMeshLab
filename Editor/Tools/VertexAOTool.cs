@@ -53,6 +53,8 @@ namespace LightmapUvTool
         float blurStrength   = 0.5f;
         bool  blurCrossHardEdges = true;
         bool  blurCrossUvSeams   = true;
+        float ppBrightness = 0f;   // -1..1
+        float ppContrast   = 1f;   // 0..3
         bool  faceAreaCorrection = false;
         bool  backfaceCulling = true;
 
@@ -217,6 +219,13 @@ namespace LightmapUvTool
                 blurCrossUvSeams = EditorGUILayout.Toggle(
                     new GUIContent("Cross UV Seams", "Blur across UV shell boundaries (vertices with different UV0 at same position)."),
                     blurCrossUvSeams);
+                EditorGUILayout.Space(4);
+                ppBrightness = EditorGUILayout.Slider(
+                    new GUIContent("Brightness", "Shift AO values. Positive = lighter, negative = darker."),
+                    ppBrightness, -1f, 1f);
+                ppContrast = EditorGUILayout.Slider(
+                    new GUIContent("Contrast", "AO contrast around midpoint 0.5. >1 = more contrast, <1 = flatter."),
+                    ppContrast, 0f, 3f);
                 if (EditorGUI.EndChangeCheck())
                     ApplyBlur();
 
@@ -329,18 +338,39 @@ namespace LightmapUvTool
 
         void ApplyBlurInternal()
         {
-            if (blurIterations <= 0 || bakedFinalAO == null) return;
-            foreach (var mesh in bakedFinalAO.Keys.ToList())
-            {
-                var uv0List = new List<Vector2>();
-                mesh.GetUVs(0, uv0List);
-                var uv0Arr = uv0List.Count == mesh.vertexCount ? uv0List.ToArray() : null;
+            if (bakedFinalAO == null) return;
 
-                bakedFinalAO[mesh] = VertexAOBaker.BlurAO(
-                    bakedFinalAO[mesh], mesh.triangles, mesh.vertexCount,
-                    blurIterations, blurStrength,
-                    mesh.vertices, mesh.normals, uv0Arr,
-                    blurCrossHardEdges, blurCrossUvSeams);
+            // Blur
+            if (blurIterations > 0)
+            {
+                foreach (var mesh in bakedFinalAO.Keys.ToList())
+                {
+                    var uv0List = new List<Vector2>();
+                    mesh.GetUVs(0, uv0List);
+                    var uv0Arr = uv0List.Count == mesh.vertexCount ? uv0List.ToArray() : null;
+
+                    bakedFinalAO[mesh] = VertexAOBaker.BlurAO(
+                        bakedFinalAO[mesh], mesh.triangles, mesh.vertexCount,
+                        blurIterations, blurStrength,
+                        mesh.vertices, mesh.normals, uv0Arr,
+                        blurCrossHardEdges, blurCrossUvSeams);
+                }
+            }
+
+            // Brightness / Contrast
+            if (ppBrightness != 0f || ppContrast != 1f)
+            {
+                foreach (var mesh in bakedFinalAO.Keys.ToList())
+                {
+                    var ao = bakedFinalAO[mesh];
+                    for (int i = 0; i < ao.Length; i++)
+                    {
+                        float v = ao[i];
+                        // Contrast around 0.5 midpoint, then brightness offset
+                        v = (v - 0.5f) * ppContrast + 0.5f + ppBrightness;
+                        ao[i] = Mathf.Clamp01(v);
+                    }
+                }
             }
         }
 
