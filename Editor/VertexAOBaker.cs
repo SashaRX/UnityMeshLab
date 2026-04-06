@@ -229,15 +229,21 @@ namespace LightmapUvTool
                 surfaceAO = Mathf.Pow(Mathf.Clamp01(surfaceAO), settings.intensity);
 
                 float vertexAvgAO = (ao[i0] + ao[i1] + ao[i2]) / 3f;
-                if (surfaceAO <= vertexAvgAO + 0.05f) return;
+
+                // Only fix anomalies: skip if average vertex AO is reasonable (normal gradient)
+                if (vertexAvgAO > 0.15f) return;
+
+                // Surface must be significantly brighter than the dark vertices
+                if (surfaceAO <= vertexAvgAO + 0.1f) return;
 
                 double weight = area / medianArea;
                 double sao = surfaceAO;
 
-                // Atomic accumulation via Interlocked — lock-free
+                // Only correct vertices that are very dark (< 0.2)
                 int[] faceVerts = { i0, i1, i2 };
                 foreach (int vi in faceVerts)
                 {
+                    if (ao[vi] >= 0.2f) continue; // normal AO, don't touch
                     InterlockedAddDouble(ref correction[vi], sao * weight);
                     InterlockedAddDouble(ref totalWeight[vi], weight);
                 }
