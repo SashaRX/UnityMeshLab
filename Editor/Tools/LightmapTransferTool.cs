@@ -1008,6 +1008,17 @@ namespace LightmapUvTool
                 if (fbxPrefab == null) { UvtLog.Error("[FBX Export] Cannot load FBX prefab: " + sourceFbxPath); continue; }
                 var tempRoot = UnityEngine.Object.Instantiate(fbxPrefab);
                 tempRoot.name = fbxPrefab.name;
+
+                // Rename LOD0 children in clone to match scene hierarchy
+                foreach (var mf in tempRoot.GetComponentsInChildren<MeshFilter>(true))
+                {
+                    if (mf.gameObject != tempRoot &&
+                        !Regex.IsMatch(mf.gameObject.name, @"[_\-\s]LOD\d+$", RegexOptions.IgnoreCase))
+                    {
+                        mf.gameObject.name = mf.gameObject.name + "_LOD0";
+                    }
+                }
+
                 try
                 {
                     // Build lookup: original mesh name -> export mesh
@@ -1134,6 +1145,34 @@ namespace LightmapUvTool
                 if (overwriteSource)
                     Uv2AssetPostprocessor.fbxOverwritePaths.Add(sourceFbxPath);
             }
+
+            // Clean up scene-generated LOD and COL objects after export —
+            // they are now embedded in the FBX and would otherwise duplicate.
+            if (ctx.LodGroup != null)
+            {
+                var lodGroupT = ctx.LodGroup.transform;
+                for (int ci = lodGroupT.childCount - 1; ci >= 0; ci--)
+                {
+                    var child = lodGroupT.GetChild(ci);
+                    if (Regex.IsMatch(child.name, @"_LOD[1-9]\d*$", RegexOptions.IgnoreCase) ||
+                        child.name.Contains("_COL"))
+                    {
+                        Undo.DestroyObjectImmediate(child.gameObject);
+                    }
+                }
+
+                // Reset LODGroup to keep only LOD0 — FBX reimport will recreate the full hierarchy
+                var lods = ctx.LodGroup.GetLODs();
+                if (lods.Length > 1)
+                {
+                    Undo.RecordObject(ctx.LodGroup, "Cleanup after FBX export");
+                    ctx.LodGroup.SetLODs(new[] { lods[0] });
+                }
+
+                ctx.Refresh(ctx.LodGroup);
+                OnRefresh();
+            }
+
             AssetDatabase.Refresh();
 #endif
         }
