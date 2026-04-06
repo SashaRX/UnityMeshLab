@@ -855,10 +855,12 @@ namespace LightmapUvTool
         }
 
         /// <summary>
-        /// Compute a UV-centroid hash for the shell — stable across LODs because UV2
-        /// is transferred from source, so the same island lands at the same UV position.
+        /// Compute a UV bounding-box hash for the shell — stable across LODs because
+        /// UV2 is transferred from source, and the bbox corners (min/max) are determined
+        /// by extreme vertices which survive simplification, unlike the centroid which
+        /// shifts when interior vertices are removed non-uniformly.
         /// </summary>
-        static int ShellCentroidHash(UvShell shell, Mesh mesh, int uvChannel = 1)
+        static int ShellBBoxHash(UvShell shell, Mesh mesh, int uvChannel = 1)
         {
             if (shell?.vertexIndices == null || shell.vertexIndices.Count == 0 || mesh == null)
                 return shell?.shellId ?? 0;
@@ -869,16 +871,23 @@ namespace LightmapUvTool
                 mesh.GetUVs(0, uvs);
                 if (uvs.Count != mesh.vertexCount) return shell.shellId;
             }
-            Vector2 centroid = Vector2.zero;
-            int count = 0;
+            Vector2 mn = new Vector2(float.MaxValue, float.MaxValue);
+            Vector2 mx = new Vector2(float.MinValue, float.MinValue);
             foreach (int vi in shell.vertexIndices)
             {
-                if (vi >= 0 && vi < uvs.Count) { centroid += uvs[vi]; count++; }
+                if (vi < 0 || vi >= uvs.Count) continue;
+                var uv = uvs[vi];
+                if (uv.x < mn.x) mn.x = uv.x; if (uv.y < mn.y) mn.y = uv.y;
+                if (uv.x > mx.x) mx.x = uv.x; if (uv.y > mx.y) mx.y = uv.y;
             }
-            if (count > 0) centroid /= count;
-            int qx = Mathf.RoundToInt(centroid.x * 1000f);
-            int qy = Mathf.RoundToInt(centroid.y * 1000f);
-            return Mathf.Abs(qx * 73856093 ^ qy * 19349663);
+            // Hash bbox center — quantize at 100x for robustness
+            Vector2 center = (mn + mx) * 0.5f;
+            int qx = Mathf.RoundToInt(center.x * 100f);
+            int qy = Mathf.RoundToInt(center.y * 100f);
+            // Include bbox size to distinguish overlapping shells of different sizes
+            int qw = Mathf.RoundToInt((mx.x - mn.x) * 100f);
+            int qh = Mathf.RoundToInt((mx.y - mn.y) * 100f);
+            return Mathf.Abs((qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381));
         }
 
         public int GetShellColorKey(UvToolContext ctx, UvShell shell, MeshEntry entry)
@@ -892,7 +901,7 @@ namespace LightmapUvTool
             int result;
             if (ctx.PostResetColoring)
             {
-                result = ShellCentroidHash(shell, mesh);
+                result = ShellBBoxHash(shell, mesh);
                 ctx.ShellColorKeyCache[cacheKey] = result;
                 return result;
             }
@@ -909,7 +918,7 @@ namespace LightmapUvTool
                     freq[srcShell] = c2;
                     if (c2 > bestCount || (c2 == bestCount && srcShell < bestKey)) { bestCount = c2; bestKey = srcShell; }
                 }
-                result = bestKey >= 0 ? bestKey : ShellCentroidHash(shell, mesh);
+                result = bestKey >= 0 ? bestKey : ShellBBoxHash(shell, mesh);
             }
             else if (mesh != null && shell?.vertexIndices != null && shell.vertexIndices.Count > 0)
             {
@@ -926,11 +935,11 @@ namespace LightmapUvTool
                         freq[uv0Shell] = c2;
                         if (c2 > bestCount || (c2 == bestCount && uv0Shell < bestKey)) { bestCount = c2; bestKey = uv0Shell; }
                     }
-                    result = bestKey >= 0 ? bestKey : ShellCentroidHash(shell, mesh);
+                    result = bestKey >= 0 ? bestKey : ShellBBoxHash(shell, mesh);
                 }
-                else result = ShellCentroidHash(shell, mesh);
+                else result = ShellBBoxHash(shell, mesh);
             }
-            else result = ShellCentroidHash(shell, mesh);
+            else result = ShellBBoxHash(shell, mesh);
             ctx.ShellColorKeyCache[cacheKey] = result;
             return result;
         }
