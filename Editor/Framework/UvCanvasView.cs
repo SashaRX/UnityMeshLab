@@ -1,4 +1,4 @@
-// UvCanvasView.cs — UV canvas component extracted from UvTransferWindow.
+// UvCanvasView.cs — UV canvas component for Mesh Lab.
 // Handles GL rendering, zoom/pan, shell picking, fill modes.
 using System;
 using System.Collections.Generic;

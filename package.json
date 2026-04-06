@@ -1,8 +1,8 @@
 {
   "name": "com.sasharx.lightmap-uv-tool",
-  "version": "0.14.4",
-  "displayName": "Lightmap UV LOD Transfer",
-  "description": "Unity Editor tool for transferring UV2 lightmap coordinates from LOD0 to higher LOD levels using xatlas repack and surface-based projection.",
+  "version": "0.15.0",
+  "displayName": "Mesh Lab",
+  "description": "Unity Editor tool suite: UV2 lightmap transfer, LOD generation, UV analysis, and FBX export with binary format support.",
   "unity": "2020.3",
   "author": {
     "name": "SashaRX",

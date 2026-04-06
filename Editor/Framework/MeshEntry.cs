@@ -1,5 +1,4 @@
 // MeshEntry.cs — Per-renderer mesh state shared across all tools.
-// Extracted from UvTransferWindow.MeshEntry nested class.
 
 using System.Collections.Generic;
 using UnityEngine;

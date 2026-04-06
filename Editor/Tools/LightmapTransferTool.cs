@@ -1,5 +1,5 @@
-// LightmapTransferTool.cs — UV2 Lightmap Transfer tool.
-// Migrated from UvTransferWindow: Setup → Repack → Transfer → Apply pipeline.
+// LightmapTransferTool.cs — UV2 Lightmap Transfer tool for Mesh Lab.
+// Setup → Repack → Transfer → Apply pipeline.
 using System;
 using System.Collections.Generic;
 using System.Linq;

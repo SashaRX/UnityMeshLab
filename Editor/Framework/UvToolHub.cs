@@ -1,5 +1,4 @@
-// UvToolHub.cs — Main EditorWindow for the UV Tool Hub.
-// Replaces UvTransferWindow as the single entry point.
+// UvToolHub.cs — Main EditorWindow for Mesh Lab.
 // Toolbar at top selects the active IUvTool; sidebar shows that tool's controls.
 // UV canvas is a shared UvCanvasView component.
 
@@ -32,17 +31,17 @@ namespace LightmapUvTool
         string selectedFbxPath;
         string selectedResetLabel;
 
-        [MenuItem("Tools/UV Tool Hub")]
+        [MenuItem("Tools/Mesh Lab")]
         static void Open()
         {
-            var w = GetWindow<UvToolHub>("UV Tool Hub v" + Uv2DataAsset.ToolVersionStr);
+            var w = GetWindow<UvToolHub>("Mesh Lab v" + Uv2DataAsset.ToolVersionStr);
             w.minSize = new Vector2(800, 500);
         }
 
         void OnEnable()
         {
             wantsMouseMove = true;
-            titleContent = new GUIContent("UV Tool Hub v" + Uv2DataAsset.ToolVersionStr);
+            titleContent = new GUIContent("Mesh Lab v" + Uv2DataAsset.ToolVersionStr);
 
             // Safety: restore any preview state left from prior session
             if (CheckerTexturePreview.IsActive) CheckerTexturePreview.Restore();

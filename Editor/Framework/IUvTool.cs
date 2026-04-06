@@ -1,4 +1,4 @@
-// IUvTool.cs — Interface for pluggable UV tools in the UV Tool Hub.
+// IUvTool.cs — Interface for pluggable tools in Mesh Lab.
 // Each tool implements this interface and is auto-discovered via reflection.
 
 using System.Collections.Generic;
