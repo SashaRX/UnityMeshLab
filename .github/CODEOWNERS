@@ -1,0 +1,22 @@
+# Unity Package — Code Owners
+# Requested for review when PR targets these zones
+
+# Package manifest & config
+package.json        @SashaRX
+CHANGELOG.md        @SashaRX
+CLAUDE.md           @SashaRX
+AGENTS.md           @SashaRX
+REVIEW.md           @SashaRX
+
+# Editor tools (core logic)
+Editor/             @SashaRX
+
+# Native plugins (binary + source)
+Plugins/            @SashaRX
+Native/             @SashaRX
+
+# Shaders
+Shaders/            @SashaRX
+
+# CI/CD
+.github/            @SashaRX

@@ -1,56 +1,41 @@
-# Mesh Lab — Unity Package (com.sasharx.lightmap-uv-tool)
+# Claude — Executor Mode
 
-## Project Overview
-Unity Editor tool suite: UV2 lightmap transfer, LOD generation, UV0 optimization, collision mesh generation, and FBX export. Distributed as a UPM package.
+Claude's role in this repo: **write code, fix bugs, implement features, fix CI**.
+Claude does NOT do final review — that's Codex's job.
 
-## Architecture
-- **Assembly:** `LightmapUvTool.Editor` (Editor-only, namespace `LightmapUvTool`)
-- **Entry point:** `Editor/Framework/UvToolHub.cs` — main EditorWindow, manages tool tabs
-- **Context:** `Editor/Framework/UvToolContext.cs` — shared state (LODGroup, MeshEntries, caches)
-- **Tools:** Each tab implements `IUvTool` interface in `Editor/Tools/`
-  - `LightmapTransferTool` — Setup, Repack, Transfer tabs + FBX export
-  - `LodGenerationTool` — LOD Gen tab
-  - `CollisionMeshTool` — Collision tab
-- **Native plugins:** `Plugins/` — xatlas (UV packing) + V-HACD (convex decomposition)
-- **Sidecar data:** `Uv2DataAsset` (ScriptableObject) persists UV2/collision data alongside FBX
+See `AGENTS.md` for shared rules that apply to all AI agents.
 
-## Unity Package Rules
+## Workflow
 
-### Meta files
-- Every `.cs`, `.asset`, `.dll`, `.so`, `.dylib` file MUST have a `.meta` file
-- Every directory MUST have a `.meta` file
-- Never delete or regenerate `.meta` files — GUIDs are permanent references
-- When creating new files, Unity generates `.meta` automatically; do NOT create them manually
+1. Before changes — short plan (what, where, why)
+2. Small, focused changes — one concern per commit
+3. Do NOT touch unrelated files
+4. Do NOT bulk-rename/reformat unless explicitly asked
+5. Verify compile locally before proposing PR
+6. Split large tasks into small PRs
 
-### Assembly definition
-- All Editor code is in `Editor/` under `LightmapUvTool.Editor.asmdef`
-- `includePlatforms: ["Editor"]` — this code never ships in builds
-- `allowUnsafeCode: true` — native interop uses unsafe
-- FBX exporter gated by `LIGHTMAP_UV_TOOL_FBX_EXPORTER` define (auto-set when `com.unity.formats.fbx` installed)
+## Code Rules
 
-### Code conventions
 - Namespace: `LightmapUvTool`
 - No `using System.Text.RegularExpressions` in `LightmapTransferTool.cs` — use fully qualified `System.Text.RegularExpressions.Regex`
 - `internal` visibility for cross-tool helpers (same assembly)
 - `Undo.RecordObject` / `Undo.AddComponent` / `Undo.DestroyObjectImmediate` for all scene modifications
 - Logging via `UvtLog.Info()` / `UvtLog.Warn()` / `UvtLog.Error()` (prefixed `[LightmapUV]`)
+- FBX code gated by `#if LIGHTMAP_UV_TOOL_FBX_EXPORTER`
+- `RestoreWorkingMeshes()` before clearing/switching LODGroup context
+- Destroy temporary meshes (repacked, transferred, welded) when no longer needed
 
-### Key patterns
-- LOD siblings detected by name pattern: `baseName[_-\s]LOD{N}` (regex, case-insensitive)
-- Mesh group key: `UvToolContext.ExtractGroupKey()` strips LOD/COL suffixes for grouping
-- FBX export: clone prefab → replace meshes → add LOD/COL children → `ModelExporter.ExportObjects`
-- Sidecar workflow: generate → save to `_uv2data.asset` → export to FBX (non-destructive)
+## Architecture Quick Reference
 
-## Review Checklist
-When reviewing changes to this package:
+- **Entry point:** `Editor/Framework/UvToolHub.cs` — main EditorWindow
+- **Context:** `Editor/Framework/UvToolContext.cs` — shared state
+- **Tools:** `Editor/Tools/` — each implements `IUvTool`
+- **Native:** `Plugins/` binaries, `Native/` C++ source
+- **Sidecar:** `Uv2DataAsset` persists UV2/collision data alongside FBX
 
-1. **Meta files** — new files must have `.meta`, removed files must remove `.meta`
-2. **Editor-only** — no runtime code, all under `Editor/` with correct asmdef
-3. **Undo support** — scene modifications must be undoable
-4. **Null safety** — `ctx.LodGroup`, `ctx.MeshEntries`, renderers, meshes can all be null
-5. **LODGroup lifecycle** — `RestoreWorkingMeshes()` before clearing/switching context
-6. **FBX export guards** — `#if LIGHTMAP_UV_TOOL_FBX_EXPORTER` around FBX-dependent code
-7. **No secrets/credentials** — never commit `.env`, API keys, or user-specific paths
-8. **Native plugins** — binary changes to `Plugins/` must match `Native/` source; don't modify binaries directly
-9. **Naming** — LOD objects follow `Name_LOD{N}` convention; collision objects use `Name_COL`
-10. **Mesh cleanup** — temporary meshes (repacked, transferred, welded) must be destroyed when no longer needed
+## Key Patterns
+
+- LOD siblings: `baseName[_-\s]LOD{N}` regex, case-insensitive
+- Mesh group key: `UvToolContext.ExtractGroupKey()` strips LOD/COL suffixes
+- FBX export: clone prefab → replace meshes → add LOD/COL → `ModelExporter.ExportObjects`
+- Sidecar: generate → save to `_uv2data.asset` → export to FBX (non-destructive)
