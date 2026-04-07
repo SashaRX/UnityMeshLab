@@ -309,41 +309,75 @@ namespace LightmapUvTool
             {
                 var imp = AssetImporter.GetAtPath(fbxPath) as ModelImporter;
                 if (imp == null) continue;
+                string fbxName = System.IO.Path.GetFileName(fbxPath);
 
+                // Check external object map (user remaps)
                 var map = imp.GetExternalObjectMap();
                 foreach (var kvp in map)
                 {
                     if (kvp.Key.type != typeof(Material)) continue;
-                    var mat = kvp.Value as Material;
+                    string sourceName = kvp.Key.name;
+                    if (string.IsNullOrEmpty(sourceName)) continue;
+
+                    // Check SOURCE name (material name baked into FBX)
+                    bool sourceIsHidden = sourceName.StartsWith("Hidden_LightmapUvTool")
+                                       || sourceName.StartsWith("Hidden/LightmapUvTool");
+                    bool sourceIsDefault = sourceName == "Lit" || sourceName == "Standard"
+                                        || sourceName == "No Name";
+
+                    if (sourceIsHidden || sourceIsDefault)
+                    {
+                        var mat = kvp.Value as Material;
+                        materialIssues.Add(new MaterialIssue
+                        {
+                            kind = MaterialIssue.Kind.ImporterRemap,
+                            fbxPath = fbxPath,
+                            remapSourceName = sourceName,
+                            current = mat,
+                            suggested = mat, // remap is already correct, FBX needs re-export
+                            description = $"{fbxName}: FBX contains bad material \"{sourceName}\"" +
+                                (mat != null ? $" (remapped to \"{mat.name}\")" : "") +
+                                " — re-export FBX to fix"
+                        });
+                    }
+                }
+
+                // Also check FBX embedded materials (not yet remapped)
+                var subAssets = AssetDatabase.LoadAllAssetsAtPath(fbxPath);
+                foreach (var asset in subAssets)
+                {
+                    var mat = asset as Material;
                     if (mat == null) continue;
 
-                    bool isHidden = mat.shader.name.StartsWith("Hidden/LightmapUvTool/");
-                    bool isDefault = mat.shader.name == "Lit" || mat.shader.name == "Standard"
-                                  || mat.shader.name == "Universal Render Pipeline/Lit";
+                    bool isHidden = mat.name.StartsWith("Hidden_LightmapUvTool")
+                                 || mat.shader.name.StartsWith("Hidden/LightmapUvTool/");
+                    bool isDefault = mat.name == "Lit" || mat.name == "No Name"
+                                  || (mat.name == "Standard" && mat.shader.name == "Standard");
 
-                    // Check if remapped material name doesn't match source name
-                    bool nameMismatch = !string.IsNullOrEmpty(kvp.Key.name) && mat.name != kvp.Key.name;
-
-                    if (isHidden || (isDefault && nameMismatch))
+                    // Skip if already covered by remap scan
+                    bool alreadyCovered = false;
+                    foreach (var kvp in map)
                     {
-                        // Try to find correct material
-                        Material suggested = null;
-                        if (correctMats.TryGetValue(kvp.Key.name, out var found))
-                            suggested = found;
+                        if (kvp.Key.type == typeof(Material) && kvp.Key.name == mat.name)
+                        { alreadyCovered = true; break; }
+                    }
+                    if (alreadyCovered) continue;
 
-                        string issue = isHidden
-                            ? $"FBX remap \"{kvp.Key.name}\" → hidden shader \"{mat.shader.name}\""
-                            : $"FBX remap \"{kvp.Key.name}\" → \"{mat.name}\" (name mismatch)";
+                    if (isHidden || isDefault)
+                    {
+                        Material suggested = null;
+                        if (correctMats.TryGetValue(mat.name, out var found))
+                            suggested = found;
 
                         materialIssues.Add(new MaterialIssue
                         {
                             kind = MaterialIssue.Kind.ImporterRemap,
                             fbxPath = fbxPath,
-                            remapSourceName = kvp.Key.name,
+                            remapSourceName = mat.name,
                             current = mat,
                             suggested = suggested,
-                            description = $"{System.IO.Path.GetFileName(fbxPath)}: {issue}" +
-                                (suggested != null ? $" → suggest \"{suggested.name}\"" : " (no suggestion)")
+                            description = $"{fbxName}: embedded material \"{mat.name}\" has bad shader" +
+                                (suggested != null ? $" → suggest \"{suggested.name}\"" : " — re-export FBX to fix")
                         });
                     }
                 }
@@ -478,59 +512,62 @@ namespace LightmapUvTool
             colliderIssues = new List<ColliderIssue>();
             if (ctx.LodGroup == null) return;
 
-            var colObjects = FindCollisionObjects(ctx.LodGroup.transform);
+            // Track meshes already checked (avoid duplicates)
+            var checkedMeshes = new HashSet<int>();
 
-            // Check extra attributes
+            // 1. Scan scene children with _COL in name
+            var colObjects = FindCollisionObjects(ctx.LodGroup.transform);
             foreach (var go in colObjects)
             {
                 var mf = go.GetComponent<MeshFilter>();
                 Mesh mesh = mf != null ? mf.sharedMesh : null;
-
-                // Also check MeshCollider
                 if (mesh == null)
                 {
                     var mc = go.GetComponent<MeshCollider>();
                     mesh = mc != null ? mc.sharedMesh : null;
                 }
-
                 if (mesh == null) continue;
+                checkedMeshes.Add(mesh.GetInstanceID());
+                CheckColliderMesh(mesh, go.name, go);
+            }
 
-                bool hasNormals  = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal);
-                bool hasTangents = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent);
-                bool hasColors   = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Color);
-                bool hasUvs      = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord0);
+            // 2. Scan FBX sub-assets for _COL meshes not in scene
+            var fbxPaths = new HashSet<string>();
+            foreach (var e in ctx.MeshEntries)
+            {
+                Mesh m = e.fbxMesh ?? e.originalMesh;
+                if (m == null) continue;
+                string p = AssetDatabase.GetAssetPath(m);
+                if (!string.IsNullOrEmpty(p) && p.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                    fbxPaths.Add(p);
+            }
 
-                if (hasNormals || hasTangents || hasColors || hasUvs)
+            foreach (string fbxPath in fbxPaths)
+            {
+                var subAssets = AssetDatabase.LoadAllAssetsAtPath(fbxPath);
+                foreach (var asset in subAssets)
                 {
-                    var extras = new List<string>();
-                    if (hasNormals) extras.Add("normals");
-                    if (hasTangents) extras.Add("tangents");
-                    if (hasColors) extras.Add("colors");
-                    if (hasUvs) extras.Add("UVs");
+                    var mesh = asset as Mesh;
+                    if (mesh == null) continue;
+                    if (checkedMeshes.Contains(mesh.GetInstanceID())) continue;
+                    if (!mesh.name.Contains("_COL") && !mesh.name.Contains("_col")) continue;
 
-                    colliderIssues.Add(new ColliderIssue
-                    {
-                        kind = ColliderIssue.Kind.ExtraAttributes,
-                        gameObject = go,
-                        mesh = mesh,
-                        description = $"{go.name}: has {string.Join(", ", extras)} (can strip)"
-                    });
+                    checkedMeshes.Add(mesh.GetInstanceID());
+                    CheckColliderMesh(mesh, $"{mesh.name} (FBX: {System.IO.Path.GetFileName(fbxPath)})", null);
                 }
             }
 
-            // Check duplicates
+            // Check duplicates (scene objects only)
             for (int i = 0; i < colObjects.Count; i++)
             {
                 var mfA = colObjects[i].GetComponent<MeshFilter>();
                 var meshA = mfA != null ? mfA.sharedMesh : null;
                 if (meshA == null) continue;
-
                 for (int j = i + 1; j < colObjects.Count; j++)
                 {
                     var mfB = colObjects[j].GetComponent<MeshFilter>();
                     var meshB = mfB != null ? mfB.sharedMesh : null;
                     if (meshB == null) continue;
-
                     if (AreMeshesDuplicate(meshA, meshB))
                     {
                         colliderIssues.Add(new ColliderIssue
@@ -545,6 +582,31 @@ namespace LightmapUvTool
             }
 
             UvtLog.Info($"Collider scan: {colliderIssues.Count} issue(s) found.");
+        }
+
+        void CheckColliderMesh(Mesh mesh, string displayName, GameObject go)
+        {
+            bool hasNormals  = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal);
+            bool hasTangents = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent);
+            bool hasColors   = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Color);
+            bool hasUvs      = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord0);
+
+            if (hasNormals || hasTangents || hasColors || hasUvs)
+            {
+                var extras = new List<string>();
+                if (hasNormals) extras.Add("normals");
+                if (hasTangents) extras.Add("tangents");
+                if (hasColors) extras.Add("colors");
+                if (hasUvs) extras.Add("UVs");
+
+                colliderIssues.Add(new ColliderIssue
+                {
+                    kind = ColliderIssue.Kind.ExtraAttributes,
+                    gameObject = go,
+                    mesh = mesh,
+                    description = $"{displayName}: has {string.Join(", ", extras)} (can strip)"
+                });
+            }
         }
 
         void FixColliders()
