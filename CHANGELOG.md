@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.15.36] - 2026-04-07
+
+### Added — Cleanup tool (#59)
+- **New "Cleanup" tab** (ToolOrder 45, between Collision and Vertex AO) for mesh/material/collider/scene hygiene
+- **Fix Materials**: detect Hidden_LightmapUvTool shaders on renderers, match LOD1+ materials to LOD0, strip unused material slots
+- **Clean Colliders**: strip UV/normal/tangent/color from _COL meshes, detect and remove duplicate _COL objects
+- **Scene Cleanup**: remove orphaned LOD objects after FBX reimport, rebuild LODGroup from hierarchy naming
+- **Mesh**: batch weld via meshopt, strip empty UV channels, per-LOD vertex/tri count summary
+- All operations use Undo and log via UvtLog
+
 ## [0.15.9] - 2026-04-06
 
 ### Added — Auto LODGroup creation + Vertex AO + CI workflows
