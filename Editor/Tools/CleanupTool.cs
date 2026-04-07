@@ -22,11 +22,15 @@ namespace LightmapUvTool
         public Action RequestRepaint { set => requestRepaint = value; }
 
         // ── Foldout state ──
-        bool foldMaterials = true, foldColliders, foldScene, foldMesh, foldAttributes;
+        bool foldMaterials = true, foldColliders, foldScene, foldMesh, foldAttributes, foldSplitMerge;
 
         // ── Ensure-attribute toggles ──
         bool ensureNormals, ensureTangents, ensureColors;
         bool[] ensureUv = new bool[8];
+
+        // ── Split/Merge state ──
+        List<SplitCandidate> splitCandidates;
+        List<MergeGroup> mergeCandidates;
 
         // ── Scan results (null = not scanned yet, empty = scanned, no issues) ──
         List<MaterialIssue> materialIssues;
@@ -64,11 +68,18 @@ namespace LightmapUvTool
             public string description;
         }
 
+        struct SplitCandidate
+        {
+            public MeshEntry entry;
+            public bool include;
+        }
+
         struct MergeGroup
         {
             public int lodIndex;
             public Material material;
             public List<MeshEntry> entries;
+            public bool include;
         }
 
         class MeshReport
@@ -76,8 +87,6 @@ namespace LightmapUvTool
             public List<LodInfo> lods = new List<LodInfo>();
             public List<MeshEntry> weldCandidates = new List<MeshEntry>();
             public List<EmptyUvEntry> emptyUvEntries = new List<EmptyUvEntry>();
-            public List<MeshEntry> multiMatEntries = new List<MeshEntry>();
-            public List<MergeGroup> mergeGroups = new List<MergeGroup>();
             public List<MeshAttributeInfo> attributes = new List<MeshAttributeInfo>();
         }
 
@@ -128,6 +137,8 @@ namespace LightmapUvTool
             colliderIssues = null;
             sceneIssues = null;
             meshReport = null;
+            splitCandidates = null;
+            mergeCandidates = null;
         }
 
         // ── UI: Sidebar ──
@@ -150,6 +161,7 @@ namespace LightmapUvTool
             DrawCollidersSection();
             DrawSceneSection();
             DrawMeshSection();
+            DrawSplitMergeSection();
             DrawAttributesSection();
         }
 
@@ -802,62 +814,7 @@ namespace LightmapUvTool
 
                 if (meshReport == null) { EditorGUI.indentLevel--; return; }
 
-                // Multi-material split
-                if (meshReport.multiMatEntries.Count > 0)
-                {
-                    EditorGUILayout.Space(4);
-                    EditorGUILayout.HelpBox(
-                        $"{meshReport.multiMatEntries.Count} mesh(es) with multiple materials (can split).",
-                        MessageType.Info);
-                    foreach (var e in meshReport.multiMatEntries)
-                    {
-                        var mesh = e.originalMesh ?? e.fbxMesh;
-                        EditorGUILayout.LabelField(
-                            $"  {e.renderer.name}: {mesh.subMeshCount} submeshes",
-                            EditorStyles.miniLabel);
-                    }
-
-                    GUI.backgroundColor = new Color(.7f, .4f, .95f);
-                    if (GUILayout.Button("Split by Material", GUILayout.Height(28)))
-                    {
-                        FixMeshSplitByMaterial();
-                        EditorGUI.indentLevel--;
-                        return;
-                    }
-                    GUI.backgroundColor = bgc;
-                }
-
-                if (meshReport == null) { EditorGUI.indentLevel--; return; }
-
-                // Merge same-material
-                if (meshReport.mergeGroups.Count > 0)
-                {
-                    int totalMergeable = meshReport.mergeGroups.Sum(g => g.entries.Count);
-                    EditorGUILayout.Space(4);
-                    EditorGUILayout.HelpBox(
-                        $"{totalMergeable} object(s) in {meshReport.mergeGroups.Count} group(s) can be merged by material.",
-                        MessageType.Info);
-                    foreach (var g in meshReport.mergeGroups)
-                    {
-                        EditorGUILayout.LabelField(
-                            $"  LOD{g.lodIndex} \"{g.material.name}\": {g.entries.Count} objects",
-                            EditorStyles.miniLabel);
-                    }
-
-                    GUI.backgroundColor = new Color(.7f, .4f, .95f);
-                    if (GUILayout.Button("Merge Same-Material", GUILayout.Height(28)))
-                    {
-                        FixMeshMerge();
-                        EditorGUI.indentLevel--;
-                        return;
-                    }
-                    GUI.backgroundColor = bgc;
-                }
-
-                if (meshReport == null) { EditorGUI.indentLevel--; return; }
-
-                if (meshReport.weldCandidates.Count == 0 && meshReport.emptyUvEntries.Count == 0
-                    && meshReport.multiMatEntries.Count == 0 && meshReport.mergeGroups.Count == 0)
+                if (meshReport.weldCandidates.Count == 0 && meshReport.emptyUvEntries.Count == 0)
                 {
                     EditorGUILayout.Space(4);
                     EditorGUILayout.HelpBox("No mesh issues found.", MessageType.Info);
@@ -979,49 +936,10 @@ namespace LightmapUvTool
                 }
             }
 
-            // Detect multi-material meshes and merge candidates
-            var mergeMap = new Dictionary<string, MergeGroup>(); // key: "lodIndex_materialInstanceId"
-            for (int li = 0; li < ctx.LodCount; li++)
-            {
-                var entries = ctx.ForLod(li);
-                foreach (var e in entries)
-                {
-                    var mesh = e.originalMesh ?? e.fbxMesh;
-                    if (mesh == null || e.renderer == null) continue;
-
-                    // Multi-material detection
-                    if (mesh.subMeshCount > 1)
-                        meshReport.multiMatEntries.Add(e);
-
-                    // Merge candidates: single-submesh, single-material objects
-                    var mats = e.renderer.sharedMaterials;
-                    if (mesh.subMeshCount == 1 && mats.Length == 1 && mats[0] != null)
-                    {
-                        string key = $"{li}_{mats[0].GetInstanceID()}";
-                        if (!mergeMap.ContainsKey(key))
-                            mergeMap[key] = new MergeGroup
-                            {
-                                lodIndex = li,
-                                material = mats[0],
-                                entries = new List<MeshEntry>()
-                            };
-                        mergeMap[key].entries.Add(e);
-                    }
-                }
-            }
-            // Only keep groups with 2+ entries
-            foreach (var kvp in mergeMap)
-            {
-                if (kvp.Value.entries.Count > 1)
-                    meshReport.mergeGroups.Add(kvp.Value);
-            }
-
             int colorCount = meshReport.emptyUvEntries.Count(e => e.hasZeroColors);
             UvtLog.Info($"Mesh scan: {meshReport.weldCandidates.Count} weld candidate(s), " +
                         $"{meshReport.emptyUvEntries.Count} mesh(es) with empty channels" +
-                        (colorCount > 0 ? $" ({colorCount} with zero vertex colors)" : "") +
-                        $", {meshReport.multiMatEntries.Count} multi-material mesh(es)" +
-                        $", {meshReport.mergeGroups.Count} merge group(s).");
+                        (colorCount > 0 ? $" ({colorCount} with zero vertex colors)" : "") + ".");
 
             // Initialize desired-state toggles from current mesh attributes (union),
             // but only on first scan (all toggles false = never initialized)
@@ -1128,13 +1046,15 @@ namespace LightmapUvTool
 
         void FixMeshSplitByMaterial()
         {
-            if (meshReport == null || meshReport.multiMatEntries.Count == 0) return;
+            if (splitCandidates == null || splitCandidates.Count == 0) return;
 
             int undoGroup = Undo.GetCurrentGroup();
             int split = 0;
 
-            foreach (var e in meshReport.multiMatEntries)
+            foreach (var sc in splitCandidates)
             {
+                if (!sc.include) continue;
+                var e = sc.entry;
                 var srcMesh = e.originalMesh ?? e.fbxMesh;
                 if (srcMesh == null || e.renderer == null || e.meshFilter == null) continue;
 
@@ -1292,20 +1212,22 @@ namespace LightmapUvTool
             if (split > 0 && ctx.LodGroup != null)
                 ctx.Refresh(ctx.LodGroup);
 
+            splitCandidates = null;
+            mergeCandidates = null;
             meshReport = null;
             requestRepaint?.Invoke();
         }
 
         void FixMeshMerge()
         {
-            if (meshReport == null || meshReport.mergeGroups.Count == 0) return;
+            if (mergeCandidates == null || mergeCandidates.Count == 0) return;
 
             int undoGroup = Undo.GetCurrentGroup();
             int merged = 0;
 
-            foreach (var group in meshReport.mergeGroups)
+            foreach (var group in mergeCandidates)
             {
-                if (group.entries.Count < 2) continue;
+                if (!group.include || group.entries.Count < 2) continue;
 
                 // Determine which vertex attributes exist across all meshes
                 bool hasNormals = false, hasTangents = false, hasColors = false;
@@ -1518,12 +1440,227 @@ namespace LightmapUvTool
             if (merged > 0 && ctx.LodGroup != null)
                 ctx.Refresh(ctx.LodGroup);
 
+            splitCandidates = null;
+            mergeCandidates = null;
             meshReport = null;
             requestRepaint?.Invoke();
         }
 
         // ═══════════════════════════════════════════════════════════════
-        // Section 5: Mesh Attributes
+        // Section 5: Split / Merge
+        // ═══════════════════════════════════════════════════════════════
+
+        void DrawSplitMergeSection()
+        {
+            EditorGUILayout.Space(8);
+            foldSplitMerge = EditorGUILayout.Foldout(foldSplitMerge, "Split / Merge", true);
+            if (!foldSplitMerge) return;
+
+            EditorGUI.indentLevel++;
+
+            if (ctx.LodGroup == null)
+            {
+                EditorGUILayout.HelpBox("Select a LODGroup first.", MessageType.Info);
+                EditorGUI.indentLevel--;
+                return;
+            }
+
+            // Scan button
+            var bgc = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(.6f, .75f, .9f);
+            if (GUILayout.Button("Scan", GUILayout.Height(24)))
+                ScanSplitMerge();
+            GUI.backgroundColor = bgc;
+
+            // ── Split by Material ──
+            if (splitCandidates != null)
+            {
+                EditorGUILayout.Space(4);
+                EditorGUILayout.LabelField("Split Multi-Material", EditorStyles.boldLabel);
+
+                if (splitCandidates.Count == 0)
+                {
+                    EditorGUILayout.LabelField("  No multi-material meshes found.", EditorStyles.miniLabel);
+                }
+                else
+                {
+                    for (int i = 0; i < splitCandidates.Count; i++)
+                    {
+                        var sc = splitCandidates[i];
+                        if (sc.entry.renderer == null) continue;
+                        var mesh = sc.entry.originalMesh ?? sc.entry.fbxMesh;
+                        if (mesh == null) continue;
+
+                        var mats = sc.entry.renderer.sharedMaterials;
+                        EditorGUILayout.BeginHorizontal();
+                        sc.include = EditorGUILayout.Toggle(sc.include, GUILayout.Width(16));
+                        splitCandidates[i] = sc;
+
+                        string info = $"LOD{sc.entry.lodIndex} {sc.entry.renderer.name}: {mesh.subMeshCount} submeshes";
+                        EditorGUILayout.LabelField(info, EditorStyles.miniLabel);
+                        EditorGUILayout.EndHorizontal();
+
+                        // Show result preview
+                        if (sc.include)
+                        {
+                            // Compute output names (same logic as FixMeshSplitByMaterial)
+                            string srcName = e.renderer.name;
+                            string lodSuffix = "";
+                            var lodMatch = System.Text.RegularExpressions.Regex.Match(
+                                srcName, @"([_\-\s]+LOD\d+)$",
+                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                            if (lodMatch.Success)
+                            {
+                                lodSuffix = lodMatch.Value;
+                                srcName = srcName.Substring(0, srcName.Length - lodSuffix.Length);
+                            }
+
+                            EditorGUILayout.LabelField("      Remove:", EditorStyles.miniLabel);
+                            EditorGUILayout.LabelField($"        {e.renderer.name}", EditorStyles.miniLabel);
+                            EditorGUILayout.LabelField("      Create:", EditorStyles.miniLabel);
+                            for (int s = 0; s < mesh.subMeshCount && s < mats.Length; s++)
+                            {
+                                string matName = mats[s] != null ? mats[s].name : $"mat{s}";
+                                string newName = $"{srcName}_{matName}{lodSuffix}";
+                                EditorGUILayout.LabelField(
+                                    $"        {newName}", EditorStyles.miniLabel);
+                            }
+                        }
+                    }
+
+                    int selected = splitCandidates.Count(s => s.include);
+                    GUI.backgroundColor = new Color(.7f, .4f, .95f);
+                    GUI.enabled = selected > 0;
+                    if (GUILayout.Button($"Split Selected ({selected})", GUILayout.Height(28)))
+                    {
+                        FixMeshSplitByMaterial();
+                        EditorGUI.indentLevel--;
+                        return;
+                    }
+                    GUI.enabled = true;
+                    GUI.backgroundColor = bgc;
+                }
+            }
+
+            // ── Merge Same-Material ──
+            if (mergeCandidates != null)
+            {
+                EditorGUILayout.Space(8);
+                EditorGUILayout.LabelField("Merge Same-Material", EditorStyles.boldLabel);
+
+                if (mergeCandidates.Count == 0)
+                {
+                    EditorGUILayout.LabelField("  No merge candidates found.", EditorStyles.miniLabel);
+                }
+                else
+                {
+                    for (int i = 0; i < mergeCandidates.Count; i++)
+                    {
+                        var g = mergeCandidates[i];
+                        EditorGUILayout.BeginHorizontal();
+                        g.include = EditorGUILayout.Toggle(g.include, GUILayout.Width(16));
+                        mergeCandidates[i] = g;
+
+                        string info = $"LOD{g.lodIndex} \"{g.material.name}\": {g.entries.Count} objects";
+                        EditorGUILayout.LabelField(info, EditorStyles.miniLabel);
+                        EditorGUILayout.EndHorizontal();
+
+                        // Show result preview
+                        if (g.include)
+                        {
+                            int totalVerts = 0;
+                            EditorGUILayout.LabelField("      Remove:", EditorStyles.miniLabel);
+                            foreach (var e in g.entries)
+                            {
+                                if (e.renderer == null) continue;
+                                var mesh = e.originalMesh ?? e.fbxMesh;
+                                int verts = mesh != null ? mesh.vertexCount : 0;
+                                totalVerts += verts;
+                                EditorGUILayout.LabelField(
+                                    $"        {e.renderer.name} ({verts:N0} v)",
+                                    EditorStyles.miniLabel);
+                            }
+                            string mergedName = g.entries[0].renderer != null
+                                ? $"{g.entries[0].renderer.name}_merged" : "merged";
+                            EditorGUILayout.LabelField("      Create:", EditorStyles.miniLabel);
+                            EditorGUILayout.LabelField(
+                                $"        {mergedName} ({totalVerts:N0} v)",
+                                EditorStyles.miniLabel);
+                        }
+                    }
+
+                    int selected = mergeCandidates.Count(g => g.include);
+                    GUI.backgroundColor = new Color(.7f, .4f, .95f);
+                    GUI.enabled = selected > 0;
+                    if (GUILayout.Button($"Merge Selected ({selected})", GUILayout.Height(28)))
+                    {
+                        FixMeshMerge();
+                        EditorGUI.indentLevel--;
+                        return;
+                    }
+                    GUI.enabled = true;
+                    GUI.backgroundColor = bgc;
+                }
+            }
+
+            EditorGUI.indentLevel--;
+        }
+
+        void ScanSplitMerge()
+        {
+            splitCandidates = new List<SplitCandidate>();
+            mergeCandidates = new List<MergeGroup>();
+
+            var mergeMap = new Dictionary<string, MergeGroup>();
+
+            for (int li = 0; li < ctx.LodCount; li++)
+            {
+                var entries = ctx.ForLod(li);
+                foreach (var e in entries)
+                {
+                    var mesh = e.originalMesh ?? e.fbxMesh;
+                    if (mesh == null || e.renderer == null) continue;
+
+                    // Multi-material detection
+                    if (mesh.subMeshCount > 1)
+                    {
+                        splitCandidates.Add(new SplitCandidate
+                        {
+                            entry = e,
+                            include = true
+                        });
+                    }
+
+                    // Merge candidates: single-submesh, single-material
+                    var mats = e.renderer.sharedMaterials;
+                    if (mesh.subMeshCount == 1 && mats.Length == 1 && mats[0] != null)
+                    {
+                        string key = $"{li}_{mats[0].GetInstanceID()}";
+                        if (!mergeMap.ContainsKey(key))
+                            mergeMap[key] = new MergeGroup
+                            {
+                                lodIndex = li,
+                                material = mats[0],
+                                entries = new List<MeshEntry>(),
+                                include = true
+                            };
+                        mergeMap[key].entries.Add(e);
+                    }
+                }
+            }
+
+            foreach (var kvp in mergeMap)
+            {
+                if (kvp.Value.entries.Count > 1)
+                    mergeCandidates.Add(kvp.Value);
+            }
+
+            UvtLog.Info($"Split/Merge scan: {splitCandidates.Count} split candidate(s), " +
+                        $"{mergeCandidates.Count} merge group(s).");
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // Section 6: Mesh Attributes
         // ═══════════════════════════════════════════════════════════════
 
         void DrawAttributesSection()
