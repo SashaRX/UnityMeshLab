@@ -96,7 +96,8 @@ namespace LightmapUvTool
 
             // Total variance = trace of covariance matrix
             float totalVariance = cxx + cyy + czz;
-            float pcaRatio = totalVariance > 1e-10f ? lambda1 / totalVariance : 0f;
+            float varianceGuard = Mathf.Max(1e-10f, totalVariance * 1e-10f);
+            float pcaRatio = totalVariance > varianceGuard ? lambda1 / totalVariance : 0f;
 
             // Deflate: remove principal component, power-iterate for second
             float cxx2 = cxx - lambda1 * v.x * v.x;
@@ -129,7 +130,7 @@ namespace LightmapUvTool
                 cxy2 * v2.x + cyy2 * v2.y + cyz2 * v2.z,
                 cxz2 * v2.x + cyz2 * v2.y + czz2 * v2.z
             );
-            float lambda2 = Mathf.Max(Vector3.Dot(v2, Av2), 1e-10f);
+            float lambda2 = Mathf.Max(Vector3.Dot(v2, Av2), Mathf.Max(1e-10f, totalVariance * 1e-10f));
 
             // Aspect ratio from eigenvalues (sqrt because eigenvalues are variance)
             float aspect = Mathf.Sqrt(lambda1 / lambda2);
@@ -325,7 +326,7 @@ namespace LightmapUvTool
                         bestUv2Any = uv2;
                     }
 
-                    if (tNrm.sqrMagnitude > 0.5f && tri.normal.sqrMagnitude > 0.5f)
+                    if (tNrm.sqrMagnitude > 1e-8f && tri.normal.sqrMagnitude > 1e-8f)
                     {
                         if (Vector3.Dot(tri.normal, tNrm) > kNormalDotThreshold && dSq < bestDSqFiltered)
                         {

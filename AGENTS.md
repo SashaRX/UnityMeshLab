@@ -34,6 +34,11 @@ Shared rules for **all AI agents** (Codex, Claude, etc.) working on this reposit
 - Do NOT modify native binaries in `Plugins/` directly — rebuild from `Native/` source
 - Define symbols (`versionDefines`) must match actual package dependencies
 
+### Transfer Pipeline
+- Before modifying GroupedShellTransfer, XatlasRepack, or SymmetrySplitShells — read `EXPERIMENTS.md`
+- Each experiment = 1 small PR, 1 concern, testable on simple model first
+- Document result in `EXPERIMENTS.md` before merging
+
 ### Code conventions
 - Namespace: `LightmapUvTool`
 - No `using System.Text.RegularExpressions` in `LightmapTransferTool.cs` — use fully qualified path

@@ -13,6 +13,7 @@ See `AGENTS.md` for shared rules that apply to all AI agents.
 4. Do NOT bulk-rename/reformat unless explicitly asked
 5. Verify compile locally before proposing PR
 6. Split large tasks into small PRs
+7. Before experimenting with transfer pipeline — read `EXPERIMENTS.md`
 
 ## Code Rules
 

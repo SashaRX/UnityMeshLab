@@ -10,9 +10,9 @@ namespace LightmapUvTool
 {
     public static class SymmetrySplitShells
     {
-        const float UV_NEAR = 0.01f;   // UV0 centroid distance threshold
-        const float POS_FAR = 0.5f;    // 3D centroid distance threshold
-        const float GRID_CELL = 0.01f; // spatial hash cell for UV0 centroids
+        // Fallback constants — used when mesh bounds are degenerate
+        const float UV_NEAR_DEFAULT = 0.01f;
+        const float POS_FAR_DEFAULT = 0.5f;
 
         struct SplitInfo
         {
@@ -35,6 +35,21 @@ namespace LightmapUvTool
                 return 0;
 
             int faceCount = tris.Length / 3;
+
+            // ── Adaptive thresholds from mesh bounds ──
+            float meshDiag = mesh.bounds.size.magnitude;
+            Vector2 uvMin = new Vector2(float.MaxValue, float.MaxValue);
+            Vector2 uvMax = new Vector2(float.MinValue, float.MinValue);
+            for (int i = 0; i < uv0.Length; i++)
+            {
+                uvMin = Vector2.Min(uvMin, uv0[i]);
+                uvMax = Vector2.Max(uvMax, uv0[i]);
+            }
+            float uv0Diag = (uvMax - uvMin).magnitude;
+
+            float uvNear = uv0Diag > 1e-6f ? uv0Diag * 0.01f : UV_NEAR_DEFAULT;
+            float posFar = meshDiag > 1e-6f ? meshDiag * 0.02f : POS_FAR_DEFAULT;
+            float gridCell = uvNear * 2f;
 
             // ── Precompute per-face centroids ──
             var uv0C = new Vector2[faceCount];
@@ -60,7 +75,7 @@ namespace LightmapUvTool
                 var grid = new Dictionary<long, List<int>>();
                 foreach (int f in faces)
                 {
-                    long key = UvGridKey(uv0C[f]);
+                    long key = UvGridKey(uv0C[f], gridCell);
                     if (!grid.TryGetValue(key, out var bucket))
                     {
                         bucket = new List<int>();
@@ -76,8 +91,8 @@ namespace LightmapUvTool
                 foreach (int f in faces)
                 {
                     var c = uv0C[f];
-                    int cx = Mathf.FloorToInt(c.x / GRID_CELL);
-                    int cy = Mathf.FloorToInt(c.y / GRID_CELL);
+                    int cx = Mathf.FloorToInt(c.x / gridCell);
+                    int cy = Mathf.FloorToInt(c.y / gridCell);
 
                     for (int dx = -1; dx <= 1; dx++)
                     for (int dy = -1; dy <= 1; dy++)
@@ -89,9 +104,9 @@ namespace LightmapUvTool
                         {
                             if (g <= f) continue; // avoid duplicate pairs + self
                             float uvDist = Vector2.Distance(uv0C[f], uv0C[g]);
-                            if (uvDist >= UV_NEAR) continue;
+                            if (uvDist >= uvNear) continue;
                             float posDist = Vector3.Distance(posC[f], posC[g]);
-                            if (posDist <= POS_FAR) continue;
+                            if (posDist <= posFar) continue;
 
                             // Symmetry pair — vote on axis
                             Vector3 mid = (posC[f] + posC[g]) * 0.5f;
@@ -392,10 +407,10 @@ namespace LightmapUvTool
 
         // ── Spatial hash helpers ──
 
-        static long UvGridKey(Vector2 uv)
+        static long UvGridKey(Vector2 uv, float cellSize)
         {
-            int cx = Mathf.FloorToInt(uv.x / GRID_CELL);
-            int cy = Mathf.FloorToInt(uv.y / GRID_CELL);
+            int cx = Mathf.FloorToInt(uv.x / cellSize);
+            int cy = Mathf.FloorToInt(uv.y / cellSize);
             return GridKey(cx, cy);
         }
 

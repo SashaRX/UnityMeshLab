@@ -98,7 +98,7 @@ namespace LightmapUvTool
             if (overlapGroups == null || overlapGroups.Count == 0)
                 return;
 
-            const float EPSILON_SCALE = 0.002f; // 0.2% per shell
+            const float EPSILON_SCALE = 0.02f; // 2% per shell
 
             foreach (var group in overlapGroups)
             {
