@@ -887,7 +887,7 @@ namespace LightmapUvTool
                     if (mesh == null) continue;
 
                     int verts = mesh.vertexCount;
-                    int tris = mesh.isReadable ? GetTriangleCount(mesh) : 0;
+                    int tris = GetTriangleCount(mesh);
                     lodInfo.totalVerts += verts;
                     lodInfo.totalTris += tris;
                     lodInfo.meshes.Add(new MeshStats
@@ -1022,6 +1022,21 @@ namespace LightmapUvTool
                         (colorCount > 0 ? $" ({colorCount} with zero vertex colors)" : "") +
                         $", {meshReport.multiMatEntries.Count} multi-material mesh(es)" +
                         $", {meshReport.mergeGroups.Count} merge group(s).");
+
+            // Initialize desired-state toggles from current mesh attributes (union)
+            if (meshReport.attributes.Count > 0)
+            {
+                ensureNormals = false; ensureTangents = false; ensureColors = false;
+                for (int ch = 0; ch < 8; ch++) ensureUv[ch] = false;
+                foreach (var attr in meshReport.attributes)
+                {
+                    if (attr.hasNormals) ensureNormals = true;
+                    if (attr.hasTangents) ensureTangents = true;
+                    if (attr.hasColors) ensureColors = true;
+                    for (int ch = 0; ch < 8; ch++)
+                        if (attr.hasUv[ch]) ensureUv[ch] = true;
+                }
+            }
         }
 
         void FixMeshWeld()
