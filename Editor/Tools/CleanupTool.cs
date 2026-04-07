@@ -1172,12 +1172,25 @@ namespace LightmapUvTool
                         }
                     }
 
+                    if (newVertCount > 65535)
+                        newMesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
                     newMesh.SetTriangles(newTris, 0);
                     newMesh.RecalculateBounds();
 
                     // Create new GameObject
                     string matName = s < mats.Length && mats[s] != null ? mats[s].name : $"mat{s}";
-                    var go = new GameObject($"{e.renderer.name}_{matName}");
+                    // Preserve trailing LOD suffix for ExtractGroupKey compatibility
+                    string srcName = e.renderer.name;
+                    string lodSuffix = "";
+                    var lodMatch = System.Text.RegularExpressions.Regex.Match(
+                        srcName, @"([_\-\s]+LOD\d+)$",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (lodMatch.Success)
+                    {
+                        lodSuffix = lodMatch.Value;
+                        srcName = srcName.Substring(0, srcName.Length - lodSuffix.Length);
+                    }
+                    var go = new GameObject($"{srcName}_{matName}{lodSuffix}");
                     Undo.RegisterCreatedObjectUndo(go, "Split by Material");
                     go.transform.SetParent(parent, false);
                     go.transform.localPosition = srcTransform.localPosition;
@@ -1188,6 +1201,16 @@ namespace LightmapUvTool
                     mf.sharedMesh = newMesh;
                     var mr = go.AddComponent<MeshRenderer>();
                     mr.sharedMaterial = s < mats.Length ? mats[s] : null;
+                    // Copy renderer settings from source
+                    var srcR = e.renderer;
+                    mr.shadowCastingMode = srcR.shadowCastingMode;
+                    mr.receiveShadows = srcR.receiveShadows;
+                    mr.lightProbeUsage = srcR.lightProbeUsage;
+                    mr.reflectionProbeUsage = srcR.reflectionProbeUsage;
+                    mr.motionVectorGenerationMode = srcR.motionVectorGenerationMode;
+                    mr.probeAnchor = srcR.probeAnchor;
+                    mr.lightmapIndex = srcR.lightmapIndex;
+                    mr.realtimeLightmapIndex = srcR.realtimeLightmapIndex;
 
                     newRenderers.Add(mr);
                 }
