@@ -5,6 +5,8 @@
 #pragma kernel AccumulateAO
 #pragma kernel FinalizeAO
 
+#include "HLSLSupport.cginc"
+
 #define FP_SCALE 100000u
 
 // ── Buffers ──
@@ -39,8 +41,20 @@ void AccumulateAO(uint3 id : SV_DispatchThreadID)
     float3 pos    = _Positions[id.x];
     float3 normal = _Normals[id.x];
 
-    // Backface cull: vertex faces away from sample direction → skip
-    float ndot = dot(_SampleDir, normal);
+    // Per-vertex jitter: rotate sample direction around Y axis
+    // to break banding artifacts with low sample counts
+    uint hash = id.x * 2654435761u;
+    float jitterAngle = (float)(hash % 360u) * 0.01745329; // deg2rad
+    float jCos = cos(jitterAngle);
+    float jSin = sin(jitterAngle);
+    float3 jitteredDir = float3(
+        _SampleDir.x * jCos - _SampleDir.z * jSin,
+        _SampleDir.y,
+        _SampleDir.x * jSin + _SampleDir.z * jCos
+    );
+
+    // Backface cull using jittered direction (matches CPU path)
+    float ndot = dot(jitteredDir, normal);
     if (ndot <= 0.0) return;
 
     // Cosine weight in fixed-point
@@ -49,15 +63,19 @@ void AccumulateAO(uint3 id : SV_DispatchThreadID)
     // Offset position along normal to avoid self-intersection
     float3 offsetPos = pos + normal * _NormalOffset;
 
-    // Project to clip space
+    // Project to clip space (VP includes platform-specific adjustments)
     float4 clip = mul(_VP, float4(offsetPos, 1.0));
     float3 ndc  = clip.xyz / clip.w;
 
     // NDC → UV (0..1)
     float2 uv = ndc.xy * 0.5 + 0.5;
 
-    // Vertex depth (normalized: 0=near, 1=far)
-    float vertexDepth = ndc.z;
+    // Normalize depth to 0=near, 1=far (matching depth shader output)
+    #if defined(UNITY_REVERSED_Z)
+    float vertexDepth = 1.0 - ndc.z;
+    #else
+    float vertexDepth = ndc.z * 0.5 + 0.5;  // OpenGL NDC [-1,1] → [0,1]
+    #endif
 
     // Out of bounds → not occluded from this direction
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)

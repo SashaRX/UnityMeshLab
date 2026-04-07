@@ -598,7 +598,9 @@ namespace LightmapUvTool
                     // LookAt returns camera-to-world, we need world-to-camera
                     view = view.inverse;
                     Matrix4x4 proj = Matrix4x4.Ortho(-extent, extent, -extent, extent, 0, 2 * extent);
-                    Matrix4x4 vp = proj * view;
+                    // GPU projection: handles reversed-Z and Y-flip for render textures
+                    Matrix4x4 gpuProj = GL.GetGPUProjectionMatrix(proj, true);
+                    Matrix4x4 vp = gpuProj * view;
 
                     // Render depth pass
                     cmd.Clear();
@@ -666,6 +668,39 @@ namespace LightmapUvTool
                 UnityEngine.Object.DestroyImmediate(rt);
                 UnityEngine.Object.DestroyImmediate(depthMat);
                 if (groundQuad != null) UnityEngine.Object.DestroyImmediate(groundQuad);
+            }
+
+            // Face-area correction (CPU post-pass using BVH)
+            if (settings.faceAreaCorrection)
+            {
+                var allVerts = new List<Vector3>();
+                var allTris = new List<int>();
+                foreach (var (mesh, xform) in meshes)
+                {
+                    int baseVert = allVerts.Count;
+                    var verts = mesh.vertices;
+                    for (int i = 0; i < verts.Length; i++)
+                        allVerts.Add(xform.MultiplyPoint3x4(verts[i]));
+                    var tris = mesh.triangles;
+                    for (int i = 0; i < tris.Length; i++)
+                        allTris.Add(tris[i] + baseVert);
+                }
+                var bvh = new TriangleBvh(allVerts.ToArray(), allTris.ToArray());
+
+                Bounds combinedBoundsFA = ComputeCombinedBounds(meshes);
+                float extentFA = combinedBoundsFA.extents.magnitude;
+                float normalOffsetFA = 0.001f * extentFA;
+                float maxDistFA = settings.maxRadius > 0 ? settings.maxRadius : float.MaxValue;
+                float groundYFA = settings.groundPlane
+                    ? combinedBoundsFA.min.y - settings.groundOffset
+                    : float.NegativeInfinity;
+
+                foreach (var (mesh, xform) in meshes)
+                {
+                    if (!result.ContainsKey(mesh)) continue;
+                    result[mesh] = FaceAreaCorrection(result[mesh], mesh, xform, bvh,
+                        directions, maxDistFA, normalOffsetFA, settings, groundYFA);
+                }
             }
 
             return result;

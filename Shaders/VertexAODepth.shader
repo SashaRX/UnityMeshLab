@@ -43,6 +43,8 @@ Shader "Hidden/LightmapUvTool/VertexAODepth"
                 float d = o.pos.z / o.pos.w;
                 #if defined(UNITY_REVERSED_Z)
                 d = 1.0 - d;
+                #else
+                d = d * 0.5 + 0.5;  // OpenGL NDC [-1,1] → [0,1]
                 #endif
                 o.depth = d;
                 return o;
