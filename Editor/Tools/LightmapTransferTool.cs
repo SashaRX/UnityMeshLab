@@ -1129,6 +1129,34 @@ namespace LightmapUvTool
                         }
                     }
 
+                    // Strip extra attributes (normals, tangents, UVs, colors) from _COL meshes
+                    foreach (var colMf in tempRoot.GetComponentsInChildren<MeshFilter>(true))
+                    {
+                        if (colMf == null || colMf.sharedMesh == null) continue;
+                        if (!IsCollisionNodeName(colMf.gameObject.name)) continue;
+                        var srcCol = colMf.sharedMesh;
+                        // Clone to make readable + strip
+                        var stripped = new Mesh { name = srcCol.name };
+                        // Need readable source — clone via Instantiate
+                        if (srcCol.isReadable)
+                        {
+                            stripped.SetVertices(srcCol.vertices);
+                            for (int s = 0; s < srcCol.subMeshCount; s++)
+                                stripped.SetTriangles(srcCol.GetTriangles(s), s);
+                        }
+                        else
+                        {
+                            // Force-read via Instantiate (copies GPU data)
+                            var tmp = UnityEngine.Object.Instantiate(srcCol);
+                            stripped.SetVertices(tmp.vertices);
+                            for (int s = 0; s < tmp.subMeshCount; s++)
+                                stripped.SetTriangles(tmp.GetTriangles(s), s);
+                            UnityEngine.Object.DestroyImmediate(tmp);
+                        }
+                        stripped.RecalculateBounds();
+                        colMf.sharedMesh = stripped;
+                    }
+
                     var exportOptions = new ExportModelOptions { ExportFormat = ExportFormat.Binary };
                     ModelExporter.ExportObjects(exportPath, new UnityEngine.Object[] { tempRoot }, exportOptions);
                     int totalExported = entries.Count + collisionMeshCount;
