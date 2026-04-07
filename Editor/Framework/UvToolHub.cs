@@ -36,12 +36,27 @@ namespace LightmapUvTool
         string selectedSidecarPath;
         string selectedFbxPath;
         string selectedResetLabel;
+        string pendingToolId;
 
         [MenuItem("Tools/Mesh Lab")]
         static void Open()
         {
+            OpenWithTool(null);
+        }
+
+        [MenuItem("Tools/Mesh Lab/Cleanup")]
+        static void OpenCleanup()
+        {
+            OpenWithTool("cleanup");
+        }
+
+        static void OpenWithTool(string toolId)
+        {
             var w = GetWindow<UvToolHub>("Mesh Lab v" + Uv2DataAsset.ToolVersionStr);
             w.minSize = new Vector2(800, 500);
+            w.pendingToolId = toolId;
+            if (w.tools != null && w.tools.Count > 0)
+                w.SelectToolById(toolId);
         }
 
         void OnEnable()
@@ -86,9 +101,19 @@ namespace LightmapUvTool
                 var modes = ActiveTool.GetFillModes();
                 canvas.SetFillModes(modes != null ? modes.ToList() : new List<UvCanvasView.FillModeEntry>());
             }
+            SelectToolById(pendingToolId);
 
             SceneView.duringSceneGui -= OnSceneGUI;
             SceneView.duringSceneGui += OnSceneGUI;
+        }
+
+        void SelectToolById(string toolId)
+        {
+            if (string.IsNullOrEmpty(toolId) || tools == null || tools.Count == 0) return;
+            int idx = tools.FindIndex(t => t.ToolId == toolId);
+            if (idx >= 0 && idx != activeToolIndex)
+                SwitchTool(idx);
+            pendingToolId = null;
         }
 
         void OnDisable()
