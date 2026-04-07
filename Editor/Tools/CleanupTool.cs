@@ -1504,7 +1504,7 @@ namespace LightmapUvTool
                         if (sc.include)
                         {
                             // Compute output names (same logic as FixMeshSplitByMaterial)
-                            string srcName = e.renderer.name;
+                            string srcName = sc.entry.renderer.name;
                             string lodSuffix = "";
                             var lodMatch = System.Text.RegularExpressions.Regex.Match(
                                 srcName, @"([_\-\s]+LOD\d+)$",
@@ -1516,7 +1516,7 @@ namespace LightmapUvTool
                             }
 
                             EditorGUILayout.LabelField("      Remove:", EditorStyles.miniLabel);
-                            EditorGUILayout.LabelField($"        {e.renderer.name}", EditorStyles.miniLabel);
+                            EditorGUILayout.LabelField($"        {sc.entry.renderer.name}", EditorStyles.miniLabel);
                             EditorGUILayout.LabelField("      Create:", EditorStyles.miniLabel);
                             for (int s = 0; s < mesh.subMeshCount && s < mats.Length; s++)
                             {
