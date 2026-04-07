@@ -764,9 +764,15 @@ namespace LightmapUvTool
 
                     GUI.backgroundColor = new Color(.4f, .8f, .4f);
                     if (GUILayout.Button("Batch Weld", GUILayout.Height(28)))
+                    {
                         FixMeshWeld();
+                        EditorGUI.indentLevel--;
+                        return; // meshReport nulled, stop drawing
+                    }
                     GUI.backgroundColor = bgc;
                 }
+
+                if (meshReport == null) { EditorGUI.indentLevel--; return; }
 
                 // Empty UV channels
                 if (meshReport.emptyUvEntries.Count > 0)
@@ -786,9 +792,15 @@ namespace LightmapUvTool
 
                     GUI.backgroundColor = new Color(.4f, .8f, .4f);
                     if (GUILayout.Button("Strip Empty Channels", GUILayout.Height(28)))
+                    {
                         FixMeshStripUvs();
+                        EditorGUI.indentLevel--;
+                        return;
+                    }
                     GUI.backgroundColor = bgc;
                 }
+
+                if (meshReport == null) { EditorGUI.indentLevel--; return; }
 
                 // Multi-material split
                 if (meshReport.multiMatEntries.Count > 0)
@@ -807,9 +819,15 @@ namespace LightmapUvTool
 
                     GUI.backgroundColor = new Color(.7f, .4f, .95f);
                     if (GUILayout.Button("Split by Material", GUILayout.Height(28)))
+                    {
                         FixMeshSplitByMaterial();
+                        EditorGUI.indentLevel--;
+                        return;
+                    }
                     GUI.backgroundColor = bgc;
                 }
+
+                if (meshReport == null) { EditorGUI.indentLevel--; return; }
 
                 // Merge same-material
                 if (meshReport.mergeGroups.Count > 0)
@@ -828,9 +846,15 @@ namespace LightmapUvTool
 
                     GUI.backgroundColor = new Color(.7f, .4f, .95f);
                     if (GUILayout.Button("Merge Same-Material", GUILayout.Height(28)))
+                    {
                         FixMeshMerge();
+                        EditorGUI.indentLevel--;
+                        return;
+                    }
                     GUI.backgroundColor = bgc;
                 }
+
+                if (meshReport == null) { EditorGUI.indentLevel--; return; }
 
                 if (meshReport.weldCandidates.Count == 0 && meshReport.emptyUvEntries.Count == 0
                     && meshReport.multiMatEntries.Count == 0 && meshReport.mergeGroups.Count == 0)
@@ -863,7 +887,7 @@ namespace LightmapUvTool
                     if (mesh == null) continue;
 
                     int verts = mesh.vertexCount;
-                    int tris = GetTriangleCount(mesh);
+                    int tris = mesh.isReadable ? GetTriangleCount(mesh) : 0;
                     lodInfo.totalVerts += verts;
                     lodInfo.totalTris += tris;
                     lodInfo.meshes.Add(new MeshStats
@@ -873,24 +897,24 @@ namespace LightmapUvTool
                         tris = tris
                     });
 
-                    // Attribute info
+                    // Attribute info (HasVertexAttribute works even without isReadable)
                     var attrInfo = new MeshAttributeInfo
                     {
                         entry = e,
                         meshName = mesh.name,
                         vertexCount = verts,
-                        hasNormals = mesh.normals != null && mesh.normals.Length > 0,
-                        hasTangents = mesh.tangents != null && mesh.tangents.Length > 0,
-                        hasColors = mesh.colors != null && mesh.colors.Length > 0,
+                        hasNormals = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal),
+                        hasTangents = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent),
+                        hasColors = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Color),
                         hasUv = new bool[8]
                     };
                     for (int ch = 0; ch < 8; ch++)
-                    {
-                        tmpUv.Clear();
-                        mesh.GetUVs(ch, tmpUv);
-                        attrInfo.hasUv[ch] = tmpUv.Count > 0;
-                    }
+                        attrInfo.hasUv[ch] = mesh.HasVertexAttribute(
+                            UnityEngine.Rendering.VertexAttribute.TexCoord0 + ch);
                     meshReport.attributes.Add(attrInfo);
+
+                    // Skip vertex-data operations for non-readable meshes
+                    if (!mesh.isReadable) continue;
 
                     // Weld check
                     var report = Uv0Analyzer.Analyze(mesh);
@@ -1011,6 +1035,11 @@ namespace LightmapUvTool
             {
                 var mesh = e.originalMesh ?? e.fbxMesh;
                 if (mesh == null) continue;
+                if (!mesh.isReadable)
+                {
+                    UvtLog.Warn($"Skipped {mesh.name}: mesh is not readable (enable Read/Write in import settings)");
+                    continue;
+                }
 
                 // Clone if asset-backed
                 if (AssetDatabase.Contains(mesh))
@@ -1050,7 +1079,7 @@ namespace LightmapUvTool
                 var entry = uvEntry.entry;
                 var channels = uvEntry.channels;
                 var mesh = entry.originalMesh ?? entry.fbxMesh;
-                if (mesh == null) continue;
+                if (mesh == null || !mesh.isReadable) continue;
 
                 // Clone if asset-backed
                 if (AssetDatabase.Contains(mesh))
@@ -1498,33 +1527,33 @@ namespace LightmapUvTool
                 return;
             }
 
-            // Attribute table header
+            // Attribute table
             EditorGUILayout.Space(4);
             EditorGUILayout.LabelField("Channel Map", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(
+                "  N=Normals T=Tangents C=Colors  UV0..UV7",
+                EditorStyles.miniLabel);
+            EditorGUILayout.Space(2);
 
-            // Compact header row
-            EditorGUILayout.BeginHorizontal();
-            EditorGUILayout.LabelField("Mesh", EditorStyles.miniLabel, GUILayout.MinWidth(120));
-            EditorGUILayout.LabelField("N", EditorStyles.miniLabel, GUILayout.Width(18));
-            EditorGUILayout.LabelField("T", EditorStyles.miniLabel, GUILayout.Width(18));
-            EditorGUILayout.LabelField("C", EditorStyles.miniLabel, GUILayout.Width(18));
-            for (int ch = 0; ch < 8; ch++)
-                EditorGUILayout.LabelField($"U{ch}", EditorStyles.miniLabel, GUILayout.Width(22));
-            EditorGUILayout.EndHorizontal();
-
-            // Per-mesh rows
+            // Per-mesh rows as single-line strings
             foreach (var attr in meshReport.attributes)
             {
-                EditorGUILayout.BeginHorizontal();
-                string label = attr.meshName;
-                if (label.Length > 20) label = label.Substring(0, 17) + "...";
-                EditorGUILayout.LabelField(label, EditorStyles.miniLabel, GUILayout.MinWidth(120));
-                DrawAttrCell(attr.hasNormals);
-                DrawAttrCell(attr.hasTangents);
-                DrawAttrCell(attr.hasColors);
+                string meshName = attr.meshName;
+                if (meshName.Length > 24) meshName = meshName.Substring(0, 21) + "...";
+
+                // Build attribute string: "NTC UV01--3---"
+                string ntc = (attr.hasNormals ? "N" : "-")
+                           + (attr.hasTangents ? "T" : "-")
+                           + (attr.hasColors ? "C" : "-");
+
+                var uvStr = new char[8];
                 for (int ch = 0; ch < 8; ch++)
-                    DrawAttrCell(attr.hasUv[ch]);
-                EditorGUILayout.EndHorizontal();
+                    uvStr[ch] = attr.hasUv[ch] ? (char)('0' + ch) : '-';
+
+                EditorGUILayout.LabelField(
+                    $"  {meshName}",
+                    $"{ntc}  UV:{new string(uvStr)}",
+                    EditorStyles.miniLabel);
             }
 
             // Ensure toggles
@@ -1580,13 +1609,6 @@ namespace LightmapUvTool
             EditorGUI.indentLevel--;
         }
 
-        static void DrawAttrCell(bool present)
-        {
-            var prev = GUI.color;
-            GUI.color = present ? new Color(.3f, .9f, .3f) : new Color(.6f, .6f, .6f);
-            EditorGUILayout.LabelField(present ? "\u2713" : "\u2013", EditorStyles.miniLabel, GUILayout.Width(18));
-            GUI.color = prev;
-        }
 
         void FixEnsureAttributes()
         {
@@ -1599,7 +1621,7 @@ namespace LightmapUvTool
             {
                 var entry = attr.entry;
                 var mesh = entry.originalMesh ?? entry.fbxMesh;
-                if (mesh == null || entry.meshFilter == null) continue;
+                if (mesh == null || entry.meshFilter == null || !mesh.isReadable) continue;
 
                 bool needsFix = false;
                 if (ensureNormals && !attr.hasNormals) needsFix = true;
