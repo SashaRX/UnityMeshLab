@@ -445,7 +445,7 @@ namespace LightmapUvTool
                 {
                     if (li == ctx.SourceLodIndex) continue;
                     var ee = ctx.ForLod(li);
-                    if (!ee.Any(e => e.shellTransferResult != null || e.report.HasValue)) continue;
+                    if (!ee.Any(e => e.shellTransferResult != null)) continue;
                     if (!reportLodFoldouts.ContainsKey(li)) reportLodFoldouts[li] = false;
                     reportLodFoldouts[li] = EditorGUILayout.Foldout(reportLodFoldouts[li], "LOD" + li, true);
                     if (!reportLodFoldouts[li]) continue;
@@ -1419,7 +1419,6 @@ namespace LightmapUvTool
                 if (e.fbxMesh != null) e.originalMesh = e.fbxMesh;
                 e.shellTransferResult = null;
                 e.wasWelded = e.wasEdgeWelded = e.wasSymmetrySplit = false;
-                e.report = null;
             }
             ctx.HasRepack = ctx.HasTransfer = false;
             uv0Analyzed = uv0Welded = false;

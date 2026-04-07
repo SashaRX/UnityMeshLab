@@ -56,7 +56,6 @@ namespace LightmapUvTool
         public TargetTransferState transferState;
 
         // ── Pipeline diagnostic outputs (cleared on reset) ──
-        public TransferQualityEvaluator.TransferReport? report;
         public GroupedShellTransfer.TransferResult shellTransferResult;
         public TransferValidator.ValidationReport validationReport;
 
