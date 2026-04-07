@@ -495,10 +495,10 @@ namespace LightmapUvTool
 
                 if (mesh == null) continue;
 
-                bool hasNormals  = mesh.normals != null && mesh.normals.Length > 0;
-                bool hasTangents = mesh.tangents != null && mesh.tangents.Length > 0;
-                bool hasColors   = mesh.colors != null && mesh.colors.Length > 0;
-                bool hasUvs      = mesh.uv != null && mesh.uv.Length > 0;
+                bool hasNormals  = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal);
+                bool hasTangents = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent);
+                bool hasColors   = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Color);
+                bool hasUvs      = mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord0);
 
                 if (hasNormals || hasTangents || hasColors || hasUvs)
                 {
@@ -558,8 +558,11 @@ namespace LightmapUvTool
                 switch (issue.kind)
                 {
                     case ColliderIssue.Kind.ExtraAttributes:
-                        if (issue.mesh != null)
+                        if (issue.mesh == null) break;
+
+                        if (issue.mesh.isReadable)
                         {
+                            // Mesh is readable — strip in-place
                             Undo.RecordObject(issue.mesh, "Strip Collider Attributes");
                             var pos = issue.mesh.vertices;
                             var tris = issue.mesh.triangles;
@@ -567,7 +570,63 @@ namespace LightmapUvTool
                             issue.mesh.SetVertices(pos);
                             issue.mesh.SetTriangles(tris, 0);
                             issue.mesh.RecalculateBounds();
-                            UvtLog.Info($"Stripped extra attributes from {issue.gameObject.name}");
+                            UvtLog.Info($"Stripped extra attributes from {issue.gameObject.name} (in-place)");
+                        }
+                        else
+                        {
+                            // Mesh is not readable — need to clone with read enabled,
+                            // strip, then assign to MeshFilter/MeshCollider
+                            var mf = issue.gameObject.GetComponent<MeshFilter>();
+                            var mc = issue.gameObject.GetComponent<MeshCollider>();
+
+                            // Try to enable Read/Write on the FBX source and reimport
+                            string assetPath = AssetDatabase.GetAssetPath(issue.mesh);
+                            if (!string.IsNullOrEmpty(assetPath))
+                            {
+                                var imp = AssetImporter.GetAtPath(assetPath) as ModelImporter;
+                                if (imp != null)
+                                {
+                                    bool wasReadable = imp.isReadable;
+                                    if (!wasReadable)
+                                    {
+                                        imp.isReadable = true;
+                                        imp.SaveAndReimport();
+                                    }
+
+                                    // Now mesh should be readable — reload and strip
+                                    Mesh freshMesh = mf != null ? mf.sharedMesh : (mc != null ? mc.sharedMesh : null);
+                                    if (freshMesh != null && freshMesh.isReadable)
+                                    {
+                                        var clone = UnityEngine.Object.Instantiate(freshMesh);
+                                        clone.name = freshMesh.name;
+                                        var cPos = clone.vertices;
+                                        var cTris = clone.triangles;
+                                        clone.Clear();
+                                        clone.SetVertices(cPos);
+                                        clone.SetTriangles(cTris, 0);
+                                        clone.RecalculateBounds();
+
+                                        if (mf != null)
+                                        {
+                                            Undo.RecordObject(mf, "Strip Collider Attributes");
+                                            mf.sharedMesh = clone;
+                                        }
+                                        if (mc != null)
+                                        {
+                                            Undo.RecordObject(mc, "Strip Collider Attributes");
+                                            mc.sharedMesh = clone;
+                                        }
+                                        UvtLog.Info($"Stripped extra attributes from {issue.gameObject.name} (cloned)");
+                                    }
+
+                                    // Restore Read/Write setting
+                                    if (!wasReadable)
+                                    {
+                                        imp.isReadable = false;
+                                        imp.SaveAndReimport();
+                                    }
+                                }
+                            }
                         }
                         break;
 
@@ -2048,23 +2107,30 @@ namespace LightmapUvTool
         {
             if (a == b) return true;
             if (a.vertexCount != b.vertexCount) return false;
-            if (a.triangles.Length != b.triangles.Length) return false;
 
-            var va = a.vertices;
-            var vb = b.vertices;
-
-            // Quick check: first and last vertices
-            if (va.Length == 0) return true;
-            float eps = 1e-5f;
-            if ((va[0] - vb[0]).sqrMagnitude > eps) return false;
-            if ((va[va.Length - 1] - vb[vb.Length - 1]).sqrMagnitude > eps) return false;
-
-            // Full vertex comparison
-            for (int i = 0; i < va.Length; i++)
+            // Compare index counts per submesh
+            if (a.subMeshCount != b.subMeshCount) return false;
+            for (int s = 0; s < a.subMeshCount; s++)
             {
-                if ((va[i] - vb[i]).sqrMagnitude > eps)
-                    return false;
+                if (a.GetIndexCount(s) != b.GetIndexCount(s)) return false;
             }
+
+            // Compare bounds (works without isReadable)
+            float eps = 0.01f;
+            if ((a.bounds.center - b.bounds.center).sqrMagnitude > eps) return false;
+            if ((a.bounds.size - b.bounds.size).sqrMagnitude > eps) return false;
+
+            // If both readable, do vertex comparison
+            if (a.isReadable && b.isReadable)
+            {
+                var va = a.vertices;
+                var vb = b.vertices;
+                if (va.Length == 0) return true;
+                float vEps = 1e-5f;
+                if ((va[0] - vb[0]).sqrMagnitude > vEps) return false;
+                if ((va[va.Length - 1] - vb[vb.Length - 1]).sqrMagnitude > vEps) return false;
+            }
+
             return true;
         }
 
