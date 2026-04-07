@@ -87,45 +87,94 @@ namespace LightmapUvTool
         }
 
         /// <summary>
-        /// Shift overlapping UV0 shells apart in a local UV array so xatlas
-        /// sees distinct chart shapes and packs them at separate UV2 positions.
-        /// Only modifies the provided uv0 array — does NOT touch the mesh.
+        /// Post-repack: detect overlapping UV2 bounding boxes among shells that
+        /// shared UV0 space (overlap groups) and shift colliding shells apart.
+        /// If any UV2 exceeds [0,1] after shifts, rescales all UV2 to fit.
         /// Returns number of shells shifted.
         /// </summary>
-        internal static int SeparateOverlappingShells(
-            Vector2[] uv0, List<UvShell> shells, List<List<int>> overlapGroups)
+        internal static int FixOverlappingUv2Shells(
+            Vector2[] uv2, List<UvShell> shells, List<List<int>> overlapGroups,
+            uint padding, uint atlasWidth, uint atlasHeight)
         {
             if (overlapGroups == null || overlapGroups.Count == 0)
                 return 0;
 
+            float padU = atlasWidth > 0 ? (float)padding / atlasWidth : 0f;
             int shifted = 0;
 
             foreach (var group in overlapGroups)
             {
-                float maxWidth = 0f;
-                foreach (int si in group)
-                {
-                    float w = shells[si].boundsMax.x - shells[si].boundsMin.x;
-                    if (w > maxWidth) maxWidth = w;
-                }
+                if (group.Count < 2) continue;
 
-                float step = maxWidth + 2f;
-
-                for (int k = 1; k < group.Count; k++)
+                int gc = group.Count;
+                var mn = new Vector2[gc];
+                var mx = new Vector2[gc];
+                for (int i = 0; i < gc; i++)
                 {
-                    float offsetU = step * k;
-                    var shell = shells[group[k]];
+                    mn[i] = new Vector2(float.MaxValue, float.MaxValue);
+                    mx[i] = new Vector2(float.MinValue, float.MinValue);
+                    var shell = shells[group[i]];
                     foreach (int vi in shell.vertexIndices)
                     {
-                        if ((uint)vi < (uint)uv0.Length)
-                            uv0[vi] = new Vector2(uv0[vi].x + offsetU, uv0[vi].y);
+                        if ((uint)vi < (uint)uv2.Length)
+                        {
+                            mn[i] = Vector2.Min(mn[i], uv2[vi]);
+                            mx[i] = Vector2.Max(mx[i], uv2[vi]);
+                        }
                     }
-                    shifted++;
+                }
+
+                for (int i = 0; i < gc; i++)
+                {
+                    for (int j = i + 1; j < gc; j++)
+                    {
+                        float oMinX = Mathf.Max(mn[i].x, mn[j].x);
+                        float oMinY = Mathf.Max(mn[i].y, mn[j].y);
+                        float oMaxX = Mathf.Min(mx[i].x, mx[j].x);
+                        float oMaxY = Mathf.Min(mx[i].y, mx[j].y);
+                        if (oMaxX <= oMinX || oMaxY <= oMinY) continue;
+
+                        float overlapArea = (oMaxX - oMinX) * (oMaxY - oMinY);
+                        float areaI = (mx[i].x - mn[i].x) * (mx[i].y - mn[i].y);
+                        float areaJ = (mx[j].x - mn[j].x) * (mx[j].y - mn[j].y);
+                        float smaller = Mathf.Min(areaI, areaJ);
+                        if (smaller <= 0f || overlapArea / smaller < 0.1f) continue;
+
+                        float shiftU = (mx[i].x - mn[j].x) + padU;
+                        if (shiftU <= 0f) shiftU = padU;
+
+                        var shell = shells[group[j]];
+                        foreach (int vi in shell.vertexIndices)
+                        {
+                            if ((uint)vi < (uint)uv2.Length)
+                                uv2[vi] = new Vector2(uv2[vi].x + shiftU, uv2[vi].y);
+                        }
+
+                        mn[j] = new Vector2(mn[j].x + shiftU, mn[j].y);
+                        mx[j] = new Vector2(mx[j].x + shiftU, mx[j].y);
+                        shifted++;
+                    }
                 }
             }
 
             if (shifted > 0)
-                UvtLog.Info($"[xatlas] Separated {shifted} overlapping shell(s) in local UV0");
+            {
+                float maxU = 0f, maxV = 0f;
+                for (int i = 0; i < uv2.Length; i++)
+                {
+                    if (uv2[i].x > maxU) maxU = uv2[i].x;
+                    if (uv2[i].y > maxV) maxV = uv2[i].y;
+                }
+
+                if (maxU > 1f || maxV > 1f)
+                {
+                    float scale = 1f / Mathf.Max(maxU, maxV);
+                    for (int i = 0; i < uv2.Length; i++)
+                        uv2[i] *= scale;
+                }
+
+                UvtLog.Info($"[xatlas] Post-repack: fixed {shifted} overlapping UV2 shell(s)");
+            }
 
             return shifted;
         }
@@ -185,9 +234,6 @@ namespace LightmapUvTool
 
             result.shellCount = shells.Count;
             result.overlapGroupCount = overlapGroups.Count;
-
-            // Shift overlapping shells apart so xatlas packs them separately.
-            SeparateOverlappingShells(uv0, shells, overlapGroups);
 
             // UV0 winding normalized by ExecWeldUv0.
             result.flippedShells = 0;
@@ -267,6 +313,10 @@ namespace LightmapUvTool
                           out uv2, out vertChartId, out conflicts);
 
                 result.conflictVertices = conflicts;
+
+                // ── Post-process: fix overlapping UV2 shells ──
+                FixOverlappingUv2Shells(uv2, shells, overlapGroups,
+                    opts.padding, result.atlasWidth, result.atlasHeight);
 
                 // ── Post-process: fix orphan vertices ──
                 int orphanVerts, orphanTris, snapped;
@@ -351,8 +401,6 @@ namespace LightmapUvTool
                 results[m].shellCount        = shells.Count;
                 results[m].overlapGroupCount  = overlapGroups.Count;
 
-                // Shift overlapping shells apart so xatlas packs them separately.
-                SeparateOverlappingShells(allUv0[m], allShells[m], allOverlap[m]);
             }
 
             // UV0 winding normalized by ExecWeldUv0.
@@ -453,6 +501,10 @@ namespace LightmapUvTool
                               outIndexCount, outIdx,
                               out uv2, out vertChartId, out conflicts);
                     results[m].conflictVertices = conflicts;
+
+                    // Fix overlapping UV2 shells
+                    FixOverlappingUv2Shells(uv2, allShells[m], allOverlap[m],
+                        opts.padding, atlasW, atlasH);
 
                     // Fix orphan vertices
                     int orphanVerts, orphanTris, snapped;
