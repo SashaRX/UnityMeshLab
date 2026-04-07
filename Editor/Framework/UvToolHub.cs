@@ -44,12 +44,6 @@ namespace LightmapUvTool
             OpenWithTool(null);
         }
 
-        [MenuItem("Tools/Mesh Lab/Cleanup")]
-        static void OpenCleanup()
-        {
-            OpenWithTool("cleanup");
-        }
-
         static void OpenWithTool(string toolId)
         {
             var w = GetWindow<UvToolHub>("Mesh Lab v" + Uv2DataAsset.ToolVersionStr);
