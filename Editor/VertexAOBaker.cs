@@ -755,35 +755,52 @@ namespace LightmapUvTool
 
                     Vector3 origin = worldPos[v] + worldNorm[v] * normalOffset;
 
+                    // Per-vertex jitter: rotate all directions by a small random angle
+                    // to break banding artifacts with low sample counts
+                    float jitterAngle = (v * 2654435761u % 360) * Mathf.Deg2Rad;
+                    float jCos = Mathf.Cos(jitterAngle), jSin = Mathf.Sin(jitterAngle);
+
                     float occludedWeight = 0f, totalWeight = 0f;
                     for (int d = 0; d < directions.Length; d++)
                     {
-                        float ndot = Vector3.Dot(directions[d], worldNorm[v]);
+                        // Apply Y-axis rotation jitter
+                        var dir = directions[d];
+                        float rx = dir.x * jCos - dir.z * jSin;
+                        float rz = dir.x * jSin + dir.z * jCos;
+                        var jitteredDir = new Vector3(rx, dir.y, rz);
+
+                        float ndot = Vector3.Dot(jitteredDir, worldNorm[v]);
                         if (ndot <= 0) continue;
 
                         // Cosine-weighted: rays near normal contribute more
                         totalWeight += ndot;
 
-                        var hit = bvh.Raycast(origin, directions[d], maxDist);
+                        var hit = bvh.Raycast(origin, jitteredDir, maxDist);
                         if (hit.triangleIndex >= 0 && hit.t > minHitDist)
                         {
                             // Backface culling: skip if ray hit the back side of a triangle
                             if (faceNormals != null &&
-                                Vector3.Dot(directions[d], faceNormals[hit.triangleIndex]) > 0)
+                                Vector3.Dot(jitteredDir, faceNormals[hit.triangleIndex]) > 0)
                             {
                                 // Hit backface — treat as no geometry (fall through to ground check)
                             }
                             else
                             {
-                                occludedWeight += ndot;
+                                // Distance falloff: closer hits occlude more
+                                float falloff = 1f - hit.t / maxDist;
+                                occludedWeight += ndot * falloff;
                                 continue;
                             }
                         }
 
-                        if (settings.groundPlane && directions[d].y < -0.001f)
+                        if (settings.groundPlane && jitteredDir.y < -0.001f)
                         {
-                            float t = (groundY - origin.y) / directions[d].y;
-                            if (t > 0 && t < maxDist) { occludedWeight += ndot; }
+                            float t = (groundY - origin.y) / jitteredDir.y;
+                            if (t > 0 && t < maxDist)
+                            {
+                                float falloff = 1f - t / maxDist;
+                                occludedWeight += ndot * falloff;
+                            }
                         }
                     }
 
