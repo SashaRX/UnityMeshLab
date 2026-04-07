@@ -18,6 +18,12 @@ namespace LightmapUvTool
         UV3_X, UV3_Y, UV4_X, UV4_Y
     }
 
+    public enum AOBakeType
+    {
+        AmbientOcclusion,
+        Thickness
+    }
+
     [Serializable]
     public class VertexAOSettings
     {
@@ -31,6 +37,7 @@ namespace LightmapUvTool
         public bool backfaceCulling = true;
         public bool useGPU        = true;
         public bool cosineWeighted = true;
+        public AOBakeType bakeType = AOBakeType.AmbientOcclusion;
     }
 
     public static class VertexAOBaker
@@ -540,11 +547,13 @@ namespace LightmapUvTool
 
             var depthMat = new Material(depthShader) { hideFlags = HideFlags.HideAndDontSave };
             // 0=Off, 1=Front, 2=Back (UnityEngine.Rendering.CullMode)
-            depthMat.SetFloat("_Cull", settings.backfaceCulling ? 2f : 0f);
+            // Thickness needs both faces rendered to capture the far side of the mesh
+            bool isThickness = settings.bakeType == AOBakeType.Thickness;
+            depthMat.SetFloat("_Cull", isThickness ? 0f : (settings.backfaceCulling ? 2f : 0f));
 
             // Compute combined bounds
             Bounds combinedBounds = ComputeCombinedBounds(meshes);
-            if (settings.groundPlane)
+            if (settings.groundPlane && !isThickness)
             {
                 float extend = Mathf.Max(combinedBounds.size.x, combinedBounds.size.z) * 2.5f;
                 var groundMin = new Vector3(
@@ -577,10 +586,10 @@ namespace LightmapUvTool
             };
             rt.Create();
 
-            // Create ground plane mesh
+            // Create ground plane mesh (not used for thickness)
             Mesh groundQuad = null;
             Matrix4x4 groundMatrix = Matrix4x4.identity;
-            if (settings.groundPlane)
+            if (settings.groundPlane && !isThickness)
             {
                 groundQuad = CreateGroundQuad(combinedBounds, settings.groundOffset);
                 groundMatrix = Matrix4x4.identity;
@@ -674,6 +683,7 @@ namespace LightmapUvTool
                     computeShader.SetFloat("_DepthRange", 2f * extent);
                     computeShader.SetFloat("_MaxDist", settings.maxRadius > 0 ? settings.maxRadius : 0f);
                     computeShader.SetFloat("_CosineWeighted", settings.cosineWeighted ? 1f : 0f);
+                    computeShader.SetFloat("_FlipNormals", settings.bakeType == AOBakeType.Thickness ? 1f : 0f);
                     computeShader.SetInt("_DepthTexSize", res);
 
                     foreach (var (mesh, posBuf, normBuf, counterBuf, vertCount) in meshBuffers)
@@ -692,6 +702,7 @@ namespace LightmapUvTool
                     var aoResultBuf = new ComputeBuffer(vertCount, 4);
                     computeShader.SetInt("_VertexCount", vertCount);
                     computeShader.SetFloat("_Intensity", settings.intensity);
+                    computeShader.SetFloat("_FlipNormals", settings.bakeType == AOBakeType.Thickness ? 1f : 0f);
                     computeShader.SetBuffer(finalKernel, "_AOCounters", counterBuf);
                     computeShader.SetBuffer(finalKernel, "_AOResult", aoResultBuf);
                     computeShader.Dispatch(finalKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
@@ -805,11 +816,16 @@ namespace LightmapUvTool
                 int progressCounter = 0;
                 bool cancelled = false;
 
+                bool isThickness = settings.bakeType == AOBakeType.Thickness;
+
                 Parallel.For(0, verts.Length, (v, loopState) =>
                 {
                     if (cancelled) { loopState.Stop(); return; }
 
-                    Vector3 origin = worldPos[v] + worldNorm[v] * normalOffset;
+                    // Thickness: flip hemisphere — rays go into the mesh
+                    Vector3 hemisphereNorm = isThickness ? -worldNorm[v] : worldNorm[v];
+                    // Thickness: offset inward; AO: offset outward
+                    Vector3 origin = worldPos[v] + hemisphereNorm * normalOffset;
 
                     // Per-vertex jitter: rotate all directions by a small random angle
                     // to break banding artifacts with low sample counts
@@ -826,7 +842,7 @@ namespace LightmapUvTool
                         float rz = dir.x * jSin + dir.z * jCos;
                         var jitteredDir = new Vector3(rx, dir.y, rz);
 
-                        float ndot = Vector3.Dot(jitteredDir, worldNorm[v]);
+                        float ndot = Vector3.Dot(jitteredDir, hemisphereNorm);
                         if (ndot <= 0) continue;
 
                         // Cosine-weighted: rays near normal contribute more;
@@ -838,7 +854,8 @@ namespace LightmapUvTool
                         if (hit.triangleIndex >= 0 && hit.t > minHitDist)
                         {
                             // Backface culling: skip if ray hit the back side of a triangle
-                            if (faceNormals != null &&
+                            // (skip for thickness — we want all inward hits)
+                            if (!isThickness && faceNormals != null &&
                                 Vector3.Dot(jitteredDir, faceNormals[hit.triangleIndex]) > 0)
                             {
                                 // Hit backface — treat as no geometry (fall through to ground check)
@@ -852,7 +869,8 @@ namespace LightmapUvTool
                             }
                         }
 
-                        if (settings.groundPlane && jitteredDir.y < -0.001f)
+                        // Ground plane only for AO, not thickness
+                        if (!isThickness && settings.groundPlane && jitteredDir.y < -0.001f)
                         {
                             float t = (groundY - origin.y) / jitteredDir.y;
                             if (t > 0 && t < maxDist)
@@ -864,6 +882,8 @@ namespace LightmapUvTool
                     }
 
                     float aoVal = totalWeight > 0 ? 1f - occludedWeight / totalWeight : 1f;
+                    // Thickness: invert — more inward hits = thinner = brighter (1=thin, 0=thick)
+                    if (isThickness) aoVal = 1f - aoVal;
                     ao[v] = Mathf.Pow(Mathf.Clamp01(aoVal), settings.intensity);
 
                     Interlocked.Increment(ref progressCounter);

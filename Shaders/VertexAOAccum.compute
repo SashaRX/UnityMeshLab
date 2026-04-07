@@ -29,6 +29,7 @@ uint     _DepthTexSize;
 float    _DepthRange;    // = 2 * extent (ortho near-to-far in world units)
 float    _MaxDist;       // max occlusion distance for falloff (0 = no falloff)
 float    _CosineWeighted; // 1 = cosine-weighted, 0 = uniform
+float    _FlipNormals;    // 1 = thickness mode (flip hemisphere), 0 = normal AO
 
 // ══════════════════════════════════════════════════════════
 // Kernel 0: AccumulateAO — dispatch once per hemisphere direction
@@ -41,6 +42,9 @@ void AccumulateAO(uint3 id : SV_DispatchThreadID)
 
     float3 pos    = _Positions[id.x];
     float3 normal = _Normals[id.x];
+
+    // Thickness mode: flip hemisphere — rays go into the mesh
+    float3 hemisphereNorm = (_FlipNormals > 0.5) ? -normal : normal;
 
     // Per-vertex jitter: rotate sample direction around Y axis
     // to break banding artifacts with low sample counts
@@ -55,15 +59,15 @@ void AccumulateAO(uint3 id : SV_DispatchThreadID)
     );
 
     // Backface cull using jittered direction (matches CPU path)
-    float ndot = dot(jitteredDir, normal);
+    float ndot = dot(jitteredDir, hemisphereNorm);
     if (ndot <= 0.0) return;
 
     // Cosine-weighted: ndot; uniform: 1.0
     float weight = (_CosineWeighted > 0.5) ? ndot : 1.0;
     uint wWeight = (uint)(weight * FP_SCALE);
 
-    // Offset position along normal to avoid self-intersection
-    float3 offsetPos = pos + normal * _NormalOffset;
+    // Offset position along hemisphere normal to avoid self-intersection
+    float3 offsetPos = pos + hemisphereNorm * _NormalOffset;
 
     // Project to clip space (VP includes platform-specific adjustments)
     float4 clip = mul(_VP, float4(offsetPos, 1.0));
@@ -120,6 +124,10 @@ void FinalizeAO(uint3 id : SV_DispatchThreadID)
     float ao = 1.0;
     if (sampled > 0)
         ao = 1.0 - (float)occluded / (float)sampled;
+
+    // Thickness: invert — more inward hits = thinner = brighter (1=thin, 0=thick)
+    if (_FlipNormals > 0.5)
+        ao = 1.0 - ao;
 
     ao = pow(saturate(ao), _Intensity);
     _AOResult[id.x] = ao;
