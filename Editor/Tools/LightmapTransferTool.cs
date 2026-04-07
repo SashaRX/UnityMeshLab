@@ -891,7 +891,10 @@ namespace LightmapUvTool
                 if (string.IsNullOrEmpty(path) || !path.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
                     return e.originalMesh;
             }
-            return null;
+            // Fallback: return original mesh as-is for clean re-export
+            // (allows "Overwrite Source FBX" to fix FBX metadata like
+            // material names and collider attributes without UV2 pipeline)
+            return e.originalMesh;
         }
 
         /// <summary>
@@ -952,11 +955,38 @@ namespace LightmapUvTool
             string sourceFbxFile = null;
             foreach (var e in ctx.MeshEntries)
             {
-                if (e.lodIndex != ctx.SourceLodIndex || e.fbxMesh == null) continue;
+                if (e.fbxMesh == null) continue;
                 string p = AssetDatabase.GetAssetPath(e.fbxMesh);
                 if (!string.IsNullOrEmpty(p) && p.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
                 { sourceFbxFile = p; break; }
             }
+            // Fallback: try prefab/model source of the LODGroup GameObject
+            if (string.IsNullOrEmpty(sourceFbxFile) && ctx.LodGroup != null)
+            {
+                var prefabSrc = PrefabUtility.GetCorrespondingObjectFromSource(ctx.LodGroup.gameObject);
+                if (prefabSrc != null)
+                {
+                    string p = AssetDatabase.GetAssetPath(prefabSrc);
+                    if (!string.IsNullOrEmpty(p) && p.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                        sourceFbxFile = p;
+                }
+                // Also try child renderers
+                if (string.IsNullOrEmpty(sourceFbxFile))
+                {
+                    foreach (var r in ctx.LodGroup.GetComponentsInChildren<Renderer>(true))
+                    {
+                        var rSrc = PrefabUtility.GetCorrespondingObjectFromSource(r);
+                        if (rSrc == null) continue;
+                        string p = AssetDatabase.GetAssetPath(rSrc);
+                        if (!string.IsNullOrEmpty(p) && p.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                        { sourceFbxFile = p; break; }
+                    }
+                }
+            }
+
+            // Last resort: use cached FBX path from context (set during initial Refresh)
+            if (string.IsNullOrEmpty(sourceFbxFile))
+                sourceFbxFile = ctx.SourceFbxPath;
 
             var fbxGroups = new Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>>();
             foreach (var e in ctx.MeshEntries)
@@ -1124,6 +1154,34 @@ namespace LightmapUvTool
                                 collisionMeshCount++;
                             }
                         }
+                    }
+
+                    // Strip extra attributes (normals, tangents, UVs, colors) from _COL meshes
+                    foreach (var colMf in tempRoot.GetComponentsInChildren<MeshFilter>(true))
+                    {
+                        if (colMf == null || colMf.sharedMesh == null) continue;
+                        if (!IsCollisionNodeName(colMf.gameObject.name)) continue;
+                        var srcCol = colMf.sharedMesh;
+                        // Clone to make readable + strip
+                        var stripped = new Mesh { name = srcCol.name };
+                        // Need readable source — clone via Instantiate
+                        if (srcCol.isReadable)
+                        {
+                            stripped.SetVertices(srcCol.vertices);
+                            for (int s = 0; s < srcCol.subMeshCount; s++)
+                                stripped.SetTriangles(srcCol.GetTriangles(s), s);
+                        }
+                        else
+                        {
+                            // Force-read via Instantiate (copies GPU data)
+                            var tmp = UnityEngine.Object.Instantiate(srcCol);
+                            stripped.SetVertices(tmp.vertices);
+                            for (int s = 0; s < tmp.subMeshCount; s++)
+                                stripped.SetTriangles(tmp.GetTriangles(s), s);
+                            UnityEngine.Object.DestroyImmediate(tmp);
+                        }
+                        stripped.RecalculateBounds();
+                        colMf.sharedMesh = stripped;
                     }
 
                     var exportOptions = new ExportModelOptions { ExportFormat = ExportFormat.Binary };

@@ -61,6 +61,12 @@ namespace LightmapUvTool
         /// <summary>True after successful UV2 transfer to target LODs. Enables the Apply button. Reset on Refresh or ResetPipelineState.</summary>
         public bool HasTransfer;
 
+        /// <summary>
+        /// Source FBX asset path resolved during Refresh. Persists across mesh modifications
+        /// (merge, split, weld) so export can always find the target FBX file.
+        /// </summary>
+        public string SourceFbxPath;
+
         // ── Events ──
         public event Action OnMeshEntriesChanged;
         public event Action OnSelectionChanged;
@@ -150,6 +156,31 @@ namespace LightmapUvTool
                         hasExistingUv2 = uv2Check.Count > 0,
                         meshGroupKey = ExtractGroupKey(r.name)
                     });
+                }
+            }
+
+            // Resolve source FBX path (survives mesh modifications like merge/split)
+            if (string.IsNullOrEmpty(SourceFbxPath) || !System.IO.File.Exists(SourceFbxPath))
+            {
+                SourceFbxPath = null;
+                foreach (var e in MeshEntries)
+                {
+                    if (e.fbxMesh == null) continue;
+                    string p = UnityEditor.AssetDatabase.GetAssetPath(e.fbxMesh);
+                    if (!string.IsNullOrEmpty(p) && p.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                    { SourceFbxPath = p; break; }
+                }
+                // Fallback: prefab source
+                if (string.IsNullOrEmpty(SourceFbxPath))
+                {
+                    foreach (var r in LodGroup.GetComponentsInChildren<Renderer>(true))
+                    {
+                        var src = UnityEditor.PrefabUtility.GetCorrespondingObjectFromSource(r);
+                        if (src == null) continue;
+                        string p = UnityEditor.AssetDatabase.GetAssetPath(src);
+                        if (!string.IsNullOrEmpty(p) && p.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                        { SourceFbxPath = p; break; }
+                    }
                 }
             }
 

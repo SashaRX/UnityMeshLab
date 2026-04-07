@@ -3,6 +3,10 @@ Shader "Hidden/LightmapUvTool/VertexAODepth"
     // Renders mesh geometry outputting linear depth (0=near, 1=far) to an RFloat color target.
     // Used by VertexAOBaker: orthographic camera renders from hemisphere directions,
     // compute shader samples this depth to determine per-vertex occlusion.
+    Properties
+    {
+        [Enum(UnityEngine.Rendering.CullMode)] _Cull ("Cull Mode", Float) = 0
+    }
     SubShader
     {
         Tags { "RenderType"="Opaque" }
@@ -11,7 +15,7 @@ Shader "Hidden/LightmapUvTool/VertexAODepth"
         {
             ZWrite On
             ZTest LEqual
-            Cull Back
+            Cull [_Cull]
 
             CGPROGRAM
             #pragma vertex vert

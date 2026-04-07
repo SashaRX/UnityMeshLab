@@ -96,6 +96,25 @@ namespace LightmapUvTool
         {
             string modelPath = assetPath;
 
+            // Strip extra attributes from _COL meshes (Unity reimporter recalculates
+            // normals even if we export without them — strip after import)
+            foreach (var mf in root.GetComponentsInChildren<MeshFilter>(true))
+            {
+                if (mf == null || mf.sharedMesh == null) continue;
+                if (!mf.gameObject.name.Contains("_COL")) continue;
+                var mesh = mf.sharedMesh;
+                var pos = mesh.vertices;
+                var subTris = new int[mesh.subMeshCount][];
+                for (int s = 0; s < mesh.subMeshCount; s++)
+                    subTris[s] = mesh.GetTriangles(s);
+                mesh.Clear();
+                mesh.vertices = pos;
+                mesh.subMeshCount = subTris.Length;
+                for (int s = 0; s < subTris.Length; s++)
+                    mesh.SetTriangles(subTris[s], s);
+                mesh.RecalculateBounds();
+            }
+
             // Bypass: ApplyUv2ToFbx needs the raw FBX mesh without any modifications.
             if (bypassPaths.Remove(modelPath))
             {
