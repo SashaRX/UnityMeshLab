@@ -87,6 +87,45 @@ namespace LightmapUvTool
         }
 
         /// <summary>
+        /// Pre-repack: apply tiny asymmetric UV0.x scale to overlap group members
+        /// (except the first) so xatlas sees distinct chart shapes and avoids
+        /// packing identical SymSplit halves at the same atlas position.
+        /// Operates on the flat UV0 copy — does NOT modify the original mesh.
+        /// </summary>
+        internal static void PerturbOverlapShellsUv0(
+            float[] uvFlat, List<UvShell> shells, List<List<int>> overlapGroups)
+        {
+            if (overlapGroups == null || overlapGroups.Count == 0)
+                return;
+
+            const float EPSILON_SCALE = 0.002f; // 0.2% per shell
+
+            foreach (var group in overlapGroups)
+            {
+                if (group.Count < 2) continue;
+
+                // Compute centroid U of first shell to use as scale pivot
+                var firstShell = shells[group[0]];
+                float pivotU = (firstShell.boundsMin.x + firstShell.boundsMax.x) * 0.5f;
+
+                for (int g = 1; g < group.Count; g++)
+                {
+                    float scale = 1f + g * EPSILON_SCALE;
+                    var shell = shells[group[g]];
+                    foreach (int vi in shell.vertexIndices)
+                    {
+                        int idx = vi * 2;
+                        if ((uint)idx + 1 < (uint)uvFlat.Length)
+                        {
+                            float u = uvFlat[idx];
+                            uvFlat[idx] = pivotU + (u - pivotU) * scale;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
         /// Post-repack: detect overlapping UV2 bounding boxes among shells that
         /// shared UV0 space (overlap groups) and shift colliding shells apart.
         /// If any UV2 exceeds [0,1] after shifts, rescales all UV2 to fit.
@@ -94,12 +133,14 @@ namespace LightmapUvTool
         /// </summary>
         internal static int FixOverlappingUv2Shells(
             Vector2[] uv2, List<UvShell> shells, List<List<int>> overlapGroups,
-            uint padding, uint atlasWidth, uint atlasHeight)
+            uint padding, uint atlasWidth, uint atlasHeight,
+            bool skipRescale = false)
         {
             if (overlapGroups == null || overlapGroups.Count == 0)
                 return 0;
 
-            float padU = atlasWidth > 0 ? (float)padding / atlasWidth : 0f;
+            float padU = atlasWidth  > 0 ? (float)padding / atlasWidth  : 0f;
+            float padV = atlasHeight > 0 ? (float)padding / atlasHeight : 0f;
             int shifted = 0;
 
             foreach (var group in overlapGroups)
@@ -138,45 +179,63 @@ namespace LightmapUvTool
                         float areaI = (mx[i].x - mn[i].x) * (mx[i].y - mn[i].y);
                         float areaJ = (mx[j].x - mn[j].x) * (mx[j].y - mn[j].y);
                         float smaller = Mathf.Min(areaI, areaJ);
-                        if (smaller <= 0f || overlapArea / smaller < 0.1f) continue;
+                        if (smaller <= 0f || overlapArea / smaller < 0.01f) continue;
 
+                        // Choose shift axis: prefer the direction with less displacement
                         float shiftU = (mx[i].x - mn[j].x) + padU;
+                        float shiftV = (mx[i].y - mn[j].y) + padV;
                         if (shiftU <= 0f) shiftU = padU;
+                        if (shiftV <= 0f) shiftV = padV;
 
                         var shell = shells[group[j]];
-                        foreach (int vi in shell.vertexIndices)
+                        if (shiftU <= shiftV)
                         {
-                            if ((uint)vi < (uint)uv2.Length)
-                                uv2[vi] = new Vector2(uv2[vi].x + shiftU, uv2[vi].y);
+                            foreach (int vi in shell.vertexIndices)
+                                if ((uint)vi < (uint)uv2.Length)
+                                    uv2[vi] = new Vector2(uv2[vi].x + shiftU, uv2[vi].y);
+                            mn[j] = new Vector2(mn[j].x + shiftU, mn[j].y);
+                            mx[j] = new Vector2(mx[j].x + shiftU, mx[j].y);
                         }
-
-                        mn[j] = new Vector2(mn[j].x + shiftU, mn[j].y);
-                        mx[j] = new Vector2(mx[j].x + shiftU, mx[j].y);
+                        else
+                        {
+                            foreach (int vi in shell.vertexIndices)
+                                if ((uint)vi < (uint)uv2.Length)
+                                    uv2[vi] = new Vector2(uv2[vi].x, uv2[vi].y + shiftV);
+                            mn[j] = new Vector2(mn[j].x, mn[j].y + shiftV);
+                            mx[j] = new Vector2(mx[j].x, mx[j].y + shiftV);
+                        }
                         shifted++;
                     }
                 }
             }
 
+            if (shifted > 0 && !skipRescale)
+                RescaleUv2ToUnit(uv2);
+
             if (shifted > 0)
-            {
-                float maxU = 0f, maxV = 0f;
-                for (int i = 0; i < uv2.Length; i++)
-                {
-                    if (uv2[i].x > maxU) maxU = uv2[i].x;
-                    if (uv2[i].y > maxV) maxV = uv2[i].y;
-                }
-
-                if (maxU > 1f || maxV > 1f)
-                {
-                    float scale = 1f / Mathf.Max(maxU, maxV);
-                    for (int i = 0; i < uv2.Length; i++)
-                        uv2[i] *= scale;
-                }
-
                 UvtLog.Info($"[xatlas] Post-repack: fixed {shifted} overlapping UV2 shell(s)");
-            }
 
             return shifted;
+        }
+
+        /// <summary>
+        /// If any UV2 coordinate exceeds [0,1], uniformly rescale all UV2 to fit.
+        /// </summary>
+        static void RescaleUv2ToUnit(Vector2[] uv2)
+        {
+            float maxU = 0f, maxV = 0f;
+            for (int i = 0; i < uv2.Length; i++)
+            {
+                if (uv2[i].x > maxU) maxU = uv2[i].x;
+                if (uv2[i].y > maxV) maxV = uv2[i].y;
+            }
+
+            if (maxU > 1f || maxV > 1f)
+            {
+                float scale = 1f / Mathf.Max(maxU, maxV);
+                for (int i = 0; i < uv2.Length; i++)
+                    uv2[i] *= scale;
+            }
         }
 
         /// <summary>
@@ -245,6 +304,9 @@ namespace LightmapUvTool
                 uvFlat[i * 2]     = uv0[i].x;
                 uvFlat[i * 2 + 1] = uv0[i].y;
             }
+
+            // ── Perturb overlapping shells to break xatlas packing symmetry ──
+            PerturbOverlapShellsUv0(uvFlat, shells, overlapGroups);
 
             // ── Flatten indices ──
             uint[] indices = new uint[tris.Length];
@@ -425,6 +487,9 @@ namespace LightmapUvTool
                         uvFlat[i * 2 + 1] = allUv0[m][i].y;
                     }
 
+                    // Perturb overlapping shells to break xatlas packing symmetry
+                    PerturbOverlapShellsUv0(uvFlat, allShells[m], allOverlap[m]);
+
                     uint[] indices = new uint[allTris[m].Length];
                     for (int i = 0; i < allTris[m].Length; i++)
                         indices[i] = (uint)allTris[m][i];
@@ -464,6 +529,9 @@ namespace LightmapUvTool
                     UvtLog.Info($"[xatlas] Joint atlas: {atlasW}x{atlasH}, total_charts={totalCharts}, meshes={outMeshCount}");
 
                 // ── Per-mesh output extraction ──
+                var allUv2 = new Vector2[meshCount][];
+                int totalShifted = 0;
+
                 for (int m = 0; m < meshCount; m++)
                 {
                     var mesh = meshes[m];
@@ -502,9 +570,9 @@ namespace LightmapUvTool
                               out uv2, out vertChartId, out conflicts);
                     results[m].conflictVertices = conflicts;
 
-                    // Fix overlapping UV2 shells
-                    FixOverlappingUv2Shells(uv2, allShells[m], allOverlap[m],
-                        opts.padding, atlasW, atlasH);
+                    // Fix overlapping UV2 shells (skip per-mesh rescale — do global rescale below)
+                    totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], allOverlap[m],
+                        opts.padding, atlasW, atlasH, skipRescale: true);
 
                     // Fix orphan vertices
                     int orphanVerts, orphanTris, snapped;
@@ -513,13 +581,44 @@ namespace LightmapUvTool
                     results[m].orphanTriangles = orphanTris;
                     results[m].snappedVertices = snapped;
 
-                    // Border padding inset
-                    if (opts.borderPadding > 0 && atlasW > 0)
-                        ApplyBorderInset(uv2, opts.borderPadding, atlasW, atlasH);
-
-                    // Apply UV2
-                    mesh.SetUVs(1, uv2);
+                    allUv2[m] = uv2;
                     results[m].ok = true;
+                }
+
+                // Global rescale across all meshes to maintain cross-mesh UV2 consistency
+                if (totalShifted > 0)
+                {
+                    float maxU = 0f, maxV = 0f;
+                    for (int m = 0; m < meshCount; m++)
+                    {
+                        if (allUv2[m] == null) continue;
+                        for (int i = 0; i < allUv2[m].Length; i++)
+                        {
+                            if (allUv2[m][i].x > maxU) maxU = allUv2[m][i].x;
+                            if (allUv2[m][i].y > maxV) maxV = allUv2[m][i].y;
+                        }
+                    }
+                    if (maxU > 1f || maxV > 1f)
+                    {
+                        float scale = 1f / Mathf.Max(maxU, maxV);
+                        for (int m = 0; m < meshCount; m++)
+                        {
+                            if (allUv2[m] == null) continue;
+                            for (int i = 0; i < allUv2[m].Length; i++)
+                                allUv2[m][i] *= scale;
+                        }
+                    }
+                }
+
+                // Apply UV2 and border padding
+                for (int m = 0; m < meshCount; m++)
+                {
+                    if (allUv2[m] == null || !results[m].ok) continue;
+
+                    if (opts.borderPadding > 0 && atlasW > 0)
+                        ApplyBorderInset(allUv2[m], opts.borderPadding, atlasW, atlasH);
+
+                    meshes[m].SetUVs(1, allUv2[m]);
                 }
             }
             finally
