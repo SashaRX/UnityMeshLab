@@ -1868,18 +1868,15 @@ namespace LightmapUvTool
                     destroyList.Add(e.renderer.gameObject);
                 }
 
-                // Build merged mesh name — preserve LOD suffix at end
+                // Build merged mesh name — always include LOD suffix from group
                 string mergeSrcName = firstEntry.renderer.name;
-                string mergeLodSuffix = "";
+                // Strip existing LOD suffix if present
                 var mergeLodMatch = System.Text.RegularExpressions.Regex.Match(
                     mergeSrcName, @"([_\-\s]+LOD\d+)$",
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 if (mergeLodMatch.Success)
-                {
-                    mergeLodSuffix = mergeLodMatch.Value;
-                    mergeSrcName = mergeSrcName.Substring(0, mergeSrcName.Length - mergeLodSuffix.Length);
-                }
-                string mergedName = $"{mergeSrcName}_merged{mergeLodSuffix}";
+                    mergeSrcName = mergeSrcName.Substring(0, mergeSrcName.Length - mergeLodMatch.Value.Length);
+                string mergedName = $"{mergeSrcName}_merged_LOD{group.lodIndex}";
 
                 // Build merged mesh
                 var mergedMesh = new Mesh();
@@ -2104,16 +2101,12 @@ namespace LightmapUvTool
                             if (g.entries[0].renderer != null)
                             {
                                 string pn = g.entries[0].renderer.name;
-                                string pSuffix = "";
                                 var pMatch = System.Text.RegularExpressions.Regex.Match(
                                     pn, @"([_\-\s]+LOD\d+)$",
                                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                                 if (pMatch.Success)
-                                {
-                                    pSuffix = pMatch.Value;
-                                    pn = pn.Substring(0, pn.Length - pSuffix.Length);
-                                }
-                                previewMergeName = $"{pn}_merged{pSuffix}";
+                                    pn = pn.Substring(0, pn.Length - pMatch.Value.Length);
+                                previewMergeName = $"{pn}_merged_LOD{g.lodIndex}";
                             }
                             EditorGUILayout.LabelField("      Create:", EditorStyles.miniLabel);
                             EditorGUILayout.LabelField(
