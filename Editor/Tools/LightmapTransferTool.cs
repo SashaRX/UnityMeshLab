@@ -891,7 +891,10 @@ namespace LightmapUvTool
                 if (string.IsNullOrEmpty(path) || !path.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
                     return e.originalMesh;
             }
-            return null;
+            // Fallback: return original mesh as-is for clean re-export
+            // (allows "Overwrite Source FBX" to fix FBX metadata like
+            // material names and collider attributes without UV2 pipeline)
+            return e.originalMesh;
         }
 
         /// <summary>
