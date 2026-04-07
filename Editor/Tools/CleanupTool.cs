@@ -64,14 +64,27 @@ namespace LightmapUvTool
         {
             public List<LodInfo> lods = new List<LodInfo>();
             public List<MeshEntry> weldCandidates = new List<MeshEntry>();
-            public List<(MeshEntry entry, List<int> channels)> emptyUvEntries = new List<(MeshEntry, List<int>)>();
+            public List<EmptyUvEntry> emptyUvEntries = new List<EmptyUvEntry>();
+        }
+
+        struct EmptyUvEntry
+        {
+            public MeshEntry entry;
+            public List<int> channels;
+        }
+
+        struct MeshStats
+        {
+            public string name;
+            public int verts;
+            public int tris;
         }
 
         struct LodInfo
         {
             public int lodIndex;
             public int totalVerts, totalTris;
-            public List<(string name, int verts, int tris)> meshes;
+            public List<MeshStats> meshes;
         }
 
         // ── Lifecycle ──
@@ -762,7 +775,7 @@ namespace LightmapUvTool
                 var lodInfo = new LodInfo
                 {
                     lodIndex = li,
-                    meshes = new List<(string, int, int)>()
+                    meshes = new List<MeshStats>()
                 };
 
                 foreach (var e in entries)
@@ -774,7 +787,12 @@ namespace LightmapUvTool
                     int tris = GetTriangleCount(mesh);
                     lodInfo.totalVerts += verts;
                     lodInfo.totalTris += tris;
-                    lodInfo.meshes.Add((mesh.name, verts, tris));
+                    lodInfo.meshes.Add(new MeshStats
+                    {
+                        name = mesh.name,
+                        verts = verts,
+                        tris = tris
+                    });
 
                     // Weld check
                     var report = Uv0Analyzer.Analyze(mesh);
@@ -798,7 +816,13 @@ namespace LightmapUvTool
                             emptyChannels.Add(ch);
                     }
                     if (emptyChannels.Count > 0)
-                        meshReport.emptyUvEntries.Add((e, emptyChannels));
+                    {
+                        meshReport.emptyUvEntries.Add(new EmptyUvEntry
+                        {
+                            entry = e,
+                            channels = emptyChannels
+                        });
+                    }
                 }
 
                 meshReport.lods.Add(lodInfo);
@@ -853,8 +877,10 @@ namespace LightmapUvTool
             int undoGroup = Undo.GetCurrentGroup();
             int stripped = 0;
 
-            foreach (var (entry, channels) in meshReport.emptyUvEntries)
+            foreach (var uvEntry in meshReport.emptyUvEntries)
             {
+                var entry = uvEntry.entry;
+                var channels = uvEntry.channels;
                 var mesh = entry.originalMesh ?? entry.fbxMesh;
                 if (mesh == null) continue;
 
