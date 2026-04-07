@@ -175,9 +175,6 @@ namespace LightmapUvTool
         void DrawMaterialsSection()
         {
             EditorGUILayout.Space(8);
-            int fixableCount = materialIssues != null
-                ? materialIssues.Count(i => i.kind != MaterialIssue.Kind.ImporterRemap)
-                : 0;
             int totalCount = materialIssues != null ? materialIssues.Count : 0;
             string label = materialIssues != null
                 ? $"Fix Materials ({totalCount} issue{(totalCount == 1 ? "" : "s")})"
@@ -187,59 +184,66 @@ namespace LightmapUvTool
 
             EditorGUI.indentLevel++;
 
-            // Scan/Fix buttons — Fix only enabled if fixable (non-ImporterRemap) issues exist
-            EditorGUILayout.Space(4);
-            EditorGUILayout.BeginHorizontal();
+            // Scan button
             var bgc2 = GUI.backgroundColor;
             GUI.backgroundColor = new Color(.6f, .75f, .9f);
             if (GUILayout.Button("Scan", GUILayout.Height(24)))
                 ScanMaterials();
-            GUI.backgroundColor = new Color(.4f, .8f, .4f);
-            GUI.enabled = fixableCount > 0;
-            if (GUILayout.Button("Fix", GUILayout.Height(24)))
+            GUI.backgroundColor = bgc2;
+
+            if (materialIssues == null)
             {
-                FixMaterials();
-                GUI.enabled = true;
-                GUI.backgroundColor = bgc2;
-                EditorGUILayout.EndHorizontal();
                 EditorGUI.indentLevel--;
                 return;
             }
-            GUI.enabled = true;
-            GUI.backgroundColor = bgc2;
-            EditorGUILayout.EndHorizontal();
+
+            if (materialIssues.Count == 0)
+            {
+                EditorGUILayout.HelpBox("No material issues found.", MessageType.Info);
+                EditorGUI.indentLevel--;
+                return;
+            }
+
             EditorGUILayout.Space(4);
 
-            if (materialIssues != null)
-            {
-                if (materialIssues.Count == 0)
-                {
-                    EditorGUILayout.HelpBox("No material issues found.", MessageType.Info);
-                }
-                else
-                {
-                    // Fixable issues (scene renderer)
-                    foreach (var issue in materialIssues)
-                    {
-                        if (issue.kind == MaterialIssue.Kind.ImporterRemap) continue;
-                        EditorGUILayout.HelpBox(issue.description, MessageType.Warning);
-                    }
+            // Group issues by type for clarity
+            bool hasSceneIssues = materialIssues.Any(i => i.kind != MaterialIssue.Kind.ImporterRemap);
+            bool hasFbxIssues = materialIssues.Any(i => i.kind == MaterialIssue.Kind.ImporterRemap);
 
-                    // FBX-embedded issues (not fixable — need re-export)
-                    bool hasImporterIssues = false;
-                    foreach (var issue in materialIssues)
-                    {
-                        if (issue.kind != MaterialIssue.Kind.ImporterRemap) continue;
-                        hasImporterIssues = true;
-                        EditorGUILayout.HelpBox(issue.description, MessageType.Info);
-                    }
-                    if (hasImporterIssues)
-                    {
-                        EditorGUILayout.HelpBox(
-                            "FBX source material names can only be fixed by \"Overwrite Source FBX\".",
-                            MessageType.None);
-                    }
+            // ── Scene issues (fixable in-place) ──
+            if (hasSceneIssues)
+            {
+                EditorGUILayout.LabelField("Scene (fix in-place):", EditorStyles.boldLabel);
+                foreach (var issue in materialIssues)
+                {
+                    if (issue.kind == MaterialIssue.Kind.ImporterRemap) continue;
+                    EditorGUILayout.LabelField($"  {issue.description}", EditorStyles.miniLabel);
                 }
+
+                GUI.backgroundColor = new Color(.4f, .8f, .4f);
+                if (GUILayout.Button("Fix Scene Materials", GUILayout.Height(24)))
+                {
+                    FixMaterials();
+                    EditorGUI.indentLevel--;
+                    return;
+                }
+                GUI.backgroundColor = bgc2;
+            }
+
+            // ── FBX-embedded issues (need re-export) ──
+            if (hasFbxIssues)
+            {
+                if (hasSceneIssues) EditorGUILayout.Space(4);
+                EditorGUILayout.LabelField("FBX-embedded (need re-export):", EditorStyles.boldLabel);
+                foreach (var issue in materialIssues)
+                {
+                    if (issue.kind != MaterialIssue.Kind.ImporterRemap) continue;
+                    EditorGUILayout.LabelField($"  {issue.description}", EditorStyles.miniLabel);
+                }
+                EditorGUILayout.HelpBox(
+                    "These material names are baked into the FBX file. " +
+                    "Click \"Overwrite Source FBX\" below to re-export and fix them.",
+                    MessageType.Info);
             }
 
             EditorGUI.indentLevel--;
@@ -628,23 +632,74 @@ namespace LightmapUvTool
         void DrawCollidersSection()
         {
             EditorGUILayout.Space(8);
+            int totalCount = colliderIssues != null ? colliderIssues.Count : 0;
             string label = colliderIssues != null
-                ? $"Clean Colliders ({colliderIssues.Count} issue{(colliderIssues.Count == 1 ? "" : "s")})"
+                ? $"Clean Colliders ({totalCount} issue{(totalCount == 1 ? "" : "s")})"
                 : "Clean Colliders";
             foldColliders = EditorGUILayout.Foldout(foldColliders, label, true);
             if (!foldColliders) return;
 
             EditorGUI.indentLevel++;
 
-            DrawScanFixButtons(ScanColliders, FixColliders, colliderIssues);
+            // Scan button
+            var bgc2 = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(.6f, .75f, .9f);
+            if (GUILayout.Button("Scan", GUILayout.Height(24)))
+                ScanColliders();
+            GUI.backgroundColor = bgc2;
 
-            if (colliderIssues != null)
+            if (colliderIssues == null)
             {
-                if (colliderIssues.Count == 0)
-                    EditorGUILayout.HelpBox("No collider issues found.", MessageType.Info);
-                else
-                    foreach (var issue in colliderIssues)
-                        EditorGUILayout.HelpBox(issue.description, MessageType.Warning);
+                EditorGUI.indentLevel--;
+                return;
+            }
+
+            if (colliderIssues.Count == 0)
+            {
+                EditorGUILayout.HelpBox("No collider issues found.", MessageType.Info);
+                EditorGUI.indentLevel--;
+                return;
+            }
+
+            EditorGUILayout.Space(4);
+
+            bool hasSceneIssues = colliderIssues.Any(i => i.gameObject != null);
+            bool hasFbxIssues = colliderIssues.Any(i => i.gameObject == null);
+
+            // ── Scene colliders (fixable in-place) ──
+            if (hasSceneIssues)
+            {
+                EditorGUILayout.LabelField("Scene (fix in-place):", EditorStyles.boldLabel);
+                foreach (var issue in colliderIssues)
+                {
+                    if (issue.gameObject == null) continue;
+                    EditorGUILayout.LabelField($"  {issue.description}", EditorStyles.miniLabel);
+                }
+
+                GUI.backgroundColor = new Color(.4f, .8f, .4f);
+                if (GUILayout.Button("Fix Scene Colliders", GUILayout.Height(24)))
+                {
+                    FixColliders();
+                    EditorGUI.indentLevel--;
+                    return;
+                }
+                GUI.backgroundColor = bgc2;
+            }
+
+            // ── FBX sub-asset colliders (need re-export) ──
+            if (hasFbxIssues)
+            {
+                if (hasSceneIssues) EditorGUILayout.Space(4);
+                EditorGUILayout.LabelField("FBX-embedded (need re-export):", EditorStyles.boldLabel);
+                foreach (var issue in colliderIssues)
+                {
+                    if (issue.gameObject != null) continue;
+                    EditorGUILayout.LabelField($"  {issue.description}", EditorStyles.miniLabel);
+                }
+                EditorGUILayout.HelpBox(
+                    "Collider attributes are baked into the FBX mesh. " +
+                    "Click \"Overwrite Source FBX\" below to re-export with stripped colliders.",
+                    MessageType.Info);
             }
 
             EditorGUI.indentLevel--;
