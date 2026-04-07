@@ -63,10 +63,20 @@ namespace LightmapUvTool
         }
 
         public void OnDeactivate() { }
+
+        void ValidateGeneratedObjects()
+        {
+            for (int i = generatedObjects.Count - 1; i >= 0; i--)
+                if (generatedObjects[i] == null)
+                    generatedObjects.RemoveAt(i);
+            if (generatedObjects.Count == 0)
+                lastResults.Clear();
+        }
+
         public void OnRefresh()
         {
+            ValidateGeneratedObjects();
             lastResults.Clear();
-            generatedObjects.Clear();
             cachedLodSelectionId = -1;
             cachedRendererSelectionId = -1;
             cachedDetectedLods.Clear();
@@ -75,6 +85,7 @@ namespace LightmapUvTool
 
         public void OnDrawSidebar()
         {
+            ValidateGeneratedObjects();
             EditorGUILayout.Space(8);
             EditorGUILayout.LabelField("LOD Generation", EditorStyles.boldLabel);
             EditorGUILayout.Space(4);
@@ -235,27 +246,31 @@ namespace LightmapUvTool
             GUI.backgroundColor = bg;
 
             // ── Results ──
-            if (lastResults.Count > 0)
+            if (lastResults.Count > 0 || generatedObjects.Count > 0)
             {
-                EditorGUILayout.Space(6);
-                EditorGUILayout.LabelField("Generated", EditorStyles.boldLabel);
-                foreach (var r in lastResults)
+                if (lastResults.Count > 0)
                 {
-                    float pct = sourceTris > 0 ? (float)r.simplifiedTris / sourceTris * 100f : 0;
-                    string warn = r.hitErrorLimit ? " ⚠" : "";
-                    EditorGUILayout.LabelField(
-                        $"  LOD{r.lodLevel}: {r.meshName} — {r.simplifiedTris:N0} tris ({pct:F0}%){warn}",
-                        EditorStyles.miniLabel);
-                    if (r.hitErrorLimit)
+                    EditorGUILayout.Space(6);
+                    EditorGUILayout.LabelField("Generated", EditorStyles.boldLabel);
+                    foreach (var r in lastResults)
+                    {
+                        float pct = sourceTris > 0 ? (float)r.simplifiedTris / sourceTris * 100f : 0;
+                        string warn = r.hitErrorLimit ? " ⚠" : "";
                         EditorGUILayout.LabelField(
-                            $"      target {r.targetRatio:P0}, got {r.actualRatio:P0} — increase Target Error",
+                            $"  LOD{r.lodLevel}: {r.meshName} — {r.simplifiedTris:N0} tris ({pct:F0}%){warn}",
                             EditorStyles.miniLabel);
+                        if (r.hitErrorLimit)
+                            EditorGUILayout.LabelField(
+                                $"      target {r.targetRatio:P0}, got {r.actualRatio:P0} — increase Target Error",
+                                EditorStyles.miniLabel);
+                    }
                 }
 
                 EditorGUILayout.Space(4);
                 var bgClear = GUI.backgroundColor;
                 GUI.backgroundColor = new Color(.9f, .3f, .3f);
-                if (GUILayout.Button("Clear Results", GUILayout.Height(20)))
+                string clearLabel = lastResults.Count > 0 ? "Clear Results" : "Clear Generated LODs";
+                if (GUILayout.Button(clearLabel, GUILayout.Height(20)))
                     ClearGeneratedLods();
                 GUI.backgroundColor = bgClear;
             }
@@ -325,6 +340,7 @@ namespace LightmapUvTool
 
             // No .asset files — meshes live in memory, exported via FBX
 
+            UvToolContext.CompactLodArray(ctx.LodGroup);
             var lods = ctx.LodGroup.GetLODs();
             var newLods = new List<LOD>(lods);
 

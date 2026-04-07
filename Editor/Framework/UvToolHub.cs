@@ -26,6 +26,7 @@ namespace LightmapUvTool
         bool sideDragging;
         Vector2 sideScroll;
         int _cachedLodCount;
+        int _cachedRendererCount;
         int _checkerUvChannel = 1;
         bool _checkerColorMode;
         bool _checkerShowR = true;
@@ -139,6 +140,17 @@ namespace LightmapUvTool
             }
         }
 
+        static int CountValidRenderers(LODGroup lg)
+        {
+            if (lg == null) return 0;
+            int count = 0;
+            foreach (var lod in lg.GetLODs())
+                if (lod.renderers != null)
+                    foreach (var r in lod.renderers)
+                        if (r != null) count++;
+            return count;
+        }
+
         void OnSelectionChange()
         {
             if (ctx == null) return;
@@ -155,6 +167,7 @@ namespace LightmapUvTool
                     RestoreWorkingMeshes();
                     ctx.Refresh(lg);
                     _cachedLodCount = ctx.LodCount;
+                    _cachedRendererCount = CountValidRenderers(lg);
                     ActiveTool?.OnRefresh();
                 }
                 else if (lg == null && ctx.LodGroup != null)
@@ -173,6 +186,7 @@ namespace LightmapUvTool
                         RestoreWorkingMeshes();
                         ctx.Refresh(null);
                         _cachedLodCount = 0;
+                        _cachedRendererCount = 0;
                         ActiveTool?.OnRefresh();
                     }
                 }
@@ -190,13 +204,18 @@ namespace LightmapUvTool
                 return;
             }
 
-            // Detect LODGroup structural changes (e.g. LOD deleted externally)
-            if (ctx.LodGroup != null && ctx.LodCount != _cachedLodCount)
+            // Detect LODGroup structural changes (e.g. LOD deleted externally, renderer removed)
+            if (ctx.LodGroup != null)
             {
-                ctx.Refresh(ctx.LodGroup);
-                _cachedLodCount = ctx.LodCount;
-                ctx.PreviewLod = Mathf.Clamp(ctx.PreviewLod, 0, Mathf.Max(0, ctx.LodCount - 1));
-                ActiveTool?.OnRefresh();
+                int rendererCount = CountValidRenderers(ctx.LodGroup);
+                if (ctx.LodCount != _cachedLodCount || rendererCount != _cachedRendererCount)
+                {
+                    ctx.Refresh(ctx.LodGroup);
+                    _cachedLodCount = ctx.LodCount;
+                    _cachedRendererCount = CountValidRenderers(ctx.LodGroup);
+                    ctx.PreviewLod = Mathf.Clamp(ctx.PreviewLod, 0, Mathf.Max(0, ctx.LodCount - 1));
+                    ActiveTool?.OnRefresh();
+                }
             }
 
             DrawHubToolbar();
