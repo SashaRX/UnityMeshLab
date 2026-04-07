@@ -155,8 +155,31 @@ namespace LightmapUvTool
             if (ctx.LodGroup == null)
             {
                 EditorGUILayout.HelpBox(
-                    "Select a LODGroup to scan for cleanup issues.",
+                    "Select a GameObject with LODGroup, or add one below.",
                     MessageType.Info);
+
+                // Offer to add LODGroup to selected GameObject
+                var selected = Selection.activeGameObject;
+                if (selected != null && selected.GetComponent<LODGroup>() == null)
+                {
+                    var bgc = GUI.backgroundColor;
+                    GUI.backgroundColor = new Color(.6f, .75f, .9f);
+                    if (GUILayout.Button($"Add LODGroup to \"{selected.name}\"", GUILayout.Height(24)))
+                    {
+                        var lodGroup = Undo.AddComponent<LODGroup>(selected);
+                        // Auto-assign renderers as LOD0
+                        var renderers = selected.GetComponentsInChildren<Renderer>();
+                        if (renderers.Length > 0)
+                        {
+                            lodGroup.SetLODs(new LOD[] { new LOD(0.5f, renderers) });
+                            lodGroup.RecalculateBounds();
+                        }
+                        ctx.Refresh(lodGroup);
+                        requestRepaint?.Invoke();
+                        UvtLog.Info($"Added LODGroup to {selected.name} with {renderers.Length} renderer(s)");
+                    }
+                    GUI.backgroundColor = bgc;
+                }
                 return;
             }
 
