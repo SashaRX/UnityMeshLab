@@ -984,6 +984,10 @@ namespace LightmapUvTool
                 }
             }
 
+            // Last resort: use cached FBX path from context (set during initial Refresh)
+            if (string.IsNullOrEmpty(sourceFbxFile))
+                sourceFbxFile = ctx.SourceFbxPath;
+
             var fbxGroups = new Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>>();
             foreach (var e in ctx.MeshEntries)
             {
