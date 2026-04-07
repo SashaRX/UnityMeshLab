@@ -664,7 +664,9 @@ namespace LightmapUvTool
                     cmd.SetRenderTarget(rt);
                     float depthClear = SystemInfo.usesReversedZBuffer ? 0f : 1f;
                     cmd.ClearRenderTarget(true, true, Color.white, depthClear);
-                    cmd.SetViewProjectionMatrices(view, proj);
+                    // Keep depth rasterization matrix consistent with compute-side projection
+                    // (GL.GetGPUProjectionMatrix handles RT Y-flip and reversed-Z differences).
+                    cmd.SetViewProjectionMatrices(view, gpuProj);
                     foreach (var (mesh, xform) in meshes)
                     {
                         for (int sub = 0; sub < mesh.subMeshCount; sub++)
