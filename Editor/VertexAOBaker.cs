@@ -770,13 +770,13 @@ namespace LightmapUvTool
                             if (faceNormals != null &&
                                 Vector3.Dot(directions[d], faceNormals[hit.triangleIndex]) > 0)
                             {
-                                // Hit backface — not real occlusion
+                                // Hit backface — treat as no geometry (fall through to ground check)
                             }
                             else
                             {
                                 occludedWeight += ndot;
+                                continue;
                             }
-                            continue;
                         }
 
                         if (settings.groundPlane && directions[d].y < -0.001f)
