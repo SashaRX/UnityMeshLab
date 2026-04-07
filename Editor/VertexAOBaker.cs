@@ -489,6 +489,8 @@ namespace LightmapUvTool
             }
 
             var depthMat = new Material(depthShader) { hideFlags = HideFlags.HideAndDontSave };
+            // 0=Off, 1=Front, 2=Back (UnityEngine.Rendering.CullMode)
+            depthMat.SetFloat("_Cull", settings.backfaceCulling ? 2f : 0f);
 
             // Compute combined bounds
             Bounds combinedBounds = ComputeCombinedBounds(meshes);
