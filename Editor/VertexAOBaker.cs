@@ -665,7 +665,8 @@ namespace LightmapUvTool
                     Matrix4x4 gpuProj = GL.GetGPUProjectionMatrix(proj, true);
                     Matrix4x4 vp = gpuProj * view;
 
-                    // Render depth pass
+                    // Render depth pass + compute dispatch in same command buffer
+                    // to guarantee GPU execution order (render completes before compute reads)
                     cmd.Clear();
                     cmd.SetRenderTarget(rt);
                     float depthClear = SystemInfo.usesReversedZBuffer ? 0f : 1f;
@@ -680,30 +681,31 @@ namespace LightmapUvTool
                     }
                     if (groundQuad != null)
                         cmd.DrawMesh(groundQuad, groundMatrix, depthMat);
-                    Graphics.ExecuteCommandBuffer(cmd);
 
-                    // Dispatch compute per mesh
-                    computeShader.SetTexture(accumKernel, "_DepthTex", rt);
-                    computeShader.SetMatrix("_VP", vp);
-                    computeShader.SetMatrix("_ViewMatrix", view);
-                    computeShader.SetFloat("_InvDepthRange", invDepthRange);
-                    computeShader.SetVector("_SampleDir", dir);
-                    computeShader.SetFloat("_DepthBias", bias);
-                    computeShader.SetFloat("_NormalOffset", normalOffset);
-                    computeShader.SetFloat("_DepthRange", 2f * extent);
-                    computeShader.SetFloat("_MaxDist", settings.maxRadius > 0 ? settings.maxRadius : 0f);
-                    computeShader.SetFloat("_CosineWeighted", settings.cosineWeighted ? 1f : 0f);
-                    computeShader.SetFloat("_FlipNormals", settings.bakeType == AOBakeType.Thickness ? 1f : 0f);
-                    computeShader.SetInt("_DepthTexSize", res);
+                    // Compute dispatch inside same command buffer — ensures depth texture
+                    // is fully written before compute shader reads it
+                    cmd.SetComputeTextureParam(computeShader, accumKernel, "_DepthTex", rt);
+                    cmd.SetComputeMatrixParam(computeShader, "_VP", vp);
+                    cmd.SetComputeMatrixParam(computeShader, "_ViewMatrix", view);
+                    cmd.SetComputeFloatParam(computeShader, "_InvDepthRange", invDepthRange);
+                    cmd.SetComputeVectorParam(computeShader, "_SampleDir", dir);
+                    cmd.SetComputeFloatParam(computeShader, "_DepthBias", bias);
+                    cmd.SetComputeFloatParam(computeShader, "_NormalOffset", normalOffset);
+                    cmd.SetComputeFloatParam(computeShader, "_DepthRange", 2f * extent);
+                    cmd.SetComputeFloatParam(computeShader, "_MaxDist", settings.maxRadius > 0 ? settings.maxRadius : 0f);
+                    cmd.SetComputeFloatParam(computeShader, "_CosineWeighted", settings.cosineWeighted ? 1f : 0f);
+                    cmd.SetComputeFloatParam(computeShader, "_FlipNormals", settings.bakeType == AOBakeType.Thickness ? 1f : 0f);
+                    cmd.SetComputeIntParam(computeShader, "_DepthTexSize", res);
 
                     foreach (var (mesh, posBuf, normBuf, counterBuf, vertCount) in meshBuffers)
                     {
-                        computeShader.SetInt("_VertexCount", vertCount);
-                        computeShader.SetBuffer(accumKernel, "_Positions", posBuf);
-                        computeShader.SetBuffer(accumKernel, "_Normals", normBuf);
-                        computeShader.SetBuffer(accumKernel, "_AOCounters", counterBuf);
-                        computeShader.Dispatch(accumKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
+                        cmd.SetComputeIntParam(computeShader, "_VertexCount", vertCount);
+                        cmd.SetComputeBufferParam(computeShader, accumKernel, "_Positions", posBuf);
+                        cmd.SetComputeBufferParam(computeShader, accumKernel, "_Normals", normBuf);
+                        cmd.SetComputeBufferParam(computeShader, accumKernel, "_AOCounters", counterBuf);
+                        cmd.DispatchCompute(computeShader, accumKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
                     }
+                    Graphics.ExecuteCommandBuffer(cmd);
                 }
 
                 // Finalize: compute final AO per mesh
