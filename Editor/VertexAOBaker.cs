@@ -690,33 +690,34 @@ namespace LightmapUvTool
                     }
                     if (groundQuad != null)
                         cmd.DrawMesh(groundQuad, groundMatrix, depthMat);
+                    Graphics.ExecuteCommandBuffer(cmd);
 
-                    // Copy to separate texture — breaks DX11 RTV/SRV resource conflict
-                    cmd.CopyTexture(rt, rtRead);
+                    // Blit to separate texture — resolves DX11 RTV/SRV conflict
+                    // and acts as GPU sync point (like ReadPixels did in debug version)
+                    Graphics.Blit(rt, rtRead);
 
-                    // Dispatch compute — reads from rtRead (not the render target)
-                    cmd.SetComputeTextureParam(computeShader, accumKernel, "_DepthTex", rtRead);
-                    cmd.SetComputeMatrixParam(computeShader, "_VP", vp);
-                    cmd.SetComputeMatrixParam(computeShader, "_ViewMatrix", view);
-                    cmd.SetComputeFloatParam(computeShader, "_InvDepthRange", invDepthRange);
-                    cmd.SetComputeVectorParam(computeShader, "_SampleDir", dir);
-                    cmd.SetComputeFloatParam(computeShader, "_DepthBias", bias);
-                    cmd.SetComputeFloatParam(computeShader, "_NormalOffset", normalOffset);
-                    cmd.SetComputeFloatParam(computeShader, "_DepthRange", 2f * extent);
-                    cmd.SetComputeFloatParam(computeShader, "_MaxDist", settings.maxRadius > 0 ? settings.maxRadius : 0f);
-                    cmd.SetComputeFloatParam(computeShader, "_CosineWeighted", settings.cosineWeighted ? 1f : 0f);
-                    cmd.SetComputeFloatParam(computeShader, "_FlipNormals", settings.bakeType == AOBakeType.Thickness ? 1f : 0f);
-                    cmd.SetComputeIntParam(computeShader, "_DepthTexSize", res);
+                    // Dispatch compute — reads from rtRead (separate from render target)
+                    computeShader.SetTexture(accumKernel, "_DepthTex", rtRead);
+                    computeShader.SetMatrix("_VP", vp);
+                    computeShader.SetMatrix("_ViewMatrix", view);
+                    computeShader.SetFloat("_InvDepthRange", invDepthRange);
+                    computeShader.SetVector("_SampleDir", dir);
+                    computeShader.SetFloat("_DepthBias", bias);
+                    computeShader.SetFloat("_NormalOffset", normalOffset);
+                    computeShader.SetFloat("_DepthRange", 2f * extent);
+                    computeShader.SetFloat("_MaxDist", settings.maxRadius > 0 ? settings.maxRadius : 0f);
+                    computeShader.SetFloat("_CosineWeighted", settings.cosineWeighted ? 1f : 0f);
+                    computeShader.SetFloat("_FlipNormals", settings.bakeType == AOBakeType.Thickness ? 1f : 0f);
+                    computeShader.SetInt("_DepthTexSize", res);
 
                     foreach (var (mesh, posBuf, normBuf, counterBuf, vertCount) in meshBuffers)
                     {
-                        cmd.SetComputeIntParam(computeShader, "_VertexCount", vertCount);
-                        cmd.SetComputeBufferParam(computeShader, accumKernel, "_Positions", posBuf);
-                        cmd.SetComputeBufferParam(computeShader, accumKernel, "_Normals", normBuf);
-                        cmd.SetComputeBufferParam(computeShader, accumKernel, "_AOCounters", counterBuf);
-                        cmd.DispatchCompute(computeShader, accumKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
+                        computeShader.SetInt("_VertexCount", vertCount);
+                        computeShader.SetBuffer(accumKernel, "_Positions", posBuf);
+                        computeShader.SetBuffer(accumKernel, "_Normals", normBuf);
+                        computeShader.SetBuffer(accumKernel, "_AOCounters", counterBuf);
+                        computeShader.Dispatch(accumKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
                     }
-                    Graphics.ExecuteCommandBuffer(cmd);
                 }
 
                 // Finalize: compute final AO per mesh
