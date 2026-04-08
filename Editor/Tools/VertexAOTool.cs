@@ -64,6 +64,11 @@ namespace LightmapUvTool
         float ppContrast   = 1f;
         // Bake settings
         bool  backfaceCulling = true;
+        bool  cosineWeighted  = true;
+        int   bakeMode = 0; // 0=GPU, 1=CPU
+        int   bakeTypeIndex = 0; // 0=AO, 1=Thickness
+        static readonly string[] bakeModeLabels = { "GPU", "CPU" };
+        static readonly string[] bakeTypeLabels = { "Ambient Occlusion", "Thickness" };
 
         // ── Results ──
         Dictionary<Mesh, float[]> bakedRawAO;       // raw vertex AO (no face-area fix)
@@ -124,16 +129,17 @@ namespace LightmapUvTool
                 return;
             }
 
-            // Bake mode indicator
+            // Bake mode selector
             bool gpuAvailable = SystemInfo.supportsComputeShaders;
             if (gpuAvailable)
             {
-                EditorGUILayout.HelpBox(
-                    "GPU mode (" + SystemInfo.graphicsDeviceType + ") — depth-map hemisphere sampling via compute shader.",
-                    MessageType.None);
+                bakeMode = EditorGUILayout.Popup(
+                    new GUIContent("Bake Mode", "GPU: fast depth-map hemisphere sampling via compute shader.\nCPU: BVH ray tracing, slower but works on all platforms."),
+                    bakeMode, bakeModeLabels);
             }
             else
             {
+                bakeMode = 1; // force CPU
                 EditorGUILayout.HelpBox(
                     "CPU mode (" + SystemInfo.graphicsDeviceType + " — no compute support). " +
                     "Switch to DX11/DX12/Vulkan/Metal for GPU acceleration.",
@@ -151,13 +157,17 @@ namespace LightmapUvTool
             channelComp = EditorGUILayout.Popup(channelComp, compNames);
             EditorGUILayout.EndHorizontal();
 
+            bakeTypeIndex = EditorGUILayout.Popup(
+                new GUIContent("Bake Type", "Ambient Occlusion: how exposed each vertex is.\nThickness: how thin the mesh is (inverted normals, for SSS/translucency)."),
+                bakeTypeIndex, bakeTypeLabels);
+
             EditorGUILayout.Space(4);
 
             // Bake settings
             sampleCountIndex = EditorGUILayout.Popup(
                 new GUIContent("Sample Count", "Number of hemisphere directions to sample. Higher = smoother AO, slower bake."),
                 sampleCountIndex, sampleLabels);
-            if (gpuAvailable)
+            if (gpuAvailable && bakeMode == 0)
             {
                 resolutionIndex = EditorGUILayout.Popup(
                     new GUIContent("Resolution", "Depth map resolution per sample. Higher = sharper shadow edges. GPU only."),
@@ -170,25 +180,31 @@ namespace LightmapUvTool
                 new GUIContent("Intensity", "AO contrast. >1 = darker shadows, <1 = softer."),
                 intensity, 0.5f, 3.0f);
 
-            // Ground plane
-            EditorGUILayout.Space(4);
-            groundPlane = EditorGUILayout.Toggle(
-                new GUIContent("Ground Plane", "Add virtual ground plane below object for bottom occlusion."),
-                groundPlane);
-            if (groundPlane)
+            // Ground plane & backface culling (not relevant for thickness)
+            if (bakeTypeIndex == 0)
             {
-                EditorGUI.indentLevel++;
-                groundOffset = EditorGUILayout.FloatField(
-                    new GUIContent("Offset", "Distance below mesh bounds minimum."),
-                    groundOffset);
-                groundOffset = Mathf.Max(0, groundOffset);
-                EditorGUI.indentLevel--;
-            }
+                EditorGUILayout.Space(4);
+                groundPlane = EditorGUILayout.Toggle(
+                    new GUIContent("Ground Plane", "Add virtual ground plane below object for bottom occlusion."),
+                    groundPlane);
+                if (groundPlane)
+                {
+                    EditorGUI.indentLevel++;
+                    groundOffset = EditorGUILayout.FloatField(
+                        new GUIContent("Offset", "Distance below mesh bounds minimum."),
+                        groundOffset);
+                    groundOffset = Mathf.Max(0, groundOffset);
+                    EditorGUI.indentLevel--;
+                }
 
-            EditorGUILayout.Space(4);
-            backfaceCulling = EditorGUILayout.Toggle(
-                new GUIContent("Backface Culling", "Ignore hits on back side of triangles. Reduces false occlusion on thin walls."),
-                backfaceCulling);
+                EditorGUILayout.Space(4);
+                backfaceCulling = EditorGUILayout.Toggle(
+                    new GUIContent("Backface Culling", "Ignore hits on back side of triangles. Reduces false occlusion on thin walls."),
+                    backfaceCulling);
+            }
+            cosineWeighted = EditorGUILayout.Toggle(
+                new GUIContent("Cosine Weighted", "Cosine: rays near normal contribute more (physically correct).\nUniform: all hemisphere directions contribute equally (harder shadows)."),
+                cosineWeighted);
 
             EditorGUILayout.Space(8);
 
@@ -332,16 +348,17 @@ namespace LightmapUvTool
                 intensity       = intensity,
                 groundPlane     = groundPlane,
                 groundOffset    = groundOffset,
-                faceAreaCorrection = false, // raw first
-                backfaceCulling = backfaceCulling
+                backfaceCulling = backfaceCulling,
+                cosineWeighted  = cosineWeighted,
+                useGPU          = bakeMode == 0,
+                bakeType        = (AOBakeType)bakeTypeIndex
             };
 
             var sw = Stopwatch.StartNew();
             bakedRawAO = VertexAOBaker.BakeMultiMesh(meshList, settings);
 
-            // Compute face-area correction from raw AO
-            settings.faceAreaCorrection = true;
-            bakedFaceAreaAO = VertexAOBaker.BakeMultiMesh(meshList, settings);
+            // Face-area correction as a lightweight post-pass on raw AO
+            bakedFaceAreaAO = VertexAOBaker.ApplyFaceAreaCorrection(bakedRawAO, meshList, settings);
             sw.Stop();
             bakeTimeSeconds = (float)sw.Elapsed.TotalSeconds;
 
@@ -354,7 +371,8 @@ namespace LightmapUvTool
             ApplyBlurInternal();
 
             int lodCount = entries.Select(e => e.lodIndex).Distinct().Count();
-            UvtLog.Info($"[Vertex AO] Baked {bakedVertexCount} vertices across {lodCount} LOD(s) in {bakeTimeSeconds:F1}s");
+            string bakeTypeName = bakeTypeIndex == 0 ? "AO" : "Thickness";
+            UvtLog.Info($"[Vertex AO] Baked {bakeTypeName} for {bakedVertexCount} vertices across {lodCount} LOD(s) in {bakeTimeSeconds:F1}s");
 
             // Auto-enable preview after bake
             ActivatePreview();

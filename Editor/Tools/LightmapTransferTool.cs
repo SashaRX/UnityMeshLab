@@ -1008,6 +1008,7 @@ namespace LightmapUvTool
             if (fbxGroups.Count == 0) { UvtLog.Error("[FBX Export] No processed meshes to export."); return; }
 
             bool allGroupsSucceeded = true;
+            var overwrittenFbxPaths = new HashSet<string>();
             foreach (var kv in fbxGroups)
             {
                 string sourceFbxPath = kv.Key;
@@ -1057,6 +1058,8 @@ namespace LightmapUvTool
 
                 try
                 {
+                    var lastLodRendererTemplate = FindLastLodRenderer(entries);
+
                     // Build lookup: original mesh name -> export mesh
                     var meshReplacements = new Dictionary<string, Mesh>();
                     foreach (var (entry, resultMesh) in entries)
@@ -1113,7 +1116,16 @@ namespace LightmapUvTool
                         if (srcUvMesh != null) PreserveUvChannels(exportMesh, srcUvMesh);
                         newMf.sharedMesh = exportMesh;
                         var mr = child.AddComponent<MeshRenderer>();
-                        if (entry.renderer != null) mr.sharedMaterials = entry.renderer.sharedMaterials;
+                        if (lastLodRendererTemplate != null)
+                        {
+                            CopyRendererSettings(lastLodRendererTemplate, mr);
+                            GameObjectUtility.SetStaticEditorFlags(child, GameObjectUtility.GetStaticEditorFlags(lastLodRendererTemplate.gameObject));
+                        }
+                        else if (entry.renderer != null)
+                        {
+                            CopyRendererSettings(entry.renderer, mr);
+                            GameObjectUtility.SetStaticEditorFlags(child, GameObjectUtility.GetStaticEditorFlags(entry.renderer.gameObject));
+                        }
                     }
 
                     // Add collision meshes from sidecar (if any)
@@ -1209,6 +1221,7 @@ namespace LightmapUvTool
                         string metaBakMeta = metaBak + ".meta";
                         if (System.IO.File.Exists(metaBakMeta))
                             System.IO.File.Delete(metaBakMeta);
+                        overwrittenFbxPaths.Add(sourceFbxPath);
                     }
                 }
                 catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); allGroupsSucceeded = false; }
@@ -1228,8 +1241,70 @@ namespace LightmapUvTool
             if (overwriteSource && allGroupsSucceeded)
                 LodGenerationTool.ActiveInstance?.ClearGeneratedLods();
 
+            // For direct FBX workflow, do not keep sidecars after successful overwrite:
+            // UV2/collision data is already baked into the FBX.
+            if (overwriteSource && overwrittenFbxPaths.Count > 0)
+                DeleteSidecarsForFbxPaths(overwrittenFbxPaths);
+
             AssetDatabase.Refresh();
 #endif
+        }
+
+        static void DeleteSidecarsForFbxPaths(IEnumerable<string> fbxPaths)
+        {
+            int deleted = 0;
+            foreach (var fbxPath in fbxPaths)
+            {
+                if (string.IsNullOrEmpty(fbxPath)) continue;
+                string sidecarPath = Uv2DataAsset.GetSidecarPath(fbxPath);
+                if (AssetDatabase.DeleteAsset(sidecarPath))
+                    deleted++;
+            }
+            if (deleted > 0)
+                UvtLog.Info($"[FBX Export] Deleted {deleted} sidecar asset(s) after overwrite.");
+        }
+
+        static Renderer FindLastLodRenderer(List<(MeshEntry entry, Mesh resultMesh)> entries)
+        {
+            Renderer best = null;
+            int bestLod = int.MinValue;
+            foreach (var (entry, _) in entries)
+            {
+                if (entry == null || entry.renderer == null) continue;
+                if (entry.lodIndex >= bestLod)
+                {
+                    bestLod = entry.lodIndex;
+                    best = entry.renderer;
+                }
+            }
+            return best;
+        }
+
+        static void CopyRendererSettings(Renderer src, Renderer dst)
+        {
+            if (src == null || dst == null) return;
+
+            dst.sharedMaterials = src.sharedMaterials;
+            dst.shadowCastingMode = src.shadowCastingMode;
+            dst.receiveShadows = src.receiveShadows;
+            dst.lightProbeUsage = src.lightProbeUsage;
+            dst.reflectionProbeUsage = src.reflectionProbeUsage;
+            dst.probeAnchor = src.probeAnchor;
+            dst.motionVectorGenerationMode = src.motionVectorGenerationMode;
+            dst.allowOcclusionWhenDynamic = src.allowOcclusionWhenDynamic;
+            dst.renderingLayerMask = src.renderingLayerMask;
+            dst.rendererPriority = src.rendererPriority;
+
+            if (src is MeshRenderer srcMr && dst is MeshRenderer dstMr)
+            {
+                dstMr.receiveGI = srcMr.receiveGI;
+                dstMr.scaleInLightmap = srcMr.scaleInLightmap;
+                dstMr.stitchLightmapSeams = srcMr.stitchLightmapSeams;
+                dstMr.lightmapScaleOffset = srcMr.lightmapScaleOffset;
+                dstMr.realtimeLightmapScaleOffset = srcMr.realtimeLightmapScaleOffset;
+                dstMr.lightmapIndex = srcMr.lightmapIndex;
+                dstMr.realtimeLightmapIndex = srcMr.realtimeLightmapIndex;
+            }
         }
 
         void RefreshSetupSelectionCache(GameObject selected, List<(GameObject go, int lodIndex)> siblings)

@@ -18,6 +18,12 @@ namespace LightmapUvTool
         UV3_X, UV3_Y, UV4_X, UV4_Y
     }
 
+    public enum AOBakeType
+    {
+        AmbientOcclusion,
+        Thickness
+    }
+
     [Serializable]
     public class VertexAOSettings
     {
@@ -29,6 +35,9 @@ namespace LightmapUvTool
         public float groundOffset = 0.01f;
         public bool faceAreaCorrection = false;
         public bool backfaceCulling = true;
+        public bool useGPU        = true;
+        public bool cosineWeighted = true;
+        public AOBakeType bakeType = AOBakeType.AmbientOcclusion;
     }
 
     public static class VertexAOBaker
@@ -42,13 +51,66 @@ namespace LightmapUvTool
             if (meshes == null || meshes.Count == 0)
                 return new Dictionary<Mesh, float[]>();
 
-            if (!SystemInfo.supportsComputeShaders)
+            if (!settings.useGPU || !SystemInfo.supportsComputeShaders)
             {
-                UvtLog.Warn("[Vertex AO] Compute shaders not supported (GPU: " + SystemInfo.graphicsDeviceType + "). Switch to DX11/DX12/Vulkan/Metal for GPU bake.");
+                if (settings.useGPU && !SystemInfo.supportsComputeShaders)
+                    UvtLog.Warn("[Vertex AO] Compute shaders not supported (GPU: " + SystemInfo.graphicsDeviceType + "). Falling back to CPU.");
                 return BakeMultiMeshCPU(meshes, settings);
             }
 
             return BakeMultiMeshGPU(meshes, settings);
+        }
+
+        /// <summary>
+        /// Apply face-area correction as a post-pass on already-baked AO values.
+        /// Builds a BVH once and corrects dark vertices on large triangles.
+        /// </summary>
+        public static Dictionary<Mesh, float[]> ApplyFaceAreaCorrection(
+            Dictionary<Mesh, float[]> rawAO,
+            List<(Mesh mesh, Matrix4x4 transform)> meshes,
+            VertexAOSettings settings)
+        {
+            if (rawAO == null || rawAO.Count == 0)
+                return rawAO;
+
+            // Build combined BVH
+            var allVerts = new List<Vector3>();
+            var allTris = new List<int>();
+            var copies = new List<Mesh>();
+            foreach (var (mesh, xform) in meshes)
+            {
+                var readable = EnsureReadable(mesh);
+                if (readable != mesh) copies.Add(readable);
+                int baseVert = allVerts.Count;
+                var verts = readable.vertices;
+                for (int i = 0; i < verts.Length; i++)
+                    allVerts.Add(xform.MultiplyPoint3x4(verts[i]));
+                var tris = readable.triangles;
+                for (int i = 0; i < tris.Length; i++)
+                    allTris.Add(tris[i] + baseVert);
+            }
+            var bvh = new TriangleBvh(allVerts.ToArray(), allTris.ToArray());
+            var directions = GenerateSphereDirections(settings.sampleCount);
+
+            Bounds combinedBounds = ComputeCombinedBounds(meshes);
+            float extent = combinedBounds.extents.magnitude;
+            float normalOffset = 0.001f * extent;
+            float maxDist = settings.maxRadius > 0 ? settings.maxRadius : float.MaxValue;
+            float groundY = settings.groundPlane
+                ? combinedBounds.min.y - settings.groundOffset
+                : float.NegativeInfinity;
+
+            var result = new Dictionary<Mesh, float[]>();
+            foreach (var (mesh, xform) in meshes)
+            {
+                if (!rawAO.ContainsKey(mesh))
+                    continue;
+                result[mesh] = FaceAreaCorrection(rawAO[mesh], mesh, xform, bvh,
+                    directions, maxDist, normalOffset, settings, groundY);
+            }
+            foreach (var c in copies)
+                UnityEngine.Object.DestroyImmediate(c);
+            return result;
         }
 
         public static void WriteToChannel(Mesh mesh, float[] aoValues, AOTargetChannel channel)
@@ -467,7 +529,7 @@ namespace LightmapUvTool
             return areas[triCount / 2];
         }
 
-        // ── GPU Path ──
+        // ── GPU Path (Compute Ray Tracing) ──
 
         static Dictionary<Mesh, float[]> BakeMultiMeshGPU(
             List<(Mesh mesh, Matrix4x4 transform)> meshes,
@@ -475,82 +537,93 @@ namespace LightmapUvTool
         {
             var result = new Dictionary<Mesh, float[]>();
 
-            // Load shaders
-            var depthShader = Shader.Find("Hidden/LightmapUvTool/VertexAODepth");
-            var computeShader = (ComputeShader)EditorGUIUtility.Load("VertexAOAccum.compute");
+            // Load ray tracing compute shader
+            var computeShader = (ComputeShader)EditorGUIUtility.Load("VertexAORayTrace.compute");
             if (computeShader == null)
                 computeShader = AssetDatabase.LoadAssetAtPath<ComputeShader>(
-                    FindComputeShaderPath("VertexAOAccum"));
+                    FindComputeShaderPath("VertexAORayTrace"));
 
-            if (depthShader == null || computeShader == null)
+            if (computeShader == null)
             {
-                UvtLog.Error("[Vertex AO] Cannot find shaders. Falling back to CPU.");
+                UvtLog.Error("[Vertex AO] Cannot find VertexAORayTrace compute shader. Falling back to CPU.");
                 return BakeMultiMeshCPU(meshes, settings);
             }
 
-            var depthMat = new Material(depthShader) { hideFlags = HideFlags.HideAndDontSave };
-            // 0=Off, 1=Front, 2=Back (UnityEngine.Rendering.CullMode)
-            depthMat.SetFloat("_Cull", settings.backfaceCulling ? 2f : 0f);
+            bool isThickness = settings.bakeType == AOBakeType.Thickness;
 
-            // Compute combined bounds
+            // Build combined BVH from all meshes (same as CPU path)
+            var allVerts = new List<Vector3>();
+            var allTris = new List<int>();
+            var readableCopies = new List<Mesh>();
+            foreach (var (mesh, xform) in meshes)
+            {
+                var readable = EnsureReadable(mesh);
+                if (readable != mesh) readableCopies.Add(readable);
+                int baseVert = allVerts.Count;
+                var verts = readable.vertices;
+                for (int i = 0; i < verts.Length; i++)
+                    allVerts.Add(xform.MultiplyPoint3x4(verts[i]));
+                var tris = readable.triangles;
+                for (int i = 0; i < tris.Length; i++)
+                    allTris.Add(tris[i] + baseVert);
+            }
+
+            var bvh = new TriangleBvh(allVerts.ToArray(), allTris.ToArray());
+            bvh.GetGPUData(out var gpuNodes, out var gpuTriIndices, out var gpuVerts, out var gpuTris);
+
+            var directions = GenerateSphereDirections(settings.sampleCount);
+
+            // Precompute face normals
+            int faceCount = allTris.Count / 3;
+            var faceNormals = new Vector3[faceCount];
+            var allVertsArr = allVerts.ToArray();
+            var allTrisArr = allTris.ToArray();
+            for (int f = 0; f < faceCount; f++)
+            {
+                var a = allVertsArr[allTrisArr[f * 3]];
+                var b = allVertsArr[allTrisArr[f * 3 + 1]];
+                var c = allVertsArr[allTrisArr[f * 3 + 2]];
+                faceNormals[f] = Vector3.Cross(b - a, c - a).normalized;
+            }
+
             Bounds combinedBounds = ComputeCombinedBounds(meshes);
-            if (settings.groundPlane)
-            {
-                float extend = Mathf.Max(combinedBounds.size.x, combinedBounds.size.z) * 2.5f;
-                var groundMin = new Vector3(
-                    combinedBounds.center.x - extend,
-                    combinedBounds.min.y - settings.groundOffset,
-                    combinedBounds.center.z - extend);
-                var groundMax = new Vector3(
-                    combinedBounds.center.x + extend,
-                    combinedBounds.min.y - settings.groundOffset,
-                    combinedBounds.center.z + extend);
-                combinedBounds.Encapsulate(groundMin);
-                combinedBounds.Encapsulate(groundMax);
-            }
-
             float extent = combinedBounds.extents.magnitude;
-            if (settings.maxRadius > 0 && settings.maxRadius < extent)
-                extent = settings.maxRadius;
-            Vector3 center = combinedBounds.center;
-            float bias = 0.001f * extent;
-            float normalOffset = 0.0005f * extent;
+            float normalOffset = 0.001f * extent;
+            float minHitDist = 0.003f * extent;
+            float maxDist = settings.maxRadius > 0 ? settings.maxRadius : float.MaxValue;
+            float groundY = settings.groundPlane
+                ? combinedBounds.min.y - settings.groundOffset
+                : float.NegativeInfinity;
 
-            // Create render texture
-            int res = settings.depthResolution;
-            var rt = new RenderTexture(res, res, 24, RenderTextureFormat.RFloat)
-            {
-                enableRandomWrite = true,
-                filterMode = FilterMode.Point,
-                wrapMode = TextureWrapMode.Clamp,
-                hideFlags = HideFlags.HideAndDontSave
-            };
-            rt.Create();
+            // Upload BVH to GPU
+            int nodeStride = System.Runtime.InteropServices.Marshal.SizeOf<TriangleBvh.GPUNode>();
+            var bvhNodeBuf = new ComputeBuffer(gpuNodes.Length, nodeStride);
+            bvhNodeBuf.SetData(gpuNodes);
+            var triVertBuf = new ComputeBuffer(gpuVerts.Length, 12);
+            triVertBuf.SetData(gpuVerts);
+            var triIdxBuf = new ComputeBuffer(gpuTriIndices.Length, 4);
+            triIdxBuf.SetData(gpuTriIndices);
+            var trisBuf = new ComputeBuffer(gpuTris.Length, 4);
+            trisBuf.SetData(gpuTris);
+            var faceNormBuf = new ComputeBuffer(faceNormals.Length, 12);
+            faceNormBuf.SetData(faceNormals);
+            var dirBuf = new ComputeBuffer(directions.Length, 12);
+            dirBuf.SetData(directions);
 
-            // Create ground plane mesh
-            Mesh groundQuad = null;
-            Matrix4x4 groundMatrix = Matrix4x4.identity;
-            if (settings.groundPlane)
-            {
-                groundQuad = CreateGroundQuad(combinedBounds, settings.groundOffset);
-                groundMatrix = Matrix4x4.identity;
-            }
-
-            // Per-mesh GPU buffers
+            // Per-mesh vertex buffers
             var meshBuffers = new List<(Mesh mesh, ComputeBuffer pos, ComputeBuffer norm, ComputeBuffer counters, int vertCount)>();
             foreach (var (mesh, xform) in meshes)
             {
-                var verts = mesh.vertices;
-                var norms = mesh.normals;
+                var readable = EnsureReadable(mesh);
+                if (readable != mesh && !readableCopies.Contains(readable)) readableCopies.Add(readable);
+                var verts = readable.vertices;
+                var norms = readable.normals;
                 if (norms == null || norms.Length != verts.Length)
                 {
-                    var tmp = UnityEngine.Object.Instantiate(mesh);
-                    tmp.RecalculateNormals();
-                    norms = tmp.normals;
-                    UnityEngine.Object.DestroyImmediate(tmp);
+                    readable.RecalculateNormals();
+                    norms = readable.normals;
                 }
 
-                // Transform to world space
                 var worldVerts = new Vector3[verts.Length];
                 var worldNorms = new Vector3[verts.Length];
                 for (int i = 0; i < verts.Length; i++)
@@ -564,78 +637,63 @@ namespace LightmapUvTool
                 var normBuf = new ComputeBuffer(verts.Length, 12);
                 normBuf.SetData(worldNorms);
                 var counterBuf = new ComputeBuffer(verts.Length, 8);
-                counterBuf.SetData(new uint[verts.Length * 2]); // zero init
+                counterBuf.SetData(new uint[verts.Length * 2]);
 
                 meshBuffers.Add((mesh, posBuf, normBuf, counterBuf, verts.Length));
             }
 
-            // Generate hemisphere directions
-            var directions = GenerateSphereDirections(settings.sampleCount);
-
-            // Kernel indices
-            int accumKernel = computeShader.FindKernel("AccumulateAO");
+            int bakeKernel = computeShader.FindKernel("BakeAO");
             int finalKernel = computeShader.FindKernel("FinalizeAO");
-
-            var cmd = new CommandBuffer { name = "VertexAO_Depth" };
 
             try
             {
-                // Main loop: render + accumulate per direction
-                for (int d = 0; d < directions.Length; d++)
+                // Set BVH buffers (shared across all meshes)
+                computeShader.SetBuffer(bakeKernel, "_BVHNodes", bvhNodeBuf);
+                computeShader.SetBuffer(bakeKernel, "_TriVerts", triVertBuf);
+                computeShader.SetBuffer(bakeKernel, "_TriIndices", triIdxBuf);
+                computeShader.SetBuffer(bakeKernel, "_Tris", trisBuf);
+                computeShader.SetBuffer(bakeKernel, "_FaceNormals", faceNormBuf);
+                computeShader.SetBuffer(bakeKernel, "_Directions", dirBuf);
+
+                // Set uniforms
+                computeShader.SetInt("_DirectionCount", directions.Length);
+                computeShader.SetFloat("_MaxDist", maxDist);
+                computeShader.SetFloat("_NormalOffset", normalOffset);
+                computeShader.SetFloat("_MinHitDist", minHitDist);
+                computeShader.SetFloat("_CosineWeighted", settings.cosineWeighted ? 1f : 0f);
+                computeShader.SetFloat("_FlipNormals", isThickness ? 1f : 0f);
+                computeShader.SetFloat("_BackfaceCulling", settings.backfaceCulling ? 1f : 0f);
+                computeShader.SetFloat("_GroundPlane", (settings.groundPlane && !isThickness) ? 1f : 0f);
+                computeShader.SetFloat("_GroundY", groundY);
+
+                // Dispatch per mesh
+                int totalVerts = 0;
+                foreach (var (mesh, _) in meshes) totalVerts += mesh.vertexCount;
+                int processed = 0;
+
+                foreach (var (mesh, posBuf, normBuf, counterBuf, vertCount) in meshBuffers)
                 {
-                    if (EditorUtility.DisplayCancelableProgressBar("Baking Vertex AO",
-                        $"Sample {d + 1}/{directions.Length}", (float)d / directions.Length))
+                    if (EditorUtility.DisplayCancelableProgressBar("Baking Vertex AO (GPU ray trace)",
+                        $"Mesh {processed + vertCount}/{totalVerts} vertices",
+                        (float)processed / totalVerts))
                         break;
 
-                    Vector3 dir = directions[d];
+                    computeShader.SetInt("_VertexCount", vertCount);
+                    computeShader.SetBuffer(bakeKernel, "_Positions", posBuf);
+                    computeShader.SetBuffer(bakeKernel, "_Normals", normBuf);
+                    computeShader.SetBuffer(bakeKernel, "_AOCounters", counterBuf);
+                    computeShader.Dispatch(bakeKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
 
-                    // Build ortho view/proj matrices
-                    Vector3 up = Mathf.Abs(Vector3.Dot(dir, Vector3.up)) > 0.99f
-                        ? Vector3.forward : Vector3.up;
-                    Matrix4x4 view = Matrix4x4.LookAt(center - dir * extent, center, up);
-                    // LookAt returns camera-to-world, we need world-to-camera
-                    view = view.inverse;
-                    Matrix4x4 proj = Matrix4x4.Ortho(-extent, extent, -extent, extent, 0, 2 * extent);
-                    Matrix4x4 vp = proj * view;
-
-                    // Render depth pass
-                    cmd.Clear();
-                    cmd.SetRenderTarget(rt);
-                    cmd.ClearRenderTarget(true, true, Color.white, 1f);
-                    cmd.SetViewProjectionMatrices(view, proj);
-                    foreach (var (mesh, xform) in meshes)
-                    {
-                        for (int sub = 0; sub < mesh.subMeshCount; sub++)
-                            cmd.DrawMesh(mesh, xform, depthMat, sub);
-                    }
-                    if (groundQuad != null)
-                        cmd.DrawMesh(groundQuad, groundMatrix, depthMat);
-                    Graphics.ExecuteCommandBuffer(cmd);
-
-                    // Dispatch compute per mesh
-                    computeShader.SetTexture(accumKernel, "_DepthTex", rt);
-                    computeShader.SetMatrix("_VP", vp);
-                    computeShader.SetVector("_SampleDir", dir);
-                    computeShader.SetFloat("_DepthBias", bias);
-                    computeShader.SetFloat("_NormalOffset", normalOffset);
-                    computeShader.SetInt("_DepthTexSize", res);
-
-                    foreach (var (mesh, posBuf, normBuf, counterBuf, vertCount) in meshBuffers)
-                    {
-                        computeShader.SetInt("_VertexCount", vertCount);
-                        computeShader.SetBuffer(accumKernel, "_Positions", posBuf);
-                        computeShader.SetBuffer(accumKernel, "_Normals", normBuf);
-                        computeShader.SetBuffer(accumKernel, "_AOCounters", counterBuf);
-                        computeShader.Dispatch(accumKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
-                    }
+                    processed += vertCount;
                 }
 
-                // Finalize: compute final AO per mesh
+                // Finalize
                 foreach (var (mesh, posBuf, normBuf, counterBuf, vertCount) in meshBuffers)
                 {
                     var aoResultBuf = new ComputeBuffer(vertCount, 4);
                     computeShader.SetInt("_VertexCount", vertCount);
                     computeShader.SetFloat("_Intensity", settings.intensity);
+                    computeShader.SetFloat("_FlipNormals", isThickness ? 1f : 0f);
                     computeShader.SetBuffer(finalKernel, "_AOCounters", counterBuf);
                     computeShader.SetBuffer(finalKernel, "_AOResult", aoResultBuf);
                     computeShader.Dispatch(finalKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
@@ -650,17 +708,20 @@ namespace LightmapUvTool
             finally
             {
                 EditorUtility.ClearProgressBar();
-                cmd.Dispose();
+                bvhNodeBuf.Dispose();
+                triVertBuf.Dispose();
+                triIdxBuf.Dispose();
+                trisBuf.Dispose();
+                faceNormBuf.Dispose();
+                dirBuf.Dispose();
                 foreach (var (_, posBuf, normBuf, counterBuf, _) in meshBuffers)
                 {
                     posBuf.Dispose();
                     normBuf.Dispose();
                     counterBuf.Dispose();
                 }
-                rt.Release();
-                UnityEngine.Object.DestroyImmediate(rt);
-                UnityEngine.Object.DestroyImmediate(depthMat);
-                if (groundQuad != null) UnityEngine.Object.DestroyImmediate(groundQuad);
+                foreach (var copy in readableCopies)
+                    UnityEngine.Object.DestroyImmediate(copy);
             }
 
             return result;
@@ -672,19 +733,22 @@ namespace LightmapUvTool
             List<(Mesh mesh, Matrix4x4 transform)> meshes,
             VertexAOSettings settings)
         {
-            UvtLog.Info("[Vertex AO] Using CPU fallback (no compute shader support).");
+            UvtLog.Info("[Vertex AO] Using CPU mode (BVH ray tracing).");
             var result = new Dictionary<Mesh, float[]>();
 
             // Build combined BVH from all meshes
             var allVerts = new List<Vector3>();
             var allTris = new List<int>();
+            var cpuCopies = new List<Mesh>();
             foreach (var (mesh, xform) in meshes)
             {
+                var readable = EnsureReadable(mesh);
+                if (readable != mesh) cpuCopies.Add(readable);
                 int baseVert = allVerts.Count;
-                var verts = mesh.vertices;
+                var verts = readable.vertices;
                 for (int i = 0; i < verts.Length; i++)
                     allVerts.Add(xform.MultiplyPoint3x4(verts[i]));
-                var tris = mesh.triangles;
+                var tris = readable.triangles;
                 for (int i = 0; i < tris.Length; i++)
                     allTris.Add(tris[i] + baseVert);
             }
@@ -723,14 +787,13 @@ namespace LightmapUvTool
 
             foreach (var (mesh, xform) in meshes)
             {
-                var verts = mesh.vertices;
-                var norms = mesh.normals;
+                var readable = EnsureReadable(mesh);
+                var verts = readable.vertices;
+                var norms = readable.normals;
                 if (norms == null || norms.Length != verts.Length)
                 {
-                    var tmp = UnityEngine.Object.Instantiate(mesh);
-                    tmp.RecalculateNormals();
-                    norms = tmp.normals;
-                    UnityEngine.Object.DestroyImmediate(tmp);
+                    readable.RecalculateNormals();
+                    norms = readable.normals;
                 }
 
                 var ao = new float[verts.Length];
@@ -749,17 +812,23 @@ namespace LightmapUvTool
                 int progressCounter = 0;
                 bool cancelled = false;
 
+                bool isThickness = settings.bakeType == AOBakeType.Thickness;
+
                 Parallel.For(0, verts.Length, (v, loopState) =>
                 {
                     if (cancelled) { loopState.Stop(); return; }
 
-                    Vector3 origin = worldPos[v] + worldNorm[v] * normalOffset;
+                    // Thickness: flip hemisphere — rays go into the mesh
+                    Vector3 hemisphereNorm = isThickness ? -worldNorm[v] : worldNorm[v];
+                    // Thickness: offset inward; AO: offset outward
+                    Vector3 origin = worldPos[v] + hemisphereNorm * normalOffset;
 
                     // Per-vertex jitter: rotate all directions by a small random angle
                     // to break banding artifacts with low sample counts
                     float jitterAngle = (v * 2654435761u % 360) * Mathf.Deg2Rad;
                     float jCos = Mathf.Cos(jitterAngle), jSin = Mathf.Sin(jitterAngle);
 
+                    bool cosW = settings.cosineWeighted;
                     float occludedWeight = 0f, totalWeight = 0f;
                     for (int d = 0; d < directions.Length; d++)
                     {
@@ -769,17 +838,20 @@ namespace LightmapUvTool
                         float rz = dir.x * jSin + dir.z * jCos;
                         var jitteredDir = new Vector3(rx, dir.y, rz);
 
-                        float ndot = Vector3.Dot(jitteredDir, worldNorm[v]);
+                        float ndot = Vector3.Dot(jitteredDir, hemisphereNorm);
                         if (ndot <= 0) continue;
 
-                        // Cosine-weighted: rays near normal contribute more
-                        totalWeight += ndot;
+                        // Cosine-weighted: rays near normal contribute more;
+                        // uniform: all hemisphere directions contribute equally.
+                        float weight = cosW ? ndot : 1f;
+                        totalWeight += weight;
 
                         var hit = bvh.Raycast(origin, jitteredDir, maxDist);
                         if (hit.triangleIndex >= 0 && hit.t > minHitDist)
                         {
                             // Backface culling: skip if ray hit the back side of a triangle
-                            if (faceNormals != null &&
+                            // (skip for thickness — we want all inward hits)
+                            if (!isThickness && faceNormals != null &&
                                 Vector3.Dot(jitteredDir, faceNormals[hit.triangleIndex]) > 0)
                             {
                                 // Hit backface — treat as no geometry (fall through to ground check)
@@ -788,23 +860,26 @@ namespace LightmapUvTool
                             {
                                 // Distance falloff: closer hits occlude more
                                 float falloff = 1f - hit.t / maxDist;
-                                occludedWeight += ndot * falloff;
+                                occludedWeight += weight * falloff;
                                 continue;
                             }
                         }
 
-                        if (settings.groundPlane && jitteredDir.y < -0.001f)
+                        // Ground plane only for AO, not thickness
+                        if (!isThickness && settings.groundPlane && jitteredDir.y < -0.001f)
                         {
                             float t = (groundY - origin.y) / jitteredDir.y;
                             if (t > 0 && t < maxDist)
                             {
                                 float falloff = 1f - t / maxDist;
-                                occludedWeight += ndot * falloff;
+                                occludedWeight += weight * falloff;
                             }
                         }
                     }
 
                     float aoVal = totalWeight > 0 ? 1f - occludedWeight / totalWeight : 1f;
+                    // Thickness: invert so closer hits = brighter (1=thin, 0=thick)
+                    if (isThickness) aoVal = 1f - aoVal;
                     ao[v] = Mathf.Pow(Mathf.Clamp01(aoVal), settings.intensity);
 
                     Interlocked.Increment(ref progressCounter);
@@ -821,20 +896,29 @@ namespace LightmapUvTool
 
                 processed += verts.Length;
 
-                // Face-area correction: fix large polygons where all vertices
-                // are in occlusion but the surface itself is mostly open.
-                if (settings.faceAreaCorrection)
-                    ao = FaceAreaCorrection(ao, mesh, xform, bvh, directions, maxDist,
-                        normalOffset, settings, groundY);
-
+                if (readable != mesh) UnityEngine.Object.DestroyImmediate(readable);
                 result[mesh] = ao;
             }
 
+            foreach (var c in cpuCopies)
+                UnityEngine.Object.DestroyImmediate(c);
             EditorUtility.ClearProgressBar();
             return result;
         }
 
         // ── Helpers ──
+
+        /// <summary>
+        /// Returns a readable copy of the mesh if needed.
+        /// Caller must DestroyImmediate the copy when done (if copy != original).
+        /// </summary>
+        static Mesh EnsureReadable(Mesh mesh)
+        {
+            if (mesh.isReadable) return mesh;
+            var copy = UnityEngine.Object.Instantiate(mesh);
+            copy.hideFlags = HideFlags.HideAndDontSave;
+            return copy;
+        }
 
         static Vector3[] GenerateSphereDirections(int count)
         {

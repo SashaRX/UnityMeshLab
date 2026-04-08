@@ -1,8 +1,7 @@
 Shader "Hidden/LightmapUvTool/VertexAODepth"
 {
     // Renders mesh geometry outputting linear depth (0=near, 1=far) to an RFloat color target.
-    // Used by VertexAOBaker: orthographic camera renders from hemisphere directions,
-    // compute shader samples this depth to determine per-vertex occlusion.
+    // Depth is computed from view-space Z for platform independence (no reversed-Z dependency).
     Properties
     {
         [Enum(UnityEngine.Rendering.CullMode)] _Cull ("Cull Mode", Float) = 0
@@ -13,8 +12,12 @@ Shader "Hidden/LightmapUvTool/VertexAODepth"
 
         Pass
         {
-            ZWrite On
-            ZTest LEqual
+            // Use BlendOp Min to keep the closest (smallest) depth per pixel.
+            // Eliminates all hardware Z-buffer / reversed-Z issues.
+            ZWrite Off
+            ZTest Always
+            BlendOp Min
+            Blend One One
             Cull [_Cull]
 
             CGPROGRAM
@@ -22,6 +25,9 @@ Shader "Hidden/LightmapUvTool/VertexAODepth"
             #pragma fragment frag
 
             #include "UnityCG.cginc"
+
+            float4x4 _AO_ViewMatrix;
+            float    _AO_InvDepthRange;
 
             struct appdata
             {
@@ -39,12 +45,11 @@ Shader "Hidden/LightmapUvTool/VertexAODepth"
                 v2f o;
                 o.pos = UnityObjectToClipPos(v.vertex);
 
-                // Output normalized depth: 0 = near plane, 1 = far plane
-                float d = o.pos.z / o.pos.w;
-                #if defined(UNITY_REVERSED_Z)
-                d = 1.0 - d;
-                #endif
-                o.depth = d;
+                // Compute linear depth from view-space Z (platform-independent).
+                // View matrix is the raw (non-GPU-adjusted) world-to-camera transform.
+                float3 worldPos = mul(unity_ObjectToWorld, v.vertex).xyz;
+                float viewZ = mul(_AO_ViewMatrix, float4(worldPos, 1.0)).z;
+                o.depth = -viewZ * _AO_InvDepthRange;
                 return o;
             }
 

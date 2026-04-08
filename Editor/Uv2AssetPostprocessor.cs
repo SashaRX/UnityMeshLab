@@ -96,25 +96,6 @@ namespace LightmapUvTool
         {
             string modelPath = assetPath;
 
-            // Strip extra attributes from _COL meshes (Unity reimporter recalculates
-            // normals even if we export without them — strip after import)
-            foreach (var mf in root.GetComponentsInChildren<MeshFilter>(true))
-            {
-                if (mf == null || mf.sharedMesh == null) continue;
-                if (!mf.gameObject.name.Contains("_COL")) continue;
-                var mesh = mf.sharedMesh;
-                var pos = mesh.vertices;
-                var subTris = new int[mesh.subMeshCount][];
-                for (int s = 0; s < mesh.subMeshCount; s++)
-                    subTris[s] = mesh.GetTriangles(s);
-                mesh.Clear();
-                mesh.vertices = pos;
-                mesh.subMeshCount = subTris.Length;
-                for (int s = 0; s < subTris.Length; s++)
-                    mesh.SetTriangles(subTris[s], s);
-                mesh.RecalculateBounds();
-            }
-
             // Bypass: ApplyUv2ToFbx needs the raw FBX mesh without any modifications.
             if (bypassPaths.Remove(modelPath))
             {
@@ -135,6 +116,28 @@ namespace LightmapUvTool
             // Load sidecar without triggering import loop
             var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sidecarPath);
             if (data == null || data.entries.Count == 0) return;
+
+            // Strip extra attributes only from collision meshes generated and tracked
+            // by this tool in the sidecar. Do not touch arbitrary user-authored _COL nodes.
+            if (data.collisionEntries != null && data.collisionEntries.Count > 0)
+            {
+                foreach (var mf in root.GetComponentsInChildren<MeshFilter>(true))
+                {
+                    if (mf == null || mf.sharedMesh == null) continue;
+                    if (!IsManagedCollisionObjectName(mf.gameObject.name, data)) continue;
+                    var mesh = mf.sharedMesh;
+                    var pos = mesh.vertices;
+                    var subTris = new int[mesh.subMeshCount][];
+                    for (int s = 0; s < mesh.subMeshCount; s++)
+                        subTris[s] = mesh.GetTriangles(s);
+                    mesh.Clear();
+                    mesh.vertices = pos;
+                    mesh.subMeshCount = subTris.Length;
+                    for (int s = 0; s < subTris.Length; s++)
+                        mesh.SetTriangles(subTris[s], s);
+                    mesh.RecalculateBounds();
+                }
+            }
 
             var filters = root.GetComponentsInChildren<MeshFilter>(true);
             var skinned = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
@@ -255,6 +258,20 @@ namespace LightmapUvTool
                     }
                 };
             }
+        }
+
+        static bool IsManagedCollisionObjectName(string objectName, Uv2DataAsset data)
+        {
+            if (string.IsNullOrEmpty(objectName) || data?.collisionEntries == null) return false;
+            for (int i = 0; i < data.collisionEntries.Count; i++)
+            {
+                var entry = data.collisionEntries[i];
+                if (entry == null || string.IsNullOrEmpty(entry.meshGroupKey)) continue;
+                string prefix = entry.meshGroupKey + "_COL";
+                if (objectName == prefix) return true;
+                if (objectName.StartsWith(prefix + "_Hull")) return true;
+            }
+            return false;
         }
 
         /// <summary>Apply weld (if flagged) + UV2 to a single mesh. Returns true on success.</summary>
