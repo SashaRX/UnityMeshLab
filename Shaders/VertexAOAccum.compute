@@ -77,7 +77,7 @@ void AccumulateAO(uint3 id : SV_DispatchThreadID)
 
     // Compute linear depth from view-space Z (platform-independent, matches depth shader)
     float viewZ = mul(_ViewMatrix, float4(offsetPos, 1.0)).z;
-    float vertexDepth = viewZ * _InvDepthRange;
+    float vertexDepth = -viewZ * _InvDepthRange;
 
     // Out of bounds → not occluded from this direction
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)

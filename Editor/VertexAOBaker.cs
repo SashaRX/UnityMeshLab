@@ -669,6 +669,11 @@ namespace LightmapUvTool
                     Matrix4x4 view = Matrix4x4.LookAt(center - dir * extent, center, up);
                     // LookAt returns camera-to-world, we need world-to-camera
                     view = view.inverse;
+                    // Flip Z axis: LookAt gives +Z forward, but Ortho expects -Z forward (OpenGL convention)
+                    view[2, 0] = -view[2, 0];
+                    view[2, 1] = -view[2, 1];
+                    view[2, 2] = -view[2, 2];
+                    view[2, 3] = -view[2, 3];
                     Matrix4x4 proj = Matrix4x4.Ortho(-extent, extent, -extent, extent, 0, 2 * extent);
                     Matrix4x4 gpuProj = GL.GetGPUProjectionMatrix(proj, true);
                     Matrix4x4 vp = gpuProj * view;

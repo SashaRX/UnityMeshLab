@@ -45,7 +45,7 @@ Shader "Hidden/LightmapUvTool/VertexAODepth"
                 // View matrix is the raw (non-GPU-adjusted) world-to-camera transform.
                 float3 worldPos = mul(unity_ObjectToWorld, v.vertex).xyz;
                 float viewZ = mul(_AO_ViewMatrix, float4(worldPos, 1.0)).z;
-                o.depth = viewZ * _AO_InvDepthRange;
+                o.depth = -viewZ * _AO_InvDepthRange;
                 return o;
             }
 
