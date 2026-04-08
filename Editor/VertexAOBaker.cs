@@ -577,7 +577,9 @@ namespace LightmapUvTool
             if (settings.maxRadius > 0 && settings.maxRadius < extent)
                 extent = settings.maxRadius;
             Vector3 center = combinedBounds.center;
-            float bias = 0.0002f * extent;
+            // Depth bias in normalized [0,1] range. CPU minHitDist = 0.003*extent world units.
+            // In depth units: 0.003*extent / (2*extent) = 0.0015
+            float bias = 0.0015f;
             float normalOffset = 0.0005f * extent;
             float invDepthRange = 1f / (2f * extent);
 
@@ -750,6 +752,7 @@ namespace LightmapUvTool
                     normBuf.Dispose();
                     counterBuf.Dispose();
                 }
+                RenderTexture.active = null;
                 rt.Release();
                 UnityEngine.Object.DestroyImmediate(rt);
                 rtRead.Release();
