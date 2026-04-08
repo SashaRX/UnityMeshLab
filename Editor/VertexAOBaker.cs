@@ -646,24 +646,6 @@ namespace LightmapUvTool
 
             try
             {
-                // Debug: log setup info
-                UvtLog.Info($"[Vertex AO] GPU setup: extent={extent:F2} center={center} bias={bias:F6} " +
-                    $"normalOffset={normalOffset:F6} invDepthRange={invDepthRange:F6} " +
-                    $"res={res} reversedZ={SystemInfo.usesReversedZBuffer} " +
-                    $"meshBuffers={meshBuffers.Count} directions={directions.Length}");
-                if (meshBuffers.Count > 0)
-                {
-                    var (m0, pb0, nb0, cb0, vc0) = meshBuffers[0];
-                    var dbgPos = new Vector3[Mathf.Min(vc0, 3)];
-                    pb0.GetData(dbgPos, 0, 0, dbgPos.Length);
-                    var dbgNrm = new Vector3[dbgPos.Length];
-                    nb0.GetData(dbgNrm, 0, 0, dbgNrm.Length);
-                    var sb = new System.Text.StringBuilder("[Vertex AO] GPU first 3 verts: ");
-                    for (int i = 0; i < dbgPos.Length; i++)
-                        sb.Append($"pos={dbgPos[i]:F2} nrm={dbgNrm[i]:F2} | ");
-                    UvtLog.Info(sb.ToString());
-                }
-
                 // Main loop: render + accumulate per direction
                 for (int d = 0; d < directions.Length; d++)
                 {
@@ -688,7 +670,7 @@ namespace LightmapUvTool
                     cmd.Clear();
                     cmd.SetRenderTarget(rt);
                     float depthClear = SystemInfo.usesReversedZBuffer ? 0f : 1f;
-                    cmd.ClearRenderTarget(true, true, new Color(0.5f, 0, 0, 0), depthClear);
+                    cmd.ClearRenderTarget(true, true, Color.white, depthClear);
                     // Pass raw view matrix to depth shader for platform-independent depth
                     depthMat.SetMatrix("_AO_ViewMatrix", view);
                     depthMat.SetFloat("_AO_InvDepthRange", invDepthRange);
@@ -725,54 +707,6 @@ namespace LightmapUvTool
                         computeShader.SetBuffer(accumKernel, "_Normals", normBuf);
                         computeShader.SetBuffer(accumKernel, "_AOCounters", counterBuf);
                         computeShader.Dispatch(accumKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
-
-                        // Debug: log counter values after first direction
-                        if (d == 0)
-                        {
-                            int dbgCount = Mathf.Min(vertCount, 10);
-                            var dbgData = new uint[dbgCount * 2];
-                            counterBuf.GetData(dbgData, 0, 0, dbgData.Length);
-                            var sb = new System.Text.StringBuilder();
-                            sb.Append("[Vertex AO] GPU debug (dir0, first 10 verts) counters[occl,samp]: ");
-                            for (int i = 0; i < dbgCount; i++)
-                                sb.Append($"[{dbgData[i * 2]},{dbgData[i * 2 + 1]}] ");
-
-                            // Read back full depth texture and scan for rendered pixels
-                            var readback = new Texture2D(res, res, TextureFormat.RFloat, false);
-                            RenderTexture.active = rt;
-                            readback.ReadPixels(new Rect(0, 0, res, res), 0, 0);
-                            readback.Apply();
-                            RenderTexture.active = null;
-                            float centerDepth = readback.GetPixel(res / 2, res / 2).r;
-                            int nonClearPixels = 0;
-                            float minD = float.MaxValue, maxD = float.MinValue;
-                            for (int py = 0; py < res; py += 4)
-                                for (int px = 0; px < res; px += 4)
-                                {
-                                    float pd = readback.GetPixel(px, py).r;
-                                    if (Mathf.Abs(pd - 0.5f) > 0.01f) // not the clear value
-                                    {
-                                        nonClearPixels++;
-                                        if (pd < minD) minD = pd;
-                                        if (pd > maxD) maxD = pd;
-                                    }
-                                }
-                            UnityEngine.Object.DestroyImmediate(readback);
-                            sb.Append($" | depthTex center={centerDepth:F4}");
-                            sb.Append($" | nonClearPx={nonClearPixels} range=[{minD:F4},{maxD:F4}]");
-                            sb.Append($" | bias={bias:F6} invRange={invDepthRange:F6}");
-
-                            // C#-side projection check for first vertex
-                            var dbgP = new Vector3[1];
-                            posBuf.GetData(dbgP, 0, 0, 1);
-                            Vector4 clipCS = vp * new Vector4(dbgP[0].x, dbgP[0].y, dbgP[0].z, 1f);
-                            Vector2 uvCS = new Vector2(clipCS.x / clipCS.w * 0.5f + 0.5f, clipCS.y / clipCS.w * 0.5f + 0.5f);
-                            float viewZCS = (view * new Vector4(dbgP[0].x, dbgP[0].y, dbgP[0].z, 1f)).z;
-                            float depthCS = viewZCS * invDepthRange;
-                            sb.Append($" | v0 proj: uv=({uvCS.x:F3},{uvCS.y:F3}) viewZ={viewZCS:F3} depth={depthCS:F4}");
-                            sb.Append($" | dir={dir}");
-                            UvtLog.Info(sb.ToString());
-                        }
                     }
                 }
 
