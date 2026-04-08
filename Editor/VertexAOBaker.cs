@@ -681,7 +681,8 @@ namespace LightmapUvTool
                     // Render depth pass
                     cmd.Clear();
                     cmd.SetRenderTarget(rt);
-                    cmd.ClearRenderTarget(true, true, Color.white, 1f);
+                    // Clear depth to 0 (far plane in reversed-Z), color to 1 (no geometry)
+                    cmd.ClearRenderTarget(true, true, Color.white, 0f);
                     depthMat.SetMatrix("_AO_ViewMatrix", view);
                     depthMat.SetFloat("_AO_InvDepthRange", invDepthRange);
                     cmd.SetViewProjectionMatrices(view, gpuProj);
