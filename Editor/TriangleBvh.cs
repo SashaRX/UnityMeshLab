@@ -467,5 +467,46 @@ namespace LightmapUvTool
             if (axis == 1) return v.y;
             return v.z;
         }
+
+        // ── GPU Serialization ──
+
+        /// <summary>
+        /// GPU-friendly BVH node (matches compute shader BVHNode struct).
+        /// 10 floats + 4 ints = 56 bytes per node.
+        /// </summary>
+        public struct GPUNode
+        {
+            public Vector3 bMin;
+            public Vector3 bMax;
+            public int left;
+            public int right;
+            public int triStart;
+            public int triCount;
+        }
+
+        /// <summary>
+        /// Serialize BVH data for GPU compute shader.
+        /// Returns: nodes array, triangle index remapping, vertices, triangle indices.
+        /// </summary>
+        public void GetGPUData(out GPUNode[] gpuNodes, out int[] gpuTriIndices,
+            out Vector3[] gpuVerts, out int[] gpuTris)
+        {
+            gpuNodes = new GPUNode[nodeCount];
+            for (int i = 0; i < nodeCount; i++)
+            {
+                gpuNodes[i] = new GPUNode
+                {
+                    bMin = nodes[i].bMin,
+                    bMax = nodes[i].bMax,
+                    left = nodes[i].left,
+                    right = nodes[i].right,
+                    triStart = nodes[i].triStart,
+                    triCount = nodes[i].triCount
+                };
+            }
+            gpuTriIndices = (int[])triIndices.Clone();
+            gpuVerts = verts;  // already world-space
+            gpuTris = tris;
+        }
     }
 }

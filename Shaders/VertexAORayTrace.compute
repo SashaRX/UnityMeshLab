@@ -1,0 +1,253 @@
+// VertexAORayTrace.compute — GPU vertex AO via BVH ray tracing.
+// Identical algorithm to CPU path: per-vertex hemisphere sampling with BVH raycast.
+// Two kernels: BakeAO (main ray tracing) and FinalizeAO (compute final values).
+
+#pragma kernel BakeAO
+#pragma kernel FinalizeAO
+
+#define FP_SCALE 100000u
+#define MAX_STACK 32
+#define EPSILON 1e-7
+
+// ── BVH Data ──
+struct BVHNode
+{
+    float3 bMin;
+    float3 bMax;
+    int left;
+    int right;
+    int triStart;
+    int triCount;
+};
+
+StructuredBuffer<BVHNode>  _BVHNodes;
+StructuredBuffer<float3>   _TriVerts;    // world-space triangle vertices
+StructuredBuffer<int>      _TriIndices;  // face index remapping
+StructuredBuffer<int>      _Tris;        // triangle vertex indices (i0,i1,i2,...)
+StructuredBuffer<float3>   _FaceNormals; // per-face normals (for backface culling)
+
+// ── Per-vertex Data ──
+StructuredBuffer<float3>   _Positions;
+StructuredBuffer<float3>   _Normals;
+RWStructuredBuffer<uint2>  _AOCounters;  // (occludedWeight, totalWeight) fixed-point
+RWStructuredBuffer<float>  _AOResult;
+
+// ── Sample Directions ──
+StructuredBuffer<float3>   _Directions;
+
+// ── Uniforms ──
+uint _VertexCount;
+uint _DirectionCount;
+float _MaxDist;
+float _NormalOffset;
+float _MinHitDist;
+float _Intensity;
+float _CosineWeighted;
+float _FlipNormals;
+float _BackfaceCulling;
+float _GroundPlane;
+float _GroundY;
+
+// ── Ray-AABB intersection (slab method) ──
+bool RayAABB(float3 origin, float3 invDir, float3 bMin, float3 bMax, float maxT)
+{
+    float3 t1 = (bMin - origin) * invDir;
+    float3 t2 = (bMax - origin) * invDir;
+    float3 tmin3 = min(t1, t2);
+    float3 tmax3 = max(t1, t2);
+    float tmin = max(max(tmin3.x, tmin3.y), max(tmin3.z, 0.0));
+    float tmax = min(min(tmax3.x, tmax3.y), tmax3.z);
+    return tmin <= min(tmax, maxT);
+}
+
+// ── Möller–Trumbore ray-triangle intersection ──
+bool RayTriangle(float3 origin, float3 dir, float3 a, float3 b, float3 c,
+                 out float t, out float3 faceNorm)
+{
+    t = 0;
+    float3 edge1 = b - a;
+    float3 edge2 = c - a;
+    faceNorm = cross(edge1, edge2);
+    float3 h = cross(dir, edge2);
+    float det = dot(edge1, h);
+
+    if (abs(det) < EPSILON) return false;
+
+    float invDet = 1.0 / det;
+    float3 s = origin - a;
+    float u = invDet * dot(s, h);
+    if (u < 0.0 || u > 1.0) return false;
+
+    float3 q = cross(s, edge1);
+    float v = invDet * dot(dir, q);
+    if (v < 0.0 || u + v > 1.0) return false;
+
+    t = invDet * dot(edge2, q);
+    return true;
+}
+
+// ── BVH Raycast (iterative with stack) ──
+// Returns: hit distance (or maxDist if no hit), and face normal of hit triangle
+float BVHRaycast(float3 origin, float3 dir, float maxDist, out float3 hitFaceNorm)
+{
+    hitFaceNorm = float3(0, 0, 0);
+    float bestT = maxDist;
+    float3 invDir = float3(
+        abs(dir.x) > EPSILON ? 1.0 / dir.x : 1e20,
+        abs(dir.y) > EPSILON ? 1.0 / dir.y : 1e20,
+        abs(dir.z) > EPSILON ? 1.0 / dir.z : 1e20
+    );
+
+    int stack[MAX_STACK];
+    int stackPtr = 0;
+    stack[stackPtr++] = 0; // root node
+
+    while (stackPtr > 0)
+    {
+        int nodeIdx = stack[--stackPtr];
+        BVHNode node = _BVHNodes[nodeIdx];
+
+        if (!RayAABB(origin, invDir, node.bMin, node.bMax, bestT))
+            continue;
+
+        // Leaf node
+        if (node.left == -1)
+        {
+            for (int i = node.triStart; i < node.triStart + node.triCount; i++)
+            {
+                int f = _TriIndices[i];
+                int i0 = _Tris[f * 3];
+                int i1 = _Tris[f * 3 + 1];
+                int i2 = _Tris[f * 3 + 2];
+
+                float3 a = _TriVerts[i0];
+                float3 b = _TriVerts[i1];
+                float3 c = _TriVerts[i2];
+
+                float t;
+                float3 fn;
+                if (RayTriangle(origin, dir, a, b, c, t, fn) && t >= 0.0 && t < bestT)
+                {
+                    bestT = t;
+                    hitFaceNorm = fn;
+                }
+            }
+            continue;
+        }
+
+        // Internal node — push children
+        if (stackPtr < MAX_STACK - 1)
+        {
+            stack[stackPtr++] = node.right;
+            stack[stackPtr++] = node.left;
+        }
+    }
+
+    return bestT;
+}
+
+// ══════════════════════════════════════════════════════════
+// Kernel 0: BakeAO — one thread per vertex, loops over all directions
+// ══════════════════════════════════════════════════════════
+
+[numthreads(64, 1, 1)]
+void BakeAO(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _VertexCount) return;
+
+    float3 pos = _Positions[id.x];
+    float3 normal = _Normals[id.x];
+
+    // Thickness mode: flip hemisphere
+    float3 hemisphereNorm = (_FlipNormals > 0.5) ? -normal : normal;
+    float3 origin = pos + hemisphereNorm * _NormalOffset;
+
+    // Per-vertex jitter
+    uint hash = id.x * 2654435761u;
+    float jitterAngle = (float)(hash % 360u) * 0.01745329;
+    float jCos = cos(jitterAngle);
+    float jSin = sin(jitterAngle);
+
+    uint wOccluded = 0;
+    uint wTotal = 0;
+
+    for (uint d = 0; d < _DirectionCount; d++)
+    {
+        float3 dir = _Directions[d];
+        // Apply Y-axis jitter
+        float3 jitteredDir = float3(
+            dir.x * jCos - dir.z * jSin,
+            dir.y,
+            dir.x * jSin + dir.z * jCos
+        );
+
+        float ndot = dot(jitteredDir, hemisphereNorm);
+        if (ndot <= 0.0) continue;
+
+        float weight = (_CosineWeighted > 0.5) ? ndot : 1.0;
+        uint wWeight = (uint)(weight * FP_SCALE);
+        wTotal += wWeight;
+
+        // BVH raycast
+        float3 hitNorm;
+        float hitT = BVHRaycast(origin, jitteredDir, _MaxDist, hitNorm);
+
+        if (hitT < _MaxDist && hitT > _MinHitDist)
+        {
+            // Backface culling
+            if (_BackfaceCulling > 0.5 && _FlipNormals < 0.5)
+            {
+                if (dot(jitteredDir, normalize(hitNorm)) > 0.0)
+                {
+                    // Hit backface — skip to ground check
+                    goto groundCheck;
+                }
+            }
+
+            float falloff = 1.0 - hitT / _MaxDist;
+            uint wOcc = (uint)(weight * falloff * FP_SCALE);
+            wOccluded += wOcc;
+            continue;
+        }
+
+        groundCheck:
+        // Ground plane
+        if (_GroundPlane > 0.5 && _FlipNormals < 0.5 && jitteredDir.y < -0.001)
+        {
+            float t = (_GroundY - origin.y) / jitteredDir.y;
+            if (t > 0.0 && t < _MaxDist)
+            {
+                float falloff = 1.0 - t / _MaxDist;
+                uint wOcc = (uint)(weight * falloff * FP_SCALE);
+                wOccluded += wOcc;
+            }
+        }
+    }
+
+    InterlockedAdd(_AOCounters[id.x].x, wOccluded);
+    InterlockedAdd(_AOCounters[id.x].y, wTotal);
+}
+
+// ══════════════════════════════════════════════════════════
+// Kernel 1: FinalizeAO — compute final AO values
+// ══════════════════════════════════════════════════════════
+
+[numthreads(64, 1, 1)]
+void FinalizeAO(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _VertexCount) return;
+
+    uint occluded = _AOCounters[id.x].x;
+    uint sampled  = _AOCounters[id.x].y;
+
+    float ao = 1.0;
+    if (sampled > 0)
+        ao = 1.0 - (float)occluded / (float)sampled;
+
+    // Thickness: invert
+    if (_FlipNormals > 0.5)
+        ao = 1.0 - ao;
+
+    ao = pow(saturate(ao), _Intensity);
+    _AOResult[id.x] = ao;
+}

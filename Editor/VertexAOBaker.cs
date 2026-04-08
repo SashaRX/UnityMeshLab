@@ -529,7 +529,7 @@ namespace LightmapUvTool
             return areas[triCount / 2];
         }
 
-        // ── GPU Path ──
+        // ── GPU Path (Compute Ray Tracing) ──
 
         static Dictionary<Mesh, float[]> BakeMultiMeshGPU(
             List<(Mesh mesh, Matrix4x4 transform)> meshes,
@@ -537,87 +537,85 @@ namespace LightmapUvTool
         {
             var result = new Dictionary<Mesh, float[]>();
 
-            // Load shaders
-            var depthShader = Shader.Find("Hidden/LightmapUvTool/VertexAODepth");
-            var computeShader = (ComputeShader)EditorGUIUtility.Load("VertexAOAccum.compute");
+            // Load ray tracing compute shader
+            var computeShader = (ComputeShader)EditorGUIUtility.Load("VertexAORayTrace.compute");
             if (computeShader == null)
                 computeShader = AssetDatabase.LoadAssetAtPath<ComputeShader>(
-                    FindComputeShaderPath("VertexAOAccum"));
+                    FindComputeShaderPath("VertexAORayTrace"));
 
-            if (depthShader == null || computeShader == null)
+            if (computeShader == null)
             {
-                UvtLog.Error("[Vertex AO] Cannot find shaders. Falling back to CPU.");
+                UvtLog.Error("[Vertex AO] Cannot find VertexAORayTrace compute shader. Falling back to CPU.");
                 return BakeMultiMeshCPU(meshes, settings);
             }
 
-            var depthMat = new Material(depthShader) { hideFlags = HideFlags.HideAndDontSave };
-            // 0=Off, 1=Front, 2=Back (UnityEngine.Rendering.CullMode)
-            // Thickness needs both faces rendered to capture the far side of the mesh
             bool isThickness = settings.bakeType == AOBakeType.Thickness;
-            depthMat.SetFloat("_Cull", isThickness ? 0f : (settings.backfaceCulling ? 2f : 0f));
 
-            // Compute combined bounds
-            Bounds combinedBounds = ComputeCombinedBounds(meshes);
-            if (settings.groundPlane && !isThickness)
-            {
-                float extend = Mathf.Max(combinedBounds.size.x, combinedBounds.size.z) * 2.5f;
-                var groundMin = new Vector3(
-                    combinedBounds.center.x - extend,
-                    combinedBounds.min.y - settings.groundOffset,
-                    combinedBounds.center.z - extend);
-                var groundMax = new Vector3(
-                    combinedBounds.center.x + extend,
-                    combinedBounds.min.y - settings.groundOffset,
-                    combinedBounds.center.z + extend);
-                combinedBounds.Encapsulate(groundMin);
-                combinedBounds.Encapsulate(groundMax);
-            }
-
-            float extent = combinedBounds.extents.magnitude;
-            if (settings.maxRadius > 0 && settings.maxRadius < extent)
-                extent = settings.maxRadius;
-            Vector3 center = combinedBounds.center;
-            // Depth bias in normalized [0,1] range. CPU minHitDist = 0.003*extent world units.
-            // In depth units: 0.003*extent / (2*extent) = 0.0015
-            float bias = 0.0015f;
-            float normalOffset = 0.0005f * extent;
-            float invDepthRange = 1f / (2f * extent);
-
-            // Create render texture
-            int res = settings.depthResolution;
-            var rt = new RenderTexture(res, res, 24, RenderTextureFormat.RFloat)
-            {
-                filterMode = FilterMode.Point,
-                wrapMode = TextureWrapMode.Clamp,
-                hideFlags = HideFlags.HideAndDontSave
-            };
-            rt.Create();
-
-            // Second RT for compute shader to read — avoids DX11 RTV/SRV conflict
-            var rtRead = new RenderTexture(res, res, 0, RenderTextureFormat.RFloat)
-            {
-                filterMode = FilterMode.Point,
-                wrapMode = TextureWrapMode.Clamp,
-                hideFlags = HideFlags.HideAndDontSave
-            };
-            rtRead.Create();
-
-            // Create ground plane mesh (not used for thickness)
-            Mesh groundQuad = null;
-            Matrix4x4 groundMatrix = Matrix4x4.identity;
-            if (settings.groundPlane && !isThickness)
-            {
-                groundQuad = CreateGroundQuad(combinedBounds, settings.groundOffset);
-                groundMatrix = Matrix4x4.identity;
-            }
-
-            // Per-mesh GPU buffers
-            var meshBuffers = new List<(Mesh mesh, ComputeBuffer pos, ComputeBuffer norm, ComputeBuffer counters, int vertCount)>();
+            // Build combined BVH from all meshes (same as CPU path)
+            var allVerts = new List<Vector3>();
+            var allTris = new List<int>();
             var readableCopies = new List<Mesh>();
             foreach (var (mesh, xform) in meshes)
             {
                 var readable = EnsureReadable(mesh);
                 if (readable != mesh) readableCopies.Add(readable);
+                int baseVert = allVerts.Count;
+                var verts = readable.vertices;
+                for (int i = 0; i < verts.Length; i++)
+                    allVerts.Add(xform.MultiplyPoint3x4(verts[i]));
+                var tris = readable.triangles;
+                for (int i = 0; i < tris.Length; i++)
+                    allTris.Add(tris[i] + baseVert);
+            }
+
+            var bvh = new TriangleBvh(allVerts.ToArray(), allTris.ToArray());
+            bvh.GetGPUData(out var gpuNodes, out var gpuTriIndices, out var gpuVerts, out var gpuTris);
+
+            var directions = GenerateSphereDirections(settings.sampleCount);
+
+            // Precompute face normals
+            int faceCount = allTris.Count / 3;
+            var faceNormals = new Vector3[faceCount];
+            var allVertsArr = allVerts.ToArray();
+            var allTrisArr = allTris.ToArray();
+            for (int f = 0; f < faceCount; f++)
+            {
+                var a = allVertsArr[allTrisArr[f * 3]];
+                var b = allVertsArr[allTrisArr[f * 3 + 1]];
+                var c = allVertsArr[allTrisArr[f * 3 + 2]];
+                faceNormals[f] = Vector3.Cross(b - a, c - a).normalized;
+            }
+
+            Bounds combinedBounds = ComputeCombinedBounds(meshes);
+            float extent = combinedBounds.extents.magnitude;
+            float normalOffset = 0.001f * extent;
+            float minHitDist = 0.003f * extent;
+            float maxDist = settings.maxRadius > 0 ? settings.maxRadius : float.MaxValue;
+            float groundY = settings.groundPlane
+                ? combinedBounds.min.y - settings.groundOffset
+                : float.NegativeInfinity;
+
+            // Upload BVH to GPU
+            int nodeStride = System.Runtime.InteropServices.Marshal.SizeOf<TriangleBvh.GPUNode>();
+            var bvhNodeBuf = new ComputeBuffer(gpuNodes.Length, nodeStride);
+            bvhNodeBuf.SetData(gpuNodes);
+            var triVertBuf = new ComputeBuffer(gpuVerts.Length, 12);
+            triVertBuf.SetData(gpuVerts);
+            var triIdxBuf = new ComputeBuffer(gpuTriIndices.Length, 4);
+            triIdxBuf.SetData(gpuTriIndices);
+            var trisBuf = new ComputeBuffer(gpuTris.Length, 4);
+            trisBuf.SetData(gpuTris);
+            var faceNormBuf = new ComputeBuffer(faceNormals.Length, 12);
+            faceNormBuf.SetData(faceNormals);
+            var dirBuf = new ComputeBuffer(directions.Length, 12);
+            dirBuf.SetData(directions);
+
+            // Per-mesh vertex buffers
+            var meshBuffers = new List<(Mesh mesh, ComputeBuffer pos, ComputeBuffer norm, ComputeBuffer counters, int vertCount)>();
+            foreach (var (mesh, xform) in meshes)
+            {
+                var readable = EnsureReadable(mesh);
+                if (readable != mesh && !readableCopies.Contains(readable)) readableCopies.Add(readable);
                 var verts = readable.vertices;
                 var norms = readable.normals;
                 if (norms == null || norms.Length != verts.Length)
@@ -626,7 +624,6 @@ namespace LightmapUvTool
                     norms = readable.normals;
                 }
 
-                // Transform to world space
                 var worldVerts = new Vector3[verts.Length];
                 var worldNorms = new Vector3[verts.Length];
                 for (int i = 0; i < verts.Length; i++)
@@ -640,97 +637,63 @@ namespace LightmapUvTool
                 var normBuf = new ComputeBuffer(verts.Length, 12);
                 normBuf.SetData(worldNorms);
                 var counterBuf = new ComputeBuffer(verts.Length, 8);
-                counterBuf.SetData(new uint[verts.Length * 2]); // zero init
+                counterBuf.SetData(new uint[verts.Length * 2]);
 
                 meshBuffers.Add((mesh, posBuf, normBuf, counterBuf, verts.Length));
             }
 
-            // Generate hemisphere directions
-            var directions = GenerateSphereDirections(settings.sampleCount);
-
-            // Kernel indices
-            int accumKernel = computeShader.FindKernel("AccumulateAO");
+            int bakeKernel = computeShader.FindKernel("BakeAO");
             int finalKernel = computeShader.FindKernel("FinalizeAO");
-
-            var cmd = new CommandBuffer { name = "VertexAO_Depth" };
 
             try
             {
-                // Main loop: render + accumulate per direction
-                for (int d = 0; d < directions.Length; d++)
+                // Set BVH buffers (shared across all meshes)
+                computeShader.SetBuffer(bakeKernel, "_BVHNodes", bvhNodeBuf);
+                computeShader.SetBuffer(bakeKernel, "_TriVerts", triVertBuf);
+                computeShader.SetBuffer(bakeKernel, "_TriIndices", triIdxBuf);
+                computeShader.SetBuffer(bakeKernel, "_Tris", trisBuf);
+                computeShader.SetBuffer(bakeKernel, "_FaceNormals", faceNormBuf);
+                computeShader.SetBuffer(bakeKernel, "_Directions", dirBuf);
+
+                // Set uniforms
+                computeShader.SetInt("_DirectionCount", directions.Length);
+                computeShader.SetFloat("_MaxDist", maxDist);
+                computeShader.SetFloat("_NormalOffset", normalOffset);
+                computeShader.SetFloat("_MinHitDist", minHitDist);
+                computeShader.SetFloat("_CosineWeighted", settings.cosineWeighted ? 1f : 0f);
+                computeShader.SetFloat("_FlipNormals", isThickness ? 1f : 0f);
+                computeShader.SetFloat("_BackfaceCulling", settings.backfaceCulling ? 1f : 0f);
+                computeShader.SetFloat("_GroundPlane", (settings.groundPlane && !isThickness) ? 1f : 0f);
+                computeShader.SetFloat("_GroundY", groundY);
+
+                // Dispatch per mesh
+                int totalVerts = 0;
+                foreach (var (mesh, _) in meshes) totalVerts += mesh.vertexCount;
+                int processed = 0;
+
+                foreach (var (mesh, posBuf, normBuf, counterBuf, vertCount) in meshBuffers)
                 {
-                    if (EditorUtility.DisplayCancelableProgressBar("Baking Vertex AO",
-                        $"Sample {d + 1}/{directions.Length}", (float)d / directions.Length))
+                    if (EditorUtility.DisplayCancelableProgressBar("Baking Vertex AO (GPU ray trace)",
+                        $"Mesh {processed + vertCount}/{totalVerts} vertices",
+                        (float)processed / totalVerts))
                         break;
 
-                    Vector3 dir = directions[d];
+                    computeShader.SetInt("_VertexCount", vertCount);
+                    computeShader.SetBuffer(bakeKernel, "_Positions", posBuf);
+                    computeShader.SetBuffer(bakeKernel, "_Normals", normBuf);
+                    computeShader.SetBuffer(bakeKernel, "_AOCounters", counterBuf);
+                    computeShader.Dispatch(bakeKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
 
-                    // Build ortho view/proj matrices
-                    Vector3 up = Mathf.Abs(Vector3.Dot(dir, Vector3.up)) > 0.99f
-                        ? Vector3.forward : Vector3.up;
-                    Matrix4x4 view = Matrix4x4.LookAt(center + dir * extent, center, up);
-                    // LookAt returns camera-to-world, we need world-to-camera
-                    view = view.inverse;
-                    // Flip Z axis: LookAt gives +Z forward, but Ortho expects -Z forward (OpenGL convention)
-                    view[2, 0] = -view[2, 0];
-                    view[2, 1] = -view[2, 1];
-                    view[2, 2] = -view[2, 2];
-                    view[2, 3] = -view[2, 3];
-                    Matrix4x4 proj = Matrix4x4.Ortho(-extent, extent, -extent, extent, 0, 2 * extent);
-                    Matrix4x4 gpuProj = GL.GetGPUProjectionMatrix(proj, false);
-                    Matrix4x4 vp = gpuProj * view;
-
-                    // Render depth pass
-                    cmd.Clear();
-                    cmd.SetRenderTarget(rt);
-                    // Clear color to 1.0 (max depth = far); BlendOp Min keeps closest
-                    cmd.ClearRenderTarget(true, true, Color.white, 1f);
-                    depthMat.SetMatrix("_AO_ViewMatrix", view);
-                    depthMat.SetFloat("_AO_InvDepthRange", invDepthRange);
-                    cmd.SetViewProjectionMatrices(view, gpuProj);
-                    foreach (var (mesh, xform) in meshes)
-                    {
-                        for (int sub = 0; sub < mesh.subMeshCount; sub++)
-                            cmd.DrawMesh(mesh, xform, depthMat, sub);
-                    }
-                    if (groundQuad != null)
-                        cmd.DrawMesh(groundQuad, groundMatrix, depthMat);
-                    Graphics.ExecuteCommandBuffer(cmd);
-
-                    // Blit to separate texture — resolves DX11 RTV/SRV conflict
-                    Graphics.Blit(rt, rtRead);
-
-                    // Dispatch compute — reads from rtRead (separate from render target)
-                    computeShader.SetTexture(accumKernel, "_DepthTex", rtRead);
-                    computeShader.SetMatrix("_VP", vp);
-                    computeShader.SetMatrix("_ViewMatrix", view);
-                    computeShader.SetFloat("_InvDepthRange", invDepthRange);
-                    computeShader.SetVector("_SampleDir", dir);
-                    computeShader.SetFloat("_DepthBias", bias);
-                    computeShader.SetFloat("_NormalOffset", normalOffset);
-                    computeShader.SetFloat("_DepthRange", 2f * extent);
-                    computeShader.SetFloat("_MaxDist", settings.maxRadius > 0 ? settings.maxRadius : 0f);
-                    computeShader.SetFloat("_CosineWeighted", settings.cosineWeighted ? 1f : 0f);
-                    computeShader.SetFloat("_FlipNormals", settings.bakeType == AOBakeType.Thickness ? 1f : 0f);
-                    computeShader.SetInt("_DepthTexSize", res);
-
-                    foreach (var (mesh, posBuf, normBuf, counterBuf, vertCount) in meshBuffers)
-                    {
-                        computeShader.SetInt("_VertexCount", vertCount);
-                        computeShader.SetBuffer(accumKernel, "_Positions", posBuf);
-                        computeShader.SetBuffer(accumKernel, "_Normals", normBuf);
-                        computeShader.SetBuffer(accumKernel, "_AOCounters", counterBuf);
-                        computeShader.Dispatch(accumKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
-                    }
+                    processed += vertCount;
                 }
 
-                // Finalize: compute final AO per mesh
+                // Finalize
                 foreach (var (mesh, posBuf, normBuf, counterBuf, vertCount) in meshBuffers)
                 {
                     var aoResultBuf = new ComputeBuffer(vertCount, 4);
                     computeShader.SetInt("_VertexCount", vertCount);
                     computeShader.SetFloat("_Intensity", settings.intensity);
-                    computeShader.SetFloat("_FlipNormals", settings.bakeType == AOBakeType.Thickness ? 1f : 0f);
+                    computeShader.SetFloat("_FlipNormals", isThickness ? 1f : 0f);
                     computeShader.SetBuffer(finalKernel, "_AOCounters", counterBuf);
                     computeShader.SetBuffer(finalKernel, "_AOResult", aoResultBuf);
                     computeShader.Dispatch(finalKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
@@ -745,20 +708,18 @@ namespace LightmapUvTool
             finally
             {
                 EditorUtility.ClearProgressBar();
-                cmd.Dispose();
+                bvhNodeBuf.Dispose();
+                triVertBuf.Dispose();
+                triIdxBuf.Dispose();
+                trisBuf.Dispose();
+                faceNormBuf.Dispose();
+                dirBuf.Dispose();
                 foreach (var (_, posBuf, normBuf, counterBuf, _) in meshBuffers)
                 {
                     posBuf.Dispose();
                     normBuf.Dispose();
                     counterBuf.Dispose();
                 }
-                RenderTexture.active = null;
-                rt.Release();
-                UnityEngine.Object.DestroyImmediate(rt);
-                rtRead.Release();
-                UnityEngine.Object.DestroyImmediate(rtRead);
-                UnityEngine.Object.DestroyImmediate(depthMat);
-                if (groundQuad != null) UnityEngine.Object.DestroyImmediate(groundQuad);
                 foreach (var copy in readableCopies)
                     UnityEngine.Object.DestroyImmediate(copy);
             }
