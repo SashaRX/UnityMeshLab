@@ -699,28 +699,54 @@ namespace LightmapUvTool
                     // Debug: log after first direction
                     if (d == 0)
                     {
+                        // Check shader/material state
+                        UvtLog.Info($"[Vertex AO] GPU shader check: shader={depthMat.shader.name} supported={depthMat.shader.isSupported} passCount={depthMat.passCount} meshCount={meshes.Count}");
+
+                        // Read rt and rtRead
                         var dbgTex = new Texture2D(4, 4, TextureFormat.RFloat, false);
+                        RenderTexture.active = rt;
+                        dbgTex.ReadPixels(new Rect(res / 2 - 2, res / 2 - 2, 4, 4), 0, 0);
+                        dbgTex.Apply();
+                        RenderTexture.active = null;
+                        float r00 = dbgTex.GetPixel(0, 0).r;
+                        float r11 = dbgTex.GetPixel(1, 1).r;
+
                         RenderTexture.active = rtRead;
                         dbgTex.ReadPixels(new Rect(res / 2 - 2, res / 2 - 2, 4, 4), 0, 0);
                         dbgTex.Apply();
                         RenderTexture.active = null;
                         float c00 = dbgTex.GetPixel(0, 0).r;
                         float c11 = dbgTex.GetPixel(1, 1).r;
-                        float c22 = dbgTex.GetPixel(2, 2).r;
-                        float c33 = dbgTex.GetPixel(3, 3).r;
                         UnityEngine.Object.DestroyImmediate(dbgTex);
 
-                        // Also check rt directly
-                        var dbgTex2 = new Texture2D(4, 4, TextureFormat.RFloat, false);
-                        RenderTexture.active = rt;
-                        dbgTex2.ReadPixels(new Rect(res / 2 - 2, res / 2 - 2, 4, 4), 0, 0);
-                        dbgTex2.Apply();
-                        RenderTexture.active = null;
-                        float r00 = dbgTex2.GetPixel(0, 0).r;
-                        float r11 = dbgTex2.GetPixel(1, 1).r;
-                        UnityEngine.Object.DestroyImmediate(dbgTex2);
+                        // Check what meshes are being drawn
+                        int totalSubs = 0;
+                        foreach (var (m, x) in meshes) totalSubs += m.subMeshCount;
 
-                        UvtLog.Info($"[Vertex AO] GPU debug dir0: rt center=[{r00:F4},{r11:F4}] rtRead center=[{c00:F4},{c11:F4},{c22:F4},{c33:F4}] dir={dir} extent={extent:F2} res={res}");
+                        UvtLog.Info($"[Vertex AO] GPU debug dir0: rt=[{r00:F4},{r11:F4}] rtRead=[{c00:F4},{c11:F4}] totalSubmeshes={totalSubs} dir={dir} extent={extent:F2} gpuProj[0,0]={gpuProj[0, 0]:F4} gpuProj[1,1]={gpuProj[1, 1]:F4} gpuProj[2,2]={gpuProj[2, 2]:F4}");
+
+                        // Try rendering a test quad directly to see if anything renders at all
+                        var testCmd = new CommandBuffer { name = "AO_Test" };
+                        testCmd.SetRenderTarget(rt);
+                        testCmd.ClearRenderTarget(true, true, new Color(0.5f, 0, 0, 0), depthClear);
+                        testCmd.SetViewProjectionMatrices(Matrix4x4.identity, Matrix4x4.identity);
+                        // Draw first mesh at identity to test if DrawMesh works at all
+                        if (meshes.Count > 0)
+                        {
+                            testCmd.DrawMesh(meshes[0].mesh, Matrix4x4.identity, depthMat, 0);
+                        }
+                        Graphics.ExecuteCommandBuffer(testCmd);
+                        testCmd.Dispose();
+
+                        var dbgTex3 = new Texture2D(4, 4, TextureFormat.RFloat, false);
+                        RenderTexture.active = rt;
+                        dbgTex3.ReadPixels(new Rect(res / 2 - 2, res / 2 - 2, 4, 4), 0, 0);
+                        dbgTex3.Apply();
+                        RenderTexture.active = null;
+                        float t00 = dbgTex3.GetPixel(0, 0).r;
+                        float t11 = dbgTex3.GetPixel(1, 1).r;
+                        UnityEngine.Object.DestroyImmediate(dbgTex3);
+                        UvtLog.Info($"[Vertex AO] GPU test draw: rt after identity draw=[{t00:F4},{t11:F4}] (0.5=clear, other=shader output)");
                     }
 
                     // Dispatch compute — reads from rtRead (separate from render target)
