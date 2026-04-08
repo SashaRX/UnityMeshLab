@@ -356,7 +356,7 @@ namespace LightmapUvTool
                         uv2Weight    = generateUv2Weight,
                         normalWeight = generateNormalWeight,
                         lockBorder   = generateLockBorder,
-                        uvChannel    = ctx.PipeSettings.targetUvChannel
+                        uvChannel    = 1
                     };
 
                     float progress = (float)lodIdx / generateLodCount;
