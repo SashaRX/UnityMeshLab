@@ -592,6 +592,16 @@ namespace LightmapUvTool
             };
             rt.Create();
 
+            // Second RT for compute shader to read — avoids DX11 RTV/SRV conflict
+            var rtRead = new RenderTexture(res, res, 0, RenderTextureFormat.RFloat)
+            {
+                enableRandomWrite = true,
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp,
+                hideFlags = HideFlags.HideAndDontSave
+            };
+            rtRead.Create();
+
             // Create ground plane mesh (not used for thickness)
             Mesh groundQuad = null;
             Matrix4x4 groundMatrix = Matrix4x4.identity;
@@ -681,11 +691,11 @@ namespace LightmapUvTool
                     if (groundQuad != null)
                         cmd.DrawMesh(groundQuad, groundMatrix, depthMat);
 
-                    // Unbind render target before compute reads it (DX11 RTV→SRV transition)
-                    cmd.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
+                    // Copy to separate texture — breaks DX11 RTV/SRV resource conflict
+                    cmd.CopyTexture(rt, rtRead);
 
-                    // Dispatch compute in same command buffer
-                    cmd.SetComputeTextureParam(computeShader, accumKernel, "_DepthTex", rt);
+                    // Dispatch compute — reads from rtRead (not the render target)
+                    cmd.SetComputeTextureParam(computeShader, accumKernel, "_DepthTex", rtRead);
                     cmd.SetComputeMatrixParam(computeShader, "_VP", vp);
                     cmd.SetComputeMatrixParam(computeShader, "_ViewMatrix", view);
                     cmd.SetComputeFloatParam(computeShader, "_InvDepthRange", invDepthRange);
@@ -739,6 +749,8 @@ namespace LightmapUvTool
                 }
                 rt.Release();
                 UnityEngine.Object.DestroyImmediate(rt);
+                rtRead.Release();
+                UnityEngine.Object.DestroyImmediate(rtRead);
                 UnityEngine.Object.DestroyImmediate(depthMat);
                 if (groundQuad != null) UnityEngine.Object.DestroyImmediate(groundQuad);
                 foreach (var copy in readableCopies)
