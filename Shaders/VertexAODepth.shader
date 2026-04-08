@@ -12,8 +12,12 @@ Shader "Hidden/LightmapUvTool/VertexAODepth"
 
         Pass
         {
-            ZWrite On
-            ZTest GEqual
+            // Use BlendOp Min to keep the closest (smallest) depth per pixel.
+            // Eliminates all hardware Z-buffer / reversed-Z issues.
+            ZWrite Off
+            ZTest Always
+            BlendOp Min
+            Blend One One
             Cull [_Cull]
 
             CGPROGRAM
