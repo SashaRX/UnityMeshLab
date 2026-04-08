@@ -577,7 +577,7 @@ namespace LightmapUvTool
             if (settings.maxRadius > 0 && settings.maxRadius < extent)
                 extent = settings.maxRadius;
             Vector3 center = combinedBounds.center;
-            float bias = 0.001f * extent;
+            float bias = 0.0002f * extent;
             float normalOffset = 0.0005f * extent;
             float invDepthRange = 1f / (2f * extent);
 
