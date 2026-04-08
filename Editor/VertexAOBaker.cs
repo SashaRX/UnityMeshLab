@@ -688,12 +688,13 @@ namespace LightmapUvTool
                     cmd.Clear();
                     cmd.SetRenderTarget(rt);
                     float depthClear = SystemInfo.usesReversedZBuffer ? 0f : 1f;
-                    cmd.ClearRenderTarget(true, true, Color.white, depthClear);
+                    cmd.ClearRenderTarget(true, true, new Color(0.5f, 0, 0, 0), depthClear);
                     // Pass raw view matrix to depth shader for platform-independent depth
                     depthMat.SetMatrix("_AO_ViewMatrix", view);
                     depthMat.SetFloat("_AO_InvDepthRange", invDepthRange);
-                    // Raw proj — Unity applies GL.GetGPUProjectionMatrix internally
-                    cmd.SetViewProjectionMatrices(view, proj);
+                    // Use gpuProj for SetViewProjectionMatrices — it may NOT apply
+                    // GL.GetGPUProjectionMatrix internally in CommandBuffer context
+                    cmd.SetViewProjectionMatrices(view, gpuProj);
                     foreach (var (mesh, xform) in meshes)
                     {
                         for (int sub = 0; sub < mesh.subMeshCount; sub++)
@@ -736,15 +737,29 @@ namespace LightmapUvTool
                             for (int i = 0; i < dbgCount; i++)
                                 sb.Append($"[{dbgData[i * 2]},{dbgData[i * 2 + 1]}] ");
 
-                            // Also read back a pixel from the depth texture
-                            var readback = new Texture2D(1, 1, TextureFormat.RFloat, false);
+                            // Read back full depth texture and scan for rendered pixels
+                            var readback = new Texture2D(res, res, TextureFormat.RFloat, false);
                             RenderTexture.active = rt;
-                            readback.ReadPixels(new Rect(res / 2, res / 2, 1, 1), 0, 0);
+                            readback.ReadPixels(new Rect(0, 0, res, res), 0, 0);
                             readback.Apply();
-                            float centerDepth = readback.GetPixel(0, 0).r;
                             RenderTexture.active = null;
+                            float centerDepth = readback.GetPixel(res / 2, res / 2).r;
+                            int nonClearPixels = 0;
+                            float minD = float.MaxValue, maxD = float.MinValue;
+                            for (int py = 0; py < res; py += 4)
+                                for (int px = 0; px < res; px += 4)
+                                {
+                                    float pd = readback.GetPixel(px, py).r;
+                                    if (Mathf.Abs(pd - 0.5f) > 0.01f) // not the clear value
+                                    {
+                                        nonClearPixels++;
+                                        if (pd < minD) minD = pd;
+                                        if (pd > maxD) maxD = pd;
+                                    }
+                                }
                             UnityEngine.Object.DestroyImmediate(readback);
                             sb.Append($" | depthTex center={centerDepth:F4}");
+                            sb.Append($" | nonClearPx={nonClearPixels} range=[{minD:F4},{maxD:F4}]");
                             sb.Append($" | bias={bias:F6} invRange={invDepthRange:F6}");
 
                             // C#-side projection check for first vertex
