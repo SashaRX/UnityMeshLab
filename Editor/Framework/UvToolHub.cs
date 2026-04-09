@@ -782,34 +782,41 @@ namespace LightmapUvTool
         [MenuItem("Tools/Mesh Lab/Delete All Sidecars && Reset Imports")]
         static void NukeAllSidecars()
         {
+            // Phase 1: Find and delete all sidecar assets
             var sidecarGuids = AssetDatabase.FindAssets("_uv2data t:Uv2DataAsset");
-            if (sidecarGuids.Length == 0)
-            {
-                EditorUtility.DisplayDialog("Nothing to clean", "No sidecar assets found in the project.", "OK");
-                return;
-            }
-
-            // Collect sidecar paths and their associated FBX paths
             var sidecarPaths = new List<string>();
-            var fbxPaths = new List<string>();
             foreach (var guid in sidecarGuids)
             {
                 string path = AssetDatabase.GUIDToAssetPath(guid);
-                if (string.IsNullOrEmpty(path) || !path.EndsWith("_uv2data.asset", System.StringComparison.OrdinalIgnoreCase))
-                    continue;
-                sidecarPaths.Add(path);
-                // Derive the FBX path: "Dir/Model_uv2data.asset" → "Dir/Model.fbx"
-                string dir = System.IO.Path.GetDirectoryName(path);
-                string name = System.IO.Path.GetFileName(path);
-                string fbxName = name.Replace("_uv2data.asset", ".fbx");
-                string fbxPath = string.IsNullOrEmpty(dir) ? fbxName : dir + "/" + fbxName;
-                if (System.IO.File.Exists(fbxPath))
-                    fbxPaths.Add(fbxPath);
+                if (!string.IsNullOrEmpty(path) && path.EndsWith("_uv2data.asset", System.StringComparison.OrdinalIgnoreCase))
+                    sidecarPaths.Add(path);
+            }
+
+            // Phase 2: Scan ALL FBX files for damaged import settings
+            // (sidecars may have been deleted already, but .meta damage persists)
+            var fbxGuids = AssetDatabase.FindAssets("t:Model");
+            var damagedFbx = new List<string>();
+            foreach (var guid in fbxGuids)
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                if (string.IsNullOrEmpty(path)) continue;
+                var importer = AssetImporter.GetAtPath(path) as ModelImporter;
+                if (importer == null) continue;
+                // Detect settings that OnPreprocessModel changed
+                if (!importer.weldVertices || !importer.optimizeMeshPolygons || !importer.optimizeMeshVertices)
+                    damagedFbx.Add(path);
+            }
+
+            if (sidecarPaths.Count == 0 && damagedFbx.Count == 0)
+            {
+                EditorUtility.DisplayDialog("Nothing to clean",
+                    "No sidecar assets or damaged import settings found.", "OK");
+                return;
             }
 
             if (!EditorUtility.DisplayDialog("Delete All Sidecars & Reset Import Settings",
                 $"This will:\n• Delete {sidecarPaths.Count} sidecar asset(s)\n" +
-                $"• Restore default import settings on {fbxPaths.Count} FBX file(s)\n" +
+                $"• Restore default import settings on {damagedFbx.Count} FBX file(s)\n" +
                 "• Reimport affected FBX files\n\nThis cannot be undone.",
                 "Delete & Reset", "Cancel"))
                 return;
@@ -822,26 +829,17 @@ namespace LightmapUvTool
                     deleted++;
             }
 
-            // Restore ModelImporter defaults on associated FBX files
+            // Restore ModelImporter defaults and reimport
             int restored = 0;
-            foreach (var fbx in fbxPaths)
+            foreach (var fbx in damagedFbx)
             {
                 var importer = AssetImporter.GetAtPath(fbx) as ModelImporter;
                 if (importer == null) continue;
-                bool changed = false;
-                if (!importer.weldVertices)          { importer.weldVertices = true; changed = true; }
-                if (!importer.optimizeMeshPolygons)   { importer.optimizeMeshPolygons = true; changed = true; }
-                if (!importer.optimizeMeshVertices)   { importer.optimizeMeshVertices = true; changed = true; }
-                if (importer.meshCompression == ModelImporterMeshCompression.Off)
-                {
-                    // Only restore if it looks like we disabled it (can't know the original value)
-                    // Leave as-is — user may have had it off intentionally.
-                }
-                if (changed)
-                {
-                    importer.SaveAndReimport();
-                    restored++;
-                }
+                importer.weldVertices = true;
+                importer.optimizeMeshPolygons = true;
+                importer.optimizeMeshVertices = true;
+                importer.SaveAndReimport();
+                restored++;
             }
 
             AssetDatabase.Refresh();
