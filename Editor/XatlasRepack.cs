@@ -144,7 +144,7 @@ namespace LightmapUvTool
             float padV = atlasHeight > 0 ? (float)padding / atlasHeight : 0f;
             // Centroid proximity threshold: shells closer than this are considered
             // packed at the same position (e.g., SymSplit halves with identical UV0 shape).
-            float centroidEps = atlasWidth > 0 ? 4f / atlasWidth : 0.02f;
+            float centroidEps = atlasWidth > 0 ? 8f / atlasWidth : 0.02f;
             float centroidEpsSq = centroidEps * centroidEps;
 
             int totalShifted = 0;
@@ -206,7 +206,7 @@ namespace LightmapUvTool
                                     float areaI = (mx[i].x - mn[i].x) * (mx[i].y - mn[i].y);
                                     float areaJ = (mx[j].x - mn[j].x) * (mx[j].y - mn[j].y);
                                     float smaller = Mathf.Min(areaI, areaJ);
-                                    bboxOverlap = smaller > 0f && overlapArea / smaller >= 0.25f;
+                                    bboxOverlap = smaller > 0f && overlapArea / smaller >= 0.10f;
                                 }
                             }
 
@@ -414,8 +414,19 @@ namespace LightmapUvTool
                 result.conflictVertices = conflicts;
 
                 // ── Post-process: fix overlapping UV2 shells ──
+                // Phase 1: within known UV0 overlap groups (fast path)
                 FixOverlappingUv2Shells(uv2, shells, overlapGroups,
-                    opts.padding, result.atlasWidth, result.atlasHeight);
+                    opts.padding, result.atlasWidth, result.atlasHeight, skipRescale: true);
+
+                // Phase 2: global safety net — check ALL shell pairs for UV2 overlaps
+                if (shells.Count > 1)
+                {
+                    var all = new List<int>(shells.Count);
+                    for (int i = 0; i < shells.Count; i++) all.Add(i);
+                    var globalGroup = new List<List<int>> { all };
+                    FixOverlappingUv2Shells(uv2, shells, globalGroup,
+                        opts.padding, result.atlasWidth, result.atlasHeight);
+                }
 
                 // ── Post-process: fix orphan vertices ──
                 int orphanVerts, orphanTris, snapped;
@@ -608,8 +619,19 @@ namespace LightmapUvTool
                     results[m].conflictVertices = conflicts;
 
                     // Fix overlapping UV2 shells (skip per-mesh rescale — do global rescale below)
+                    // Phase 1: within known UV0 overlap groups
                     totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], allOverlap[m],
                         opts.padding, atlasW, atlasH, skipRescale: true);
+
+                    // Phase 2: global safety net — check ALL shell pairs
+                    if (allShells[m].Count > 1)
+                    {
+                        var all = new List<int>(allShells[m].Count);
+                        for (int si = 0; si < allShells[m].Count; si++) all.Add(si);
+                        var globalGroup = new List<List<int>> { all };
+                        totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], globalGroup,
+                            opts.padding, atlasW, atlasH, skipRescale: true);
+                    }
 
                     // Fix orphan vertices
                     int orphanVerts, orphanTris, snapped;
