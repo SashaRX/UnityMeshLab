@@ -827,8 +827,10 @@ namespace LightmapUvTool
                 var importer = AssetImporter.GetAtPath(path) as ModelImporter;
                 if (importer == null) continue;
                 // Detect settings that PrepareImportSettings changed
-                if (!importer.weldVertices || !importer.optimizeMeshPolygons || !importer.optimizeMeshVertices
-                    || !importer.generateSecondaryUV || importer.meshCompression == ModelImporterMeshCompression.Off)
+                // Only check weldVertices/optimizeMesh — these are almost never
+                // disabled by users. generateSecondaryUV and meshCompression=Off
+                // are normal user settings and should NOT be flagged.
+                if (!importer.weldVertices || !importer.optimizeMeshPolygons || !importer.optimizeMeshVertices)
                     damagedFbx.Add(path);
             }
 
@@ -863,11 +865,6 @@ namespace LightmapUvTool
                 importer.weldVertices = true;
                 importer.optimizeMeshPolygons = true;
                 importer.optimizeMeshVertices = true;
-                importer.generateSecondaryUV = true;
-                // meshCompression default varies per project; restore to Low
-                // (Off is what PrepareImportSettings forces, anything else is fine)
-                if (importer.meshCompression == ModelImporterMeshCompression.Off)
-                    importer.meshCompression = ModelImporterMeshCompression.Low;
                 importer.SaveAndReimport();
                 restored++;
             }
