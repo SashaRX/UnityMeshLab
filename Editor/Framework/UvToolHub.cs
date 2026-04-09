@@ -734,7 +734,7 @@ namespace LightmapUvTool
             EditorGUILayout.Space(4);
             var bgNuke = GUI.backgroundColor;
             GUI.backgroundColor = new Color(.7f, .15f, .15f);
-            if (GUILayout.Button("Delete All Sidecars & Reset Imports", GUILayout.Height(22)))
+            if (GUILayout.Button("Delete All Sidecars", GUILayout.Height(22)))
                 NukeAllSidecars();
             GUI.backgroundColor = bgNuke;
 
@@ -806,7 +806,7 @@ namespace LightmapUvTool
 
         static void NukeAllSidecars()
         {
-            // Phase 1: Find and delete all sidecar assets
+            // Find and delete all sidecar assets
             var sidecarGuids = AssetDatabase.FindAssets("_uv2data t:Uv2DataAsset");
             var sidecarPaths = new List<string>();
             foreach (var guid in sidecarGuids)
@@ -816,39 +816,20 @@ namespace LightmapUvTool
                     sidecarPaths.Add(path);
             }
 
-            // Phase 2: Scan ALL FBX files for damaged import settings
-            // (sidecars may have been deleted already, but .meta damage persists)
-            var fbxGuids = AssetDatabase.FindAssets("t:Model");
-            var damagedFbx = new List<string>();
-            foreach (var guid in fbxGuids)
-            {
-                string path = AssetDatabase.GUIDToAssetPath(guid);
-                if (string.IsNullOrEmpty(path)) continue;
-                var importer = AssetImporter.GetAtPath(path) as ModelImporter;
-                if (importer == null) continue;
-                // Detect settings that PrepareImportSettings changed
-                // Only check weldVertices/optimizeMesh — these are almost never
-                // disabled by users. generateSecondaryUV and meshCompression=Off
-                // are normal user settings and should NOT be flagged.
-                if (!importer.weldVertices || !importer.optimizeMeshPolygons || !importer.optimizeMeshVertices)
-                    damagedFbx.Add(path);
-            }
-
-            if (sidecarPaths.Count == 0 && damagedFbx.Count == 0)
+            if (sidecarPaths.Count == 0)
             {
                 EditorUtility.DisplayDialog("Nothing to clean",
-                    "No sidecar assets or damaged import settings found.", "OK");
+                    "No sidecar assets found in the project.", "OK");
                 return;
             }
 
-            if (!EditorUtility.DisplayDialog("Delete All Sidecars & Reset Import Settings",
-                $"This will:\n• Delete {sidecarPaths.Count} sidecar asset(s)\n" +
-                $"• Restore default import settings on {damagedFbx.Count} FBX file(s)\n" +
-                "• Reimport affected FBX files\n\nThis cannot be undone.",
-                "Delete & Reset", "Cancel"))
+            if (!EditorUtility.DisplayDialog("Delete All Sidecars",
+                $"This will delete {sidecarPaths.Count} sidecar asset(s).\n\n" +
+                "Import settings (weldVertices etc.) are left as-is —\n" +
+                "they do not break meshes.\n\nThis cannot be undone.",
+                "Delete", "Cancel"))
                 return;
 
-            // Delete sidecars
             int deleted = 0;
             foreach (var sp in sidecarPaths)
             {
@@ -856,20 +837,6 @@ namespace LightmapUvTool
                     deleted++;
             }
 
-            // Restore ModelImporter defaults and reimport
-            int restored = 0;
-            foreach (var fbx in damagedFbx)
-            {
-                var importer = AssetImporter.GetAtPath(fbx) as ModelImporter;
-                if (importer == null) continue;
-                importer.weldVertices = true;
-                importer.optimizeMeshPolygons = true;
-                importer.optimizeMeshVertices = true;
-                importer.SaveAndReimport();
-                restored++;
-            }
-
-            AssetDatabase.Refresh();
             // Offer to disable sidecar mode if active
             if (PostprocessorDefineManager.IsEnabled())
             {
@@ -880,10 +847,8 @@ namespace LightmapUvTool
                     PostprocessorDefineManager.SetEnabled(false);
             }
 
-            UvtLog.Info($"[Cleanup] Deleted {deleted} sidecar(s), restored import settings on {restored} FBX file(s).");
-            EditorUtility.DisplayDialog("Done",
-                $"Deleted {deleted} sidecar(s).\nRestored import settings on {restored} FBX file(s).",
-                "OK");
+            UvtLog.Info($"[Cleanup] Deleted {deleted} sidecar(s).");
+            EditorUtility.DisplayDialog("Done", $"Deleted {deleted} sidecar(s).", "OK");
         }
 
         void DrawResizeHandle()
