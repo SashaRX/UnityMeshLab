@@ -1050,6 +1050,18 @@ namespace LightmapUvTool
                         exportPath = "Assets" + exportPath.Substring(dataPath.Length);
                 }
 
+                // Ensure FBX meshes are readable so the FBX Exporter can access
+                // vertex data (especially for _COL meshes without sidecar data).
+                var srcImporter = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
+                bool madeReadable = false;
+                if (srcImporter != null && !srcImporter.isReadable)
+                {
+                    srcImporter.isReadable = true;
+                    Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
+                    srcImporter.SaveAndReimport();
+                    madeReadable = true;
+                }
+
                 // Clone original FBX hierarchy and replace only the meshes
                 var fbxPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(sourceFbxPath);
                 if (fbxPrefab == null) { UvtLog.Error("[FBX Export] Cannot load FBX prefab: " + sourceFbxPath); allGroupsSucceeded = false; continue; }
@@ -1225,6 +1237,15 @@ namespace LightmapUvTool
                 }
                 catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); allGroupsSucceeded = false; }
                 finally { UnityEngine.Object.DestroyImmediate(tempRoot); }
+
+                // Restore isReadable if we changed it (non-overwrite path only;
+                // overwrite path restores .meta from backup automatically).
+                if (madeReadable && !overwriteSource && srcImporter != null)
+                {
+                    srcImporter.isReadable = false;
+                    Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
+                    srcImporter.SaveAndReimport();
+                }
 
                 if (!groupSucceeded)
                     allGroupsSucceeded = false;
