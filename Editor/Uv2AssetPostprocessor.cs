@@ -148,10 +148,15 @@ namespace LightmapUvTool
                 }
             }
 
+            // Consume managed registration (collision stripping above may have used it).
+            managedImportPaths.Remove(modelPath);
+
             if (data.entries == null || data.entries.Count == 0) return;
 
-            // UV2 application only runs when the tool explicitly registered this path.
-            if (!managedImportPaths.Remove(modelPath)) return;
+            // Always apply UV2 from sidecar if entries exist — ensures persistence
+            // across Unity restarts even when third-party postprocessors (e.g. Bakery
+            // auto-unwrap) overwrite UV2 on every reimport. Our high postprocess order
+            // (10000) guarantees we run last and our UV2 data wins.
 
             var filters = root.GetComponentsInChildren<MeshFilter>(true);
             var skinned = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
