@@ -730,6 +730,14 @@ namespace LightmapUvTool
 
         void DrawSidebarFooter()
         {
+            // Global cleanup — always visible, even without a LODGroup selected
+            EditorGUILayout.Space(4);
+            var bgNuke = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(.7f, .15f, .15f);
+            if (GUILayout.Button("Delete All Sidecars & Reset Imports", GUILayout.Height(22)))
+                NukeAllSidecars();
+            GUI.backgroundColor = bgNuke;
+
             if (ctx.LodGroup == null) return;
             EditorGUILayout.Space(2);
             var r = GUILayoutUtility.GetRect(0, 1, GUILayout.ExpandWidth(true));
@@ -768,6 +776,79 @@ namespace LightmapUvTool
                 foreach (var tool in tools)
                     if (tool is LightmapTransferTool ltt) { ltt.SaveAllPublic(); break; }
             }
+
+        }
+
+        [MenuItem("Tools/Mesh Lab/Delete All Sidecars && Reset Imports")]
+        static void NukeAllSidecars()
+        {
+            var sidecarGuids = AssetDatabase.FindAssets("_uv2data t:Uv2DataAsset");
+            if (sidecarGuids.Length == 0)
+            {
+                EditorUtility.DisplayDialog("Nothing to clean", "No sidecar assets found in the project.", "OK");
+                return;
+            }
+
+            // Collect sidecar paths and their associated FBX paths
+            var sidecarPaths = new List<string>();
+            var fbxPaths = new List<string>();
+            foreach (var guid in sidecarGuids)
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                if (string.IsNullOrEmpty(path) || !path.EndsWith("_uv2data.asset", System.StringComparison.OrdinalIgnoreCase))
+                    continue;
+                sidecarPaths.Add(path);
+                // Derive the FBX path: "Dir/Model_uv2data.asset" → "Dir/Model.fbx"
+                string dir = System.IO.Path.GetDirectoryName(path);
+                string name = System.IO.Path.GetFileName(path);
+                string fbxName = name.Replace("_uv2data.asset", ".fbx");
+                string fbxPath = string.IsNullOrEmpty(dir) ? fbxName : dir + "/" + fbxName;
+                if (System.IO.File.Exists(fbxPath))
+                    fbxPaths.Add(fbxPath);
+            }
+
+            if (!EditorUtility.DisplayDialog("Delete All Sidecars & Reset Import Settings",
+                $"This will:\n• Delete {sidecarPaths.Count} sidecar asset(s)\n" +
+                $"• Restore default import settings on {fbxPaths.Count} FBX file(s)\n" +
+                "• Reimport affected FBX files\n\nThis cannot be undone.",
+                "Delete & Reset", "Cancel"))
+                return;
+
+            // Delete sidecars
+            int deleted = 0;
+            foreach (var sp in sidecarPaths)
+            {
+                if (AssetDatabase.DeleteAsset(sp))
+                    deleted++;
+            }
+
+            // Restore ModelImporter defaults on associated FBX files
+            int restored = 0;
+            foreach (var fbx in fbxPaths)
+            {
+                var importer = AssetImporter.GetAtPath(fbx) as ModelImporter;
+                if (importer == null) continue;
+                bool changed = false;
+                if (!importer.weldVertices)          { importer.weldVertices = true; changed = true; }
+                if (!importer.optimizeMeshPolygons)   { importer.optimizeMeshPolygons = true; changed = true; }
+                if (!importer.optimizeMeshVertices)   { importer.optimizeMeshVertices = true; changed = true; }
+                if (importer.meshCompression == ModelImporterMeshCompression.Off)
+                {
+                    // Only restore if it looks like we disabled it (can't know the original value)
+                    // Leave as-is — user may have had it off intentionally.
+                }
+                if (changed)
+                {
+                    importer.SaveAndReimport();
+                    restored++;
+                }
+            }
+
+            AssetDatabase.Refresh();
+            UvtLog.Info($"[Cleanup] Deleted {deleted} sidecar(s), restored import settings on {restored} FBX file(s).");
+            EditorUtility.DisplayDialog("Done",
+                $"Deleted {deleted} sidecar(s).\nRestored import settings on {restored} FBX file(s).",
+                "OK");
         }
 
         void DrawResizeHandle()
