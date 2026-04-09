@@ -197,14 +197,6 @@ namespace LightmapUvTool
         public int sourceLodIndex;
 
         // Pipeline
-        public int sourceUvChannel = 1;
-        public int targetUvChannel = 1;
-        public float maxProjectionDistance = 0.5f;
-        public float maxNormalAngle = 80f;
-        public bool filterBySubmesh = true;
-        public bool enableBorderRepair = false;
-        public float perimeterTolerance = 0.05f;
-        public float borderFuseTolerance = 0.02f;
         public bool saveNewMeshAssets = true;
         public string savePath = "Assets/LightmapUvTool_Output";
     }

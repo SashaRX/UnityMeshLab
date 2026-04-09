@@ -98,7 +98,7 @@ namespace LightmapUvTool
             if (overlapGroups == null || overlapGroups.Count == 0)
                 return;
 
-            const float EPSILON_SCALE = 0.002f; // 0.2% per shell
+            const float EPSILON_SCALE = 0.02f; // 2% per shell
 
             foreach (var group in overlapGroups)
             {
@@ -126,10 +126,11 @@ namespace LightmapUvTool
         }
 
         /// <summary>
-        /// Post-repack: detect overlapping UV2 bounding boxes among shells that
-        /// shared UV0 space (overlap groups) and shift colliding shells apart.
-        /// If any UV2 exceeds [0,1] after shifts, rescales all UV2 to fit.
-        /// Returns number of shells shifted.
+        /// Post-repack: detect overlapping UV2 shells within overlap groups using
+        /// dual detection: (1) UV2 centroid proximity for shells packed at the same
+        /// position (common with SymSplit halves), and (2) bbox overlap ratio for
+        /// shells whose bounding boxes significantly intersect.
+        /// Runs iteratively to handle cascading shifts. Returns total shifts.
         /// </summary>
         internal static int FixOverlappingUv2Shells(
             Vector2[] uv2, List<UvShell> shells, List<List<int>> overlapGroups,
@@ -141,81 +142,117 @@ namespace LightmapUvTool
 
             float padU = atlasWidth  > 0 ? (float)padding / atlasWidth  : 0f;
             float padV = atlasHeight > 0 ? (float)padding / atlasHeight : 0f;
-            int shifted = 0;
+            // Centroid proximity threshold: shells closer than this are considered
+            // packed at the same position (e.g., SymSplit halves with identical UV0 shape).
+            float centroidEps = atlasWidth > 0 ? 2f / atlasWidth : 0.01f;
+            float centroidEpsSq = centroidEps * centroidEps;
 
-            foreach (var group in overlapGroups)
+            int totalShifted = 0;
+            const int MAX_ITER = 10;
+
+            for (int iter = 0; iter < MAX_ITER; iter++)
             {
-                if (group.Count < 2) continue;
+                int shifted = 0;
 
-                int gc = group.Count;
-                var mn = new Vector2[gc];
-                var mx = new Vector2[gc];
-                for (int i = 0; i < gc; i++)
+                foreach (var group in overlapGroups)
                 {
-                    mn[i] = new Vector2(float.MaxValue, float.MaxValue);
-                    mx[i] = new Vector2(float.MinValue, float.MinValue);
-                    var shell = shells[group[i]];
-                    foreach (int vi in shell.vertexIndices)
+                    if (group.Count < 2) continue;
+
+                    int gc = group.Count;
+                    var mn = new Vector2[gc];
+                    var mx = new Vector2[gc];
+                    var centroid = new Vector2[gc];
+                    var vertCount = new int[gc];
+                    for (int i = 0; i < gc; i++)
                     {
-                        if ((uint)vi < (uint)uv2.Length)
+                        mn[i] = new Vector2(float.MaxValue, float.MaxValue);
+                        mx[i] = new Vector2(float.MinValue, float.MinValue);
+                        centroid[i] = Vector2.zero;
+                        vertCount[i] = 0;
+                        var shell = shells[group[i]];
+                        foreach (int vi in shell.vertexIndices)
                         {
-                            mn[i] = Vector2.Min(mn[i], uv2[vi]);
-                            mx[i] = Vector2.Max(mx[i], uv2[vi]);
+                            if ((uint)vi < (uint)uv2.Length)
+                            {
+                                mn[i] = Vector2.Min(mn[i], uv2[vi]);
+                                mx[i] = Vector2.Max(mx[i], uv2[vi]);
+                                centroid[i] += uv2[vi];
+                                vertCount[i]++;
+                            }
+                        }
+                        if (vertCount[i] > 0) centroid[i] /= vertCount[i];
+                    }
+
+                    for (int i = 0; i < gc; i++)
+                    {
+                        for (int j = i + 1; j < gc; j++)
+                        {
+                            // Detection 1: UV2 centroid proximity (catches SymSplit
+                            // halves packed at identical positions by xatlas)
+                            bool centroidOverlap = (centroid[i] - centroid[j]).sqrMagnitude < centroidEpsSq
+                                && vertCount[i] > 0 && vertCount[j] > 0;
+
+                            // Detection 2: bbox overlap ratio (catches partial overlaps)
+                            bool bboxOverlap = false;
+                            if (!centroidOverlap)
+                            {
+                                float oMinX = Mathf.Max(mn[i].x, mn[j].x);
+                                float oMinY = Mathf.Max(mn[i].y, mn[j].y);
+                                float oMaxX = Mathf.Min(mx[i].x, mx[j].x);
+                                float oMaxY = Mathf.Min(mx[i].y, mx[j].y);
+                                if (oMaxX > oMinX && oMaxY > oMinY)
+                                {
+                                    float overlapArea = (oMaxX - oMinX) * (oMaxY - oMinY);
+                                    float areaI = (mx[i].x - mn[i].x) * (mx[i].y - mn[i].y);
+                                    float areaJ = (mx[j].x - mn[j].x) * (mx[j].y - mn[j].y);
+                                    float smaller = Mathf.Min(areaI, areaJ);
+                                    bboxOverlap = smaller > 0f && overlapArea / smaller >= 0.5f;
+                                }
+                            }
+
+                            if (!centroidOverlap && !bboxOverlap) continue;
+
+                            // Shift shell j past shell i's bounding box
+                            float shiftU = (mx[i].x - mn[j].x) + padU;
+                            float shiftV = (mx[i].y - mn[j].y) + padV;
+                            if (shiftU <= 0f) shiftU = padU + (mx[i].x - mn[i].x) * 0.5f;
+                            if (shiftV <= 0f) shiftV = padV + (mx[i].y - mn[i].y) * 0.5f;
+
+                            var shell = shells[group[j]];
+                            if (shiftU <= shiftV)
+                            {
+                                foreach (int vi in shell.vertexIndices)
+                                    if ((uint)vi < (uint)uv2.Length)
+                                        uv2[vi] = new Vector2(uv2[vi].x + shiftU, uv2[vi].y);
+                                mn[j] = new Vector2(mn[j].x + shiftU, mn[j].y);
+                                mx[j] = new Vector2(mx[j].x + shiftU, mx[j].y);
+                                centroid[j] = new Vector2(centroid[j].x + shiftU, centroid[j].y);
+                            }
+                            else
+                            {
+                                foreach (int vi in shell.vertexIndices)
+                                    if ((uint)vi < (uint)uv2.Length)
+                                        uv2[vi] = new Vector2(uv2[vi].x, uv2[vi].y + shiftV);
+                                mn[j] = new Vector2(mn[j].x, mn[j].y + shiftV);
+                                mx[j] = new Vector2(mx[j].x, mx[j].y + shiftV);
+                                centroid[j] = new Vector2(centroid[j].x, centroid[j].y + shiftV);
+                            }
+                            shifted++;
                         }
                     }
                 }
 
-                for (int i = 0; i < gc; i++)
-                {
-                    for (int j = i + 1; j < gc; j++)
-                    {
-                        float oMinX = Mathf.Max(mn[i].x, mn[j].x);
-                        float oMinY = Mathf.Max(mn[i].y, mn[j].y);
-                        float oMaxX = Mathf.Min(mx[i].x, mx[j].x);
-                        float oMaxY = Mathf.Min(mx[i].y, mx[j].y);
-                        if (oMaxX <= oMinX || oMaxY <= oMinY) continue;
-
-                        float overlapArea = (oMaxX - oMinX) * (oMaxY - oMinY);
-                        float areaI = (mx[i].x - mn[i].x) * (mx[i].y - mn[i].y);
-                        float areaJ = (mx[j].x - mn[j].x) * (mx[j].y - mn[j].y);
-                        float smaller = Mathf.Min(areaI, areaJ);
-                        if (smaller <= 0f || overlapArea / smaller < 0.01f) continue;
-
-                        // Choose shift axis: prefer the direction with less displacement
-                        float shiftU = (mx[i].x - mn[j].x) + padU;
-                        float shiftV = (mx[i].y - mn[j].y) + padV;
-                        if (shiftU <= 0f) shiftU = padU;
-                        if (shiftV <= 0f) shiftV = padV;
-
-                        var shell = shells[group[j]];
-                        if (shiftU <= shiftV)
-                        {
-                            foreach (int vi in shell.vertexIndices)
-                                if ((uint)vi < (uint)uv2.Length)
-                                    uv2[vi] = new Vector2(uv2[vi].x + shiftU, uv2[vi].y);
-                            mn[j] = new Vector2(mn[j].x + shiftU, mn[j].y);
-                            mx[j] = new Vector2(mx[j].x + shiftU, mx[j].y);
-                        }
-                        else
-                        {
-                            foreach (int vi in shell.vertexIndices)
-                                if ((uint)vi < (uint)uv2.Length)
-                                    uv2[vi] = new Vector2(uv2[vi].x, uv2[vi].y + shiftV);
-                            mn[j] = new Vector2(mn[j].x, mn[j].y + shiftV);
-                            mx[j] = new Vector2(mx[j].x, mx[j].y + shiftV);
-                        }
-                        shifted++;
-                    }
-                }
+                totalShifted += shifted;
+                if (shifted == 0) break;
             }
 
-            if (shifted > 0 && !skipRescale)
+            if (totalShifted > 0 && !skipRescale)
                 RescaleUv2ToUnit(uv2);
 
-            if (shifted > 0)
-                UvtLog.Info($"[xatlas] Post-repack: fixed {shifted} overlapping UV2 shell(s)");
+            if (totalShifted > 0)
+                UvtLog.Info($"[xatlas] Post-repack: fixed {totalShifted} overlapping UV2 shell(s)");
 
-            return shifted;
+            return totalShifted;
         }
 
         /// <summary>

@@ -35,7 +35,7 @@ namespace LightmapUvTool
         Dictionary<int, bool> lodFoldouts = new Dictionary<int, bool>();
         Dictionary<int, bool> transferLodFoldouts = new Dictionary<int, bool>();
         Dictionary<int, bool> reportLodFoldouts = new Dictionary<int, bool>();
-        bool foldProjection = true, foldBorderRepair, foldOutput = true;
+        bool foldOutput = true;
         bool foldUv0Analysis, foldRepackSettings = true;
         bool splitTargetsInSymmetryStep;
         HashSet<int> lastSymmetrySplitLods = new HashSet<int>();
@@ -341,31 +341,6 @@ namespace LightmapUvTool
 
             EditorGUILayout.Space(6);
             H("Pipeline Settings");
-            ctx.PipeSettings.sourceUvChannel = EditorGUILayout.IntPopup("Source UV", ctx.PipeSettings.sourceUvChannel, new[]{"UV0","UV2"}, new[]{0,1});
-            ctx.PipeSettings.targetUvChannel = EditorGUILayout.IntPopup("Target UV", ctx.PipeSettings.targetUvChannel, new[]{"UV0","UV2"}, new[]{0,1});
-
-            foldProjection = EditorGUILayout.Foldout(foldProjection, "Projection", true);
-            if (foldProjection)
-            {
-                EditorGUI.indentLevel++;
-                ctx.PipeSettings.maxProjectionDistance = EditorGUILayout.FloatField("Max Dist", ctx.PipeSettings.maxProjectionDistance);
-                ctx.PipeSettings.maxNormalAngle = EditorGUILayout.Slider("Normal Angle", ctx.PipeSettings.maxNormalAngle, 10, 180);
-                ctx.PipeSettings.filterBySubmesh = EditorGUILayout.Toggle("Submesh Filter", ctx.PipeSettings.filterBySubmesh);
-                EditorGUI.indentLevel--;
-            }
-
-            foldBorderRepair = EditorGUILayout.Foldout(foldBorderRepair, "Border Repair", true);
-            if (foldBorderRepair)
-            {
-                EditorGUI.indentLevel++;
-                ctx.PipeSettings.enableBorderRepair = EditorGUILayout.Toggle("Enable", ctx.PipeSettings.enableBorderRepair);
-                if (ctx.PipeSettings.enableBorderRepair)
-                {
-                    ctx.PipeSettings.perimeterTolerance = EditorGUILayout.FloatField("Perim Tol", ctx.PipeSettings.perimeterTolerance);
-                    ctx.PipeSettings.borderFuseTolerance = EditorGUILayout.FloatField("Fuse Tol", ctx.PipeSettings.borderFuseTolerance);
-                }
-                EditorGUI.indentLevel--;
-            }
 
             foldOutput = EditorGUILayout.Foldout(foldOutput, "Output", true);
             if (foldOutput)
@@ -470,7 +445,7 @@ namespace LightmapUvTool
                 {
                     if (li == ctx.SourceLodIndex) continue;
                     var ee = ctx.ForLod(li);
-                    if (!ee.Any(e => e.shellTransferResult != null || e.report.HasValue)) continue;
+                    if (!ee.Any(e => e.shellTransferResult != null)) continue;
                     if (!reportLodFoldouts.ContainsKey(li)) reportLodFoldouts[li] = false;
                     reportLodFoldouts[li] = EditorGUILayout.Foldout(reportLodFoldouts[li], "LOD" + li, true);
                     if (!reportLodFoldouts[li]) continue;
@@ -736,23 +711,10 @@ namespace LightmapUvTool
                 if (tr.overlapHints != null && tr.overlapHints.Count > 0)
                     accumulatedOverlapHints.AddRange(tr.overlapHints);
 
-                // Border repair (modifies tr.uv2 in-place)
-                tgt.borderRepairReport = null;
-                if (ctx.PipeSettings.enableBorderRepair)
-                {
-                    var brSettings = new BorderRepairAdapter.Settings
-                    {
-                        perimeterTolerance = ctx.PipeSettings.perimeterTolerance,
-                        borderFuseTolerance = ctx.PipeSettings.borderFuseTolerance,
-                        maxNormalAngle = ctx.PipeSettings.maxNormalAngle
-                    };
-                    tgt.borderRepairReport = BorderRepairAdapter.Repair(tgtMesh, srcMesh, tr.uv2, brSettings);
-                }
-
                 // Build output mesh with UV2 applied
                 var om = UnityEngine.Object.Instantiate(tgtMesh);
                 om.name = tgtMesh.name + "_uvTransfer";
-                om.SetUVs(ctx.PipeSettings.targetUvChannel, new List<Vector2>(tr.uv2));
+                om.SetUVs(1, new List<Vector2>(tr.uv2));
                 tgt.transferredMesh = om;
                 tgt.shellTransferResult = tr;
 
@@ -810,7 +772,7 @@ namespace LightmapUvTool
                 if (string.IsNullOrEmpty(fbxPath)) continue;
 
                 var uv2List = new List<Vector2>();
-                resultMesh.GetUVs(ctx.PipeSettings.targetUvChannel, uv2List);
+                resultMesh.GetUVs(1, uv2List);
                 if (uv2List.Count == 0) continue;
 
                 var positions = resultMesh.vertices;
@@ -834,7 +796,7 @@ namespace LightmapUvTool
                     schemaVersion = Uv2DataAsset.CurrentSchemaVersion,
                     toolVersion = Uv2DataAsset.ToolVersionStr,
                     sourceFingerprint = fp,
-                    targetUvChannel = ctx.PipeSettings.targetUvChannel,
+                    targetUvChannel = 1,
                     stepMeshopt = e.wasWelded,
                     stepEdgeWeld = e.wasEdgeWelded,
                     stepSymmetrySplit = e.wasSymmetrySplit,
@@ -1442,7 +1404,7 @@ namespace LightmapUvTool
                         uv2Weight    = generateUv2Weight,
                         normalWeight = generateNormalWeight,
                         lockBorder   = generateLockBorder,
-                        uvChannel    = ctx.PipeSettings.targetUvChannel
+                        uvChannel    = 1
                     };
 
                     float progress = (float)lodIdx / generateLodCount;
@@ -1578,9 +1540,7 @@ namespace LightmapUvTool
                 if (e.originalMesh != null && e.originalMesh != e.fbxMesh) UnityEngine.Object.DestroyImmediate(e.originalMesh);
                 if (e.fbxMesh != null) e.originalMesh = e.fbxMesh;
                 e.shellTransferResult = null;
-                e.borderRepairReport = null;
                 e.wasWelded = e.wasEdgeWelded = e.wasSymmetrySplit = false;
-                e.report = null;
             }
             ctx.HasRepack = ctx.HasTransfer = false;
             uv0Analyzed = uv0Welded = false;
@@ -1736,14 +1696,6 @@ namespace LightmapUvTool
             ctx.BorderPaddingPx = s.borderPaddingPx;
             ctx.RepackPerMesh = s.repackPerMesh;
             ctx.SourceLodIndex = Mathf.Clamp(s.sourceLodIndex, 0, Mathf.Max(0, ctx.LodCount - 1));
-            ctx.PipeSettings.sourceUvChannel = s.sourceUvChannel;
-            ctx.PipeSettings.targetUvChannel = s.targetUvChannel;
-            ctx.PipeSettings.maxProjectionDistance = s.maxProjectionDistance;
-            ctx.PipeSettings.maxNormalAngle = s.maxNormalAngle;
-            ctx.PipeSettings.filterBySubmesh = s.filterBySubmesh;
-            ctx.PipeSettings.enableBorderRepair = s.enableBorderRepair;
-            ctx.PipeSettings.perimeterTolerance = s.perimeterTolerance;
-            ctx.PipeSettings.borderFuseTolerance = s.borderFuseTolerance;
             ctx.PipeSettings.saveNewMeshAssets = s.saveNewMeshAssets;
             if (!string.IsNullOrEmpty(s.savePath)) ctx.PipeSettings.savePath = s.savePath;
         }
@@ -1760,14 +1712,6 @@ namespace LightmapUvTool
             s.borderPaddingPx = ctx.BorderPaddingPx;
             s.repackPerMesh = ctx.RepackPerMesh;
             s.sourceLodIndex = ctx.SourceLodIndex;
-            s.sourceUvChannel = ctx.PipeSettings.sourceUvChannel;
-            s.targetUvChannel = ctx.PipeSettings.targetUvChannel;
-            s.maxProjectionDistance = ctx.PipeSettings.maxProjectionDistance;
-            s.maxNormalAngle = ctx.PipeSettings.maxNormalAngle;
-            s.filterBySubmesh = ctx.PipeSettings.filterBySubmesh;
-            s.enableBorderRepair = ctx.PipeSettings.enableBorderRepair;
-            s.perimeterTolerance = ctx.PipeSettings.perimeterTolerance;
-            s.borderFuseTolerance = ctx.PipeSettings.borderFuseTolerance;
             s.saveNewMeshAssets = ctx.PipeSettings.saveNewMeshAssets;
             s.savePath = ctx.PipeSettings.savePath;
             EditorUtility.SetDirty(data);

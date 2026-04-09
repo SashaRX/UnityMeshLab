@@ -129,6 +129,10 @@ namespace LightmapUvTool
         public ShellDescriptor descriptor;
         /// <summary>Whether descriptor has been computed.</summary>
         public bool hasDescriptor;
+        /// <summary>Symmetry split axis (0=X, 1=Y, 2=Z). -1 means not a SymSplit product.</summary>
+        public int symSplitAxis = -1;
+        /// <summary>Symmetry split side: +1 = positive side (groupA), -1 = negative side (groupB), 0 = not split.</summary>
+        public int symSplitSide = 0;
     }
 
     public static class UvShellExtractor

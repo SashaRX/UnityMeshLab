@@ -566,6 +566,38 @@ namespace LightmapUvTool
 
                 if (bestSrc >= 0 && bestCoverage >= kCoverageAcceptThreshold)
                 {
+                    // SymSplit guard: if the target has symSplitSide metadata,
+                    // reject a rescore that would assign it to a source with
+                    // opposite symSplitSide (mirror half).
+                    if (tShell.symSplitSide != 0
+                        && bestSrc < srcShells.Count
+                        && srcShells[bestSrc].symSplitSide != 0
+                        && srcShells[bestSrc].symSplitSide != tShell.symSplitSide
+                        && srcShells[bestSrc].symSplitAxis == tShell.symSplitAxis)
+                    {
+                        // Try to find a same-side source with acceptable coverage
+                        int fallback = -1;
+                        float fallbackScore = -1f;
+                        for (int si = 0; si < srcShells.Count; si++)
+                        {
+                            if (srcShells[si].symSplitSide != tShell.symSplitSide) continue;
+                            if (srcShells[si].symSplitAxis != tShell.symSplitAxis) continue;
+                            float coverage2 = ComputeUv0CoverageFraction(
+                                tShell, tUv0,
+                                srcShells[si].faceIndices,
+                                triUv0A, triUv0B, triUv0C,
+                                shellUv0Bvh[si], uv0BadThreshold);
+                            if (coverage2 >= kCoverageAcceptThreshold && coverage2 > fallbackScore)
+                            {
+                                fallback = si;
+                                fallbackScore = coverage2;
+                            }
+                        }
+                        if (fallback >= 0)
+                            bestSrc = fallback;
+                        // else: keep bestSrc as-is, better than nothing
+                    }
+
                     int oldSrc = targetShellToSourceShell[tsi];
                     tgtIsMerged[tsi] = false;
                     targetShellToSourceShell[tsi] = bestSrc;
@@ -938,6 +970,25 @@ namespace LightmapUvTool
                 $"uv0BadThresh={kUv0BadThreshold:F6}, maxRetries={kMaxRetries}, " +
                 $"overlapGroups={overlapGroups.Count}(maxSize={maxOverlapGroupSize})");
 
+            // ── Reconstruct SymSplit metadata for source and target shells ──
+            // After re-extraction, symSplit metadata is lost. Reconstruct it by
+            // checking if shells in the same overlap group have 3D centroids on
+            // opposite sides of an axis plane (signature of SymSplit halves).
+            ReconstructSymSplitMetadata(srcShells, srcCentroid3D, overlapGroups);
+            {
+                // Compute target 3D centroids for metadata reconstruction
+                var tgtCentroid3DForMeta = new Vector3[tgtShells.Count];
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    Vector3 sum = Vector3.zero; int n = 0;
+                    foreach (int vi in tgtShells[tsi].vertexIndices)
+                        if (vi < tVerts.Length) { sum += tVerts[vi]; n++; }
+                    tgtCentroid3DForMeta[tsi] = n > 0 ? sum / n : Vector3.zero;
+                }
+                var tgtOverlapGroups = UvShellExtractor.FindOverlapGroups(tgtShells);
+                ReconstructSymSplitMetadata(tgtShells, tgtCentroid3DForMeta, tgtOverlapGroups);
+            }
+
             // ── Phase 2a: Match each target shell → best source shell ──
             result.targetShellToSourceShell = new int[tgtShells.Count];
             result.targetShellMethod = new int[tgtShells.Count]; // 0=interp, 1=xform, 2=merged
@@ -1020,6 +1071,29 @@ namespace LightmapUvTool
                 }
 
                 if (chosenSrc < 0) continue;
+
+                // SymSplit guard: if the target has symSplitSide and the chosen
+                // source has opposite side, search the source's overlap group
+                // for a same-side source.
+                if (tShell.symSplitSide != 0
+                    && chosenSrc < srcShells.Count
+                    && srcShells[chosenSrc].symSplitSide != 0
+                    && srcShells[chosenSrc].symSplitSide != tShell.symSplitSide
+                    && srcShells[chosenSrc].symSplitAxis == tShell.symSplitAxis
+                    && srcShellOverlapMembers[chosenSrc] != null)
+                {
+                    foreach (int alt in srcShellOverlapMembers[chosenSrc])
+                    {
+                        if (alt >= srcShells.Count) continue;
+                        if (srcShells[alt].symSplitSide == tShell.symSplitSide
+                            && srcShells[alt].symSplitAxis == tShell.symSplitAxis)
+                        {
+                            chosenSrc = alt;
+                            chosenDistSq = (tCentroid - srcCentroid3D[alt]).sqrMagnitude;
+                            break;
+                        }
+                    }
+                }
 
                 result.targetShellToSourceShell[tsi] = chosenSrc;
                 result.targetShellMatchDistSqr[tsi] = chosenDistSq;
@@ -1187,11 +1261,23 @@ namespace LightmapUvTool
                     // Truly overlapping UV0 (tiling/symmetric) — evict as before.
                     // Non-merged shells get priority (they need the specific UV0→UV2
                     // mapping); merged shells use 3D voting and work with any source.
+                    // SymSplit-aware: prefer claimant whose symSplitSide matches the source's.
+                    int srcSide = srcKey < srcShells.Count ? srcShells[srcKey].symSplitSide : 0;
+                    int srcAxis = srcKey < srcShells.Count ? srcShells[srcKey].symSplitAxis : -1;
                     claimants.Sort((a, b) =>
                     {
                         bool aM = tgtIsMerged[a.tsi];
                         bool bM = tgtIsMerged[b.tsi];
                         if (aM != bM) return aM ? 1 : -1; // non-merged first
+                        // SymSplit side match: prefer claimant whose side matches source
+                        if (srcSide != 0 && srcAxis >= 0)
+                        {
+                            bool aMatch = tgtShells[a.tsi].symSplitSide == srcSide
+                                && tgtShells[a.tsi].symSplitAxis == srcAxis;
+                            bool bMatch = tgtShells[b.tsi].symSplitSide == srcSide
+                                && tgtShells[b.tsi].symSplitAxis == srcAxis;
+                            if (aMatch != bMatch) return aMatch ? -1 : 1;
+                        }
                         return a.avg3D.CompareTo(b.avg3D);
                     });
                     for (int i = 1; i < claimants.Count; i++)
@@ -1225,6 +1311,29 @@ namespace LightmapUvTool
                                 kMaxRetries * 3, kGoodDistSq, claimed,
                                 out int newSrc, out float newDistSq, out float newAvg3D,
                                 tgtAvgNormal[tsi], srcAvgNormal, meshDiagonal);
+
+                            // SymSplit guard: if the rematched source has opposite symSplitSide,
+                            // search the overlap group for a same-side unclaimed source instead.
+                            if (newSrc >= 0 && tShell.symSplitSide != 0
+                                && newSrc < srcShells.Count
+                                && srcShells[newSrc].symSplitSide != 0
+                                && srcShells[newSrc].symSplitSide != tShell.symSplitSide
+                                && srcShells[newSrc].symSplitAxis == tShell.symSplitAxis
+                                && srcShellOverlapMembers[newSrc] != null)
+                            {
+                                foreach (int alt in srcShellOverlapMembers[newSrc])
+                                {
+                                    if (claimed.Contains(alt)) continue;
+                                    if (alt >= srcShells.Count) continue;
+                                    if (srcShells[alt].symSplitSide == tShell.symSplitSide
+                                        && srcShells[alt].symSplitAxis == tShell.symSplitAxis)
+                                    {
+                                        newSrc = alt;
+                                        newDistSq = (result.targetShellCentroids[tsi] - srcCentroid3D[alt]).sqrMagnitude;
+                                        break;
+                                    }
+                                }
+                            }
 
                             if (newSrc >= 0)
                             {
@@ -4138,6 +4247,79 @@ namespace LightmapUvTool
             }
 
             return newShells;
+        }
+
+        /// <summary>
+        /// Reconstruct SymSplit metadata for shells after re-extraction.
+        /// For each overlap group, check if pairs of shells have 3D centroids on
+        /// opposite sides of an axis plane. If so, assign symSplitAxis and symSplitSide.
+        /// </summary>
+        static void ReconstructSymSplitMetadata(
+            List<UvShell> shells, Vector3[] centroids3D,
+            List<List<int>> overlapGroups)
+        {
+            if (overlapGroups == null) return;
+
+            foreach (var group in overlapGroups)
+            {
+                if (group.Count < 2) continue;
+
+                // For each pair in the group, check if they look like SymSplit halves:
+                // same UV0 bbox but 3D centroids separated along a dominant axis.
+                for (int i = 0; i < group.Count; i++)
+                {
+                    int si = group[i];
+                    if (si >= shells.Count || si >= centroids3D.Length) continue;
+                    if (shells[si].symSplitSide != 0) continue; // already assigned
+
+                    for (int j = i + 1; j < group.Count; j++)
+                    {
+                        int sj = group[j];
+                        if (sj >= shells.Count || sj >= centroids3D.Length) continue;
+                        if (shells[sj].symSplitSide != 0) continue;
+
+                        // Check UV0 bbox similarity (SymSplit halves have nearly identical UV0 bounds)
+                        float bboxDistMn = Vector2.Distance(shells[si].boundsMin, shells[sj].boundsMin);
+                        float bboxDistMx = Vector2.Distance(shells[si].boundsMax, shells[sj].boundsMax);
+                        float bboxSize = Mathf.Max(
+                            shells[si].boundsMax.x - shells[si].boundsMin.x,
+                            shells[si].boundsMax.y - shells[si].boundsMin.y);
+                        if (bboxSize <= 0f) continue;
+                        if ((bboxDistMn + bboxDistMx) / bboxSize > 0.15f) continue;
+
+                        // Check 3D centroids are separated along a dominant axis.
+                        // Use RELATIVE comparison (diff between centroids), not absolute
+                        // position vs origin — model may not be centered at origin.
+                        Vector3 ci = centroids3D[si];
+                        Vector3 cj = centroids3D[sj];
+                        Vector3 diff = ci - cj;
+                        float posDist = diff.magnitude;
+                        if (posDist < 0.1f) continue; // too close in 3D
+
+                        // Find axis with largest separation (must be >30% of total distance)
+                        float absDx = Mathf.Abs(diff.x);
+                        float absDy = Mathf.Abs(diff.y);
+                        float absDz = Mathf.Abs(diff.z);
+                        float minSep = posDist * 0.3f;
+
+                        int bestAxis = -1;
+                        float bestSep = minSep;
+                        if (absDx > bestSep) { bestAxis = 0; bestSep = absDx; }
+                        if (absDy > bestSep) { bestAxis = 1; bestSep = absDy; }
+                        if (absDz > bestSep) { bestAxis = 2; bestSep = absDz; }
+
+                        if (bestAxis >= 0)
+                        {
+                            // Assign sides relative to each other: positive diff = si is on + side
+                            shells[si].symSplitAxis = bestAxis;
+                            shells[si].symSplitSide = diff[bestAxis] > 0f ? +1 : -1;
+                            shells[sj].symSplitAxis = bestAxis;
+                            shells[sj].symSplitSide = diff[bestAxis] > 0f ? -1 : +1;
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 }
