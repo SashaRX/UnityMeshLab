@@ -746,21 +746,21 @@ namespace LightmapUvTool
 
             var bg = GUI.backgroundColor;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            EditorGUILayout.BeginHorizontal();
             GUI.backgroundColor = new Color(.95f, .6f, .2f);
-            if (GUILayout.Button("Overwrite Source FBX", GUILayout.Height(24)))
+            if (GUILayout.Button("Overwrite FBX", GUILayout.Height(24)))
             {
                 foreach (var tool in tools)
                     if (tool is LightmapTransferTool ltt) { ltt.ExportFbxPublic(true); break; }
             }
-            GUI.backgroundColor = bg;
-            EditorGUILayout.Space(2);
             GUI.backgroundColor = new Color(.4f, .7f, .95f);
-            if (GUILayout.Button("Export as New FBX", GUILayout.Height(20)))
+            if (GUILayout.Button("Export New FBX", GUILayout.Height(24)))
             {
                 foreach (var tool in tools)
                     if (tool is LightmapTransferTool ltt) { ltt.ExportFbxPublic(false); break; }
             }
             GUI.backgroundColor = bg;
+            EditorGUILayout.EndHorizontal();
 #else
             EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.Info);
 #endif
