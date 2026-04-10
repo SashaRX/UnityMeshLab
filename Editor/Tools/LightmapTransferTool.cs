@@ -1270,7 +1270,10 @@ namespace LightmapUvTool
                 }
             }
             if (cleared > 0)
+            {
+                AssetDatabase.SaveAssets();
                 UvtLog.Info($"[FBX Export] Cleared UV2 entries from {cleared} sidecar(s) after overwrite (collision entries preserved).");
+            }
         }
 
         static Renderer FindLastLodRenderer(List<(MeshEntry entry, Mesh resultMesh)> entries)

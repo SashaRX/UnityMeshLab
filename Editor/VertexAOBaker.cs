@@ -538,10 +538,17 @@ namespace LightmapUvTool
             var result = new Dictionary<Mesh, float[]>();
 
             // Load ray tracing compute shader
-            var computeShader = (ComputeShader)EditorGUIUtility.Load("VertexAORayTrace.compute");
+            var computeShader = AssetDatabase.LoadAssetAtPath<ComputeShader>(
+                FindComputeShaderPath("VertexAORayTrace"));
             if (computeShader == null)
-                computeShader = AssetDatabase.LoadAssetAtPath<ComputeShader>(
-                    FindComputeShaderPath("VertexAORayTrace"));
+            {
+                // Fallback: resolve path relative to this package
+                var pkgInfo = UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                    System.Reflection.Assembly.GetExecutingAssembly());
+                if (pkgInfo != null)
+                    computeShader = AssetDatabase.LoadAssetAtPath<ComputeShader>(
+                        pkgInfo.assetPath + "/Shaders/VertexAORayTrace.compute");
+            }
 
             if (computeShader == null)
             {
