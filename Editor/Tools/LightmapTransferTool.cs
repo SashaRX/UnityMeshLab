@@ -1108,6 +1108,11 @@ namespace LightmapUvTool
                         }
                     }
 
+                    // ── Normalize FBX hierarchy ──
+                    // Ensure root is a clean pivot (identity transform, no mesh)
+                    // and LOD0 child named same as root gets _LOD0 suffix.
+                    NormalizeExportHierarchy(tempRoot);
+
                     // Add collision meshes from sidecar (if any)
                     var collisionData = CollisionMeshTool.GetCollisionMeshesFromSidecar(sourceFbxPath);
                     int collisionMeshCount = 0;
@@ -1449,6 +1454,70 @@ namespace LightmapUvTool
             for (int i = 0; i < subMeshCount; i++)
                 indexCount += mesh.GetIndexCount(i);
             return (int)(indexCount / 3L);
+        }
+
+        /// <summary>
+        /// Ensures the export hierarchy follows the convention:
+        ///   Root (baseName, identity transform, no mesh)
+        ///     ├── baseName_LOD0
+        ///     ├── baseName_LOD1
+        ///     └── baseName_Collider / baseName_COL
+        /// If a child has the same name as the root (LOD0 without suffix),
+        /// it is renamed to baseName_LOD0.  Root transform is reset to identity.
+        /// All children are flattened to be direct children of root.
+        /// </summary>
+        static void NormalizeExportHierarchy(GameObject root)
+        {
+            string baseName = root.name;
+
+            // Reset root transform to identity
+            root.transform.localPosition = Vector3.zero;
+            root.transform.localRotation = Quaternion.identity;
+            root.transform.localScale = Vector3.one;
+
+            // If root itself has a MeshFilter, it's acting as both pivot and LOD0.
+            // Move the mesh to a new child named baseName_LOD0.
+            var rootMf = root.GetComponent<MeshFilter>();
+            if (rootMf != null && rootMf.sharedMesh != null)
+            {
+                var lod0Child = new GameObject(baseName + "_LOD0");
+                lod0Child.transform.SetParent(root.transform, false);
+                var newMf = lod0Child.AddComponent<MeshFilter>();
+                newMf.sharedMesh = rootMf.sharedMesh;
+                var rootMr = root.GetComponent<MeshRenderer>();
+                if (rootMr != null)
+                {
+                    var newMr = lod0Child.AddComponent<MeshRenderer>();
+                    newMr.sharedMaterials = rootMr.sharedMaterials;
+                    UnityEngine.Object.DestroyImmediate(rootMr);
+                }
+                UnityEngine.Object.DestroyImmediate(rootMf);
+            }
+
+            // Rename child that matches root name (LOD0 without suffix) to baseName_LOD0
+            foreach (Transform child in root.transform)
+            {
+                if (child.name == baseName)
+                {
+                    child.name = baseName + "_LOD0";
+                    break;
+                }
+            }
+
+            // Flatten nested children: move any grandchildren up to root level
+            var toReparent = new List<Transform>();
+            foreach (Transform child in root.transform)
+            {
+                // Skip _COL hull containers — they have intentional nesting
+                if (IsCollisionNodeName(child.name)) continue;
+                foreach (Transform grandchild in child)
+                {
+                    if (grandchild.GetComponent<MeshFilter>() != null)
+                        toReparent.Add(grandchild);
+                }
+            }
+            foreach (var t in toReparent)
+                t.SetParent(root.transform, true);
         }
 
         static bool IsCollisionNodeName(string nodeName)
