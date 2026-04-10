@@ -1457,14 +1457,15 @@ namespace LightmapUvTool
         }
 
         /// <summary>
-        /// Ensures the export hierarchy follows the convention:
+        /// Ensures the export root follows the convention:
         ///   Root (baseName, identity transform, no mesh)
         ///     ├── baseName_LOD0
         ///     ├── baseName_LOD1
         ///     └── baseName_Collider / baseName_COL
         /// If a child has the same name as the root (LOD0 without suffix),
         /// it is renamed to baseName_LOD0.  Root transform is reset to identity.
-        /// All children are flattened to be direct children of root.
+        /// Existing sub-hierarchies (intermediate pivots with their own LODs)
+        /// are left intact — only the root and its direct children are touched.
         /// </summary>
         static void NormalizeExportHierarchy(GameObject root)
         {
@@ -1494,7 +1495,7 @@ namespace LightmapUvTool
                 UnityEngine.Object.DestroyImmediate(rootMf);
             }
 
-            // Rename child that matches root name (LOD0 without suffix) to baseName_LOD0
+            // Rename direct child that matches root name (LOD0 without suffix) to baseName_LOD0
             foreach (Transform child in root.transform)
             {
                 if (child.name == baseName)
@@ -1503,21 +1504,6 @@ namespace LightmapUvTool
                     break;
                 }
             }
-
-            // Flatten nested children: move any grandchildren up to root level
-            var toReparent = new List<Transform>();
-            foreach (Transform child in root.transform)
-            {
-                // Skip _COL hull containers — they have intentional nesting
-                if (IsCollisionNodeName(child.name)) continue;
-                foreach (Transform grandchild in child)
-                {
-                    if (grandchild.GetComponent<MeshFilter>() != null)
-                        toReparent.Add(grandchild);
-                }
-            }
-            foreach (var t in toReparent)
-                t.SetParent(root.transform, true);
         }
 
         static bool IsCollisionNodeName(string nodeName)
