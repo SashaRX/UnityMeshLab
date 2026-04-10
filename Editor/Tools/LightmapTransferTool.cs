@@ -1474,10 +1474,9 @@ namespace LightmapUvTool
         {
             string baseName = root.name;
 
-            // Reset root transform to identity
+            // Reset root position only — keep rotation/scale from original FBX
+            // (may contain axis conversion data for 3ds Max ↔ Unity)
             root.transform.localPosition = Vector3.zero;
-            root.transform.localRotation = Quaternion.identity;
-            root.transform.localScale = Vector3.one;
 
             // Rename direct child that matches root name (LOD0 without suffix) to baseName_LOD0
             foreach (Transform child in root.transform)
