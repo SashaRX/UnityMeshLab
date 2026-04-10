@@ -377,8 +377,19 @@ namespace LightmapUvTool
                 result.conflictVertices = conflicts;
 
                 // ── Post-process: fix overlapping UV2 shells ──
+                // Phase 1: known UV0 overlap groups (fast path, catches SymSplit halves in same group)
                 FixOverlappingUv2Shells(uv2, shells, overlapGroups,
-                    opts.padding, result.atlasWidth, result.atlasHeight);
+                    opts.padding, result.atlasWidth, result.atlasHeight, skipRescale: true);
+
+                // Phase 2: global safety net — check ALL shell pairs for UV2 bbox overlap.
+                // Catches SymSplit halves whose UV0 bboxes diverged after splitting.
+                if (shells.Count > 1)
+                {
+                    var allGroup = new List<List<int>> { new List<int>(shells.Count) };
+                    for (int i = 0; i < shells.Count; i++) allGroup[0].Add(i);
+                    FixOverlappingUv2Shells(uv2, shells, allGroup,
+                        opts.padding, result.atlasWidth, result.atlasHeight);
+                }
 
                 // ── Post-process: fix orphan vertices ──
                 int orphanVerts, orphanTris, snapped;
@@ -573,6 +584,15 @@ namespace LightmapUvTool
                     // Fix overlapping UV2 shells (skip per-mesh rescale — do global rescale below)
                     totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], allOverlap[m],
                         opts.padding, atlasW, atlasH, skipRescale: true);
+
+                    // Global safety net: check ALL shell pairs for UV2 overlap
+                    if (allShells[m].Count > 1)
+                    {
+                        var allGroup = new List<List<int>> { new List<int>(allShells[m].Count) };
+                        for (int si = 0; si < allShells[m].Count; si++) allGroup[0].Add(si);
+                        totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], allGroup,
+                            opts.padding, atlasW, atlasH, skipRescale: true);
+                    }
 
                     // Fix orphan vertices
                     int orphanVerts, orphanTris, snapped;
