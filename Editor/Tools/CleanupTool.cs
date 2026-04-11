@@ -65,7 +65,7 @@ namespace LightmapUvTool
 
         struct SceneIssue
         {
-            public enum Kind { OrphanedLod, LodGroupMismatch, MissingLod0Suffix, RootHasMesh, MissingCollider }
+            public enum Kind { OrphanedLod, LodGroupMismatch, MissingLod0Suffix, RootHasMesh, MissingCollider, InvalidRootName, InvalidChars }
             public Kind kind;
             public GameObject gameObject;
             public string description;
@@ -1213,7 +1213,71 @@ namespace LightmapUvTool
                 });
             }
 
+            // Check if root name has _LOD/_COL/_Collider suffix (should be clean base name)
+            if (HasLodOrColSuffix(root.name))
+            {
+                sceneIssues.Add(new SceneIssue
+                {
+                    kind = SceneIssue.Kind.InvalidRootName,
+                    gameObject = root.gameObject,
+                    description = $"{root.name}: root name has LOD/COL suffix — should be base name"
+                });
+            }
+
+            // Check root + direct children for invalid characters (dots, cyrillic, etc.)
+            if (HasInvalidChars(root.name))
+            {
+                sceneIssues.Add(new SceneIssue
+                {
+                    kind = SceneIssue.Kind.InvalidChars,
+                    gameObject = root.gameObject,
+                    description = $"{root.name}: name contains invalid characters (dots, cyrillic, etc.)"
+                });
+            }
+            for (int i = 0; i < root.childCount; i++)
+            {
+                var child = root.GetChild(i);
+                if (HasInvalidChars(child.name))
+                {
+                    sceneIssues.Add(new SceneIssue
+                    {
+                        kind = SceneIssue.Kind.InvalidChars,
+                        gameObject = child.gameObject,
+                        description = $"{child.name}: name contains invalid characters"
+                    });
+                }
+            }
+
             UvtLog.Info($"Scene scan: {sceneIssues.Count} issue(s) found.");
+        }
+
+        static bool HasLodOrColSuffix(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            return System.Text.RegularExpressions.Regex.IsMatch(
+                name,
+                @"[_\-\s]+(LOD\d+|COL\w*|Collider|Collision)$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+
+        static bool HasInvalidChars(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            // Allowed: ASCII letters, digits, underscore
+            return System.Text.RegularExpressions.Regex.IsMatch(name, @"[^A-Za-z0-9_]");
+        }
+
+        static string SanitizeName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return "Unnamed";
+            // Replace any non-ASCII-alnum-underscore with underscore
+            string clean = System.Text.RegularExpressions.Regex.Replace(name, @"[^A-Za-z0-9_]", "_");
+            // Collapse multiple underscores
+            clean = System.Text.RegularExpressions.Regex.Replace(clean, @"_+", "_");
+            // Trim leading/trailing underscores
+            clean = clean.Trim('_');
+            if (string.IsNullOrEmpty(clean)) return "Unnamed";
+            return clean;
         }
 
         void FixScene()
@@ -1223,7 +1287,39 @@ namespace LightmapUvTool
             int undoGroup = Undo.GetCurrentGroup();
             bool needsRefresh = false;
 
-            // First pass: remove orphans
+            // First pass: sanitize invalid characters in names
+            foreach (var issue in sceneIssues)
+            {
+                if (issue.kind != SceneIssue.Kind.InvalidChars) continue;
+                if (issue.gameObject == null) continue;
+
+                string sanitized = SanitizeName(issue.gameObject.name);
+                if (sanitized != issue.gameObject.name)
+                {
+                    Undo.RecordObject(issue.gameObject, "Sanitize Name");
+                    UvtLog.Info($"Sanitized: {issue.gameObject.name} → {sanitized}");
+                    issue.gameObject.name = sanitized;
+                    needsRefresh = true;
+                }
+            }
+
+            // Second pass: strip LOD/COL suffix from root name
+            foreach (var issue in sceneIssues)
+            {
+                if (issue.kind != SceneIssue.Kind.InvalidRootName) continue;
+                if (issue.gameObject == null) continue;
+
+                string cleaned = UvToolContext.ExtractGroupKey(issue.gameObject.name);
+                if (!string.IsNullOrEmpty(cleaned) && cleaned != issue.gameObject.name)
+                {
+                    Undo.RecordObject(issue.gameObject, "Strip Root Suffix");
+                    UvtLog.Info($"Cleaned root name: {issue.gameObject.name} → {cleaned}");
+                    issue.gameObject.name = cleaned;
+                    needsRefresh = true;
+                }
+            }
+
+            // Third pass: remove orphans
             foreach (var issue in sceneIssues)
             {
                 if (issue.kind != SceneIssue.Kind.OrphanedLod) continue;
@@ -1234,7 +1330,7 @@ namespace LightmapUvTool
                 needsRefresh = true;
             }
 
-            // Second pass: move root mesh to child LOD0 (restructures hierarchy)
+            // Fourth pass: move root mesh to child LOD0 (restructures hierarchy)
             var movedRoots = new HashSet<GameObject>();
             foreach (var issue in sceneIssues)
             {
@@ -1246,7 +1342,7 @@ namespace LightmapUvTool
                 needsRefresh = true;
             }
 
-            // Third pass: add _LOD0 suffix to LOD0 renderers
+            // Fifth pass: add _LOD0 suffix to LOD0 renderers
             // Skip roots that had their mesh moved — the new child is already named _LOD0.
             foreach (var issue in sceneIssues)
             {
@@ -1264,7 +1360,7 @@ namespace LightmapUvTool
                 needsRefresh = true;
             }
 
-            // Fourth pass: rebuild LODGroup (after hierarchy is finalized)
+            // Sixth pass: rebuild LODGroup (after hierarchy is finalized)
             bool needsRebuild = sceneIssues.Any(i => i.kind == SceneIssue.Kind.LodGroupMismatch) ||
                                 movedRoots.Count > 0;
             if (needsRebuild && ctx.LodGroup != null)
@@ -1273,7 +1369,7 @@ namespace LightmapUvTool
                 needsRefresh = true;
             }
 
-            // Fifth pass: add MeshCollider from collision mesh
+            // Seventh pass: add MeshCollider from collision mesh
             foreach (var issue in sceneIssues)
             {
                 if (issue.kind != SceneIssue.Kind.MissingCollider) continue;
