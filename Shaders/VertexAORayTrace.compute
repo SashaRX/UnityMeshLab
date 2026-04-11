@@ -38,6 +38,8 @@ StructuredBuffer<float3>   _Directions;
 // ── Uniforms ──
 uint _VertexCount;
 uint _DirectionCount;
+uint _DirStart;     // first direction index for this batch (inclusive)
+uint _DirEnd;       // last direction index for this batch (exclusive)
 float _MaxDist;
 float _NormalOffset;
 float _MinHitDist;
@@ -171,7 +173,7 @@ void BakeAO(uint3 id : SV_DispatchThreadID)
     uint wOccluded = 0;
     uint wTotal = 0;
 
-    for (uint d = 0; d < _DirectionCount; d++)
+    for (uint d = _DirStart; d < _DirEnd; d++)
     {
         float3 dir = _Directions[d];
         // Apply Y-axis jitter

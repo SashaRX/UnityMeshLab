@@ -1,5 +1,6 @@
 // VertexAOTool.cs — Vertex AO baking tool (IUvTool tab).
-// GPU depth-map hemisphere sampling with ground plane, blur, and channel-select output.
+// GPU: non-blocking async BVH ray tracing via compute shader.
+// CPU: synchronous BVH ray tracing with Parallel.For.
 
 using System;
 using System.Collections.Generic;
@@ -77,6 +78,11 @@ namespace LightmapUvTool
         float bakeTimeSeconds;
         int   bakedVertexCount;
 
+        // ── Async GPU bake ──
+        VertexAOBaker.GpuAOBakeJob activeGpuJob;
+        List<(Mesh mesh, Matrix4x4 transform)> pendingMeshList; // kept for face-area correction after GPU bake
+        Stopwatch bakeStopwatch;
+
         // ── Preview ──
         bool previewActive;
         List<(MeshFilter mf, Mesh originalMesh, Material[] originalMats)> previewBackups
@@ -96,12 +102,14 @@ namespace LightmapUvTool
 
         public void OnDeactivate()
         {
+            CancelGpuJob();
             RestorePreview();
             ClearResults();
         }
 
         public void OnRefresh()
         {
+            CancelGpuJob();
             RestorePreview();
             ClearResults();
         }
@@ -109,8 +117,18 @@ namespace LightmapUvTool
         void ClearResults()
         {
             bakedRawAO = null;
+            bakedFaceAreaAO = null;
             bakedFinalAO = null;
             bakedVertexCount = 0;
+        }
+
+        void CancelGpuJob()
+        {
+            if (activeGpuJob != null && activeGpuJob.IsRunning)
+                activeGpuJob.Cancel();
+            activeGpuJob = null;
+            pendingMeshList = null;
+            bakeStopwatch = null;
         }
 
         // ── UI ──
@@ -208,17 +226,35 @@ namespace LightmapUvTool
 
             EditorGUILayout.Space(8);
 
-            // Bake button
+            // Bake button / progress
+            bool isBaking = activeGpuJob != null && activeGpuJob.IsRunning;
             var bgc = GUI.backgroundColor;
-            EditorGUILayout.BeginHorizontal();
-            GUI.backgroundColor = new Color(.4f, .8f, .4f);
-            if (GUILayout.Button("Bake Vertex AO", GUILayout.Height(28)))
-                ExecuteBake();
-            GUI.backgroundColor = new Color(.6f, .75f, .9f);
-            if (GUILayout.Button("Load from Mesh", GUILayout.Height(28)))
-                LoadFromMesh();
-            GUI.backgroundColor = bgc;
-            EditorGUILayout.EndHorizontal();
+
+            if (isBaking)
+            {
+                // Inline progress bar + cancel
+                var rect = EditorGUILayout.GetControlRect(false, 22);
+                EditorGUI.ProgressBar(rect, activeGpuJob.Progress, activeGpuJob.StatusText);
+                GUI.backgroundColor = new Color(.9f, .5f, .3f);
+                if (GUILayout.Button("Cancel", GUILayout.Height(24)))
+                {
+                    CancelGpuJob();
+                    UvtLog.Info("[Vertex AO] GPU bake cancelled.");
+                }
+                GUI.backgroundColor = bgc;
+            }
+            else
+            {
+                EditorGUILayout.BeginHorizontal();
+                GUI.backgroundColor = new Color(.4f, .8f, .4f);
+                if (GUILayout.Button("Bake Vertex AO", GUILayout.Height(28)))
+                    ExecuteBake();
+                GUI.backgroundColor = new Color(.6f, .75f, .9f);
+                if (GUILayout.Button("Load from Mesh", GUILayout.Height(28)))
+                    LoadFromMesh();
+                GUI.backgroundColor = bgc;
+                EditorGUILayout.EndHorizontal();
+            }
 
             // Results
             if (bakedFinalAO != null && bakedFinalAO.Count > 0)
@@ -320,6 +356,7 @@ namespace LightmapUvTool
 
         void ExecuteBake()
         {
+            CancelGpuJob();
             RestorePreview();
 
             var entries = ctx.MeshEntries
@@ -354,27 +391,92 @@ namespace LightmapUvTool
                 bakeType        = (AOBakeType)bakeTypeIndex
             };
 
-            var sw = Stopwatch.StartNew();
-            bakedRawAO = VertexAOBaker.BakeMultiMesh(meshList, settings);
+            bakeStopwatch = Stopwatch.StartNew();
 
-            // Face-area correction as a lightweight post-pass on raw AO
+            if (settings.useGPU && SystemInfo.supportsComputeShaders)
+            {
+                // Async GPU path — non-blocking
+                pendingMeshList = meshList;
+                activeGpuJob = VertexAOBaker.StartGPUBake(meshList, settings,
+                    result => OnGpuBakeComplete(result, meshList, settings, entries),
+                    error =>
+                    {
+                        UvtLog.Error($"[Vertex AO] GPU bake failed: {error}. Falling back to CPU.");
+                        activeGpuJob = null;
+                        // Fall back to CPU synchronously
+                        ExecuteBakeCPU(meshList, settings, entries);
+                    });
+
+                if (activeGpuJob == null)
+                {
+                    // Compute shader not found — fall back to CPU
+                    ExecuteBakeCPU(meshList, settings, entries);
+                    return;
+                }
+
+                // Subscribe repaint pump so progress bar updates
+                EditorApplication.update += RepaintDuringBake;
+                UvtLog.Info("[Vertex AO] GPU bake started (non-blocking).");
+            }
+            else
+            {
+                if (settings.useGPU && !SystemInfo.supportsComputeShaders)
+                    UvtLog.Warn("[Vertex AO] Compute shaders not supported. Falling back to CPU.");
+                ExecuteBakeCPU(meshList, settings, entries);
+            }
+        }
+
+        void RepaintDuringBake()
+        {
+            if (activeGpuJob == null || !activeGpuJob.IsRunning)
+            {
+                EditorApplication.update -= RepaintDuringBake;
+                return;
+            }
+            requestRepaint?.Invoke();
+        }
+
+        void OnGpuBakeComplete(
+            Dictionary<Mesh, float[]> result,
+            List<(Mesh mesh, Matrix4x4 transform)> meshList,
+            VertexAOSettings settings,
+            List<MeshEntry> entries)
+        {
+            EditorApplication.update -= RepaintDuringBake;
+            activeGpuJob = null;
+            pendingMeshList = null;
+
+            bakedRawAO = result;
             bakedFaceAreaAO = VertexAOBaker.ApplyFaceAreaCorrection(bakedRawAO, meshList, settings);
-            sw.Stop();
-            bakeTimeSeconds = (float)sw.Elapsed.TotalSeconds;
+            FinalizeBake(entries);
+        }
 
-            // Count vertices
+        void ExecuteBakeCPU(
+            List<(Mesh mesh, Matrix4x4 transform)> meshList,
+            VertexAOSettings settings,
+            List<MeshEntry> entries)
+        {
+            bakedRawAO = VertexAOBaker.BakeMultiMesh(meshList, settings);
+            bakedFaceAreaAO = VertexAOBaker.ApplyFaceAreaCorrection(bakedRawAO, meshList, settings);
+            FinalizeBake(entries);
+        }
+
+        void FinalizeBake(List<MeshEntry> entries)
+        {
+            bakeStopwatch?.Stop();
+            bakeTimeSeconds = bakeStopwatch != null ? (float)bakeStopwatch.Elapsed.TotalSeconds : 0f;
+            bakeStopwatch = null;
+
             bakedVertexCount = 0;
             foreach (var kvp in bakedRawAO)
                 bakedVertexCount += kvp.Value.Length;
 
-            // Apply post-processing chain
             ApplyBlurInternal();
 
             int lodCount = entries.Select(e => e.lodIndex).Distinct().Count();
             string bakeTypeName = bakeTypeIndex == 0 ? "AO" : "Thickness";
             UvtLog.Info($"[Vertex AO] Baked {bakeTypeName} for {bakedVertexCount} vertices across {lodCount} LOD(s) in {bakeTimeSeconds:F1}s");
 
-            // Auto-enable preview after bake
             ActivatePreview();
             requestRepaint?.Invoke();
         }

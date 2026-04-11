@@ -1,5 +1,5 @@
-// VertexAOBaker.cs — GPU vertex AO baking via depth-map hemisphere sampling.
-// Renders mesh from N hemisphere directions, accumulates occlusion per vertex via compute shader.
+// VertexAOBaker.cs — GPU vertex AO baking via BVH ray tracing compute shader.
+// Supports async non-blocking GPU path (GpuAOBakeJob) and synchronous CPU fallback.
 
 using System;
 using System.Collections.Generic;
@@ -44,6 +44,9 @@ namespace LightmapUvTool
     {
         // ── Public API ──
 
+        /// <summary>
+        /// Synchronous CPU bake. For GPU path, use StartGPUBake() instead.
+        /// </summary>
         public static Dictionary<Mesh, float[]> BakeMultiMesh(
             List<(Mesh mesh, Matrix4x4 transform)> meshes,
             VertexAOSettings settings)
@@ -51,14 +54,7 @@ namespace LightmapUvTool
             if (meshes == null || meshes.Count == 0)
                 return new Dictionary<Mesh, float[]>();
 
-            if (!settings.useGPU || !SystemInfo.supportsComputeShaders)
-            {
-                if (settings.useGPU && !SystemInfo.supportsComputeShaders)
-                    UvtLog.Warn("[Vertex AO] Compute shaders not supported (GPU: " + SystemInfo.graphicsDeviceType + "). Falling back to CPU.");
-                return BakeMultiMeshCPU(meshes, settings);
-            }
-
-            return BakeMultiMeshGPU(meshes, settings);
+            return BakeMultiMeshCPU(meshes, settings);
         }
 
         /// <summary>
@@ -529,209 +525,399 @@ namespace LightmapUvTool
             return areas[triCount / 2];
         }
 
-        // ── GPU Path (Compute Ray Tracing) ──
+        // ── GPU Path (Async Compute Ray Tracing) ──
 
-        static Dictionary<Mesh, float[]> BakeMultiMeshGPU(
+        /// <summary>
+        /// Start a non-blocking GPU AO bake. Returns a GpuAOBakeJob that drives itself
+        /// via EditorApplication.update. Returns null if the compute shader is missing.
+        /// </summary>
+        internal static GpuAOBakeJob StartGPUBake(
             List<(Mesh mesh, Matrix4x4 transform)> meshes,
-            VertexAOSettings settings)
+            VertexAOSettings settings,
+            Action<Dictionary<Mesh, float[]>> onComplete,
+            Action<string> onError)
         {
-            var result = new Dictionary<Mesh, float[]>();
-
-            // Load ray tracing compute shader
-            var computeShader = AssetDatabase.LoadAssetAtPath<ComputeShader>(
-                FindComputeShaderPath("VertexAORayTrace"));
+            var computeShader = FindComputeShader("VertexAORayTrace");
             if (computeShader == null)
             {
-                // Fallback: resolve path relative to this package
-                var pkgInfo = UnityEditor.PackageManager.PackageInfo.FindForAssembly(
-                    System.Reflection.Assembly.GetExecutingAssembly());
-                if (pkgInfo != null)
-                    computeShader = AssetDatabase.LoadAssetAtPath<ComputeShader>(
-                        pkgInfo.assetPath + "/Shaders/VertexAORayTrace.compute");
+                onError?.Invoke("Cannot find VertexAORayTrace compute shader.");
+                return null;
             }
 
-            if (computeShader == null)
+            var job = new GpuAOBakeJob(computeShader, meshes, settings, onComplete, onError);
+            job.Start();
+            return job;
+        }
+
+        /// <summary>
+        /// Non-blocking GPU AO bake driven by EditorApplication.update.
+        /// Splits direction sampling into batches to avoid TDR, uses AsyncGPUReadback.
+        /// </summary>
+        internal class GpuAOBakeJob
+        {
+            enum Phase { Dispatching, ReadingBack, Done, Cancelled }
+
+            Phase phase = Phase.Done;
+            readonly ComputeShader cs;
+            readonly VertexAOSettings settings;
+            readonly Action<Dictionary<Mesh, float[]>> onComplete;
+            readonly Action<string> onError;
+
+            // Kernels
+            int bakeKernel, finalKernel;
+
+            // Shared GPU buffers
+            ComputeBuffer bvhNodeBuf, triVertBuf, triIdxBuf, trisBuf, faceNormBuf, dirBuf;
+
+            // Per-mesh data
+            struct MeshSlot
             {
-                UvtLog.Error("[Vertex AO] Cannot find VertexAORayTrace compute shader. Falling back to CPU.");
-                return BakeMultiMeshCPU(meshes, settings);
+                public Mesh mesh;
+                public ComputeBuffer posBuf, normBuf, counterBuf, resultBuf;
+                public int vertCount;
             }
+            MeshSlot[] slots;
 
-            bool isThickness = settings.bakeType == AOBakeType.Thickness;
+            // Readback requests (one per mesh)
+            AsyncGPUReadbackRequest[] readbackRequests;
 
-            // Build combined BVH from all meshes (same as CPU path)
-            var allVerts = new List<Vector3>();
-            var allTris = new List<int>();
-            var readableCopies = new List<Mesh>();
-            foreach (var (mesh, xform) in meshes)
+            // Direction batching
+            int dirCount;
+            int dirBatchSize;
+            int totalBatches;  // per mesh
+
+            // Progress tracking
+            int curMesh;
+            int curBatch;
+            int totalDispatches;
+            int completedDispatches;
+
+            // Cleanup
+            List<Mesh> readableCopies = new List<Mesh>();
+
+            /// <summary>Bake progress 0..1 for UI display.</summary>
+            public float Progress =>
+                totalDispatches > 0 ? (float)completedDispatches / totalDispatches : 0f;
+
+            /// <summary>True while the job is actively running.</summary>
+            public bool IsRunning => phase == Phase.Dispatching || phase == Phase.ReadingBack;
+
+            public string StatusText
             {
-                var readable = EnsureReadable(mesh);
-                if (readable != mesh) readableCopies.Add(readable);
-                int baseVert = allVerts.Count;
-                var verts = readable.vertices;
-                for (int i = 0; i < verts.Length; i++)
-                    allVerts.Add(xform.MultiplyPoint3x4(verts[i]));
-                var tris = readable.triangles;
-                for (int i = 0; i < tris.Length; i++)
-                    allTris.Add(tris[i] + baseVert);
-            }
-
-            var bvh = new TriangleBvh(allVerts.ToArray(), allTris.ToArray());
-            bvh.GetGPUData(out var gpuNodes, out var gpuTriIndices, out var gpuVerts, out var gpuTris);
-
-            var directions = GenerateSphereDirections(settings.sampleCount);
-
-            // Precompute face normals
-            int faceCount = allTris.Count / 3;
-            var faceNormals = new Vector3[faceCount];
-            var allVertsArr = allVerts.ToArray();
-            var allTrisArr = allTris.ToArray();
-            for (int f = 0; f < faceCount; f++)
-            {
-                var a = allVertsArr[allTrisArr[f * 3]];
-                var b = allVertsArr[allTrisArr[f * 3 + 1]];
-                var c = allVertsArr[allTrisArr[f * 3 + 2]];
-                faceNormals[f] = Vector3.Cross(b - a, c - a).normalized;
-            }
-
-            Bounds combinedBounds = ComputeCombinedBounds(meshes);
-            float extent = combinedBounds.extents.magnitude;
-            float normalOffset = 0.001f * extent;
-            float minHitDist = 0.003f * extent;
-            float maxDist = settings.maxRadius > 0 ? settings.maxRadius : float.MaxValue;
-            float groundY = settings.groundPlane
-                ? combinedBounds.min.y - settings.groundOffset
-                : float.NegativeInfinity;
-
-            // Upload BVH to GPU
-            int nodeStride = System.Runtime.InteropServices.Marshal.SizeOf<TriangleBvh.GPUNode>();
-            var bvhNodeBuf = new ComputeBuffer(gpuNodes.Length, nodeStride);
-            bvhNodeBuf.SetData(gpuNodes);
-            var triVertBuf = new ComputeBuffer(gpuVerts.Length, 12);
-            triVertBuf.SetData(gpuVerts);
-            var triIdxBuf = new ComputeBuffer(gpuTriIndices.Length, 4);
-            triIdxBuf.SetData(gpuTriIndices);
-            var trisBuf = new ComputeBuffer(gpuTris.Length, 4);
-            trisBuf.SetData(gpuTris);
-            var faceNormBuf = new ComputeBuffer(faceNormals.Length, 12);
-            faceNormBuf.SetData(faceNormals);
-            var dirBuf = new ComputeBuffer(directions.Length, 12);
-            dirBuf.SetData(directions);
-
-            // Per-mesh vertex buffers
-            var meshBuffers = new List<(Mesh mesh, ComputeBuffer pos, ComputeBuffer norm, ComputeBuffer counters, int vertCount)>();
-            foreach (var (mesh, xform) in meshes)
-            {
-                var readable = EnsureReadable(mesh);
-                if (readable != mesh && !readableCopies.Contains(readable)) readableCopies.Add(readable);
-                var verts = readable.vertices;
-                var norms = readable.normals;
-                if (norms == null || norms.Length != verts.Length)
+                get
                 {
-                    readable.RecalculateNormals();
-                    norms = readable.normals;
+                    switch (phase)
+                    {
+                        case Phase.Dispatching:
+                            return $"Baking mesh {curMesh + 1}/{slots.Length}, " +
+                                   $"batch {curBatch + 1}/{totalBatches}";
+                        case Phase.ReadingBack:
+                            return "Reading back results...";
+                        default:
+                            return "";
+                    }
+                }
+            }
+
+            public GpuAOBakeJob(
+                ComputeShader computeShader,
+                List<(Mesh mesh, Matrix4x4 transform)> meshes,
+                VertexAOSettings settings,
+                Action<Dictionary<Mesh, float[]>> onComplete,
+                Action<string> onError)
+            {
+                this.cs = computeShader;
+                this.settings = settings;
+                this.onComplete = onComplete;
+                this.onError = onError;
+
+                Prepare(meshes);
+            }
+
+            void Prepare(List<(Mesh mesh, Matrix4x4 transform)> meshes)
+            {
+                bool isThickness = settings.bakeType == AOBakeType.Thickness;
+
+                // Build combined BVH from all meshes
+                var allVerts = new List<Vector3>();
+                var allTris = new List<int>();
+                foreach (var (mesh, xform) in meshes)
+                {
+                    var readable = EnsureReadable(mesh);
+                    if (readable != mesh) readableCopies.Add(readable);
+                    int baseVert = allVerts.Count;
+                    var verts = readable.vertices;
+                    for (int i = 0; i < verts.Length; i++)
+                        allVerts.Add(xform.MultiplyPoint3x4(verts[i]));
+                    var tris = readable.triangles;
+                    for (int i = 0; i < tris.Length; i++)
+                        allTris.Add(tris[i] + baseVert);
                 }
 
-                var worldVerts = new Vector3[verts.Length];
-                var worldNorms = new Vector3[verts.Length];
-                for (int i = 0; i < verts.Length; i++)
+                var bvh = new TriangleBvh(allVerts.ToArray(), allTris.ToArray());
+                bvh.GetGPUData(out var gpuNodes, out var gpuTriIndices, out var gpuVerts, out var gpuTris);
+
+                var directions = GenerateSphereDirections(settings.sampleCount);
+                dirCount = directions.Length;
+
+                // Auto batch size: larger BVH → smaller batches to avoid TDR
+                int totalTris = allTris.Count / 3;
+                dirBatchSize = Mathf.Clamp(500000 / Mathf.Max(totalTris, 1), 8, 64);
+                totalBatches = Mathf.CeilToInt((float)dirCount / dirBatchSize);
+
+                // Precompute face normals
+                int faceCount = totalTris;
+                var faceNormals = new Vector3[faceCount];
+                var allVertsArr = allVerts.ToArray();
+                var allTrisArr = allTris.ToArray();
+                for (int f = 0; f < faceCount; f++)
                 {
-                    worldVerts[i] = xform.MultiplyPoint3x4(verts[i]);
-                    worldNorms[i] = xform.MultiplyVector(norms[i]).normalized;
+                    var a = allVertsArr[allTrisArr[f * 3]];
+                    var b = allVertsArr[allTrisArr[f * 3 + 1]];
+                    var c = allVertsArr[allTrisArr[f * 3 + 2]];
+                    faceNormals[f] = Vector3.Cross(b - a, c - a).normalized;
                 }
 
-                var posBuf = new ComputeBuffer(verts.Length, 12);
-                posBuf.SetData(worldVerts);
-                var normBuf = new ComputeBuffer(verts.Length, 12);
-                normBuf.SetData(worldNorms);
-                var counterBuf = new ComputeBuffer(verts.Length, 8);
-                counterBuf.SetData(new uint[verts.Length * 2]);
+                Bounds combinedBounds = ComputeCombinedBounds(meshes);
+                float extent = combinedBounds.extents.magnitude;
+                float normalOffset = 0.001f * extent;
+                float minHitDist = 0.003f * extent;
+                float maxDist = settings.maxRadius > 0 ? settings.maxRadius : float.MaxValue;
+                float groundY = settings.groundPlane
+                    ? combinedBounds.min.y - settings.groundOffset
+                    : float.NegativeInfinity;
 
-                meshBuffers.Add((mesh, posBuf, normBuf, counterBuf, verts.Length));
+                // Upload shared BVH data to GPU
+                int nodeStride = System.Runtime.InteropServices.Marshal.SizeOf<TriangleBvh.GPUNode>();
+                bvhNodeBuf = new ComputeBuffer(gpuNodes.Length, nodeStride);
+                bvhNodeBuf.SetData(gpuNodes);
+                triVertBuf = new ComputeBuffer(gpuVerts.Length, 12);
+                triVertBuf.SetData(gpuVerts);
+                triIdxBuf = new ComputeBuffer(gpuTriIndices.Length, 4);
+                triIdxBuf.SetData(gpuTriIndices);
+                trisBuf = new ComputeBuffer(gpuTris.Length, 4);
+                trisBuf.SetData(gpuTris);
+                faceNormBuf = new ComputeBuffer(faceNormals.Length, 12);
+                faceNormBuf.SetData(faceNormals);
+                dirBuf = new ComputeBuffer(directions.Length, 12);
+                dirBuf.SetData(directions);
+
+                // Per-mesh vertex buffers
+                slots = new MeshSlot[meshes.Count];
+                for (int i = 0; i < meshes.Count; i++)
+                {
+                    var (mesh, xform) = meshes[i];
+                    var readable = EnsureReadable(mesh);
+                    if (readable != mesh && !readableCopies.Contains(readable))
+                        readableCopies.Add(readable);
+                    var verts = readable.vertices;
+                    var norms = readable.normals;
+                    if (norms == null || norms.Length != verts.Length)
+                    {
+                        readable.RecalculateNormals();
+                        norms = readable.normals;
+                    }
+
+                    var worldVerts = new Vector3[verts.Length];
+                    var worldNorms = new Vector3[verts.Length];
+                    for (int v = 0; v < verts.Length; v++)
+                    {
+                        worldVerts[v] = xform.MultiplyPoint3x4(verts[v]);
+                        worldNorms[v] = xform.MultiplyVector(norms[v]).normalized;
+                    }
+
+                    slots[i].mesh = mesh;
+                    slots[i].vertCount = verts.Length;
+                    slots[i].posBuf = new ComputeBuffer(verts.Length, 12);
+                    slots[i].posBuf.SetData(worldVerts);
+                    slots[i].normBuf = new ComputeBuffer(verts.Length, 12);
+                    slots[i].normBuf.SetData(worldNorms);
+                    slots[i].counterBuf = new ComputeBuffer(verts.Length, 8);
+                    slots[i].counterBuf.SetData(new uint[verts.Length * 2]);
+                }
+
+                // Find kernels and bind shared state
+                bakeKernel = cs.FindKernel("BakeAO");
+                finalKernel = cs.FindKernel("FinalizeAO");
+
+                cs.SetBuffer(bakeKernel, "_BVHNodes", bvhNodeBuf);
+                cs.SetBuffer(bakeKernel, "_TriVerts", triVertBuf);
+                cs.SetBuffer(bakeKernel, "_TriIndices", triIdxBuf);
+                cs.SetBuffer(bakeKernel, "_Tris", trisBuf);
+                cs.SetBuffer(bakeKernel, "_FaceNormals", faceNormBuf);
+                cs.SetBuffer(bakeKernel, "_Directions", dirBuf);
+
+                cs.SetInt("_DirectionCount", dirCount);
+                cs.SetFloat("_MaxDist", maxDist);
+                cs.SetFloat("_NormalOffset", normalOffset);
+                cs.SetFloat("_MinHitDist", minHitDist);
+                cs.SetFloat("_CosineWeighted", settings.cosineWeighted ? 1f : 0f);
+                cs.SetFloat("_FlipNormals", isThickness ? 1f : 0f);
+                cs.SetFloat("_BackfaceCulling", settings.backfaceCulling ? 1f : 0f);
+                cs.SetFloat("_GroundPlane", (settings.groundPlane && !isThickness) ? 1f : 0f);
+                cs.SetFloat("_GroundY", groundY);
+
+                totalDispatches = slots.Length * totalBatches;
             }
 
-            int bakeKernel = computeShader.FindKernel("BakeAO");
-            int finalKernel = computeShader.FindKernel("FinalizeAO");
-
-            try
+            public void Start()
             {
-                // Set BVH buffers (shared across all meshes)
-                computeShader.SetBuffer(bakeKernel, "_BVHNodes", bvhNodeBuf);
-                computeShader.SetBuffer(bakeKernel, "_TriVerts", triVertBuf);
-                computeShader.SetBuffer(bakeKernel, "_TriIndices", triIdxBuf);
-                computeShader.SetBuffer(bakeKernel, "_Tris", trisBuf);
-                computeShader.SetBuffer(bakeKernel, "_FaceNormals", faceNormBuf);
-                computeShader.SetBuffer(bakeKernel, "_Directions", dirBuf);
+                phase = Phase.Dispatching;
+                curMesh = 0;
+                curBatch = 0;
+                completedDispatches = 0;
+                EditorApplication.update += Tick;
+            }
 
-                // Set uniforms
-                computeShader.SetInt("_DirectionCount", directions.Length);
-                computeShader.SetFloat("_MaxDist", maxDist);
-                computeShader.SetFloat("_NormalOffset", normalOffset);
-                computeShader.SetFloat("_MinHitDist", minHitDist);
-                computeShader.SetFloat("_CosineWeighted", settings.cosineWeighted ? 1f : 0f);
-                computeShader.SetFloat("_FlipNormals", isThickness ? 1f : 0f);
-                computeShader.SetFloat("_BackfaceCulling", settings.backfaceCulling ? 1f : 0f);
-                computeShader.SetFloat("_GroundPlane", (settings.groundPlane && !isThickness) ? 1f : 0f);
-                computeShader.SetFloat("_GroundY", groundY);
+            public void Cancel()
+            {
+                if (!IsRunning) return;
+                phase = Phase.Cancelled;
+                Cleanup();
+            }
 
-                // Dispatch per mesh
-                int totalVerts = 0;
-                foreach (var (mesh, _) in meshes) totalVerts += mesh.vertexCount;
-                int processed = 0;
-
-                foreach (var (mesh, posBuf, normBuf, counterBuf, vertCount) in meshBuffers)
+            void Tick()
+            {
+                try
                 {
-                    if (EditorUtility.DisplayCancelableProgressBar("Baking Vertex AO (GPU ray trace)",
-                        $"Mesh {processed + vertCount}/{totalVerts} vertices",
-                        (float)processed / totalVerts))
+                    switch (phase)
+                    {
+                        case Phase.Dispatching:
+                            TickDispatching();
+                            break;
+                        case Phase.ReadingBack:
+                            TickReadback();
+                            break;
+                        default:
+                            EditorApplication.update -= Tick;
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    UvtLog.Error($"[Vertex AO] GPU bake error: {ex.Message}");
+                    phase = Phase.Done;
+                    Cleanup();
+                    onError?.Invoke(ex.Message);
+                }
+            }
+
+            void TickDispatching()
+            {
+                ref var slot = ref slots[curMesh];
+                int dirStart = curBatch * dirBatchSize;
+                int dirEnd = Mathf.Min(dirStart + dirBatchSize, dirCount);
+
+                cs.SetInt("_VertexCount", slot.vertCount);
+                cs.SetInt("_DirStart", dirStart);
+                cs.SetInt("_DirEnd", dirEnd);
+                cs.SetBuffer(bakeKernel, "_Positions", slot.posBuf);
+                cs.SetBuffer(bakeKernel, "_Normals", slot.normBuf);
+                cs.SetBuffer(bakeKernel, "_AOCounters", slot.counterBuf);
+                cs.Dispatch(bakeKernel, Mathf.CeilToInt(slot.vertCount / 64f), 1, 1);
+
+                completedDispatches++;
+                curBatch++;
+
+                if (curBatch >= totalBatches)
+                {
+                    curBatch = 0;
+                    curMesh++;
+                    if (curMesh >= slots.Length)
+                        BeginFinalize();
+                }
+            }
+
+            void BeginFinalize()
+            {
+                bool isThickness = settings.bakeType == AOBakeType.Thickness;
+
+                // Dispatch FinalizeAO for all meshes and issue async readback
+                readbackRequests = new AsyncGPUReadbackRequest[slots.Length];
+                for (int i = 0; i < slots.Length; i++)
+                {
+                    ref var slot = ref slots[i];
+                    slot.resultBuf = new ComputeBuffer(slot.vertCount, 4);
+
+                    cs.SetInt("_VertexCount", slot.vertCount);
+                    cs.SetFloat("_Intensity", settings.intensity);
+                    cs.SetFloat("_FlipNormals", isThickness ? 1f : 0f);
+                    cs.SetBuffer(finalKernel, "_AOCounters", slot.counterBuf);
+                    cs.SetBuffer(finalKernel, "_AOResult", slot.resultBuf);
+                    cs.Dispatch(finalKernel, Mathf.CeilToInt(slot.vertCount / 64f), 1, 1);
+
+                    readbackRequests[i] = AsyncGPUReadback.Request(slot.resultBuf);
+                }
+
+                phase = Phase.ReadingBack;
+            }
+
+            void TickReadback()
+            {
+                bool allDone = true;
+                for (int i = 0; i < readbackRequests.Length; i++)
+                {
+                    if (!readbackRequests[i].done)
+                    {
+                        allDone = false;
                         break;
-
-                    computeShader.SetInt("_VertexCount", vertCount);
-                    computeShader.SetBuffer(bakeKernel, "_Positions", posBuf);
-                    computeShader.SetBuffer(bakeKernel, "_Normals", normBuf);
-                    computeShader.SetBuffer(bakeKernel, "_AOCounters", counterBuf);
-                    computeShader.Dispatch(bakeKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
-
-                    processed += vertCount;
+                    }
                 }
+                if (!allDone) return;
 
-                // Finalize
-                foreach (var (mesh, posBuf, normBuf, counterBuf, vertCount) in meshBuffers)
+                // All readbacks complete — extract results
+                var result = new Dictionary<Mesh, float[]>();
+                bool hasError = false;
+                for (int i = 0; i < slots.Length; i++)
                 {
-                    var aoResultBuf = new ComputeBuffer(vertCount, 4);
-                    computeShader.SetInt("_VertexCount", vertCount);
-                    computeShader.SetFloat("_Intensity", settings.intensity);
-                    computeShader.SetFloat("_FlipNormals", isThickness ? 1f : 0f);
-                    computeShader.SetBuffer(finalKernel, "_AOCounters", counterBuf);
-                    computeShader.SetBuffer(finalKernel, "_AOResult", aoResultBuf);
-                    computeShader.Dispatch(finalKernel, Mathf.CeilToInt(vertCount / 64f), 1, 1);
-
-                    var aoData = new float[vertCount];
-                    aoResultBuf.GetData(aoData);
-                    aoResultBuf.Dispose();
-
-                    result[mesh] = aoData;
+                    if (readbackRequests[i].hasError)
+                    {
+                        hasError = true;
+                        break;
+                    }
+                    var data = readbackRequests[i].GetData<float>();
+                    var aoData = new float[slots[i].vertCount];
+                    data.CopyTo(aoData);
+                    result[slots[i].mesh] = aoData;
                 }
+
+                phase = Phase.Done;
+                Cleanup();
+
+                if (hasError)
+                    onError?.Invoke("AsyncGPUReadback failed.");
+                else
+                    onComplete?.Invoke(result);
             }
-            finally
+
+            void Cleanup()
             {
-                EditorUtility.ClearProgressBar();
-                bvhNodeBuf.Dispose();
-                triVertBuf.Dispose();
-                triIdxBuf.Dispose();
-                trisBuf.Dispose();
-                faceNormBuf.Dispose();
-                dirBuf.Dispose();
-                foreach (var (_, posBuf, normBuf, counterBuf, _) in meshBuffers)
-                {
-                    posBuf.Dispose();
-                    normBuf.Dispose();
-                    counterBuf.Dispose();
-                }
-                foreach (var copy in readableCopies)
-                    UnityEngine.Object.DestroyImmediate(copy);
-            }
+                EditorApplication.update -= Tick;
 
-            return result;
+                bvhNodeBuf?.Dispose();
+                triVertBuf?.Dispose();
+                triIdxBuf?.Dispose();
+                trisBuf?.Dispose();
+                faceNormBuf?.Dispose();
+                dirBuf?.Dispose();
+                bvhNodeBuf = triVertBuf = triIdxBuf = trisBuf = faceNormBuf = dirBuf = null;
+
+                if (slots != null)
+                {
+                    for (int i = 0; i < slots.Length; i++)
+                    {
+                        slots[i].posBuf?.Dispose();
+                        slots[i].normBuf?.Dispose();
+                        slots[i].counterBuf?.Dispose();
+                        slots[i].resultBuf?.Dispose();
+                    }
+                    slots = null;
+                }
+
+                foreach (var copy in readableCopies)
+                    if (copy != null) UnityEngine.Object.DestroyImmediate(copy);
+                readableCopies.Clear();
+            }
         }
 
         // ── CPU Fallback ──
@@ -991,10 +1177,33 @@ namespace LightmapUvTool
             return mesh;
         }
 
-        static string FindComputeShaderPath(string name)
+        static ComputeShader FindComputeShader(string name)
         {
+            // 1. EditorGUIUtility.Load (Editor Default Resources)
+            var cs = (ComputeShader)EditorGUIUtility.Load(name + ".compute");
+            if (cs != null) return cs;
+
+            // 2. AssetDatabase search by type + name
             var guids = AssetDatabase.FindAssets($"t:ComputeShader {name}");
-            return guids.Length > 0 ? AssetDatabase.GUIDToAssetPath(guids[0]) : null;
+            foreach (var guid in guids)
+            {
+                cs = AssetDatabase.LoadAssetAtPath<ComputeShader>(AssetDatabase.GUIDToAssetPath(guid));
+                if (cs != null) return cs;
+            }
+
+            // 3. Resolve relative to this script (works for UPM packages)
+            var scriptGuids = AssetDatabase.FindAssets("t:Script VertexAOBaker");
+            foreach (var guid in scriptGuids)
+            {
+                string scriptPath = AssetDatabase.GUIDToAssetPath(guid);
+                string editorDir = System.IO.Path.GetDirectoryName(scriptPath);
+                string packageRoot = System.IO.Path.GetDirectoryName(editorDir);
+                string shaderPath = packageRoot + "/Shaders/" + name + ".compute";
+                cs = AssetDatabase.LoadAssetAtPath<ComputeShader>(shaderPath);
+                if (cs != null) return cs;
+            }
+
+            return null;
         }
     }
 }
