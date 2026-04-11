@@ -544,7 +544,17 @@ namespace LightmapUvTool
                 return null;
             }
 
-            var job = new GpuAOBakeJob(computeShader, meshes, settings, onComplete, onError);
+            GpuAOBakeJob job;
+            try
+            {
+                job = new GpuAOBakeJob(computeShader, meshes, settings, onComplete, onError);
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Error($"[Vertex AO] GPU bake setup failed: {ex.Message}");
+                onError?.Invoke(ex.Message);
+                return null;
+            }
             job.Start();
             return job;
         }
@@ -739,6 +749,15 @@ namespace LightmapUvTool
                 // Find kernels and bind shared state
                 bakeKernel = cs.FindKernel("BakeAO");
                 finalKernel = cs.FindKernel("FinalizeAO");
+
+                if (bakeKernel < 0 || finalKernel < 0)
+                {
+                    throw new Exception(
+                        "VertexAORayTrace.compute kernels missing " +
+                        $"(BakeAO={bakeKernel}, FinalizeAO={finalKernel}). " +
+                        "The compute shader likely failed to compile — check the " +
+                        "Console for shader compilation errors.");
+                }
 
                 cs.SetBuffer(bakeKernel, "_BVHNodes", bvhNodeBuf);
                 cs.SetBuffer(bakeKernel, "_TriVerts", triVertBuf);

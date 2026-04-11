@@ -194,27 +194,28 @@ void BakeAO(uint3 id : SV_DispatchThreadID)
         float3 hitNorm;
         float hitT = BVHRaycast(origin, jitteredDir, _MaxDist, hitNorm);
 
+        bool didOcclude = false;
+
         if (hitT < _MaxDist && hitT > _MinHitDist)
         {
-            // Backface culling
-            if (_BackfaceCulling > 0.5 && _FlipNormals < 0.5)
-            {
-                if (dot(jitteredDir, normalize(hitNorm)) > 0.0)
-                {
-                    // Hit backface — skip to ground check
-                    goto groundCheck;
-                }
-            }
+            // Backface culling: if enabled and the hit face points with the
+            // ray, treat it as a miss for occlusion purposes so the ground
+            // plane check below still runs (matches original goto semantics).
+            bool isBackface = (_BackfaceCulling > 0.5) && (_FlipNormals < 0.5)
+                && (dot(jitteredDir, normalize(hitNorm)) > 0.0);
 
-            float falloff = 1.0 - hitT / _MaxDist;
-            uint wOcc = (uint)(weight * falloff * FP_SCALE);
-            wOccluded += wOcc;
-            continue;
+            if (!isBackface)
+            {
+                float falloff = 1.0 - hitT / _MaxDist;
+                uint wOcc = (uint)(weight * falloff * FP_SCALE);
+                wOccluded += wOcc;
+                didOcclude = true;
+            }
         }
 
-        groundCheck:
-        // Ground plane
-        if (_GroundPlane > 0.5 && _FlipNormals < 0.5 && jitteredDir.y < -0.001)
+        // Ground plane — runs when we didn't already count occlusion,
+        // i.e. the ray missed OR hit a culled backface.
+        if (!didOcclude && _GroundPlane > 0.5 && _FlipNormals < 0.5 && jitteredDir.y < -0.001)
         {
             float t = (_GroundY - origin.y) / jitteredDir.y;
             if (t > 0.0 && t < _MaxDist)
