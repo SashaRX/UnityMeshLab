@@ -5,8 +5,11 @@ on:
     paths:
       - 'Editor/**'
       - 'Plugins/**'
+      - 'Shaders/**'
       - 'Native/**'
+      - '**.md'
       - 'package.json'
+      - 'build_native.bat'
 
 jobs:
   meta-files:
@@ -18,8 +21,28 @@ jobs:
       - name: Check for missing .meta files
         run: |
           EXIT=0
-          # Check all tracked files in Editor/ and Plugins/ that need .meta
-          for f in $(find Editor Plugins -type f \
+          # Unity package root files (imported by Unity when consumed as UPM package).
+          # Root-level user-facing files need .meta because Unity treats the package
+          # root as an immutable folder and warns about orphan assets.
+          ROOT_FILES=(
+            package.json
+            build_native.bat
+            AGENTS.md
+            CHANGELOG.md
+            CLAUDE.md
+            CONFLICT_CHECK_LAST_5_PRS.md
+            EXPERIMENTS.md
+            README.md
+            REVIEW.md
+          )
+          for f in "${ROOT_FILES[@]}"; do
+            if [ -f "$f" ] && [ ! -f "${f}.meta" ]; then
+              echo "::error::Missing .meta file for: ${f}"
+              EXIT=1
+            fi
+          done
+          # Check all tracked files in Editor/, Plugins/, Shaders/, Native/ that need .meta
+          for f in $(find Editor Plugins Shaders Native -type f \
             ! -name '*.meta' \
             ! -name '.gitkeep' \
             ! -name '.DS_Store' \
@@ -30,14 +53,14 @@ jobs:
             fi
           done
           # Check for orphaned .meta files (no matching file/dir)
-          for m in $(find Editor Plugins -name '*.meta' 2>/dev/null); do
+          for m in $(find Editor Plugins Shaders Native -name '*.meta' 2>/dev/null); do
             target="${m%.meta}"
             if [ ! -e "$target" ]; then
               echo "::warning::Orphaned .meta file (no matching file/dir): ${m}"
             fi
           done
           # Check directories have .meta
-          for d in $(find Editor Plugins -type d ! -path '.' 2>/dev/null); do
+          for d in $(find Editor Plugins Shaders Native -type d ! -path '.' 2>/dev/null); do
             if [ ! -f "${d}.meta" ]; then
               echo "::error::Missing .meta file for directory: ${d}"
               EXIT=1
