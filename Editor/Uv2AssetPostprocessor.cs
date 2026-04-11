@@ -57,17 +57,23 @@ namespace LightmapUvTool
         /// <summary>
         /// Prepares ModelImporter settings before reimport. Called directly by the tool
         /// instead of OnPreprocessModel to avoid triggering mass reimport on package install.
+        /// <paramref name="force"/> bypasses the opt-in gate (fbxOverwritePaths/managedImportPaths)
+        /// so the CleanupTool Import Settings fixer can apply the same enforcement to any
+        /// tool-managed FBX without having to pre-register it.
         /// </summary>
-        internal static void PrepareImportSettings(string assetPath)
+        internal static void PrepareImportSettings(string assetPath, bool force = false)
         {
             if (bypassPaths.Contains(assetPath)) return;
 
             var modelImporter = AssetImporter.GetAtPath(assetPath) as ModelImporter;
             if (modelImporter == null) return;
 
-            bool isFbxOverwrite = fbxOverwritePaths.Contains(assetPath);
-            bool isManaged = managedImportPaths.Contains(assetPath);
-            if (!isFbxOverwrite && !isManaged) return;
+            if (!force)
+            {
+                bool isFbxOverwrite = fbxOverwritePaths.Contains(assetPath);
+                bool isManaged = managedImportPaths.Contains(assetPath);
+                if (!isFbxOverwrite && !isManaged) return;
+            }
 
             if (modelImporter.generateSecondaryUV)
             {

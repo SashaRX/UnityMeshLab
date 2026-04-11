@@ -1165,7 +1165,7 @@ namespace LightmapUvTool
                     foreach (var colMf in tempRoot.GetComponentsInChildren<MeshFilter>(true))
                     {
                         if (colMf == null || colMf.sharedMesh == null) continue;
-                        if (!IsCollisionNodeName(colMf.gameObject.name)) continue;
+                        if (!MeshHygieneUtility.IsCollisionNodeName(colMf.gameObject.name)) continue;
                         var srcCol = colMf.sharedMesh;
                         if (srcCol.isReadable)
                         {
@@ -1494,8 +1494,7 @@ namespace LightmapUvTool
             foreach (var colMf in root.GetComponentsInChildren<MeshFilter>(true))
             {
                 if (colMf == null || colMf.sharedMesh == null) continue;
-                if (!IsCollisionNodeName(colMf.gameObject.name) &&
-                    !colMf.gameObject.name.EndsWith("_Collider", System.StringComparison.OrdinalIgnoreCase))
+                if (!MeshHygieneUtility.IsCollisionNodeName(colMf.gameObject.name))
                     continue;
 
                 var t = colMf.transform;
@@ -1536,15 +1535,6 @@ namespace LightmapUvTool
                 t.localRotation = Quaternion.identity;
                 t.localScale = Vector3.one;
             }
-        }
-
-        static bool IsCollisionNodeName(string nodeName)
-        {
-            if (string.IsNullOrEmpty(nodeName)) return false;
-            return System.Text.RegularExpressions.Regex.IsMatch(
-                nodeName,
-                @"_COL(?:_Hull\d+)?$",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
 
         void GenerateLods()
