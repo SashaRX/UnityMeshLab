@@ -26,7 +26,6 @@ Thumbs.db
 .idea/
 .vs/
 *.swp
-*~
 
 # Build intermediates
 *.obj
@@ -34,10 +33,10 @@ Thumbs.db
 *.exp
 
 # Native plugins are tracked (needed for UPM git install)
-# Rebuild with build_native.bat if needed
+# Rebuild with Native~/build_native.bat if needed
 
 # CMake build output (xatlas fetched automatically)
-Native/_deps/
+Native~/_deps/
 
 # Test file
 test.txt
@@ -45,4 +44,3 @@ test.txt
 # Temp commit message file
 .commitmsg
 commitmsg.txt
-*.bat
