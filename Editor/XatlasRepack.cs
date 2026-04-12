@@ -219,6 +219,77 @@ namespace LightmapUvTool
         }
 
         /// <summary>
+        /// Post-repack safety net: find shell pairs with nearly identical UV2 centroids
+        /// (true SymSplit duplicates packed at the same position) and fix their overlap.
+        /// Unlike the old global pass that checked ALL N² pairs (causing false positives
+        /// on dense atlases), this only checks pairs within centroid proximity threshold.
+        /// </summary>
+        internal static int FixNearDuplicateUv2Shells(
+            Vector2[] uv2, List<UvShell> shells,
+            uint padding, uint atlasWidth, uint atlasHeight,
+            bool skipRescale = false)
+        {
+            if (shells.Count < 2) return 0;
+
+            float atlasDim = Mathf.Max(atlasWidth, atlasHeight);
+            if (atlasDim <= 0f) return 0;
+
+            // Centroid proximity threshold: 4 pixels in UV space.
+            // True SymSplit duplicates are packed at essentially identical positions.
+            float centroidThreshold = 4f / atlasDim;
+            float centroidThresholdSq = centroidThreshold * centroidThreshold;
+
+            // Compute UV2 centroid for each shell
+            int sc = shells.Count;
+            var centroids = new Vector2[sc];
+            for (int i = 0; i < sc; i++)
+            {
+                Vector2 sum = Vector2.zero;
+                int cnt = 0;
+                foreach (int vi in shells[i].vertexIndices)
+                {
+                    if ((uint)vi < (uint)uv2.Length)
+                    {
+                        sum += uv2[vi];
+                        cnt++;
+                    }
+                }
+                centroids[i] = cnt > 0 ? sum / cnt : Vector2.zero;
+            }
+
+            // Build overlap groups from near-centroid pairs only
+            var nearPairs = new List<List<int>>();
+            var visited = new bool[sc];
+            for (int i = 0; i < sc; i++)
+            {
+                if (visited[i]) continue;
+                List<int> group = null;
+                for (int j = i + 1; j < sc; j++)
+                {
+                    float dx = centroids[i].x - centroids[j].x;
+                    float dy = centroids[i].y - centroids[j].y;
+                    if (dx * dx + dy * dy < centroidThresholdSq)
+                    {
+                        if (group == null)
+                        {
+                            group = new List<int> { i };
+                            visited[i] = true;
+                        }
+                        group.Add(j);
+                        visited[j] = true;
+                    }
+                }
+                if (group != null)
+                    nearPairs.Add(group);
+            }
+
+            if (nearPairs.Count == 0) return 0;
+
+            return FixOverlappingUv2Shells(uv2, shells, nearPairs,
+                padding, atlasWidth, atlasHeight, skipRescale);
+        }
+
+        /// <summary>
         /// If any UV2 coordinate exceeds [0,1], uniformly rescale all UV2 to fit.
         /// </summary>
         static void RescaleUv2ToUnit(Vector2[] uv2)
@@ -381,15 +452,12 @@ namespace LightmapUvTool
                 FixOverlappingUv2Shells(uv2, shells, overlapGroups,
                     opts.padding, result.atlasWidth, result.atlasHeight, skipRescale: true);
 
-                // Phase 2: global safety net — check ALL shell pairs for UV2 bbox overlap.
-                // Catches SymSplit halves whose UV0 bboxes diverged after splitting.
-                if (shells.Count > 1)
-                {
-                    var allGroup = new List<List<int>> { new List<int>(shells.Count) };
-                    for (int i = 0; i < shells.Count; i++) allGroup[0].Add(i);
-                    FixOverlappingUv2Shells(uv2, shells, allGroup,
-                        opts.padding, result.atlasWidth, result.atlasHeight);
-                }
+                // Phase 2: centroid-proximity safety net — find shells packed at
+                // nearly identical UV2 positions (true SymSplit near-duplicates).
+                // Only checks pairs within 4px centroid distance, avoiding the
+                // false positives of the old global N² pass on dense atlases.
+                FixNearDuplicateUv2Shells(uv2, shells,
+                    opts.padding, result.atlasWidth, result.atlasHeight);
 
                 // ── Post-process: fix orphan vertices ──
                 int orphanVerts, orphanTris, snapped;
@@ -585,14 +653,9 @@ namespace LightmapUvTool
                     totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], allOverlap[m],
                         opts.padding, atlasW, atlasH, skipRescale: true);
 
-                    // Global safety net: check ALL shell pairs for UV2 overlap
-                    if (allShells[m].Count > 1)
-                    {
-                        var allGroup = new List<List<int>> { new List<int>(allShells[m].Count) };
-                        for (int si = 0; si < allShells[m].Count; si++) allGroup[0].Add(si);
-                        totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], allGroup,
-                            opts.padding, atlasW, atlasH, skipRescale: true);
-                    }
+                    // Centroid-proximity safety net for near-duplicate SymSplit shells
+                    totalShifted += FixNearDuplicateUv2Shells(uv2, allShells[m],
+                        opts.padding, atlasW, atlasH, skipRescale: true);
 
                     // Fix orphan vertices
                     int orphanVerts, orphanTris, snapped;

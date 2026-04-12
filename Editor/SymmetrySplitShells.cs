@@ -107,6 +107,40 @@ namespace LightmapUvTool
                     }
                 }
 
+                // ── Secondary detection: UV0 overlap-based (V-shaped symmetry) ──
+                // Catches symmetry where UV0 regions overlap but per-face centroids
+                // don't coincide (e.g., V-shaped geometry with shared boundary edges).
+                // Uses grid rasterization to find non-adjacent face pairs occupying
+                // the same UV0 space, then checks if they lie on opposite sides of
+                // a 3D symmetry plane.
+                if (!found && faces.Count >= 6)
+                {
+                    var overlapPairs = DetectUv0OverlapPairs(shell, uv0, tris);
+                    if (overlapPairs.Count > 0)
+                    {
+                        // Vote on symmetry axis using overlapping face pairs
+                        foreach (var (fA, fB) in overlapPairs)
+                        {
+                            float posDist = Vector3.Distance(posC[fA], posC[fB]);
+                            if (posDist <= POS_FAR * 0.5f) continue; // too close in 3D
+
+                            Vector3 mid = (posC[fA] + posC[fB]) * 0.5f;
+                            float ax = Mathf.Abs(mid.x);
+                            float ay = Mathf.Abs(mid.y);
+                            float az = Mathf.Abs(mid.z);
+
+                            if (ax <= ay && ax <= az) axisVotes[0]++;
+                            else if (ay <= az) axisVotes[1]++;
+                            else axisVotes[2]++;
+                            found = true;
+                        }
+
+                        if (found)
+                            UvtLog.Verbose($"[SymSplit] Shell {si}: V-shape overlap detected " +
+                                $"({overlapPairs.Count} pairs)");
+                    }
+                }
+
                 if (!found) continue;
 
                 int bestAxis = 0;
@@ -357,6 +391,8 @@ namespace LightmapUvTool
                 origShell.boundsMin = mnA;
                 origShell.boundsMax = mxA;
                 origShell.bboxArea = Mathf.Max(0f, (mxA.x - mnA.x) * (mxA.y - mnA.y));
+                origShell.symSplitAxis = info.axis;
+                origShell.symSplitSide = +1; // groupA = positive side
 
                 // Create new shell for group B
                 var newShell = new UvShell { shellId = shells.Count };
@@ -379,6 +415,8 @@ namespace LightmapUvTool
                 newShell.boundsMin = mnB;
                 newShell.boundsMax = mxB;
                 newShell.bboxArea = Mathf.Max(0f, (mxB.x - mnB.x) * (mxB.y - mnB.y));
+                newShell.symSplitAxis = info.axis;
+                newShell.symSplitSide = -1; // groupB = negative side
                 shells.Add(newShell);
             }
 
@@ -386,6 +424,92 @@ namespace LightmapUvTool
                 $"added {totalNewVerts} boundary verts ({origVertCount} → {newVertCount})");
 
             return splitData.Count;
+        }
+
+        // ── UV0 overlap detection for V-shaped symmetry ──
+
+        /// <summary>
+        /// Find face pairs within a shell that overlap in UV0 space but don't share
+        /// vertices. Uses grid rasterization similar to SpatialPartitioner.DetectOverlap.
+        /// Returns list of (faceA, faceB) pairs.
+        /// </summary>
+        static List<(int, int)> DetectUv0OverlapPairs(UvShell shell, Vector2[] uv0, int[] tris)
+        {
+            var pairs = new List<(int, int)>();
+            var faces = shell.faceIndices;
+
+            // Build face vertex sets for adjacency check
+            var faceVerts = new Dictionary<int, HashSet<int>>(faces.Count);
+            foreach (int f in faces)
+            {
+                var set = new HashSet<int>();
+                set.Add(tris[f * 3]);
+                set.Add(tris[f * 3 + 1]);
+                set.Add(tris[f * 3 + 2]);
+                faceVerts[f] = set;
+            }
+
+            // Grid rasterization of face UV0 bboxes
+            const int kGridRes = 64;
+            float rangeX = shell.boundsMax.x - shell.boundsMin.x;
+            float rangeY = shell.boundsMax.y - shell.boundsMin.y;
+            if (rangeX < 1e-8f || rangeY < 1e-8f) return pairs;
+
+            float invX = kGridRes / rangeX;
+            float invY = kGridRes / rangeY;
+            float bMinX = shell.boundsMin.x;
+            float bMinY = shell.boundsMin.y;
+
+            var cellFaces = new Dictionary<long, List<int>>();
+
+            foreach (int f in faces)
+            {
+                int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
+                if (i0 >= uv0.Length || i1 >= uv0.Length || i2 >= uv0.Length) continue;
+                Vector2 a = uv0[i0], b = uv0[i1], c = uv0[i2];
+
+                int gxMin = Mathf.Clamp((int)((Mathf.Min(a.x, Mathf.Min(b.x, c.x)) - bMinX) * invX), 0, kGridRes - 1);
+                int gxMax = Mathf.Clamp((int)((Mathf.Max(a.x, Mathf.Max(b.x, c.x)) - bMinX) * invX), 0, kGridRes - 1);
+                int gyMin = Mathf.Clamp((int)((Mathf.Min(a.y, Mathf.Min(b.y, c.y)) - bMinY) * invY), 0, kGridRes - 1);
+                int gyMax = Mathf.Clamp((int)((Mathf.Max(a.y, Mathf.Max(b.y, c.y)) - bMinY) * invY), 0, kGridRes - 1);
+
+                for (int gy = gyMin; gy <= gyMax; gy++)
+                for (int gx = gxMin; gx <= gxMax; gx++)
+                {
+                    long key = (long)gy * kGridRes + gx;
+                    if (!cellFaces.TryGetValue(key, out var bucket))
+                    {
+                        bucket = new List<int>(2);
+                        cellFaces[key] = bucket;
+                    }
+                    bucket.Add(f);
+                }
+            }
+
+            // Find non-adjacent face pairs sharing a grid cell
+            var seen = new HashSet<long>(); // dedup pairs
+            foreach (var kv in cellFaces)
+            {
+                var list = kv.Value;
+                if (list.Count < 2) continue;
+
+                for (int i = 0; i < list.Count; i++)
+                for (int j = i + 1; j < list.Count; j++)
+                {
+                    int fA = list[i], fB = list[j];
+                    // Skip adjacent faces (they share at least one vertex)
+                    bool adjacent = false;
+                    foreach (int v in faceVerts[fA])
+                        if (faceVerts[fB].Contains(v)) { adjacent = true; break; }
+                    if (adjacent) continue;
+
+                    long pairKey = fA < fB ? ((long)fA << 32) | (uint)fB : ((long)fB << 32) | (uint)fA;
+                    if (seen.Add(pairKey))
+                        pairs.Add((fA, fB));
+                }
+            }
+
+            return pairs;
         }
 
         // ── Spatial hash helpers ──
