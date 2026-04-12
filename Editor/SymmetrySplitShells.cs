@@ -186,55 +186,11 @@ namespace LightmapUvTool
                 }
 
                 // ── Tertiary detection: UV0 winding split ──
-                // Catches mirror-UV where half the faces have inverted winding
-                // (negative signed area). Common in symmetric models where one
-                // side has flipped UV0. Requires significant 3D separation between
-                // positive/negative groups to avoid splitting inner/outer walls.
-                if (!found && faces.Count >= 4)
-                {
-                    int posFaces = 0, negFaces = 0;
-                    Vector3 posSum = Vector3.zero, negSum = Vector3.zero;
-                    foreach (int f in faces)
-                    {
-                        int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
-                        if (i0 >= uv0.Length || i1 >= uv0.Length || i2 >= uv0.Length) continue;
-                        float cross = (uv0[i1].x - uv0[i0].x) * (uv0[i2].y - uv0[i0].y)
-                                    - (uv0[i2].x - uv0[i0].x) * (uv0[i1].y - uv0[i0].y);
-                        if (cross > 1e-10f) { posFaces++; posSum += posC[f]; }
-                        else if (cross < -1e-10f) { negFaces++; negSum += posC[f]; }
-                    }
+                // DISABLED: causes over-splitting on models with mixed winding
+                // (inner/outer walls, belt front/back). POS_FAR threshold is
+                // insufficient — needs mesh-scale-aware separation check.
+                // TODO: re-enable with adaptive threshold after auto-tuning system.
 
-                    // Need both positive and negative winding, each ≥20% of total,
-                    // AND significant 3D separation (same POS_FAR as primary detection)
-                    int totalValid = posFaces + negFaces;
-                    if (totalValid >= 4 && posFaces > 0 && negFaces > 0
-                        && Mathf.Min(posFaces, negFaces) >= totalValid / 5)
-                    {
-                        Vector3 posCenter = posSum / posFaces;
-                        Vector3 negCenter = negSum / negFaces;
-                        float separation = Vector3.Distance(posCenter, negCenter);
-
-                        if (separation > POS_FAR)
-                        {
-                            Vector3 diff = posCenter - negCenter;
-                            float dx = Mathf.Abs(diff.x), dy = Mathf.Abs(diff.y), dz = Mathf.Abs(diff.z);
-
-                            int windAxis;
-                            if (dx >= dy && dx >= dz) windAxis = 0;
-                            else if (dy >= dz) windAxis = 1;
-                            else windAxis = 2;
-
-                            float windThreshold = (posCenter[windAxis] + negCenter[windAxis]) * 0.5f;
-                            axisVotes[windAxis] += totalValid;
-                            axisMidpointSum[windAxis] += windThreshold * totalValid;
-                            found = true;
-
-                            UvtLog.Verbose($"[SymSplit] Shell {si}: winding split detected " +
-                                $"(pos={posFaces}, neg={negFaces}, axis={AxisName(windAxis)}, " +
-                                $"sep={separation:F1})");
-                        }
-                    }
-                }
 
                 if (!found) continue;
 
