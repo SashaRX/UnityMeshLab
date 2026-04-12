@@ -138,6 +138,31 @@ namespace LightmapUvTool
             return report;
         }
 
+        /// <summary>
+        /// Returns the set of vertex indices that participate in false seams
+        /// (duplicate position+UV0+normal). Used by Model Builder problem preview.
+        /// Returns null if no false seams found or mesh has no UV0.
+        /// </summary>
+        internal static HashSet<int> GetFalseSeamVertices(Mesh mesh)
+        {
+            if (mesh == null || !mesh.isReadable) return null;
+            var verts = mesh.vertices;
+            var normals = mesh.normals;
+            var uv0 = mesh.uv;
+            if (uv0 == null || uv0.Length == 0) return null;
+            bool hasNormals = normals != null && normals.Length == mesh.vertexCount;
+            var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals);
+            if (weldMap.Count == 0) return null;
+            // Both keys (source) and values (target) are seam vertices
+            var result = new HashSet<int>();
+            foreach (var kv in weldMap)
+            {
+                result.Add(kv.Key);
+                result.Add(kv.Value);
+            }
+            return result;
+        }
+
         // ═══════════════════════════════════════════════════════════
         //  WeldUv0: merge false-seam vertices, return new mesh
         //  Only modifies index buffer + removes unused vertices.

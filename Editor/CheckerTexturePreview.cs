@@ -64,6 +64,9 @@ namespace LightmapUvTool
             if (ShellColorModelPreview.IsActive)
                 ShellColorModelPreview.Restore();
 
+            // Model Builder preview is per-tool instance — static guard.
+            ModelBuilderPreview.RestoreIfActive();
+
             // Lightmap preview is per-window instance — find open Mesh Lab windows and restore.
             var hubs = Resources.FindObjectsOfTypeAll<UvToolHub>();
             foreach (var h in hubs)
