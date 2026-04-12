@@ -160,6 +160,80 @@ namespace LightmapUvTool
         }
 
         /// <summary>
+        /// Extract a single submesh from a mesh, returning a new mesh with only
+        /// the referenced vertices and a single submesh. Returns null on failure.
+        /// </summary>
+        internal static Mesh ExtractSubmesh(Mesh source, int[] tris)
+        {
+            if (source == null || tris == null || tris.Length == 0) return null;
+
+            // Find used vertices
+            var usedSet = new HashSet<int>();
+            foreach (int t in tris) usedSet.Add(t);
+            var usedList = new List<int>(usedSet);
+            usedList.Sort();
+
+            var remap = new Dictionary<int, int>();
+            for (int i = 0; i < usedList.Count; i++)
+                remap[usedList[i]] = i;
+
+            int newCount = usedList.Count;
+
+            var srcVerts = source.vertices;
+            var srcNormals = source.normals;
+            var srcTangents = source.tangents;
+            var srcColors = source.colors32;
+
+            var newVerts = new Vector3[newCount];
+            for (int i = 0; i < newCount; i++)
+                newVerts[i] = srcVerts[usedList[i]];
+
+            var newMesh = new Mesh();
+            newMesh.SetVertices(newVerts);
+
+            if (srcNormals != null && srcNormals.Length == source.vertexCount)
+            {
+                var n = new Vector3[newCount];
+                for (int i = 0; i < newCount; i++) n[i] = srcNormals[usedList[i]];
+                newMesh.SetNormals(n);
+            }
+
+            if (srcTangents != null && srcTangents.Length == source.vertexCount)
+            {
+                var t = new Vector4[newCount];
+                for (int i = 0; i < newCount; i++) t[i] = srcTangents[usedList[i]];
+                newMesh.tangents = t;
+            }
+
+            if (srcColors != null && srcColors.Length == source.vertexCount)
+            {
+                var c = new Color32[newCount];
+                for (int i = 0; i < newCount; i++) c[i] = srcColors[usedList[i]];
+                newMesh.colors32 = c;
+            }
+
+            // Copy UV channels
+            for (int ch = 0; ch < 8; ch++)
+            {
+                var uvList = new List<Vector2>();
+                source.GetUVs(ch, uvList);
+                if (uvList.Count != source.vertexCount) continue;
+                var newUv = new Vector2[newCount];
+                for (int i = 0; i < newCount; i++) newUv[i] = uvList[usedList[i]];
+                newMesh.SetUVs(ch, newUv);
+            }
+
+            // Remap triangles
+            var newTris = new int[tris.Length];
+            for (int i = 0; i < tris.Length; i++)
+                newTris[i] = remap[tris[i]];
+            newMesh.SetTriangles(newTris, 0);
+            newMesh.RecalculateBounds();
+
+            return newMesh;
+        }
+
+        /// <summary>
         /// Best-effort equality check using vertex/submesh counts, bounds, and (when
         /// both are readable) endpoint vertices. Used to detect duplicate collider
         /// meshes under the same LODGroup.

@@ -328,6 +328,68 @@ namespace LightmapUvTool
         }
 
         // ═══════════════════════════════════════════════════════════
+        //  Split preview: color each submesh with a distinct palette color
+        // ═══════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Show split preview: each submesh of multi-material meshes gets a
+        /// distinct color from the palette, previewing what each output object
+        /// would contain after split.
+        /// </summary>
+        public void ActivateSplitPreview(UvToolContext ctx,
+            List<(Renderer renderer, Mesh mesh)> candidates)
+        {
+            Restore();
+            EnsureMaterial();
+            if (vertexColorMat == null || candidates == null) return;
+
+            for (int ci = 0; ci < candidates.Count; ci++)
+            {
+                var (renderer, mesh) = candidates[ci];
+                if (renderer == null || mesh == null || !mesh.isReadable) continue;
+
+                var mf = renderer.GetComponent<MeshFilter>();
+                var mr = renderer as MeshRenderer;
+                if (mf == null || mr == null) continue;
+
+                backups.Add(new RendererBackup
+                {
+                    meshFilter = mf,
+                    originalMesh = mf.sharedMesh,
+                    originalMats = mr.sharedMaterials
+                });
+
+                var colors = new Color32[mesh.vertexCount];
+                // Assign palette color per submesh
+                for (int s = 0; s < mesh.subMeshCount; s++)
+                {
+                    var tris = mesh.GetTriangles(s);
+                    Color c = UvCanvasView.pal[s % UvCanvasView.pal.Length];
+                    var c32 = new Color32(
+                        (byte)(c.r * 255f), (byte)(c.g * 255f),
+                        (byte)(c.b * 255f), 255);
+                    for (int t = 0; t < tris.Length; t++)
+                    {
+                        int vi = tris[t];
+                        if (vi >= 0 && vi < colors.Length)
+                            colors[vi] = c32;
+                    }
+                }
+
+                var clone = Object.Instantiate(mesh);
+                clone.hideFlags = HideFlags.HideAndDontSave;
+                clone.colors32 = colors;
+                mf.sharedMesh = clone;
+
+                var mats = new Material[mr.sharedMaterials.Length];
+                for (int i = 0; i < mats.Length; i++) mats[i] = vertexColorMat;
+                mr.sharedMaterials = mats;
+            }
+
+            MarkActive();
+        }
+
+        // ═══════════════════════════════════════════════════════════
         //  Edge wireframe overlay
         // ═══════════════════════════════════════════════════════════
 
