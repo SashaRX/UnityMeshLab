@@ -257,31 +257,46 @@ namespace LightmapUvTool
                 centroids[i] = cnt > 0 ? sum / cnt : Vector2.zero;
             }
 
-            // Build overlap groups from near-centroid pairs only
-            var nearPairs = new List<List<int>>();
-            var visited = new bool[sc];
+            // Build overlap groups using union-find so transitive chains
+            // (A near B, B near C) are merged into one group.
+            var parent = new int[sc];
+            for (int i = 0; i < sc; i++) parent[i] = i;
+
+            int FindRoot(int x)
+            {
+                while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+                return x;
+            }
+
+            for (int i = 0; i < sc; i++)
+            for (int j = i + 1; j < sc; j++)
+            {
+                float dx = centroids[i].x - centroids[j].x;
+                float dy = centroids[i].y - centroids[j].y;
+                if (dx * dx + dy * dy < centroidThresholdSq)
+                {
+                    int ri = FindRoot(i), rj = FindRoot(j);
+                    if (ri != rj) parent[ri] = rj;
+                }
+            }
+
+            // Collect groups with more than one member
+            var groupMap = new Dictionary<int, List<int>>();
             for (int i = 0; i < sc; i++)
             {
-                if (visited[i]) continue;
-                List<int> group = null;
-                for (int j = i + 1; j < sc; j++)
+                int root = FindRoot(i);
+                if (!groupMap.TryGetValue(root, out var g))
                 {
-                    float dx = centroids[i].x - centroids[j].x;
-                    float dy = centroids[i].y - centroids[j].y;
-                    if (dx * dx + dy * dy < centroidThresholdSq)
-                    {
-                        if (group == null)
-                        {
-                            group = new List<int> { i };
-                            visited[i] = true;
-                        }
-                        group.Add(j);
-                        visited[j] = true;
-                    }
+                    g = new List<int>();
+                    groupMap[root] = g;
                 }
-                if (group != null)
-                    nearPairs.Add(group);
+                g.Add(i);
             }
+
+            var nearPairs = new List<List<int>>();
+            foreach (var g in groupMap.Values)
+                if (g.Count > 1)
+                    nearPairs.Add(g);
 
             if (nearPairs.Count == 0) return 0;
 

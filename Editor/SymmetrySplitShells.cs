@@ -600,7 +600,8 @@ namespace LightmapUvTool
                 }
             }
 
-            // Find non-adjacent face pairs sharing a grid cell
+            // Find non-adjacent face pairs sharing a grid cell,
+            // then confirm with actual 2D triangle-triangle overlap test.
             var seen = new HashSet<long>(); // dedup pairs
             foreach (var kv in cellFaces)
             {
@@ -618,12 +619,66 @@ namespace LightmapUvTool
                     if (adjacent) continue;
 
                     long pairKey = fA < fB ? ((long)fA << 32) | (uint)fB : ((long)fB << 32) | (uint)fA;
-                    if (seen.Add(pairKey))
+                    if (!seen.Add(pairKey)) continue;
+
+                    // Actual 2D triangle overlap test to avoid false positives
+                    // from bbox-only grid co-location on dense meshes.
+                    Vector2 a0 = uv0[tris[fA * 3]], a1 = uv0[tris[fA * 3 + 1]], a2 = uv0[tris[fA * 3 + 2]];
+                    Vector2 b0 = uv0[tris[fB * 3]], b1 = uv0[tris[fB * 3 + 1]], b2 = uv0[tris[fB * 3 + 2]];
+                    if (TrianglesOverlap2D(a0, a1, a2, b0, b1, b2))
                         pairs.Add((fA, fB));
                 }
             }
 
             return pairs;
+        }
+
+        // ── 2D triangle overlap test ──
+
+        /// <summary>
+        /// Returns true if two 2D triangles overlap (share interior area).
+        /// Uses separating-axis theorem (SAT) on the 6 edge normals.
+        /// </summary>
+        static bool TrianglesOverlap2D(Vector2 a0, Vector2 a1, Vector2 a2,
+                                        Vector2 b0, Vector2 b1, Vector2 b2)
+        {
+            // Test all 6 edge normals as separating axes (3 per triangle).
+            // If any axis separates the projections, triangles don't overlap.
+            if (SeparatedOnAxis(a0, a1, a2, b0, b1, b2, a1 - a0)) return false;
+            if (SeparatedOnAxis(a0, a1, a2, b0, b1, b2, a2 - a1)) return false;
+            if (SeparatedOnAxis(a0, a1, a2, b0, b1, b2, a0 - a2)) return false;
+            if (SeparatedOnAxis(a0, a1, a2, b0, b1, b2, b1 - b0)) return false;
+            if (SeparatedOnAxis(a0, a1, a2, b0, b1, b2, b2 - b1)) return false;
+            if (SeparatedOnAxis(a0, a1, a2, b0, b1, b2, b0 - b2)) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Check if projections of two triangles onto the perpendicular of 'edge' are separated.
+        /// </summary>
+        static bool SeparatedOnAxis(Vector2 a0, Vector2 a1, Vector2 a2,
+                                     Vector2 b0, Vector2 b1, Vector2 b2,
+                                     Vector2 edge)
+        {
+            // Perpendicular (normal) of the edge
+            float nx = -edge.y, ny = edge.x;
+
+            // Project all 6 vertices onto the axis
+            float pa0 = a0.x * nx + a0.y * ny;
+            float pa1 = a1.x * nx + a1.y * ny;
+            float pa2 = a2.x * nx + a2.y * ny;
+            float pb0 = b0.x * nx + b0.y * ny;
+            float pb1 = b1.x * nx + b1.y * ny;
+            float pb2 = b2.x * nx + b2.y * ny;
+
+            float aMin = Mathf.Min(pa0, Mathf.Min(pa1, pa2));
+            float aMax = Mathf.Max(pa0, Mathf.Max(pa1, pa2));
+            float bMin = Mathf.Min(pb0, Mathf.Min(pb1, pb2));
+            float bMax = Mathf.Max(pb0, Mathf.Max(pb1, pb2));
+
+            // Separated if intervals don't overlap (with small epsilon for edge-touching)
+            const float eps = 1e-6f;
+            return aMax <= bMin + eps || bMax <= aMin + eps;
         }
 
         // ── Spatial hash helpers ──
