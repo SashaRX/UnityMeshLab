@@ -18,6 +18,7 @@ namespace LightmapUvTool
         {
             public int shellIndex;
             public int axis; // 0=X, 1=Y, 2=Z
+            public float splitThreshold; // 3D position along axis to split at
         }
 
         /// <summary>
@@ -71,6 +72,7 @@ namespace LightmapUvTool
 
                 // Find symmetry pairs via grid neighbor search
                 int[] axisVotes = new int[3];
+                float[] axisMidpointSum = new float[3]; // sum of midpoint[axis] per axis
                 bool found = false;
 
                 foreach (int f in faces)
@@ -99,9 +101,21 @@ namespace LightmapUvTool
                             float ay = Mathf.Abs(mid.y);
                             float az = Mathf.Abs(mid.z);
 
-                            if (ax <= ay && ax <= az) axisVotes[0]++;
-                            else if (ay <= az) axisVotes[1]++;
-                            else axisVotes[2]++;
+                            if (ax <= ay && ax <= az)
+                            {
+                                axisVotes[0]++;
+                                axisMidpointSum[0] += mid.x;
+                            }
+                            else if (ay <= az)
+                            {
+                                axisVotes[1]++;
+                                axisMidpointSum[1] += mid.y;
+                            }
+                            else
+                            {
+                                axisVotes[2]++;
+                                axisMidpointSum[2] += mid.z;
+                            }
                             found = true;
                         }
                     }
@@ -129,9 +143,21 @@ namespace LightmapUvTool
                             float ay = Mathf.Abs(mid.y);
                             float az = Mathf.Abs(mid.z);
 
-                            if (ax <= ay && ax <= az) axisVotes[0]++;
-                            else if (ay <= az) axisVotes[1]++;
-                            else axisVotes[2]++;
+                            if (ax <= ay && ax <= az)
+                            {
+                                axisVotes[0]++;
+                                axisMidpointSum[0] += mid.x;
+                            }
+                            else if (ay <= az)
+                            {
+                                axisVotes[1]++;
+                                axisMidpointSum[1] += mid.y;
+                            }
+                            else
+                            {
+                                axisVotes[2]++;
+                                axisMidpointSum[2] += mid.z;
+                            }
                             found = true;
                         }
 
@@ -147,9 +173,17 @@ namespace LightmapUvTool
                 if (axisVotes[1] > axisVotes[bestAxis]) bestAxis = 1;
                 if (axisVotes[2] > axisVotes[bestAxis]) bestAxis = 2;
 
-                splits.Add(new SplitInfo { shellIndex = si, axis = bestAxis });
+                // Compute split threshold: average midpoint along the winning axis.
+                // This is the symmetry plane position — faces on opposite sides
+                // of this value belong to different symmetry halves.
+                float threshold = axisVotes[bestAxis] > 0
+                    ? axisMidpointSum[bestAxis] / axisVotes[bestAxis]
+                    : 0f;
+
+                splits.Add(new SplitInfo { shellIndex = si, axis = bestAxis, splitThreshold = threshold });
                 UvtLog.Verbose($"[SymSplit] Shell {si}: symmetry on {AxisName(bestAxis)} " +
-                    $"({axisVotes[0]}x/{axisVotes[1]}y/{axisVotes[2]}z votes, {faces.Count} faces)");
+                    $"({axisVotes[0]}x/{axisVotes[1]}y/{axisVotes[2]}z votes, {faces.Count} faces, " +
+                    $"threshold={threshold:F4})");
             }
 
             if (splits.Count == 0) return 0;
@@ -176,7 +210,7 @@ namespace LightmapUvTool
                 foreach (int f in shell.faceIndices)
                 {
                     float val = posC[f][sp.axis];
-                    if (val >= 0f)
+                    if (val >= sp.splitThreshold)
                         groupA.Add(f);
                     else
                         groupB.Add(f);
