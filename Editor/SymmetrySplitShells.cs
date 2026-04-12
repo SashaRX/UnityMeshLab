@@ -22,29 +22,11 @@ namespace LightmapUvTool
         }
 
         /// <summary>
-        /// Recursively detect and split shells with symmetry overlap.
-        /// Runs SplitOnce() in a loop — each pass may produce new shells
-        /// that need further splitting (e.g., 4-way overlap → 2 passes).
-        /// </summary>
-        public static int Split(Mesh mesh, List<UvShell> shells)
-        {
-            int totalSplit = 0;
-            const int maxIterations = 3;
-            for (int iter = 0; iter < maxIterations; iter++)
-            {
-                int split = SplitOnce(mesh, shells);
-                if (split == 0) break;
-                totalSplit += split;
-            }
-            return totalSplit;
-        }
-
-        /// <summary>
-        /// Single pass: detect and split shells with symmetry overlap.
+        /// Detect and split shells with symmetry overlap.
         /// Modifies mesh in-place, adds new shells to the list.
         /// Returns number of shells split.
         /// </summary>
-        static int SplitOnce(Mesh mesh, List<UvShell> shells)
+        public static int Split(Mesh mesh, List<UvShell> shells)
         {
             var verts = mesh.vertices;
             var uv0 = mesh.uv;
