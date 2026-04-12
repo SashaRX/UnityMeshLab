@@ -230,6 +230,37 @@ namespace LightmapUvTool
                     continue;
                 }
 
+                // Skip if groups are not well separated in 3D.
+                // Compute 3D centroids of each group and the shell's extent.
+                // Groups must be significantly separated relative to the shell size
+                // to be a real symmetry split (not just noise from midpoint threshold).
+                {
+                    Vector3 centA = Vector3.zero, centB = Vector3.zero;
+                    foreach (int f in groupA) centA += posC[f];
+                    foreach (int f in groupB) centB += posC[f];
+                    centA /= groupA.Count;
+                    centB /= groupB.Count;
+                    float groupSep = Vector3.Distance(centA, centB);
+
+                    // Compute shell 3D extent (AABB diagonal)
+                    Vector3 sMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                    Vector3 sMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+                    foreach (int f in shell.faceIndices)
+                    {
+                        sMin = Vector3.Min(sMin, posC[f]);
+                        sMax = Vector3.Max(sMax, posC[f]);
+                    }
+                    float shellExtent = (sMax - sMin).magnitude;
+
+                    // Groups must be separated by at least 20% of the shell's extent
+                    if (shellExtent > 1e-6f && groupSep / shellExtent < 0.2f)
+                    {
+                        UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (3D separation too small: " +
+                            $"{groupSep:F1}/{shellExtent:F1} = {groupSep / shellExtent:P0})");
+                        continue;
+                    }
+                }
+
                 // Skip if UV0 bounding boxes don't overlap — no symmetry overlap to fix.
                 // SymSplit exists to separate overlapping UV0 regions so xatlas packs them
                 // at different UV2 positions. Without UV0 overlap, the split is unnecessary.
