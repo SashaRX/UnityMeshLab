@@ -13,6 +13,8 @@ namespace LightmapUvTool
         const float UV_NEAR = 0.01f;   // UV0 centroid distance threshold
         const float POS_FAR = 0.5f;    // 3D centroid distance threshold
         const float GRID_CELL = 0.01f; // spatial hash cell for UV0 centroids
+        const int   MIN_FACES = 20;    // skip shells with fewer faces — splitting tiny shells
+                                        // creates fragments too small for quality transfer
 
         struct SplitInfo
         {
@@ -55,7 +57,7 @@ namespace LightmapUvTool
             {
                 var shell = shells[si];
                 var faces = shell.faceIndices;
-                if (faces.Count < 2) continue;
+                if (faces.Count < MIN_FACES) continue;
 
                 // Build UV0 centroid spatial hash for this shell
                 var grid = new Dictionary<long, List<int>>();
@@ -320,6 +322,15 @@ namespace LightmapUvTool
                 if (boundary.Count == 0)
                 {
                     UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: no boundary vertices (already separate)");
+                    continue;
+                }
+
+                // Skip if split is too expensive: boundary verts exceed smaller group's
+                // face count. Such splits add more vertex bloat than separation benefit.
+                int smallerGroup = Mathf.Min(groupA.Count, groupB.Count);
+                if (boundary.Count > smallerGroup)
+                {
+                    UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (boundary {boundary.Count} > smaller group {smallerGroup} faces)");
                     continue;
                 }
 
