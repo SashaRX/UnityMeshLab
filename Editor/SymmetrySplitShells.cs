@@ -258,8 +258,10 @@ namespace LightmapUvTool
                     }
                     float shellExtent = (sMax - sMin).magnitude;
 
-                    // Groups must be separated by at least 20% of the shell's extent
-                    if (shellExtent > 1e-6f && groupSep / shellExtent < 0.2f)
+                    // Groups must be separated by at least 5% of the shell's extent.
+                    // Lower threshold catches flat symmetry (e.g. watering can body
+                    // where halves are close together relative to shell size).
+                    if (shellExtent > 1e-6f && groupSep / shellExtent < 0.05f)
                     {
                         UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (3D separation too small: " +
                             $"{groupSep:F1}/{shellExtent:F1} = {groupSep / shellExtent:P0})");
