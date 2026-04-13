@@ -573,7 +573,7 @@ namespace LightmapUvTool
                     // Block rescue if new source is too far — merged per-face
                     // voting handles multi-source coverage correctly.
                     float shellRatio = (float)srcShells.Count / Mathf.Max(tgtShells.Count, 1);
-                    if (shellRatio > 3f)
+                    if (shellRatio > 10f)
                     {
                         float maxRescueDist = meshDiagonal * 0.03f;
                         if (Mathf.Sqrt(bestDistSq) > maxRescueDist)
