@@ -1122,7 +1122,8 @@ namespace LightmapUvTool
                     for (int ci = tempRoot.transform.childCount - 1; ci >= 0; ci--)
                     {
                         var ch = tempRoot.transform.GetChild(ci);
-                        if (!validNames.Contains(ch.name))
+                        if (!validNames.Contains(ch.name)
+                            && !MeshHygieneUtility.IsCollisionNodeName(ch.name))
                             UnityEngine.Object.DestroyImmediate(ch.gameObject);
                     }
 
@@ -1131,8 +1132,19 @@ namespace LightmapUvTool
                     // and LOD0 child named same as root gets _LOD0 suffix.
                     NormalizeExportHierarchy(tempRoot);
 
-                    // Add collision meshes from sidecar (if any)
+                    // Add collision meshes from sidecar (if any).
+                    // When sidecar provides collision data, remove existing _COL
+                    // children first to avoid duplicates.
                     var collisionData = CollisionMeshTool.GetCollisionMeshesFromSidecar(sourceFbxPath);
+                    if (collisionData.Count > 0)
+                    {
+                        for (int ci = tempRoot.transform.childCount - 1; ci >= 0; ci--)
+                        {
+                            var ch = tempRoot.transform.GetChild(ci);
+                            if (MeshHygieneUtility.IsCollisionNodeName(ch.name))
+                                UnityEngine.Object.DestroyImmediate(ch.gameObject);
+                        }
+                    }
                     int collisionMeshCount = 0;
                     foreach (var (colMeshName, colMeshes, isConvex) in collisionData)
                     {
