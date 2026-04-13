@@ -1150,11 +1150,10 @@ namespace LightmapUvTool
                     {
                         if (colMeshes.Count == 1 && !isConvex)
                         {
-                            // Simplified: single _COL child
+                            // Simplified: single _COL child (no MeshRenderer — avoids stale material)
                             var colChild = new GameObject(colMeshName + "_COL");
                             colChild.transform.SetParent(tempRoot.transform, false);
                             colChild.AddComponent<MeshFilter>().sharedMesh = colMeshes[0];
-                            colChild.AddComponent<MeshRenderer>();
                             collisionMeshCount++;
                         }
                         else
@@ -1167,7 +1166,6 @@ namespace LightmapUvTool
                                 var hullChild = new GameObject($"{colMeshName}_COL_Hull{hi}");
                                 hullChild.transform.SetParent(container.transform, false);
                                 hullChild.AddComponent<MeshFilter>().sharedMesh = colMeshes[hi];
-                                hullChild.AddComponent<MeshRenderer>();
                                 collisionMeshCount++;
                             }
                         }
@@ -1181,10 +1179,13 @@ namespace LightmapUvTool
                         if (colMf == null || colMf.sharedMesh == null) continue;
                         if (!MeshHygieneUtility.IsCollisionNodeName(colMf.gameObject.name)) continue;
 
-                        // Clear material on collision renderer — _COL doesn't need materials
+                        // Remove MeshRenderer — _COL doesn't need materials.
+                        // Clearing the material array isn't enough: FBX Exporter
+                        // writes a default "Lit" for any renderer. Destroying the
+                        // component entirely avoids the stale material entry.
                         var colMr = colMf.GetComponent<MeshRenderer>();
                         if (colMr != null)
-                            colMr.sharedMaterials = new Material[0];
+                            UnityEngine.Object.DestroyImmediate(colMr);
 
                         var srcCol = colMf.sharedMesh;
                         if (srcCol.isReadable)
