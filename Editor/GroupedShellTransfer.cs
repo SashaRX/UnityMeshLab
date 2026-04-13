@@ -495,8 +495,11 @@ namespace LightmapUvTool
             const float wCoverage = 0.35f;
             const float kCoverageAcceptThreshold = 0.70f;
 
-            float diagSq = meshDiagonal * meshDiagonal;
-            if (diagSq < 1e-12f) diagSq = 1f;
+            // Normalize distance by a fraction of the diagonal so that
+            // nearby vs. far sources produce meaningfully different scores.
+            // Using full diagSq makes all distances look nearly identical.
+            float distNormSq = meshDiagonal * meshDiagonal * 0.04f; // (20% of diagonal)²
+            if (distNormSq < 1e-12f) distNormSq = 1f;
 
             int rescued = 0;
 
@@ -541,7 +544,7 @@ namespace LightmapUvTool
 
                     // 3. 3D centroid distance (normalized by mesh diagonal)
                     float centDistSq = (tCentroid - srcCentroid3D[si]).sqrMagnitude;
-                    float distScore = 1f - Mathf.Clamp01(centDistSq / diagSq);
+                    float distScore = 1f - Mathf.Clamp01(centDistSq / distNormSq);
 
                     // 4. UV0 coverage fraction
                     float coverage = ComputeUv0CoverageFraction(
@@ -555,7 +558,25 @@ namespace LightmapUvTool
                                 + wDist * distScore
                                 + wCoverage * coverage;
 
+                    // When multiple sources have full coverage (>=threshold),
+                    // prefer the closest in 3D to avoid scattering UV2 shells
+                    // to distant parts of the atlas on lower LODs.
+                    bool wins = false;
                     if (score > bestScore)
+                    {
+                        wins = true;
+                    }
+                    else if (Mathf.Abs(score - bestScore) < 0.01f
+                        && coverage >= kCoverageAcceptThreshold
+                        && bestCoverage >= kCoverageAcceptThreshold
+                        && centDistSq < bestDistSq * 0.5f)
+                    {
+                        // Tie-break: both have good coverage but this one is
+                        // significantly closer (< half the distance squared).
+                        wins = true;
+                    }
+
+                    if (wins)
                     {
                         bestScore = score;
                         bestSrc = si;
