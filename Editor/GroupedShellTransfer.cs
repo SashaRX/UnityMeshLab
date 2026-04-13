@@ -567,6 +567,21 @@ namespace LightmapUvTool
                 if (bestSrc >= 0 && bestCoverage >= kCoverageAcceptThreshold)
                 {
                     int oldSrc = targetShellToSourceShell[tsi];
+
+                    // Guard: don't rescue if new source is much farther than original.
+                    // On low LODs with few shells, many distant sources have full
+                    // coverage — merged per-face voting produces better UV2.
+                    float origDistSq = (oldSrc >= 0 && oldSrc < srcCentroid3D.Length)
+                        ? (tCentroid - srcCentroid3D[oldSrc]).sqrMagnitude : 0f;
+                    float maxRescueDistSq = Mathf.Max(origDistSq * 4f, diagSq * 0.01f);
+                    if (bestDistSq > maxRescueDistSq)
+                    {
+                        UvtLog.Verbose($"[GroupedTransfer] Rescore: t{tsi} rescue blocked " +
+                            $"(src{oldSrc}→src{bestSrc}, dist {Mathf.Sqrt(bestDistSq):F3} > " +
+                            $"max {Mathf.Sqrt(maxRescueDistSq):F3})");
+                        continue;
+                    }
+
                     tgtIsMerged[tsi] = false;
                     targetShellToSourceShell[tsi] = bestSrc;
                     targetShellMatchDistSqr[tsi] = bestDistSq;
