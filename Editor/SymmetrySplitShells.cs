@@ -24,6 +24,34 @@ namespace LightmapUvTool
             public int axis;             // split axis for binary, rotation axis for N-fold
             public float splitThreshold; // for binary: value along axis
             public Vector3 center;       // rotation center for N-fold
+            public int sourceShellId;    // shellId from source LOD (diagnostic)
+            public ulong sourceShellSignature; // stable UV descriptor hash from source shell
+            public Vector2 sourceUvCentroid; // source shell UV centroid (for fallback matching)
+            public Vector2 sourceUvSize; // source shell UV bounds size (for fallback matching)
+            public int sourceFaceCount;  // source shell face count (for fallback matching)
+            public int sourceDescriptorHash; // UvShell.descriptor.stableHash (if available)
+            public float sourceUvArea;   // signed UV shell area from descriptor
+            public float sourceBoundaryLength; // UV boundary length from descriptor
+            public Vector3 sourceWorldCentroid; // world-space centroid from source shell
+            public Vector3 sourceWorldNormal; // averaged source shell normal
+            public int sourceGroupId;    // cross-LOD shell group identifier
+            public bool sourceMirrored;  // descriptor/area-based orientation flag
+        }
+
+        struct ShellStateSnapshot
+        {
+            public int shellId;
+            public ulong signature; // bounds-based signature
+            public int descriptorHash;
+            public Vector2 uvCentroid;
+            public Vector2 uvSize;
+            public float uvArea;
+            public float boundaryLength;
+            public Vector3 worldCentroid;
+            public Vector3 worldNormal;
+            public int faceCount;
+            public int groupId;
+            public bool mirrored;
         }
 
         struct SplitInfo
@@ -463,6 +491,9 @@ namespace LightmapUvTool
             // Detect N-fold rotational symmetry per shell
             int totalSplit = 0;
             int shellCountBefore = shells.Count;
+            var sourceDescriptors = new ShellStateSnapshot[shellCountBefore];
+            for (int i = 0; i < shellCountBefore; i++)
+                sourceDescriptors[i] = BuildShellSnapshot(shells[i], mesh);
 
             for (int si = 0; si < shellCountBefore; si++)
             {
@@ -482,7 +513,19 @@ namespace LightmapUvTool
                             foldCount = N,
                             axis = rotAxis,
                             center = center,
-                            splitThreshold = 0f
+                            splitThreshold = 0f,
+                            sourceShellId = sourceDescriptors[si].shellId,
+                            sourceShellSignature = sourceDescriptors[si].signature,
+                            sourceUvCentroid = sourceDescriptors[si].uvCentroid,
+                            sourceUvSize = sourceDescriptors[si].uvSize,
+                            sourceFaceCount = sourceDescriptors[si].faceCount,
+                            sourceDescriptorHash = sourceDescriptors[si].descriptorHash,
+                            sourceUvArea = sourceDescriptors[si].uvArea,
+                            sourceBoundaryLength = sourceDescriptors[si].boundaryLength,
+                            sourceWorldCentroid = sourceDescriptors[si].worldCentroid,
+                            sourceWorldNormal = sourceDescriptors[si].worldNormal,
+                            sourceGroupId = sourceDescriptors[si].groupId,
+                            sourceMirrored = sourceDescriptors[si].mirrored
                         });
                         totalSplit += splitCount;
                         UvtLog.Info($"[SymSplit] Shell {si}: N-fold rotational N={N} axis={AxisName(rotAxis)} center=({center.x:F2},{center.y:F2},{center.z:F2})");
@@ -511,18 +554,30 @@ namespace LightmapUvTool
             {
                 // No N-fold detected, run the standard binary split
                 int binarySplit = Split(mesh, shells);
-                // Record binary params for each split
-                for (int i = shellCountBefore; i < shells.Count; i++)
+                // Record binary params for split source shells (groupA/original side)
+                for (int i = 0; i < shellCountBefore; i++)
                 {
                     var s = shells[i];
-                    if (s.symSplitAxis >= 0)
+                    if (s.symSplitAxis >= 0 && s.symSplitSide == 1)
                     {
                         outParams.Add(new SplitParams
                         {
                             foldCount = 2,
                             axis = s.symSplitAxis,
                             splitThreshold = 0f, // threshold was used internally
-                            center = Vector3.zero
+                            center = Vector3.zero,
+                            sourceShellId = sourceDescriptors[i].shellId,
+                            sourceShellSignature = sourceDescriptors[i].signature,
+                            sourceUvCentroid = sourceDescriptors[i].uvCentroid,
+                            sourceUvSize = sourceDescriptors[i].uvSize,
+                            sourceFaceCount = sourceDescriptors[i].faceCount,
+                            sourceDescriptorHash = sourceDescriptors[i].descriptorHash,
+                            sourceUvArea = sourceDescriptors[i].uvArea,
+                            sourceBoundaryLength = sourceDescriptors[i].boundaryLength,
+                            sourceWorldCentroid = sourceDescriptors[i].worldCentroid,
+                            sourceWorldNormal = sourceDescriptors[i].worldNormal,
+                            sourceGroupId = sourceDescriptors[i].groupId,
+                            sourceMirrored = sourceDescriptors[i].mirrored
                         });
                     }
                 }
@@ -563,34 +618,69 @@ namespace LightmapUvTool
 
             int totalSplit = 0;
             int shellCountBefore = shells.Count;
+            var usedShells = new HashSet<int>();
 
             foreach (var p in prescribed)
             {
                 if (p.foldCount < 2) continue;
 
-                // Find the target shell that overlaps in UV0 with the source split.
-                // For N-fold, match by finding the shell with overlapping UV0 faces.
                 int bestShell = -1;
-                int bestFaceCount = 0;
+                float bestDistance = float.MaxValue;
 
+                // 1) Exact signature match first.
                 for (int si = 0; si < shellCountBefore; si++)
                 {
+                    if (usedShells.Contains(si)) continue;
                     var shell = shells[si];
-                    if (shell.faceIndices.Count <= bestFaceCount) continue;
+                    if (p.foldCount >= 3 && !HasUv0Overlap(shell, uv0C)) continue;
 
-                    // Check if this shell has UV0 overlap (multiple faces sharing UV0 space)
-                    bool hasOverlap = HasUv0Overlap(shell, uv0C);
-                    if (!hasOverlap) continue;
-
-                    bestShell = si;
-                    bestFaceCount = shell.faceIndices.Count;
+                    var descriptor = BuildShellSnapshot(shell, mesh);
+                    bool descriptorMatch = p.sourceDescriptorHash != 0 && descriptor.descriptorHash != 0
+                        ? descriptor.descriptorHash == p.sourceDescriptorHash
+                        : descriptor.signature == p.sourceShellSignature;
+                    if (!descriptorMatch) continue;
+                    if (p.sourceGroupId != 0 && descriptor.groupId != p.sourceGroupId) continue;
+                    float distance = DescriptorDistance(p, descriptor);
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        bestShell = si;
+                    }
                 }
 
+                bool usedFallback = false;
                 if (bestShell < 0)
                 {
-                    UvtLog.Verbose($"[SymSplit] SplitWithParams: no matching target shell for N={p.foldCount}");
-                    continue;
+                    // 2) Fallback: nearest descriptor distance.
+                    for (int si = 0; si < shellCountBefore; si++)
+                    {
+                        if (usedShells.Contains(si)) continue;
+                        var shell = shells[si];
+                        if (p.foldCount >= 3 && !HasUv0Overlap(shell, uv0C)) continue;
+
+                        var descriptor = BuildShellSnapshot(shell, mesh);
+                        if (p.sourceGroupId != 0 && descriptor.groupId != p.sourceGroupId) continue;
+                        float distance = DescriptorDistance(p, descriptor);
+                        if (distance < bestDistance)
+                        {
+                            bestDistance = distance;
+                            bestShell = si;
+                        }
+                    }
+
+                    if (bestShell >= 0)
+                    {
+                        usedFallback = true;
+                        UvtLog.Warn($"[SymSplit] SplitWithParams: fallback descriptor match for sourceShellId={p.sourceShellId}, " +
+                            $"groupId={p.sourceGroupId}, signature={p.sourceShellSignature}, targetShell={bestShell}, distance={bestDistance:F4}");
+                    }
+                    else
+                    {
+                        UvtLog.Verbose($"[SymSplit] SplitWithParams: no matching target shell for sourceShellId={p.sourceShellId}, N={p.foldCount}");
+                        continue;
+                    }
                 }
+                usedShells.Add(bestShell);
 
                 if (p.foldCount >= 3)
                 {
@@ -598,7 +688,7 @@ namespace LightmapUvTool
                     if (splitCount > 0)
                     {
                         totalSplit += splitCount;
-                        UvtLog.Info($"[SymSplit] SplitWithParams: shell {bestShell} → {p.foldCount} sectors (prescribed)");
+                        UvtLog.Info($"[SymSplit] SplitWithParams: shell {bestShell} → {p.foldCount} sectors (prescribed{(usedFallback ? ", fallback" : string.Empty)})");
                         // Reread after mesh modification
                         verts = mesh.vertices;
                         uv0 = mesh.uv;
@@ -1045,6 +1135,106 @@ namespace LightmapUvTool
         static string AxisName(int axis)
         {
             return axis == 0 ? "X" : axis == 1 ? "Y" : "Z";
+        }
+
+        static ShellStateSnapshot BuildShellSnapshot(UvShell shell, Mesh mesh)
+        {
+            Vector2 uvSize = shell.boundsMax - shell.boundsMin;
+            Vector3 worldCentroid = Vector3.zero;
+            Vector3 worldNormal = Vector3.zero;
+            int centroidCount = 0;
+            var vertices = mesh.vertices;
+            var normals = mesh.normals;
+            foreach (int vi in shell.vertexIndices)
+            {
+                if (vi >= 0 && vi < vertices.Length)
+                {
+                    worldCentroid += vertices[vi];
+                    centroidCount++;
+                }
+                if (normals != null && vi >= 0 && vi < normals.Length)
+                    worldNormal += normals[vi];
+            }
+            if (centroidCount > 0)
+                worldCentroid /= centroidCount;
+            worldNormal = worldNormal.sqrMagnitude > 1e-8f ? worldNormal.normalized : Vector3.up;
+
+            int descriptorHash = shell.hasDescriptor ? shell.descriptor.stableHash : 0;
+            float uvArea = shell.hasDescriptor ? shell.descriptor.uv0Area : 0f;
+            float boundaryLength = shell.hasDescriptor ? shell.descriptor.boundaryLength : 0f;
+            bool mirrored = shell.hasDescriptor ? shell.descriptor.uv0Area < 0f : false;
+            int groupId = ComputeGroupId(descriptorHash, shell.boundsMin, shell.boundsMax);
+
+            return new ShellStateSnapshot
+            {
+                shellId = shell.shellId,
+                signature = ComputeShellSignature(shell.boundsMin, shell.boundsMax),
+                uvCentroid = (shell.boundsMin + shell.boundsMax) * 0.5f,
+                uvSize = uvSize,
+                faceCount = shell.faceIndices != null ? shell.faceIndices.Count : 0,
+                descriptorHash = descriptorHash,
+                uvArea = uvArea,
+                boundaryLength = boundaryLength,
+                worldCentroid = worldCentroid,
+                worldNormal = worldNormal,
+                groupId = groupId,
+                mirrored = mirrored
+            };
+        }
+
+        static ulong ComputeShellSignature(Vector2 boundsMin, Vector2 boundsMax)
+        {
+            const float quantizeScale = 1000f;
+            ulong hash = 1469598103934665603UL; // FNV-1a 64
+            HashU32(ref hash, QuantizeToU32(boundsMin.x, quantizeScale));
+            HashU32(ref hash, QuantizeToU32(boundsMin.y, quantizeScale));
+            HashU32(ref hash, QuantizeToU32(boundsMax.x, quantizeScale));
+            HashU32(ref hash, QuantizeToU32(boundsMax.y, quantizeScale));
+            return hash;
+        }
+
+        static uint QuantizeToU32(float value, float scale)
+        {
+            int q = Mathf.RoundToInt(value * scale);
+            unchecked
+            {
+                return (uint)q;
+            }
+        }
+
+        static void HashU32(ref ulong hash, uint value)
+        {
+            hash ^= value;
+            hash *= 1099511628211UL;
+        }
+
+        static int ComputeGroupId(int descriptorHash, Vector2 boundsMin, Vector2 boundsMax)
+        {
+            unchecked
+            {
+                uint h = 2166136261u;
+                h = (h ^ (uint)descriptorHash) * 16777619u;
+                h = (h ^ QuantizeToU32(boundsMin.x, 100f)) * 16777619u;
+                h = (h ^ QuantizeToU32(boundsMin.y, 100f)) * 16777619u;
+                h = (h ^ QuantizeToU32(boundsMax.x, 100f)) * 16777619u;
+                h = (h ^ QuantizeToU32(boundsMax.y, 100f)) * 16777619u;
+                return (int)h;
+            }
+        }
+
+        static float DescriptorDistance(SplitParams source, ShellStateSnapshot target)
+        {
+            float centroidDist = Vector2.Distance(source.sourceUvCentroid, target.uvCentroid);
+            float sizeDist = Vector2.Distance(source.sourceUvSize, target.uvSize);
+            float faceNorm = Mathf.Max(1f, source.sourceFaceCount);
+            float faceDist = Mathf.Abs(source.sourceFaceCount - target.faceCount) / faceNorm;
+            float areaNorm = Mathf.Max(1e-6f, Mathf.Abs(source.sourceUvArea));
+            float uvAreaDist = Mathf.Abs(source.sourceUvArea - target.uvArea) / areaNorm;
+            float worldCentroidDist = Vector3.Distance(source.sourceWorldCentroid, target.worldCentroid);
+            float normalDist = 1f - Mathf.Clamp01((Vector3.Dot(source.sourceWorldNormal, target.worldNormal) + 1f) * 0.5f);
+            float mirrorPenalty = source.sourceMirrored == target.mirrored ? 0f : 0.5f;
+            return centroidDist + sizeDist * 0.5f + faceDist * 0.1f +
+                   uvAreaDist * 0.15f + worldCentroidDist * 0.1f + normalDist * 0.2f + mirrorPenalty;
         }
     }
 }

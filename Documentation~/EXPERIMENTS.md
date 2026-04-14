@@ -77,6 +77,18 @@
 ### Фаза 4: Coverage (высокий риск, исследование)
 - Реактивация coverage без смены transfer mode
 
+## Эксперимент 2026-04-14 — SymSplit shell-to-shell matching в SplitWithParams
+
+- **Проблема:** эвристика `bestShell` (largest overlap shell) в `SplitWithParams` выбирала самый большой overlap shell, из-за чего на LOD2 с несколькими похожими shell split мог применяться не к ожидаемому shell.
+- **Изменение:** добавлен явный descriptor-based идентификатор shell в `SplitParams` (signature + UV centroid/size + faceCount + sourceShellId), запись id на source в `Split(mesh, shells, out outParams)` и поиск target shell по exact signature.
+- **Fallback:** если exact signature не найден, применяется nearest descriptor distance с `UvtLog.Warn`.
+- **Ожидание/проверка:** сценарий «1 source shell → несколько похожих target shells на LOD2» теперь стабильно берёт shell по descriptor id, а не по количеству face.
+
+### Дополнение (2026-04-14, round 2)
+- **Расширение состояния source shell:** в `SplitParams` дополнительно сохраняются `descriptor.stableHash`, `uv0Area`, `boundaryLength`, `worldCentroid`, `worldNormal`, `sourceMirrored`, `sourceGroupId`.
+- **Связь между LOD:** matching теперь учитывает `descriptorHash` и `groupId` как первичную связь shell→shell/группа→группа, а затем distance fallback.
+- **Фикс бинарного кейса:** параметры теперь пишутся по исходным shell (`symSplitSide == 1`), а не по добавленным shell, чтобы не терять связь с source.
+
 ---
 
 ## FBX Export & Collision — Known Issues & Constraints
