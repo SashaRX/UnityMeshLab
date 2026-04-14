@@ -3107,21 +3107,56 @@ namespace LightmapUvTool
                     if (overlaps)
                     {
                         int src = result.targetShellToSourceShell[tsi];
-                        Vector2 centroid;
+                        Vector2 sMin2, sMax2;
                         if (src >= 0 && src < srcUv2Min.Length)
-                            centroid = (srcUv2Min[src] + srcUv2Max[src]) * 0.5f;
+                        {
+                            sMin2 = srcUv2Min[src];
+                            sMax2 = srcUv2Max[src];
+                        }
                         else
-                            centroid = (shellUv2Min[tsi] + shellUv2Max[tsi]) * 0.5f;
+                        {
+                            sMin2 = shellUv2Min[tsi];
+                            sMax2 = shellUv2Max[tsi];
+                        }
+
+                        // Count force3D siblings sharing same source to subdivide UV2 region
+                        int siblingCount = 0;
+                        int siblingIndex = 0;
+                        for (int tsj = 0; tsj < tgtShells.Count; tsj++)
+                        {
+                            if (!tgtForce3DFallback[tsj]) continue;
+                            if (result.targetShellToSourceShell[tsj] != src) continue;
+                            if (tsj == tsi) siblingIndex = siblingCount;
+                            siblingCount++;
+                        }
+
+                        // Subdivide source UV2 AABB into horizontal strips for each sibling
+                        float stripH = (sMax2.y - sMin2.y) / Mathf.Max(1, siblingCount);
+                        float subMin = sMin2.y + siblingIndex * stripH;
+                        float subMax = sMin2.y + (siblingIndex + 1) * stripH;
+
+                        // Scale target UV2 into the allocated sub-strip
+                        Vector2 tMin = shellUv2Min[tsi];
+                        Vector2 tMax = shellUv2Max[tsi];
+                        float tw = Mathf.Max(tMax.x - tMin.x, 1e-8f);
+                        float th = Mathf.Max(tMax.y - tMin.y, 1e-8f);
 
                         foreach (int vi in tgtShells[tsi].vertexIndices)
                         {
-                            if (vi < result.uv2.Length)
-                                result.uv2[vi] = centroid;
+                            if (vi >= result.uv2.Length) continue;
+                            Vector2 uv = result.uv2[vi];
+                            float nx = (uv.x - tMin.x) / tw;
+                            float ny = (uv.y - tMin.y) / th;
+                            uv.x = Mathf.Lerp(sMin2.x, sMax2.x, Mathf.Clamp01(nx));
+                            uv.y = Mathf.Lerp(subMin, subMax, Mathf.Clamp01(ny));
+                            result.uv2[vi] = uv;
                         }
+
                         overlapsFixed++;
                         result.shellsOverlapFixed++;
-                        UvtLog.Info($"[GroupedTransfer] Overlap fix: t{tsi} collapsed to " +
-                            $"src{src} centroid ({centroid.x:F4},{centroid.y:F4})");
+                        UvtLog.Info($"[GroupedTransfer] Overlap fix: t{tsi} → sub-region " +
+                            $"[{sMin2.x:F3},{subMin:F3}]-[{sMax2.x:F3},{subMax:F3}] " +
+                            $"(sibling {siblingIndex}/{siblingCount} of src{src})");
                     }
                 }
                 if (overlapsFixed > 0)
