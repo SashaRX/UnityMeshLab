@@ -10,17 +10,16 @@ namespace LightmapUvTool
 {
     public static class SymmetrySplitShells
     {
-        const float UV_NEAR_FACTOR = 0.05f;  // UV0 centroid threshold = shell UV diagonal * factor
-        const float UV_NEAR_FLOOR  = 0.005f; // minimum UV0 centroid distance threshold
-        const float POS_FAR_FACTOR = 0.10f;  // 3D centroid threshold = mesh diagonal * 10%
-        const float POS_FAR_FLOOR  = 0.1f;   // minimum 3D centroid distance threshold
-        const float GRID_CELL = 0.01f;       // spatial hash cell for UV0 centroids
+        const float UV_NEAR = 0.01f;   // UV0 centroid distance threshold
+        const float GRID_CELL = 0.01f; // spatial hash cell for UV0 centroids
+        const int   MIN_FACES = 20;    // skip shells with fewer faces — splitting tiny shells
+                                        // creates fragments too small for quality transfer
 
         struct SplitInfo
         {
             public int shellIndex;
             public int axis; // 0=X, 1=Y, 2=Z
-            public float splitThreshold; // computed from pair midpoints
+            public float splitThreshold; // 3D position along axis to split at
         }
 
         /// <summary>
@@ -28,7 +27,7 @@ namespace LightmapUvTool
         /// Modifies mesh in-place, adds new shells to the list.
         /// Returns number of shells split.
         /// </summary>
-        public static int Split(Mesh mesh, List<UvShell> shells)
+        public static int Split(Mesh mesh, List<UvShell> shells, float separationThreshold = 0.10f)
         {
             var verts = mesh.vertices;
             var uv0 = mesh.uv;
@@ -37,10 +36,10 @@ namespace LightmapUvTool
             if (uv0 == null || uv0.Length == 0 || tris.Length == 0)
                 return 0;
 
-            // ── Adaptive thresholds from mesh bounds ──
-            float meshDiag = (mesh.bounds.max - mesh.bounds.min).magnitude;
-            float posFar = Mathf.Max(meshDiag * POS_FAR_FACTOR, POS_FAR_FLOOR);
-            UvtLog.Verbose($"[SymSplit] Adaptive: meshDiag={meshDiag:F3} posFar={posFar:F3}");
+            // Adaptive 3D separation threshold based on mesh size.
+            // Fixed 0.5 was too large for small models (WateringCan diag=0.34).
+            float meshDiag = mesh.bounds.size.magnitude;
+            float POS_FAR = Mathf.Max(meshDiag * 0.1f, 0.05f);
 
             int faceCount = tris.Length / 3;
 
@@ -62,11 +61,7 @@ namespace LightmapUvTool
             {
                 var shell = shells[si];
                 var faces = shell.faceIndices;
-                if (faces.Count < 2) continue;
-
-                // Per-shell adaptive UV0 threshold from shell UV bounding box
-                float shellUvDiag = (shell.boundsMax - shell.boundsMin).magnitude;
-                float uvNear = Mathf.Max(shellUvDiag * UV_NEAR_FACTOR, UV_NEAR_FLOOR);
+                if (faces.Count < MIN_FACES) continue;
 
                 // Build UV0 centroid spatial hash for this shell
                 var grid = new Dictionary<long, List<int>>();
@@ -83,12 +78,8 @@ namespace LightmapUvTool
 
                 // Find symmetry pairs via grid neighbor search
                 int[] axisVotes = new int[3];
-                float[] midpointSum = new float[3]; // accumulate midpoint per axis
-                int[] midpointCount = new int[3];
+                float[] axisMidpointSum = new float[3]; // sum of midpoint[axis] per axis
                 bool found = false;
-
-                // Search radius in grid cells must cover uvNear distance
-                int gridRadius = Mathf.Max(1, Mathf.CeilToInt(uvNear / GRID_CELL));
 
                 foreach (int f in faces)
                 {
@@ -96,8 +87,8 @@ namespace LightmapUvTool
                     int cx = Mathf.FloorToInt(c.x / GRID_CELL);
                     int cy = Mathf.FloorToInt(c.y / GRID_CELL);
 
-                    for (int dx = -gridRadius; dx <= gridRadius; dx++)
-                    for (int dy = -gridRadius; dy <= gridRadius; dy++)
+                    for (int dx = -1; dx <= 1; dx++)
+                    for (int dy = -1; dy <= 1; dy++)
                     {
                         long nk = GridKey(cx + dx, cy + dy);
                         if (!grid.TryGetValue(nk, out var bucket)) continue;
@@ -106,28 +97,88 @@ namespace LightmapUvTool
                         {
                             if (g <= f) continue; // avoid duplicate pairs + self
                             float uvDist = Vector2.Distance(uv0C[f], uv0C[g]);
-                            if (uvDist >= uvNear) continue;
+                            if (uvDist >= UV_NEAR) continue;
                             float posDist = Vector3.Distance(posC[f], posC[g]);
-                            if (posDist <= posFar) continue;
+                            if (posDist <= POS_FAR) continue;
 
-                            // Symmetry pair — vote on axis and accumulate midpoint
+                            // Symmetry pair — vote on axis
                             Vector3 mid = (posC[f] + posC[g]) * 0.5f;
                             float ax = Mathf.Abs(mid.x);
                             float ay = Mathf.Abs(mid.y);
                             float az = Mathf.Abs(mid.z);
 
-                            int votedAxis;
-                            if (ax <= ay && ax <= az) votedAxis = 0;
-                            else if (ay <= az) votedAxis = 1;
-                            else votedAxis = 2;
-
-                            axisVotes[votedAxis]++;
-                            midpointSum[votedAxis] += mid[votedAxis];
-                            midpointCount[votedAxis]++;
+                            if (ax <= ay && ax <= az)
+                            {
+                                axisVotes[0]++;
+                                axisMidpointSum[0] += mid.x;
+                            }
+                            else if (ay <= az)
+                            {
+                                axisVotes[1]++;
+                                axisMidpointSum[1] += mid.y;
+                            }
+                            else
+                            {
+                                axisVotes[2]++;
+                                axisMidpointSum[2] += mid.z;
+                            }
                             found = true;
                         }
                     }
                 }
+
+                // ── Secondary detection: UV0 overlap-based (V-shaped symmetry) ──
+                // Catches symmetry where UV0 regions overlap but per-face centroids
+                // don't coincide (e.g., V-shaped geometry with shared boundary edges).
+                // Uses grid rasterization to find non-adjacent face pairs occupying
+                // the same UV0 space, then checks if they lie on opposite sides of
+                // a 3D symmetry plane.
+                if (!found && faces.Count >= 6)
+                {
+                    var overlapPairs = DetectUv0OverlapPairs(shell, uv0, tris);
+                    if (overlapPairs.Count > 0)
+                    {
+                        // Vote on symmetry axis using overlapping face pairs
+                        foreach (var (fA, fB) in overlapPairs)
+                        {
+                            float posDist = Vector3.Distance(posC[fA], posC[fB]);
+                            if (posDist <= POS_FAR * 0.5f) continue; // too close in 3D
+
+                            Vector3 mid = (posC[fA] + posC[fB]) * 0.5f;
+                            float ax = Mathf.Abs(mid.x);
+                            float ay = Mathf.Abs(mid.y);
+                            float az = Mathf.Abs(mid.z);
+
+                            if (ax <= ay && ax <= az)
+                            {
+                                axisVotes[0]++;
+                                axisMidpointSum[0] += mid.x;
+                            }
+                            else if (ay <= az)
+                            {
+                                axisVotes[1]++;
+                                axisMidpointSum[1] += mid.y;
+                            }
+                            else
+                            {
+                                axisVotes[2]++;
+                                axisMidpointSum[2] += mid.z;
+                            }
+                            found = true;
+                        }
+
+                        if (found)
+                            UvtLog.Verbose($"[SymSplit] Shell {si}: V-shape overlap detected " +
+                                $"({overlapPairs.Count} pairs)");
+                    }
+                }
+
+                // ── Tertiary detection: UV0 winding split ──
+                // DISABLED: causes over-splitting on models with mixed winding
+                // (inner/outer walls, belt front/back). POS_FAR threshold is
+                // insufficient — needs mesh-scale-aware separation check.
+                // TODO: re-enable with adaptive threshold after auto-tuning system.
+
 
                 if (!found) continue;
 
@@ -135,28 +186,17 @@ namespace LightmapUvTool
                 if (axisVotes[1] > axisVotes[bestAxis]) bestAxis = 1;
                 if (axisVotes[2] > axisVotes[bestAxis]) bestAxis = 2;
 
-                // Compute split threshold from average midpoint of detected pairs.
-                // This handles models not centered at origin.
-                float splitThreshold = 0f;
-                if (midpointCount[bestAxis] > 0)
-                    splitThreshold = midpointSum[bestAxis] / midpointCount[bestAxis];
+                // Compute split threshold: average midpoint along the winning axis.
+                // This is the symmetry plane position — faces on opposite sides
+                // of this value belong to different symmetry halves.
+                float threshold = axisVotes[bestAxis] > 0
+                    ? axisMidpointSum[bestAxis] / axisVotes[bestAxis]
+                    : 0f;
 
-                splits.Add(new SplitInfo { shellIndex = si, axis = bestAxis,
-                    splitThreshold = splitThreshold });
+                splits.Add(new SplitInfo { shellIndex = si, axis = bestAxis, splitThreshold = threshold });
                 UvtLog.Verbose($"[SymSplit] Shell {si}: symmetry on {AxisName(bestAxis)} " +
-                    $"({axisVotes[0]}x/{axisVotes[1]}y/{axisVotes[2]}z votes, {faces.Count} faces) " +
-                    $"uvNear={uvNear:F4} posFar={posFar:F3} splitAt={splitThreshold:F4}");
-            }
-
-            // ── Diagnostic: detect N-fold rotational symmetry in unsplit shells ──
-            for (int si = 0; si < shells.Count; si++)
-            {
-                bool wasSplit = false;
-                foreach (var sp in splits)
-                    if (sp.shellIndex == si) { wasSplit = true; break; }
-                if (wasSplit) continue;
-                if (shells[si].faceIndices.Count < 20) continue;
-                DetectRotationalSymmetry(shells[si], verts, uv0, tris);
+                    $"({axisVotes[0]}x/{axisVotes[1]}y/{axisVotes[2]}z votes, {faces.Count} faces, " +
+                    $"threshold={threshold:F4})");
             }
 
             if (splits.Count == 0) return 0;
@@ -180,38 +220,93 @@ namespace LightmapUvTool
                 var groupA = new List<int>();
                 var groupB = new List<int>();
 
-                // Try splitting at computed midpoint threshold first,
-                // fall back to origin (0) if midpoint puts all faces on one side
-                float threshold = sp.splitThreshold;
-                for (int attempt = 0; attempt < 2; attempt++)
+                foreach (int f in shell.faceIndices)
                 {
-                    groupA.Clear();
-                    groupB.Clear();
+                    float val = posC[f][sp.axis];
+                    if (val >= sp.splitThreshold)
+                        groupA.Add(f);
+                    else
+                        groupB.Add(f);
+                }
+
+                // Skip if one group is empty — no actual split
+                if (groupA.Count == 0 || groupB.Count == 0)
+                {
+                    UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (all faces on one side)");
+                    continue;
+                }
+
+                // Skip if groups are not well separated in 3D.
+                // Compute 3D centroids of each group and the shell's extent.
+                // Groups must be significantly separated relative to the shell size
+                // to be a real symmetry split (not just noise from midpoint threshold).
+                {
+                    Vector3 centA = Vector3.zero, centB = Vector3.zero;
+                    foreach (int f in groupA) centA += posC[f];
+                    foreach (int f in groupB) centB += posC[f];
+                    centA /= groupA.Count;
+                    centB /= groupB.Count;
+                    float groupSep = Vector3.Distance(centA, centB);
+
+                    // Compute shell 3D extent (AABB diagonal)
+                    Vector3 sMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                    Vector3 sMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
                     foreach (int f in shell.faceIndices)
                     {
-                        float val = posC[f][sp.axis];
-                        if (val >= threshold)
-                            groupA.Add(f);
-                        else
-                            groupB.Add(f);
+                        sMin = Vector3.Min(sMin, posC[f]);
+                        sMax = Vector3.Max(sMax, posC[f]);
                     }
-                    if (groupA.Count > 0 && groupB.Count > 0) break;
+                    float shellExtent = (sMax - sMin).magnitude;
 
-                    // First attempt failed — try origin as fallback
-                    if (attempt == 0 && Mathf.Abs(threshold) > 1e-6f)
+                    // Groups must be separated by at least N% of the shell's extent
+                    if (shellExtent > 1e-6f && groupSep / shellExtent < separationThreshold)
                     {
-                        UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: " +
-                            $"midpoint threshold {threshold:F4} failed, trying origin");
-                        threshold = 0f;
+                        UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (3D separation too small: " +
+                            $"{groupSep:F1}/{shellExtent:F1} = {groupSep / shellExtent:P0})");
+                        continue;
                     }
                 }
 
-                // Skip if both thresholds fail
-                if (groupA.Count == 0 || groupB.Count == 0)
+                // Skip if UV0 bounding boxes don't overlap — no symmetry overlap to fix.
+                // SymSplit exists to separate overlapping UV0 regions so xatlas packs them
+                // at different UV2 positions. Without UV0 overlap, the split is unnecessary.
                 {
-                    UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip " +
-                        $"(all faces on one side, tried midpoint={sp.splitThreshold:F4} and origin)");
-                    continue;
+                    Vector2 mnA = new Vector2(float.MaxValue, float.MaxValue);
+                    Vector2 mxA = new Vector2(float.MinValue, float.MinValue);
+                    foreach (int f in groupA)
+                        for (int j = 0; j < 3; j++)
+                        {
+                            int vi = tris[f * 3 + j];
+                            if (vi < uv0.Length) { mnA = Vector2.Min(mnA, uv0[vi]); mxA = Vector2.Max(mxA, uv0[vi]); }
+                        }
+                    Vector2 mnB = new Vector2(float.MaxValue, float.MaxValue);
+                    Vector2 mxB = new Vector2(float.MinValue, float.MinValue);
+                    foreach (int f in groupB)
+                        for (int j = 0; j < 3; j++)
+                        {
+                            int vi = tris[f * 3 + j];
+                            if (vi < uv0.Length) { mnB = Vector2.Min(mnB, uv0[vi]); mxB = Vector2.Max(mxB, uv0[vi]); }
+                        }
+                    // Check bbox overlap
+                    float oMinX = Mathf.Max(mnA.x, mnB.x);
+                    float oMaxX = Mathf.Min(mxA.x, mxB.x);
+                    float oMinY = Mathf.Max(mnA.y, mnB.y);
+                    float oMaxY = Mathf.Min(mxA.y, mxB.y);
+                    if (oMaxX <= oMinX || oMaxY <= oMinY)
+                    {
+                        UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (UV0 bboxes don't overlap)");
+                        continue;
+                    }
+                    // Also check overlap is significant (>10% of smaller bbox area)
+                    float overlapArea = (oMaxX - oMinX) * (oMaxY - oMinY);
+                    float areaA = (mxA.x - mnA.x) * (mxA.y - mnA.y);
+                    float areaB = (mxB.x - mnB.x) * (mxB.y - mnB.y);
+                    float smaller = Mathf.Min(areaA, areaB);
+                    if (smaller > 1e-8f && overlapArea / smaller < 0.10f)
+                    {
+                        UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (UV0 overlap too small: {overlapArea / smaller:P0})");
+                        continue;
+                    }
                 }
 
                 // Find vertices used by each group
@@ -231,6 +326,15 @@ namespace LightmapUvTool
                 if (boundary.Count == 0)
                 {
                     UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: no boundary vertices (already separate)");
+                    continue;
+                }
+
+                // Skip if split is too expensive: boundary verts exceed smaller group's
+                // face count. Such splits add more vertex bloat than separation benefit.
+                int smallerGroup = Mathf.Min(groupA.Count, groupB.Count);
+                if (boundary.Count > smallerGroup)
+                {
+                    UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (boundary {boundary.Count} > smaller group {smallerGroup} faces)");
                     continue;
                 }
 
@@ -416,6 +520,8 @@ namespace LightmapUvTool
                 origShell.boundsMin = mnA;
                 origShell.boundsMax = mxA;
                 origShell.bboxArea = Mathf.Max(0f, (mxA.x - mnA.x) * (mxA.y - mnA.y));
+                origShell.symSplitAxis = info.axis;
+                origShell.symSplitSide = +1; // groupA = positive side
 
                 // Create new shell for group B
                 var newShell = new UvShell { shellId = shells.Count };
@@ -438,6 +544,8 @@ namespace LightmapUvTool
                 newShell.boundsMin = mnB;
                 newShell.boundsMax = mxB;
                 newShell.bboxArea = Mathf.Max(0f, (mxB.x - mnB.x) * (mxB.y - mnB.y));
+                newShell.symSplitAxis = info.axis;
+                newShell.symSplitSide = -1; // groupB = negative side
                 shells.Add(newShell);
             }
 
@@ -445,6 +553,147 @@ namespace LightmapUvTool
                 $"added {totalNewVerts} boundary verts ({origVertCount} → {newVertCount})");
 
             return splitData.Count;
+        }
+
+        // ── UV0 overlap detection for V-shaped symmetry ──
+
+        /// <summary>
+        /// Find face pairs within a shell that overlap in UV0 space but don't share
+        /// vertices. Uses grid rasterization similar to SpatialPartitioner.DetectOverlap.
+        /// Returns list of (faceA, faceB) pairs.
+        /// </summary>
+        static List<(int, int)> DetectUv0OverlapPairs(UvShell shell, Vector2[] uv0, int[] tris)
+        {
+            var pairs = new List<(int, int)>();
+            var faces = shell.faceIndices;
+
+            // Build face vertex sets for adjacency check
+            var faceVerts = new Dictionary<int, HashSet<int>>(faces.Count);
+            foreach (int f in faces)
+            {
+                var set = new HashSet<int>();
+                set.Add(tris[f * 3]);
+                set.Add(tris[f * 3 + 1]);
+                set.Add(tris[f * 3 + 2]);
+                faceVerts[f] = set;
+            }
+
+            // Grid rasterization of face UV0 bboxes
+            const int kGridRes = 64;
+            float rangeX = shell.boundsMax.x - shell.boundsMin.x;
+            float rangeY = shell.boundsMax.y - shell.boundsMin.y;
+            if (rangeX < 1e-8f || rangeY < 1e-8f) return pairs;
+
+            float invX = kGridRes / rangeX;
+            float invY = kGridRes / rangeY;
+            float bMinX = shell.boundsMin.x;
+            float bMinY = shell.boundsMin.y;
+
+            var cellFaces = new Dictionary<long, List<int>>();
+
+            foreach (int f in faces)
+            {
+                int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
+                if (i0 >= uv0.Length || i1 >= uv0.Length || i2 >= uv0.Length) continue;
+                Vector2 a = uv0[i0], b = uv0[i1], c = uv0[i2];
+
+                int gxMin = Mathf.Clamp((int)((Mathf.Min(a.x, Mathf.Min(b.x, c.x)) - bMinX) * invX), 0, kGridRes - 1);
+                int gxMax = Mathf.Clamp((int)((Mathf.Max(a.x, Mathf.Max(b.x, c.x)) - bMinX) * invX), 0, kGridRes - 1);
+                int gyMin = Mathf.Clamp((int)((Mathf.Min(a.y, Mathf.Min(b.y, c.y)) - bMinY) * invY), 0, kGridRes - 1);
+                int gyMax = Mathf.Clamp((int)((Mathf.Max(a.y, Mathf.Max(b.y, c.y)) - bMinY) * invY), 0, kGridRes - 1);
+
+                for (int gy = gyMin; gy <= gyMax; gy++)
+                for (int gx = gxMin; gx <= gxMax; gx++)
+                {
+                    long key = (long)gy * kGridRes + gx;
+                    if (!cellFaces.TryGetValue(key, out var bucket))
+                    {
+                        bucket = new List<int>(2);
+                        cellFaces[key] = bucket;
+                    }
+                    bucket.Add(f);
+                }
+            }
+
+            // Find non-adjacent face pairs sharing a grid cell,
+            // then confirm with actual 2D triangle-triangle overlap test.
+            var seen = new HashSet<long>(); // dedup pairs
+            foreach (var kv in cellFaces)
+            {
+                var list = kv.Value;
+                if (list.Count < 2) continue;
+
+                for (int i = 0; i < list.Count; i++)
+                for (int j = i + 1; j < list.Count; j++)
+                {
+                    int fA = list[i], fB = list[j];
+                    // Skip adjacent faces (they share at least one vertex)
+                    bool adjacent = false;
+                    foreach (int v in faceVerts[fA])
+                        if (faceVerts[fB].Contains(v)) { adjacent = true; break; }
+                    if (adjacent) continue;
+
+                    long pairKey = fA < fB ? ((long)fA << 32) | (uint)fB : ((long)fB << 32) | (uint)fA;
+                    if (!seen.Add(pairKey)) continue;
+
+                    // Actual 2D triangle overlap test to avoid false positives
+                    // from bbox-only grid co-location on dense meshes.
+                    Vector2 a0 = uv0[tris[fA * 3]], a1 = uv0[tris[fA * 3 + 1]], a2 = uv0[tris[fA * 3 + 2]];
+                    Vector2 b0 = uv0[tris[fB * 3]], b1 = uv0[tris[fB * 3 + 1]], b2 = uv0[tris[fB * 3 + 2]];
+                    if (TrianglesOverlap2D(a0, a1, a2, b0, b1, b2))
+                        pairs.Add((fA, fB));
+                }
+            }
+
+            return pairs;
+        }
+
+        // ── 2D triangle overlap test ──
+
+        /// <summary>
+        /// Returns true if two 2D triangles overlap (share interior area).
+        /// Uses separating-axis theorem (SAT) on the 6 edge normals.
+        /// </summary>
+        static bool TrianglesOverlap2D(Vector2 a0, Vector2 a1, Vector2 a2,
+                                        Vector2 b0, Vector2 b1, Vector2 b2)
+        {
+            // Test all 6 edge normals as separating axes (3 per triangle).
+            // If any axis separates the projections, triangles don't overlap.
+            if (SeparatedOnAxis(a0, a1, a2, b0, b1, b2, a1 - a0)) return false;
+            if (SeparatedOnAxis(a0, a1, a2, b0, b1, b2, a2 - a1)) return false;
+            if (SeparatedOnAxis(a0, a1, a2, b0, b1, b2, a0 - a2)) return false;
+            if (SeparatedOnAxis(a0, a1, a2, b0, b1, b2, b1 - b0)) return false;
+            if (SeparatedOnAxis(a0, a1, a2, b0, b1, b2, b2 - b1)) return false;
+            if (SeparatedOnAxis(a0, a1, a2, b0, b1, b2, b0 - b2)) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Check if projections of two triangles onto the perpendicular of 'edge' are separated.
+        /// </summary>
+        static bool SeparatedOnAxis(Vector2 a0, Vector2 a1, Vector2 a2,
+                                     Vector2 b0, Vector2 b1, Vector2 b2,
+                                     Vector2 edge)
+        {
+            // Perpendicular (normal) of the edge
+            float nx = -edge.y, ny = edge.x;
+
+            // Project all 6 vertices onto the axis
+            float pa0 = a0.x * nx + a0.y * ny;
+            float pa1 = a1.x * nx + a1.y * ny;
+            float pa2 = a2.x * nx + a2.y * ny;
+            float pb0 = b0.x * nx + b0.y * ny;
+            float pb1 = b1.x * nx + b1.y * ny;
+            float pb2 = b2.x * nx + b2.y * ny;
+
+            float aMin = Mathf.Min(pa0, Mathf.Min(pa1, pa2));
+            float aMax = Mathf.Max(pa0, Mathf.Max(pa1, pa2));
+            float bMin = Mathf.Min(pb0, Mathf.Min(pb1, pb2));
+            float bMax = Mathf.Max(pb0, Mathf.Max(pb1, pb2));
+
+            // Separated if intervals don't overlap (with small epsilon for edge-touching)
+            const float eps = 1e-6f;
+            return aMax <= bMin + eps || bMax <= aMin + eps;
         }
 
         // ── N-fold rotational symmetry detection (research/diagnostic) ──
@@ -470,46 +719,25 @@ namespace LightmapUvTool
             center /= faces.Count;
 
             // PCA to find rotation axis (smallest variance axis = rotation axis for a ring)
-            float cxx = 0, cyy = 0, czz = 0, cxy = 0, cxz = 0, cyz = 0;
+            float cxx = 0, cyy = 0, czz = 0;
             foreach (int f in faces)
             {
                 int v0 = tris[f * 3], v1 = tris[f * 3 + 1], v2 = tris[f * 3 + 2];
                 Vector3 fc = (verts[v0] + verts[v1] + verts[v2]) / 3f - center;
                 cxx += fc.x * fc.x; cyy += fc.y * fc.y; czz += fc.z * fc.z;
-                cxy += fc.x * fc.y; cxz += fc.x * fc.z; cyz += fc.y * fc.z;
             }
 
-            // Determine the axis with maximum variance spread (rotation axis = min variance)
-            // Simplified: pick axis with minimum diagonal covariance
             int rotAxis;
-            if (cxx <= cyy && cxx <= czz) rotAxis = 0;      // X has min variance → rotate around X
-            else if (cyy <= czz) rotAxis = 1;                // Y has min variance → rotate around Y
-            else rotAxis = 2;                                 // Z has min variance → rotate around Z
-
-            // Compute angular positions of face centroids projected onto rotation plane
-            int projA = (rotAxis + 1) % 3;
-            int projB = (rotAxis + 2) % 3;
-
-            var angles = new List<float>(faces.Count);
-            foreach (int f in faces)
-            {
-                int v0 = tris[f * 3], v1 = tris[f * 3 + 1], v2 = tris[f * 3 + 2];
-                Vector3 fc = (verts[v0] + verts[v1] + verts[v2]) / 3f - center;
-                float a = fc[projA];
-                float b = fc[projB];
-                angles.Add(Mathf.Atan2(b, a));
-            }
+            if (cxx <= cyy && cxx <= czz) rotAxis = 0;
+            else if (cyy <= czz) rotAxis = 1;
+            else rotAxis = 2;
 
             // Count UV0 overlap layers via grid sampling
-            // Sample a small grid over the shell's UV0 bbox and count how many faces
-            // have centroids near each sample point
             const int kSamples = 16;
-            float uvMinX = shell.boundsMin.x, uvMaxX = shell.boundsMax.x;
-            float uvMinY = shell.boundsMin.y, uvMaxY = shell.boundsMax.y;
-            float uvW = uvMaxX - uvMinX, uvH = uvMaxY - uvMinY;
+            float uvW = shell.boundsMax.x - shell.boundsMin.x;
+            float uvH = shell.boundsMax.y - shell.boundsMin.y;
             if (uvW < 1e-6f || uvH < 1e-6f) return 0;
 
-            // Build UV0 centroid list for this shell
             var uvCentroids = new Vector2[faces.Count];
             for (int i = 0; i < faces.Count; i++)
             {
@@ -518,38 +746,28 @@ namespace LightmapUvTool
                 uvCentroids[i] = (uv0[v0] + uv0[v1] + uv0[v2]) / 3f;
             }
 
-            float cellW = uvW / kSamples;
-            float cellH = uvH / kSamples;
-            int maxLayers = 0;
-            int layerSum = 0;
-            int layerCells = 0;
+            float cellW = uvW / kSamples, cellH = uvH / kSamples;
+            int maxLayers = 0, layerSum = 0, layerCells = 0;
 
             for (int sy = 0; sy < kSamples; sy++)
+            for (int sx = 0; sx < kSamples; sx++)
             {
-                for (int sx = 0; sx < kSamples; sx++)
+                float cx = shell.boundsMin.x + (sx + 0.5f) * cellW;
+                float cy = shell.boundsMin.y + (sy + 0.5f) * cellH;
+                int count = 0;
+                for (int i = 0; i < uvCentroids.Length; i++)
+                    if (Mathf.Abs(uvCentroids[i].x - cx) < cellW &&
+                        Mathf.Abs(uvCentroids[i].y - cy) < cellH)
+                        count++;
+                if (count > 1)
                 {
-                    float cx = uvMinX + (sx + 0.5f) * cellW;
-                    float cy = uvMinY + (sy + 0.5f) * cellH;
-
-                    int count = 0;
-                    for (int i = 0; i < uvCentroids.Length; i++)
-                    {
-                        float dx = uvCentroids[i].x - cx;
-                        float dy = uvCentroids[i].y - cy;
-                        if (Mathf.Abs(dx) < cellW && Mathf.Abs(dy) < cellH)
-                            count++;
-                    }
-                    if (count > 1)
-                    {
-                        if (count > maxLayers) maxLayers = count;
-                        layerSum += count;
-                        layerCells++;
-                    }
+                    if (count > maxLayers) maxLayers = count;
+                    layerSum += count;
+                    layerCells++;
                 }
             }
 
-            // If consistent multi-layer overlap detected, it's N-fold
-            if (layerCells < kSamples) return 0;  // too few cells with overlap
+            if (layerCells < kSamples) return 0;
             float avgLayers = (float)layerSum / layerCells;
             int nFold = Mathf.RoundToInt(avgLayers);
 
@@ -560,7 +778,6 @@ namespace LightmapUvTool
                     $"{faces.Count} faces)");
                 return nFold;
             }
-
             return 0;
         }
 

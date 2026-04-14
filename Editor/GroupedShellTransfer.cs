@@ -98,6 +98,7 @@ namespace LightmapUvTool
             public ShellStatus[] targetShellStatus; // per-shell quality classification
             public int[] targetShellIssues;  // per-shell issue count (inverted/degenerate faces)
             public int shellsRejected;       // shells where UV2 was not written (too many issues)
+            public int shellsOverlapFixed;   // force3D shells relocated due to UV2 overlap
 
             // ─── Cross-LOD overlap hints ───
             // Populated for merged shells to propagate source selection to subsequent LODs.
@@ -567,6 +568,7 @@ namespace LightmapUvTool
                 if (bestSrc >= 0 && bestCoverage >= kCoverageAcceptThreshold)
                 {
                     int oldSrc = targetShellToSourceShell[tsi];
+
                     tgtIsMerged[tsi] = false;
                     targetShellToSourceShell[tsi] = bestSrc;
                     targetShellMatchDistSqr[tsi] = bestDistSq;
@@ -2065,6 +2067,10 @@ namespace LightmapUvTool
                                 var fMap3D = shellBvh3DFaceMap[bestOverlapSrc];
                                 var fNorm3D = shellBvh3DFaceNormals[bestOverlapSrc];
 
+                                // Adaptive ray distance from source shell extent
+                                float srcShellDiag = (srcAABBMax[bestOverlapSrc] - srcAABBMin[bestOverlapSrc]).magnitude;
+                                float outlierRayDist = Mathf.Clamp(srcShellDiag * 2f, kRayMaxDist * 0.05f, kRayMaxDist);
+
                                 foreach (int vi in outlierVerts)
                                 {
                                     if (vi >= tVerts.Length) continue;
@@ -2079,11 +2085,19 @@ namespace LightmapUvTool
                                     if (bvh3D != null && tNrm.sqrMagnitude > 0.5f)
                                     {
                                         var rayHit = bvh3D.RaycastBidirectional(
-                                            tPos, tNrm.normalized, kRayMaxDist);
+                                            tPos, tNrm.normalized, outlierRayDist);
                                         if (rayHit.triangleIndex >= 0)
                                         {
-                                            hitFace = rayHit.triangleIndex;
-                                            hitBary = rayHit.barycentric;
+                                            // Back-face culling: reject hits on opposite-facing triangles
+                                            int gfRay = (rayHit.triangleIndex < fMap3D.Length)
+                                                ? fMap3D[rayHit.triangleIndex] : -1;
+                                            bool facing = gfRay >= 0 && gfRay < triNormal.Length
+                                                && Vector3.Dot(triNormal[gfRay], tNrm) > 0f;
+                                            if (facing)
+                                            {
+                                                hitFace = rayHit.triangleIndex;
+                                                hitBary = rayHit.barycentric;
+                                            }
                                         }
                                     }
                                     if (hitFace < 0 && bvh3D != null && fNorm3D != null)
@@ -2639,14 +2653,131 @@ namespace LightmapUvTool
                     // Reject gate: if >50% faces have issues, don't write garbage UV2.
                     if (bestMergedIssues > faceCount / 2)
                     {
-                        chosenUv2 = null; // prevent write
-                        result.targetShellStatus[tsi] = ShellStatus.Rejected;
-                        result.shellsRejected++;
-                        shellsMerged++;
-                        result.consistencyCorrected += bestMergedConsistencyFixes;
-                        UvtLog.Warn($"[GroupedTransfer]   t{tsi} REJECTED({faceCount}f): " +
-                            $"{bestMergedIssues} issues (>{faceCount / 2} threshold) — UV2 not written");
-                        // Don't continue — fall through to "Write chosen UV2" with null chosenUv2
+                        if (force3D && bestMergedUv2 != null && bestMergedUv2.Count > 0)
+                        {
+                            // Force3D shells: accept degraded UV2 rather than leaving holes.
+                            // These were forced to merged+3D by dedup — degenerate UV2 in the
+                            // correct region is better than (0,0) which creates lightmap seams.
+                            chosenUv2 = bestMergedUv2;
+                            result.targetShellStatus[tsi] = ShellStatus.Poor;
+                            shellsMerged++;
+                            result.consistencyCorrected += bestMergedConsistencyFixes;
+                            UvtLog.Warn($"[GroupedTransfer]   t{tsi} force3D-accepted({faceCount}f): " +
+                                $"{bestMergedIssues} issues (>{faceCount / 2} threshold) — UV2 written as poor");
+
+                            // ── Edge-based expansion for degenerate UV2 ──
+                            // When 3D projection collapses all vertices to a line/point,
+                            // expand the degenerate axis using the shell's 3D edge proportions.
+                            if (chosenUv2.Count >= 3 && chosenSrc >= 0)
+                            {
+                                Vector2 dgMin = new Vector2(float.MaxValue, float.MaxValue);
+                                Vector2 dgMax = new Vector2(float.MinValue, float.MinValue);
+                                foreach (var kv in chosenUv2)
+                                {
+                                    dgMin = Vector2.Min(dgMin, kv.Value);
+                                    dgMax = Vector2.Max(dgMax, kv.Value);
+                                }
+                                float dgW = dgMax.x - dgMin.x, dgH = dgMax.y - dgMin.y;
+                                float dgLong = Mathf.Max(dgW, dgH);
+                                float dgShort = Mathf.Min(dgW, dgH);
+
+                                if (dgShort < dgLong * 0.01f && dgLong > 1e-6f)
+                                {
+                                    bool xIsLong = dgW >= dgH;
+
+                                    // Find vertex pair spanning the non-degenerate axis
+                                    int dgA = -1, dgB = -1;
+                                    float dgSpan = 0;
+                                    var dgKeys = new List<int>(chosenUv2.Keys);
+                                    for (int i = 0; i < dgKeys.Count; i++)
+                                    for (int j = i + 1; j < dgKeys.Count; j++)
+                                    {
+                                        float s = xIsLong
+                                            ? Mathf.Abs(chosenUv2[dgKeys[i]].x - chosenUv2[dgKeys[j]].x)
+                                            : Mathf.Abs(chosenUv2[dgKeys[i]].y - chosenUv2[dgKeys[j]].y);
+                                        if (s > dgSpan) { dgSpan = s; dgA = dgKeys[i]; dgB = dgKeys[j]; }
+                                    }
+
+                                    if (dgA >= 0 && dgB >= 0 && dgA < tVerts.Length && dgB < tVerts.Length)
+                                    {
+                                        float width3D = (tVerts[dgB] - tVerts[dgA]).magnitude;
+                                        if (width3D > 1e-8f)
+                                        {
+                                            Vector3 widthDir = (tVerts[dgB] - tVerts[dgA]) / width3D;
+                                            Vector3 shellNrm = tgtAvgNormal[tsi];
+                                            Vector3 heightDir = Vector3.Cross(shellNrm, widthDir).normalized;
+                                            if (heightDir.sqrMagnitude < 0.5f)
+                                                heightDir = Vector3.Cross(Vector3.up, widthDir).normalized;
+
+                                            // Project vertices onto height direction
+                                            Vector3 c3D = Vector3.zero; int cn3 = 0;
+                                            foreach (int vi in tShell.vertexIndices)
+                                                if (vi < tVerts.Length) { c3D += tVerts[vi]; cn3++; }
+                                            if (cn3 > 0) c3D /= cn3;
+
+                                            float hMin = float.MaxValue, hMax = float.MinValue;
+                                            var hProj = new Dictionary<int, float>();
+                                            foreach (int vi in tShell.vertexIndices)
+                                            {
+                                                if (vi >= tVerts.Length || !chosenUv2.ContainsKey(vi)) continue;
+                                                float h = Vector3.Dot(tVerts[vi] - c3D, heightDir);
+                                                hProj[vi] = h;
+                                                hMin = Mathf.Min(hMin, h); hMax = Mathf.Max(hMax, h);
+                                            }
+
+                                            float height3D = hMax - hMin;
+                                            if (height3D > 1e-8f)
+                                            {
+                                                // UV2 scale from non-degenerate axis
+                                                float uvScale = dgLong / width3D;
+                                                float targetShort = height3D * uvScale;
+
+                                                // Clamp to source UV2 shortest edge
+                                                Vector2 sMin2 = srcUv2Min[chosenSrc];
+                                                Vector2 sMax2 = srcUv2Max[chosenSrc];
+                                                float srcShort = Mathf.Min(
+                                                    sMax2.x - sMin2.x, sMax2.y - sMin2.y);
+                                                targetShort = Mathf.Min(targetShort, srcShort);
+
+                                                float uvCenter = xIsLong
+                                                    ? (dgMin.y + dgMax.y) * 0.5f
+                                                    : (dgMin.x + dgMax.x) * 0.5f;
+                                                float hCenter = (hMin + hMax) * 0.5f;
+                                                float hScale = targetShort / height3D;
+
+                                                foreach (int vi in tShell.vertexIndices)
+                                                {
+                                                    if (!chosenUv2.ContainsKey(vi) ||
+                                                        !hProj.ContainsKey(vi)) continue;
+                                                    Vector2 uv = chosenUv2[vi];
+                                                    float off = (hProj[vi] - hCenter) * hScale;
+                                                    if (xIsLong) uv.y = uvCenter + off;
+                                                    else         uv.x = uvCenter + off;
+                                                    uv.x = Mathf.Clamp(uv.x, sMin2.x, sMax2.x);
+                                                    uv.y = Mathf.Clamp(uv.y, sMin2.y, sMax2.y);
+                                                    chosenUv2[vi] = uv;
+                                                }
+
+                                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: " +
+                                                    $"edge-based UV2 expansion " +
+                                                    $"(height3D={height3D:F4}, " +
+                                                    $"uvExpand={targetShort:F6})");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            chosenUv2 = null; // prevent write
+                            result.targetShellStatus[tsi] = ShellStatus.Rejected;
+                            result.shellsRejected++;
+                            shellsMerged++;
+                            result.consistencyCorrected += bestMergedConsistencyFixes;
+                            UvtLog.Warn($"[GroupedTransfer]   t{tsi} REJECTED({faceCount}f): " +
+                                $"{bestMergedIssues} issues (>{faceCount / 2} threshold) — UV2 not written");
+                        }
                     }
                     else
                     {
@@ -2889,6 +3020,82 @@ namespace LightmapUvTool
                 }
                 if (totalOutlierVerts > 0)
                     UvtLog.Info($"[GroupedTransfer] Post-fix total: {totalOutlierVerts} outlier verts corrected");
+            }
+
+            // ── Post-transfer UV2 overlap detection & relocation ──
+            // Force3D shells may land in UV2 regions occupied by other shells.
+            // Detect overlapping force3D shells and collapse them to their source's
+            // UV2 centroid to eliminate overlaps.
+            {
+                // Build per-shell UV2 AABB
+                var shellUv2Min = new Vector2[tgtShells.Count];
+                var shellUv2Max = new Vector2[tgtShells.Count];
+                var shellHasUv2 = new bool[tgtShells.Count];
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    Vector2 sMin = new Vector2(float.MaxValue, float.MaxValue);
+                    Vector2 sMax = new Vector2(float.MinValue, float.MinValue);
+                    bool hasAny = false;
+                    foreach (int vi in tgtShells[tsi].vertexIndices)
+                    {
+                        if (vi >= result.uv2.Length) continue;
+                        Vector2 uv = result.uv2[vi];
+                        if (uv.x == 0f && uv.y == 0f && result.targetShellStatus[tsi] == ShellStatus.Rejected)
+                            continue;
+                        sMin = Vector2.Min(sMin, uv);
+                        sMax = Vector2.Max(sMax, uv);
+                        hasAny = true;
+                    }
+                    shellUv2Min[tsi] = sMin;
+                    shellUv2Max[tsi] = sMax;
+                    shellHasUv2[tsi] = hasAny;
+                }
+
+                int overlapsFixed = 0;
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    if (!tgtForce3DFallback[tsi]) continue;
+                    if (!shellHasUv2[tsi]) continue;
+
+                    bool overlaps = false;
+                    for (int tsj = 0; tsj < tgtShells.Count; tsj++)
+                    {
+                        if (tsj == tsi) continue;
+                        if (!shellHasUv2[tsj]) continue;
+                        if (tgtForce3DFallback[tsj]) continue; // don't compare force3D vs force3D
+
+                        if (shellUv2Min[tsi].x < shellUv2Max[tsj].x &&
+                            shellUv2Max[tsi].x > shellUv2Min[tsj].x &&
+                            shellUv2Min[tsi].y < shellUv2Max[tsj].y &&
+                            shellUv2Max[tsi].y > shellUv2Min[tsj].y)
+                        {
+                            overlaps = true;
+                            break;
+                        }
+                    }
+
+                    if (overlaps)
+                    {
+                        int src = result.targetShellToSourceShell[tsi];
+                        Vector2 centroid;
+                        if (src >= 0 && src < srcUv2Min.Length)
+                            centroid = (srcUv2Min[src] + srcUv2Max[src]) * 0.5f;
+                        else
+                            centroid = (shellUv2Min[tsi] + shellUv2Max[tsi]) * 0.5f;
+
+                        foreach (int vi in tgtShells[tsi].vertexIndices)
+                        {
+                            if (vi < result.uv2.Length)
+                                result.uv2[vi] = centroid;
+                        }
+                        overlapsFixed++;
+                        result.shellsOverlapFixed++;
+                        UvtLog.Info($"[GroupedTransfer] Overlap fix: t{tsi} collapsed to " +
+                            $"src{src} centroid ({centroid.x:F4},{centroid.y:F4})");
+                    }
+                }
+                if (overlapsFixed > 0)
+                    UvtLog.Info($"[GroupedTransfer] Overlap fix: {overlapsFixed} force3D shells relocated");
             }
 
             // ── Classify all shells ──
@@ -3230,6 +3437,12 @@ namespace LightmapUvTool
                         $"({uv2[vi].x:F4},{uv2[vi].y:F4}) → ({predicted.x:F4},{predicted.y:F4}) " +
                         $"disp/scale={displacement / avgNeighborEdge:F2}");
 
+                    // Cap correction to prevent extreme displacements that cause overlaps
+                    float maxCorrection = avgNeighborEdge * 3f;
+                    Vector2 delta = predicted - uv2[vi];
+                    if (delta.magnitude > maxCorrection)
+                        predicted = uv2[vi] + delta.normalized * maxCorrection;
+
                     uv2[vi] = predicted;
                     fixedThisPass++;
                 }
@@ -3517,6 +3730,20 @@ namespace LightmapUvTool
             {
                 var uv2Map = new Dictionary<int, Vector2>();
 
+                // Compute target shell's 3D extent for adaptive ray distance.
+                // Use 2× AABB diagonal so the ray reaches nearby source triangles
+                // but doesn't overshoot to distant parts on thin geometry.
+                Vector3 tBMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                Vector3 tBMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+                foreach (int vi in tShell.vertexIndices)
+                {
+                    if (vi >= tVerts.Length) continue;
+                    tBMin = Vector3.Min(tBMin, tVerts[vi]);
+                    tBMax = Vector3.Max(tBMax, tVerts[vi]);
+                }
+                float shellDiag = (tBMax - tBMin).magnitude;
+                float shellRayDist = Mathf.Clamp(shellDiag * 2f, kRayMaxDist * 0.05f, kRayMaxDist);
+
                 foreach (int vi in tShell.vertexIndices)
                 {
                     if (vi >= tVerts.Length) continue;
@@ -3531,16 +3758,20 @@ namespace LightmapUvTool
                     int hitFace = -1;
                     Vector3 hitBary = Vector3.zero;
 
-                    // Primary: ray along normal (bidirectional)
+                    // Primary: ray along normal (bidirectional) with back-face culling
                     if (tNrm.sqrMagnitude > 0.5f)
                     {
                         var rayHit = srcBvh3D.RaycastBidirectional(
-                            tPos, tNrm.normalized, kRayMaxDist);
+                            tPos, tNrm.normalized, shellRayDist);
                         if (rayHit.triangleIndex >= 0)
                         {
                             int gf = (rayHit.triangleIndex < faceMap3D.Length)
                                 ? faceMap3D[rayHit.triangleIndex] : -1;
                             bool partOk = true;
+                            // Back-face culling: reject hits on opposite-facing triangles
+                            if (gf >= 0 && gf < triNormal.Length
+                                && Vector3.Dot(triNormal[gf], tNrm) <= 0f)
+                                partOk = false;
                             if (vertexPid >= 0 && gf >= 0 &&
                                 srcPR.facePartitionId.TryGetValue(gf, out int fp) &&
                                 fp != vertexPid)

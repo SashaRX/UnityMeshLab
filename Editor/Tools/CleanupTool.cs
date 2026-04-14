@@ -46,7 +46,7 @@ namespace LightmapUvTool
 
         struct MaterialIssue
         {
-            public enum Kind { HiddenShader, MismatchedMaterial, ExtraSlot, ImporterRemap, DuplicateSlot }
+            public enum Kind { HiddenShader, MismatchedMaterial, ExtraSlot, ImporterRemap, DuplicateSlot, NullSlot }
             public Kind kind;
             public Renderer renderer;
             public int submeshIndex;
@@ -408,6 +408,28 @@ namespace LightmapUvTool
                 var mesh = e.meshFilter.sharedMesh;
                 if (mesh == null) continue;
 
+                // Check null material slots (empty slots within valid submesh range)
+                for (int i = 0; i < mats.Length && i < mesh.subMeshCount; i++)
+                {
+                    if (mats[i] == null)
+                    {
+                        string key = e.meshGroupKey ?? e.renderer.name;
+                        Material suggested = null;
+                        if (lod0Mats.TryGetValue(key, out var l0Null) && i < l0Null.Length)
+                            suggested = l0Null[i];
+
+                        materialIssues.Add(new MaterialIssue
+                        {
+                            kind = MaterialIssue.Kind.NullSlot,
+                            renderer = e.renderer,
+                            submeshIndex = i,
+                            current = null,
+                            suggested = suggested,
+                            description = $"{e.renderer.name}: material slot [{i}] is empty (null)"
+                        });
+                    }
+                }
+
                 // Check hidden shaders
                 for (int i = 0; i < mats.Length; i++)
                 {
@@ -633,6 +655,7 @@ namespace LightmapUvTool
 
                 switch (issue.kind)
                 {
+                    case MaterialIssue.Kind.NullSlot:
                     case MaterialIssue.Kind.HiddenShader:
                     case MaterialIssue.Kind.MismatchedMaterial:
                         if (issue.suggested != null && issue.submeshIndex < mats.Length)
