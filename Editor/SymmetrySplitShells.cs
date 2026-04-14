@@ -20,6 +20,7 @@ namespace LightmapUvTool
         {
             public int shellIndex;
             public int axis; // 0=X, 1=Y, 2=Z
+            public float splitThreshold; // computed from pair midpoints
         }
 
         /// <summary>
@@ -82,6 +83,8 @@ namespace LightmapUvTool
 
                 // Find symmetry pairs via grid neighbor search
                 int[] axisVotes = new int[3];
+                float[] midpointSum = new float[3]; // accumulate midpoint per axis
+                int[] midpointCount = new int[3];
                 bool found = false;
 
                 // Search radius in grid cells must cover uvNear distance
@@ -107,15 +110,20 @@ namespace LightmapUvTool
                             float posDist = Vector3.Distance(posC[f], posC[g]);
                             if (posDist <= posFar) continue;
 
-                            // Symmetry pair — vote on axis
+                            // Symmetry pair — vote on axis and accumulate midpoint
                             Vector3 mid = (posC[f] + posC[g]) * 0.5f;
                             float ax = Mathf.Abs(mid.x);
                             float ay = Mathf.Abs(mid.y);
                             float az = Mathf.Abs(mid.z);
 
-                            if (ax <= ay && ax <= az) axisVotes[0]++;
-                            else if (ay <= az) axisVotes[1]++;
-                            else axisVotes[2]++;
+                            int votedAxis;
+                            if (ax <= ay && ax <= az) votedAxis = 0;
+                            else if (ay <= az) votedAxis = 1;
+                            else votedAxis = 2;
+
+                            axisVotes[votedAxis]++;
+                            midpointSum[votedAxis] += mid[votedAxis];
+                            midpointCount[votedAxis]++;
                             found = true;
                         }
                     }
@@ -127,10 +135,17 @@ namespace LightmapUvTool
                 if (axisVotes[1] > axisVotes[bestAxis]) bestAxis = 1;
                 if (axisVotes[2] > axisVotes[bestAxis]) bestAxis = 2;
 
-                splits.Add(new SplitInfo { shellIndex = si, axis = bestAxis });
+                // Compute split threshold from average midpoint of detected pairs.
+                // This handles models not centered at origin.
+                float splitThreshold = 0f;
+                if (midpointCount[bestAxis] > 0)
+                    splitThreshold = midpointSum[bestAxis] / midpointCount[bestAxis];
+
+                splits.Add(new SplitInfo { shellIndex = si, axis = bestAxis,
+                    splitThreshold = splitThreshold });
                 UvtLog.Verbose($"[SymSplit] Shell {si}: symmetry on {AxisName(bestAxis)} " +
                     $"({axisVotes[0]}x/{axisVotes[1]}y/{axisVotes[2]}z votes, {faces.Count} faces) " +
-                    $"uvNear={uvNear:F4} posFar={posFar:F3}");
+                    $"uvNear={uvNear:F4} posFar={posFar:F3} splitAt={splitThreshold:F4}");
             }
 
             // ── Diagnostic: detect N-fold rotational symmetry in unsplit shells ──
@@ -165,19 +180,37 @@ namespace LightmapUvTool
                 var groupA = new List<int>();
                 var groupB = new List<int>();
 
-                foreach (int f in shell.faceIndices)
+                // Try splitting at computed midpoint threshold first,
+                // fall back to origin (0) if midpoint puts all faces on one side
+                float threshold = sp.splitThreshold;
+                for (int attempt = 0; attempt < 2; attempt++)
                 {
-                    float val = posC[f][sp.axis];
-                    if (val >= 0f)
-                        groupA.Add(f);
-                    else
-                        groupB.Add(f);
+                    groupA.Clear();
+                    groupB.Clear();
+                    foreach (int f in shell.faceIndices)
+                    {
+                        float val = posC[f][sp.axis];
+                        if (val >= threshold)
+                            groupA.Add(f);
+                        else
+                            groupB.Add(f);
+                    }
+                    if (groupA.Count > 0 && groupB.Count > 0) break;
+
+                    // First attempt failed — try origin as fallback
+                    if (attempt == 0 && Mathf.Abs(threshold) > 1e-6f)
+                    {
+                        UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: " +
+                            $"midpoint threshold {threshold:F4} failed, trying origin");
+                        threshold = 0f;
+                    }
                 }
 
-                // Skip if one group is empty — no actual split
+                // Skip if both thresholds fail
                 if (groupA.Count == 0 || groupB.Count == 0)
                 {
-                    UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (all faces on one side)");
+                    UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip " +
+                        $"(all faces on one side, tried midpoint={sp.splitThreshold:F4} and origin)");
                     continue;
                 }
 
