@@ -3077,11 +3077,12 @@ namespace LightmapUvTool
                 }
             }
 
-            // Iterative Laplacian displacement detection (max 3 passes)
+            // Iterative Laplacian displacement detection
             int totalFixed = 0;
             const float displacementThreshold = 2.0f;
+            const int kMaxTopologyIterations = 5;
 
-            for (int iteration = 0; iteration < 3; iteration++)
+            for (int iteration = 0; iteration < kMaxTopologyIterations; iteration++)
             {
                 var candidates = new List<(int vi, float ratio)>();
 
@@ -3234,7 +3235,12 @@ namespace LightmapUvTool
                 }
 
                 totalFixed += fixedThisPass;
+                UvtLog.Verbose($"[ShellTopology] iter={iteration} fixed={fixedThisPass} candidates={candidates.Count}");
                 if (fixedThisPass == 0) break;
+
+                if (iteration == kMaxTopologyIterations - 1 && fixedThisPass > 0)
+                    UvtLog.Warn($"[ShellTopology] Cap reached ({kMaxTopologyIterations} iterations) " +
+                        $"with {fixedThisPass} vertices still fixable — consider increasing cap");
             }
 
             if (totalFixed > 0)
