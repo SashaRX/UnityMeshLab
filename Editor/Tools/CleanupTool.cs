@@ -2063,6 +2063,28 @@ namespace LightmapUvTool
                 var srcTransform = e.renderer.transform;
                 var newRenderers = new List<Renderer>();
 
+                // Compute source name + trailing LOD suffix once per renderer; each
+                // submesh child reuses these to build `{srcName}_{matName}{lodSuffix}`,
+                // keeping `_LOD{N}` at the END for ExtractGroupKey compatibility.
+                string srcName = e.renderer.name;
+                string lodSuffix = "";
+                var lodMatch = System.Text.RegularExpressions.Regex.Match(
+                    srcName, @"([_\-\s]+LOD\d+)$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (lodMatch.Success)
+                {
+                    lodSuffix = lodMatch.Value;
+                    srcName = srcName.Substring(0, srcName.Length - lodSuffix.Length);
+                }
+
+                // Warn if material count doesn't line up with submeshes — slots beyond
+                // the shorter of the two would be silently unassigned otherwise.
+                if (mats.Length != subCount)
+                    UvtLog.Warn($"Split '{e.renderer.name}': material count ({mats.Length}) != submesh count ({subCount}) — " +
+                                (mats.Length < subCount
+                                    ? "some submeshes will have no material."
+                                    : "extra material slots will be dropped."));
+
                 for (int s = 0; s < subCount; s++)
                 {
                     // Extract submesh
@@ -2105,9 +2127,17 @@ namespace LightmapUvTool
                     for (int t = 0; t < subTris.Length; t++)
                         newTris[t] = oldToNew[subTris[t]];
 
+                    // Build the child name ONCE and reuse for both mesh asset and
+                    // GameObject so the FBX export (which names export children after
+                    // entry.fbxMesh.name) matches the scene hierarchy exactly.
+                    string matName = s < mats.Length && mats[s] != null ? mats[s].name : $"mat{s}";
+                    if (s < mats.Length && mats[s] == null)
+                        UvtLog.Warn($"Split '{e.renderer.name}': material slot [{s}] is null — child '{srcName}_mat{s}{lodSuffix}' will have no material.");
+                    string childName = $"{srcName}_{matName}{lodSuffix}";
+
                     // Build new mesh
                     var newMesh = new Mesh();
-                    newMesh.name = $"{srcMesh.name}_sub{s}";
+                    newMesh.name = childName;
                     newMesh.SetVertices(newPos);
                     if (newNorm != null) newMesh.normals = newNorm;
                     if (newTan != null) newMesh.tangents = newTan;
@@ -2139,20 +2169,8 @@ namespace LightmapUvTool
                     newMesh.SetTriangles(newTris, 0);
                     newMesh.RecalculateBounds();
 
-                    // Create new GameObject
-                    string matName = s < mats.Length && mats[s] != null ? mats[s].name : $"mat{s}";
-                    // Preserve trailing LOD suffix for ExtractGroupKey compatibility
-                    string srcName = e.renderer.name;
-                    string lodSuffix = "";
-                    var lodMatch = System.Text.RegularExpressions.Regex.Match(
-                        srcName, @"([_\-\s]+LOD\d+)$",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    if (lodMatch.Success)
-                    {
-                        lodSuffix = lodMatch.Value;
-                        srcName = srcName.Substring(0, srcName.Length - lodSuffix.Length);
-                    }
-                    var go = new GameObject($"{srcName}_{matName}{lodSuffix}");
+                    // Create new GameObject (name already computed above as childName)
+                    var go = new GameObject(childName);
                     Undo.RegisterCreatedObjectUndo(go, "Split by Material");
                     go.transform.SetParent(parent, false);
                     go.transform.localPosition = srcTransform.localPosition;
