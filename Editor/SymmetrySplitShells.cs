@@ -197,16 +197,6 @@ namespace LightmapUvTool
                     continue;
                 }
 
-                // Skip lopsided splits that produce tiny fragments.
-                // A 1-face shell after split tends to get REJECTED during transfer
-                // (too few faces for reliable UV2 interpolation), causing regressions
-                // on simplified LODs. Require at least 2 faces per group.
-                if (groupA.Count < 2 || groupB.Count < 2)
-                {
-                    UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (lopsided split: A={groupA.Count} B={groupB.Count})");
-                    continue;
-                }
-
                 // Find vertices used by each group
                 var vertsA = new HashSet<int>();
                 var vertsB = new HashSet<int>();
