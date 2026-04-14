@@ -314,15 +314,23 @@ namespace LightmapUvTool
         /// even when heavy decimation leaves only a fragment of the original
         /// UV0 area (e.g. corner cap of a nail pattern).
         ///
-        /// Tie-break: among UV0-compatible hints, pick the one with closest
-        /// 3D centroid — this identifies the specific instance (e.g. which
-        /// corner of the box this particular corner-cap belongs to).
+        /// Tie-break: among UV0-compatible hints, prefer those whose source
+        /// hasn't already been claimed by another hint-matched target on this
+        /// LOD. This is critical for lightmap correctness — symmetric copies
+        /// in 3D with identical UV0 must get DIFFERENT sources so they end up
+        /// in DIFFERENT UV2 regions (xatlas-packed to distinct atlas slots
+        /// by the source LOD). Sharing a source would produce identical UV2
+        /// for all copies → identical lightmap on different 3D positions.
+        /// Among unclaimed hints, pick the one with closest 3D centroid.
+        /// Falls back to closest claimed hint if all matching sources are
+        /// already claimed.
         /// </summary>
         static int FindCrossLodHintSource(
             Vector3 targetCentroid, Vector2 targetUv0Centroid,
             Vector2 targetUv0Min, Vector2 targetUv0Max,
             List<CrossLodMatchHint> hints, int srcShellCount,
             float meshDiagonal,
+            HashSet<int> claimedSources,
             out float bestDistSq, out float bestAvg3D)
         {
             bestDistSq = float.MaxValue;
@@ -333,8 +341,10 @@ namespace LightmapUvTool
             // mesh diagonal as cap to still prevent matches across the mesh.
             float dist3DTol = Mathf.Max(meshDiagonal * 0.20f, 0.05f);
 
-            int bestHint = -1;
-            float bestScore = float.MaxValue;
+            int bestUnclaimedHint = -1;
+            float bestUnclaimedScore = float.MaxValue;
+            int bestClaimedHint = -1;
+            float bestClaimedScore = float.MaxValue;
 
             for (int i = 0; i < hints.Count; i++)
             {
@@ -367,16 +377,39 @@ namespace LightmapUvTool
                 // by tighter UV0 centroid proximity (same UV region).
                 float uv0Dist = (h.uv0Centroid - targetUv0Centroid).magnitude;
                 float score = dist3D + uv0Dist * 0.1f;
-                if (score < bestScore)
+
+                bool claimed = claimedSources != null
+                    && claimedSources.Contains(h.sourceShellIndex);
+
+                if (claimed)
                 {
-                    bestScore = score;
-                    bestHint = i;
-                    bestDistSq = dist3D * dist3D;
-                    bestAvg3D = dist3D;
+                    if (score < bestClaimedScore)
+                    {
+                        bestClaimedScore = score;
+                        bestClaimedHint = i;
+                    }
+                }
+                else
+                {
+                    if (score < bestUnclaimedScore)
+                    {
+                        bestUnclaimedScore = score;
+                        bestUnclaimedHint = i;
+                    }
                 }
             }
 
-            return bestHint >= 0 ? hints[bestHint].sourceShellIndex : -1;
+            // Prefer unclaimed source (produces unique UV2 per copy).
+            // Fall back to claimed only if no unclaimed source matches.
+            int chosen = bestUnclaimedHint >= 0 ? bestUnclaimedHint : bestClaimedHint;
+            if (chosen >= 0)
+            {
+                float score = chosen == bestUnclaimedHint ? bestUnclaimedScore : bestClaimedScore;
+                bestAvg3D = (hints[chosen].centroid3D - targetCentroid).magnitude;
+                bestDistSq = bestAvg3D * bestAvg3D;
+                return hints[chosen].sourceShellIndex;
+            }
+            return -1;
         }
 
         static void FindBestSourceShell(
@@ -1088,6 +1121,10 @@ namespace LightmapUvTool
 
             // Track which targets matched via cross-LOD hints (preserves them in dedup)
             var tgtHintMatched = new bool[tgtShells.Count];
+            // Track which sources have been claimed by hint-matched targets on this LOD.
+            // Prevents multiple symmetric-copy targets from all sharing one source
+            // (which would produce identical UV2 for distinct 3D instances).
+            var hintClaimedSources = new HashSet<int>();
 
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
             {
@@ -1154,7 +1191,8 @@ namespace LightmapUvTool
                         hintedSrc = FindCrossLodHintSource(
                             tCentroid, tUv0Centroid, tUv0Min, tUv0Max,
                             previousLodMatchHints,
-                            srcShells.Count, meshDiagonal, out hintedDistSq, out hintedAvg3D);
+                            srcShells.Count, meshDiagonal, hintClaimedSources,
+                            out hintedDistSq, out hintedAvg3D);
                     }
 
                     if (hintedSrc >= 0)
@@ -1163,6 +1201,7 @@ namespace LightmapUvTool
                         chosenDistSq = hintedDistSq;
                         chosenAvg3D = hintedAvg3D;
                         tgtHintMatched[tsi] = true;
+                        hintClaimedSources.Add(hintedSrc);
                         UvtLog.Verbose($"[GroupedTransfer] t{tsi} hint-matched to src{chosenSrc} " +
                             $"(uv0=[{tUv0Min.x:F3},{tUv0Min.y:F3}]-[{tUv0Max.x:F3},{tUv0Max.y:F3}], " +
                             $"dist3D={hintedAvg3D:F4})");
