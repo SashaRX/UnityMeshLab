@@ -12,7 +12,7 @@ namespace LightmapUvTool
     {
         const float UV_NEAR = 0.01f;   // UV0 centroid distance threshold
         const float GRID_CELL = 0.01f; // spatial hash cell for UV0 centroids
-        const int   MIN_FACES = 8;     // skip shells with fewer faces — splitting tiny shells
+        const int   MIN_FACES = 20;    // skip shells with fewer faces — splitting tiny shells
                                         // creates fragments too small for quality transfer
 
         struct SplitInfo
@@ -258,10 +258,8 @@ namespace LightmapUvTool
                     }
                     float shellExtent = (sMax - sMin).magnitude;
 
-                    // Groups must be separated by at least 5% of the shell's extent.
-                    // Lower threshold catches flat symmetry (e.g. watering can body
-                    // where halves are close together relative to shell size).
-                    if (shellExtent > 1e-6f && groupSep / shellExtent < 0.05f)
+                    // Groups must be separated by at least 10% of the shell's extent
+                    if (shellExtent > 1e-6f && groupSep / shellExtent < 0.10f)
                     {
                         UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (3D separation too small: " +
                             $"{groupSep:F1}/{shellExtent:F1} = {groupSep / shellExtent:P0})");
