@@ -27,7 +27,7 @@ namespace LightmapUvTool
         /// Modifies mesh in-place, adds new shells to the list.
         /// Returns number of shells split.
         /// </summary>
-        public static int Split(Mesh mesh, List<UvShell> shells)
+        public static int Split(Mesh mesh, List<UvShell> shells, float separationThreshold = 0.10f)
         {
             var verts = mesh.vertices;
             var uv0 = mesh.uv;
@@ -258,8 +258,8 @@ namespace LightmapUvTool
                     }
                     float shellExtent = (sMax - sMin).magnitude;
 
-                    // Groups must be separated by at least 10% of the shell's extent
-                    if (shellExtent > 1e-6f && groupSep / shellExtent < 0.10f)
+                    // Groups must be separated by at least N% of the shell's extent
+                    if (shellExtent > 1e-6f && groupSep / shellExtent < separationThreshold)
                     {
                         UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (3D separation too small: " +
                             $"{groupSep:F1}/{shellExtent:F1} = {groupSep / shellExtent:P0})");
