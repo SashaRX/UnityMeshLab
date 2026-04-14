@@ -62,7 +62,7 @@
 ## Roadmap
 
 ### Фаза 1: Стабилизация (малый риск) ← ТЕКУЩАЯ
-- Adaptive thresholds в SymSplit (масштабировать по mesh/UV bounds)
+- ~~Adaptive thresholds в SymSplit (масштабировать по mesh/UV bounds)~~ — DONE (v0.15.47)
 - PCA stability в StripParameterization (clamp lambda2)
 - Epsilon harmonization (нормали → 1e-8f)
 - EPSILON_SCALE 0.2% → 2%
@@ -76,6 +76,51 @@
 
 ### Фаза 4: Coverage (высокий риск, исследование)
 - Реактивация coverage без смены transfer mode
+
+---
+
+## Batch 8-tasks (v0.15.47, 2026-04-14)
+
+### Выполнено
+
+1. **Diagnostic logging** — overlap relocator, FBX export, repack pipeline
+   - Per-pair shift axis/magnitude/ratio в `FixOverlappingUv2Shells`
+   - Rescale UV2 logging
+   - FBX export: pruned children, collision count, material trim logging
+
+2. **CountAabbOverlaps metric** (`UvShellExtractor.CountAabbOverlaps`)
+   - O(N²) подсчёт пар с bbox overlap > threshold
+   - Логируется pre-repack для каждого mesh
+
+3. **SymSplit adaptive thresholds** (`SymmetrySplitShells.cs`)
+   - `POS_FAR` = meshDiagonal * 10% (floor 0.1)
+   - `UV_NEAR` = shellUvDiagonal * 5% (floor 0.005)
+   - Grid search radius масштабируется с uvNear
+   - **Требует тестирования на WateringCan и Playground**
+
+4. **ShellTopology iteration cap** (`GroupedShellTransfer.EnforceShellTopologyOnUv2`)
+   - Увеличен с 3 до 5 итераций
+   - Per-iteration convergence logging
+   - Warning если cap достигнут с fixable vertices
+
+5. **Free-space relocator** (`XatlasRepack.RelocateToFreeSpace`)
+   - 128x128 occupancy grid из non-overlapping shell AABBs
+   - Поиск свободного прямоугольника для каждого overlapping shell
+   - Заменяет Phase 2 brute-force all-pairs shift
+   - **Требует тестирования: может ли atlas utilization улучшиться?**
+
+6. **N-fold rotational symmetry detection** (diagnostic only)
+   - PCA rotation axis detection
+   - UV0 layer counting via grid sampling
+   - Логирует обнаруженную N-fold symmetry
+   - **Не сплитит — только диагностика. Сплит в отдельном PR**
+
+### Не протестировано (требует Unity)
+
+- Все изменения требуют тестирования в Unity Editor
+- Порядок тестирования: простая модель → WateringCan → Carousel → Playground
+- Если SymSplit adaptive thresholds ломают существующие модели → revert к fixed values
+- Если free-space relocator хуже axis-shift → revert к Phase 2 all-pairs
 
 ---
 
