@@ -3130,25 +3130,31 @@ namespace LightmapUvTool
                             siblingCount++;
                         }
 
-                        // Subdivide source UV2 AABB into horizontal strips for each sibling
-                        float stripH = (sMax2.y - sMin2.y) / Mathf.Max(1, siblingCount);
-                        float subMin = sMin2.y + siblingIndex * stripH;
-                        float subMax = sMin2.y + (siblingIndex + 1) * stripH;
-
-                        // Scale target UV2 into the allocated sub-strip
+                        // Relocate force3D shell into source UV2 region without stretching.
+                        // For multiple siblings: subdivide into horizontal strips.
+                        // For single sibling: just offset to source center, keep original size.
                         Vector2 tMin = shellUv2Min[tsi];
                         Vector2 tMax = shellUv2Max[tsi];
-                        float tw = Mathf.Max(tMax.x - tMin.x, 1e-8f);
-                        float th = Mathf.Max(tMax.y - tMin.y, 1e-8f);
+                        Vector2 tCenter = (tMin + tMax) * 0.5f;
+                        Vector2 tSize = tMax - tMin;
+
+                        float stripH = (sMax2.y - sMin2.y) / Mathf.Max(1, siblingCount);
+                        float subMinY = sMin2.y + siblingIndex * stripH;
+                        float subMaxY = sMin2.y + (siblingIndex + 1) * stripH;
+                        Vector2 subCenter = new Vector2(
+                            (sMin2.x + sMax2.x) * 0.5f,
+                            (subMinY + subMaxY) * 0.5f);
+
+                        // Offset: move shell center to sub-region center
+                        Vector2 offset = subCenter - tCenter;
 
                         foreach (int vi in tgtShells[tsi].vertexIndices)
                         {
                             if (vi >= result.uv2.Length) continue;
-                            Vector2 uv = result.uv2[vi];
-                            float nx = (uv.x - tMin.x) / tw;
-                            float ny = (uv.y - tMin.y) / th;
-                            uv.x = Mathf.Lerp(sMin2.x, sMax2.x, Mathf.Clamp01(nx));
-                            uv.y = Mathf.Lerp(subMin, subMax, Mathf.Clamp01(ny));
+                            Vector2 uv = result.uv2[vi] + offset;
+                            // Clamp to source bounds
+                            uv.x = Mathf.Clamp(uv.x, sMin2.x, sMax2.x);
+                            uv.y = Mathf.Clamp(uv.y, subMinY, subMaxY);
                             result.uv2[vi] = uv;
                         }
 
