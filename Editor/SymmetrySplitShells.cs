@@ -10,9 +10,11 @@ namespace LightmapUvTool
 {
     public static class SymmetrySplitShells
     {
-        const float UV_NEAR = 0.01f;   // UV0 centroid distance threshold
-        const float POS_FAR = 0.5f;    // 3D centroid distance threshold
-        const float GRID_CELL = 0.01f; // spatial hash cell for UV0 centroids
+        const float UV_NEAR_FACTOR = 0.05f;  // UV0 centroid threshold = shell UV diagonal * factor
+        const float UV_NEAR_FLOOR  = 0.005f; // minimum UV0 centroid distance threshold
+        const float POS_FAR_FACTOR = 0.10f;  // 3D centroid threshold = mesh diagonal * 10%
+        const float POS_FAR_FLOOR  = 0.1f;   // minimum 3D centroid distance threshold
+        const float GRID_CELL = 0.01f;       // spatial hash cell for UV0 centroids
 
         struct SplitInfo
         {
@@ -33,6 +35,11 @@ namespace LightmapUvTool
 
             if (uv0 == null || uv0.Length == 0 || tris.Length == 0)
                 return 0;
+
+            // ── Adaptive thresholds from mesh bounds ──
+            float meshDiag = (mesh.bounds.max - mesh.bounds.min).magnitude;
+            float posFar = Mathf.Max(meshDiag * POS_FAR_FACTOR, POS_FAR_FLOOR);
+            UvtLog.Verbose($"[SymSplit] Adaptive: meshDiag={meshDiag:F3} posFar={posFar:F3}");
 
             int faceCount = tris.Length / 3;
 
@@ -56,6 +63,10 @@ namespace LightmapUvTool
                 var faces = shell.faceIndices;
                 if (faces.Count < 2) continue;
 
+                // Per-shell adaptive UV0 threshold from shell UV bounding box
+                float shellUvDiag = (shell.boundsMax - shell.boundsMin).magnitude;
+                float uvNear = Mathf.Max(shellUvDiag * UV_NEAR_FACTOR, UV_NEAR_FLOOR);
+
                 // Build UV0 centroid spatial hash for this shell
                 var grid = new Dictionary<long, List<int>>();
                 foreach (int f in faces)
@@ -73,14 +84,17 @@ namespace LightmapUvTool
                 int[] axisVotes = new int[3];
                 bool found = false;
 
+                // Search radius in grid cells must cover uvNear distance
+                int gridRadius = Mathf.Max(1, Mathf.CeilToInt(uvNear / GRID_CELL));
+
                 foreach (int f in faces)
                 {
                     var c = uv0C[f];
                     int cx = Mathf.FloorToInt(c.x / GRID_CELL);
                     int cy = Mathf.FloorToInt(c.y / GRID_CELL);
 
-                    for (int dx = -1; dx <= 1; dx++)
-                    for (int dy = -1; dy <= 1; dy++)
+                    for (int dx = -gridRadius; dx <= gridRadius; dx++)
+                    for (int dy = -gridRadius; dy <= gridRadius; dy++)
                     {
                         long nk = GridKey(cx + dx, cy + dy);
                         if (!grid.TryGetValue(nk, out var bucket)) continue;
@@ -89,9 +103,9 @@ namespace LightmapUvTool
                         {
                             if (g <= f) continue; // avoid duplicate pairs + self
                             float uvDist = Vector2.Distance(uv0C[f], uv0C[g]);
-                            if (uvDist >= UV_NEAR) continue;
+                            if (uvDist >= uvNear) continue;
                             float posDist = Vector3.Distance(posC[f], posC[g]);
-                            if (posDist <= POS_FAR) continue;
+                            if (posDist <= posFar) continue;
 
                             // Symmetry pair — vote on axis
                             Vector3 mid = (posC[f] + posC[g]) * 0.5f;
@@ -115,7 +129,8 @@ namespace LightmapUvTool
 
                 splits.Add(new SplitInfo { shellIndex = si, axis = bestAxis });
                 UvtLog.Verbose($"[SymSplit] Shell {si}: symmetry on {AxisName(bestAxis)} " +
-                    $"({axisVotes[0]}x/{axisVotes[1]}y/{axisVotes[2]}z votes, {faces.Count} faces)");
+                    $"({axisVotes[0]}x/{axisVotes[1]}y/{axisVotes[2]}z votes, {faces.Count} faces) " +
+                    $"uvNear={uvNear:F4} posFar={posFar:F3}");
             }
 
             if (splits.Count == 0) return 0;
