@@ -133,6 +133,17 @@ namespace LightmapUvTool
                     $"uvNear={uvNear:F4} posFar={posFar:F3}");
             }
 
+            // ── Diagnostic: detect N-fold rotational symmetry in unsplit shells ──
+            for (int si = 0; si < shells.Count; si++)
+            {
+                bool wasSplit = false;
+                foreach (var sp in splits)
+                    if (sp.shellIndex == si) { wasSplit = true; break; }
+                if (wasSplit) continue;
+                if (shells[si].faceIndices.Count < 20) continue;
+                DetectRotationalSymmetry(shells[si], verts, uv0, tris);
+            }
+
             if (splits.Count == 0) return 0;
 
             // ══════════════ Phase 2: Split classification ══════════════
@@ -401,6 +412,123 @@ namespace LightmapUvTool
                 $"added {totalNewVerts} boundary verts ({origVertCount} → {newVertCount})");
 
             return splitData.Count;
+        }
+
+        // ── N-fold rotational symmetry detection (research/diagnostic) ──
+
+        /// <summary>
+        /// Detect N-fold rotational symmetry in a shell's UV0 overlap pattern.
+        /// Returns the number of segments (N) if rotational symmetry is found, 0 otherwise.
+        /// Does NOT modify the mesh — diagnostic only.
+        /// </summary>
+        internal static int DetectRotationalSymmetry(
+            UvShell shell, Vector3[] verts, Vector2[] uv0, int[] tris)
+        {
+            var faces = shell.faceIndices;
+            if (faces.Count < 6) return 0;
+
+            // Compute shell 3D centroid
+            Vector3 center = Vector3.zero;
+            foreach (int f in faces)
+            {
+                int v0 = tris[f * 3], v1 = tris[f * 3 + 1], v2 = tris[f * 3 + 2];
+                center += (verts[v0] + verts[v1] + verts[v2]) / 3f;
+            }
+            center /= faces.Count;
+
+            // PCA to find rotation axis (smallest variance axis = rotation axis for a ring)
+            float cxx = 0, cyy = 0, czz = 0, cxy = 0, cxz = 0, cyz = 0;
+            foreach (int f in faces)
+            {
+                int v0 = tris[f * 3], v1 = tris[f * 3 + 1], v2 = tris[f * 3 + 2];
+                Vector3 fc = (verts[v0] + verts[v1] + verts[v2]) / 3f - center;
+                cxx += fc.x * fc.x; cyy += fc.y * fc.y; czz += fc.z * fc.z;
+                cxy += fc.x * fc.y; cxz += fc.x * fc.z; cyz += fc.y * fc.z;
+            }
+
+            // Determine the axis with maximum variance spread (rotation axis = min variance)
+            // Simplified: pick axis with minimum diagonal covariance
+            int rotAxis;
+            if (cxx <= cyy && cxx <= czz) rotAxis = 0;      // X has min variance → rotate around X
+            else if (cyy <= czz) rotAxis = 1;                // Y has min variance → rotate around Y
+            else rotAxis = 2;                                 // Z has min variance → rotate around Z
+
+            // Compute angular positions of face centroids projected onto rotation plane
+            int projA = (rotAxis + 1) % 3;
+            int projB = (rotAxis + 2) % 3;
+
+            var angles = new List<float>(faces.Count);
+            foreach (int f in faces)
+            {
+                int v0 = tris[f * 3], v1 = tris[f * 3 + 1], v2 = tris[f * 3 + 2];
+                Vector3 fc = (verts[v0] + verts[v1] + verts[v2]) / 3f - center;
+                float a = fc[projA];
+                float b = fc[projB];
+                angles.Add(Mathf.Atan2(b, a));
+            }
+
+            // Count UV0 overlap layers via grid sampling
+            // Sample a small grid over the shell's UV0 bbox and count how many faces
+            // have centroids near each sample point
+            const int kSamples = 16;
+            float uvMinX = shell.boundsMin.x, uvMaxX = shell.boundsMax.x;
+            float uvMinY = shell.boundsMin.y, uvMaxY = shell.boundsMax.y;
+            float uvW = uvMaxX - uvMinX, uvH = uvMaxY - uvMinY;
+            if (uvW < 1e-6f || uvH < 1e-6f) return 0;
+
+            // Build UV0 centroid list for this shell
+            var uvCentroids = new Vector2[faces.Count];
+            for (int i = 0; i < faces.Count; i++)
+            {
+                int f = faces[i];
+                int v0 = tris[f * 3], v1 = tris[f * 3 + 1], v2 = tris[f * 3 + 2];
+                uvCentroids[i] = (uv0[v0] + uv0[v1] + uv0[v2]) / 3f;
+            }
+
+            float cellW = uvW / kSamples;
+            float cellH = uvH / kSamples;
+            int maxLayers = 0;
+            int layerSum = 0;
+            int layerCells = 0;
+
+            for (int sy = 0; sy < kSamples; sy++)
+            {
+                for (int sx = 0; sx < kSamples; sx++)
+                {
+                    float cx = uvMinX + (sx + 0.5f) * cellW;
+                    float cy = uvMinY + (sy + 0.5f) * cellH;
+
+                    int count = 0;
+                    for (int i = 0; i < uvCentroids.Length; i++)
+                    {
+                        float dx = uvCentroids[i].x - cx;
+                        float dy = uvCentroids[i].y - cy;
+                        if (Mathf.Abs(dx) < cellW && Mathf.Abs(dy) < cellH)
+                            count++;
+                    }
+                    if (count > 1)
+                    {
+                        if (count > maxLayers) maxLayers = count;
+                        layerSum += count;
+                        layerCells++;
+                    }
+                }
+            }
+
+            // If consistent multi-layer overlap detected, it's N-fold
+            if (layerCells < kSamples) return 0;  // too few cells with overlap
+            float avgLayers = (float)layerSum / layerCells;
+            int nFold = Mathf.RoundToInt(avgLayers);
+
+            if (nFold > 2)
+            {
+                UvtLog.Info($"[SymSplit] Shell: detected {nFold}-fold rotational symmetry " +
+                    $"(axis={AxisName(rotAxis)}, maxLayers={maxLayers}, avgLayers={avgLayers:F1}, " +
+                    $"{faces.Count} faces)");
+                return nFold;
+            }
+
+            return 0;
         }
 
         // ── Spatial hash helpers ──
