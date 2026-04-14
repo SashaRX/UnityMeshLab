@@ -13,7 +13,8 @@ namespace LightmapUvTool
 {
     /// <summary>
     /// Safety hook: restores all preview materials on domain reload, play mode change,
-    /// scene save, and editor quit. Prevents checker/shell materials from leaking onto models.
+    /// scene save, prefab save, and editor quit. Prevents checker/shell materials from
+    /// leaking onto models in saved scenes or prefab assets.
     /// </summary>
     [InitializeOnLoad]
     static class PreviewSafetyGuard
@@ -24,6 +25,7 @@ namespace LightmapUvTool
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
             EditorSceneManager.sceneSaving += OnSceneSaving;
             EditorSceneManager.sceneClosing += OnSceneClosing;
+            PrefabStage.prefabSaving += OnPrefabSaving;
             EditorApplication.quitting += OnQuitting;
         }
 
@@ -43,6 +45,14 @@ namespace LightmapUvTool
         }
 
         static void OnSceneClosing(UnityEngine.SceneManagement.Scene scene, bool removingScene)
+        {
+            RestoreAll();
+        }
+
+        // Saving a prefab in Prefab Mode does NOT trigger sceneSaving, so without
+        // this hook the checker/shell preview material would get baked into the
+        // saved prefab asset — visually "breaking" the mesh's material.
+        static void OnPrefabSaving(GameObject prefabRoot)
         {
             RestoreAll();
         }
