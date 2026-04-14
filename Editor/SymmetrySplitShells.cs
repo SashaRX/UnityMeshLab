@@ -27,7 +27,7 @@ namespace LightmapUvTool
         /// Modifies mesh in-place, adds new shells to the list.
         /// Returns number of shells split.
         /// </summary>
-        public static int Split(Mesh mesh, List<UvShell> shells, float separationThreshold = 0.10f)
+        public static int Split(Mesh mesh, List<UvShell> shells, float separationThreshold = 0.10f, bool allowNFold = true)
         {
             var verts = mesh.vertices;
             var uv0 = mesh.uv;
@@ -202,7 +202,10 @@ namespace LightmapUvTool
             // ══════════════ Phase 1b: N-fold rotational split ══════════════
             // For shells not caught by bilateral detection, check for N-fold
             // rotational symmetry and split into N angular sectors.
+            // Only on source LOD — target LODs use bilateral only to maintain
+            // UV2 continuity with source.
             var nFoldSplits = new List<(int shellIndex, int nFold, int rotAxis, Vector3 center)>();
+            if (!allowNFold) goto skipNFold;
             for (int si = 0; si < shells.Count; si++)
             {
                 // Skip if already bilateral-split
@@ -243,6 +246,7 @@ namespace LightmapUvTool
                     $"{shell.faceIndices.Count} faces — will split into {nFold} sectors");
             }
 
+            skipNFold:
             if (splits.Count == 0 && nFoldSplits.Count == 0) return 0;
 
             // ══════════════ Phase 2: Split classification ══════════════

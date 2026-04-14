@@ -571,7 +571,9 @@ namespace LightmapUvTool
                 var uv0 = e.originalMesh.uv;
                 if (uv0 == null || uv0.Length == 0) continue;
                 var shells = UvShellExtractor.Extract(uv0, e.originalMesh.triangles);
-                int split = SymmetrySplitShells.Split(e.originalMesh, shells, separationThreshold);
+                bool isSource = e.lodIndex == ctx.SourceLodIndex;
+                int split = SymmetrySplitShells.Split(e.originalMesh, shells, separationThreshold,
+                    allowNFold: isSource);
                 if (split > 0) { e.wasSymmetrySplit = true; lastSymmetrySplitLods.Add(e.lodIndex); UvtLog.Info($"[SymSplit] '{e.originalMesh.name}' LOD{e.lodIndex}: {split} shells split"); }
             }
             ctx.ClearAllCaches();
