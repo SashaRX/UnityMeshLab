@@ -559,10 +559,13 @@ namespace LightmapUvTool
         {
             if (ctx.LodGroup == null) return;
             lastSymmetrySplitLods.Clear();
+
+            // Phase 1: Split source LOD and capture parameters for coordinated LOD splitting
+            var splitParamsByGroup = new Dictionary<string, List<SymmetrySplitShells.SplitParams>>();
+
             foreach (var e in ctx.MeshEntries)
             {
-                if (!e.include) continue;
-                if (!includeTargets && e.lodIndex != ctx.SourceLodIndex) continue;
+                if (!e.include || e.lodIndex != ctx.SourceLodIndex) continue;
                 if (e.originalMesh == e.fbxMesh)
                 {
                     e.originalMesh = UvCanvasView.MakeReadableCopy(e.fbxMesh);
@@ -571,9 +574,53 @@ namespace LightmapUvTool
                 var uv0 = e.originalMesh.uv;
                 if (uv0 == null || uv0.Length == 0) continue;
                 var shells = UvShellExtractor.Extract(uv0, e.originalMesh.triangles);
-                int split = SymmetrySplitShells.Split(e.originalMesh, shells);
-                if (split > 0) { e.wasSymmetrySplit = true; lastSymmetrySplitLods.Add(e.lodIndex); UvtLog.Info($"[SymSplit] '{e.originalMesh.name}' LOD{e.lodIndex}: {split} shells split"); }
+                int split = SymmetrySplitShells.Split(e.originalMesh, shells, out var splitParams);
+                if (split > 0)
+                {
+                    e.wasSymmetrySplit = true;
+                    lastSymmetrySplitLods.Add(e.lodIndex);
+                    UvtLog.Info($"[SymSplit] '{e.originalMesh.name}' LOD{e.lodIndex}: {split} shells split");
+                    // Store params keyed by mesh group for target LOD propagation
+                    string key = e.meshGroupKey ?? e.renderer.name;
+                    splitParamsByGroup[key] = splitParams;
+                }
             }
+
+            // Phase 2: Apply same split parameters to target LODs (coordinated)
+            if (includeTargets)
+            {
+                foreach (var e in ctx.MeshEntries)
+                {
+                    if (!e.include || e.lodIndex == ctx.SourceLodIndex) continue;
+                    if (e.originalMesh == e.fbxMesh)
+                    {
+                        e.originalMesh = UvCanvasView.MakeReadableCopy(e.fbxMesh);
+                        e.originalMesh.name = e.fbxMesh.name + "_wc";
+                    }
+                    var uv0 = e.originalMesh.uv;
+                    if (uv0 == null || uv0.Length == 0) continue;
+                    var shells = UvShellExtractor.Extract(uv0, e.originalMesh.triangles);
+
+                    // Try coordinated split with source LOD parameters
+                    string key = e.meshGroupKey ?? e.renderer.name;
+                    int split = 0;
+                    if (splitParamsByGroup.TryGetValue(key, out var prescribed) && prescribed.Count > 0)
+                    {
+                        split = SymmetrySplitShells.SplitWithParams(e.originalMesh, shells, prescribed);
+                        if (split > 0)
+                            UvtLog.Info($"[SymSplit] '{e.originalMesh.name}' LOD{e.lodIndex}: {split} shells split (coordinated)");
+                    }
+                    // Fallback to independent detection if no prescribed params
+                    if (split == 0)
+                    {
+                        split = SymmetrySplitShells.Split(e.originalMesh, shells);
+                        if (split > 0)
+                            UvtLog.Info($"[SymSplit] '{e.originalMesh.name}' LOD{e.lodIndex}: {split} shells split (independent)");
+                    }
+                    if (split > 0) { e.wasSymmetrySplit = true; lastSymmetrySplitLods.Add(e.lodIndex); }
+                }
+            }
+
             ctx.ClearAllCaches();
             requestRepaint?.Invoke();
         }
@@ -581,7 +628,9 @@ namespace LightmapUvTool
         void ExecFullPipeline()
         {
             if (ctx.LodGroup == null) return;
-            UvtLog.Info("[Pipeline] Starting full pipeline...");
+            string version = UnityEditor.PackageManager.PackageInfo
+                .FindForAssembly(typeof(LightmapTransferTool).Assembly)?.version ?? "0.0.0";
+            UvtLog.Info($"[Pipeline] Starting full pipeline... (v{version})");
 
             // 1. Analyze
             ExecAnalyzeUv0();
