@@ -555,7 +555,7 @@ namespace LightmapUvTool
             requestRepaint?.Invoke();
         }
 
-        void ExecSymmetrySplit(bool includeTargets)
+        void ExecSymmetrySplit(bool includeTargets, float separationThreshold = 0.10f)
         {
             if (ctx.LodGroup == null) return;
             lastSymmetrySplitLods.Clear();
@@ -571,7 +571,7 @@ namespace LightmapUvTool
                 var uv0 = e.originalMesh.uv;
                 if (uv0 == null || uv0.Length == 0) continue;
                 var shells = UvShellExtractor.Extract(uv0, e.originalMesh.triangles);
-                int split = SymmetrySplitShells.Split(e.originalMesh, shells);
+                int split = SymmetrySplitShells.Split(e.originalMesh, shells, separationThreshold);
                 if (split > 0) { e.wasSymmetrySplit = true; lastSymmetrySplitLods.Add(e.lodIndex); UvtLog.Info($"[SymSplit] '{e.originalMesh.name}' LOD{e.lodIndex}: {split} shells split"); }
             }
             ctx.ClearAllCaches();
@@ -589,16 +589,128 @@ namespace LightmapUvTool
             // 2. Weld
             ExecWeldUv0();
 
-            // 3. SymSplit
-            ExecSymmetrySplit(splitTargetsInSymmetryStep);
+            // ── Auto-tune: try multiple SymSplit configs, pick best ──
+            // Save working copies so we can restore between attempts.
+            var savedMeshes = new Dictionary<MeshEntry, Mesh>();
+            foreach (var e in ctx.MeshEntries)
+                if (e.originalMesh != null)
+                    savedMeshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
 
-            // 4. Repack
-            var src = ctx.ForLod(ctx.SourceLodIndex);
-            if (ctx.RepackPerMesh) ExecRepackPerMesh(src);
-            else ExecRepack(src);
+            float[] separationConfigs = { 0.10f, 0.05f, 0.20f };
+            int bestRejected = int.MaxValue;
+            float bestCoverage = 0f;
+            int bestConfigIdx = 0;
+            var bestMeshes = new Dictionary<MeshEntry, Mesh>();
+            var bestTransfers = new Dictionary<MeshEntry, (Mesh transferred, GroupedShellTransfer.TransferResult tr)>();
 
-            // 5. Transfer
-            if (ctx.HasRepack) ExecTransferAll();
+            for (int ci = 0; ci < separationConfigs.Length; ci++)
+            {
+                float sepThresh = separationConfigs[ci];
+                if (ci > 0)
+                {
+                    UvtLog.Info($"[Pipeline] Auto-tune retry #{ci} (separation={sepThresh:P0})...");
+                    // Restore saved meshes
+                    foreach (var kv in savedMeshes)
+                    {
+                        kv.Key.originalMesh = UnityEngine.Object.Instantiate(kv.Value);
+                        kv.Key.originalMesh.name = kv.Value.name;
+                        kv.Key.wasSymmetrySplit = false;
+                        kv.Key.repackedMesh = null;
+                        kv.Key.transferredMesh = null;
+                        kv.Key.shellTransferResult = null;
+                    }
+                    ctx.ClearAllCaches();
+                    accumulatedOverlapHints.Clear();
+                    shellTransformCache.Clear();
+                    ctx.HasRepack = false;
+                    ctx.HasTransfer = false;
+                }
+
+                // 3. SymSplit
+                ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh);
+
+                // 4. Repack
+                var src = ctx.ForLod(ctx.SourceLodIndex);
+                if (ctx.RepackPerMesh) ExecRepackPerMesh(src);
+                else ExecRepack(src);
+
+                // 5. Transfer
+                if (ctx.HasRepack) ExecTransferAll();
+
+                // Evaluate quality
+                int totalRejected = 0;
+                int totalOverlaps = 0;
+                int totalVerts = 0;
+                int totalTransferred = 0;
+                foreach (var e in ctx.MeshEntries)
+                {
+                    if (e.shellTransferResult == null) continue;
+                    totalRejected += e.shellTransferResult.shellsRejected;
+                    totalOverlaps += e.shellTransferResult.shellsOverlapFixed;
+                    totalVerts += e.shellTransferResult.verticesTotal;
+                    totalTransferred += e.shellTransferResult.verticesTransferred;
+                }
+                float coverage = totalVerts > 0 ? (float)totalTransferred / totalVerts : 0f;
+                int totalIssues = totalRejected + totalOverlaps;
+
+                UvtLog.Info($"[Pipeline] Config #{ci} (sep={sepThresh:P0}): " +
+                    $"rejected={totalRejected}, overlaps={totalOverlaps}, coverage={coverage:P0}");
+
+                bool better = false;
+                if (totalIssues < bestRejected)
+                    better = true;
+                else if (totalIssues == bestRejected && coverage > bestCoverage)
+                    better = true;
+
+                if (better)
+                {
+                    bestRejected = totalIssues;
+                    bestCoverage = coverage;
+                    bestConfigIdx = ci;
+                    // Save best meshes
+                    foreach (var m in bestMeshes.Values) UnityEngine.Object.DestroyImmediate(m);
+                    bestMeshes.Clear();
+                    bestTransfers.Clear();
+                    foreach (var e in ctx.MeshEntries)
+                    {
+                        if (e.originalMesh != null)
+                            bestMeshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
+                        if (e.transferredMesh != null)
+                            bestTransfers[e] = (UnityEngine.Object.Instantiate(e.transferredMesh),
+                                e.shellTransferResult);
+                    }
+                }
+
+                // Early exit if perfect
+                if (totalIssues == 0 && coverage >= 0.99f)
+                {
+                    if (ci > 0) UvtLog.Info($"[Pipeline] Perfect result on config #{ci}, stopping.");
+                    break;
+                }
+            }
+
+            // Restore best config if not the last one tested
+            if (bestMeshes.Count > 0)
+            {
+                foreach (var kv in bestMeshes)
+                {
+                    kv.Key.originalMesh = kv.Value;
+                    kv.Key.originalMesh.name = kv.Value.name;
+                }
+                foreach (var kv in bestTransfers)
+                {
+                    kv.Key.transferredMesh = kv.Value.transferred;
+                    kv.Key.shellTransferResult = kv.Value.tr;
+                }
+            }
+
+            // Cleanup saved copies
+            foreach (var m in savedMeshes.Values)
+                UnityEngine.Object.DestroyImmediate(m);
+
+            if (separationConfigs.Length > 1 && bestConfigIdx > 0)
+                UvtLog.Info($"[Pipeline] Auto-tune: selected config #{bestConfigIdx} " +
+                    $"(sep={separationConfigs[bestConfigIdx]:P0})");
 
             UvtLog.Info("[Pipeline] Complete.");
             requestRepaint?.Invoke();
@@ -1122,7 +1234,8 @@ namespace LightmapUvTool
                     for (int ci = tempRoot.transform.childCount - 1; ci >= 0; ci--)
                     {
                         var ch = tempRoot.transform.GetChild(ci);
-                        if (!validNames.Contains(ch.name))
+                        if (!validNames.Contains(ch.name)
+                            && !MeshHygieneUtility.IsCollisionNodeName(ch.name))
                             UnityEngine.Object.DestroyImmediate(ch.gameObject);
                     }
 
@@ -1131,18 +1244,28 @@ namespace LightmapUvTool
                     // and LOD0 child named same as root gets _LOD0 suffix.
                     NormalizeExportHierarchy(tempRoot);
 
-                    // Add collision meshes from sidecar (if any)
+                    // Add collision meshes from sidecar (if any).
+                    // When sidecar provides collision data, remove existing _COL
+                    // children first to avoid duplicates.
                     var collisionData = CollisionMeshTool.GetCollisionMeshesFromSidecar(sourceFbxPath);
+                    if (collisionData.Count > 0)
+                    {
+                        for (int ci = tempRoot.transform.childCount - 1; ci >= 0; ci--)
+                        {
+                            var ch = tempRoot.transform.GetChild(ci);
+                            if (MeshHygieneUtility.IsCollisionNodeName(ch.name))
+                                UnityEngine.Object.DestroyImmediate(ch.gameObject);
+                        }
+                    }
                     int collisionMeshCount = 0;
                     foreach (var (colMeshName, colMeshes, isConvex) in collisionData)
                     {
                         if (colMeshes.Count == 1 && !isConvex)
                         {
-                            // Simplified: single _COL child
+                            // Simplified: single _COL child (no MeshRenderer — avoids stale material)
                             var colChild = new GameObject(colMeshName + "_COL");
                             colChild.transform.SetParent(tempRoot.transform, false);
                             colChild.AddComponent<MeshFilter>().sharedMesh = colMeshes[0];
-                            colChild.AddComponent<MeshRenderer>();
                             collisionMeshCount++;
                         }
                         else
@@ -1155,7 +1278,6 @@ namespace LightmapUvTool
                                 var hullChild = new GameObject($"{colMeshName}_COL_Hull{hi}");
                                 hullChild.transform.SetParent(container.transform, false);
                                 hullChild.AddComponent<MeshFilter>().sharedMesh = colMeshes[hi];
-                                hullChild.AddComponent<MeshRenderer>();
                                 collisionMeshCount++;
                             }
                         }
@@ -1163,10 +1285,20 @@ namespace LightmapUvTool
 
                     // Strip _COL meshes to bare minimum: vertices + triangles +
                     // averaged normals + tangents. No UVs, colors, or other channels.
+                    // Also clear materials to prevent stale "Lit" entries in FBX importer.
                     foreach (var colMf in tempRoot.GetComponentsInChildren<MeshFilter>(true))
                     {
                         if (colMf == null || colMf.sharedMesh == null) continue;
                         if (!MeshHygieneUtility.IsCollisionNodeName(colMf.gameObject.name)) continue;
+
+                        // Remove MeshRenderer — _COL doesn't need materials.
+                        // Clearing the material array isn't enough: FBX Exporter
+                        // writes a default "Lit" for any renderer. Destroying the
+                        // component entirely avoids the stale material entry.
+                        var colMr = colMf.GetComponent<MeshRenderer>();
+                        if (colMr != null)
+                            UnityEngine.Object.DestroyImmediate(colMr);
+
                         var srcCol = colMf.sharedMesh;
                         if (srcCol.isReadable)
                         {
@@ -1270,6 +1402,12 @@ namespace LightmapUvTool
                     Uv2AssetPostprocessor.managedImportPaths.Add(sourceFbxPath);
                     Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath);
                 }
+                // Always disable generateSecondaryUV after overwriting FBX with
+                // transferred UV2 — Unity's auto-generated UV2 would overwrite ours.
+                else if (overwriteSource && groupSucceeded)
+                {
+                    Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true);
+                }
             }
 
             // Clean up scene-generated LOD objects from LodGenerationTool.
@@ -1281,6 +1419,32 @@ namespace LightmapUvTool
             // third-party postprocessors like Bakery). Don't clear sidecar entries.
 
             AssetDatabase.Refresh();
+
+            // Remove stale "Lit" material remap created by Unity's FBX importer
+            // for _COL nodes that have no material. Without this, an unwanted "Lit"
+            // entry appears in the material remap list after every export.
+            if (overwriteSource && allGroupsSucceeded)
+            {
+                foreach (string fbxPath in overwrittenFbxPaths)
+                {
+                    var imp = AssetImporter.GetAtPath(fbxPath) as ModelImporter;
+                    if (imp == null) continue;
+                    var map = imp.GetExternalObjectMap();
+                    var toRemove = new List<AssetImporter.SourceAssetIdentifier>();
+                    foreach (var kvp in map)
+                    {
+                        if (kvp.Key.type != typeof(Material)) continue;
+                        if (kvp.Key.name == "Lit" || kvp.Key.name == "No Name")
+                            toRemove.Add(kvp.Key);
+                    }
+                    if (toRemove.Count > 0)
+                    {
+                        foreach (var key in toRemove)
+                            imp.RemoveRemap(key);
+                        imp.SaveAndReimport();
+                    }
+                }
+            }
 #endif
         }
 

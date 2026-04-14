@@ -802,6 +802,72 @@ namespace LightmapUvTool
                     if (tool is LightmapTransferTool ltt) { ltt.SaveAllPublic(); break; }
             }
 
+            // Backup current FBX from git main branch
+            if (!string.IsNullOrEmpty(ctx.SourceFbxPath)
+                && GUILayout.Button("Backup from main", EditorStyles.miniButton))
+            {
+                BackupFbxFromGitMain(ctx.SourceFbxPath);
+            }
+
+        }
+
+        static void BackupFbxFromGitMain(string assetPath)
+        {
+            try
+            {
+                // Convert Unity asset path to OS path relative to repo root
+                string repoRoot = System.IO.Path.GetDirectoryName(Application.dataPath);
+                string fullPath = System.IO.Path.GetFullPath(assetPath);
+                string relativePath = assetPath; // Unity paths are already relative to project
+
+                // Build output path with _main suffix
+                string dir = System.IO.Path.GetDirectoryName(fullPath);
+                string name = System.IO.Path.GetFileNameWithoutExtension(fullPath);
+                string ext = System.IO.Path.GetExtension(fullPath);
+                string backupPath = System.IO.Path.Combine(dir, name + "_main" + ext);
+                string backupAssetPath = System.IO.Path.Combine(
+                    System.IO.Path.GetDirectoryName(assetPath),
+                    name + "_main" + ext);
+
+                // Use git show to extract file from main branch
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "git",
+                    Arguments = $"show main:\"{relativePath}\"",
+                    WorkingDirectory = repoRoot,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                using (var proc = System.Diagnostics.Process.Start(psi))
+                {
+                    using (var fs = new System.IO.FileStream(backupPath,
+                        System.IO.FileMode.Create, System.IO.FileAccess.Write))
+                    {
+                        proc.StandardOutput.BaseStream.CopyTo(fs);
+                    }
+                    string err = proc.StandardError.ReadToEnd();
+                    proc.WaitForExit();
+
+                    if (proc.ExitCode != 0)
+                    {
+                        UvtLog.Error($"[Backup] git show failed: {err.Trim()}");
+                        // Clean up empty file
+                        if (System.IO.File.Exists(backupPath))
+                            System.IO.File.Delete(backupPath);
+                        return;
+                    }
+                }
+
+                AssetDatabase.Refresh();
+                UvtLog.Info($"[Backup] Saved main branch version → {backupAssetPath}");
+            }
+            catch (System.Exception ex)
+            {
+                UvtLog.Error($"[Backup] Failed: {ex.Message}");
+            }
         }
 
         static void NukeAllSidecars()
