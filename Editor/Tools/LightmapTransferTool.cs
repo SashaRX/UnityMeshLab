@@ -1112,7 +1112,7 @@ namespace LightmapUvTool
                     }
 
                     // ── Remove stale children from cloned FBX ──
-                    // Keep only direct children whose names match our mesh entries.
+                    // Keep children whose names match mesh entries OR whose meshes were replaced.
                     // Old _COL, _Collider, "Lit", duplicate LODs etc. are removed.
                     // Must run BEFORE NormalizeExportHierarchy (which renames LOD0).
                     var validNames = new HashSet<string>();
@@ -1120,6 +1120,19 @@ namespace LightmapUvTool
                     {
                         string meshName = entry.fbxMesh != null ? entry.fbxMesh.name : resultMesh.name;
                         validNames.Add(meshName);
+                    }
+                    // Also keep children whose meshes were successfully replaced
+                    // (child name may differ from mesh name, e.g. "Body" vs "Body_LOD0")
+                    var replacedMeshes = new HashSet<Mesh>(meshReplacements.Values);
+                    foreach (var mf in tempRoot.GetComponentsInChildren<MeshFilter>(true))
+                    {
+                        if (mf.sharedMesh != null && replacedMeshes.Contains(mf.sharedMesh))
+                            validNames.Add(mf.gameObject.name);
+                    }
+                    foreach (var smr in tempRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                    {
+                        if (smr.sharedMesh != null && replacedMeshes.Contains(smr.sharedMesh))
+                            validNames.Add(smr.gameObject.name);
                     }
                     for (int ci = tempRoot.transform.childCount - 1; ci >= 0; ci--)
                     {
