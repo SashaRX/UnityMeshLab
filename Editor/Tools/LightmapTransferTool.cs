@@ -1123,7 +1123,10 @@ namespace LightmapUvTool
                     {
                         var ch = tempRoot.transform.GetChild(ci);
                         if (!validNames.Contains(ch.name))
+                        {
+                            UvtLog.Verbose($"[FBX Export] Pruning stale child '{ch.name}'");
                             UnityEngine.Object.DestroyImmediate(ch.gameObject);
+                        }
                     }
 
                     // ── Normalize FBX hierarchy ──
@@ -1160,6 +1163,9 @@ namespace LightmapUvTool
                             }
                         }
                     }
+
+                    if (collisionMeshCount > 0)
+                        UvtLog.Verbose($"[FBX Export] Added {collisionMeshCount} collision mesh(es) from sidecar");
 
                     // Strip _COL meshes to bare minimum: vertices + triangles +
                     // averaged normals + tangents. No UVs, colors, or other channels.
@@ -1210,6 +1216,8 @@ namespace LightmapUvTool
                         var mats = mr.sharedMaterials;
                         if (mats.Length > mesh.subMeshCount)
                         {
+                            UvtLog.Verbose($"[FBX Export] Trimming materials on '{mr.gameObject.name}': " +
+                                $"{mats.Length} → {mesh.subMeshCount}");
                             var trimmed = new Material[mesh.subMeshCount];
                             System.Array.Copy(mats, trimmed, trimmed.Length);
                             mr.sharedMaterials = trimmed;

@@ -291,6 +291,20 @@ namespace LightmapUvTool
             return result;
         }
 
+        /// <summary>
+        /// Count the total number of shell pairs whose UV0 bounding boxes overlap
+        /// above the given threshold. Useful as a metric for auto-tuning parameters.
+        /// </summary>
+        public static int CountAabbOverlaps(List<UvShell> shells, float threshold = 0.25f)
+        {
+            int count = 0;
+            for (int i = 0; i < shells.Count; i++)
+                for (int j = i + 1; j < shells.Count; j++)
+                    if (BboxOverlapRatio(shells[i], shells[j]) > threshold)
+                        count++;
+            return count;
+        }
+
         // ── Internals ──
 
         static float BboxOverlapRatio(UvShell a, UvShell b)

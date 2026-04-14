@@ -181,6 +181,8 @@ namespace LightmapUvTool
                         float smaller = Mathf.Min(areaI, areaJ);
                         if (smaller <= 0f || overlapArea / smaller < 0.01f) continue;
 
+                        float overlapRatio = overlapArea / smaller;
+
                         // Choose shift axis: prefer the direction with less displacement
                         float shiftU = (mx[i].x - mn[j].x) + padU;
                         float shiftV = (mx[i].y - mn[j].y) + padV;
@@ -188,6 +190,8 @@ namespace LightmapUvTool
                         if (shiftV <= 0f) shiftV = padV;
 
                         var shell = shells[group[j]];
+                        string axisName;
+                        float shiftMag;
                         if (shiftU <= shiftV)
                         {
                             foreach (int vi in shell.vertexIndices)
@@ -195,6 +199,8 @@ namespace LightmapUvTool
                                     uv2[vi] = new Vector2(uv2[vi].x + shiftU, uv2[vi].y);
                             mn[j] = new Vector2(mn[j].x + shiftU, mn[j].y);
                             mx[j] = new Vector2(mx[j].x + shiftU, mx[j].y);
+                            axisName = "U";
+                            shiftMag = shiftU;
                         }
                         else
                         {
@@ -203,7 +209,11 @@ namespace LightmapUvTool
                                     uv2[vi] = new Vector2(uv2[vi].x, uv2[vi].y + shiftV);
                             mn[j] = new Vector2(mn[j].x, mn[j].y + shiftV);
                             mx[j] = new Vector2(mx[j].x, mx[j].y + shiftV);
+                            axisName = "V";
+                            shiftMag = shiftV;
                         }
+                        UvtLog.Verbose($"[xatlas] Overlap fix: shell {group[i]}↔{group[j]} " +
+                            $"ratio={overlapRatio:F3} shift={axisName}+{shiftMag:F4}");
                         shifted++;
                     }
                 }
@@ -233,6 +243,7 @@ namespace LightmapUvTool
             if (maxU > 1f || maxV > 1f)
             {
                 float scale = 1f / Mathf.Max(maxU, maxV);
+                UvtLog.Verbose($"[xatlas] Rescale UV2 to unit: maxU={maxU:F4} maxV={maxV:F4} scale={scale:F4}");
                 for (int i = 0; i < uv2.Length; i++)
                     uv2[i] *= scale;
             }
@@ -293,6 +304,9 @@ namespace LightmapUvTool
 
             result.shellCount = shells.Count;
             result.overlapGroupCount = overlapGroups.Count;
+            int overlapPairCount = UvShellExtractor.CountAabbOverlaps(shells);
+            UvtLog.Verbose($"[xatlas] Pre-repack: {shells.Count} shells, " +
+                $"{overlapGroups.Count} overlap groups, {overlapPairCount} overlapping pairs");
 
             // UV0 winding normalized by ExecWeldUv0.
             result.flippedShells = 0;
@@ -473,6 +487,9 @@ namespace LightmapUvTool
 
                 results[m].shellCount        = shells.Count;
                 results[m].overlapGroupCount  = overlapGroups.Count;
+                int overlapPairs = UvShellExtractor.CountAabbOverlaps(shells);
+                UvtLog.Verbose($"[xatlas] Pre-repack mesh {m}: {shells.Count} shells, " +
+                    $"{overlapGroups.Count} overlap groups, {overlapPairs} overlapping pairs");
 
             }
 
