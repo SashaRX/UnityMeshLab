@@ -336,10 +336,20 @@ namespace LightmapUvTool
             bestDistSq = float.MaxValue;
             bestAvg3D = float.MaxValue;
 
-            // 3D tolerance must be generous: LOD decimation can shift the
-            // centroid of a shell by up to half its diameter. Use 20% of
-            // mesh diagonal as cap to still prevent matches across the mesh.
-            float dist3DTol = Mathf.Max(meshDiagonal * 0.20f, 0.05f);
+            // 3D tolerance: LOD decimation can shift centroids but not by much
+            // for "same feature" matches. Keep tight to avoid cross-side matches
+            // (e.g. corner on X+ side matching to LOD1 panel center on X- side).
+            float dist3DTol = Mathf.Max(meshDiagonal * 0.10f, 0.03f);
+
+            // Target UV0 bbox area — used to reject hints where the target
+            // covers a much larger UV0 region than the source. That indicates
+            // the target survives decimation as a "full feature" while the
+            // source is just a partial split fragment. Interp would need
+            // source UV0 coverage outside the source's actual range → UV2
+            // clamped / collapsed to a line (degenerate shells).
+            float targetUv0Area = Mathf.Max(
+                (targetUv0Max.x - targetUv0Min.x) * (targetUv0Max.y - targetUv0Min.y),
+                1e-9f);
 
             int bestUnclaimedHint = -1;
             float bestUnclaimedScore = float.MaxValue;
@@ -369,6 +379,15 @@ namespace LightmapUvTool
                     targetUv0Max.y > h.uv0BoundsMin.y - eps;
 
                 if (!centroidInsideHint && !bboxesOverlap) continue;
+
+                // Reject hint if target UV0 region is significantly larger
+                // than the hint's. Source (via hint) cannot provide UV0
+                // coverage for all target verts → degenerate interp.
+                float hintUv0Area = Mathf.Max(
+                    (h.uv0BoundsMax.x - h.uv0BoundsMin.x)
+                    * (h.uv0BoundsMax.y - h.uv0BoundsMin.y),
+                    1e-9f);
+                if (targetUv0Area > hintUv0Area * 1.5f) continue;
 
                 float dist3D = (h.centroid3D - targetCentroid).magnitude;
                 if (dist3D > dist3DTol) continue;
