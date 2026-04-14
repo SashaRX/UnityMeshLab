@@ -371,6 +371,13 @@ namespace LightmapUvTool
                     chosenDistSq = ranked[attempt].distSq;
                     chosenAvg3D = avgDist;
                 }
+
+                // Distance cutoff: if we already have a match and remaining candidates
+                // are beyond 50% of mesh diagonal, stop — they can't be correct.
+                if (chosenSrc >= 0 && meshDiag > 0f &&
+                    ranked[attempt].distSq > 0.25f * meshDiag * meshDiag)
+                    break;
+
                 // Early exit requires BOTH good distance AND good normal alignment.
                 // With multiplicative penalty, even wrong-side shells have low scores
                 // when distance is small (thin belts), so we must also check that the
@@ -563,6 +570,15 @@ namespace LightmapUvTool
                         bestCoverage = coverage;
                         bestDistSq = centDistSq;
                     }
+                }
+
+                // Distance guard: don't rescue to a source farther than 30% of mesh diagonal
+                float maxRescueDistSq = 0.09f * diagSq; // (0.3 * diag)²
+                if (bestSrc >= 0 && bestDistSq > maxRescueDistSq)
+                {
+                    UvtLog.Verbose($"[GroupedTransfer] Rescore: t{tsi} → src{bestSrc} " +
+                        $"too far ({Mathf.Sqrt(bestDistSq):F4} > {Mathf.Sqrt(maxRescueDistSq):F4}), keeping merged");
+                    bestSrc = -1;
                 }
 
                 if (bestSrc >= 0 && bestCoverage >= kCoverageAcceptThreshold)
@@ -1227,6 +1243,15 @@ namespace LightmapUvTool
                                 kMaxRetries * 3, kGoodDistSq, claimed,
                                 out int newSrc, out float newDistSq, out float newAvg3D,
                                 tgtAvgNormal[tsi], srcAvgNormal, meshDiagonal);
+
+                            // Distance guard: reject rematch if new source is too far
+                            float maxRematchDistSq = 0.09f * meshDiagonal * meshDiagonal; // 30% diag
+                            if (newSrc >= 0 && newAvg3D > maxRematchDistSq)
+                            {
+                                UvtLog.Verbose($"[GroupedTransfer] Dedup: t{tsi} rematch to src{newSrc} " +
+                                    $"rejected (avg3D={Mathf.Sqrt(newAvg3D):F4} > 30% diag={meshDiagonal * 0.3f:F4})");
+                                newSrc = -1;
+                            }
 
                             if (newSrc >= 0)
                             {
