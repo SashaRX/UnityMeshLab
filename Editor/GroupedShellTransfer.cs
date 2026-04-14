@@ -3161,7 +3161,7 @@ namespace LightmapUvTool
                         overlapsFixed++;
                         result.shellsOverlapFixed++;
                         UvtLog.Info($"[GroupedTransfer] Overlap fix: t{tsi} → sub-region " +
-                            $"[{sMin2.x:F3},{subMin:F3}]-[{sMax2.x:F3},{subMax:F3}] " +
+                            $"[{sMin2.x:F3},{subMinY:F3}]-[{sMax2.x:F3},{subMaxY:F3}] " +
                             $"(sibling {siblingIndex}/{siblingCount} of src{src})");
                     }
                 }
