@@ -108,11 +108,15 @@ namespace LightmapUvTool
 
             // Detect N-fold rotational symmetry per shell
             int totalSplit = 0;
+            int nFoldParamsCount = 0;
+            int binaryParamsCount = 0;
             int shellCountBefore = shells.Count;
             var sourceDescriptors = new ShellStateSnapshot[shellCountBefore];
+            var nFoldProcessedShells = new HashSet<int>();
             for (int i = 0; i < shellCountBefore; i++)
                 sourceDescriptors[i] = BuildShellSnapshot(shells[i], mesh);
 
+            // Stage 1: Detect + Apply N-fold splits.
             for (int si = 0; si < shellCountBefore; si++)
             {
                 var shell = shells[si];
@@ -145,7 +149,9 @@ namespace LightmapUvTool
                             sourceGroupId = sourceDescriptors[si].groupId,
                             sourceMirrored = sourceDescriptors[si].mirrored
                         });
+                        nFoldParamsCount++;
                         totalSplit += splitCount;
+                        nFoldProcessedShells.Add(si);
                         UvtLog.Info($"[SymSplit] Shell {si}: N-fold rotational N={N} axis={AxisName(rotAxis)} center=({center.x:F2},{center.y:F2},{center.z:F2})");
                         // Reread mesh data after modification
                         verts = mesh.vertices;
@@ -167,18 +173,21 @@ namespace LightmapUvTool
                 // Fall back to binary detection (ниже)
             }
 
-            // Run standard binary split on remaining shells (those not N-fold split)
-            if (totalSplit == 0)
+            // Stage 2: Detect + Apply binary splits on shells not processed by N-fold stage.
+            var binaryCandidateShells = new HashSet<int>();
+            for (int si = 0; si < shellCountBefore; si++)
+                if (!nFoldProcessedShells.Contains(si))
+                    binaryCandidateShells.Add(si);
+
+            if (binaryCandidateShells.Count > 0)
             {
-                // No N-fold detected, run binary splits with explicit params capture.
-                var binarySplits = DetectBinarySplits(mesh, shells);
-                int binarySplit = 0;
+                var binarySplits = DetectBinarySplits(mesh, shells, binaryCandidateShells);
                 foreach (var sp in binarySplits)
                 {
                     int splitCount = ApplyBinarySplit(mesh, shells, sp.shellIndex, sp.axis, sp.splitThreshold);
                     if (splitCount <= 0) continue;
+                    totalSplit += splitCount;
 
-                    binarySplit += splitCount;
                     if (sp.shellIndex < 0 || sp.shellIndex >= sourceDescriptors.Length) continue;
                     var src = sourceDescriptors[sp.shellIndex];
                     outParams.Add(new SplitParams
@@ -200,10 +209,11 @@ namespace LightmapUvTool
                         sourceGroupId = src.groupId,
                         sourceMirrored = src.mirrored
                     });
+                    binaryParamsCount++;
                 }
-                return binarySplit;
             }
 
+            UvtLog.Info($"[SymSplit] Split params: total={outParams.Count}, N-fold={nFoldParamsCount}, binary={binaryParamsCount}");
             return totalSplit;
         }
 
@@ -552,7 +562,7 @@ namespace LightmapUvTool
             return 1;
         }
 
-        static List<SplitInfo> DetectBinarySplits(Mesh mesh, List<UvShell> shells)
+        static List<SplitInfo> DetectBinarySplits(Mesh mesh, List<UvShell> shells, HashSet<int> candidateShells = null)
         {
             var splits = new List<SplitInfo>();
             var verts = mesh.vertices;
@@ -572,6 +582,9 @@ namespace LightmapUvTool
 
             for (int si = 0; si < shells.Count; si++)
             {
+                if (candidateShells != null && !candidateShells.Contains(si))
+                    continue;
+
                 var shell = shells[si];
                 var faces = shell.faceIndices;
                 if (faces.Count < 2) continue;
@@ -642,9 +655,9 @@ namespace LightmapUvTool
                 if (axisVotes[1] > axisVotes[bestAxis]) bestAxis = 1;
                 if (axisVotes[2] > axisVotes[bestAxis]) bestAxis = 2;
 
-                const int kMinVotesForThreshold = 3;
-                float threshold = axisVotes[bestAxis] >= kMinVotesForThreshold
-                    ? axisMidpointSum[bestAxis] / axisVotes[bestAxis]
+                int axisVoteCount = axisVotes[bestAxis];
+                float threshold = axisVoteCount > 0
+                    ? axisMidpointSum[bestAxis] / axisVoteCount
                     : 0f;
 
                 splits.Add(new SplitInfo { shellIndex = si, axis = bestAxis, splitThreshold = threshold });
