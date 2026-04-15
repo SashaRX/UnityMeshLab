@@ -12,6 +12,9 @@ namespace LightmapUvTool
 {
     public class UvToolHub : EditorWindow
     {
+        const string WindowTitle = nameof(UvToolHub);
+        const string WindowBrand = "Mesh Lab";
+
         // ── Tool registry ──
         List<IUvTool> tools;
         int activeToolIndex;
@@ -46,7 +49,7 @@ namespace LightmapUvTool
 
         static void OpenWithTool(string toolId)
         {
-            var w = GetWindow<UvToolHub>("Mesh Lab v" + Uv2DataAsset.ToolVersionStr);
+            var w = GetWindow<UvToolHub>(WindowTitle);
             w.minSize = new Vector2(800, 500);
             w.pendingToolId = toolId;
             if (w.tools != null && w.tools.Count > 0)
@@ -56,7 +59,10 @@ namespace LightmapUvTool
         void OnEnable()
         {
             wantsMouseMove = true;
-            titleContent = new GUIContent("Mesh Lab v" + Uv2DataAsset.ToolVersionStr);
+            // Keep the actual dock/window title stable and aligned with the
+            // EditorWindow type name. Unity can log "Invalid editor window"
+            // on maximize/minimize for custom windows with a different title.
+            titleContent = new GUIContent(WindowTitle, WindowBrand + " v" + Uv2DataAsset.ToolVersionStr);
 
             // Safety: if the window was closed while a preview was active (e.g., checker
             // materials on renderers), the static IsActive flag persists across editor
@@ -355,6 +361,10 @@ namespace LightmapUvTool
             }
 
             GUILayout.FlexibleSpace();
+
+            EditorGUILayout.LabelField(WindowBrand + " v" + Uv2DataAsset.ToolVersionStr,
+                EditorStyles.miniLabel, GUILayout.Width(120));
+            GUILayout.Space(6);
 
             // ── Log level ──
             EditorGUILayout.LabelField("Log:", EditorStyles.miniLabel, GUILayout.Width(24));
