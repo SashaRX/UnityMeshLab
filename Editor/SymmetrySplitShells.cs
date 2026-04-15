@@ -117,6 +117,7 @@ namespace LightmapUvTool
                 sourceDescriptors[i] = BuildShellSnapshot(shells[i], mesh);
 
             // Stage 1: Detect + Apply N-fold splits.
+            UvtLog.Verbose($"[SymSplit] Stage 1/2: Detect+Apply N-fold (shells={shellCountBefore})");
             for (int si = 0; si < shellCountBefore; si++)
             {
                 var shell = shells[si];
@@ -181,6 +182,7 @@ namespace LightmapUvTool
 
             if (binaryCandidateShells.Count > 0)
             {
+                UvtLog.Verbose($"[SymSplit] Stage 2/2: Detect+Apply binary on remaining shells (remaining={binaryCandidateShells.Count})");
                 var binarySplits = DetectBinarySplits(mesh, shells, binaryCandidateShells);
                 foreach (var sp in binarySplits)
                 {
@@ -213,7 +215,7 @@ namespace LightmapUvTool
                 }
             }
 
-            UvtLog.Info($"[SymSplit] Split params: total={outParams.Count}, N-fold={nFoldParamsCount}, binary={binaryParamsCount}");
+            UvtLog.Info($"[SymSplit] Split params: total={outParams.Count}, N-fold={nFoldParamsCount}, binary={binaryParamsCount}; applied splits total={totalSplit}");
             return totalSplit;
         }
 
