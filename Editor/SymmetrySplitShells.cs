@@ -10,9 +10,41 @@ namespace LightmapUvTool
 {
     public static class SymmetrySplitShells
     {
-        const float UV_NEAR = 0.01f;   // UV0 centroid distance threshold
-        const float POS_FAR = 0.5f;    // 3D centroid distance threshold
-        const float GRID_CELL = 0.01f; // spatial hash cell for UV0 centroids
+        const float UV_NEAR = 0.01f;   // UV0 centroid distance threshold (legacy)
+        const float POS_FAR = 0.5f;    // 3D centroid distance threshold (legacy)
+        const float GRID_CELL = 0.01f; // spatial hash cell for UV0 centroids (legacy)
+
+        public enum ThresholdMode
+        {
+            LegacyFixed = 0,
+            Adaptive = 1
+        }
+
+        struct ThresholdSet
+        {
+            public float uvNear;
+            public float posFar;
+            public float gridCell;
+            public bool adaptive;
+        }
+
+        static ThresholdMode s_thresholdMode = ThresholdMode.LegacyFixed;
+        static bool s_adaptiveModeLogged;
+
+        /// <summary>
+        /// Controls threshold strategy for symmetry split detection.
+        /// Default is LegacyFixed for backward compatibility.
+        /// </summary>
+        public static ThresholdMode CurrentThresholdMode
+        {
+            get => s_thresholdMode;
+            set
+            {
+                if (s_thresholdMode == value) return;
+                s_thresholdMode = value;
+                s_adaptiveModeLogged = false;
+            }
+        }
 
         /// <summary>
         /// Parameters describing how a shell was split. Stored so that
@@ -590,11 +622,12 @@ namespace LightmapUvTool
                 var shell = shells[si];
                 var faces = shell.faceIndices;
                 if (faces.Count < 2) continue;
+                var thresholds = GetThresholds(mesh, shell, si, "DetectBinarySplits");
 
                 var grid = new Dictionary<long, List<int>>();
                 foreach (int f in faces)
                 {
-                    long key = UvGridKey(uv0C[f]);
+                    long key = UvGridKey(uv0C[f], thresholds);
                     if (!grid.TryGetValue(key, out var bucket))
                     {
                         bucket = new List<int>();
@@ -610,8 +643,8 @@ namespace LightmapUvTool
                 foreach (int f in faces)
                 {
                     var c = uv0C[f];
-                    int cx = Mathf.FloorToInt(c.x / GRID_CELL);
-                    int cy = Mathf.FloorToInt(c.y / GRID_CELL);
+                    int cx = Mathf.FloorToInt(c.x / thresholds.gridCell);
+                    int cy = Mathf.FloorToInt(c.y / thresholds.gridCell);
 
                     for (int dx = -1; dx <= 1; dx++)
                     for (int dy = -1; dy <= 1; dy++)
@@ -622,8 +655,8 @@ namespace LightmapUvTool
                         foreach (int g in bucket)
                         {
                             if (g <= f) continue;
-                            if (Vector2.Distance(uv0C[f], uv0C[g]) >= UV_NEAR) continue;
-                            if (Vector3.Distance(posC[f], posC[g]) <= POS_FAR) continue;
+                            if (Vector2.Distance(uv0C[f], uv0C[g]) >= thresholds.uvNear) continue;
+                            if (Vector3.Distance(posC[f], posC[g]) <= thresholds.posFar) continue;
 
                             Vector3 sep = posC[f] - posC[g];
                             float sx = Mathf.Abs(sep.x);
@@ -688,12 +721,13 @@ namespace LightmapUvTool
 
             var faces = shell.faceIndices;
             if (faces.Count < 6) return 1;
+            var thresholds = GetThresholds(null, shell, shell.shellId, "DetectFoldCount");
 
             // Build UV0 centroid spatial hash for this shell
             var grid = new Dictionary<long, List<int>>();
             foreach (int f in faces)
             {
-                long key = UvGridKey(uv0C[f]);
+                long key = UvGridKey(uv0C[f], thresholds);
                 if (!grid.TryGetValue(key, out var bucket))
                 {
                     bucket = new List<int>();
@@ -717,8 +751,8 @@ namespace LightmapUvTool
                 if (sampleCount >= maxSample) break;
 
                 var c = uv0C[f];
-                int cx = Mathf.FloorToInt(c.x / GRID_CELL);
-                int cy = Mathf.FloorToInt(c.y / GRID_CELL);
+                int cx = Mathf.FloorToInt(c.x / thresholds.gridCell);
+                int cy = Mathf.FloorToInt(c.y / thresholds.gridCell);
 
                 int copies = 0;
                 for (int dx = -1; dx <= 1; dx++)
@@ -729,8 +763,8 @@ namespace LightmapUvTool
                     foreach (int g in bucket)
                     {
                         if (g == f) continue;
-                        if (Vector2.Distance(uv0C[f], uv0C[g]) >= UV_NEAR) continue;
-                        if (Vector3.Distance(posC[f], posC[g]) <= POS_FAR) continue;
+                        if (Vector2.Distance(uv0C[f], uv0C[g]) >= thresholds.uvNear) continue;
+                        if (Vector3.Distance(posC[f], posC[g]) <= thresholds.posFar) continue;
                         copies++;
 
                         // Vote on rotation axis: axis of MINIMUM separation
@@ -1041,10 +1075,11 @@ namespace LightmapUvTool
         /// </summary>
         static bool HasUv0Overlap(UvShell shell, Vector2[] uv0C)
         {
+            var thresholds = GetThresholds(null, shell, shell.shellId, "HasUv0Overlap");
             var grid = new Dictionary<long, List<int>>();
             foreach (int f in shell.faceIndices)
             {
-                long key = UvGridKey(uv0C[f]);
+                long key = UvGridKey(uv0C[f], thresholds);
                 if (!grid.TryGetValue(key, out var bucket))
                 {
                     bucket = new List<int>();
@@ -1076,10 +1111,52 @@ namespace LightmapUvTool
             return Mathf.Atan2(v, u);
         }
 
-        static long UvGridKey(Vector2 uv)
+        static ThresholdSet GetThresholds(Mesh mesh, UvShell shell, int shellIndex, string stageTag)
         {
-            int cx = Mathf.FloorToInt(uv.x / GRID_CELL);
-            int cy = Mathf.FloorToInt(uv.y / GRID_CELL);
+            if (CurrentThresholdMode != ThresholdMode.Adaptive)
+                return new ThresholdSet { uvNear = UV_NEAR, posFar = POS_FAR, gridCell = GRID_CELL, adaptive = false };
+
+            if (!s_adaptiveModeLogged)
+            {
+                UvtLog.Info("[SymSplit][AdaptiveThresholds] Adaptive threshold mode enabled.");
+                s_adaptiveModeLogged = true;
+            }
+
+            Vector2 uvSize = shell.boundsMax - shell.boundsMin;
+            float uvDiag = uvSize.magnitude;
+
+            float meshDiag = 0f;
+            if (mesh != null)
+                meshDiag = mesh.bounds.size.magnitude;
+
+            float uvNearAdaptive = Mathf.Clamp(uvDiag * 0.05f, UV_NEAR * 0.25f, UV_NEAR * 5f);
+            float posFarAdaptive = Mathf.Clamp(meshDiag * 0.03f, POS_FAR * 0.25f, POS_FAR * 4f);
+            if (posFarAdaptive <= 1e-6f)
+                posFarAdaptive = POS_FAR;
+
+            float gridCellAdaptive = Mathf.Clamp(uvNearAdaptive * 0.5f, GRID_CELL * 0.25f, GRID_CELL * 5f);
+            if (gridCellAdaptive <= 1e-6f)
+                gridCellAdaptive = GRID_CELL;
+
+            UvtLog.Verbose($"[SymSplit][AdaptiveThresholds] stage={stageTag}, shell={shellIndex}, " +
+                $"uvNear={uvNearAdaptive:F6} (legacy={UV_NEAR:F6}), " +
+                $"posFar={posFarAdaptive:F6} (legacy={POS_FAR:F6}), " +
+                $"gridCell={gridCellAdaptive:F6} (legacy={GRID_CELL:F6}), " +
+                $"uvDiag={uvDiag:F6}, meshDiag={meshDiag:F6}");
+
+            return new ThresholdSet
+            {
+                uvNear = uvNearAdaptive,
+                posFar = posFarAdaptive,
+                gridCell = gridCellAdaptive,
+                adaptive = true
+            };
+        }
+
+        static long UvGridKey(Vector2 uv, ThresholdSet thresholds)
+        {
+            int cx = Mathf.FloorToInt(uv.x / thresholds.gridCell);
+            int cy = Mathf.FloorToInt(uv.y / thresholds.gridCell);
             return GridKey(cx, cy);
         }
 
