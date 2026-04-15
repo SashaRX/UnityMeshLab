@@ -1326,11 +1326,11 @@ namespace LightmapUvTool
                     // Keep only direct children whose names match our mesh entries.
                     // Old _COL, _Collider, "Lit", duplicate LODs etc. are removed.
                     // Must run BEFORE NormalizeExportHierarchy (which renames LOD0).
-                    var validNames = new HashSet<string>();
+                    var validMeshNames = new HashSet<string>();
                     foreach (var (entry, resultMesh) in entries)
                     {
                         string meshName = ResolveExportMeshName(entry, resultMesh);
-                        validNames.Add(meshName);
+                        validMeshNames.Add(meshName);
                     }
 
                     // Protect meshes referenced by MeshCollider components.
@@ -1367,7 +1367,20 @@ namespace LightmapUvTool
                         // Removing them flattens FBX hierarchy and can break prefabs.
                         if (!hasRenderableMesh)
                             continue;
-                        if (!validNames.Contains(ch.name))
+                        string childMeshName = null;
+                        if (chMf != null && chMf.sharedMesh != null)
+                            childMeshName = chMf.sharedMesh.name;
+                        else if (chSmr != null && chSmr.sharedMesh != null)
+                            childMeshName = chSmr.sharedMesh.name;
+
+                        // Keep nodes when either the node name OR its bound mesh name
+                        // is part of the export set. Some DCC/Unity imports keep node
+                        // names different from mesh names (especially for root LOD0),
+                        // and pruning by node name alone can drop valid LOD content.
+                        bool keepByNodeName = validMeshNames.Contains(ch.name);
+                        bool keepByMeshName = !string.IsNullOrEmpty(childMeshName) &&
+                                              validMeshNames.Contains(childMeshName);
+                        if (!keepByNodeName && !keepByMeshName)
                             UnityEngine.Object.DestroyImmediate(ch.gameObject);
                     }
 
