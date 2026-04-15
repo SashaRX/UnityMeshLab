@@ -68,396 +68,14 @@ namespace LightmapUvTool
         /// </summary>
         public static int Split(Mesh mesh, List<UvShell> shells)
         {
-            var verts = mesh.vertices;
-            var uv0 = mesh.uv;
-            var tris = mesh.triangles;
-
-            if (uv0 == null || uv0.Length == 0 || tris.Length == 0)
-                return 0;
-
-            int faceCount = tris.Length / 3;
-
-            // ── Precompute per-face centroids ──
-            var uv0C = new Vector2[faceCount];
-            var posC = new Vector3[faceCount];
-            for (int f = 0; f < faceCount; f++)
-            {
-                int v0 = tris[f * 3], v1 = tris[f * 3 + 1], v2 = tris[f * 3 + 2];
-                uv0C[f] = (uv0[v0] + uv0[v1] + uv0[v2]) / 3f;
-                posC[f] = (verts[v0] + verts[v1] + verts[v2]) / 3f;
-            }
-
-            // ══════════════ Phase 1: Detection ══════════════
-
-            var splits = new List<SplitInfo>();
-
-            for (int si = 0; si < shells.Count; si++)
-            {
-                var shell = shells[si];
-                var faces = shell.faceIndices;
-                if (faces.Count < 2) continue;
-
-                // Build UV0 centroid spatial hash for this shell
-                var grid = new Dictionary<long, List<int>>();
-                foreach (int f in faces)
-                {
-                    long key = UvGridKey(uv0C[f]);
-                    if (!grid.TryGetValue(key, out var bucket))
-                    {
-                        bucket = new List<int>();
-                        grid[key] = bucket;
-                    }
-                    bucket.Add(f);
-                }
-
-                // Find symmetry pairs via grid neighbor search
-                int[] axisVotes = new int[3];
-                float[] axisMidpointSum = new float[3]; // sum of pair midpoints along each axis
-                bool found = false;
-
-                foreach (int f in faces)
-                {
-                    var c = uv0C[f];
-                    int cx = Mathf.FloorToInt(c.x / GRID_CELL);
-                    int cy = Mathf.FloorToInt(c.y / GRID_CELL);
-
-                    for (int dx = -1; dx <= 1; dx++)
-                    for (int dy = -1; dy <= 1; dy++)
-                    {
-                        long nk = GridKey(cx + dx, cy + dy);
-                        if (!grid.TryGetValue(nk, out var bucket)) continue;
-
-                        foreach (int g in bucket)
-                        {
-                            if (g <= f) continue; // avoid duplicate pairs + self
-                            float uvDist = Vector2.Distance(uv0C[f], uv0C[g]);
-                            if (uvDist >= UV_NEAR) continue;
-                            float posDist = Vector3.Distance(posC[f], posC[g]);
-                            if (posDist <= POS_FAR) continue;
-
-                            // Symmetry pair — vote on split axis
-                            // Use separation direction, not midpoint position.
-                            // The axis of maximum separation between a mirrored pair
-                            // is the correct split axis. The old midpoint heuristic
-                            // fails on flat models (e.g. Carousel in XZ plane) where
-                            // Y midpoint ≈ 0 for all pairs, incorrectly picking Y.
-                            Vector3 sep = posC[f] - posC[g];
-                            float sx = Mathf.Abs(sep.x);
-                            float sy = Mathf.Abs(sep.y);
-                            float sz = Mathf.Abs(sep.z);
-
-                            Vector3 mid = (posC[f] + posC[g]) * 0.5f;
-                            if (sx >= sy && sx >= sz)
-                            {
-                                axisVotes[0]++;
-                                axisMidpointSum[0] += mid.x;
-                            }
-                            else if (sy >= sz)
-                            {
-                                axisVotes[1]++;
-                                axisMidpointSum[1] += mid.y;
-                            }
-                            else
-                            {
-                                axisVotes[2]++;
-                                axisMidpointSum[2] += mid.z;
-                            }
-                            found = true;
-                        }
-                    }
-                }
-
-                if (!found) continue;
-
-                int bestAxis = 0;
-                if (axisVotes[1] > axisVotes[bestAxis]) bestAxis = 1;
-                if (axisVotes[2] > axisVotes[bestAxis]) bestAxis = 2;
-
-                // Use computed threshold only when there are enough votes to trust it.
-                // With 1-2 votes, a single pair's midpoint drives the threshold,
-                // producing lopsided splits (e.g. A=3, B=1) on simplified LODs
-                // that generate tiny fragments rejected by downstream transfer.
-                // Fall back to origin (0f) for low-confidence cases — matches
-                // the old behavior for models centered at world origin.
-                const int kMinVotesForThreshold = 3;
-                float threshold = axisVotes[bestAxis] >= kMinVotesForThreshold
-                    ? axisMidpointSum[bestAxis] / axisVotes[bestAxis]
-                    : 0f;
-                splits.Add(new SplitInfo { shellIndex = si, axis = bestAxis, splitThreshold = threshold });
-                UvtLog.Verbose($"[SymSplit] Shell {si}: symmetry on {AxisName(bestAxis)} " +
-                    $"(threshold={threshold:F3}, {axisVotes[0]}x/{axisVotes[1]}y/{axisVotes[2]}z votes, {faces.Count} faces)");
-            }
-
+            var splits = DetectBinarySplits(mesh, shells);
             if (splits.Count == 0) return 0;
 
-            // ══════════════ Phase 2: Split classification ══════════════
-
-            // Collect all boundary vertex duplications needed
-            int origVertCount = verts.Length;
-            int newVertOffset = 0;
-
-            // Per split: groupA faces, groupB faces, boundary remap
-            var splitData = new List<(
-                SplitInfo info,
-                List<int> groupA,
-                List<int> groupB,
-                Dictionary<int, int> boundaryRemap)>();
-
+            int totalSplit = 0;
             foreach (var sp in splits)
-            {
-                var shell = shells[sp.shellIndex];
-                var groupA = new List<int>();
-                var groupB = new List<int>();
+                totalSplit += ApplyBinarySplit(mesh, shells, sp.shellIndex, sp.axis, sp.splitThreshold);
 
-                foreach (int f in shell.faceIndices)
-                {
-                    float val = posC[f][sp.axis];
-                    if (val >= sp.splitThreshold)
-                        groupA.Add(f);
-                    else
-                        groupB.Add(f);
-                }
-
-                // Skip if one group is empty — no actual split
-                if (groupA.Count == 0 || groupB.Count == 0)
-                {
-                    UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: skip (all faces on one side)");
-                    continue;
-                }
-
-                // Find vertices used by each group
-                var vertsA = new HashSet<int>();
-                var vertsB = new HashSet<int>();
-                foreach (int f in groupA)
-                    for (int j = 0; j < 3; j++)
-                        vertsA.Add(tris[f * 3 + j]);
-                foreach (int f in groupB)
-                    for (int j = 0; j < 3; j++)
-                        vertsB.Add(tris[f * 3 + j]);
-
-                // Boundary = intersection
-                var boundary = new HashSet<int>(vertsA);
-                boundary.IntersectWith(vertsB);
-
-                if (boundary.Count == 0)
-                {
-                    UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: no boundary vertices (already separate)");
-                    continue;
-                }
-
-                // Assign new indices for boundary vertices (for group B)
-                var remap = new Dictionary<int, int>();
-                foreach (int bv in boundary)
-                {
-                    remap[bv] = origVertCount + newVertOffset;
-                    newVertOffset++;
-                }
-
-                splitData.Add((sp, groupA, groupB, remap));
-                UvtLog.Verbose($"[SymSplit] Shell {sp.shellIndex}: A={groupA.Count} B={groupB.Count} boundary={boundary.Count}");
-            }
-
-            if (splitData.Count == 0) return 0;
-
-            // ══════════════ Phase 3: Apply ══════════════
-
-            int totalNewVerts = newVertOffset;
-            int newVertCount = origVertCount + totalNewVerts;
-
-            // Read all vertex attributes
-            var normals = mesh.normals;
-            var tangents = mesh.tangents;
-            var colors = mesh.colors;
-            var boneWeights = mesh.boneWeights;
-
-            bool hasNormals = normals != null && normals.Length == origVertCount;
-            bool hasTangents = tangents != null && tangents.Length == origVertCount;
-            bool hasColors = colors != null && colors.Length == origVertCount;
-            bool hasBW = boneWeights != null && boneWeights.Length == origVertCount;
-
-            // Read all UV channels (0-7)
-            var uvLists = new List<Vector4>[8];
-            var hasUv = new bool[8];
-            for (int ch = 0; ch < 8; ch++)
-            {
-                uvLists[ch] = new List<Vector4>();
-                mesh.GetUVs(ch, uvLists[ch]);
-                hasUv[ch] = uvLists[ch].Count == origVertCount;
-            }
-
-            // Expand arrays
-            var newVerts = new Vector3[newVertCount];
-            System.Array.Copy(verts, newVerts, origVertCount);
-
-            Vector3[] newNormals = null;
-            if (hasNormals)
-            {
-                newNormals = new Vector3[newVertCount];
-                System.Array.Copy(normals, newNormals, origVertCount);
-            }
-
-            Vector4[] newTangents = null;
-            if (hasTangents)
-            {
-                newTangents = new Vector4[newVertCount];
-                System.Array.Copy(tangents, newTangents, origVertCount);
-            }
-
-            Color[] newColors = null;
-            if (hasColors)
-            {
-                newColors = new Color[newVertCount];
-                System.Array.Copy(colors, newColors, origVertCount);
-            }
-
-            BoneWeight[] newBW = null;
-            if (hasBW)
-            {
-                newBW = new BoneWeight[newVertCount];
-                System.Array.Copy(boneWeights, newBW, origVertCount);
-            }
-
-            // Expand UV channels
-            var newUvs = new List<Vector4>[8];
-            for (int ch = 0; ch < 8; ch++)
-            {
-                if (!hasUv[ch]) { newUvs[ch] = null; continue; }
-                newUvs[ch] = new List<Vector4>(newVertCount);
-                newUvs[ch].AddRange(uvLists[ch]);
-                // Pad to newVertCount — will fill duplicates below
-                while (newUvs[ch].Count < newVertCount)
-                    newUvs[ch].Add(Vector4.zero);
-            }
-
-            // Copy boundary vertex attributes to new slots
-            foreach (var (info, groupA, groupB, remap) in splitData)
-            {
-                foreach (var kv in remap)
-                {
-                    int src = kv.Key;
-                    int dst = kv.Value;
-                    newVerts[dst] = verts[src];
-                    if (hasNormals) newNormals[dst] = normals[src];
-                    if (hasTangents) newTangents[dst] = tangents[src];
-                    if (hasColors) newColors[dst] = colors[src];
-                    if (hasBW) newBW[dst] = boneWeights[src];
-                    for (int ch = 0; ch < 8; ch++)
-                        if (hasUv[ch]) newUvs[ch][dst] = uvLists[ch][src];
-                }
-            }
-
-            // Update triangle indices for group B faces
-            int[] newTris = (int[])tris.Clone();
-            foreach (var (info, groupA, groupB, remap) in splitData)
-            {
-                foreach (int f in groupB)
-                {
-                    for (int j = 0; j < 3; j++)
-                    {
-                        int vi = newTris[f * 3 + j];
-                        if (remap.TryGetValue(vi, out int ni))
-                            newTris[f * 3 + j] = ni;
-                    }
-                }
-            }
-
-            // Capture submesh layout before Clear
-            int subCount = mesh.subMeshCount;
-            var subDescs = new UnityEngine.Rendering.SubMeshDescriptor[subCount];
-            for (int s = 0; s < subCount; s++)
-                subDescs[s] = mesh.GetSubMesh(s);
-
-            var bindPoses = mesh.bindposes;
-
-            // Apply to mesh
-            mesh.Clear();
-            mesh.vertices = newVerts;
-            if (hasNormals) mesh.normals = newNormals;
-            if (hasTangents) mesh.tangents = newTangents;
-            if (hasColors) mesh.colors = newColors;
-            if (hasBW) mesh.boneWeights = newBW;
-            if (bindPoses != null && bindPoses.Length > 0)
-                mesh.bindposes = bindPoses;
-
-            for (int ch = 0; ch < 8; ch++)
-            {
-                if (!hasUv[ch]) continue;
-                mesh.SetUVs(ch, newUvs[ch]);
-            }
-
-            // Restore submeshes
-            mesh.subMeshCount = subCount;
-            int triOffset = 0;
-            for (int s = 0; s < subCount; s++)
-            {
-                int idxCount = subDescs[s].indexCount;
-                int[] subTris = new int[idxCount];
-                System.Array.Copy(newTris, triOffset, subTris, 0, idxCount);
-                mesh.SetTriangles(subTris, s);
-                triOffset += idxCount;
-            }
-
-            mesh.RecalculateBounds();
-
-            // Update shell list — need fresh UV0 for bounds
-            var finalUv0 = mesh.uv;
-
-            foreach (var (info, groupA, groupB, remap) in splitData)
-            {
-                var origShell = shells[info.shellIndex];
-
-                // Rebuild original shell as group A
-                origShell.symSplitAxis = info.axis;
-                origShell.symSplitSide = 1;
-                origShell.faceIndices = groupA;
-                origShell.vertexIndices.Clear();
-                Vector2 mnA = new Vector2(float.MaxValue, float.MaxValue);
-                Vector2 mxA = new Vector2(float.MinValue, float.MinValue);
-                foreach (int f in groupA)
-                {
-                    for (int j = 0; j < 3; j++)
-                    {
-                        int vi = newTris[f * 3 + j];
-                        origShell.vertexIndices.Add(vi);
-                        if (vi < finalUv0.Length)
-                        {
-                            mnA = Vector2.Min(mnA, finalUv0[vi]);
-                            mxA = Vector2.Max(mxA, finalUv0[vi]);
-                        }
-                    }
-                }
-                origShell.boundsMin = mnA;
-                origShell.boundsMax = mxA;
-                origShell.bboxArea = Mathf.Max(0f, (mxA.x - mnA.x) * (mxA.y - mnA.y));
-
-                // Create new shell for group B
-                var newShell = new UvShell { shellId = shells.Count, symSplitAxis = info.axis, symSplitSide = -1 };
-                newShell.faceIndices = groupB;
-                Vector2 mnB = new Vector2(float.MaxValue, float.MaxValue);
-                Vector2 mxB = new Vector2(float.MinValue, float.MinValue);
-                foreach (int f in groupB)
-                {
-                    for (int j = 0; j < 3; j++)
-                    {
-                        int vi = newTris[f * 3 + j];
-                        newShell.vertexIndices.Add(vi);
-                        if (vi < finalUv0.Length)
-                        {
-                            mnB = Vector2.Min(mnB, finalUv0[vi]);
-                            mxB = Vector2.Max(mxB, finalUv0[vi]);
-                        }
-                    }
-                }
-                newShell.boundsMin = mnB;
-                newShell.boundsMax = mxB;
-                newShell.bboxArea = Mathf.Max(0f, (mxB.x - mnB.x) * (mxB.y - mnB.y));
-                shells.Add(newShell);
-            }
-
-            UvtLog.Info($"[SymSplit] Split {splitData.Count} shell(s), " +
-                $"added {totalNewVerts} boundary verts ({origVertCount} → {newVertCount})");
-
-            return splitData.Count;
+            return totalSplit;
         }
 
         // ═══════════════════════════════════════════════════════════════
@@ -546,40 +164,42 @@ namespace LightmapUvTool
                     }
                 }
 
-                // Fall back to binary detection — already handled by Split(mesh, shells)
+                // Fall back to binary detection (ниже)
             }
 
             // Run standard binary split on remaining shells (those not N-fold split)
             if (totalSplit == 0)
             {
-                // No N-fold detected, run the standard binary split
-                int binarySplit = Split(mesh, shells);
-                // Record binary params for split source shells (groupA/original side)
-                for (int i = 0; i < shellCountBefore; i++)
+                // No N-fold detected, run binary splits with explicit params capture.
+                var binarySplits = DetectBinarySplits(mesh, shells);
+                int binarySplit = 0;
+                foreach (var sp in binarySplits)
                 {
-                    var s = shells[i];
-                    if (s.symSplitAxis >= 0 && s.symSplitSide == 1)
+                    int splitCount = ApplyBinarySplit(mesh, shells, sp.shellIndex, sp.axis, sp.splitThreshold);
+                    if (splitCount <= 0) continue;
+
+                    binarySplit += splitCount;
+                    if (sp.shellIndex < 0 || sp.shellIndex >= sourceDescriptors.Length) continue;
+                    var src = sourceDescriptors[sp.shellIndex];
+                    outParams.Add(new SplitParams
                     {
-                        outParams.Add(new SplitParams
-                        {
-                            foldCount = 2,
-                            axis = s.symSplitAxis,
-                            splitThreshold = 0f, // threshold was used internally
-                            center = Vector3.zero,
-                            sourceShellId = sourceDescriptors[i].shellId,
-                            sourceShellSignature = sourceDescriptors[i].signature,
-                            sourceUvCentroid = sourceDescriptors[i].uvCentroid,
-                            sourceUvSize = sourceDescriptors[i].uvSize,
-                            sourceFaceCount = sourceDescriptors[i].faceCount,
-                            sourceDescriptorHash = sourceDescriptors[i].descriptorHash,
-                            sourceUvArea = sourceDescriptors[i].uvArea,
-                            sourceBoundaryLength = sourceDescriptors[i].boundaryLength,
-                            sourceWorldCentroid = sourceDescriptors[i].worldCentroid,
-                            sourceWorldNormal = sourceDescriptors[i].worldNormal,
-                            sourceGroupId = sourceDescriptors[i].groupId,
-                            sourceMirrored = sourceDescriptors[i].mirrored
-                        });
-                    }
+                        foldCount = 2,
+                        axis = sp.axis,
+                        splitThreshold = sp.splitThreshold,
+                        center = Vector3.zero,
+                        sourceShellId = src.shellId,
+                        sourceShellSignature = src.signature,
+                        sourceUvCentroid = src.uvCentroid,
+                        sourceUvSize = src.uvSize,
+                        sourceFaceCount = src.faceCount,
+                        sourceDescriptorHash = src.descriptorHash,
+                        sourceUvArea = src.uvArea,
+                        sourceBoundaryLength = src.boundaryLength,
+                        sourceWorldCentroid = src.worldCentroid,
+                        sourceWorldNormal = src.worldNormal,
+                        sourceGroupId = src.groupId,
+                        sourceMirrored = src.mirrored
+                    });
                 }
                 return binarySplit;
             }
@@ -619,6 +239,7 @@ namespace LightmapUvTool
             int totalSplit = 0;
             int shellCountBefore = shells.Count;
             var usedShells = new HashSet<int>();
+            var processedShells = new HashSet<int>();
 
             foreach (var p in prescribed)
             {
@@ -671,7 +292,8 @@ namespace LightmapUvTool
                     if (bestShell >= 0)
                     {
                         usedFallback = true;
-                        UvtLog.Warn($"[SymSplit] SplitWithParams: fallback descriptor match for sourceShellId={p.sourceShellId}, " +
+                        string fallbackTag = p.foldCount == 2 ? "[SymSplit][PrescribedBinary]" : "[SymSplit]";
+                        UvtLog.Warn($"{fallbackTag} SplitWithParams: fallback descriptor match for sourceShellId={p.sourceShellId}, " +
                             $"groupId={p.sourceGroupId}, signature={p.sourceShellSignature}, targetShell={bestShell}, distance={bestDistance:F4}");
                     }
                     else
@@ -704,14 +326,333 @@ namespace LightmapUvTool
                         }
                     }
                 }
+                else if (processedShells.Contains(bestShell))
+                {
+                    UvtLog.Warn($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} уже обработан в этом вызове, повтор пропущен");
+                }
                 else
                 {
-                    // Binary: just run the standard split (it will detect the same axis)
-                    totalSplit += Split(mesh, shells);
+                    int splitCount = ApplyBinarySplit(mesh, shells, bestShell, p.axis, p.splitThreshold);
+                    if (splitCount > 0)
+                    {
+                        processedShells.Add(bestShell);
+                        totalSplit += splitCount;
+                        UvtLog.Info($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} axis={AxisName(p.axis)} threshold={p.splitThreshold:F4} (prescribed{(usedFallback ? ", fallback" : string.Empty)})");
+                        // Reread after mesh modification
+                        verts = mesh.vertices;
+                        uv0 = mesh.uv;
+                        tris = mesh.triangles;
+                        faceCount = tris.Length / 3;
+                        uv0C = new Vector2[faceCount];
+                        posC = new Vector3[faceCount];
+                        for (int f2 = 0; f2 < faceCount; f2++)
+                        {
+                            int v0 = tris[f2 * 3], v1 = tris[f2 * 3 + 1], v2 = tris[f2 * 3 + 2];
+                            uv0C[f2] = (uv0[v0] + uv0[v1] + uv0[v2]) / 3f;
+                            posC[f2] = (verts[v0] + verts[v1] + verts[v2]) / 3f;
+                        }
+                    }
+                    else
+                    {
+                        UvtLog.Verbose($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} не разрезан (axis={AxisName(p.axis)}, threshold={p.splitThreshold:F4})");
+                    }
                 }
             }
 
             return totalSplit;
+        }
+
+        static int ApplyBinarySplit(Mesh mesh, List<UvShell> shells, int shellIndex, int axis, float threshold)
+        {
+            if (mesh == null || shells == null || shellIndex < 0 || shellIndex >= shells.Count) return 0;
+            if (axis < 0 || axis > 2) return 0;
+
+            var tris = mesh.triangles;
+            var verts = mesh.vertices;
+            if (tris == null || tris.Length == 0 || verts == null || verts.Length == 0) return 0;
+
+            var shell = shells[shellIndex];
+            if (shell.faceIndices == null || shell.faceIndices.Count < 2) return 0;
+
+            var groupA = new List<int>();
+            var groupB = new List<int>();
+            foreach (int f in shell.faceIndices)
+            {
+                if (f < 0 || f * 3 + 2 >= tris.Length) continue;
+                int v0 = tris[f * 3];
+                int v1 = tris[f * 3 + 1];
+                int v2 = tris[f * 3 + 2];
+                float val = (verts[v0][axis] + verts[v1][axis] + verts[v2][axis]) / 3f;
+                if (val >= threshold) groupA.Add(f);
+                else groupB.Add(f);
+            }
+
+            if (groupA.Count == 0 || groupB.Count == 0)
+            {
+                UvtLog.Verbose($"[SymSplit] Shell {shellIndex}: skip (all faces on one side)");
+                return 0;
+            }
+
+            var vertsA = new HashSet<int>();
+            var vertsB = new HashSet<int>();
+            foreach (int f in groupA)
+                for (int j = 0; j < 3; j++)
+                    vertsA.Add(tris[f * 3 + j]);
+            foreach (int f in groupB)
+                for (int j = 0; j < 3; j++)
+                    vertsB.Add(tris[f * 3 + j]);
+
+            var boundary = new HashSet<int>(vertsA);
+            boundary.IntersectWith(vertsB);
+            if (boundary.Count == 0)
+            {
+                UvtLog.Verbose($"[SymSplit] Shell {shellIndex}: no boundary vertices (already separate)");
+                return 0;
+            }
+
+            int origVertCount = verts.Length;
+            var remap = new Dictionary<int, int>(boundary.Count);
+            int offset = 0;
+            foreach (int bv in boundary)
+                remap[bv] = origVertCount + offset++;
+
+            int newVertCount = origVertCount + boundary.Count;
+            var normals = mesh.normals;
+            var tangents = mesh.tangents;
+            var colors = mesh.colors;
+            var boneWeights = mesh.boneWeights;
+            bool hasNormals = normals != null && normals.Length == origVertCount;
+            bool hasTangents = tangents != null && tangents.Length == origVertCount;
+            bool hasColors = colors != null && colors.Length == origVertCount;
+            bool hasBW = boneWeights != null && boneWeights.Length == origVertCount;
+
+            var uvLists = new List<Vector4>[8];
+            var hasUv = new bool[8];
+            for (int ch = 0; ch < 8; ch++)
+            {
+                uvLists[ch] = new List<Vector4>();
+                mesh.GetUVs(ch, uvLists[ch]);
+                hasUv[ch] = uvLists[ch].Count == origVertCount;
+            }
+
+            var newVerts = new Vector3[newVertCount];
+            System.Array.Copy(verts, newVerts, origVertCount);
+            Vector3[] newNormals = hasNormals ? new Vector3[newVertCount] : null;
+            if (hasNormals) System.Array.Copy(normals, newNormals, origVertCount);
+            Vector4[] newTangents = hasTangents ? new Vector4[newVertCount] : null;
+            if (hasTangents) System.Array.Copy(tangents, newTangents, origVertCount);
+            Color[] newColors = hasColors ? new Color[newVertCount] : null;
+            if (hasColors) System.Array.Copy(colors, newColors, origVertCount);
+            BoneWeight[] newBW = hasBW ? new BoneWeight[newVertCount] : null;
+            if (hasBW) System.Array.Copy(boneWeights, newBW, origVertCount);
+
+            var newUvs = new List<Vector4>[8];
+            for (int ch = 0; ch < 8; ch++)
+            {
+                if (!hasUv[ch]) { newUvs[ch] = null; continue; }
+                newUvs[ch] = new List<Vector4>(newVertCount);
+                newUvs[ch].AddRange(uvLists[ch]);
+                while (newUvs[ch].Count < newVertCount) newUvs[ch].Add(Vector4.zero);
+            }
+
+            foreach (var kv in remap)
+            {
+                int src = kv.Key;
+                int dst = kv.Value;
+                newVerts[dst] = verts[src];
+                if (hasNormals) newNormals[dst] = normals[src];
+                if (hasTangents) newTangents[dst] = tangents[src];
+                if (hasColors) newColors[dst] = colors[src];
+                if (hasBW) newBW[dst] = boneWeights[src];
+                for (int ch = 0; ch < 8; ch++)
+                    if (hasUv[ch]) newUvs[ch][dst] = uvLists[ch][src];
+            }
+
+            int[] newTris = (int[])tris.Clone();
+            foreach (int f in groupB)
+                for (int j = 0; j < 3; j++)
+                {
+                    int vi = newTris[f * 3 + j];
+                    if (remap.TryGetValue(vi, out int ni))
+                        newTris[f * 3 + j] = ni;
+                }
+
+            int subCount = mesh.subMeshCount;
+            var subDescs = new UnityEngine.Rendering.SubMeshDescriptor[subCount];
+            for (int s = 0; s < subCount; s++)
+                subDescs[s] = mesh.GetSubMesh(s);
+            var bindPoses = mesh.bindposes;
+
+            mesh.Clear();
+            mesh.vertices = newVerts;
+            if (hasNormals) mesh.normals = newNormals;
+            if (hasTangents) mesh.tangents = newTangents;
+            if (hasColors) mesh.colors = newColors;
+            if (hasBW) mesh.boneWeights = newBW;
+            if (bindPoses != null && bindPoses.Length > 0) mesh.bindposes = bindPoses;
+            for (int ch = 0; ch < 8; ch++)
+                if (hasUv[ch]) mesh.SetUVs(ch, newUvs[ch]);
+
+            mesh.subMeshCount = subCount;
+            int triOffset = 0;
+            for (int s = 0; s < subCount; s++)
+            {
+                int idxCount = subDescs[s].indexCount;
+                int[] subTris = new int[idxCount];
+                System.Array.Copy(newTris, triOffset, subTris, 0, idxCount);
+                mesh.SetTriangles(subTris, s);
+                triOffset += idxCount;
+            }
+            mesh.RecalculateBounds();
+
+            var finalUv0 = mesh.uv;
+            var origShell = shells[shellIndex];
+            origShell.symSplitAxis = axis;
+            origShell.symSplitSide = 1;
+            origShell.faceIndices = groupA;
+            origShell.vertexIndices.Clear();
+            Vector2 mnA = new Vector2(float.MaxValue, float.MaxValue);
+            Vector2 mxA = new Vector2(float.MinValue, float.MinValue);
+            foreach (int f in groupA)
+                for (int j = 0; j < 3; j++)
+                {
+                    int vi = newTris[f * 3 + j];
+                    origShell.vertexIndices.Add(vi);
+                    if (vi < finalUv0.Length)
+                    {
+                        mnA = Vector2.Min(mnA, finalUv0[vi]);
+                        mxA = Vector2.Max(mxA, finalUv0[vi]);
+                    }
+                }
+            origShell.boundsMin = mnA;
+            origShell.boundsMax = mxA;
+            origShell.bboxArea = Mathf.Max(0f, (mxA.x - mnA.x) * (mxA.y - mnA.y));
+
+            var newShell = new UvShell { shellId = shells.Count, symSplitAxis = axis, symSplitSide = -1 };
+            newShell.faceIndices = groupB;
+            Vector2 mnB = new Vector2(float.MaxValue, float.MaxValue);
+            Vector2 mxB = new Vector2(float.MinValue, float.MinValue);
+            foreach (int f in groupB)
+                for (int j = 0; j < 3; j++)
+                {
+                    int vi = newTris[f * 3 + j];
+                    newShell.vertexIndices.Add(vi);
+                    if (vi < finalUv0.Length)
+                    {
+                        mnB = Vector2.Min(mnB, finalUv0[vi]);
+                        mxB = Vector2.Max(mxB, finalUv0[vi]);
+                    }
+                }
+            newShell.boundsMin = mnB;
+            newShell.boundsMax = mxB;
+            newShell.bboxArea = Mathf.Max(0f, (mxB.x - mnB.x) * (mxB.y - mnB.y));
+            shells.Add(newShell);
+
+            UvtLog.Info($"[SymSplit] Shell {shellIndex}: binary split axis={AxisName(axis)} threshold={threshold:F4}, A={groupA.Count}, B={groupB.Count}, boundary={boundary.Count}, verts {origVertCount}→{newVertCount}");
+            return 1;
+        }
+
+        static List<SplitInfo> DetectBinarySplits(Mesh mesh, List<UvShell> shells)
+        {
+            var splits = new List<SplitInfo>();
+            var verts = mesh.vertices;
+            var uv0 = mesh.uv;
+            var tris = mesh.triangles;
+            if (uv0 == null || uv0.Length == 0 || tris.Length == 0) return splits;
+
+            int faceCount = tris.Length / 3;
+            var uv0C = new Vector2[faceCount];
+            var posC = new Vector3[faceCount];
+            for (int f = 0; f < faceCount; f++)
+            {
+                int v0 = tris[f * 3], v1 = tris[f * 3 + 1], v2 = tris[f * 3 + 2];
+                uv0C[f] = (uv0[v0] + uv0[v1] + uv0[v2]) / 3f;
+                posC[f] = (verts[v0] + verts[v1] + verts[v2]) / 3f;
+            }
+
+            for (int si = 0; si < shells.Count; si++)
+            {
+                var shell = shells[si];
+                var faces = shell.faceIndices;
+                if (faces.Count < 2) continue;
+
+                var grid = new Dictionary<long, List<int>>();
+                foreach (int f in faces)
+                {
+                    long key = UvGridKey(uv0C[f]);
+                    if (!grid.TryGetValue(key, out var bucket))
+                    {
+                        bucket = new List<int>();
+                        grid[key] = bucket;
+                    }
+                    bucket.Add(f);
+                }
+
+                int[] axisVotes = new int[3];
+                float[] axisMidpointSum = new float[3];
+                bool found = false;
+
+                foreach (int f in faces)
+                {
+                    var c = uv0C[f];
+                    int cx = Mathf.FloorToInt(c.x / GRID_CELL);
+                    int cy = Mathf.FloorToInt(c.y / GRID_CELL);
+
+                    for (int dx = -1; dx <= 1; dx++)
+                    for (int dy = -1; dy <= 1; dy++)
+                    {
+                        long nk = GridKey(cx + dx, cy + dy);
+                        if (!grid.TryGetValue(nk, out var bucket)) continue;
+
+                        foreach (int g in bucket)
+                        {
+                            if (g <= f) continue;
+                            if (Vector2.Distance(uv0C[f], uv0C[g]) >= UV_NEAR) continue;
+                            if (Vector3.Distance(posC[f], posC[g]) <= POS_FAR) continue;
+
+                            Vector3 sep = posC[f] - posC[g];
+                            float sx = Mathf.Abs(sep.x);
+                            float sy = Mathf.Abs(sep.y);
+                            float sz = Mathf.Abs(sep.z);
+                            Vector3 mid = (posC[f] + posC[g]) * 0.5f;
+                            if (sx >= sy && sx >= sz)
+                            {
+                                axisVotes[0]++;
+                                axisMidpointSum[0] += mid.x;
+                            }
+                            else if (sy >= sz)
+                            {
+                                axisVotes[1]++;
+                                axisMidpointSum[1] += mid.y;
+                            }
+                            else
+                            {
+                                axisVotes[2]++;
+                                axisMidpointSum[2] += mid.z;
+                            }
+
+                            found = true;
+                        }
+                    }
+                }
+
+                if (!found) continue;
+
+                int bestAxis = 0;
+                if (axisVotes[1] > axisVotes[bestAxis]) bestAxis = 1;
+                if (axisVotes[2] > axisVotes[bestAxis]) bestAxis = 2;
+
+                const int kMinVotesForThreshold = 3;
+                float threshold = axisVotes[bestAxis] >= kMinVotesForThreshold
+                    ? axisMidpointSum[bestAxis] / axisVotes[bestAxis]
+                    : 0f;
+
+                splits.Add(new SplitInfo { shellIndex = si, axis = bestAxis, splitThreshold = threshold });
+                UvtLog.Verbose($"[SymSplit] Shell {si}: symmetry on {AxisName(bestAxis)} " +
+                    $"(threshold={threshold:F3}, {axisVotes[0]}x/{axisVotes[1]}y/{axisVotes[2]}z votes, {faces.Count} faces)");
+            }
+
+            return splits;
         }
 
         // ═══════════════════════════════════════════════════════════════
