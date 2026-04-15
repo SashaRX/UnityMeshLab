@@ -86,7 +86,7 @@ namespace LightmapUvTool
             if (string.IsNullOrEmpty(name)) return name;
             return System.Text.RegularExpressions.Regex.Replace(
                 name,
-                @"[_\-\s]+(LOD\d+|COL\w*|Collision)$",
+                @"(?:[_\-\s]+(?:LOD\d+|COL(?:_Hull\d+)?|Collider|Collision))+$",
                 "",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
