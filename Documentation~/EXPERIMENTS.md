@@ -102,66 +102,76 @@
 - **Логи этапов:** добавлены явные служебные логи старта этапов `Stage 1/2: Detect+Apply N-fold` и `Stage 2/2: Detect+Apply binary on remaining`.
 - **Итоговая диагностика:** итоговый лог `Split params` дополнен `applied splits total`, чтобы сверять число реально применённых split с числом сериализованных `SplitParams`.
 
-## Эксперимент 2026-04-15 — Adaptive `UV_NEAR/POS_FAR` для shell matching
+## Эксперимент 2026-04-15 — Adaptive `UV_NEAR/POS_FAR` для shell matching (Round 3, decision protocol)
 
-- **Гипотеза:** фиксированные пороги (`UV_NEAR`, `POS_FAR`) слишком жёсткие для крупных shell и слишком мягкие для мелких, поэтому:
-  - улучшится matching в **symmetry shell** (особенно при слабом scale drift между source/target);
-  - улучшится matching на **LOD2+ с похожими shell**, где несколько кандидатов близки по descriptor, но отличаются масштабом.
-- **Ожидаемый эффект:** рост процента корректных соответствий без роста ложных матчей и без дестабилизации повторных прогонов.
+- **Статус:** proposal / A-B validation against legacy (до включения по умолчанию).
 
-### Предлагаемая формула/эвристика
+### 1) Гипотеза
 
-Для каждого source shell считаем масштабные признаки:
-- `uvArea` — площадь shell в UV0;
-- `boundaryLength` — длина UV0-границы shell;
-- `uvDiag` — диагональ AABB shell в UV0;
-- `posDiag` — диагональ AABB shell в object/world space.
+Фиксированные пороги `UV_NEAR/POS_FAR` хуже переносятся между shell разного масштаба.
+Ожидаемые улучшения от adaptive-порогов:
+- **Symmetry shell:** меньше ошибочных пар left/right при небольшом drift UV/позиции после split/repack.
+- **LOD2+ с похожими shell:** выше точность выбора source shell среди близких кандидатов (одинаковый class/group, но разный размер).
 
-Нормируем относительно медианы по shell в текущей группе:
+### 2) Формула / эвристика adaptive-порогов
+
+Для каждого source shell считаются признаки масштаба:
+- `uvArea` — площадь в UV0;
+- `boundaryLength` — длина границы в UV0;
+- `uvDiag` — диагональ UV0 AABB;
+- `posDiag` — диагональ world/object AABB.
+
+Нормировка в пределах текущей группы (устойчиво к outlier через медиану):
 - `sUv = clamp(uvDiag / medianUvDiag, 0.5, 2.0)`
 - `sPos = clamp(posDiag / medianPosDiag, 0.5, 2.0)`
 
-Адаптивные пороги:
+Расчёт порогов:
 - `UV_NEAR_adaptive = UV_NEAR_legacy * lerp(0.85, 1.35, (sUv - 0.5) / 1.5)`
 - `POS_FAR_adaptive = POS_FAR_legacy * lerp(0.80, 1.40, (sPos - 0.5) / 1.5)`
 
-Дополнительные правила стабилизации:
-- нижняя/верхняя граница: `UV_NEAR_adaptive ∈ [0.75x, 1.50x]`, `POS_FAR_adaptive ∈ [0.70x, 1.60x]` от legacy;
-- если `uvArea` ниже `P10` по группе, принудительно `UV_NEAR_adaptive *= 0.9` (борьба с false-positive на микрошеллах);
-- если `boundaryLength / sqrt(uvArea)` выше `P90` (тонкие/рваные shell), не расширять `UV_NEAR` выше `1.15x` legacy.
+Стабилизаторы:
+- глобальный clamp: `UV_NEAR ∈ [0.75x, 1.50x]`, `POS_FAR ∈ [0.70x, 1.60x]` от legacy;
+- micro-shell guard: если `uvArea < P10`, применить `UV_NEAR *= 0.9`;
+- thin-shell guard: если `boundaryLength / sqrt(uvArea) > P90`, не расширять `UV_NEAR` выше `1.15x` legacy.
 
-### Набор тестов и метрики сравнения с legacy
+### 3) Тестовый набор и метрики vs legacy
 
-**Сцены/модели (минимум):**
-1. Простая симметрия: «базовый симметричный проп» (лево/право зеркальные shell).
-2. Playground LODGroup (эталонная сложная сцена пакета).
-3. Модель с 3+ LOD, где на LOD2/LOD3 есть несколько визуально похожих shell.
-4. Стресс-кейс с мелкими fragment shell (после dedup/merge path).
+**Сцены/модели (обязательный минимум):**
+1. Симметричный prop (эталон left/right shell).
+2. Playground LODGroup (сложный mixed-кейс пакета).
+3. LOD-цепочка с 3+ уровнями, где LOD2/LOD3 содержит похожие shell-кандидаты.
+4. Stress-кейс с мелкими fragment shell после dedup/merge.
 
-**Сценарий прогона:**
-- для каждого кейса: legacy vs adaptive;
-- по 10 повторных прогонов на одинаковом входе (для проверки детерминизма).
+**Протокол:**
+- A/B: `legacy` vs `adaptive` на одинаковом входе;
+- 10 повторов на кейс (проверка детерминизма);
+- фиксировать seed/порядок загрузки для воспроизводимости.
 
 **Метрики:**
-- `%correct_match` — доля shell с ожидаемым source shell id/group id;
+- `correct_match_%` — доля shell с ожидаемым source shell id/group id;
 - `fallback_count` — число переходов на descriptor-distance fallback;
-- `overlap_count` — итоговые UV2 overlap после post-hoc fixing;
-- `rerun_stability` — совпадение mapping hash между 10 прогонами (в %);
-- `time_ms` — среднее время этапа matching.
+- `overlap_count` — финальные UV2 overlaps после post-hoc fixing;
+- `rerun_stability_%` — совпадение mapping hash между 10 прогонами;
+- `matching_time_ms` — среднее время этапа shell matching.
 
-### Stop/Go критерии
+### 4) Stop/Go критерии
 
-**GO (оставляем adaptive по умолчанию), если одновременно:**
-- `%correct_match` не хуже legacy на простом symmetry-кейсе и ≥ `+3%` на LOD2+ похожих shell;
+**GO (adaptive становится default), если одновременно:**
+- `correct_match_%` на symmetry-кейсе не хуже legacy, и минимум `+3%` на LOD2+ похожих shell;
 - `fallback_count` не растёт более чем на `+10%` относительно legacy;
-- `rerun_stability` ≥ `99.5%` (расхождения только в диагностике, не в результате UV2);
-- `overlap_count` не увеличивается.
+- `overlap_count` не выше legacy на всех эталонных сценах;
+- `rerun_stability_% >= 99.5%`;
+- `matching_time_ms` рост не более `20%`.
 
-**STOP (откатываемся на legacy), если выполняется любой пункт:**
-- деградация `%correct_match` на symmetry-кейсе более чем на `1%`;
-- рост `overlap_count` на любом эталонном кейсе;
-- `rerun_stability < 99%` или недетерминизм в target shell выборе;
-- прирост `time_ms` matching этапа > `20%` без компенсирующего выигрыша по качеству.
+**STOP (оставляем/возвращаем legacy), если выполняется любой пункт:**
+- деградация `correct_match_%` на symmetry-кейсе более чем на `1%`;
+- рост `overlap_count` хотя бы на одной эталонной сцене;
+- `rerun_stability_% < 99%` или зафиксирован недетерминизм выбора target shell;
+- рост `matching_time_ms > 20%` без подтверждённого quality-win.
+
+**Решение по умолчанию:**
+- до выполнения GO-критериев adaptive держать за feature-flag / экспериментальный режим;
+- после 2 последовательных прогонов полного набора без регрессий — переводить в default.
 
 ---
 
