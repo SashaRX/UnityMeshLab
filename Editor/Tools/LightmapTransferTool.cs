@@ -1078,16 +1078,6 @@ namespace LightmapUvTool
             // so that original materials are captured, not preview materials.
             RestoreAllPreviews();
 
-            // Overwrite pipeline must have postprocessor define enabled so UV2/AO can
-            // survive third-party reimports (Bakery and similar). If disabled, enable
-            // it and ask user to rerun export after scripts recompile.
-            if (overwriteSource && !PostprocessorDefineManager.IsEnabled())
-            {
-                PostprocessorDefineManager.SetEnabled(true);
-                UvtLog.Warn("[FBX Export] Sidecar UV2 Mode was disabled. Enabled LIGHTMAP_UV_TOOL_POSTPROCESSOR — wait for script reload and run Overwrite FBX again.");
-                return;
-            }
-
             // Find the source FBX path from source LOD entries
             string sourceFbxFile = null;
             foreach (var e in ctx.MeshEntries)
