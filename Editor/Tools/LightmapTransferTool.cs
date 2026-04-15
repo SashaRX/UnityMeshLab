@@ -909,7 +909,11 @@ namespace LightmapUvTool
 
         void ApplyUv2ToFbx()
         {
-            if (ctx.LodGroup == null) return;
+            if (ctx?.MeshEntries == null || ctx.MeshEntries.Count == 0)
+            {
+                UvtLog.Warn("[Apply] No meshes loaded.");
+                return;
+            }
             UvtLog.Info("[Apply] Applying UV2 to FBX...");
 
             // Pre-import pass: reimport FBXs with postprocessor bypassed to get raw vertex order
@@ -1301,7 +1305,11 @@ namespace LightmapUvTool
         void ExportFbx(bool overwriteSource)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            if (ctx.LodGroup == null) { UvtLog.Error("[FBX Export] No LODGroup loaded."); return; }
+            if (ctx?.MeshEntries == null || ctx.MeshEntries.Count == 0)
+            {
+                UvtLog.Error("[FBX Export] No meshes loaded.");
+                return;
+            }
 
             // Restore any active preview (checker, AO, shell colors) before export
             // so that original materials are captured, not preview materials.
@@ -2497,7 +2505,17 @@ namespace LightmapUvTool
 
         void SwitchToPostApplyView()
         {
-            ctx.Refresh(ctx.LodGroup);
+            if (ctx.LodGroup != null)
+            {
+                ctx.Refresh(ctx.LodGroup);
+            }
+            else if (ctx.StandaloneMesh)
+            {
+                var standaloneRenderer = ctx.MeshEntries
+                    .FirstOrDefault(e => e?.renderer is MeshRenderer)?.renderer as MeshRenderer;
+                if (standaloneRenderer != null)
+                    ctx.RefreshStandalone(standaloneRenderer);
+            }
             OnRefresh();
             canvas.FillAlpha = 0.15f;
             canvas.ActiveFillModeIndex = 0; // Shells

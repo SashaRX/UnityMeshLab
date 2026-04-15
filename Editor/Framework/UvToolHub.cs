@@ -786,7 +786,7 @@ namespace LightmapUvTool
             GUI.backgroundColor = bgNuke;
 
             bool hasMeshEntries = ctx != null && ctx.MeshEntries != null && ctx.MeshEntries.Count > 0;
-            bool hasLodWorkflow = ctx != null && ctx.LodGroup != null;
+            bool hasFbxWorkflow = ctx != null && !string.IsNullOrEmpty(ctx.SourceFbxPath);
             if (!hasMeshEntries) return;
             EditorGUILayout.Space(2);
             var r = GUILayoutUtility.GetRect(0, 1, GUILayout.ExpandWidth(true));
@@ -799,7 +799,7 @@ namespace LightmapUvTool
                     if (tool is LightmapTransferTool ltt) { ltt.SaveAllPublic(); break; }
             }
 
-            if (!hasLodWorkflow) return;
+            if (!hasFbxWorkflow) return;
 
             EditorGUILayout.Space(4);
 
