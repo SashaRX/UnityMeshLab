@@ -1302,6 +1302,33 @@ namespace LightmapUvTool
         public void ApplyUv2Public() => ApplyUv2ToFbx();
         public void SaveAllPublic() => SaveAll();
 
+        static bool EnsureSidecarReplayEnabledForOverwrite()
+        {
+            if (PostprocessorDefineManager.IsEnabled())
+                return true;
+
+            bool enable = EditorUtility.DisplayDialog(
+                "Enable Sidecar UV2 Mode",
+                "Reliable FBX overwrite requires Sidecar UV2 Mode.\n\n" +
+                "Without it, Unity/Bakery can overwrite imported lightmap UVs right after export, " +
+                "so the FBX appears to lose UV2.\n\n" +
+                "Enable it now? Unity will recompile once. After that, rerun Overwrite FBX.",
+                "Enable",
+                "Cancel");
+
+            if (enable)
+            {
+                PostprocessorDefineManager.SetEnabled(true);
+                UvtLog.Warn("[FBX Export] Sidecar UV2 Mode enabled. Rerun Overwrite FBX after Unity recompiles.");
+            }
+            else
+            {
+                UvtLog.Warn("[FBX Export] Overwrite cancelled: Sidecar UV2 Mode is required for reliable UV2 persistence.");
+            }
+
+            return false;
+        }
+
         void ExportFbx(bool overwriteSource)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
@@ -1310,6 +1337,8 @@ namespace LightmapUvTool
                 UvtLog.Error("[FBX Export] No meshes loaded.");
                 return;
             }
+            if (overwriteSource && !EnsureSidecarReplayEnabledForOverwrite())
+                return;
 
             // Restore any active preview (checker, AO, shell colors) before export
             // so that original materials are captured, not preview materials.

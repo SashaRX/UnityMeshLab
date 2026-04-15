@@ -804,7 +804,15 @@ namespace LightmapUvTool
             EditorGUILayout.Space(4);
 
             var bg = GUI.backgroundColor;
+            bool sidecarEnabled = PostprocessorDefineManager.IsEnabled();
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            if (!sidecarEnabled)
+            {
+                EditorGUILayout.HelpBox(
+                    "Reliable FBX overwrite requires Sidecar UV2 Mode. Without it, Unity/Bakery can overwrite imported lightmap UVs immediately after export.",
+                    MessageType.Warning);
+            }
+
             EditorGUILayout.BeginHorizontal();
             GUI.backgroundColor = new Color(.95f, .6f, .2f);
             if (GUILayout.Button("Overwrite FBX", GUILayout.Height(24)))
@@ -825,7 +833,6 @@ namespace LightmapUvTool
 #endif
             EditorGUILayout.Space(4);
             // ── Sidecar UV2 mode ──
-            bool sidecarEnabled = PostprocessorDefineManager.IsEnabled();
             EditorGUI.BeginChangeCheck();
             sidecarEnabled = EditorGUILayout.ToggleLeft("Sidecar UV2 Mode", sidecarEnabled);
             if (EditorGUI.EndChangeCheck())
