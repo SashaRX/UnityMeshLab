@@ -760,13 +760,44 @@ namespace LightmapUvTool
             RestorePreview();
 
             var channel = TargetChannel;
+            var appliedMeshes = new HashSet<Mesh>();
             foreach (var kvp in bakedFinalAO)
             {
-                VertexAOBaker.WriteToChannel(kvp.Key, kvp.Value, channel);
-                EditorUtility.SetDirty(kvp.Key);
+                Mesh seedMesh = kvp.Key;
+                var ao = kvp.Value;
+                if (seedMesh == null || ao == null) continue;
+
+                // AO bake runs on original working meshes, but FBX export can use
+                // repacked/transferred variants. Mirror AO into all mesh variants
+                // of the same entry so overwrite export persists the selected channel.
+                var targetMeshes = new List<Mesh> { seedMesh };
+                if (ctx?.MeshEntries != null)
+                {
+                    var owner = ctx.MeshEntries.FirstOrDefault(e =>
+                        e.originalMesh == seedMesh ||
+                        e.fbxMesh == seedMesh ||
+                        e.repackedMesh == seedMesh ||
+                        e.transferredMesh == seedMesh);
+                    if (owner != null)
+                    {
+                        if (owner.originalMesh != null) targetMeshes.Add(owner.originalMesh);
+                        if (owner.repackedMesh != null) targetMeshes.Add(owner.repackedMesh);
+                        if (owner.transferredMesh != null) targetMeshes.Add(owner.transferredMesh);
+                        if (owner.fbxMesh != null) targetMeshes.Add(owner.fbxMesh);
+                    }
+                }
+
+                foreach (var mesh in targetMeshes)
+                {
+                    if (mesh == null) continue;
+                    if (!appliedMeshes.Add(mesh)) continue;
+                    if (mesh.vertexCount != ao.Length) continue;
+                    VertexAOBaker.WriteToChannel(mesh, ao, channel);
+                    EditorUtility.SetDirty(mesh);
+                }
             }
 
-            UvtLog.Info($"[Vertex AO] Applied to {bakedFinalAO.Count} mesh(es) → {TargetChannelName}");
+            UvtLog.Info($"[Vertex AO] Applied to {appliedMeshes.Count} mesh(es) → {TargetChannelName}");
         }
 
         // ── Preview ──
