@@ -80,7 +80,13 @@ namespace LightmapUvTool
 
         // ── Async GPU bake ──
         VertexAOBaker.GpuAOBakeJob activeGpuJob;
-        List<(Mesh mesh, Matrix4x4 transform)> pendingMeshList; // kept for face-area correction after GPU bake
+        List<(Mesh mesh, Matrix4x4 transform)> pendingMeshList; // active LOD batch mesh list (debug/status)
+        List<LodBakeBatch> pendingLodBatches;
+        int pendingLodBatchIndex;
+        Dictionary<Mesh, float[]> pendingRawAO;
+        Dictionary<Mesh, float[]> pendingFaceAreaAO;
+        List<MeshEntry> pendingBakeEntries;
+        VertexAOSettings pendingBakeSettings;
         Stopwatch bakeStopwatch;
 
         // ── Preview ──
@@ -92,6 +98,12 @@ namespace LightmapUvTool
         // ── Lifecycle ──
 
         internal static VertexAOTool ActiveInstance { get; private set; }
+
+        class LodBakeBatch
+        {
+            public int lodIndex;
+            public List<(Mesh mesh, Matrix4x4 transform)> meshList;
+        }
 
         public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
         {
@@ -128,6 +140,12 @@ namespace LightmapUvTool
                 activeGpuJob.Cancel();
             activeGpuJob = null;
             pendingMeshList = null;
+            pendingLodBatches = null;
+            pendingLodBatchIndex = 0;
+            pendingRawAO = null;
+            pendingFaceAreaAO = null;
+            pendingBakeEntries = null;
+            pendingBakeSettings = null;
             bakeStopwatch = null;
         }
 
@@ -369,12 +387,11 @@ namespace LightmapUvTool
                 return;
             }
 
-            var meshList = new List<(Mesh mesh, Matrix4x4 transform)>();
-            foreach (var e in entries)
+            var batches = BuildLodBatches(entries);
+            if (batches.Count == 0)
             {
-                Mesh mesh = e.originalMesh ?? e.fbxMesh;
-                if (mesh == null) continue;
-                meshList.Add((mesh, e.renderer.transform.localToWorldMatrix));
+                UvtLog.Warn("[Vertex AO] No valid meshes to bake.");
+                return;
             }
 
             var settings = new VertexAOSettings
@@ -395,35 +412,134 @@ namespace LightmapUvTool
 
             if (settings.useGPU && SystemInfo.supportsComputeShaders)
             {
-                // Async GPU path — non-blocking
-                pendingMeshList = meshList;
-                activeGpuJob = VertexAOBaker.StartGPUBake(meshList, settings,
-                    result => OnGpuBakeComplete(result, meshList, settings, entries),
-                    error =>
-                    {
-                        UvtLog.Error($"[Vertex AO] GPU bake failed: {error}. Falling back to CPU.");
-                        activeGpuJob = null;
-                        // Fall back to CPU synchronously
-                        ExecuteBakeCPU(meshList, settings, entries);
-                    });
+                pendingLodBatches = batches;
+                pendingLodBatchIndex = 0;
+                pendingRawAO = new Dictionary<Mesh, float[]>();
+                pendingFaceAreaAO = new Dictionary<Mesh, float[]>();
+                pendingBakeEntries = entries;
+                pendingBakeSettings = settings;
 
-                if (activeGpuJob == null)
-                {
-                    // Compute shader not found — fall back to CPU
-                    ExecuteBakeCPU(meshList, settings, entries);
-                    return;
-                }
-
-                // Subscribe repaint pump so progress bar updates
+                // Subscribe repaint pump so progress bar updates.
                 EditorApplication.update += RepaintDuringBake;
-                UvtLog.Info("[Vertex AO] GPU bake started (non-blocking).");
+                StartNextGpuLodBatch();
             }
             else
             {
                 if (settings.useGPU && !SystemInfo.supportsComputeShaders)
                     UvtLog.Warn("[Vertex AO] Compute shaders not supported. Falling back to CPU.");
-                ExecuteBakeCPU(meshList, settings, entries);
+                ExecuteBakeCPU(batches, settings, entries);
             }
+        }
+
+        static List<LodBakeBatch> BuildLodBatches(List<MeshEntry> entries)
+        {
+            var batches = entries
+                .GroupBy(e => e.lodIndex)
+                .OrderBy(g => g.Key)
+                .Select(g =>
+                {
+                    var lodEntries = g.ToList();
+                    var meshList = new List<(Mesh mesh, Matrix4x4 transform)>();
+                    foreach (var e in lodEntries)
+                    {
+                        Mesh mesh = e.originalMesh ?? e.fbxMesh;
+                        if (mesh == null) continue;
+                        meshList.Add((mesh, e.renderer.transform.localToWorldMatrix));
+                    }
+
+                    return new LodBakeBatch
+                    {
+                        lodIndex = g.Key,
+                        meshList = meshList
+                    };
+                })
+                .Where(b => b.meshList.Count > 0)
+                .ToList();
+
+            return batches;
+        }
+
+        void StartNextGpuLodBatch()
+        {
+            if (pendingLodBatches == null || pendingLodBatchIndex >= pendingLodBatches.Count)
+            {
+                bakedRawAO = pendingRawAO ?? new Dictionary<Mesh, float[]>();
+                bakedFaceAreaAO = pendingFaceAreaAO;
+                pendingLodBatches = null;
+                pendingLodBatchIndex = 0;
+                pendingRawAO = null;
+                pendingFaceAreaAO = null;
+                pendingMeshList = null;
+
+                var finalEntries = pendingBakeEntries ?? new List<MeshEntry>();
+                pendingBakeEntries = null;
+                pendingBakeSettings = null;
+                FinalizeBake(finalEntries);
+                return;
+            }
+
+            var batch = pendingLodBatches[pendingLodBatchIndex];
+            pendingMeshList = batch.meshList;
+
+            activeGpuJob = VertexAOBaker.StartGPUBake(batch.meshList, pendingBakeSettings,
+                result => OnGpuLodBakeComplete(result, batch),
+                error => OnGpuLodBakeError(error, batch));
+
+            if (activeGpuJob == null)
+            {
+                UvtLog.Warn($"[Vertex AO] GPU setup failed on LOD{batch.lodIndex}. Falling back to CPU for remaining LODs.");
+                ExecuteRemainingCpuBatchesFrom(pendingLodBatchIndex);
+                return;
+            }
+
+            UvtLog.Info($"[Vertex AO] GPU bake started for LOD{batch.lodIndex} ({pendingLodBatchIndex + 1}/{pendingLodBatches.Count}).");
+        }
+
+        void OnGpuLodBakeComplete(Dictionary<Mesh, float[]> result, LodBakeBatch batch)
+        {
+            activeGpuJob = null;
+            if (pendingRawAO == null) pendingRawAO = new Dictionary<Mesh, float[]>();
+            foreach (var kvp in result)
+                pendingRawAO[kvp.Key] = kvp.Value;
+
+            var faceArea = VertexAOBaker.ApplyFaceAreaCorrection(result, batch.meshList, pendingBakeSettings);
+            if (pendingFaceAreaAO == null) pendingFaceAreaAO = new Dictionary<Mesh, float[]>();
+            foreach (var kvp in faceArea)
+                pendingFaceAreaAO[kvp.Key] = kvp.Value;
+
+            pendingLodBatchIndex++;
+            StartNextGpuLodBatch();
+        }
+
+        void OnGpuLodBakeError(string error, LodBakeBatch batch)
+        {
+            UvtLog.Error($"[Vertex AO] GPU bake failed on LOD{batch.lodIndex}: {error}. Falling back to CPU for remaining LODs.");
+            activeGpuJob = null;
+            ExecuteRemainingCpuBatchesFrom(pendingLodBatchIndex);
+        }
+
+        void ExecuteRemainingCpuBatchesFrom(int startIndex)
+        {
+            if (pendingLodBatches == null || pendingBakeSettings == null)
+                return;
+
+            for (int i = startIndex; i < pendingLodBatches.Count; i++)
+            {
+                var batch = pendingLodBatches[i];
+                var raw = VertexAOBaker.BakeMultiMesh(batch.meshList, pendingBakeSettings);
+                var face = VertexAOBaker.ApplyFaceAreaCorrection(raw, batch.meshList, pendingBakeSettings);
+
+                if (pendingRawAO == null) pendingRawAO = new Dictionary<Mesh, float[]>();
+                foreach (var kvp in raw)
+                    pendingRawAO[kvp.Key] = kvp.Value;
+
+                if (pendingFaceAreaAO == null) pendingFaceAreaAO = new Dictionary<Mesh, float[]>();
+                foreach (var kvp in face)
+                    pendingFaceAreaAO[kvp.Key] = kvp.Value;
+            }
+
+            pendingLodBatchIndex = pendingLodBatches.Count;
+            StartNextGpuLodBatch();
         }
 
         void RepaintDuringBake()
@@ -436,28 +552,24 @@ namespace LightmapUvTool
             requestRepaint?.Invoke();
         }
 
-        void OnGpuBakeComplete(
-            Dictionary<Mesh, float[]> result,
-            List<(Mesh mesh, Matrix4x4 transform)> meshList,
-            VertexAOSettings settings,
-            List<MeshEntry> entries)
-        {
-            EditorApplication.update -= RepaintDuringBake;
-            activeGpuJob = null;
-            pendingMeshList = null;
-
-            bakedRawAO = result;
-            bakedFaceAreaAO = VertexAOBaker.ApplyFaceAreaCorrection(bakedRawAO, meshList, settings);
-            FinalizeBake(entries);
-        }
-
         void ExecuteBakeCPU(
-            List<(Mesh mesh, Matrix4x4 transform)> meshList,
+            List<LodBakeBatch> batches,
             VertexAOSettings settings,
             List<MeshEntry> entries)
         {
-            bakedRawAO = VertexAOBaker.BakeMultiMesh(meshList, settings);
-            bakedFaceAreaAO = VertexAOBaker.ApplyFaceAreaCorrection(bakedRawAO, meshList, settings);
+            bakedRawAO = new Dictionary<Mesh, float[]>();
+            bakedFaceAreaAO = new Dictionary<Mesh, float[]>();
+
+            foreach (var batch in batches)
+            {
+                var raw = VertexAOBaker.BakeMultiMesh(batch.meshList, settings);
+                var face = VertexAOBaker.ApplyFaceAreaCorrection(raw, batch.meshList, settings);
+                foreach (var kvp in raw)
+                    bakedRawAO[kvp.Key] = kvp.Value;
+                foreach (var kvp in face)
+                    bakedFaceAreaAO[kvp.Key] = kvp.Value;
+            }
+
             FinalizeBake(entries);
         }
 
