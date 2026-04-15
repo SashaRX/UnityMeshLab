@@ -1187,8 +1187,8 @@ namespace LightmapUvTool
                         }
                         string meshName = ResolveExportMeshName(entry, resultMesh);
                         meshReplacements[meshName] = exportMesh;
-                        if (entry.renderer != null)
-                            meshRendererTemplates[meshName] = entry.renderer;
+                        if (entry.renderer != null && !meshRendererTemplates.ContainsKey(meshName))
+                            meshRendererTemplates.Add(meshName, entry.renderer);
                     }
 
                     // Replace meshes in cloned hierarchy
