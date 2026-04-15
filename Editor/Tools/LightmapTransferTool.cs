@@ -38,6 +38,7 @@ namespace LightmapUvTool
         bool foldOutput = true;
         bool foldUv0Analysis, foldRepackSettings = true;
         bool splitTargetsInSymmetryStep;
+        SymmetrySplitShells.ThresholdMode symSplitThresholdMode = SymmetrySplitShells.ThresholdMode.LegacyFixed;
         HashSet<int> lastSymmetrySplitLods = new HashSet<int>();
         Vector2 reportScroll;
 
@@ -338,6 +339,9 @@ namespace LightmapUvTool
 
             EditorGUILayout.Space(6);
             ctx.RepackPerMesh = EditorGUILayout.ToggleLeft("Per-mesh repack (each group -> [0,1])", ctx.RepackPerMesh);
+            symSplitThresholdMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
+                "SymSplit thresholds", symSplitThresholdMode);
+            SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
             ColorBtn(new Color(.2f,.75f,.95f), "Run Full Pipeline", 30, ExecFullPipeline);
             splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft("SymSplit target LODs (advanced)", splitTargetsInSymmetryStep);
 
@@ -398,6 +402,9 @@ namespace LightmapUvTool
             var src = ctx.ForLod(ctx.SourceLodIndex);
             EditorGUILayout.Space(4);
             ctx.RepackPerMesh = EditorGUILayout.ToggleLeft("Per-mesh repack", ctx.RepackPerMesh);
+            symSplitThresholdMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
+                "SymSplit thresholds", symSplitThresholdMode);
+            SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
             ColorBtn(new Color(.3f,.8f,.4f), "Repack All", 26, () => {
                 if (ctx.RepackPerMesh) ExecRepackPerMesh(src);
                 else ExecRepack(src);
@@ -560,6 +567,7 @@ namespace LightmapUvTool
         void ExecSymmetrySplit(bool includeTargets)
         {
             if (ctx.LodGroup == null) return;
+            SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
             lastSymmetrySplitLods.Clear();
 
             // Phase 1: Split source LOD and capture parameters for coordinated LOD splitting
@@ -1975,6 +1983,10 @@ namespace LightmapUvTool
             ctx.ShellPaddingPx = s.shellPaddingPx;
             ctx.BorderPaddingPx = s.borderPaddingPx;
             ctx.RepackPerMesh = s.repackPerMesh;
+            symSplitThresholdMode = Enum.IsDefined(typeof(SymmetrySplitShells.ThresholdMode), s.symmetrySplitThresholdMode)
+                ? (SymmetrySplitShells.ThresholdMode)s.symmetrySplitThresholdMode
+                : SymmetrySplitShells.ThresholdMode.LegacyFixed;
+            SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
             ctx.SourceLodIndex = Mathf.Clamp(s.sourceLodIndex, 0, Mathf.Max(0, ctx.LodCount - 1));
             ctx.PipeSettings.saveNewMeshAssets = s.saveNewMeshAssets;
             if (!string.IsNullOrEmpty(s.savePath)) ctx.PipeSettings.savePath = s.savePath;
@@ -1991,6 +2003,7 @@ namespace LightmapUvTool
             s.shellPaddingPx = ctx.ShellPaddingPx;
             s.borderPaddingPx = ctx.BorderPaddingPx;
             s.repackPerMesh = ctx.RepackPerMesh;
+            s.symmetrySplitThresholdMode = (int)symSplitThresholdMode;
             s.sourceLodIndex = ctx.SourceLodIndex;
             s.saveNewMeshAssets = ctx.PipeSettings.saveNewMeshAssets;
             s.savePath = ctx.PipeSettings.savePath;

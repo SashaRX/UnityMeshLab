@@ -194,6 +194,7 @@ namespace LightmapUvTool
         public int shellPaddingPx = 2;
         public int borderPaddingPx = 0;
         public bool repackPerMesh;
+        public int symmetrySplitThresholdMode; // SymmetrySplitShells.ThresholdMode
         public int sourceLodIndex;
 
         // Pipeline
