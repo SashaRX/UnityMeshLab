@@ -1043,8 +1043,10 @@ namespace LightmapUvTool
 
         static Mesh SelectUv2Donor(MeshEntry entry, Mesh resultMesh)
         {
-            // Prefer meshes that are most likely to contain the latest AO payload.
-            var candidates = new[] { entry?.originalMesh, resultMesh, entry?.transferredMesh, entry?.repackedMesh, entry?.fbxMesh };
+            // AO is written into UV2.x by VertexAOTool.ApplyToMesh, which primarily
+            // targets original/fbx-backed working meshes. Keep transferred mesh last
+            // so UV1 transfer result stays authoritative while AO comes from AO donor.
+            var candidates = new[] { entry?.originalMesh, entry?.fbxMesh, entry?.repackedMesh, entry?.transferredMesh, resultMesh };
             for (int i = 0; i < candidates.Length; i++)
             {
                 var m = candidates[i];
