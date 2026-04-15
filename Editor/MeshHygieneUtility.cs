@@ -67,7 +67,8 @@ namespace LightmapUvTool
         {
             if (string.IsNullOrEmpty(nodeName)) return false;
             return collisionSuffixRegex.IsMatch(nodeName) ||
-                   nodeName.EndsWith("_Collider", StringComparison.OrdinalIgnoreCase);
+                   nodeName.EndsWith("_Collider", StringComparison.OrdinalIgnoreCase) ||
+                   nodeName.EndsWith("_Collision", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
