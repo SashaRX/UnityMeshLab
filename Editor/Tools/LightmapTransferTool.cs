@@ -1107,6 +1107,12 @@ namespace LightmapUvTool
                         exportPath = "Assets" + exportPath.Substring(dataPath.Length);
                 }
 
+                // For overwrite flow, lock import settings BEFORE export.
+                // This avoids an extra post-export reimport that can let third-party
+                // importers (e.g. Bakery) touch UV2 again before user validation.
+                if (overwriteSource)
+                    Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true);
+
                 // Ensure FBX meshes are readable so the FBX Exporter can access
                 // vertex data (especially for _COL meshes without sidecar data).
                 var srcImporter = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
@@ -1376,14 +1382,6 @@ namespace LightmapUvTool
                     Uv2AssetPostprocessor.managedImportPaths.Add(sourceFbxPath);
                 }
 
-                // For overwrite flow, always lock import settings that can silently
-                // alter UV topology/channels on reimport (Generate Lightmap UVs, weld,
-                // mesh compression, mesh optimization). This preserves baked AO/UV data
-                // even when Sidecar UV2 Mode is disabled.
-                // Important: do this after sidecar save/registration so the reimport
-                // triggered by PrepareImportSettings can immediately re-apply UV2.
-                if (overwriteSource)
-                    Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true);
             }
 
             // Clean up scene-generated LOD objects from LodGenerationTool.

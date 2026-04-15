@@ -75,28 +75,34 @@ namespace LightmapUvTool
                 if (!isFbxOverwrite && !isManaged) return;
             }
 
+            bool changed = false;
             if (modelImporter.generateSecondaryUV)
             {
                 modelImporter.generateSecondaryUV = false;
+                changed = true;
                 UvtLog.Info($"[UV2 Preprocess] Disabled generateSecondaryUV on '{assetPath}'");
             }
             if (modelImporter.weldVertices)
             {
                 modelImporter.weldVertices = false;
+                changed = true;
                 UvtLog.Info($"[UV2 Preprocess] Disabled weldVertices on '{assetPath}'");
             }
             if (modelImporter.meshCompression != ModelImporterMeshCompression.Off)
             {
                 UvtLog.Info($"[UV2 Preprocess] Disabled meshCompression ({modelImporter.meshCompression}) on '{assetPath}'");
                 modelImporter.meshCompression = ModelImporterMeshCompression.Off;
+                changed = true;
             }
             // Unity 2022.1+ unified optimizeMeshPolygons/Vertices into meshOptimizationFlags.
             if (modelImporter.meshOptimizationFlags != 0)
             {
                 UvtLog.Info($"[UV2 Preprocess] Cleared meshOptimizationFlags ({modelImporter.meshOptimizationFlags}) on '{assetPath}'");
                 modelImporter.meshOptimizationFlags = 0;
+                changed = true;
             }
-            modelImporter.SaveAndReimport();
+            if (changed)
+                modelImporter.SaveAndReimport();
         }
 
 // OnPostprocessModel is gated behind LIGHTMAP_UV_TOOL_POSTPROCESSOR to prevent
