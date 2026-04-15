@@ -392,7 +392,16 @@ namespace LightmapUvTool
 
                 // Double-click → focus SceneView camera on shell
                 if (e.clickCount == 2 && HasSelectedShell)
-                    OnDoubleClickShell?.Invoke(SelectedShell);
+                {
+                    try
+                    {
+                        OnDoubleClickShell?.Invoke(SelectedShell);
+                    }
+                    catch (Exception ex)
+                    {
+                        UvtLog.Error($"[UV Canvas] Double-click shell focus failed: {ex.Message}");
+                    }
+                }
 
                 e.Use(); RequestRepaint?.Invoke(); SceneView.RepaintAll();
             }

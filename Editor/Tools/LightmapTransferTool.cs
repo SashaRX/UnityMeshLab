@@ -2863,24 +2863,15 @@ namespace LightmapUvTool
 
             var verts = mesh.vertices;
             var tris = mesh.triangles;
-            var tr = uvHit.meshEntry.renderer.transform;
+            var renderer = uvHit.meshEntry.renderer;
+            var tr = renderer.transform;
+            var rendererBounds = renderer.bounds;
 
-            int i0 = uvHit.faceIndex * 3;
-            if (i0 + 2 >= tris.Length) return;
-            int vi0 = tris[i0], vi1 = tris[i0 + 1], vi2 = tris[i0 + 2];
-            if (vi0 >= verts.Length || vi1 >= verts.Length || vi2 >= verts.Length) return;
-
-            var bary = uvHit.barycentric;
-            var localPos = verts[vi0] * bary.x + verts[vi1] * bary.y + verts[vi2] * bary.z;
-            var worldPos = tr.TransformPoint(localPos);
-
-            var localEdge1 = verts[vi1] - verts[vi0];
-            var localEdge2 = verts[vi2] - verts[vi0];
-            var faceNormal = tr.TransformDirection(Vector3.Cross(localEdge1, localEdge2).normalized).normalized;
-            if (faceNormal.sqrMagnitude < 0.5f) faceNormal = Vector3.up;
+            Vector3 worldPos = rendererBounds.center;
+            Vector3 faceNormal = tr.up.sqrMagnitude > 0.001f ? tr.up : Vector3.up;
+            float idealDist = Mathf.Max(rendererBounds.extents.magnitude * 1.5f, 0.3f);
 
             // Shell bbox for ideal camera distance
-            float idealDist = 1f;
             var cache = canvas.GetPreviewShellCache(ctx, mesh, ctx.PreviewUvChannel);
             if (cache?.shellById != null && cache.shellById.TryGetValue(uvHit.shellId, out var shell))
             {
@@ -2899,13 +2890,43 @@ namespace LightmapUvTool
                         else sb.Encapsulate(wp);
                     }
                 }
-                if (!first) idealDist = Mathf.Max(sb.extents.magnitude * 1.5f, 0.3f);
+                if (!first)
+                {
+                    worldPos = sb.center;
+                    idealDist = Mathf.Max(sb.extents.magnitude * 1.5f, 0.3f);
+                }
+            }
+
+            if (uvHit.faceIndex >= 0)
+            {
+                int i0 = uvHit.faceIndex * 3;
+                if (i0 + 2 < tris.Length)
+                {
+                    int vi0 = tris[i0], vi1 = tris[i0 + 1], vi2 = tris[i0 + 2];
+                    if (vi0 >= 0 && vi1 >= 0 && vi2 >= 0 &&
+                        vi0 < verts.Length && vi1 < verts.Length && vi2 < verts.Length)
+                    {
+                        var bary = uvHit.barycentric;
+                        var localPos = verts[vi0] * bary.x + verts[vi1] * bary.y + verts[vi2] * bary.z;
+                        worldPos = tr.TransformPoint(localPos);
+
+                        var localEdge1 = verts[vi1] - verts[vi0];
+                        var localEdge2 = verts[vi2] - verts[vi0];
+                        var triNormal = Vector3.Cross(localEdge1, localEdge2);
+                        if (triNormal.sqrMagnitude > 1e-8f)
+                        {
+                            faceNormal = tr.TransformDirection(triNormal.normalized).normalized;
+                            if (faceNormal.sqrMagnitude < 0.5f)
+                                faceNormal = tr.up.sqrMagnitude > 0.001f ? tr.up : Vector3.up;
+                        }
+                    }
+                }
             }
 
             var sv = SceneView.lastActiveSceneView;
             if (sv == null) return;
-            sv.pivot = worldPos + faceNormal * idealDist;
-            sv.size = 0.01f;
+            sv.pivot = worldPos;
+            sv.size = idealDist;
             sv.rotation = Quaternion.LookRotation(-faceNormal);
             sv.Repaint();
         }
