@@ -1280,7 +1280,11 @@ namespace LightmapUvTool
 
             // Check if root has MeshFilter (should be empty pivot)
             var rootMf = root.GetComponent<MeshFilter>();
-            if (rootMf != null && rootMf.sharedMesh != null)
+            var rootSmr = root.GetComponent<SkinnedMeshRenderer>();
+            bool rootHasRenderableMesh =
+                (rootMf != null && rootMf.sharedMesh != null) ||
+                (rootSmr != null && rootSmr.sharedMesh != null);
+            if (rootHasRenderableMesh && !IsRootRendererUsedAsLod0(root, lods))
             {
                 sceneIssues.Add(new SceneIssue
                 {
@@ -1411,6 +1415,11 @@ namespace LightmapUvTool
             {
                 if (issue.kind != SceneIssue.Kind.RootHasMesh) continue;
                 if (issue.gameObject == null || ctx.LodGroup == null) continue;
+                if (IsRootRendererUsedAsLod0(issue.gameObject, ctx.LodGroup.GetLODs()))
+                {
+                    UvtLog.Info($"Skipped root mesh move for '{issue.gameObject.name}': root renderer is already used as LOD0.");
+                    continue;
+                }
 
                 MoveRootMeshToChild(issue.gameObject);
                 movedRoots.Add(issue.gameObject);
@@ -2971,6 +2980,8 @@ namespace LightmapUvTool
         {
             string baseName = UvToolContext.ExtractGroupKey(root.name);
             if (string.IsNullOrEmpty(baseName)) baseName = root.name;
+            baseName = MeshHygieneUtility.SanitizeName(baseName);
+            if (string.IsNullOrEmpty(baseName)) baseName = "Unnamed";
 
             var rootMf = root.GetComponent<MeshFilter>();
             var rootMr = root.GetComponent<MeshRenderer>();
@@ -3010,21 +3021,35 @@ namespace LightmapUvTool
             {
                 if (colSet.Contains(child.gameObject)) continue;
                 var mf = child.GetComponent<MeshFilter>();
-                if (mf == null || mf.sharedMesh == null) continue;
-                lodCandidates.Add((child, MeshHygieneUtility.GetTriangleCount(mf.sharedMesh)));
+                var smr = child.GetComponent<SkinnedMeshRenderer>();
+                var mesh = mf != null ? mf.sharedMesh : (smr != null ? smr.sharedMesh : null);
+                if (mesh == null) continue;
+                lodCandidates.Add((child, MeshHygieneUtility.GetTriangleCount(mesh)));
             }
 
             // Sort by polycount descending (LOD0 = highest)
             lodCandidates.Sort((a, b) => b.polyCount.CompareTo(a.polyCount));
 
             // Rename to _LOD0, _LOD1, etc.
+            // Use a temporary naming pass first to avoid collisions when
+            // children already contain one of the target names.
             for (int i = 0; i < lodCandidates.Count; i++)
             {
-                string newName = baseName + "_LOD" + i;
-                if (lodCandidates[i].t.name != newName)
+                string tmpName = "__UVTMP_LOD_" + i + "_" + Guid.NewGuid().ToString("N");
+                if (lodCandidates[i].t.name != tmpName)
                 {
                     Undo.RecordObject(lodCandidates[i].t.gameObject, "Rename LOD");
-                    lodCandidates[i].t.name = newName;
+                    lodCandidates[i].t.name = tmpName;
+                }
+            }
+
+            for (int i = 0; i < lodCandidates.Count; i++)
+            {
+                string finalName = baseName + "_LOD" + i;
+                if (lodCandidates[i].t.name != finalName)
+                {
+                    Undo.RecordObject(lodCandidates[i].t.gameObject, "Rename LOD");
+                    lodCandidates[i].t.name = finalName;
                 }
             }
 
@@ -3063,6 +3088,24 @@ namespace LightmapUvTool
         // ═══════════════════════════════════════════════════════════════
         // Helpers
         // ═══════════════════════════════════════════════════════════════
+
+        static bool IsRootRendererUsedAsLod0(GameObject root, LOD[] lods)
+        {
+            if (root == null || lods == null || lods.Length == 0) return false;
+
+            var rootRenderer = root.GetComponent<Renderer>();
+            if (rootRenderer == null) return false;
+
+            var lod0Renderers = lods[0].renderers;
+            if (lod0Renderers == null || lod0Renderers.Length == 0) return false;
+
+            for (int i = 0; i < lod0Renderers.Length; i++)
+            {
+                if (lod0Renderers[i] == rootRenderer)
+                    return true;
+            }
+            return false;
+        }
 
         void DrawScanFixButtons(Action scan, Action fix, System.Collections.IList issues)
         {

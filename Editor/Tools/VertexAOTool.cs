@@ -70,6 +70,9 @@ namespace LightmapUvTool
         int   bakeTypeIndex = 0; // 0=AO, 1=Thickness
         static readonly string[] bakeModeLabels = { "GPU", "CPU" };
         static readonly string[] bakeTypeLabels = { "Ambient Occlusion", "Thickness" };
+        bool applySelectedRendererOnly;
+        bool applySelectedSubmeshOnly;
+        int selectedSubmeshIndex;
 
         // ── Results ──
         Dictionary<Mesh, float[]> bakedRawAO;       // raw vertex AO (no face-area fix)
@@ -158,10 +161,10 @@ namespace LightmapUvTool
             EditorGUILayout.LabelField("Vertex AO Baker", EditorStyles.boldLabel);
             EditorGUILayout.Space(4);
 
-            if (ctx.LodGroup == null)
+            if (ctx == null || ctx.MeshEntries == null || ctx.MeshEntries.Count == 0)
             {
                 EditorGUILayout.HelpBox(
-                    "Select a LODGroup to bake vertex ambient occlusion.",
+                    "Выберите LODGroup или отдельный MeshRenderer, чтобы запечь vertex AO.",
                     MessageType.Info);
                 return;
             }
@@ -342,6 +345,35 @@ namespace LightmapUvTool
                     ApplyBlur();
 
                 EditorGUILayout.Space(8);
+
+                applySelectedRendererOnly = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Apply only selected renderer", "Apply AO only to currently selected mesh renderer/skinned renderer."),
+                    applySelectedRendererOnly);
+                if (applySelectedRendererOnly)
+                {
+                    var selectedRenderer = Selection.activeGameObject != null
+                        ? Selection.activeGameObject.GetComponentInParent<Renderer>()
+                        : null;
+                    int subCount = GetRendererSubmeshCount(selectedRenderer);
+                    if (selectedRenderer == null || subCount <= 0)
+                    {
+                        EditorGUILayout.HelpBox("Выберите объект с MeshRenderer/SkinnedMeshRenderer для выборочного применения.", MessageType.Warning);
+                    }
+                    else
+                    {
+                        applySelectedSubmeshOnly = EditorGUILayout.ToggleLeft(
+                            new GUIContent("Only selected submesh", "Apply AO only to vertices used by the chosen submesh. Other parts stay untouched."),
+                            applySelectedSubmeshOnly);
+                        if (applySelectedSubmeshOnly)
+                        {
+                            selectedSubmeshIndex = EditorGUILayout.IntSlider(
+                                new GUIContent("Submesh Index"),
+                                Mathf.Clamp(selectedSubmeshIndex, 0, subCount - 1),
+                                0,
+                                subCount - 1);
+                        }
+                    }
+                }
 
                 // Preview / Apply / Clear — three buttons
                 EditorGUILayout.BeginHorizontal();
@@ -763,6 +795,10 @@ namespace LightmapUvTool
             var channel = TargetChannel;
             LastAppliedTargetChannel = channel;
             var appliedMeshes = new HashSet<Mesh>();
+            var selectedRenderer = Selection.activeGameObject != null
+                ? Selection.activeGameObject.GetComponentInParent<Renderer>()
+                : null;
+
             foreach (var kvp in bakedFinalAO)
             {
                 Mesh seedMesh = kvp.Key;
@@ -773,9 +809,10 @@ namespace LightmapUvTool
                 // repacked/transferred variants. Mirror AO into all mesh variants
                 // of the same entry so overwrite export persists the selected channel.
                 var targetMeshes = new List<Mesh> { seedMesh };
+                MeshEntry owner = null;
                 if (ctx?.MeshEntries != null)
                 {
-                    var owner = ctx.MeshEntries.FirstOrDefault(e =>
+                    owner = ctx.MeshEntries.FirstOrDefault(e =>
                         e.originalMesh == seedMesh ||
                         e.fbxMesh == seedMesh ||
                         e.repackedMesh == seedMesh ||
@@ -789,17 +826,58 @@ namespace LightmapUvTool
                     }
                 }
 
+                if (applySelectedRendererOnly)
+                {
+                    if (selectedRenderer == null)
+                        continue;
+                    if (owner == null || owner.renderer != selectedRenderer)
+                        continue;
+                }
+
                 foreach (var mesh in targetMeshes)
                 {
                     if (mesh == null) continue;
                     if (!appliedMeshes.Add(mesh)) continue;
                     if (mesh.vertexCount != ao.Length) continue;
-                    VertexAOBaker.WriteToChannel(mesh, ao, channel);
+
+                    if (applySelectedRendererOnly && applySelectedSubmeshOnly)
+                    {
+                        var merged = ReadFromChannel(mesh, channel) ?? new float[mesh.vertexCount];
+                        if (selectedSubmeshIndex < 0 || selectedSubmeshIndex >= mesh.subMeshCount)
+                        {
+                            UvtLog.Warn($"[Vertex AO] Submesh index {selectedSubmeshIndex} is out of range for mesh '{mesh.name}'.");
+                            continue;
+                        }
+
+                        var triangles = mesh.GetTriangles(selectedSubmeshIndex);
+                        for (int ti = 0; ti < triangles.Length; ti++)
+                        {
+                            int vi = triangles[ti];
+                            if (vi >= 0 && vi < merged.Length)
+                                merged[vi] = ao[vi];
+                        }
+                        VertexAOBaker.WriteToChannel(mesh, merged, channel);
+                    }
+                    else
+                    {
+                        VertexAOBaker.WriteToChannel(mesh, ao, channel);
+                    }
                     EditorUtility.SetDirty(mesh);
                 }
             }
 
             UvtLog.Info($"[Vertex AO] Applied to {appliedMeshes.Count} mesh(es) → {TargetChannelName}");
+        }
+
+        static int GetRendererSubmeshCount(Renderer renderer)
+        {
+            if (renderer == null) return 0;
+            if (renderer is SkinnedMeshRenderer smr && smr.sharedMesh != null)
+                return smr.sharedMesh.subMeshCount;
+            var mf = renderer.GetComponent<MeshFilter>();
+            if (mf != null && mf.sharedMesh != null)
+                return mf.sharedMesh.subMeshCount;
+            return 0;
         }
 
         // ── Preview ──
