@@ -798,7 +798,6 @@ namespace LightmapUvTool
             var selectedRenderer = Selection.activeGameObject != null
                 ? Selection.activeGameObject.GetComponentInParent<Renderer>()
                 : null;
-
             foreach (var kvp in bakedFinalAO)
             {
                 Mesh seedMesh = kvp.Key;
@@ -833,7 +832,6 @@ namespace LightmapUvTool
                     if (owner == null || owner.renderer != selectedRenderer)
                         continue;
                 }
-
                 foreach (var mesh in targetMeshes)
                 {
                     if (mesh == null) continue;

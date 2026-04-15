@@ -995,6 +995,38 @@ namespace LightmapUvTool
             }
         }
 
+        static void OverwriteUvChannel(Mesh exportMesh, Mesh sourceMesh, int channel)
+        {
+            if (exportMesh == null || sourceMesh == null) return;
+            if (channel < 0 || channel > 7) return;
+            if (sourceMesh.vertexCount != exportMesh.vertexCount) return;
+            var attr = (VertexAttribute)((int)VertexAttribute.TexCoord0 + channel);
+            if (!sourceMesh.HasVertexAttribute(attr)) return;
+
+            int dim = sourceMesh.GetVertexAttributeDimension(attr);
+            if (dim <= 2)
+            {
+                var uv = new List<Vector2>();
+                sourceMesh.GetUVs(channel, uv);
+                if (uv.Count == exportMesh.vertexCount)
+                    exportMesh.SetUVs(channel, uv);
+            }
+            else if (dim == 3)
+            {
+                var uv = new List<Vector3>();
+                sourceMesh.GetUVs(channel, uv);
+                if (uv.Count == exportMesh.vertexCount)
+                    exportMesh.SetUVs(channel, uv);
+            }
+            else
+            {
+                var uv = new List<Vector4>();
+                sourceMesh.GetUVs(channel, uv);
+                if (uv.Count == exportMesh.vertexCount)
+                    exportMesh.SetUVs(channel, uv);
+            }
+        }
+
         static bool TryGetAppliedAoUvTarget(out int uvChannel, out int uvComponent)
         {
             uvChannel = -1;
@@ -1195,6 +1227,12 @@ namespace LightmapUvTool
                         exportPath = "Assets" + exportPath.Substring(dataPath.Length);
                 }
 
+                // For overwrite flow, lock import settings BEFORE export.
+                // This avoids an extra post-export reimport that can let third-party
+                // importers (e.g. Bakery) touch UV2 again before user validation.
+                if (overwriteSource)
+                    Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true);
+
                 // Ensure FBX meshes are readable so the FBX Exporter can access
                 // vertex data (especially for _COL meshes without sidecar data).
                 var srcImporter = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
@@ -1231,6 +1269,9 @@ namespace LightmapUvTool
                         if (entry.originalMesh != null && entry.originalMesh != entry.fbxMesh)
                         {
                             PreserveUvChannels(exportMesh, entry.originalMesh);
+                            // AO often writes into UV2 components. Ensure UV2 from the
+                            // working/original mesh wins so overwrite export persists AO.
+                            OverwriteUvChannel(exportMesh, entry.originalMesh, 1);
                         }
                         // AO often writes into UV2 components. Source meshes may not
                         // have UV2 at all, so pick the best available donor.
@@ -1301,7 +1342,7 @@ namespace LightmapUvTool
                         if (entry.originalMesh != null && entry.originalMesh != entry.fbxMesh)
                         {
                             PreserveUvChannels(exportMesh, entry.originalMesh);
-                        }
+                            OverwriteUvChannel(exportMesh, entry.originalMesh, 1);
                         if (TryGetAppliedAoUvTarget(out int aoUvChannel, out int aoUvComponent))
                         {
                             var uv2Donor = SelectUv2Donor(entry, resultMesh, aoUvChannel);
@@ -1323,8 +1364,9 @@ namespace LightmapUvTool
                     }
 
                     // ── Remove stale children from cloned FBX ──
-                    // Keep only direct children whose names match our mesh entries.
-                    // Old _COL, _Collider, "Lit", duplicate LODs etc. are removed.
+                    // Keep collision nodes, MeshCollider-backed nodes, structural
+                    // containers, and renderable children that still map to the
+                    // export mesh set. Remove only stale renderable leftovers.
                     // Must run BEFORE NormalizeExportHierarchy (which renames LOD0).
                     var validMeshNames = new HashSet<string>();
                     foreach (var (entry, resultMesh) in entries)
@@ -1517,13 +1559,6 @@ namespace LightmapUvTool
                 if (!groupSucceeded)
                     allGroupsSucceeded = false;
 
-                // For overwrite flow, always lock import settings that can silently
-                // alter UV topology/channels on reimport (Generate Lightmap UVs, weld,
-                // mesh compression, mesh optimization). This preserves baked AO/UV data
-                // even when Sidecar UV2 Mode is disabled.
-                if (overwriteSource)
-                    Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true);
-
                 // Save sidecar entries so our postprocessor (order=10000) can
                 // re-apply UV2 after third-party postprocessors (e.g. Bakery auto-unwrap).
                 // Only when Sidecar UV2 Mode is enabled — otherwise the postprocessor
@@ -1532,6 +1567,20 @@ namespace LightmapUvTool
                 {
                     SaveSidecarForExport(sourceFbxPath, entries);
                     Uv2AssetPostprocessor.managedImportPaths.Add(sourceFbxPath);
+                }
+
+                // Always disable generateSecondaryUV after overwriting FBX with
+                // transferred UV2. This is a post-export fallback in case importer
+                // state changed during export/reimport despite the pre-lock above.
+                if (overwriteSource && groupSucceeded)
+                {
+                    var fbxImp = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
+                    if (fbxImp != null && fbxImp.generateSecondaryUV)
+                    {
+                        fbxImp.generateSecondaryUV = false;
+                        fbxImp.SaveAndReimport();
+                        UvtLog.Info($"[FBX Export] Disabled generateSecondaryUV on '{sourceFbxPath}'");
+                    }
                 }
 
             }
@@ -1545,6 +1594,31 @@ namespace LightmapUvTool
             // third-party postprocessors like Bakery). Don't clear sidecar entries.
 
             AssetDatabase.Refresh();
+
+            // Remove stale material remaps created by FBX importer defaults on
+            // collision-only nodes. These should not survive an overwrite export.
+            if (overwriteSource && allGroupsSucceeded)
+            {
+                foreach (string fbxPath in overwrittenFbxPaths)
+                {
+                    var imp = AssetImporter.GetAtPath(fbxPath) as ModelImporter;
+                    if (imp == null) continue;
+                    var map = imp.GetExternalObjectMap();
+                    var toRemove = new List<AssetImporter.SourceAssetIdentifier>();
+                    foreach (var kvp in map)
+                    {
+                        if (kvp.Key.type != typeof(Material)) continue;
+                        if (kvp.Key.name == "Lit" || kvp.Key.name == "No Name")
+                            toRemove.Add(kvp.Key);
+                    }
+                    if (toRemove.Count > 0)
+                    {
+                        foreach (var key in toRemove)
+                            imp.RemoveRemap(key);
+                        imp.SaveAndReimport();
+                    }
+                }
+            }
 #endif
         }
 
