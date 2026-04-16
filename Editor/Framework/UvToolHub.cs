@@ -860,35 +860,27 @@ namespace LightmapUvTool
         {
             try
             {
-                // Convert Unity asset path to OS path relative to repo root
                 string repoRoot = System.IO.Path.GetDirectoryName(Application.dataPath);
                 string fullPath = System.IO.Path.GetFullPath(assetPath);
-                string relativePath = assetPath; // Unity paths are already relative to project
+                string relativePath = assetPath.Replace('\\', '/');
 
-                // Build output path with _main suffix
                 string dir = System.IO.Path.GetDirectoryName(fullPath);
                 string name = System.IO.Path.GetFileNameWithoutExtension(fullPath);
                 string ext = System.IO.Path.GetExtension(fullPath);
                 string backupPath = System.IO.Path.Combine(dir, name + "_main" + ext);
-                string backupAssetPath = System.IO.Path.Combine(
-                    System.IO.Path.GetDirectoryName(assetPath),
-                    name + "_main" + ext);
+                string backupAssetPath = (System.IO.Path.GetDirectoryName(assetPath) + "/" + name + "_main" + ext)
+                    .Replace('\\', '/');
+                string tempBackupPath = backupPath + ".tmp";
 
-                // Use git show to extract file from main branch
-                var psi = new System.Diagnostics.ProcessStartInfo
+                if (!RunGit(repoRoot, $"cat-file -e \"main:{relativePath}\"", out _, out string existsErr))
                 {
-                    FileName = "git",
-                    Arguments = $"show main:\"{relativePath}\"",
-                    WorkingDirectory = repoRoot,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
+                    UvtLog.Error($"[Backup] '{relativePath}' does not exist on branch 'main'. {existsErr.Trim()}");
+                    return;
+                }
 
-                using (var proc = System.Diagnostics.Process.Start(psi))
+                using (var proc = StartGitBinary(repoRoot, $"cat-file --filters \"main:{relativePath}\""))
                 {
-                    using (var fs = new System.IO.FileStream(backupPath,
+                    using (var fs = new System.IO.FileStream(tempBackupPath,
                         System.IO.FileMode.Create, System.IO.FileAccess.Write))
                     {
                         proc.StandardOutput.BaseStream.CopyTo(fs);
@@ -898,13 +890,25 @@ namespace LightmapUvTool
 
                     if (proc.ExitCode != 0)
                     {
-                        UvtLog.Error($"[Backup] git show failed: {err.Trim()}");
-                        // Clean up empty file
-                        if (System.IO.File.Exists(backupPath))
-                            System.IO.File.Delete(backupPath);
+                        UvtLog.Error($"[Backup] Failed to extract '{relativePath}' from main: {err.Trim()}");
+                        if (System.IO.File.Exists(tempBackupPath))
+                            System.IO.File.Delete(tempBackupPath);
                         return;
                     }
                 }
+
+                var tempInfo = new System.IO.FileInfo(tempBackupPath);
+                if (!tempInfo.Exists || tempInfo.Length == 0)
+                {
+                    if (System.IO.File.Exists(tempBackupPath))
+                        System.IO.File.Delete(tempBackupPath);
+                    UvtLog.Error($"[Backup] Extracted '{relativePath}' from main, but the result is empty.");
+                    return;
+                }
+
+                if (System.IO.File.Exists(backupPath))
+                    System.IO.File.Delete(backupPath);
+                System.IO.File.Move(tempBackupPath, backupPath);
 
                 AssetDatabase.Refresh();
                 UvtLog.Info($"[Backup] Saved main branch version → {backupAssetPath}");
@@ -912,6 +916,32 @@ namespace LightmapUvTool
             catch (System.Exception ex)
             {
                 UvtLog.Error($"[Backup] Failed: {ex.Message}");
+            }
+        }
+
+        static System.Diagnostics.Process StartGitBinary(string workingDirectory, string arguments)
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = arguments,
+                WorkingDirectory = workingDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            return System.Diagnostics.Process.Start(psi);
+        }
+
+        static bool RunGit(string workingDirectory, string arguments, out string stdout, out string stderr)
+        {
+            using (var proc = StartGitBinary(workingDirectory, arguments))
+            {
+                stdout = proc.StandardOutput.ReadToEnd();
+                stderr = proc.StandardError.ReadToEnd();
+                proc.WaitForExit();
+                return proc.ExitCode == 0;
             }
         }
 
