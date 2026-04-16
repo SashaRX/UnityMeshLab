@@ -97,9 +97,9 @@ namespace LightmapUvTool
         /// Modifies mesh in-place, adds new shells to the list.
         /// Returns number of shells split.
         /// </summary>
-        public static int Split(Mesh mesh, List<UvShell> shells)
+        public static int Split(Mesh mesh, List<UvShell> shells, float separationThreshold = 0f)
         {
-            var splits = DetectBinarySplits(mesh, shells);
+            var splits = DetectBinarySplits(mesh, shells, null, separationThreshold);
             if (splits.Count == 0) return 0;
 
             int totalSplit = 0;
@@ -117,7 +117,7 @@ namespace LightmapUvTool
         /// Split shells and output parameters so target LODs can replicate
         /// the same split pattern. Call this on the source LOD first.
         /// </summary>
-        public static int Split(Mesh mesh, List<UvShell> shells, out List<SplitParams> outParams)
+        public static int Split(Mesh mesh, List<UvShell> shells, out List<SplitParams> outParams, float separationThreshold = 0f)
         {
             outParams = new List<SplitParams>();
             var verts = mesh.vertices;
@@ -154,7 +154,7 @@ namespace LightmapUvTool
                 var shell = shells[si];
                 if (shell.faceIndices.Count < 4) continue;
 
-                int N = DetectFoldCount(shell, uv0C, posC, tris, verts, out int rotAxis, out Vector3 center);
+                int N = DetectFoldCount(shell, uv0C, posC, tris, verts, out int rotAxis, out Vector3 center, separationThreshold);
 
                 if (N >= 3)
                 {
@@ -214,7 +214,7 @@ namespace LightmapUvTool
             if (binaryCandidateShells.Count > 0)
             {
                 UvtLog.Verbose($"[SymSplit] Stage 2/2: Detect+Apply binary on remaining shells (remaining={binaryCandidateShells.Count})");
-                var binarySplits = DetectBinarySplits(mesh, shells, binaryCandidateShells);
+                var binarySplits = DetectBinarySplits(mesh, shells, binaryCandidateShells, separationThreshold);
                 foreach (var sp in binarySplits)
                 {
                     int splitCount = ApplyBinarySplit(mesh, shells, sp.shellIndex, sp.axis, sp.splitThreshold);
@@ -595,7 +595,7 @@ namespace LightmapUvTool
             return 1;
         }
 
-        static List<SplitInfo> DetectBinarySplits(Mesh mesh, List<UvShell> shells, HashSet<int> candidateShells = null)
+        static List<SplitInfo> DetectBinarySplits(Mesh mesh, List<UvShell> shells, HashSet<int> candidateShells = null, float separationThreshold = 0f)
         {
             var splits = new List<SplitInfo>();
             var verts = mesh.vertices;
@@ -622,6 +622,7 @@ namespace LightmapUvTool
                 var faces = shell.faceIndices;
                 if (faces.Count < 2) continue;
                 var thresholds = GetThresholds(mesh, shell, si, "DetectBinarySplits");
+                if (separationThreshold > 0f) thresholds.posFar = separationThreshold;
 
                 var grid = new Dictionary<long, List<int>>();
                 foreach (int f in faces)
@@ -713,7 +714,7 @@ namespace LightmapUvTool
         /// Returns N=1 if no rotational symmetry is found.
         /// </summary>
         static int DetectFoldCount(UvShell shell, Vector2[] uv0C, Vector3[] posC,
-            int[] tris, Vector3[] verts, out int rotAxis, out Vector3 center)
+            int[] tris, Vector3[] verts, out int rotAxis, out Vector3 center, float separationThreshold = 0f)
         {
             rotAxis = 1; // default Y
             center = Vector3.zero;
@@ -721,6 +722,7 @@ namespace LightmapUvTool
             var faces = shell.faceIndices;
             if (faces.Count < 6) return 1;
             var thresholds = GetThresholds(null, shell, shell.shellId, "DetectFoldCount");
+            if (separationThreshold > 0f) thresholds.posFar = separationThreshold;
 
             // Build UV0 centroid spatial hash for this shell
             var grid = new Dictionary<long, List<int>>();
