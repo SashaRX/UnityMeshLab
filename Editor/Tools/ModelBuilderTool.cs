@@ -252,11 +252,10 @@ namespace LightmapUvTool
 
             var colSet = new HashSet<GameObject>(MeshHygieneUtility.FindCollisionObjects(root));
 
-            // Root name
-            EditorGUI.indentLevel++;
-            DrawEditableName(root.gameObject, "Root");
+            // Root name (no indent)
+            DrawEditableName(root.gameObject, "Root", 0);
 
-            // Children grouped by LOD
+            // Children grouped by LOD (indented)
             int lodCount = ctx.LodCount;
             for (int li = 0; li < lodCount; li++)
             {
@@ -270,11 +269,11 @@ namespace LightmapUvTool
                     int verts = mesh != null ? mesh.vertexCount : 0;
                     int tris = mesh != null ? MeshHygieneUtility.GetTriangleCount(mesh) : 0;
                     string suffix = $"LOD{li}  {verts:N0}v / {tris:N0}t";
-                    DrawEditableName(e.renderer.gameObject, suffix);
+                    DrawEditableName(e.renderer.gameObject, suffix, 1);
                 }
             }
 
-            // Collision objects
+            // Collision objects (indented)
             foreach (var colGo in colSet)
             {
                 if (colGo == null) continue;
@@ -282,10 +281,8 @@ namespace LightmapUvTool
                 Mesh mesh = mf != null ? mf.sharedMesh : null;
                 int verts = mesh != null ? mesh.vertexCount : 0;
                 string suffix = $"COL  {verts:N0}v";
-                DrawEditableName(colGo, suffix);
+                DrawEditableName(colGo, suffix, 1);
             }
-
-            EditorGUI.indentLevel--;
 
             // Apply / Normalize buttons
             EditorGUILayout.Space(4);
@@ -332,7 +329,7 @@ namespace LightmapUvTool
             }
         }
 
-        void DrawEditableName(GameObject go, string suffix)
+        void DrawEditableName(GameObject go, string suffix, int indent)
         {
             if (go == null) return;
             int id = go.GetInstanceID();
@@ -343,8 +340,23 @@ namespace LightmapUvTool
 
             EditorGUILayout.BeginHorizontal();
 
+            // Tree indent with visual connector
+            if (indent > 0)
+            {
+                GUILayout.Space(indent * 16);
+                var lineRect = EditorGUILayout.GetControlRect(false, 18, GUILayout.Width(12));
+                if (Event.current.type == EventType.Repaint)
+                {
+                    var c = new Color(0.5f, 0.5f, 0.5f, 0.5f);
+                    // Vertical line
+                    EditorGUI.DrawRect(new Rect(lineRect.x, lineRect.y, 1, lineRect.height), c);
+                    // Horizontal connector
+                    EditorGUI.DrawRect(new Rect(lineRect.x, lineRect.y + lineRect.height * 0.5f, 10, 1), c);
+                }
+            }
+
             // Editable name field
-            string newName = EditorGUILayout.TextField(editName, GUILayout.MinWidth(100));
+            string newName = EditorGUILayout.TextField(editName, GUILayout.MinWidth(80));
             if (newName != editName)
             {
                 if (newName != go.name)
