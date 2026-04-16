@@ -44,7 +44,7 @@ both pipelines (sidecar on/off) and .meta file semantics.
 
 ## Two pipelines
 
-### Pipeline A — Sidecar ON (`LIGHTMAP_UV_TOOL_POSTPROCESSOR` define active)
+### Pipeline A — Sidecar ON (`PostprocessorDefineManager.IsEnabled()` returns true)
 
 - Overwrite writes **two artifacts**: UV2 baked into FBX + `_uv2data.asset`
   sidecar next to the FBX (path = `{dir}/{name}_uv2data.asset`, see
@@ -57,11 +57,12 @@ both pipelines (sidecar on/off) and .meta file semantics.
 - `fbxOverwritePaths` set makes the postprocessor skip the immediate
   post-overwrite reimport (UV2 already in file).
 
-### Pipeline B — Sidecar OFF
+### Pipeline B — Sidecar OFF (one-shot transient replay)
 
-- Only UV2 baked into FBX. No sidecar created
-  (`LightmapTransferTool.cs:1266` branch).
-- Postprocessor code is `#if`'d out, nothing re-applies UV2 after reimport.
+- UV2 baked into FBX. No persistent sidecar created.
+- Postprocessor is always compiled but early-returns when sidecar mode is
+  off, unless a transient replay has been armed for the current overwrite
+  via `Uv2AssetPostprocessor.SetTransientReplayEntries()`.
 - Existing orphaned sidecars (e.g. from a previous Pipeline A session) are
   read only for collision data, never updated or deleted.
 
@@ -313,8 +314,9 @@ in `renameMap`.
 
 ## Cross-cutting risks
 
-- `LIGHTMAP_UV_TOOL_POSTPROCESSOR` define toggled between preview open
-  and commit — read at commit time in `ExportPlan.Commit()`.
+- `PostprocessorDefineManager.IsEnabled()` (EditorPrefs toggle) checked at
+  commit time in `ExportPlan.Commit()`. Postprocessor is always compiled;
+  the toggle only controls persistent vs transient sidecar replay.
 - Third-party postprocessor order (Bakery is `order=1000`, ours is
   `order=10000`). Our sidecar re-apply always runs last. Don't break
   this contract.

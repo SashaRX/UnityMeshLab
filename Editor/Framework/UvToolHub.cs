@@ -856,7 +856,7 @@ namespace LightmapUvTool
 
         }
 
-        static void BackupFbxFromGitMain(string assetPath)
+        internal static void BackupFbxFromGitMain(string assetPath)
         {
             try
             {
@@ -880,13 +880,16 @@ namespace LightmapUvTool
 
                 using (var proc = StartGitBinary(repoRoot, $"cat-file --filters \"main:{relativePath}\""))
                 {
+                    var stderrBuf = new System.Text.StringBuilder();
+                    proc.ErrorDataReceived += (s, e) => { if (e.Data != null) stderrBuf.AppendLine(e.Data); };
+                    proc.BeginErrorReadLine();
                     using (var fs = new System.IO.FileStream(tempBackupPath,
                         System.IO.FileMode.Create, System.IO.FileAccess.Write))
                     {
                         proc.StandardOutput.BaseStream.CopyTo(fs);
                     }
-                    string err = proc.StandardError.ReadToEnd();
                     proc.WaitForExit();
+                    string err = stderrBuf.ToString();
 
                     if (proc.ExitCode != 0)
                     {
@@ -919,7 +922,7 @@ namespace LightmapUvTool
             }
         }
 
-        static System.Diagnostics.Process StartGitBinary(string workingDirectory, string arguments)
+        internal static System.Diagnostics.Process StartGitBinary(string workingDirectory, string arguments)
         {
             var psi = new System.Diagnostics.ProcessStartInfo
             {
@@ -934,13 +937,16 @@ namespace LightmapUvTool
             return System.Diagnostics.Process.Start(psi);
         }
 
-        static bool RunGit(string workingDirectory, string arguments, out string stdout, out string stderr)
+        internal static bool RunGit(string workingDirectory, string arguments, out string stdout, out string stderr)
         {
             using (var proc = StartGitBinary(workingDirectory, arguments))
             {
+                var stderrBuf = new System.Text.StringBuilder();
+                proc.ErrorDataReceived += (s, e) => { if (e.Data != null) stderrBuf.AppendLine(e.Data); };
+                proc.BeginErrorReadLine();
                 stdout = proc.StandardOutput.ReadToEnd();
-                stderr = proc.StandardError.ReadToEnd();
                 proc.WaitForExit();
+                stderr = stderrBuf.ToString();
                 return proc.ExitCode == 0;
             }
         }

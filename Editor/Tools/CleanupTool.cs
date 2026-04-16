@@ -434,7 +434,7 @@ namespace LightmapUvTool
                 for (int i = 0; i < mats.Length; i++)
                 {
                     if (mats[i] == null) continue;
-                    if (mats[i].shader.name.StartsWith("Hidden/LightmapUvTool/"))
+                    if (mats[i].shader.name.StartsWith(CheckerTexturePreview.ToolShaderPrefix))
                     {
                         string key = e.meshGroupKey ?? e.renderer.name;
                         Material suggested = null;
@@ -464,7 +464,7 @@ namespace LightmapUvTool
                         {
                             if (mats[i] == l0[i]) continue;
                             // Skip if already flagged as hidden shader
-                            if (mats[i] != null && mats[i].shader.name.StartsWith("Hidden/LightmapUvTool/"))
+                            if (mats[i] != null && mats[i].shader.name.StartsWith(CheckerTexturePreview.ToolShaderPrefix))
                                 continue;
                             materialIssues.Add(new MaterialIssue
                             {
@@ -539,7 +539,7 @@ namespace LightmapUvTool
                 if (e.lodIndex != 0 || e.renderer == null) continue;
                 foreach (var mat in e.renderer.sharedMaterials)
                 {
-                    if (mat != null && !mat.shader.name.StartsWith("Hidden/LightmapUvTool/"))
+                    if (mat != null && !mat.shader.name.StartsWith(CheckerTexturePreview.ToolShaderPrefix))
                         correctMats[mat.name] = mat;
                 }
             }
@@ -589,7 +589,7 @@ namespace LightmapUvTool
                     if (mat == null) continue;
 
                     bool isHidden = mat.name.StartsWith("Hidden_LightmapUvTool")
-                                 || mat.shader.name.StartsWith("Hidden/LightmapUvTool/");
+                                 || mat.shader.name.StartsWith(CheckerTexturePreview.ToolShaderPrefix);
                     bool isDefault = mat.name == "Lit" || mat.name == "No Name"
                                   || (mat.name == "Standard" && mat.shader.name == "Standard");
 

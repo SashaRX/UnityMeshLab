@@ -227,7 +227,7 @@
 ### AssetPostprocessor вызывает массовый реимпорт
 - Наличие `OnPreprocessModel` / `OnPostprocessModel` в пакете заставляет Unity реимпортировать ВСЕ модели при установке.
 - На больших проектах (тысячи FBX) это ломает collision meshes (0 вершин).
-- **Решение**: `OnPostprocessModel` под `#if LIGHTMAP_UV_TOOL_POSTPROCESSOR` — по умолчанию выключен. `OnPreprocessModel` заменён на статический `PrepareImportSettings()`. Пакет полностью пассивен при установке.
+- **Решение**: `OnPostprocessModel` always compiled; controlled at runtime by `PostprocessorDefineManager.IsEnabled()` (EditorPrefs toggle). `OnPreprocessModel` replaced with static `PrepareImportSettings()`. The package is passive on install — postprocessor early-returns when sidecar mode is off and no transient replay is armed.
 
 ### Collision mesh (_COL) — нормали обязательны для FBX Exporter
 - Unity FBX Exporter (`ModelExporter.ExportObjects`) не может корректно записать mesh без нормалей → 0 вершин после реимпорта.

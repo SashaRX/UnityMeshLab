@@ -2001,9 +2001,7 @@ namespace LightmapUvTool
             {
                 var m = srcMats[i];
                 string shaderName = m != null && m.shader != null ? m.shader.name : null;
-                if (!string.IsNullOrEmpty(shaderName) &&
-                    (shaderName.Equals("Hidden/Internal-Colored", StringComparison.OrdinalIgnoreCase) ||
-                     shaderName.StartsWith("Hidden/LightmapUvTool/", StringComparison.OrdinalIgnoreCase)))
+                if (CheckerTexturePreview.IsPreviewShader(shaderName))
                 {
                     hasPreviewMat = true;
                     break;
@@ -2498,8 +2496,6 @@ namespace LightmapUvTool
 
         void RestoreFbxFromGitMain()
         {
-            if (ctx.LodGroup == null) return;
-
             var fbxPaths = new HashSet<string>();
             foreach (var e in ctx.MeshEntries)
             {
@@ -2516,59 +2512,8 @@ namespace LightmapUvTool
                 return;
             }
 
-            string projectPath = System.IO.Directory.GetParent(Application.dataPath).FullName;
-            int saved = 0;
-
             foreach (string fbx in fbxPaths)
-            {
-                // ModelName.fbx → ModelName_main.fbx
-                string dir = System.IO.Path.GetDirectoryName(fbx);
-                string name = System.IO.Path.GetFileNameWithoutExtension(fbx);
-                string destAsset = System.IO.Path.Combine(dir, name + "_main.fbx");
-                string destFull = System.IO.Path.Combine(projectPath, destAsset);
-
-                try
-                {
-                    // git show main:<path> > dest
-                    var psi = new System.Diagnostics.ProcessStartInfo
-                    {
-                        FileName = "git",
-                        Arguments = $"show main:\"{fbx}\"",
-                        WorkingDirectory = projectPath,
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        CreateNoWindow = true
-                    };
-                    var proc = System.Diagnostics.Process.Start(psi);
-                    using (var fs = System.IO.File.Create(destFull))
-                        proc.StandardOutput.BaseStream.CopyTo(fs);
-                    proc.WaitForExit(10000);
-                    string stderr = proc.StandardError.ReadToEnd().Trim();
-
-                    if (proc.ExitCode == 0)
-                    {
-                        UvtLog.Info($"[Backup] Saved {destAsset} from git main");
-                        saved++;
-                    }
-                    else
-                    {
-                        UvtLog.Error($"[Backup] git show main:{fbx} failed: {stderr}");
-                        if (System.IO.File.Exists(destFull))
-                            System.IO.File.Delete(destFull);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    UvtLog.Error($"[Backup] Failed to run git: {ex.Message}");
-                }
-            }
-
-            if (saved > 0)
-            {
-                AssetDatabase.Refresh();
-                UvtLog.Info($"[Backup] {saved} FBX file(s) saved with _main suffix");
-            }
+                UvToolHub.BackupFbxFromGitMain(fbx);
         }
 
         void SwitchToPostApplyView()
