@@ -1703,9 +1703,11 @@ namespace LightmapUvTool
                         if (entry.originalMesh != null && entry.originalMesh != entry.fbxMesh)
                         {
                             PreserveUvChannels(exportMesh, entry.originalMesh);
-                            // AO often writes into UV2 components. Ensure UV2 from the
-                            // working/original mesh wins so overwrite export persists AO.
-                            OverwriteUvChannel(exportMesh, entry.originalMesh, 1);
+                            // Only overwrite UV1 from originalMesh when there is no
+                            // repack/transfer result — otherwise the repacked lightmap
+                            // UV in channel 1 takes priority over the pre-pipeline data.
+                            if (entry.repackedMesh == null && entry.transferredMesh == null)
+                                OverwriteUvChannel(exportMesh, entry.originalMesh, 1);
                         }
                         // AO often writes into UV2 components. Source meshes may not
                         // have UV2 at all, so pick the best available donor.
@@ -1776,7 +1778,8 @@ namespace LightmapUvTool
                         if (entry.originalMesh != null && entry.originalMesh != entry.fbxMesh)
                         {
                             PreserveUvChannels(exportMesh, entry.originalMesh);
-                            OverwriteUvChannel(exportMesh, entry.originalMesh, 1);
+                            if (entry.repackedMesh == null && entry.transferredMesh == null)
+                                OverwriteUvChannel(exportMesh, entry.originalMesh, 1);
                         }
                         if (TryGetAppliedAoUvTarget(out int aoUvChannel, out int aoUvComponent))
                         {
