@@ -1719,19 +1719,38 @@ namespace LightmapUvTool
 
                     // Strip _COL meshes to bare minimum: vertices + triangles +
                     // averaged normals + tangents. No UVs, colors, or other channels.
-                    // Also clear materials to prevent stale "Lit" entries in FBX importer.
+                    // Assign a real material from LOD0 render mesh to prevent FBX
+                    // Exporter from writing a default "Lit" material on collision nodes.
+                    Material colFallbackMat = null;
+                    foreach (var (entry, _) in entries)
+                    {
+                        if (entry.renderer != null && entry.renderer.sharedMaterial != null &&
+                            !CheckerTexturePreview.IsPreviewShader(entry.renderer.sharedMaterial.shader.name))
+                        {
+                            colFallbackMat = entry.renderer.sharedMaterial;
+                            break;
+                        }
+                    }
+
                     foreach (var colMf in tempRoot.GetComponentsInChildren<MeshFilter>(true))
                     {
                         if (colMf == null || colMf.sharedMesh == null) continue;
                         if (!MeshHygieneUtility.IsCollisionNodeName(colMf.gameObject.name)) continue;
 
-                        // Remove MeshRenderer — _COL doesn't need materials.
-                        // Clearing the material array isn't enough: FBX Exporter
-                        // writes a default "Lit" for any renderer. Destroying the
-                        // component entirely avoids the stale material entry.
+                        // Assign LOD0 material to collision renderer so FBX Exporter
+                        // doesn't create a stale "Lit" default. If no render material
+                        // is available, destroy the renderer as fallback.
                         var colMr = colMf.GetComponent<MeshRenderer>();
-                        if (colMr != null)
+                        if (colFallbackMat != null)
+                        {
+                            if (colMr == null)
+                                colMr = colMf.gameObject.AddComponent<MeshRenderer>();
+                            colMr.sharedMaterials = new[] { colFallbackMat };
+                        }
+                        else if (colMr != null)
+                        {
                             UnityEngine.Object.DestroyImmediate(colMr);
+                        }
 
                         var srcCol = colMf.sharedMesh;
                         if (srcCol.isReadable)
