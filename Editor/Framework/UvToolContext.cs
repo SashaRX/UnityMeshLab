@@ -21,15 +21,27 @@ namespace LightmapUvTool
         public int SourceLodIndex;
         public List<MeshEntry> MeshEntries = new List<MeshEntry>();
 
-        // ── Settings ──
-        public UvTransferPipeline.PipelineSettings PipeSettings =
-            UvTransferPipeline.PipelineSettings.Default;
-
-        public int AtlasResolution = 256;
-        public int ShellPaddingPx  = 2;
-        public int BorderPaddingPx = 0;
+        // ── Settings (defaults from Project Settings > Mesh Lab) ──
+        public UvTransferPipeline.PipelineSettings PipeSettings;
+        public int AtlasResolution;
+        public int ShellPaddingPx;
+        public int BorderPaddingPx;
         public bool RepackPerMesh;
         public int IsolatedMeshGroup = -1;
+
+        public UvToolContext()
+        {
+            var ps = MeshLabProjectSettings.Instance;
+            AtlasResolution = ps.atlasResolution;
+            ShellPaddingPx  = ps.shellPaddingPx;
+            BorderPaddingPx = ps.borderPaddingPx;
+            RepackPerMesh   = ps.repackPerMesh;
+            PipeSettings    = new UvTransferPipeline.PipelineSettings
+            {
+                saveNewMeshAssets = true,
+                savePath = ps.savePath
+            };
+        }
         public string IsolatedMeshGroupKey;
 
         // ── Canvas state ──
