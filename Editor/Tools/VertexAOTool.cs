@@ -32,10 +32,9 @@ namespace LightmapUvTool
         static readonly string[] channelTypeNames = { "Vertex Color", "UV0", "UV1", "UV2", "UV3", "UV4" };
         static readonly string[] colorCompNames  = { "R", "G", "B", "A" };
         static readonly string[] uvCompNames     = { "X", "Y" };
-        static readonly string[] occluderModeLabels = { "Self Only", "Same Root + Nearby" };
 
-        int channelType = MeshLabProjectSettings.Instance.aoChannelType;
-        int channelComp = MeshLabProjectSettings.Instance.aoChannelComp;
+        int channelType = 0;  // 0=VertexColor, 1-5=UV0-UV4
+        int channelComp = 0;  // 0=R/X, 1=G/Y, 2=B, 3=A
 
         int sampleCountIndex = 2;   // 256
         int resolutionIndex  = 1;   // 512
@@ -69,9 +68,6 @@ namespace LightmapUvTool
         bool  cosineWeighted  = true;
         int   bakeMode = 0; // 0=GPU, 1=CPU
         int   bakeTypeIndex = 0; // 0=AO, 1=Thickness
-        int   occluderModeIndex = (int)VertexAOOccluderMode.SameRootNearby;
-        float occluderRadiusMultiplier = 2.0f;
-        bool  includeCollisionOccluders;
         static readonly string[] bakeModeLabels = { "GPU", "CPU" };
         static readonly string[] bakeTypeLabels = { "Ambient Occlusion", "Thickness" };
         bool applySelectedRendererOnly;
@@ -84,13 +80,10 @@ namespace LightmapUvTool
         Dictionary<Mesh, float[]> bakedFinalAO;     // after blend + blur + brightness/contrast
         float bakeTimeSeconds;
         int   bakedVertexCount;
-        int   lastTargetMeshCount;
-        int   lastRenderableOccluderCount;
-        int   lastColliderOccluderCount;
-        bool  lastUsedSidecarCollisionFallback;
 
         // ── Async GPU bake ──
         VertexAOBaker.GpuAOBakeJob activeGpuJob;
+        List<(Mesh mesh, Matrix4x4 transform)> pendingMeshList; // active LOD batch mesh list (debug/status)
         List<LodBakeBatch> pendingLodBatches;
         int pendingLodBatchIndex;
         Dictionary<Mesh, float[]> pendingRawAO;
@@ -113,13 +106,7 @@ namespace LightmapUvTool
         class LodBakeBatch
         {
             public int lodIndex;
-            public List<MeshEntry> targetEntries = new List<MeshEntry>();
-            public List<(Mesh mesh, Matrix4x4 transform)> targetMeshes = new List<(Mesh mesh, Matrix4x4 transform)>();
-            public List<(Mesh mesh, Matrix4x4 transform)> occluderMeshes = new List<(Mesh mesh, Matrix4x4 transform)>();
-            public List<Mesh> temporaryMeshesToDestroy = new List<Mesh>();
-            public int renderableOccluderCount;
-            public int colliderOccluderCount;
-            public bool usedSidecarCollisionFallback;
+            public List<(Mesh mesh, Matrix4x4 transform)> meshList;
         }
 
         public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
@@ -149,19 +136,14 @@ namespace LightmapUvTool
             bakedFaceAreaAO = null;
             bakedFinalAO = null;
             bakedVertexCount = 0;
-            lastTargetMeshCount = 0;
-            lastRenderableOccluderCount = 0;
-            lastColliderOccluderCount = 0;
-            lastUsedSidecarCollisionFallback = false;
         }
 
         void CancelGpuJob()
         {
             if (activeGpuJob != null && activeGpuJob.IsRunning)
                 activeGpuJob.Cancel();
-            EditorApplication.update -= RepaintDuringBake;
             activeGpuJob = null;
-            DisposePendingBatchTempMeshes();
+            pendingMeshList = null;
             pendingLodBatches = null;
             pendingLodBatchIndex = 0;
             pendingRawAO = null;
@@ -182,7 +164,7 @@ namespace LightmapUvTool
             if (ctx == null || ctx.MeshEntries == null || ctx.MeshEntries.Count == 0)
             {
                 EditorGUILayout.HelpBox(
-                    "Select a LODGroup or an individual MeshRenderer to bake vertex AO.",
+                    "Выберите LODGroup или отдельный MeshRenderer, чтобы запечь vertex AO.",
                     MessageType.Info);
                 return;
             }
@@ -264,27 +246,6 @@ namespace LightmapUvTool
                 new GUIContent("Cosine Weighted", "Cosine: rays near normal contribute more (physically correct).\nUniform: all hemisphere directions contribute equally (harder shadows)."),
                 cosineWeighted);
 
-            if (bakeTypeIndex == 0)
-            {
-                EditorGUILayout.Space(4);
-                occluderModeIndex = EditorGUILayout.Popup(
-                    new GUIContent("Occluders", "Self Only: bake only against the selected target meshes.\nSame Root + Nearby: include nearby sibling geometry from the same model root as extra occluders."),
-                    occluderModeIndex,
-                    occluderModeLabels);
-
-                if ((VertexAOOccluderMode)occluderModeIndex != VertexAOOccluderMode.SelfOnly)
-                {
-                    occluderRadiusMultiplier = EditorGUILayout.Slider(
-                        new GUIContent("Occluder Radius", "Nearby occluders are accepted when their bounds are within this multiple of the target batch bounds radius."),
-                        occluderRadiusMultiplier,
-                        0.25f,
-                        8f);
-                    includeCollisionOccluders = EditorGUILayout.Toggle(
-                        new GUIContent("Use collision meshes as occluders", "Include same-root collision meshes. Falls back to sidecar collision meshes when no live collision objects are present."),
-                        includeCollisionOccluders);
-                }
-            }
-
             EditorGUILayout.Space(8);
 
             // Bake button / progress
@@ -328,11 +289,6 @@ namespace LightmapUvTool
                 EditorGUILayout.LabelField(
                     $"  Target: {TargetChannelName}",
                     EditorStyles.miniLabel);
-                EditorGUILayout.LabelField(
-                    $"  Bake meshes: {lastTargetMeshCount}, nearby occluders: {lastRenderableOccluderCount}, collision occluders: {lastColliderOccluderCount}",
-                    EditorStyles.miniLabel);
-                if (lastUsedSidecarCollisionFallback)
-                    EditorGUILayout.LabelField("  Collision source: sidecar fallback", EditorStyles.miniLabel);
 
                 // Post-processing — all controls update preview in real-time
                 EditorGUILayout.Space(4);
@@ -401,7 +357,7 @@ namespace LightmapUvTool
                     int subCount = GetRendererSubmeshCount(selectedRenderer);
                     if (selectedRenderer == null || subCount <= 0)
                     {
-                        EditorGUILayout.HelpBox("Select an object with MeshRenderer/SkinnedMeshRenderer for selective apply.", MessageType.Warning);
+                        EditorGUILayout.HelpBox("Выберите объект с MeshRenderer/SkinnedMeshRenderer для выборочного применения.", MessageType.Warning);
                     }
                     else
                     {
@@ -444,22 +400,6 @@ namespace LightmapUvTool
                 }
                 GUI.backgroundColor = bgc;
                 EditorGUILayout.EndHorizontal();
-
-                // Export vertex colors to FBX (after Apply)
-                GUI.backgroundColor = new Color(.4f, .7f, .95f);
-                if (GUILayout.Button("Overwrite FBX (Vertex Colors)", GUILayout.Height(22)))
-                {
-                    var hub = Resources.FindObjectsOfTypeAll<UvToolHub>();
-                    if (hub.Length > 0)
-                    {
-                        var transferTool = hub[0].FindTool<LightmapTransferTool>();
-                        if (transferTool != null)
-                            transferTool.ExportVertexColorsToFbx();
-                        else
-                            UvtLog.Error("[Vertex AO] LightmapTransferTool not found.");
-                    }
-                }
-                GUI.backgroundColor = bgc;
             }
         }
 
@@ -480,6 +420,13 @@ namespace LightmapUvTool
                 return;
             }
 
+            var batches = BuildLodBatches(entries);
+            if (batches.Count == 0)
+            {
+                UvtLog.Warn("[Vertex AO] No valid meshes to bake.");
+                return;
+            }
+
             var settings = new VertexAOSettings
             {
                 sampleCount     = sampleCounts[sampleCountIndex],
@@ -491,21 +438,8 @@ namespace LightmapUvTool
                 backfaceCulling = backfaceCulling,
                 cosineWeighted  = cosineWeighted,
                 useGPU          = bakeMode == 0,
-                bakeType        = (AOBakeType)bakeTypeIndex,
-                occluderMode    = bakeTypeIndex == 0
-                    ? (VertexAOOccluderMode)occluderModeIndex
-                    : VertexAOOccluderMode.SelfOnly,
-                occluderRadiusMultiplier = Mathf.Max(occluderRadiusMultiplier, 0.01f),
-                includeCollisionOccluders = bakeTypeIndex == 0 && includeCollisionOccluders
+                bakeType        = (AOBakeType)bakeTypeIndex
             };
-
-            var batches = BuildLodBatches(entries, settings);
-            if (batches.Count == 0)
-            {
-                UvtLog.Warn("[Vertex AO] No valid meshes to bake.");
-                return;
-            }
-            StoreBatchStats(batches);
 
             bakeStopwatch = Stopwatch.StartNew();
 
@@ -530,457 +464,32 @@ namespace LightmapUvTool
             }
         }
 
-        List<LodBakeBatch> BuildLodBatches(List<MeshEntry> entries, VertexAOSettings settings)
+        static List<LodBakeBatch> BuildLodBatches(List<MeshEntry> entries)
         {
-            var batches = new List<LodBakeBatch>();
-
-            foreach (var group in entries.GroupBy(e => e.lodIndex).OrderBy(g => g.Key))
-            {
-                var batch = new LodBakeBatch { lodIndex = group.Key };
-                foreach (var entry in group)
+            var batches = entries
+                .GroupBy(e => e.lodIndex)
+                .OrderBy(g => g.Key)
+                .Select(g =>
                 {
-                    if (entry?.renderer == null)
-                        continue;
+                    var lodEntries = g.ToList();
+                    var meshList = new List<(Mesh mesh, Matrix4x4 transform)>();
+                    foreach (var e in lodEntries)
+                    {
+                        Mesh mesh = e.originalMesh ?? e.fbxMesh;
+                        if (mesh == null) continue;
+                        meshList.Add((mesh, e.renderer.transform.localToWorldMatrix));
+                    }
 
-                    Mesh mesh = entry.originalMesh ?? entry.fbxMesh;
-                    if (mesh == null)
-                        continue;
-
-                    batch.targetEntries.Add(entry);
-                    batch.targetMeshes.Add((mesh, entry.renderer.transform.localToWorldMatrix));
-                }
-
-                if (batch.targetMeshes.Count == 0)
-                {
-                    DisposeBatchTemporaryMeshes(batch);
-                    continue;
-                }
-
-                CollectAdditionalOccluders(batch, entries, settings);
-                batches.Add(batch);
-            }
+                    return new LodBakeBatch
+                    {
+                        lodIndex = g.Key,
+                        meshList = meshList
+                    };
+                })
+                .Where(b => b.meshList.Count > 0)
+                .ToList();
 
             return batches;
-        }
-
-        void CollectAdditionalOccluders(
-            LodBakeBatch batch,
-            List<MeshEntry> allEntries,
-            VertexAOSettings settings)
-        {
-            if (batch == null || batch.targetEntries.Count == 0)
-                return;
-            if (settings.bakeType != AOBakeType.AmbientOcclusion)
-                return;
-            if (settings.occluderMode == VertexAOOccluderMode.SelfOnly)
-                return;
-
-            var root = ResolveOccluderRoot(batch.targetEntries);
-            if (root == null)
-                return;
-
-            var candidateRenderers = root.GetComponentsInChildren<Renderer>(true);
-            if (candidateRenderers == null || candidateRenderers.Length == 0)
-                return;
-
-            var targetAnchors = ComputeTargetAnchors(batch.targetEntries, out Bounds targetBounds);
-            float effectiveRadius = Mathf.Max(targetBounds.extents.magnitude * settings.occluderRadiusMultiplier, 0.01f);
-
-            var targetRendererIds = new HashSet<int>(
-                batch.targetEntries
-                    .Where(e => e.renderer != null)
-                    .Select(e => e.renderer.GetInstanceID()));
-
-            var alternateLodRendererIds = new HashSet<int>();
-            if (ctx?.LodGroup != null)
-            {
-                foreach (var entry in allEntries)
-                {
-                    if (entry?.renderer == null || entry.lodIndex == batch.lodIndex)
-                        continue;
-                    alternateLodRendererIds.Add(entry.renderer.GetInstanceID());
-                }
-            }
-
-            var seenRenderers = new HashSet<int>();
-            foreach (var renderer in candidateRenderers)
-            {
-                if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy)
-                    continue;
-
-                int rendererId = renderer.GetInstanceID();
-                if (!seenRenderers.Add(rendererId))
-                    continue;
-                if (targetRendererIds.Contains(rendererId))
-                    continue;
-                if (alternateLodRendererIds.Contains(rendererId))
-                    continue;
-                if (MeshHygieneUtility.IsCollisionNodeName(renderer.name))
-                    continue;
-                if (!TryGetRendererOccluderData(renderer, out var mesh, out var matrix, out var bounds, out var anchor))
-                    continue;
-                if (!IsWithinOccluderRange(targetBounds, targetAnchors, bounds, anchor, effectiveRadius))
-                    continue;
-
-                batch.occluderMeshes.Add((mesh, matrix));
-                batch.renderableOccluderCount++;
-            }
-
-            if (!settings.includeCollisionOccluders)
-                return;
-
-            int liveColliderCount = CollectLiveCollisionOccluders(batch, root, targetBounds, targetAnchors, effectiveRadius);
-            if (liveColliderCount > 0 || string.IsNullOrEmpty(ctx?.SourceFbxPath))
-                return;
-
-            CollectSidecarCollisionOccluders(batch, candidateRenderers, targetBounds, targetAnchors, effectiveRadius);
-        }
-
-        GameObject ResolveOccluderRoot(List<MeshEntry> targetEntries)
-        {
-            if (ctx?.LodGroup != null)
-                return ctx.LodGroup.gameObject;
-
-            var firstRenderer = targetEntries.FirstOrDefault(e => e?.renderer != null)?.renderer;
-            if (firstRenderer == null)
-                return null;
-
-            var prefabRoot = PrefabUtility.GetNearestPrefabInstanceRoot(firstRenderer.gameObject);
-            return prefabRoot != null ? prefabRoot : firstRenderer.transform.root.gameObject;
-        }
-
-        int CollectLiveCollisionOccluders(
-            LodBakeBatch batch,
-            GameObject root,
-            Bounds targetBounds,
-            List<Vector3> targetAnchors,
-            float effectiveRadius)
-        {
-            int added = 0;
-            var seen = new HashSet<int>();
-            foreach (var go in MeshHygieneUtility.FindCollisionObjects(root.transform))
-            {
-                if (go == null || !go.activeInHierarchy)
-                    continue;
-                if (!seen.Add(go.GetInstanceID()))
-                    continue;
-                if (!TryGetCollisionMesh(go, out var mesh, out var matrix, out var bounds, out var anchor))
-                    continue;
-                if (!IsWithinOccluderRange(targetBounds, targetAnchors, bounds, anchor, effectiveRadius))
-                    continue;
-
-                batch.occluderMeshes.Add((mesh, matrix));
-                batch.colliderOccluderCount++;
-                added++;
-            }
-            return added;
-        }
-
-        void CollectSidecarCollisionOccluders(
-            LodBakeBatch batch,
-            Renderer[] candidateRenderers,
-            Bounds targetBounds,
-            List<Vector3> targetAnchors,
-            float effectiveRadius)
-        {
-            var sidecarEntries = CollisionMeshTool.GetCollisionMeshesFromSidecar(ctx.SourceFbxPath);
-            if (sidecarEntries == null || sidecarEntries.Count == 0)
-                return;
-
-            var seenHullKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            bool addedAny = false;
-
-            foreach (var (meshName, meshes, _) in sidecarEntries)
-            {
-                if (meshes == null || meshes.Count == 0)
-                    continue;
-
-                foreach (var mesh in meshes)
-                {
-                    if (mesh != null && !batch.temporaryMeshesToDestroy.Contains(mesh))
-                        batch.temporaryMeshesToDestroy.Add(mesh);
-                }
-
-                var matchedRenderer = FindBestSidecarRenderer(meshName, candidateRenderers, batch);
-                if (matchedRenderer == null)
-                    continue;
-
-                var matrix = matchedRenderer.transform.localToWorldMatrix;
-                for (int i = 0; i < meshes.Count; i++)
-                {
-                    var mesh = meshes[i];
-                    if (mesh == null)
-                        continue;
-
-                    string hullKey = $"{meshName}:{i}";
-                    if (!seenHullKeys.Add(hullKey))
-                        continue;
-
-                    var bounds = TransformBounds(mesh.bounds, matrix);
-                    var anchor = GetMeshWorldAnchor(mesh, matrix);
-                    if (!IsWithinOccluderRange(targetBounds, targetAnchors, bounds, anchor, effectiveRadius))
-                        continue;
-
-                    batch.occluderMeshes.Add((mesh, matrix));
-                    batch.colliderOccluderCount++;
-                    addedAny = true;
-                }
-            }
-
-            batch.usedSidecarCollisionFallback = addedAny;
-        }
-
-        Renderer FindBestSidecarRenderer(string meshName, Renderer[] candidateRenderers, LodBakeBatch batch)
-        {
-            Renderer best = null;
-            int bestScore = 0;
-
-            foreach (var renderer in candidateRenderers)
-            {
-                if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy)
-                    continue;
-
-                int score = GetSidecarRendererScore(meshName, renderer, batch);
-                if (score <= 0 || score <= bestScore)
-                    continue;
-
-                bestScore = score;
-                best = renderer;
-            }
-
-            return best;
-        }
-
-        int GetSidecarRendererScore(string meshName, Renderer renderer, LodBakeBatch batch)
-        {
-            int score = 0;
-            string rendererGroupKey = UvToolContext.ExtractGroupKey(renderer.name);
-            if (NamesEqual(meshName, rendererGroupKey))
-                score = 40;
-            else if (TryGetRendererMesh(renderer, out var mesh) && mesh != null && NamesEqual(meshName, mesh.name))
-                score = 30;
-            else if (NamesEqual(meshName, renderer.name))
-                score = 20;
-
-            if (score == 0)
-                return 0;
-
-            var ownerEntry = ctx?.MeshEntries?.FirstOrDefault(e => e?.renderer == renderer);
-            if (ownerEntry != null && ownerEntry.lodIndex == batch.lodIndex)
-                score += 5;
-            if (batch.targetEntries.Any(e => e?.renderer == renderer))
-                score += 10;
-
-            return score;
-        }
-
-        static bool NamesEqual(string a, string b)
-            => !string.IsNullOrEmpty(a) &&
-               !string.IsNullOrEmpty(b) &&
-               string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
-
-        static bool TryGetRendererMesh(Renderer renderer, out Mesh mesh)
-        {
-            mesh = null;
-            if (renderer is SkinnedMeshRenderer smr && smr.sharedMesh != null)
-            {
-                mesh = smr.sharedMesh;
-                return true;
-            }
-
-            var mf = renderer.GetComponent<MeshFilter>();
-            if (mf != null && mf.sharedMesh != null)
-            {
-                mesh = mf.sharedMesh;
-                return true;
-            }
-
-            return false;
-        }
-
-        static bool TryGetRendererOccluderData(
-            Renderer renderer,
-            out Mesh mesh,
-            out Matrix4x4 matrix,
-            out Bounds bounds,
-            out Vector3 anchor)
-        {
-            mesh = null;
-            matrix = Matrix4x4.identity;
-            bounds = default;
-            anchor = Vector3.zero;
-            if (!TryGetRendererMesh(renderer, out mesh) || mesh == null)
-                return false;
-
-            matrix = renderer.transform.localToWorldMatrix;
-            bounds = GetRendererWorldBounds(renderer, mesh, matrix);
-            anchor = GetRendererWorldAnchor(renderer, mesh, matrix);
-            return true;
-        }
-
-        static bool TryGetCollisionMesh(GameObject go, out Mesh mesh, out Matrix4x4 matrix, out Bounds bounds, out Vector3 anchor)
-        {
-            mesh = null;
-            matrix = Matrix4x4.identity;
-            bounds = default;
-            anchor = Vector3.zero;
-            if (go == null)
-                return false;
-
-            var meshCollider = go.GetComponent<MeshCollider>();
-            if (meshCollider != null && meshCollider.sharedMesh != null)
-                mesh = meshCollider.sharedMesh;
-
-            if (mesh == null)
-            {
-                var meshFilter = go.GetComponent<MeshFilter>();
-                if (meshFilter != null && meshFilter.sharedMesh != null)
-                    mesh = meshFilter.sharedMesh;
-            }
-
-            if (mesh == null)
-                return false;
-
-            matrix = go.transform.localToWorldMatrix;
-            bounds = TransformBounds(mesh.bounds, matrix);
-            anchor = GetMeshWorldAnchor(mesh, matrix);
-            return true;
-        }
-
-        static List<Vector3> ComputeTargetAnchors(List<MeshEntry> entries, out Bounds bounds)
-        {
-            bounds = default;
-            bool hasBounds = false;
-            var anchors = new List<Vector3>();
-            foreach (var entry in entries)
-            {
-                if (entry?.renderer == null)
-                    continue;
-
-                var mesh = entry.originalMesh ?? entry.fbxMesh;
-                if (mesh == null)
-                    continue;
-
-                var matrix = entry.renderer.transform.localToWorldMatrix;
-                var worldBounds = GetRendererWorldBounds(entry.renderer, mesh, matrix);
-                anchors.Add(GetRendererWorldAnchor(entry.renderer, mesh, matrix));
-
-                if (!hasBounds)
-                {
-                    bounds = worldBounds;
-                    hasBounds = true;
-                }
-                else
-                {
-                    bounds.Encapsulate(worldBounds);
-                }
-            }
-
-            if (!hasBounds)
-                bounds = new Bounds(Vector3.zero, Vector3.one * 0.01f);
-            return anchors;
-        }
-
-        static Bounds GetRendererWorldBounds(Renderer renderer, Mesh mesh, Matrix4x4 matrix)
-        {
-            if (renderer is SkinnedMeshRenderer || mesh == null)
-                return renderer.bounds;
-            return TransformBounds(mesh.bounds, matrix);
-        }
-
-        static Vector3 GetRendererWorldAnchor(Renderer renderer, Mesh mesh, Matrix4x4 matrix)
-        {
-            if (renderer is SkinnedMeshRenderer || mesh == null)
-                return renderer.bounds.center;
-            return GetMeshWorldAnchor(mesh, matrix);
-        }
-
-        static Vector3 GetMeshWorldAnchor(Mesh mesh, Matrix4x4 matrix)
-        {
-            if (mesh == null)
-                return matrix.MultiplyPoint3x4(Vector3.zero);
-            return matrix.MultiplyPoint3x4(mesh.bounds.center);
-        }
-
-        static Bounds TransformBounds(Bounds localBounds, Matrix4x4 matrix)
-        {
-            var corners = new[]
-            {
-                new Vector3(localBounds.min.x, localBounds.min.y, localBounds.min.z),
-                new Vector3(localBounds.max.x, localBounds.min.y, localBounds.min.z),
-                new Vector3(localBounds.min.x, localBounds.max.y, localBounds.min.z),
-                new Vector3(localBounds.max.x, localBounds.max.y, localBounds.min.z),
-                new Vector3(localBounds.min.x, localBounds.min.y, localBounds.max.z),
-                new Vector3(localBounds.max.x, localBounds.min.y, localBounds.max.z),
-                new Vector3(localBounds.min.x, localBounds.max.y, localBounds.max.z),
-                new Vector3(localBounds.max.x, localBounds.max.y, localBounds.max.z)
-            };
-
-            Bounds worldBounds = new Bounds(matrix.MultiplyPoint3x4(corners[0]), Vector3.zero);
-            for (int i = 1; i < corners.Length; i++)
-                worldBounds.Encapsulate(matrix.MultiplyPoint3x4(corners[i]));
-            return worldBounds;
-        }
-
-        static bool IsWithinOccluderRange(
-            Bounds targetBounds,
-            List<Vector3> targetAnchors,
-            Bounds candidateBounds,
-            Vector3 candidateAnchor,
-            float radius)
-        {
-            if (BoundsDistance(targetBounds, candidateBounds) <= radius)
-                return true;
-
-            if (targetAnchors == null || targetAnchors.Count == 0)
-                return false;
-
-            float sqrRadius = radius * radius;
-            for (int i = 0; i < targetAnchors.Count; i++)
-            {
-                if ((targetAnchors[i] - candidateAnchor).sqrMagnitude <= sqrRadius)
-                    return true;
-            }
-
-            return false;
-        }
-
-        static float BoundsDistance(Bounds a, Bounds b)
-        {
-            float dx = Mathf.Max(0f, Mathf.Max(a.min.x - b.max.x, b.min.x - a.max.x));
-            float dy = Mathf.Max(0f, Mathf.Max(a.min.y - b.max.y, b.min.y - a.max.y));
-            float dz = Mathf.Max(0f, Mathf.Max(a.min.z - b.max.z, b.min.z - a.max.z));
-            return Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
-        }
-
-        void StoreBatchStats(List<LodBakeBatch> batches)
-        {
-            lastTargetMeshCount = batches.Sum(b => b.targetMeshes.Count);
-            lastRenderableOccluderCount = batches.Sum(b => b.renderableOccluderCount);
-            lastColliderOccluderCount = batches.Sum(b => b.colliderOccluderCount);
-            lastUsedSidecarCollisionFallback = batches.Any(b => b.usedSidecarCollisionFallback);
-        }
-
-        void DisposePendingBatchTempMeshes()
-        {
-            if (pendingLodBatches == null)
-                return;
-
-            foreach (var batch in pendingLodBatches)
-                DisposeBatchTemporaryMeshes(batch);
-        }
-
-        static void DisposeBatchTemporaryMeshes(LodBakeBatch batch)
-        {
-            if (batch?.temporaryMeshesToDestroy == null)
-                return;
-
-            foreach (var mesh in batch.temporaryMeshesToDestroy)
-            {
-                if (mesh != null)
-                    UnityEngine.Object.DestroyImmediate(mesh);
-            }
-            batch.temporaryMeshesToDestroy.Clear();
         }
 
         void StartNextGpuLodBatch()
@@ -993,6 +502,7 @@ namespace LightmapUvTool
                 pendingLodBatchIndex = 0;
                 pendingRawAO = null;
                 pendingFaceAreaAO = null;
+                pendingMeshList = null;
 
                 var finalEntries = pendingBakeEntries ?? new List<MeshEntry>();
                 pendingBakeEntries = null;
@@ -1002,8 +512,9 @@ namespace LightmapUvTool
             }
 
             var batch = pendingLodBatches[pendingLodBatchIndex];
+            pendingMeshList = batch.meshList;
 
-            activeGpuJob = VertexAOBaker.StartGPUBake(batch.targetMeshes, batch.occluderMeshes, pendingBakeSettings,
+            activeGpuJob = VertexAOBaker.StartGPUBake(batch.meshList, pendingBakeSettings,
                 result => OnGpuLodBakeComplete(result, batch),
                 error => OnGpuLodBakeError(error, batch));
 
@@ -1014,34 +525,20 @@ namespace LightmapUvTool
                 return;
             }
 
-            UvtLog.Info(
-                $"[Vertex AO] GPU bake started for LOD{batch.lodIndex} ({pendingLodBatchIndex + 1}/{pendingLodBatches.Count}) — " +
-                $"targets={batch.targetMeshes.Count}, nearby={batch.renderableOccluderCount}, collision={batch.colliderOccluderCount}" +
-                (batch.usedSidecarCollisionFallback ? ", sidecar collision fallback." : "."));
+            UvtLog.Info($"[Vertex AO] GPU bake started for LOD{batch.lodIndex} ({pendingLodBatchIndex + 1}/{pendingLodBatches.Count}).");
         }
 
         void OnGpuLodBakeComplete(Dictionary<Mesh, float[]> result, LodBakeBatch batch)
         {
             activeGpuJob = null;
-            try
-            {
-                if (pendingRawAO == null) pendingRawAO = new Dictionary<Mesh, float[]>();
-                foreach (var kvp in result)
-                    pendingRawAO[kvp.Key] = kvp.Value;
+            if (pendingRawAO == null) pendingRawAO = new Dictionary<Mesh, float[]>();
+            foreach (var kvp in result)
+                pendingRawAO[kvp.Key] = kvp.Value;
 
-                var faceArea = VertexAOBaker.ApplyFaceAreaCorrection(
-                    result,
-                    batch.targetMeshes,
-                    batch.occluderMeshes,
-                    pendingBakeSettings);
-                if (pendingFaceAreaAO == null) pendingFaceAreaAO = new Dictionary<Mesh, float[]>();
-                foreach (var kvp in faceArea)
-                    pendingFaceAreaAO[kvp.Key] = kvp.Value;
-            }
-            finally
-            {
-                DisposeBatchTemporaryMeshes(batch);
-            }
+            var faceArea = VertexAOBaker.ApplyFaceAreaCorrection(result, batch.meshList, pendingBakeSettings);
+            if (pendingFaceAreaAO == null) pendingFaceAreaAO = new Dictionary<Mesh, float[]>();
+            foreach (var kvp in faceArea)
+                pendingFaceAreaAO[kvp.Key] = kvp.Value;
 
             pendingLodBatchIndex++;
             StartNextGpuLodBatch();
@@ -1062,31 +559,16 @@ namespace LightmapUvTool
             for (int i = startIndex; i < pendingLodBatches.Count; i++)
             {
                 var batch = pendingLodBatches[i];
-                UvtLog.Info(
-                    $"[Vertex AO] CPU fallback for LOD{batch.lodIndex} — targets={batch.targetMeshes.Count}, nearby={batch.renderableOccluderCount}, collision={batch.colliderOccluderCount}" +
-                    (batch.usedSidecarCollisionFallback ? ", sidecar collision fallback." : "."));
+                var raw = VertexAOBaker.BakeMultiMesh(batch.meshList, pendingBakeSettings);
+                var face = VertexAOBaker.ApplyFaceAreaCorrection(raw, batch.meshList, pendingBakeSettings);
 
-                try
-                {
-                    var raw = VertexAOBaker.BakeMultiMesh(batch.targetMeshes, batch.occluderMeshes, pendingBakeSettings);
-                    var face = VertexAOBaker.ApplyFaceAreaCorrection(
-                        raw,
-                        batch.targetMeshes,
-                        batch.occluderMeshes,
-                        pendingBakeSettings);
+                if (pendingRawAO == null) pendingRawAO = new Dictionary<Mesh, float[]>();
+                foreach (var kvp in raw)
+                    pendingRawAO[kvp.Key] = kvp.Value;
 
-                    if (pendingRawAO == null) pendingRawAO = new Dictionary<Mesh, float[]>();
-                    foreach (var kvp in raw)
-                        pendingRawAO[kvp.Key] = kvp.Value;
-
-                    if (pendingFaceAreaAO == null) pendingFaceAreaAO = new Dictionary<Mesh, float[]>();
-                    foreach (var kvp in face)
-                        pendingFaceAreaAO[kvp.Key] = kvp.Value;
-                }
-                finally
-                {
-                    DisposeBatchTemporaryMeshes(batch);
-                }
+                if (pendingFaceAreaAO == null) pendingFaceAreaAO = new Dictionary<Mesh, float[]>();
+                foreach (var kvp in face)
+                    pendingFaceAreaAO[kvp.Key] = kvp.Value;
             }
 
             pendingLodBatchIndex = pendingLodBatches.Count;
@@ -1113,23 +595,12 @@ namespace LightmapUvTool
 
             foreach (var batch in batches)
             {
-                UvtLog.Info(
-                    $"[Vertex AO] CPU bake for LOD{batch.lodIndex} — targets={batch.targetMeshes.Count}, nearby={batch.renderableOccluderCount}, collision={batch.colliderOccluderCount}" +
-                    (batch.usedSidecarCollisionFallback ? ", sidecar collision fallback." : "."));
-
-                try
-                {
-                    var raw = VertexAOBaker.BakeMultiMesh(batch.targetMeshes, batch.occluderMeshes, settings);
-                    var face = VertexAOBaker.ApplyFaceAreaCorrection(raw, batch.targetMeshes, batch.occluderMeshes, settings);
-                    foreach (var kvp in raw)
-                        bakedRawAO[kvp.Key] = kvp.Value;
-                    foreach (var kvp in face)
-                        bakedFaceAreaAO[kvp.Key] = kvp.Value;
-                }
-                finally
-                {
-                    DisposeBatchTemporaryMeshes(batch);
-                }
+                var raw = VertexAOBaker.BakeMultiMesh(batch.meshList, settings);
+                var face = VertexAOBaker.ApplyFaceAreaCorrection(raw, batch.meshList, settings);
+                foreach (var kvp in raw)
+                    bakedRawAO[kvp.Key] = kvp.Value;
+                foreach (var kvp in face)
+                    bakedFaceAreaAO[kvp.Key] = kvp.Value;
             }
 
             FinalizeBake(entries);
@@ -1149,10 +620,7 @@ namespace LightmapUvTool
 
             int lodCount = entries.Select(e => e.lodIndex).Distinct().Count();
             string bakeTypeName = bakeTypeIndex == 0 ? "AO" : "Thickness";
-            UvtLog.Info(
-                $"[Vertex AO] Baked {bakeTypeName} for {bakedVertexCount} vertices across {lodCount} LOD(s) in {bakeTimeSeconds:F1}s " +
-                $"(targets={lastTargetMeshCount}, nearby={lastRenderableOccluderCount}, collision={lastColliderOccluderCount}" +
-                (lastUsedSidecarCollisionFallback ? ", sidecar collision fallback)." : ")."));
+            UvtLog.Info($"[Vertex AO] Baked {bakeTypeName} for {bakedVertexCount} vertices across {lodCount} LOD(s) in {bakeTimeSeconds:F1}s");
 
             ActivatePreview();
             requestRepaint?.Invoke();
@@ -1180,13 +648,6 @@ namespace LightmapUvTool
             foreach (var e in entries)
             {
                 Mesh mesh = e.originalMesh ?? e.fbxMesh;
-                if (ctx != null && ctx.StandaloneMesh &&
-                    e.renderer != null &&
-                    TryGetRendererMesh(e.renderer, out var currentMesh) &&
-                    currentMesh != null)
-                {
-                    mesh = currentMesh;
-                }
                 if (mesh == null) continue;
 
                 var ao = ReadFromChannel(mesh, channel);
@@ -1203,10 +664,6 @@ namespace LightmapUvTool
                 return;
             }
 
-            lastTargetMeshCount = bakedRawAO.Count;
-            lastRenderableOccluderCount = 0;
-            lastColliderOccluderCount = 0;
-            lastUsedSidecarCollisionFallback = false;
             bakeTimeSeconds = 0;
             ApplyBlurInternal();
             ActivatePreview();

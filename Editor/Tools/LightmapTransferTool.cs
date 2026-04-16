@@ -1748,6 +1748,7 @@ namespace LightmapUvTool
                             // Only overwrite UV1 from originalMesh when there is no
                             // repack/transfer result — otherwise the repacked lightmap
                             // UV in channel 1 takes priority over the pre-pipeline data.
+                            // (Preserves AO only when the pipeline didn't overwrite it.)
                             if (entry.repackedMesh == null && entry.transferredMesh == null)
                                 OverwriteUvChannel(exportMesh, entry.originalMesh, 1);
                         }
@@ -1847,6 +1848,9 @@ namespace LightmapUvTool
                     // For full LOD workflows we prune renderable leftovers that no longer
                     // belong to the export set. For standalone/partial FBX overwrite we
                     // must preserve untouched siblings and only replace the selected mesh.
+                    // Keep collision nodes, MeshCollider-backed nodes, structural
+                    // containers, and renderable children that still map to the
+                    // export mesh set. Remove only stale renderable leftovers.
                     // Must run BEFORE NormalizeExportHierarchy (which renames LOD0).
                     if (!(ctx != null && ctx.StandaloneMesh))
                     {
@@ -2090,8 +2094,8 @@ namespace LightmapUvTool
 
                 // Save sidecar entries so our postprocessor (order=10000) can
                 // re-apply UV2 after third-party postprocessors (e.g. Bakery auto-unwrap).
-                // If Sidecar UV2 Mode is off, mark the path for one-shot replay and
-                // cleanup after the current import finishes.
+                // If Sidecar UV2 Mode is off, mark the path for one-shot transient
+                // replay and cleanup after the current import finishes.
                 if (overwriteSource)
                 {
                     var sidecarEntries = BuildSidecarEntriesForExport(entries);
@@ -2118,13 +2122,12 @@ namespace LightmapUvTool
                     var fbxImp = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
                     if (fbxImp != null && fbxImp.generateSecondaryUV)
                     {
-                        if (!persistentSidecarMode)
-                            ArmTransientReplayForOverwrite(sourceFbxPath, transientReplayEntriesByPath);
                         fbxImp.generateSecondaryUV = false;
                         fbxImp.SaveAndReimport();
                         UvtLog.Info($"[FBX Export] Disabled generateSecondaryUV on '{sourceFbxPath}'");
                     }
                 }
+
             }
 
             // Clean up scene-generated LOD objects from LodGenerationTool.

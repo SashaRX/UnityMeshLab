@@ -13,7 +13,6 @@ namespace LightmapUvTool
         const float UV_NEAR = 0.01f;   // UV0 centroid distance threshold (legacy)
         const float POS_FAR = 0.5f;    // 3D centroid distance threshold (legacy)
         const float GRID_CELL = 0.01f; // spatial hash cell for UV0 centroids (legacy)
-        const int MIN_FACES = 20;      // avoid splitting tiny shells from noisy matches
 
         public enum ThresholdMode
         {
@@ -100,17 +99,12 @@ namespace LightmapUvTool
         /// </summary>
         public static int Split(Mesh mesh, List<UvShell> shells)
         {
-            return Split(mesh, shells, 0.10f);
-        }
-
-        public static int Split(Mesh mesh, List<UvShell> shells, float separationThreshold = 0.10f)
-        {
             var splits = DetectBinarySplits(mesh, shells);
             if (splits.Count == 0) return 0;
 
             int totalSplit = 0;
             foreach (var sp in splits)
-                totalSplit += ApplyBinarySplit(mesh, shells, sp.shellIndex, sp.axis, sp.splitThreshold, separationThreshold);
+                totalSplit += ApplyBinarySplit(mesh, shells, sp.shellIndex, sp.axis, sp.splitThreshold);
 
             return totalSplit;
         }
@@ -124,11 +118,6 @@ namespace LightmapUvTool
         /// the same split pattern. Call this on the source LOD first.
         /// </summary>
         public static int Split(Mesh mesh, List<UvShell> shells, out List<SplitParams> outParams)
-        {
-            return Split(mesh, shells, out outParams, 0.10f);
-        }
-
-        public static int Split(Mesh mesh, List<UvShell> shells, out List<SplitParams> outParams, float separationThreshold)
         {
             outParams = new List<SplitParams>();
             var verts = mesh.vertices;
@@ -213,7 +202,7 @@ namespace LightmapUvTool
                     }
                 }
 
-                // Fall back to binary detection (below)
+                // Fall back to binary detection (ниже)
             }
 
             // Stage 2: Detect + Apply binary splits on shells not processed by N-fold stage.
@@ -228,7 +217,7 @@ namespace LightmapUvTool
                 var binarySplits = DetectBinarySplits(mesh, shells, binaryCandidateShells);
                 foreach (var sp in binarySplits)
                 {
-                    int splitCount = ApplyBinarySplit(mesh, shells, sp.shellIndex, sp.axis, sp.splitThreshold, separationThreshold);
+                    int splitCount = ApplyBinarySplit(mesh, shells, sp.shellIndex, sp.axis, sp.splitThreshold);
                     if (splitCount <= 0) continue;
                     totalSplit += splitCount;
 
@@ -382,7 +371,7 @@ namespace LightmapUvTool
                 }
                 else if (processedShells.Contains(bestShell))
                 {
-                    UvtLog.Warn($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} already processed in this call, skipping duplicate");
+                    UvtLog.Warn($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} уже обработан в этом вызове, повтор пропущен");
                 }
                 else
                 {
@@ -408,7 +397,7 @@ namespace LightmapUvTool
                     }
                     else
                     {
-                        UvtLog.Verbose($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} was not split (axis={AxisName(p.axis)}, threshold={p.splitThreshold:F4})");
+                        UvtLog.Verbose($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} не разрезан (axis={AxisName(p.axis)}, threshold={p.splitThreshold:F4})");
                     }
                 }
             }
@@ -417,11 +406,6 @@ namespace LightmapUvTool
         }
 
         static int ApplyBinarySplit(Mesh mesh, List<UvShell> shells, int shellIndex, int axis, float threshold)
-        {
-            return ApplyBinarySplit(mesh, shells, shellIndex, axis, threshold, -1f);
-        }
-
-        static int ApplyBinarySplit(Mesh mesh, List<UvShell> shells, int shellIndex, int axis, float threshold, float separationThreshold)
         {
             if (mesh == null || shells == null || shellIndex < 0 || shellIndex >= shells.Count) return 0;
             if (axis < 0 || axis > 2) return 0;
@@ -450,52 +434,6 @@ namespace LightmapUvTool
             {
                 UvtLog.Verbose($"[SymSplit] Shell {shellIndex}: skip (all faces on one side)");
                 return 0;
-            }
-
-            if (separationThreshold >= 0f)
-            {
-                Vector3 centerA = Vector3.zero;
-                Vector3 centerB = Vector3.zero;
-                Vector3 shellMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-                Vector3 shellMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-
-                foreach (int f in groupA)
-                {
-                    int v0 = tris[f * 3];
-                    int v1 = tris[f * 3 + 1];
-                    int v2 = tris[f * 3 + 2];
-                    centerA += (verts[v0] + verts[v1] + verts[v2]) / 3f;
-                }
-
-                foreach (int f in groupB)
-                {
-                    int v0 = tris[f * 3];
-                    int v1 = tris[f * 3 + 1];
-                    int v2 = tris[f * 3 + 2];
-                    centerB += (verts[v0] + verts[v1] + verts[v2]) / 3f;
-                }
-
-                foreach (int f in shell.faceIndices)
-                {
-                    if (f < 0 || f * 3 + 2 >= tris.Length) continue;
-                    for (int j = 0; j < 3; j++)
-                    {
-                        int vi = tris[f * 3 + j];
-                        shellMin = Vector3.Min(shellMin, verts[vi]);
-                        shellMax = Vector3.Max(shellMax, verts[vi]);
-                    }
-                }
-
-                centerA /= groupA.Count;
-                centerB /= groupB.Count;
-                float groupSeparation = Vector3.Distance(centerA, centerB);
-                float shellExtent = (shellMax - shellMin).magnitude;
-                if (shellExtent > 1e-6f && groupSeparation / shellExtent < separationThreshold)
-                {
-                    UvtLog.Verbose($"[SymSplit] Shell {shellIndex}: skip (3D separation too small: " +
-                        $"{groupSeparation:F3}/{shellExtent:F3} = {groupSeparation / shellExtent:P0})");
-                    return 0;
-                }
             }
 
             var vertsA = new HashSet<int>();
@@ -682,7 +620,7 @@ namespace LightmapUvTool
 
                 var shell = shells[si];
                 var faces = shell.faceIndices;
-                if (faces.Count < MIN_FACES) continue;
+                if (faces.Count < 2) continue;
                 var thresholds = GetThresholds(mesh, shell, si, "DetectBinarySplits");
 
                 var grid = new Dictionary<long, List<int>>();
