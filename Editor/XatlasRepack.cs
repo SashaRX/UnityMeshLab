@@ -395,7 +395,7 @@ namespace LightmapUvTool
 
             // Build occupancy grid from non-overlapping shells
             const int kGridRes = 128;
-            bool[,] grid = new bool[kGridRes, kGridRes];
+            int[,] grid = new int[kGridRes, kGridRes]; // 0 = free, 1 = occupied
 
             for (int i = 0; i < n; i++)
             {
@@ -406,9 +406,15 @@ namespace LightmapUvTool
                 int gMaxY = Mathf.Clamp(Mathf.CeilToInt(mx[i].y * kGridRes), 0, kGridRes - 1);
                 for (int gy = gMinY; gy <= gMaxY; gy++)
                     for (int gx = gMinX; gx <= gMaxX; gx++)
-                        grid[gx, gy] = true;
+                        grid[gx, gy] = 1;
             }
 
+            // Build summed area table for O(1) rectangle occupancy queries.
+            // sat[x,y] = sum of grid[0..x-1, 0..y-1].
+            int[,] sat = new int[kGridRes + 1, kGridRes + 1];
+            for (int y = 0; y < kGridRes; y++)
+                for (int x = 0; x < kGridRes; x++)
+                    sat[x + 1, y + 1] = grid[x, y] + sat[x, y + 1] + sat[x + 1, y] - sat[x, y];
             // Sort overlapping shells by area (largest first) for better packing
             var toRelocate = new List<int>(overlapping);
             toRelocate.Sort((a, b) =>
@@ -426,19 +432,15 @@ namespace LightmapUvTool
                 int gw = Mathf.Max(1, Mathf.CeilToInt(w * kGridRes));
                 int gh = Mathf.Max(1, Mathf.CeilToInt(h * kGridRes));
 
-                // Scan for free rectangle
+                // Scan for free rectangle using summed area table (O(1) per query)
                 bool placed = false;
                 for (int gy = 0; gy <= kGridRes - gh && !placed; gy++)
                 {
                     for (int gx = 0; gx <= kGridRes - gw && !placed; gx++)
                     {
-                        bool free = true;
-                        for (int dy = 0; dy < gh && free; dy++)
-                            for (int dx = 0; dx < gw && free; dx++)
-                                if (grid[gx + dx, gy + dy])
-                                    free = false;
-
-                        if (!free) continue;
+                        int sum = sat[gx + gw, gy + gh] - sat[gx, gy + gh]
+                                - sat[gx + gw, gy]      + sat[gx, gy];
+                        if (sum != 0) continue;
 
                         // Place shell here
                         float newMinX = (float)gx / kGridRes + padU;
@@ -450,10 +452,13 @@ namespace LightmapUvTool
                             if ((uint)vi < (uint)uv2.Length)
                                 uv2[vi] = new Vector2(uv2[vi].x + offX, uv2[vi].y + offY);
 
-                        // Mark occupied in grid
+                        // Mark occupied in grid and rebuild SAT incrementally
                         for (int dy = 0; dy < gh; dy++)
                             for (int dx = 0; dx < gw; dx++)
-                                grid[gx + dx, gy + dy] = true;
+                                grid[gx + dx, gy + dy] = 1;
+                        for (int y = gy; y < kGridRes; y++)
+                            for (int x = gx; x < kGridRes; x++)
+                                sat[x + 1, y + 1] = grid[x, y] + sat[x, y + 1] + sat[x + 1, y] - sat[x, y];
 
                         mn[si] = new Vector2(mn[si].x + offX, mn[si].y + offY);
                         mx[si] = new Vector2(mx[si].x + offX, mx[si].y + offY);
@@ -476,7 +481,10 @@ namespace LightmapUvTool
                     int fgMaxY = Mathf.Clamp(Mathf.CeilToInt(mx[si].y * kGridRes), 0, kGridRes - 1);
                     for (int fy = fgMinY; fy <= fgMaxY; fy++)
                         for (int fx = fgMinX; fx <= fgMaxX; fx++)
-                            grid[fx, fy] = true;
+                            grid[fx, fy] = 1;
+                    for (int y = fgMinY; y < kGridRes; y++)
+                        for (int x = fgMinX; x < kGridRes; x++)
+                            sat[x + 1, y + 1] = grid[x, y] + sat[x, y + 1] + sat[x + 1, y] - sat[x, y];
                 }
             }
 

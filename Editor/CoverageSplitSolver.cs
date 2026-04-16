@@ -433,7 +433,7 @@ namespace LightmapUvTool
             float maxDistSq = maxDist * maxDist;
             var coverage = new float[tgtShells.Count];
 
-            // Построим глобальный source BVH для обратной проекции
+            // Build a global source BVH for back-projection
             var globalBvh = new TriangleBvh(srcVerts, srcTris);
 
             // Per-face source shell lookup
@@ -466,7 +466,7 @@ namespace LightmapUvTool
 
                     totalFaces++;
 
-                    // Проверяем центроид грани
+                    // Check face centroid
                     Vector3 centroid = (tgtVerts[ti0] + tgtVerts[ti1] + tgtVerts[ti2]) / 3f;
                     Vector3 nrm = Vector3.zero;
                     if (tgtNormals != null && ti0 < tgtNormals.Length)
@@ -476,7 +476,7 @@ namespace LightmapUvTool
                     if (hit.triangleIndex < 0 || hit.distSq > maxDistSq)
                         continue;
 
-                    // Проверяем нормаль
+                    // Check normal
                     if (nrm.sqrMagnitude > 0.5f && srcNormals != null)
                     {
                         int si0 = srcTris[hit.triangleIndex * 3];
@@ -489,7 +489,7 @@ namespace LightmapUvTool
                         if (dot < minNormalDot) continue;
                     }
 
-                    // Проверяем, что ближайший треугольник принадлежит matched source shell
+                    // Verify that the nearest triangle belongs to the matched source shell
                     int hitShell = srcFaceToShell[hit.triangleIndex];
                     if (hitShell == matchedSrc)
                     {
@@ -515,9 +515,9 @@ namespace LightmapUvTool
             int upgraded = 0;
             for (int tsi = 0; tsi < coverage3D.Length; tsi++)
             {
-                if (isMerged[tsi]) continue; // уже merged
+                if (isMerged[tsi]) continue; // already merged
                 if (isFragmentMerged != null && tsi < isFragmentMerged.Length
-                    && isFragmentMerged[tsi]) continue; // fragment-merged → не трогаем
+                    && isFragmentMerged[tsi]) continue; // fragment-merged → skip
 
                 if (coverage3D[tsi] < coverageThreshold && coverage3D[tsi] > 0f)
                 {

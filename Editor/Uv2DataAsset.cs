@@ -233,9 +233,29 @@ namespace LightmapUvTool
     }
 
     [CreateAssetMenu(menuName = "LightmapUvTool/UV2 Data (internal)", fileName = "uv2data")]
-    public class Uv2DataAsset : ScriptableObject
+    public class Uv2DataAsset : ScriptableObject, ISerializationCallbackReceiver
     {
         public const int CurrentSchemaVersion = 3;
+
+        public void OnBeforeSerialize() { }
+
+        public void OnAfterDeserialize()
+        {
+            // Migrate entries from schema v2 (or earlier) to v3.
+            // Unity deserializes missing int fields as 0 (default), not the
+            // field initializer value (-1). Without this fixup an old entry
+            // would have auxiliaryTargetUvChannel == 0, which means "UV0" and
+            // could cause UV0 to be overwritten with null auxiliary data.
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var e = entries[i];
+                if (e.schemaVersion < 3)
+                {
+                    if (e.auxiliaryUv == null)
+                        e.auxiliaryTargetUvChannel = -1;
+                }
+            }
+        }
         public static string ToolVersionStr
         {
             get

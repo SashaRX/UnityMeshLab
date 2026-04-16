@@ -664,94 +664,113 @@ namespace LightmapUvTool
             var bestMeshes = new Dictionary<MeshEntry, Mesh>();
             var bestTransfers = new Dictionary<MeshEntry, (Mesh transferred, GroupedShellTransfer.TransferResult tr)>();
 
-            for (int ci = 0; ci < separationConfigs.Length; ci++)
+            bool cancelled = false;
+            try
             {
-                float sepThresh = separationConfigs[ci];
-                if (ci > 0)
+                for (int ci = 0; ci < separationConfigs.Length; ci++)
                 {
-                    UvtLog.Info($"[Pipeline] Auto-tune retry #{ci} (separation={sepThresh:P0})...");
-                    // Restore saved meshes
-                    foreach (var kv in savedMeshes)
+                    float sepThresh = separationConfigs[ci];
+
+                    if (EditorUtility.DisplayCancelableProgressBar(
+                        "Auto-tune Pipeline",
+                        $"Config {ci + 1}/{separationConfigs.Length} (separation={sepThresh:P0})",
+                        (float)ci / separationConfigs.Length))
                     {
-                        kv.Key.originalMesh = UnityEngine.Object.Instantiate(kv.Value);
-                        kv.Key.originalMesh.name = kv.Value.name;
-                        kv.Key.wasSymmetrySplit = false;
-                        kv.Key.repackedMesh = null;
-                        kv.Key.transferredMesh = null;
-                        kv.Key.shellTransferResult = null;
+                        UvtLog.Warn("[Pipeline] Auto-tune cancelled by user.");
+                        cancelled = true;
+                        break;
                     }
-                    ctx.ClearAllCaches();
-                    accumulatedOverlapHints.Clear();
-                    shellTransformCache.Clear();
-                    ctx.HasRepack = false;
-                    ctx.HasTransfer = false;
-                }
 
-                // 3. SymSplit
-                ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh);
+                    if (ci > 0)
+                    {
+                        UvtLog.Info($"[Pipeline] Auto-tune retry #{ci} (separation={sepThresh:P0})...");
+                        // Restore saved meshes
+                        foreach (var kv in savedMeshes)
+                        {
+                            kv.Key.originalMesh = UnityEngine.Object.Instantiate(kv.Value);
+                            kv.Key.originalMesh.name = kv.Value.name;
+                            kv.Key.wasSymmetrySplit = false;
+                            kv.Key.repackedMesh = null;
+                            kv.Key.transferredMesh = null;
+                            kv.Key.shellTransferResult = null;
+                        }
+                        ctx.ClearAllCaches();
+                        accumulatedOverlapHints.Clear();
+                        shellTransformCache.Clear();
+                        ctx.HasRepack = false;
+                        ctx.HasTransfer = false;
+                    }
 
-                // 4. Repack
-                var src = ctx.ForLod(ctx.SourceLodIndex);
-                if (ctx.RepackPerMesh) ExecRepackPerMesh(src);
-                else ExecRepack(src);
+                    // 3. SymSplit
+                    ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh);
 
-                // 5. Transfer
-                if (ctx.HasRepack) ExecTransferAll();
+                    // 4. Repack
+                    var src = ctx.ForLod(ctx.SourceLodIndex);
+                    if (ctx.RepackPerMesh) ExecRepackPerMesh(src);
+                    else ExecRepack(src);
 
-                // Evaluate quality
-                int totalRejected = 0;
-                int totalOverlaps = 0;
-                int totalVerts = 0;
-                int totalTransferred = 0;
-                foreach (var e in ctx.MeshEntries)
-                {
-                    if (e.shellTransferResult == null) continue;
-                    totalRejected += e.shellTransferResult.shellsRejected;
-                    totalOverlaps += e.shellTransferResult.shellsOverlapFixed;
-                    totalVerts += e.shellTransferResult.verticesTotal;
-                    totalTransferred += e.shellTransferResult.verticesTransferred;
-                }
-                float coverage = totalVerts > 0 ? (float)totalTransferred / totalVerts : 0f;
-                int totalIssues = totalRejected + totalOverlaps;
+                    // 5. Transfer
+                    if (ctx.HasRepack) ExecTransferAll();
 
-                UvtLog.Info($"[Pipeline] Config #{ci} (sep={sepThresh:P0}): " +
-                    $"rejected={totalRejected}, overlaps={totalOverlaps}, coverage={coverage:P0}");
-
-                bool better = false;
-                if (totalIssues < bestRejected)
-                    better = true;
-                else if (totalIssues == bestRejected && coverage > bestCoverage)
-                    better = true;
-
-                if (better)
-                {
-                    bestRejected = totalIssues;
-                    bestCoverage = coverage;
-                    bestConfigIdx = ci;
-                    // Save best meshes
-                    foreach (var m in bestMeshes.Values) UnityEngine.Object.DestroyImmediate(m);
-                    bestMeshes.Clear();
-                    bestTransfers.Clear();
+                    // Evaluate quality
+                    int totalRejected = 0;
+                    int totalOverlaps = 0;
+                    int totalVerts = 0;
+                    int totalTransferred = 0;
                     foreach (var e in ctx.MeshEntries)
                     {
-                        if (e.originalMesh != null)
-                            bestMeshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
-                        if (e.transferredMesh != null)
-                            bestTransfers[e] = (UnityEngine.Object.Instantiate(e.transferredMesh),
-                                e.shellTransferResult);
+                        if (e.shellTransferResult == null) continue;
+                        totalRejected += e.shellTransferResult.shellsRejected;
+                        totalOverlaps += e.shellTransferResult.shellsOverlapFixed;
+                        totalVerts += e.shellTransferResult.verticesTotal;
+                        totalTransferred += e.shellTransferResult.verticesTransferred;
+                    }
+                    float coverage = totalVerts > 0 ? (float)totalTransferred / totalVerts : 0f;
+                    int totalIssues = totalRejected + totalOverlaps;
+
+                    UvtLog.Info($"[Pipeline] Config #{ci} (sep={sepThresh:P0}): " +
+                        $"rejected={totalRejected}, overlaps={totalOverlaps}, coverage={coverage:P0}");
+
+                    bool better = false;
+                    if (totalIssues < bestRejected)
+                        better = true;
+                    else if (totalIssues == bestRejected && coverage > bestCoverage)
+                        better = true;
+
+                    if (better)
+                    {
+                        bestRejected = totalIssues;
+                        bestCoverage = coverage;
+                        bestConfigIdx = ci;
+                        // Save best meshes
+                        foreach (var m in bestMeshes.Values) UnityEngine.Object.DestroyImmediate(m);
+                        bestMeshes.Clear();
+                        bestTransfers.Clear();
+                        foreach (var e in ctx.MeshEntries)
+                        {
+                            if (e.originalMesh != null)
+                                bestMeshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
+                            if (e.transferredMesh != null)
+                                bestTransfers[e] = (UnityEngine.Object.Instantiate(e.transferredMesh),
+                                    e.shellTransferResult);
+                        }
+                    }
+
+                    // Early exit if perfect
+                    if (totalIssues == 0 && coverage >= 0.99f)
+                    {
+                        if (ci > 0) UvtLog.Info($"[Pipeline] Perfect result on config #{ci}, stopping.");
+                        break;
                     }
                 }
-
-                // Early exit if perfect
-                if (totalIssues == 0 && coverage >= 0.99f)
-                {
-                    if (ci > 0) UvtLog.Info($"[Pipeline] Perfect result on config #{ci}, stopping.");
-                    break;
-                }
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
             }
 
             // Restore best config if not the last one tested
-            if (bestMeshes.Count > 0)
+            if (bestMeshes.Count > 0 && !cancelled)
             {
                 foreach (var kv in bestMeshes)
                 {
@@ -769,6 +788,11 @@ namespace LightmapUvTool
             foreach (var m in savedMeshes.Values)
                 UnityEngine.Object.DestroyImmediate(m);
 
+            if (cancelled)
+            {
+                requestRepaint?.Invoke();
+                return;
+            }
             if (separationConfigs.Length > 1 && bestConfigIdx > 0)
                 UvtLog.Info($"[Pipeline] Auto-tune: selected config #{bestConfigIdx} " +
                     $"(sep={separationConfigs[bestConfigIdx]:P0})");
@@ -2001,9 +2025,7 @@ namespace LightmapUvTool
             {
                 var m = srcMats[i];
                 string shaderName = m != null && m.shader != null ? m.shader.name : null;
-                if (!string.IsNullOrEmpty(shaderName) &&
-                    (shaderName.Equals("Hidden/Internal-Colored", StringComparison.OrdinalIgnoreCase) ||
-                     shaderName.StartsWith("Hidden/LightmapUvTool/", StringComparison.OrdinalIgnoreCase)))
+                if (CheckerTexturePreview.IsPreviewShader(shaderName))
                 {
                     hasPreviewMat = true;
                     break;
@@ -2498,8 +2520,6 @@ namespace LightmapUvTool
 
         void RestoreFbxFromGitMain()
         {
-            if (ctx.LodGroup == null) return;
-
             var fbxPaths = new HashSet<string>();
             foreach (var e in ctx.MeshEntries)
             {
@@ -2516,59 +2536,8 @@ namespace LightmapUvTool
                 return;
             }
 
-            string projectPath = System.IO.Directory.GetParent(Application.dataPath).FullName;
-            int saved = 0;
-
             foreach (string fbx in fbxPaths)
-            {
-                // ModelName.fbx → ModelName_main.fbx
-                string dir = System.IO.Path.GetDirectoryName(fbx);
-                string name = System.IO.Path.GetFileNameWithoutExtension(fbx);
-                string destAsset = System.IO.Path.Combine(dir, name + "_main.fbx");
-                string destFull = System.IO.Path.Combine(projectPath, destAsset);
-
-                try
-                {
-                    // git show main:<path> > dest
-                    var psi = new System.Diagnostics.ProcessStartInfo
-                    {
-                        FileName = "git",
-                        Arguments = $"show main:\"{fbx}\"",
-                        WorkingDirectory = projectPath,
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        CreateNoWindow = true
-                    };
-                    var proc = System.Diagnostics.Process.Start(psi);
-                    using (var fs = System.IO.File.Create(destFull))
-                        proc.StandardOutput.BaseStream.CopyTo(fs);
-                    proc.WaitForExit(10000);
-                    string stderr = proc.StandardError.ReadToEnd().Trim();
-
-                    if (proc.ExitCode == 0)
-                    {
-                        UvtLog.Info($"[Backup] Saved {destAsset} from git main");
-                        saved++;
-                    }
-                    else
-                    {
-                        UvtLog.Error($"[Backup] git show main:{fbx} failed: {stderr}");
-                        if (System.IO.File.Exists(destFull))
-                            System.IO.File.Delete(destFull);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    UvtLog.Error($"[Backup] Failed to run git: {ex.Message}");
-                }
-            }
-
-            if (saved > 0)
-            {
-                AssetDatabase.Refresh();
-                UvtLog.Info($"[Backup] {saved} FBX file(s) saved with _main suffix");
-            }
+                UvToolHub.BackupFbxFromGitMain(fbx);
         }
 
         void SwitchToPostApplyView()
