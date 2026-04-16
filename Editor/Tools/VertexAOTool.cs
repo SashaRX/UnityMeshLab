@@ -1164,6 +1164,13 @@ namespace LightmapUvTool
             foreach (var e in entries)
             {
                 Mesh mesh = e.originalMesh ?? e.fbxMesh;
+                if (ctx != null && ctx.StandaloneMesh &&
+                    e.renderer != null &&
+                    TryGetRendererMesh(e.renderer, out var currentMesh) &&
+                    currentMesh != null)
+                {
+                    mesh = currentMesh;
+                }
                 if (mesh == null) continue;
 
                 var ao = ReadFromChannel(mesh, channel);

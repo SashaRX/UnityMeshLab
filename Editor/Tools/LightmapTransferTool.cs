@@ -1386,12 +1386,14 @@ namespace LightmapUvTool
 
             bool allGroupsSucceeded = true;
             var overwrittenFbxPaths = new HashSet<string>();
+            var transientReplayEntriesByPath = new Dictionary<string, List<MeshUv2Entry>>();
             foreach (var kv in fbxGroups)
             {
                 string sourceFbxPath = kv.Key;
                 var entries = kv.Value;
                 string exportPath;
                 bool groupSucceeded = false;
+                bool persistentSidecarMode = PostprocessorDefineManager.IsEnabled();
                 if (overwriteSource)
                 {
                     if (!EditorUtility.DisplayDialog("Overwrite Source FBX",
@@ -1801,11 +1803,15 @@ namespace LightmapUvTool
                 if (overwriteSource)
                 {
                     var sidecarEntries = BuildSidecarEntriesForExport(entries);
-                    bool persistentSidecarMode = PostprocessorDefineManager.IsEnabled();
                     if (persistentSidecarMode)
+                    {
                         SaveSidecarForExport(sourceFbxPath, sidecarEntries);
+                    }
                     else
-                        Uv2AssetPostprocessor.SetTransientReplayEntries(sourceFbxPath, sidecarEntries);
+                    {
+                        transientReplayEntriesByPath[sourceFbxPath] = sidecarEntries;
+                        ArmTransientReplayForOverwrite(sourceFbxPath, transientReplayEntriesByPath);
+                    }
 
                     Uv2AssetPostprocessor.managedImportPaths.Add(sourceFbxPath);
                     if (!persistentSidecarMode)
@@ -1820,6 +1826,8 @@ namespace LightmapUvTool
                     var fbxImp = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
                     if (fbxImp != null && fbxImp.generateSecondaryUV)
                     {
+                        if (!persistentSidecarMode)
+                            ArmTransientReplayForOverwrite(sourceFbxPath, transientReplayEntriesByPath);
                         fbxImp.generateSecondaryUV = false;
                         fbxImp.SaveAndReimport();
                         UvtLog.Info($"[FBX Export] Disabled generateSecondaryUV on '{sourceFbxPath}'");
@@ -1856,13 +1864,34 @@ namespace LightmapUvTool
                     }
                     if (toRemove.Count > 0)
                     {
+                        if (transientReplayEntriesByPath.Count > 0)
+                            ArmTransientReplayForOverwrite(fbxPath, transientReplayEntriesByPath);
                         foreach (var key in toRemove)
                             imp.RemoveRemap(key);
                         imp.SaveAndReimport();
                     }
                 }
             }
+
+            if (allGroupsSucceeded)
+                SwitchToPostApplyView();
 #endif
+        }
+
+        static void ArmTransientReplayForOverwrite(
+            string assetPath,
+            Dictionary<string, List<MeshUv2Entry>> transientReplayEntriesByPath)
+        {
+            if (string.IsNullOrEmpty(assetPath) || transientReplayEntriesByPath == null)
+                return;
+
+            if (!transientReplayEntriesByPath.TryGetValue(assetPath, out var entries) ||
+                entries == null || entries.Count == 0)
+                return;
+
+            Uv2AssetPostprocessor.SetTransientReplayEntries(assetPath, entries);
+            Uv2AssetPostprocessor.managedImportPaths.Add(assetPath);
+            Uv2AssetPostprocessor.transientReplayPaths.Add(assetPath);
         }
 
         List<MeshUv2Entry> BuildSidecarEntriesForExport(List<(MeshEntry entry, Mesh resultMesh)> entries)
