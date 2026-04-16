@@ -1404,7 +1404,17 @@ namespace LightmapUvTool
 
             try
             {
-                // Copy vertex colors from scene meshes onto FBX clone meshes by name
+                // Determine which channel AO targets (vertex color or UV)
+                int aoUvIdx = -1; // -1 = vertex colors, 0-7 = UV channel index
+                var aoChannel = VertexAOTool.LastAppliedTargetChannel;
+                if (aoChannel.HasValue)
+                {
+                    int ch = (int)aoChannel.Value;
+                    if (ch > (int)AOTargetChannel.VertexColorA)
+                        aoUvIdx = (ch - (int)AOTargetChannel.UV0_X) / 2;
+                }
+
+                // Copy vertex data from scene meshes onto FBX clone meshes by name
                 int updated = 0;
                 foreach (var e in ctx.MeshEntries)
                 {
@@ -1422,7 +1432,7 @@ namespace LightmapUvTool
                         var cloneMesh = UnityEngine.Object.Instantiate(cloneMf.sharedMesh);
                         cloneMesh.name = cloneMf.sharedMesh.name;
 
-                        // Copy vertex colors
+                        // Copy vertex colors (when AO targets vertex color channel)
                         if (sceneMesh.colors32 != null && sceneMesh.colors32.Length == cloneMesh.vertexCount)
                         {
                             cloneMesh.colors32 = sceneMesh.colors32;
@@ -1434,6 +1444,18 @@ namespace LightmapUvTool
                             updated++;
                         }
 
+                        // Copy the UV channel where AO was applied
+                        if (aoUvIdx >= 0 && sceneMesh.vertexCount == cloneMesh.vertexCount)
+                        {
+                            var uvs = new List<Vector2>();
+                            sceneMesh.GetUVs(aoUvIdx, uvs);
+                            if (uvs.Count == cloneMesh.vertexCount)
+                            {
+                                cloneMesh.SetUVs(aoUvIdx, uvs);
+                                updated++;
+                            }
+                        }
+
                         cloneMf.sharedMesh = cloneMesh;
                         break;
                     }
@@ -1441,7 +1463,7 @@ namespace LightmapUvTool
 
                 if (updated == 0)
                 {
-                    UvtLog.Warn("[FBX Export] No vertex colors found to export.");
+                    UvtLog.Warn("[FBX Export] No vertex data found to export.");
                     return;
                 }
 
@@ -1489,9 +1511,11 @@ namespace LightmapUvTool
                     }
                 }
 
-                // Backup .meta
+                // Backup .meta to temp dir (avoid Unity scanning .bak in Assets)
                 string fullPath = System.IO.Path.GetFullPath(sourceFbxPath);
-                string metaBak = fullPath + ".meta.bak";
+                string metaBak = System.IO.Path.Combine(
+                    System.IO.Path.GetTempPath(),
+                    System.IO.Path.GetFileName(fullPath) + ".meta.bak");
                 if (System.IO.File.Exists(fullPath + ".meta"))
                     System.IO.File.Copy(fullPath + ".meta", metaBak, true);
 
@@ -1626,6 +1650,9 @@ namespace LightmapUvTool
                 string exportPath;
                 bool groupSucceeded = false;
                 bool persistentSidecarMode = PostprocessorDefineManager.IsEnabled();
+                string tempDir = System.IO.Path.GetTempPath();
+                string fbxBakName = System.IO.Path.GetFileName(
+                    System.IO.Path.GetFullPath(sourceFbxPath));
                 if (overwriteSource)
                 {
                     if (!EditorUtility.DisplayDialog("Overwrite Source FBX",
@@ -1640,9 +1667,9 @@ namespace LightmapUvTool
                     string fullMeta = fullSource + ".meta";
                     try
                     {
-                        System.IO.File.Copy(fullSource, fullSource + ".bak", true);
+                        System.IO.File.Copy(fullSource, System.IO.Path.Combine(tempDir, fbxBakName + ".bak"), true);
                         if (System.IO.File.Exists(fullMeta))
-                            System.IO.File.Copy(fullMeta, fullSource + ".meta.bak", true);
+                            System.IO.File.Copy(fullMeta, System.IO.Path.Combine(tempDir, fbxBakName + ".meta.bak"), true);
                     }
                     catch (Exception ex) { UvtLog.Error("[FBX Export] Backup failed: " + ex.Message); allGroupsSucceeded = false; continue; }
                 }
@@ -2015,26 +2042,19 @@ namespace LightmapUvTool
                     int totalExported = entries.Count + collisionMeshCount;
                     UvtLog.Info("[FBX Export] Exported (binary) " + totalExported + " mesh(es) -> " + exportPath);
                     groupSucceeded = true;
-                    // Restore original .meta and clean up .bak files
+                    // Restore original .meta from temp backup
                     if (overwriteSource)
                     {
                         string fullPath = System.IO.Path.GetFullPath(sourceFbxPath);
-                        string metaBak = fullPath + ".meta.bak";
+                        string metaBak = System.IO.Path.Combine(tempDir, fbxBakName + ".meta.bak");
                         if (System.IO.File.Exists(metaBak))
                         {
                             System.IO.File.Copy(metaBak, fullPath + ".meta", true);
                             System.IO.File.Delete(metaBak);
                         }
-                        string fbxBak = fullPath + ".bak";
+                        string fbxBak = System.IO.Path.Combine(tempDir, fbxBakName + ".bak");
                         if (System.IO.File.Exists(fbxBak))
                             System.IO.File.Delete(fbxBak);
-                        // Delete auto-created .bak.meta files
-                        string fbxBakMeta = fbxBak + ".meta";
-                        if (System.IO.File.Exists(fbxBakMeta))
-                            System.IO.File.Delete(fbxBakMeta);
-                        string metaBakMeta = metaBak + ".meta";
-                        if (System.IO.File.Exists(metaBakMeta))
-                            System.IO.File.Delete(metaBakMeta);
                         overwrittenFbxPaths.Add(sourceFbxPath);
                     }
                 }
