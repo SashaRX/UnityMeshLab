@@ -182,7 +182,7 @@ namespace LightmapUvTool
             if (ctx == null || ctx.MeshEntries == null || ctx.MeshEntries.Count == 0)
             {
                 EditorGUILayout.HelpBox(
-                    "Выберите LODGroup или отдельный MeshRenderer, чтобы запечь vertex AO.",
+                    "Select a LODGroup or an individual MeshRenderer to bake vertex AO.",
                     MessageType.Info);
                 return;
             }
@@ -401,7 +401,7 @@ namespace LightmapUvTool
                     int subCount = GetRendererSubmeshCount(selectedRenderer);
                     if (selectedRenderer == null || subCount <= 0)
                     {
-                        EditorGUILayout.HelpBox("Выберите объект с MeshRenderer/SkinnedMeshRenderer для выборочного применения.", MessageType.Warning);
+                        EditorGUILayout.HelpBox("Select an object with MeshRenderer/SkinnedMeshRenderer for selective apply.", MessageType.Warning);
                     }
                     else
                     {

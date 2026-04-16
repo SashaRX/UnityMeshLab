@@ -213,7 +213,7 @@ namespace LightmapUvTool
                     }
                 }
 
-                // Fall back to binary detection (ниже)
+                // Fall back to binary detection (below)
             }
 
             // Stage 2: Detect + Apply binary splits on shells not processed by N-fold stage.
@@ -382,7 +382,7 @@ namespace LightmapUvTool
                 }
                 else if (processedShells.Contains(bestShell))
                 {
-                    UvtLog.Warn($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} уже обработан в этом вызове, повтор пропущен");
+                    UvtLog.Warn($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} already processed in this call, skipping duplicate");
                 }
                 else
                 {
@@ -408,7 +408,7 @@ namespace LightmapUvTool
                     }
                     else
                     {
-                        UvtLog.Verbose($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} не разрезан (axis={AxisName(p.axis)}, threshold={p.splitThreshold:F4})");
+                        UvtLog.Verbose($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} was not split (axis={AxisName(p.axis)}, threshold={p.splitThreshold:F4})");
                     }
                 }
             }
