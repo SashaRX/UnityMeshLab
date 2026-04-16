@@ -2297,7 +2297,7 @@ namespace LightmapUvTool
             return best;
         }
 
-        static void CopyRendererSettings(Renderer src, Renderer dst)
+        internal static void CopyRendererSettings(Renderer src, Renderer dst)
         {
             if (src == null || dst == null) return;
 

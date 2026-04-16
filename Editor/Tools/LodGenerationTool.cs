@@ -340,7 +340,7 @@ namespace LightmapUvTool
 
             // No .asset files — meshes live in memory, exported via FBX
 
-            UvToolContext.CompactLodArray(ctx.LodGroup);
+            UvToolContext.CompactLodArray(ctx.LodGroup, removeEmptySlots: true);
             var lods = ctx.LodGroup.GetLODs();
             var newLods = new List<LOD>(lods);
 
@@ -431,7 +431,9 @@ namespace LightmapUvTool
                             var mf = go.AddComponent<MeshFilter>();
                             mf.sharedMesh = r.simplifiedMesh;
                             var mr = go.AddComponent<MeshRenderer>();
-                            mr.sharedMaterials = entry.renderer.sharedMaterials;
+                            LightmapTransferTool.CopyRendererSettings(entry.renderer, mr);
+                            GameObjectUtility.SetStaticEditorFlags(go,
+                                GameObjectUtility.GetStaticEditorFlags(entry.renderer.gameObject));
                             Undo.RegisterCreatedObjectUndo(go, "Generate LOD");
                             generatedObjects.Add(go);
                             lodRenderers.Add(mr);

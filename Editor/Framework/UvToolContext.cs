@@ -104,10 +104,12 @@ namespace LightmapUvTool
         }
 
         /// <summary>
-        /// Remove LOD slots whose renderers are all null or empty.
-        /// Also strips null renderers from remaining slots.
+        /// Cleans up LOD slots: always removes null renderers from within a slot.
+        /// When <paramref name="removeEmptySlots"/> is true, also drops slots that
+        /// end up with zero renderers. Defaults to false so user-added empty LOD
+        /// slots (from "Add LOD Level") survive a context refresh.
         /// </summary>
-        public static bool CompactLodArray(LODGroup lodGroup)
+        public static bool CompactLodArray(LODGroup lodGroup, bool removeEmptySlots = false)
         {
             if (lodGroup == null) return false;
             var lods = lodGroup.GetLODs();
@@ -115,12 +117,15 @@ namespace LightmapUvTool
             bool changed = false;
             foreach (var lod in lods)
             {
-                if (lod.renderers == null || lod.renderers.Length == 0)
-                { changed = true; continue; }
-                var valid = lod.renderers.Where(r => r != null).ToArray();
+                var renderers = lod.renderers ?? new Renderer[0];
+                var valid = renderers.Where(r => r != null).ToArray();
+                if (valid.Length != renderers.Length) changed = true;
                 if (valid.Length == 0)
-                { changed = true; continue; }
-                if (valid.Length != lod.renderers.Length) changed = true;
+                {
+                    if (removeEmptySlots) { changed = true; continue; }
+                    compacted.Add(new LOD(lod.screenRelativeTransitionHeight, new Renderer[0]));
+                    continue;
+                }
                 compacted.Add(new LOD(lod.screenRelativeTransitionHeight, valid));
             }
             if (changed)
