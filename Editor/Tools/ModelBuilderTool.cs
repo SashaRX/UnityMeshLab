@@ -256,32 +256,63 @@ namespace LightmapUvTool
             // Root name (no indent)
             DrawEditableName(root.gameObject, "Root", 0);
 
-            // Children grouped by LOD (indented)
-            int lodCount = ctx.LodCount;
-            for (int li = 0; li < lodCount; li++)
+            // Draw hierarchy respecting group containers
+            var drawn = new HashSet<GameObject>();
+            foreach (Transform child in root)
             {
-                var entries = ctx.ForLod(li);
-                if (entries.Count == 0) continue;
+                if (child == null) continue;
+                if (colSet.Contains(child.gameObject)) continue;
 
-                foreach (var e in entries)
+                var childMf = child.GetComponent<MeshFilter>();
+                bool isContainer = childMf == null && child.childCount > 0;
+
+                if (isContainer)
                 {
-                    if (e.renderer == null) continue;
-                    Mesh mesh = e.originalMesh ?? e.fbxMesh;
-                    int verts = mesh != null ? mesh.vertexCount : 0;
-                    int tris = mesh != null ? MeshHygieneUtility.GetTriangleCount(mesh) : 0;
-                    string suffix = $"LOD{li}  {verts:N0}v / {tris:N0}t";
-                    DrawEditableName(e.renderer.gameObject, suffix, 1);
+                    // Group container node
+                    DrawEditableName(child.gameObject, "Group", 1);
+                    drawn.Add(child.gameObject);
+
+                    // Children inside container
+                    foreach (Transform gc in child)
+                    {
+                        if (gc == null) continue;
+                        var gcMf = gc.GetComponent<MeshFilter>();
+                        Mesh gcMesh = gcMf != null ? gcMf.sharedMesh : null;
+                        if (gcMesh == null) continue;
+
+                        int lodIdx = GetLodIndexFromName(gc.name);
+                        int verts = gcMesh.vertexCount;
+                        int tris = MeshHygieneUtility.GetTriangleCount(gcMesh);
+                        string suffix = lodIdx >= 0
+                            ? $"LOD{lodIdx}  {verts:N0}v / {tris:N0}t"
+                            : $"{verts:N0}v / {tris:N0}t";
+                        DrawEditableName(gc.gameObject, suffix, 2);
+                        drawn.Add(gc.gameObject);
+                    }
+                }
+                else if (childMf != null && childMf.sharedMesh != null)
+                {
+                    // Direct mesh child (no container)
+                    Mesh mesh = childMf.sharedMesh;
+                    int lodIdx = GetLodIndexFromName(child.name);
+                    int verts = mesh.vertexCount;
+                    int tris = MeshHygieneUtility.GetTriangleCount(mesh);
+                    string suffix = lodIdx >= 0
+                        ? $"LOD{lodIdx}  {verts:N0}v / {tris:N0}t"
+                        : $"{verts:N0}v / {tris:N0}t";
+                    DrawEditableName(child.gameObject, suffix, 1);
+                    drawn.Add(child.gameObject);
                 }
             }
 
-            // Collision objects (indented)
+            // Collision objects
             foreach (var colGo in colSet)
             {
                 if (colGo == null) continue;
                 var mf = colGo.GetComponent<MeshFilter>();
                 Mesh mesh = mf != null ? mf.sharedMesh : null;
-                int verts = mesh != null ? mesh.vertexCount : 0;
-                string suffix = $"COL  {verts:N0}v";
+                int cverts = mesh != null ? mesh.vertexCount : 0;
+                string suffix = $"COL  {cverts:N0}v";
                 DrawEditableName(colGo, suffix, 1);
             }
 
@@ -328,6 +359,14 @@ namespace LightmapUvTool
                     break; // show only first to avoid spam
                 }
             }
+        }
+
+        static int GetLodIndexFromName(string name)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(
+                name, @"_LOD(\d+)$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return match.Success ? int.Parse(match.Groups[1].Value) : -1;
         }
 
         void DrawEditableName(GameObject go, string suffix, int indent)
@@ -536,6 +575,10 @@ namespace LightmapUvTool
             // scale on nodes, or vice versa. Bake into verts → set scale to 1,1,1.
             NormalizeChildScales(root);
 
+            // Group multi-mesh LODs into container nodes by mesh group key.
+            // e.g. TubBig2_m_WoodenBoxes_LOD0 + _LOD1 → container "TubBig2_m_WoodenBoxes"
+            GroupMeshChildrenByMaterial(root);
+
             // Rebuild LODGroup from hierarchy naming
             RebuildLodGroupFromNames();
 
@@ -545,6 +588,86 @@ namespace LightmapUvTool
             ctx.Refresh(ctx.LodGroup);
             requestRepaint?.Invoke();
             UvtLog.Info("Normalized hierarchy.");
+        }
+
+        /// <summary>
+        /// Group direct mesh children into container nodes by mesh group key.
+        /// When multiple meshes share the same base name (e.g. TubBig2_m_WoodenBoxes_LOD0,
+        /// TubBig2_m_WoodenBoxes_LOD1), they are moved under a container node named
+        /// with the group key (TubBig2_m_WoodenBoxes). Single-mesh groups stay flat.
+        /// Children already inside containers are skipped.
+        /// </summary>
+        void GroupMeshChildrenByMaterial(Transform root)
+        {
+            var colSet = new HashSet<GameObject>(MeshHygieneUtility.FindCollisionObjects(root));
+
+            // Collect direct mesh children (not collision, not containers)
+            var directMeshChildren = new List<Transform>();
+            foreach (Transform child in root)
+            {
+                if (colSet.Contains(child.gameObject)) continue;
+                var mf = child.GetComponent<MeshFilter>();
+                if (mf != null && mf.sharedMesh != null)
+                    directMeshChildren.Add(child);
+            }
+
+            // Group by mesh group key (name without LOD suffix)
+            var groups = new Dictionary<string, List<Transform>>();
+            foreach (var child in directMeshChildren)
+            {
+                string groupKey = UvToolContext.ExtractGroupKey(child.name);
+                if (string.IsNullOrEmpty(groupKey)) groupKey = child.name;
+                if (!groups.ContainsKey(groupKey))
+                    groups[groupKey] = new List<Transform>();
+                groups[groupKey].Add(child);
+            }
+
+            // Only create containers for groups with multiple LOD variants
+            // AND where the group key differs from the root base name
+            // (if all children share root's base name, keep flat)
+            string rootBase = UvToolContext.ExtractGroupKey(root.name);
+            int containerCount = 0;
+
+            foreach (var kvp in groups)
+            {
+                if (kvp.Value.Count <= 1) continue;
+                if (kvp.Key == rootBase && groups.Count == 1) continue; // single group = keep flat
+
+                // Check if container already exists
+                Transform existing = null;
+                foreach (Transform child in root)
+                {
+                    if (child.name == kvp.Key && child.GetComponent<MeshFilter>() == null)
+                    { existing = child; break; }
+                }
+
+                Transform container;
+                if (existing != null)
+                {
+                    container = existing;
+                }
+                else
+                {
+                    var containerGo = new GameObject(kvp.Key);
+                    Undo.RegisterCreatedObjectUndo(containerGo, "Group LODs");
+                    containerGo.transform.SetParent(root, false);
+                    container = containerGo.transform;
+                    containerCount++;
+                }
+
+                // Move children into container
+                foreach (var child in kvp.Value)
+                {
+                    if (child.parent == container) continue;
+                    Undo.SetTransformParent(child, container, "Group LODs");
+                    child.localPosition = Vector3.zero;
+                    child.localRotation = Quaternion.identity;
+                    child.localScale = Vector3.one;
+                }
+            }
+
+            if (containerCount > 0)
+                UvtLog.Info($"Created {containerCount} mesh group container(s).");
         }
 
         /// <summary>
@@ -657,18 +780,18 @@ namespace LightmapUvTool
             var colSet = new HashSet<GameObject>(MeshHygieneUtility.FindCollisionObjects(root));
             var lodChildren = new SortedDictionary<int, List<Renderer>>();
 
-            foreach (Transform child in root)
+            // Search recursively — meshes can be inside group containers
+            foreach (var r in root.GetComponentsInChildren<Renderer>(true))
             {
-                if (colSet.Contains(child.gameObject)) continue;
+                if (r == null || r.transform == root) continue;
+                if (colSet.Contains(r.gameObject)) continue;
 
                 var match = System.Text.RegularExpressions.Regex.Match(
-                    child.name, @"_LOD(\d+)$",
+                    r.gameObject.name, @"_LOD(\d+)$",
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 if (!match.Success) continue;
 
                 int lodIdx = int.Parse(match.Groups[1].Value);
-                var r = child.GetComponent<Renderer>();
-                if (r == null) continue;
 
                 if (!lodChildren.ContainsKey(lodIdx))
                     lodChildren[lodIdx] = new List<Renderer>();
