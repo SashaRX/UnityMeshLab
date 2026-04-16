@@ -1545,6 +1545,20 @@ namespace LightmapUvTool
 
                 AssetDatabase.Refresh();
 
+                // Restore working copy meshes to scene renderers.
+                // FBX reimport resets prefab instance MeshFilters to
+                // reimported sub-assets, losing the in-memory working copy
+                // that holds AO and other tool modifications.
+                if (ctx?.MeshEntries != null)
+                {
+                    foreach (var e in ctx.MeshEntries)
+                    {
+                        if (!e.include || e.meshFilter == null) continue;
+                        if (e.originalMesh != null && e.meshFilter.sharedMesh != e.originalMesh)
+                            e.meshFilter.sharedMesh = e.originalMesh;
+                    }
+                }
+
                 // Re-link scene mesh references
                 if (ctx.LodGroup != null)
                     RelinkSceneMeshReferences(sourceFbxPath, renameMap.Count > 0 ? renameMap : null, ctx.LodGroup);
