@@ -1380,6 +1380,10 @@ namespace LightmapUvTool
                 "Overwrite", "Cancel"))
                 return;
 
+            // Lock importer settings to prevent Unity from regenerating UV2
+            // during reimport (same as the main export pipeline).
+            Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true);
+
             // Make FBX readable if needed
             var srcImporter = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             bool madeReadable = false;
