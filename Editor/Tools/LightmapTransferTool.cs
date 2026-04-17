@@ -1368,17 +1368,38 @@ namespace LightmapUvTool
                 "Overwrite", "Cancel"))
                 return;
 
-            // ── Phase 1: Prepare importer (single reimport) ──
+            // Determine AO target to scope importer setting changes.
+            // - aoUvIdx == -1: AO in vertex color → no importer changes needed
+            // - aoUvIdx >= 0:  AO in UV channel  → lock weld/compression/optimization
+            // - aoUvIdx == 1:  AO in Unity UV channel 1 (lightmap UV) → also lock generateSecondaryUV
+            int aoUvIdx = -1;
+            var aoChannel = VertexAOTool.LastAppliedTargetChannel;
+            if (aoChannel.HasValue)
+            {
+                int ch = (int)aoChannel.Value;
+                if (ch > (int)AOTargetChannel.VertexColorA)
+                    aoUvIdx = (ch - (int)AOTargetChannel.UV0_X) / 2;
+            }
+
+            // ── Phase 1: Prepare importer (single reimport, scoped to AO target) ──
             var srcImporter = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             bool needsReimport = false;
             if (srcImporter != null)
             {
-                if (srcImporter.generateSecondaryUV)  { srcImporter.generateSecondaryUV = false; needsReimport = true; }
-                if (srcImporter.weldVertices)          { srcImporter.weldVertices = false;        needsReimport = true; }
-                if (srcImporter.meshCompression != ModelImporterMeshCompression.Off)
-                    { srcImporter.meshCompression = ModelImporterMeshCompression.Off; needsReimport = true; }
-                if (srcImporter.meshOptimizationFlags != 0)
-                    { srcImporter.meshOptimizationFlags = 0; needsReimport = true; }
+                // generateSecondaryUV writes to Unity UV channel 1 (mesh.uv2).
+                // Only lock it when AO targets that specific channel.
+                if (aoUvIdx == 1 && srcImporter.generateSecondaryUV)
+                    { srcImporter.generateSecondaryUV = false; needsReimport = true; }
+                // weld/compression/optimization change vertex count or order —
+                // break per-vertex UV data. Only lock when AO is in a UV channel.
+                if (aoUvIdx >= 0)
+                {
+                    if (srcImporter.weldVertices)          { srcImporter.weldVertices = false;        needsReimport = true; }
+                    if (srcImporter.meshCompression != ModelImporterMeshCompression.Off)
+                        { srcImporter.meshCompression = ModelImporterMeshCompression.Off; needsReimport = true; }
+                    if (srcImporter.meshOptimizationFlags != 0)
+                        { srcImporter.meshOptimizationFlags = 0; needsReimport = true; }
+                }
                 if (!srcImporter.isReadable)
                     { srcImporter.isReadable = true; needsReimport = true; }
                 if (needsReimport)
