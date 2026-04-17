@@ -444,6 +444,25 @@ namespace LightmapUvTool
             }
 
             UvtLog.Info($"[UV1] Packed {ok} mesh(es), failed {fail}.");
+
+            // Auto-select the first packed renderer so the shared UV canvas
+            // populates via UvToolHub.OnSelectionChange → ctx.RefreshStandalone.
+            // Without this, a parent GameObject selected as root leaves ctx
+            // empty (Refresh(null) path) and the canvas shows "No meshes".
+            if (ok > 0)
+            {
+                foreach (var e in entries)
+                {
+                    var src = e.fbxMesh ?? e.originalMesh;
+                    if (src == null) continue;
+                    if (!packedResults.TryGetValue(src, out var res) || !res.ok) continue;
+                    if (e.renderer == null) continue;
+                    if (Selection.activeGameObject != e.renderer.gameObject)
+                        Selection.activeGameObject = e.renderer.gameObject;
+                    break;
+                }
+            }
+
             requestRepaint?.Invoke();
         }
 
