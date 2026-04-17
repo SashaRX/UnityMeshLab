@@ -47,7 +47,21 @@ namespace LightmapUvTool
         // with fresh UV1 ready to apply.
         Dictionary<Mesh, Mesh> packedMeshes = new Dictionary<Mesh, Mesh>();
         Dictionary<Mesh, RepackResult> packedResults = new Dictionary<Mesh, RepackResult>();
-        bool packedAppliedToScene;
+
+        // Independent backup of scene MeshFilters that had their sharedMesh
+        // swapped to a packed clone. Survives hierarchyEntries rebuilds so
+        // Restore still finds the applied set after the user changes
+        // Selection (which would otherwise repopulate hierarchyEntries and
+        // orphan the old refs).
+        struct AppliedBackup
+        {
+            public MeshFilter mf;
+            public Mesh originalFbxMesh;
+            public Mesh appliedClone;
+        }
+        List<AppliedBackup> appliedBackups = new List<AppliedBackup>();
+
+        bool packedAppliedToScene => appliedBackups.Count > 0;
 
         // ── Lifecycle ──
 
@@ -421,6 +435,10 @@ namespace LightmapUvTool
         void ApplyToScene()
         {
             if (packedMeshes.Count == 0) return;
+            // Clear previous apply state (restore into old scene refs first)
+            // so re-apply on a different hierarchy doesn't stack backups.
+            RestoreScene();
+
             int applied = 0;
             foreach (var e in hierarchyEntries)
             {
@@ -431,11 +449,17 @@ namespace LightmapUvTool
                 if (!packedResults.TryGetValue(src, out var res) || !res.ok) continue;
 
                 Undo.RecordObject(e.meshFilter, "Apply UV1 Pack");
+                var original = e.meshFilter.sharedMesh;
                 e.meshFilter.sharedMesh = clone;
                 e.originalMesh = clone; // snapshot lookup uses originalMesh
+                appliedBackups.Add(new AppliedBackup
+                {
+                    mf = e.meshFilter,
+                    originalFbxMesh = original,
+                    appliedClone = clone
+                });
                 applied++;
             }
-            packedAppliedToScene = applied > 0;
             UvtLog.Info($"[UV1] Applied to {applied} mesh(es).");
             SceneView.RepaintAll();
             requestRepaint?.Invoke();
@@ -443,24 +467,26 @@ namespace LightmapUvTool
 
         void RestoreScene()
         {
-            if (!packedAppliedToScene)
-            {
-                packedAppliedToScene = false;
-                return;
-            }
+            if (appliedBackups.Count == 0) return;
             int restored = 0;
-            foreach (var e in hierarchyEntries)
+            foreach (var b in appliedBackups)
             {
-                if (e == null || e.meshFilter == null || e.fbxMesh == null) continue;
-                if (e.meshFilter.sharedMesh != e.fbxMesh)
-                {
-                    Undo.RecordObject(e.meshFilter, "Restore Mesh");
-                    e.meshFilter.sharedMesh = e.fbxMesh;
-                    e.originalMesh = e.fbxMesh;
-                    restored++;
-                }
+                if (b.mf == null) continue;
+                // Only roll back if the MeshFilter still holds our applied
+                // clone; external tooling may have swapped it already.
+                if (b.mf.sharedMesh != b.appliedClone) continue;
+                if (b.originalFbxMesh == null) continue;
+                Undo.RecordObject(b.mf, "Restore Mesh");
+                b.mf.sharedMesh = b.originalFbxMesh;
+                restored++;
             }
-            packedAppliedToScene = false;
+            appliedBackups.Clear();
+            // Also rewire any still-live hierarchyEntries so their
+            // originalMesh reflects the restored state (the entries may
+            // have been rebuilt against a different selection).
+            foreach (var e in hierarchyEntries)
+                if (e != null && e.meshFilter != null && e.meshFilter.sharedMesh != null)
+                    e.originalMesh = e.meshFilter.sharedMesh;
             if (restored > 0) UvtLog.Info($"[UV1] Restored {restored} mesh(es) to original.");
             SceneView.RepaintAll();
             requestRepaint?.Invoke();
@@ -468,6 +494,10 @@ namespace LightmapUvTool
 
         void DestroyPackedMeshes()
         {
+            // If a clone is still assigned to a live MeshFilter (because the
+            // user walked away without Restore), swap it back before destroy
+            // to avoid leaving missing-mesh refs in the scene.
+            RestoreScene();
             foreach (var m in packedMeshes.Values)
                 if (m != null) UnityEngine.Object.DestroyImmediate(m);
             packedMeshes.Clear();

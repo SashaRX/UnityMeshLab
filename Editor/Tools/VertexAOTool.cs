@@ -1093,8 +1093,9 @@ namespace SashaRX.UnityMeshLab
                 CollectCollisionMeshCandidates(root.transform, collCandidates);
                 foreach (var c in collCandidates)
                 {
-                    string n = c.mesh.name;
-                    collCoveredKeys.Add(n.Substring(0, n.Length - 4));
+                    string baseName = StripColSuffix(c.mesh.name);
+                    if (!string.IsNullOrEmpty(baseName))
+                        collCoveredKeys.Add(baseName);
                 }
             }
 
@@ -1225,9 +1226,25 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // Collider mesh-name convention: "_COL" OR "_COL_Hull{digits}"
+        // (convex hull decomposition suffix). Both forms map to the same
+        // base name via StripColSuffix.
         static bool EndsWithColSuffix(string name)
-            => !string.IsNullOrEmpty(name) &&
-               name.EndsWith("_COL", StringComparison.OrdinalIgnoreCase);
+            => StripColSuffix(name) != name;
+
+        static string StripColSuffix(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return name;
+            if (name.EndsWith("_COL", StringComparison.OrdinalIgnoreCase))
+                return name.Substring(0, name.Length - 4);
+            int hullIdx = name.LastIndexOf("_COL_Hull", StringComparison.OrdinalIgnoreCase);
+            if (hullIdx < 0) return name;
+            int digitStart = hullIdx + 9; // "_COL_Hull".Length
+            if (digitStart >= name.Length) return name;
+            for (int i = digitStart; i < name.Length; i++)
+                if (!char.IsDigit(name[i])) return name;
+            return name.Substring(0, hullIdx);
+        }
 
         void CollectSidecarCollisionOccluders(
             LodBakeBatch batch,
