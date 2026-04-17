@@ -78,6 +78,11 @@ namespace SashaRX.UnityMeshLab
         bool applySelectedSubmeshOnly;
         int selectedSubmeshIndex;
 
+        // ── Hierarchy mode (no LODGroup, all descendant MeshRenderers as one batch) ──
+        bool hierarchyMode;
+        GameObject hierarchyRoot;
+        List<MeshEntry> hierarchyEntries = new List<MeshEntry>();
+
         // ── Results ──
         Dictionary<Mesh, float[]> bakedRawAO;       // raw vertex AO (no face-area fix)
         Dictionary<Mesh, float[]> bakedFaceAreaAO;  // face-area corrected AO
@@ -134,6 +139,8 @@ namespace SashaRX.UnityMeshLab
             CancelGpuJob();
             RestorePreview();
             ClearResults();
+            hierarchyEntries.Clear();
+            hierarchyRoot = null;
         }
 
         public void OnRefresh()
@@ -141,6 +148,50 @@ namespace SashaRX.UnityMeshLab
             CancelGpuJob();
             RestorePreview();
             ClearResults();
+        }
+
+        // Rebuild hierarchy entries from the current selection. Only active
+        // MeshRenderer descendants are collected; collision nodes are skipped.
+        // AO application writes only to the configured vertex channel — no
+        // other mesh data is touched.
+        void RefreshHierarchyEntries()
+        {
+            hierarchyEntries.Clear();
+            hierarchyRoot = Selection.activeGameObject;
+            if (hierarchyRoot == null)
+                return;
+
+            var renderers = hierarchyRoot.GetComponentsInChildren<MeshRenderer>(true);
+            foreach (var r in renderers)
+            {
+                if (r == null || !r.enabled || !r.gameObject.activeInHierarchy)
+                    continue;
+                if (MeshHygieneUtility.IsCollisionNodeName(r.name))
+                    continue;
+                var mf = r.GetComponent<MeshFilter>();
+                if (mf == null || mf.sharedMesh == null)
+                    continue;
+
+                hierarchyEntries.Add(new MeshEntry
+                {
+                    lodIndex = 0,
+                    renderer = r,
+                    meshFilter = mf,
+                    originalMesh = mf.sharedMesh,
+                    fbxMesh = mf.sharedMesh,
+                    meshGroupKey = UvToolContext.ExtractGroupKey(r.name)
+                });
+            }
+        }
+
+        // Entries that drive bake / load / apply / preview.
+        IEnumerable<MeshEntry> ActiveEntries()
+        {
+            if (hierarchyMode)
+                return hierarchyEntries;
+            return ctx != null && ctx.MeshEntries != null
+                ? (IEnumerable<MeshEntry>)ctx.MeshEntries
+                : System.Array.Empty<MeshEntry>();
         }
 
         void ClearResults()
@@ -179,7 +230,32 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField("Vertex AO Baker", EditorStyles.boldLabel);
             EditorGUILayout.Space(4);
 
-            if (ctx == null || ctx.MeshEntries == null || ctx.MeshEntries.Count == 0)
+            hierarchyMode = EditorGUILayout.ToggleLeft(
+                new GUIContent("Hierarchy Mode",
+                    "Bake AO across all active MeshRenderer descendants of the selected root as a single batch. " +
+                    "Applies only the vertex AO channel — other mesh data is untouched."),
+                hierarchyMode);
+
+            if (hierarchyMode)
+            {
+                // While preview is active, MeshFilters hold clone meshes — don't
+                // rebuild from them or Apply would target the clones. Preview is
+                // always restored before bake/load/apply, so the stale window is
+                // user-visible only (ok).
+                if (!previewActive)
+                    RefreshHierarchyEntries();
+                if (hierarchyRoot == null || hierarchyEntries.Count == 0)
+                {
+                    EditorGUILayout.HelpBox(
+                        "Select a root GameObject that has active MeshRenderer descendants.",
+                        MessageType.Info);
+                    return;
+                }
+                EditorGUILayout.LabelField(
+                    $"Root: {hierarchyRoot.name}  ({hierarchyEntries.Count} meshes)",
+                    EditorStyles.miniLabel);
+            }
+            else if (ctx == null || ctx.MeshEntries == null || ctx.MeshEntries.Count == 0)
             {
                 EditorGUILayout.HelpBox(
                     "Select a LODGroup or an individual MeshRenderer to bake vertex AO.",
@@ -470,7 +546,10 @@ namespace SashaRX.UnityMeshLab
             CancelGpuJob();
             RestorePreview();
 
-            var entries = ctx.MeshEntries
+            if (hierarchyMode)
+                RefreshHierarchyEntries();
+
+            var entries = ActiveEntries()
                 .Where(e => e.include && e.renderer != null)
                 .ToList();
 
@@ -638,6 +717,9 @@ namespace SashaRX.UnityMeshLab
 
         GameObject ResolveOccluderRoot(List<MeshEntry> targetEntries)
         {
+            if (hierarchyMode && hierarchyRoot != null)
+                return hierarchyRoot;
+
             if (ctx?.LodGroup != null)
                 return ctx.LodGroup.gameObject;
 
@@ -1162,7 +1244,10 @@ namespace SashaRX.UnityMeshLab
         {
             RestorePreview();
 
-            var entries = ctx.MeshEntries
+            if (hierarchyMode)
+                RefreshHierarchyEntries();
+
+            var entries = ActiveEntries()
                 .Where(e => e.include && e.renderer != null)
                 .ToList();
 
@@ -1351,21 +1436,17 @@ namespace SashaRX.UnityMeshLab
                 // repacked/transferred variants. Mirror AO into all mesh variants
                 // of the same entry so overwrite export persists the selected channel.
                 var targetMeshes = new List<Mesh> { seedMesh };
-                MeshEntry owner = null;
-                if (ctx?.MeshEntries != null)
+                MeshEntry owner = ActiveEntries().FirstOrDefault(e =>
+                    e.originalMesh == seedMesh ||
+                    e.fbxMesh == seedMesh ||
+                    e.repackedMesh == seedMesh ||
+                    e.transferredMesh == seedMesh);
+                if (owner != null)
                 {
-                    owner = ctx.MeshEntries.FirstOrDefault(e =>
-                        e.originalMesh == seedMesh ||
-                        e.fbxMesh == seedMesh ||
-                        e.repackedMesh == seedMesh ||
-                        e.transferredMesh == seedMesh);
-                    if (owner != null)
-                    {
-                        if (owner.originalMesh != null) targetMeshes.Add(owner.originalMesh);
-                        if (owner.repackedMesh != null) targetMeshes.Add(owner.repackedMesh);
-                        if (owner.transferredMesh != null) targetMeshes.Add(owner.transferredMesh);
-                        if (owner.fbxMesh != null) targetMeshes.Add(owner.fbxMesh);
-                    }
+                    if (owner.originalMesh != null) targetMeshes.Add(owner.originalMesh);
+                    if (owner.repackedMesh != null) targetMeshes.Add(owner.repackedMesh);
+                    if (owner.transferredMesh != null) targetMeshes.Add(owner.transferredMesh);
+                    if (owner.fbxMesh != null) targetMeshes.Add(owner.fbxMesh);
                 }
 
                 if (applySelectedRendererOnly)
@@ -1440,7 +1521,7 @@ namespace SashaRX.UnityMeshLab
                 previewMaterial.SetInt("_ZWrite", 1);
             }
 
-            foreach (var e in ctx.MeshEntries)
+            foreach (var e in ActiveEntries())
             {
                 if (!e.include || e.renderer == null) continue;
                 var mf = e.meshFilter;
