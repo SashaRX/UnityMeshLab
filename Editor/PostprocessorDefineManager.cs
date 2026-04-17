@@ -1,23 +1,20 @@
-// PostprocessorDefineManager.cs — Manages the persistent sidecar replay toggle.
-// The UV postprocessor is always compiled; this flag only controls whether
-// sidecar replay stays enabled for future imports or is used transiently.
-
-using UnityEditor;
+// PostprocessorDefineManager.cs — sidecar replay toggle.
+// Storage now lives in MeshLabProjectSettings (per-project, committed).
+// This class is kept as a thin shim so existing call sites don't need changes.
 
 namespace LightmapUvTool
 {
     static class PostprocessorDefineManager
     {
-        const string PrefKey = "LightmapUvTool.SidecarUv2Mode";
-
         internal static bool IsEnabled()
         {
-            return EditorPrefs.GetBool(PrefKey, false);
+            return MeshLabProjectSettings.Instance.sidecarMode;
         }
 
         internal static void SetEnabled(bool enabled)
         {
-            EditorPrefs.SetBool(PrefKey, enabled);
+            MeshLabProjectSettings.Instance.sidecarMode = enabled;
+            MeshLabProjectSettings.Save();
         }
     }
 }

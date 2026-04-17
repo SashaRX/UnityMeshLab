@@ -786,17 +786,10 @@ namespace LightmapUvTool
 
         void DrawSidebarFooter()
         {
-            // Global cleanup — always visible, even without a LODGroup selected
-            EditorGUILayout.Space(4);
-            var bgNuke = GUI.backgroundColor;
-            GUI.backgroundColor = new Color(.7f, .15f, .15f);
-            if (GUILayout.Button("Delete All Sidecars", GUILayout.Height(22)))
-                NukeAllSidecars();
-            GUI.backgroundColor = bgNuke;
-
             bool hasMeshEntries = ctx != null && ctx.MeshEntries != null && ctx.MeshEntries.Count > 0;
             bool hasFbxWorkflow = ctx != null && !string.IsNullOrEmpty(ctx.SourceFbxPath);
             if (!hasMeshEntries) return;
+
             EditorGUILayout.Space(2);
             var r = GUILayoutUtility.GetRect(0, 1, GUILayout.ExpandWidth(true));
             EditorGUI.DrawRect(r, new Color(.3f, .3f, .3f));
@@ -813,12 +806,11 @@ namespace LightmapUvTool
             EditorGUILayout.Space(4);
 
             var bg = GUI.backgroundColor;
-            bool sidecarEnabled = PostprocessorDefineManager.IsEnabled();
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            if (!sidecarEnabled)
+            if (!PostprocessorDefineManager.IsEnabled())
             {
                 EditorGUILayout.HelpBox(
-                    "Sidecar UV2 Mode is OFF. FBX overwrite/apply will use temporary sidecar replay for this import only, then UV sidecar entries will be removed again.",
+                    "Sidecar UV2 Mode is OFF. FBX overwrite/apply will use temporary sidecar replay for this import only.",
                     MessageType.Info);
             }
 
@@ -840,15 +832,6 @@ namespace LightmapUvTool
 #else
             EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.Info);
 #endif
-            EditorGUILayout.Space(4);
-            // ── Sidecar UV2 mode ──
-            EditorGUI.BeginChangeCheck();
-            sidecarEnabled = EditorGUILayout.ToggleLeft("Sidecar UV2 Mode", sidecarEnabled);
-            if (EditorGUI.EndChangeCheck())
-                PostprocessorDefineManager.SetEnabled(sidecarEnabled);
-
-            if (!sidecarEnabled)
-                EditorGUILayout.LabelField("Persistent replay is OFF; one-shot FBX/apply replay still works.", EditorStyles.miniLabel);
 
             if (GUILayout.Button("Apply UV2 (sidecar)", EditorStyles.miniButton))
             {
@@ -856,13 +839,11 @@ namespace LightmapUvTool
                     if (tool is LightmapTransferTool ltt) { ltt.ApplyUv2Public(); break; }
             }
 
-            // Backup current FBX from git main branch
             if (!string.IsNullOrEmpty(ctx.SourceFbxPath)
                 && GUILayout.Button("Backup from main", EditorStyles.miniButton))
             {
                 BackupFbxFromGitMain(ctx.SourceFbxPath);
             }
-
         }
 
         internal static void BackupFbxFromGitMain(string assetPath)
@@ -959,6 +940,8 @@ namespace LightmapUvTool
                 return proc.ExitCode == 0;
             }
         }
+
+        internal static void NukeAllSidecarsStatic() => NukeAllSidecars();
 
         static void NukeAllSidecars()
         {

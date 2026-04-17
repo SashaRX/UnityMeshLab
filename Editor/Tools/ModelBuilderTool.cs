@@ -128,7 +128,6 @@ namespace LightmapUvTool
             DrawLodManagementSection();
             DrawCollisionSection();
             DrawSplitMergeSection();
-            DrawExportSection();
             DrawMeshInfo();
 
             if (edgeReports != null)
@@ -1555,68 +1554,6 @@ namespace LightmapUvTool
             preview?.Restore();
             previewMode = PreviewMode.None;
             requestRepaint?.Invoke();
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        // Export section
-        // ═══════════════════════════════════════════════════════════
-
-        void DrawExportSection()
-        {
-            EditorGUILayout.Space(8);
-            EditorGUILayout.LabelField("Export", EditorStyles.boldLabel);
-
-            var bgc = GUI.backgroundColor;
-            EditorGUILayout.BeginHorizontal();
-
-            // Overwrite FBX (full — through UV2 Transfer)
-            GUI.backgroundColor = new Color(0.4f, 0.7f, 0.95f);
-            if (GUILayout.Button("Overwrite FBX", GUILayout.Height(24)))
-            {
-                var hub = Resources.FindObjectsOfTypeAll<UvToolHub>();
-                if (hub.Length > 0)
-                {
-                    var transferTool = hub[0].FindTool<LightmapTransferTool>();
-                    if (transferTool != null)
-                        transferTool.ExportFbxPublic(true);
-                    else
-                        UvtLog.Error("[Model Builder] LightmapTransferTool not found.");
-                }
-            }
-
-            // Export New FBX
-            GUI.backgroundColor = new Color(0.3f, 0.85f, 0.4f);
-            if (GUILayout.Button("Export New FBX", GUILayout.Height(24)))
-            {
-                var hub = Resources.FindObjectsOfTypeAll<UvToolHub>();
-                if (hub.Length > 0)
-                {
-                    var transferTool = hub[0].FindTool<LightmapTransferTool>();
-                    if (transferTool != null)
-                        transferTool.ExportFbxPublic(false);
-                    else
-                        UvtLog.Error("[Model Builder] LightmapTransferTool not found.");
-                }
-            }
-
-            GUI.backgroundColor = bgc;
-            EditorGUILayout.EndHorizontal();
-
-            // Vertex Colors only export
-            GUI.backgroundColor = new Color(0.7f, 0.4f, 0.95f);
-            if (GUILayout.Button("Overwrite FBX (Vertex Colors Only)", GUILayout.Height(22)))
-            {
-                var hub = Resources.FindObjectsOfTypeAll<UvToolHub>();
-                if (hub.Length > 0)
-                {
-                    var transferTool = hub[0].FindTool<LightmapTransferTool>();
-                    if (transferTool != null)
-                        transferTool.ExportVertexColorsToFbx();
-                    else
-                        UvtLog.Error("[Model Builder] LightmapTransferTool not found.");
-                }
-            }
-            GUI.backgroundColor = bgc;
         }
 
         // ═══════════════════════════════════════════════════════════

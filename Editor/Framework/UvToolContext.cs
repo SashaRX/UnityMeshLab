@@ -21,15 +21,27 @@ namespace LightmapUvTool
         public int SourceLodIndex;
         public List<MeshEntry> MeshEntries = new List<MeshEntry>();
 
-        // ── Settings ──
-        public UvTransferPipeline.PipelineSettings PipeSettings =
-            UvTransferPipeline.PipelineSettings.Default;
-
-        public int AtlasResolution = 256;
-        public int ShellPaddingPx  = 2;
-        public int BorderPaddingPx = 0;
+        // ── Settings (defaults from Project Settings > Mesh Lab) ──
+        public UvTransferPipeline.PipelineSettings PipeSettings;
+        public int AtlasResolution;
+        public int ShellPaddingPx;
+        public int BorderPaddingPx;
         public bool RepackPerMesh;
         public int IsolatedMeshGroup = -1;
+
+        public UvToolContext()
+        {
+            var ps = MeshLabProjectSettings.Instance;
+            AtlasResolution = ps.atlasResolution;
+            ShellPaddingPx  = ps.shellPaddingPx;
+            BorderPaddingPx = ps.borderPaddingPx;
+            RepackPerMesh   = ps.repackPerMesh;
+            PipeSettings    = new UvTransferPipeline.PipelineSettings
+            {
+                saveNewMeshAssets = true,
+                savePath = ps.savePath
+            };
+        }
         public string IsolatedMeshGroupKey;
 
         // ── Canvas state ──
@@ -92,10 +104,12 @@ namespace LightmapUvTool
         }
 
         /// <summary>
-        /// Remove LOD slots whose renderers are all null or empty.
-        /// Also strips null renderers from remaining slots.
+        /// Cleans up LOD slots: always removes null renderers from within a slot.
+        /// When <paramref name="removeEmptySlots"/> is true, also drops slots that
+        /// end up with zero renderers. Defaults to false so user-added empty LOD
+        /// slots (from "Add LOD Level") survive a context refresh.
         /// </summary>
-        public static bool CompactLodArray(LODGroup lodGroup)
+        public static bool CompactLodArray(LODGroup lodGroup, bool removeEmptySlots = false)
         {
             if (lodGroup == null) return false;
             var lods = lodGroup.GetLODs();
@@ -103,12 +117,15 @@ namespace LightmapUvTool
             bool changed = false;
             foreach (var lod in lods)
             {
-                if (lod.renderers == null || lod.renderers.Length == 0)
-                { changed = true; continue; }
-                var valid = lod.renderers.Where(r => r != null).ToArray();
+                var renderers = lod.renderers ?? new Renderer[0];
+                var valid = renderers.Where(r => r != null).ToArray();
+                if (valid.Length != renderers.Length) changed = true;
                 if (valid.Length == 0)
-                { changed = true; continue; }
-                if (valid.Length != lod.renderers.Length) changed = true;
+                {
+                    if (removeEmptySlots) { changed = true; continue; }
+                    compacted.Add(new LOD(lod.screenRelativeTransitionHeight, new Renderer[0]));
+                    continue;
+                }
                 compacted.Add(new LOD(lod.screenRelativeTransitionHeight, valid));
             }
             if (changed)
