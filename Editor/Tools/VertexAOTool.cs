@@ -1017,12 +1017,13 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            // When colliders are enabled as occluders, a collider with the
-            // same stripped group key (e.g. Wall_COL ↔ Wall) should REPLACE
-            // the renderer, not add on top of it. Pre-walk collider names
-            // to collect covered group keys; renderers that fall into a
-            // covered group are skipped below. Renderers with no matching
-            // collider still contribute.
+            // When colliders are enabled as occluders, a collider named
+            // "<Name>_COL" should REPLACE its matching "<Name>" renderer in
+            // the BVH instead of stacking on top. Pre-walk collider nodes and
+            // collect the base name (suffix stripped) — renderers with a
+            // matching base name are skipped below. Only a trailing "_COL"
+            // suffix is stripped; variations like "_COL_Hull01" are not
+            // tried here to keep the match rule predictable.
             HashSet<string> collCoveredKeys = null;
             if (settings.includeCollisionOccluders)
             {
@@ -1032,8 +1033,9 @@ namespace SashaRX.UnityMeshLab
                 foreach (var go in collCandidates)
                 {
                     if (go == null || !go.activeInHierarchy) continue;
-                    var key = UvToolContext.ExtractGroupKey(go.name);
-                    if (!string.IsNullOrEmpty(key)) collCoveredKeys.Add(key);
+                    string n = go.name;
+                    if (n.EndsWith("_COL", StringComparison.OrdinalIgnoreCase))
+                        collCoveredKeys.Add(n.Substring(0, n.Length - 4));
                 }
             }
 
@@ -1055,12 +1057,9 @@ namespace SashaRX.UnityMeshLab
                     continue;
                 if (MeshHygieneUtility.IsCollisionNodeName(renderer.name))
                     continue;
-                if (collCoveredKeys != null && collCoveredKeys.Count > 0)
-                {
-                    var rKey = UvToolContext.ExtractGroupKey(renderer.name);
-                    if (!string.IsNullOrEmpty(rKey) && collCoveredKeys.Contains(rKey))
-                        continue; // replaced by sibling collider below
-                }
+                if (collCoveredKeys != null && collCoveredKeys.Count > 0 &&
+                    collCoveredKeys.Contains(renderer.name))
+                    continue; // replaced by sibling "<name>_COL" collider below
                 if (!TryGetRendererOccluderData(renderer, out var mesh, out var matrix, out var bounds, out var anchor))
                     continue;
                 if (!IsWithinOccluderRange(targetBounds, perTargetBounds, targetAnchors, bounds, anchor, effectiveRadius))
