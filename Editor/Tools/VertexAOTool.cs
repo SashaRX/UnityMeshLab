@@ -82,6 +82,9 @@ namespace SashaRX.UnityMeshLab
         bool hierarchyMode;
         GameObject hierarchyRoot;
         List<MeshEntry> hierarchyEntries = new List<MeshEntry>();
+        GameObject lastHierarchySelection;
+        bool lastHierarchyMode;
+        bool hierarchyEntriesBuilt;
 
         // ── Results ──
         Dictionary<Mesh, float[]> bakedRawAO;       // raw vertex AO (no face-area fix)
@@ -141,6 +144,9 @@ namespace SashaRX.UnityMeshLab
             ClearResults();
             hierarchyEntries.Clear();
             hierarchyRoot = null;
+            lastHierarchySelection = null;
+            lastHierarchyMode = false;
+            hierarchyEntriesBuilt = false;
         }
 
         public void OnRefresh()
@@ -148,6 +154,23 @@ namespace SashaRX.UnityMeshLab
             CancelGpuJob();
             RestorePreview();
             ClearResults();
+        }
+
+        // Rebuild hierarchy entries only when selection or mode actually changed.
+        // OnGUI fires multiple times per frame, so unconditional refresh would
+        // churn GC (renderer array + MeshEntry allocs) on larger hierarchies.
+        void RefreshHierarchyEntriesIfNeeded()
+        {
+            var sel = Selection.activeGameObject;
+            if (hierarchyEntriesBuilt &&
+                hierarchyMode == lastHierarchyMode &&
+                sel == lastHierarchySelection)
+                return;
+
+            RefreshHierarchyEntries();
+            lastHierarchySelection = sel;
+            lastHierarchyMode = hierarchyMode;
+            hierarchyEntriesBuilt = true;
         }
 
         // Rebuild hierarchy entries from the current selection. Only active
@@ -243,7 +266,7 @@ namespace SashaRX.UnityMeshLab
                 // always restored before bake/load/apply, so the stale window is
                 // user-visible only (ok).
                 if (!previewActive)
-                    RefreshHierarchyEntries();
+                    RefreshHierarchyEntriesIfNeeded();
                 if (hierarchyRoot == null || hierarchyEntries.Count == 0)
                 {
                     EditorGUILayout.HelpBox(
