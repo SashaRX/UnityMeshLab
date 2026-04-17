@@ -1588,12 +1588,17 @@ namespace SashaRX.UnityMeshLab
             }
 
             int updated = 0;
+            int visitedCloneMfs = 0;
+            int matchedCloneMfs = 0;
+            int uvWrites = 0;
             foreach (var cloneMf in tempRoot.GetComponentsInChildren<MeshFilter>(true))
             {
                 if (cloneMf == null || cloneMf.sharedMesh == null) continue;
+                visitedCloneMfs++;
                 if (!sceneById.TryGetValue(cloneMf.sharedMesh.GetInstanceID(), out var e) &&
                     !sceneByName.TryGetValue(cloneMf.sharedMesh.name, out e))
                     continue;
+                matchedCloneMfs++;
 
                 Mesh sceneMesh = e.originalMesh ?? e.fbxMesh;
                 if (sceneMesh == null) continue;
@@ -1612,19 +1617,32 @@ namespace SashaRX.UnityMeshLab
                     updated++;
                 }
 
-                if (aoUvIdx >= 0 && sceneMesh.vertexCount == cloneMesh.vertexCount)
+                if (aoUvIdx >= 0)
                 {
-                    var uvs = new List<Vector2>();
-                    sceneMesh.GetUVs(aoUvIdx, uvs);
-                    if (uvs.Count == cloneMesh.vertexCount)
+                    if (sceneMesh.vertexCount != cloneMesh.vertexCount)
                     {
-                        cloneMesh.SetUVs(aoUvIdx, uvs);
-                        updated++;
+                        UvtLog.Warn($"[FBX Export] Skip UV{aoUvIdx} copy on '{cloneMesh.name}': vertex count mismatch (scene={sceneMesh.vertexCount}, clone={cloneMesh.vertexCount}).");
+                    }
+                    else
+                    {
+                        var uvs = new List<Vector2>();
+                        sceneMesh.GetUVs(aoUvIdx, uvs);
+                        if (uvs.Count != cloneMesh.vertexCount)
+                        {
+                            UvtLog.Warn($"[FBX Export] Skip UV{aoUvIdx} copy on '{cloneMesh.name}': scene mesh has no data in UV{aoUvIdx} (got {uvs.Count}, expected {cloneMesh.vertexCount}). Did Apply run?");
+                        }
+                        else
+                        {
+                            cloneMesh.SetUVs(aoUvIdx, uvs);
+                            updated++;
+                            uvWrites++;
+                        }
                     }
                 }
 
                 cloneMf.sharedMesh = cloneMesh;
             }
+            UvtLog.Info($"[FBX Export] CopyVertexDataToClone: visited={visitedCloneMfs}, matched={matchedCloneMfs}, uv{(aoUvIdx >= 0 ? aoUvIdx.ToString() : "-")}Writes={uvWrites}, totalUpdates={updated}.");
             return updated;
         }
 
