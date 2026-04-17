@@ -1108,13 +1108,15 @@ namespace SashaRX.UnityMeshLab
             float effectiveRadius)
         {
             int added = 0;
-            var seen = new HashSet<int>();
             var candidates = new List<(GameObject go, Mesh mesh)>();
             CollectCollisionMeshCandidates(root.transform, candidates);
+            // CollectCollisionMeshCandidates already dedups per (GO, mesh);
+            // don't dedup by mesh ID alone — instanced colliders (same
+            // _COL asset at different world positions) must each contribute
+            // a distinct occluder in the BVH.
             foreach (var c in candidates)
             {
                 if (c.go == null || !c.go.activeInHierarchy) continue;
-                if (!seen.Add(c.mesh.GetInstanceID())) continue;
 
                 var matrix = c.go.transform.localToWorldMatrix;
                 var bounds = TransformBounds(c.mesh.bounds, matrix);
