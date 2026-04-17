@@ -1485,6 +1485,13 @@ namespace SashaRX.UnityMeshLab
 
                 var exportOptions = new UnityEditor.Formats.Fbx.Exporter.ExportModelOptions
                     { ExportFormat = UnityEditor.Formats.Fbx.Exporter.ExportFormat.Binary };
+
+                // Signal the UV2 postprocessor to skip sidecar injection on the
+                // reimport triggered by this write. Without this, a stale
+                // `_uv2data.asset` would overwrite the freshly baked UV/colors
+                // we just wrote into the FBX (e.g. AO in UV2 gets nuked).
+                Uv2AssetPostprocessor.fbxOverwritePaths.Add(sourceFbxPath);
+
                 UnityEditor.Formats.Fbx.Exporter.ModelExporter.ExportObjects(
                     sourceFbxPath, new UnityEngine.Object[] { tempRoot }, exportOptions);
 
