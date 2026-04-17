@@ -3,8 +3,10 @@
 // PR #1: preview modes only. PR #2: cleanup scan/fix migration. PR #3: LOD + collision management.
 
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 
 namespace SashaRX.UnityMeshLab
 {
@@ -59,6 +61,19 @@ namespace SashaRX.UnityMeshLab
         // ── LOD management state ──
         bool lodFoldout = true;
 
+        // ── Build pipeline state ──
+        bool buildFoldout;
+        bool editInPrefabStage;
+        int buildLodCount = 2;
+        float[] buildLodRatios = { 0.5f, 0.25f, 0.125f, 0.0625f };
+        float buildTargetError = 0.2f;
+        float buildUv2Weight = 20f;
+        float buildNormalWeight = 1f;
+        bool buildLockBorder = false;
+        List<BuildValidator.Issue> buildIssues;
+        Dictionary<BuildValidator.IssueGroup, bool> buildIssueFoldouts =
+            new Dictionary<BuildValidator.IssueGroup, bool>();
+
         // ── Collision management state ──
         bool collisionFoldout;
 
@@ -105,6 +120,7 @@ namespace SashaRX.UnityMeshLab
             pendingNames?.Clear();
             splitCandidates = null;
             mergeCandidates = null;
+            buildIssues = null;
         }
 
         // ── UI: Sidebar ──
@@ -126,6 +142,7 @@ namespace SashaRX.UnityMeshLab
             DrawPreviewModeToolbar();
             DrawHierarchySection();
             DrawLodManagementSection();
+            DrawBuildPipelineSection();
             DrawCollisionSection();
             DrawSplitMergeSection();
             DrawMeshInfo();
@@ -818,6 +835,241 @@ namespace SashaRX.UnityMeshLab
             }
             ctx.LodGroup.SetLODs(newLods);
             ctx.LodGroup.RecalculateBounds();
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // Build Pipeline section: Open Prefab → Generate LODs (with
+        // progressive scaleInLightmap) → Validate → Save FBX.
+        // ═══════════════════════════════════════════════════════════
+
+        void DrawBuildPipelineSection()
+        {
+            EditorGUILayout.Space(8);
+            buildFoldout = EditorGUILayout.Foldout(buildFoldout, "Build Pipeline", true);
+            if (!buildFoldout) return;
+
+            if (ctx.LodGroup == null)
+            {
+                EditorGUILayout.HelpBox("No LODGroup selected.", MessageType.Info);
+                return;
+            }
+
+            DrawBuildOpenPrefab();
+            EditorGUILayout.Space(6);
+            DrawBuildGenerateLods();
+            EditorGUILayout.Space(6);
+            DrawBuildValidate();
+            EditorGUILayout.Space(6);
+            DrawBuildSave();
+        }
+
+        void DrawBuildOpenPrefab()
+        {
+            EditorGUILayout.LabelField("Open Prefab", EditorStyles.miniBoldLabel);
+
+            var stage = PrefabStageUtility.GetCurrentPrefabStage();
+            bool inStage = stage != null;
+            editInPrefabStage = inStage;
+
+            bool desired = EditorGUILayout.Toggle("Edit in isolated Prefab Stage", editInPrefabStage);
+
+            string prefabPath = ResolvePrefabPathForEdit();
+            using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(prefabPath) && !inStage))
+            {
+                string label = desired == inStage
+                    ? (inStage ? "Reload Prefab Stage" : "Open / Focus Prefab")
+                    : (desired ? "Open Prefab Stage" : "Return to Main Stage");
+                if (GUILayout.Button(label, GUILayout.Height(22)))
+                    ApplyPrefabStage(desired, prefabPath, inStage);
+            }
+
+            if (inStage)
+                EditorGUILayout.LabelField($"Stage: {System.IO.Path.GetFileName(stage.assetPath)}", EditorStyles.miniLabel);
+            else if (!string.IsNullOrEmpty(prefabPath))
+                EditorGUILayout.LabelField($"Source: {System.IO.Path.GetFileName(prefabPath)}", EditorStyles.miniLabel);
+        }
+
+        string ResolvePrefabPathForEdit()
+        {
+            if (ctx.LodGroup == null) return null;
+            var go = ctx.LodGroup.gameObject;
+            if (PrefabUtility.IsPartOfPrefabInstance(go))
+                return PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(go);
+            if (PrefabUtility.IsPartOfPrefabAsset(go))
+                return AssetDatabase.GetAssetPath(go);
+            return null;
+        }
+
+        void ApplyPrefabStage(bool wantStage, string prefabPath, bool currentlyInStage)
+        {
+            if (!wantStage)
+            {
+                if (currentlyInStage) StageUtility.GoToMainStage();
+                UvtLog.Info("[LightmapUV] Switched to main stage.");
+                requestRepaint?.Invoke();
+                return;
+            }
+            if (string.IsNullOrEmpty(prefabPath))
+            {
+                UvtLog.Warn("[LightmapUV] No prefab asset path resolved for current LODGroup.");
+                return;
+            }
+            var stage = PrefabStageUtility.OpenPrefab(prefabPath);
+            if (stage == null) { UvtLog.Warn($"[LightmapUV] Failed to open {prefabPath}"); return; }
+            var root = stage.prefabContentsRoot;
+            var lg = root != null ? root.GetComponentInChildren<LODGroup>() : null;
+            if (lg != null) ctx.Refresh(lg);
+            UvtLog.Info($"[LightmapUV] Opened prefab {prefabPath}");
+            requestRepaint?.Invoke();
+        }
+
+        void DrawBuildGenerateLods()
+        {
+            EditorGUILayout.LabelField("Generate LODs", EditorStyles.miniBoldLabel);
+
+            buildLodCount = EditorGUILayout.IntSlider("Count (new)", buildLodCount, 1, 4);
+            for (int i = 0; i < buildLodCount && i < buildLodRatios.Length; i++)
+            {
+                float maxRatio = i == 0 ? 0.99f : buildLodRatios[i - 1] * 0.99f;
+                if (maxRatio < 0.001f) maxRatio = 0.001f;
+                if (buildLodRatios[i] > maxRatio) buildLodRatios[i] = maxRatio * 0.5f;
+                buildLodRatios[i] = EditorGUILayout.Slider($"  LOD{i + 1} ratio", buildLodRatios[i], 0.001f, maxRatio);
+            }
+
+            buildTargetError  = EditorGUILayout.Slider("Target Error", buildTargetError, 0.001f, 0.5f);
+            buildUv2Weight    = EditorGUILayout.Slider("UV2 Weight", buildUv2Weight, 0f, 500f);
+            buildNormalWeight = EditorGUILayout.Slider("Normal Weight", buildNormalWeight, 0f, 10f);
+            buildLockBorder   = EditorGUILayout.Toggle("Lock Border", buildLockBorder);
+
+            var preview = new System.Text.StringBuilder("scaleInLightmap: LOD0=inherit");
+            for (int i = 1; i <= buildLodCount; i++)
+                preview.Append($", LOD{i}={Mathf.Pow(0.5f, i):F3}");
+            EditorGUILayout.LabelField(preview.ToString(), EditorStyles.miniLabel);
+
+            var bg = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(.7f, .4f, .95f);
+            if (GUILayout.Button("Generate LODs", GUILayout.Height(26)))
+                ExecBuildGenerateLods();
+            GUI.backgroundColor = bg;
+        }
+
+        void ExecBuildGenerateLods()
+        {
+            int startLod = 1;
+            var lods = ctx.LodGroup.GetLODs();
+            for (int li = 0; li < lods.Length; li++)
+                if (lods[li].renderers != null && lods[li].renderers.Length > 0)
+                    startLod = li + 1;
+            if (startLod == 0) startLod = 1;
+
+            var opts = new LodPipelineOps.Options
+            {
+                count = buildLodCount,
+                ratios = buildLodRatios,
+                targetError = buildTargetError,
+                uv2Weight = buildUv2Weight,
+                normalWeight = buildNormalWeight,
+                lockBorder = buildLockBorder,
+                progressiveScaleInLightmap = true
+            };
+            var result = LodPipelineOps.Generate(ctx, startLod, opts);
+            if (!result.ok)
+            {
+                UvtLog.Error($"[Build] Generate failed: {result.error}");
+                return;
+            }
+            buildIssues = null;
+            requestRepaint?.Invoke();
+        }
+
+        void DrawBuildValidate()
+        {
+            EditorGUILayout.LabelField("Validate", EditorStyles.miniBoldLabel);
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Validate", GUILayout.Height(22)))
+                buildIssues = BuildValidator.Run(ctx);
+            using (new EditorGUI.DisabledScope(buildIssues == null || buildIssues.Count == 0))
+            {
+                if (GUILayout.Button("Clear", GUILayout.Width(80), GUILayout.Height(22)))
+                    buildIssues = null;
+            }
+            EditorGUILayout.EndHorizontal();
+
+            if (buildIssues == null) return;
+            if (buildIssues.Count == 0)
+            {
+                EditorGUILayout.HelpBox("No issues found.", MessageType.Info);
+                return;
+            }
+
+            int blockers = buildIssues.Count(i => BuildValidator.IsBlocker(i.group));
+            int warns = buildIssues.Count - blockers;
+            EditorGUILayout.LabelField($"Total: {buildIssues.Count}  (blockers: {blockers}, warnings: {warns})",
+                EditorStyles.miniLabel);
+
+            foreach (BuildValidator.IssueGroup grp in System.Enum.GetValues(typeof(BuildValidator.IssueGroup)))
+            {
+                var inGroup = buildIssues.Where(i => i.group == grp).ToList();
+                if (inGroup.Count == 0) continue;
+                if (!buildIssueFoldouts.TryGetValue(grp, out var open)) open = true;
+                string badge = BuildValidator.IsBlocker(grp) ? "✖" : "⚠";
+                open = EditorGUILayout.Foldout(open, $"  {badge} {grp} ({inGroup.Count})", true);
+                buildIssueFoldouts[grp] = open;
+                if (!open) continue;
+                foreach (var issue in inGroup)
+                {
+                    EditorGUILayout.BeginHorizontal();
+                    EditorGUILayout.LabelField($"    {issue.meshName}: {issue.detail}", EditorStyles.miniLabel);
+                    using (new EditorGUI.DisabledScope(issue.target == null))
+                    {
+                        if (GUILayout.Button("Ping", GUILayout.Width(40), GUILayout.Height(16)))
+                            EditorGUIUtility.PingObject(issue.target);
+                    }
+                    EditorGUILayout.EndHorizontal();
+                }
+            }
+        }
+
+        void DrawBuildSave()
+        {
+            EditorGUILayout.LabelField("Save", EditorStyles.miniBoldLabel);
+
+            EditorGUILayout.BeginHorizontal();
+            var bg = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(.4f, .8f, .4f);
+            if (GUILayout.Button("Overwrite Source FBX", GUILayout.Height(26)))
+                ExecBuildSave(overwriteSource: true);
+            GUI.backgroundColor = new Color(.3f, .7f, 1f);
+            if (GUILayout.Button("Save As New FBX…", GUILayout.Height(26)))
+                ExecBuildSave(overwriteSource: false);
+            GUI.backgroundColor = bg;
+            EditorGUILayout.EndHorizontal();
+        }
+
+        void ExecBuildSave(bool overwriteSource)
+        {
+            if (buildIssues == null) buildIssues = BuildValidator.Run(ctx);
+            var blockers = buildIssues.Where(i => BuildValidator.IsBlocker(i.group)).ToList();
+            if (blockers.Count > 0)
+            {
+                string msg = "Fix blocking issues first:\n\n" +
+                    string.Join("\n", blockers.Take(6).Select(b => $"• [{b.group}] {b.meshName}: {b.detail}"));
+                if (blockers.Count > 6) msg += $"\n… +{blockers.Count - 6} more";
+                EditorUtility.DisplayDialog("Build blocked", msg, "OK");
+                return;
+            }
+
+            var hubs = Resources.FindObjectsOfTypeAll<UvToolHub>();
+            var hub = hubs != null && hubs.Length > 0 ? hubs[0] : null;
+            var transferTool = hub != null ? hub.FindTool<LightmapTransferTool>() : null;
+            if (transferTool == null)
+            {
+                UvtLog.Error("[Build] UV2 Transfer tool not found — cannot export FBX.");
+                return;
+            }
+            transferTool.ExportFbxPublic(overwriteSource);
+            buildIssues = null;
         }
 
         // ═══════════════════════════════════════════════════════════
