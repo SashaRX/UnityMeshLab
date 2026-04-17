@@ -1378,7 +1378,7 @@ namespace SashaRX.UnityMeshLab
         // entry list. Caller (VertexAOTool) owns user confirmation. The FBX
         // structure is preserved as-is (no LOD-style hierarchy normalization)
         // so unrelated submeshes / instanced refs are not mutated.
-        public void ExportVertexColorsToFbx(string sourceFbxPath, IEnumerable<MeshEntry> entries)
+        public void ExportVertexColorsToFbx(string sourceFbxPath, IEnumerable<MeshEntry> entries, int uvChannelOverride = -1)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (string.IsNullOrEmpty(sourceFbxPath))
@@ -1394,7 +1394,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             RestoreAllPreviews();
-            ExportVertexColorsToFbxCore(sourceFbxPath, list, normalizeHierarchy: false);
+            ExportVertexColorsToFbxCore(sourceFbxPath, list, normalizeHierarchy: false, uvChannelOverride);
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
 #endif
@@ -1408,22 +1408,31 @@ namespace SashaRX.UnityMeshLab
             public Vector2[] uvs;  // snapshot of aoUvIdx channel, if any
         }
 
-        void ExportVertexColorsToFbxCore(string sourceFbxPath, IEnumerable<MeshEntry> entries, bool normalizeHierarchy)
+        void ExportVertexColorsToFbxCore(string sourceFbxPath, IEnumerable<MeshEntry> entries, bool normalizeHierarchy, int uvChannelOverride = -1)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (string.IsNullOrEmpty(sourceFbxPath) || entries == null) return;
 
-            // Determine AO target to scope importer setting changes.
-            // - aoUvIdx == -1: AO in vertex color → no importer changes needed
-            // - aoUvIdx >= 0:  AO in UV channel  → lock weld/compression/optimization
-            // - aoUvIdx == 1:  AO in Unity UV channel 1 (lightmap UV) → also lock generateSecondaryUV
-            int aoUvIdx = -1;
-            var aoChannel = VertexAOTool.LastAppliedTargetChannel;
-            if (aoChannel.HasValue)
+            // Determine target UV channel.
+            // - aoUvIdx == -1: no UV channel to copy (vertex color only)
+            // - aoUvIdx == 1:  Unity UV channel 1 (lightmap UV) → lock generateSecondaryUV
+            // - aoUvIdx >= 0:  also lock weld/compression/optimization so vertex order survives reimport
+            // Priority: explicit override > VertexAOTool.LastAppliedTargetChannel (AO flow).
+            int aoUvIdx;
+            if (uvChannelOverride >= 0)
             {
-                int ch = (int)aoChannel.Value;
-                if (ch > (int)AOTargetChannel.VertexColorA)
-                    aoUvIdx = (ch - (int)AOTargetChannel.UV0_X) / 2;
+                aoUvIdx = uvChannelOverride;
+            }
+            else
+            {
+                aoUvIdx = -1;
+                var aoChannel = VertexAOTool.LastAppliedTargetChannel;
+                if (aoChannel.HasValue)
+                {
+                    int ch = (int)aoChannel.Value;
+                    if (ch > (int)AOTargetChannel.VertexColorA)
+                        aoUvIdx = (ch - (int)AOTargetChannel.UV0_X) / 2;
+                }
             }
 
             // Snapshot AO data BEFORE any reimport. Phase 1 can call
