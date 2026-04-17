@@ -210,6 +210,10 @@ namespace SashaRX.UnityMeshLab
                 var mf = r.GetComponent<MeshFilter>();
                 if (mf == null || mf.sharedMesh == null)
                     continue;
+                // Skip empty meshes — they can't participate in AO bake and
+                // would trip GPU compute buffer creation (count must be > 0).
+                if (mf.sharedMesh.vertexCount == 0)
+                    continue;
 
                 var entry = new MeshEntry
                 {

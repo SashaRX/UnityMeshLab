@@ -140,6 +140,13 @@ namespace SashaRX.UnityMeshLab
                 List<(Mesh mesh, Matrix4x4 transform)> targets,
                 List<(Mesh mesh, Matrix4x4 transform)> occluders)
             {
+                // Filter out zero-vertex meshes — ComputeBuffer construction
+                // rejects count==0, so one empty target would poison the batch.
+                if (targets != null)
+                    targets = targets.FindAll(t => t.mesh != null && t.mesh.vertexCount > 0);
+                if (occluders != null)
+                    occluders = occluders.FindAll(t => t.mesh != null && t.mesh.vertexCount > 0);
+
                 if (targets == null || targets.Count == 0)
                     throw new Exception("GPU bake requires at least one target mesh.");
 
