@@ -1056,8 +1056,14 @@ namespace SashaRX.UnityMeshLab
 
         GameObject ResolveOccluderRoot(List<MeshEntry> targetEntries)
         {
+            // Hierarchy mode searches across the whole scene root (not only
+            // under the user-selected subtree) so a single selected mesh can
+            // still pick up nearby occluders / _COL* siblings from elsewhere
+            // in the level. Targets themselves are filtered out via
+            // targetRendererIds in CollectAdditionalOccluders; range test
+            // keeps things local.
             if (hierarchyMode && hierarchyRoot != null)
-                return hierarchyRoot;
+                return hierarchyRoot.transform.root.gameObject;
 
             if (ctx?.LodGroup != null)
                 return ctx.LodGroup.gameObject;

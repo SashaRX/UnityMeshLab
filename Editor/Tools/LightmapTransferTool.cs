@@ -1398,6 +1398,14 @@ namespace SashaRX.UnityMeshLab
 #endif
         }
 
+        class VertexDataSnapshot
+        {
+            public int vertexCount;
+            public Color32[] colors32;
+            public Color[] colors;
+            public Vector2[] uvs;  // snapshot of aoUvIdx channel, if any
+        }
+
         void ExportVertexColorsToFbxCore(string sourceFbxPath, IEnumerable<MeshEntry> entries)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
@@ -1414,6 +1422,39 @@ namespace SashaRX.UnityMeshLab
                 int ch = (int)aoChannel.Value;
                 if (ch > (int)AOTargetChannel.VertexColorA)
                     aoUvIdx = (ch - (int)AOTargetChannel.UV0_X) / 2;
+            }
+
+            // Snapshot AO data BEFORE any reimport. Phase 1 can call
+            // SaveAndReimport which re-reads the FBX from disk — the native
+            // mesh buffer is reset, wiping the UV / color writes that
+            // ApplyToMesh made on the in-memory shared asset. Keying by
+            // sub-asset name (stable across reimport) lets
+            // CopyVertexDataToClone look up the pre-reimport data later.
+            var snapshots = new Dictionary<string, VertexDataSnapshot>(StringComparer.Ordinal);
+            foreach (var e in entries)
+            {
+                if (e == null || !e.include) continue;
+                Mesh sm = e.originalMesh ?? e.fbxMesh;
+                if (sm == null || string.IsNullOrEmpty(sm.name)) continue;
+
+                var snap = new VertexDataSnapshot { vertexCount = sm.vertexCount };
+                var c32 = sm.colors32;
+                if (c32 != null && c32.Length == sm.vertexCount)
+                    snap.colors32 = c32;
+                else
+                {
+                    var c = sm.colors;
+                    if (c != null && c.Length == sm.vertexCount)
+                        snap.colors = c;
+                }
+                if (aoUvIdx >= 0)
+                {
+                    var uvList = new List<Vector2>();
+                    sm.GetUVs(aoUvIdx, uvList);
+                    if (uvList.Count == sm.vertexCount)
+                        snap.uvs = uvList.ToArray();
+                }
+                snapshots[sm.name] = snap;
             }
 
             // ── Phase 1: Prepare importer (single reimport, scoped to AO target) ──
@@ -1460,7 +1501,7 @@ namespace SashaRX.UnityMeshLab
             Dictionary<string, string> renameMap = null;
             try
             {
-                updated = CopyVertexDataToClone(tempRoot, entries);
+                updated = CopyVertexDataToClone(tempRoot, snapshots, aoUvIdx);
                 if (updated == 0)
                 {
                     UvtLog.Warn("[FBX Export] No vertex data found to export.");
@@ -1553,39 +1594,12 @@ namespace SashaRX.UnityMeshLab
             return null;
         }
 
-        int CopyVertexDataToClone(GameObject tempRoot, IEnumerable<MeshEntry> entries)
+        int CopyVertexDataToClone(
+            GameObject tempRoot,
+            Dictionary<string, VertexDataSnapshot> snapshots,
+            int aoUvIdx)
         {
-            int aoUvIdx = -1;
-            var aoChannel = VertexAOTool.LastAppliedTargetChannel;
-            if (aoChannel.HasValue)
-            {
-                int ch = (int)aoChannel.Value;
-                if (ch > (int)AOTargetChannel.VertexColorA)
-                    aoUvIdx = (ch - (int)AOTargetChannel.UV0_X) / 2;
-            }
-
-            // Index entries by their source FBX sub-asset instance ID. cloneMf
-            // is instantiated from the FBX prefab, so cloneMf.sharedMesh at
-            // walk time is still the original FBX sub-asset reference — its
-            // InstanceID matches e.fbxMesh. This is more precise than name
-            // matching (which would conflate two distinct sub-assets sharing
-            // a name) and still handles instanced geometry (same sub-asset
-            // referenced from multiple MeshFilters).
-            var sceneById = new Dictionary<int, MeshEntry>();
-            var sceneByName = new Dictionary<string, MeshEntry>(StringComparer.Ordinal);
-            foreach (var e in entries)
-            {
-                if (e == null || !e.include) continue;
-                if (e.fbxMesh != null)
-                    sceneById[e.fbxMesh.GetInstanceID()] = e;
-                // Fallback name index for entries whose fbxMesh has since been
-                // replaced by a working copy with a different identity (weld,
-                // repack, transfer) — falls back to name lookup only when the
-                // ID index misses.
-                Mesh sm = e.originalMesh ?? e.fbxMesh;
-                if (sm != null && !string.IsNullOrEmpty(sm.name))
-                    sceneByName[sm.name] = e;
-            }
+            if (snapshots == null) return 0;
 
             int updated = 0;
             int visitedCloneMfs = 0;
@@ -1595,49 +1609,39 @@ namespace SashaRX.UnityMeshLab
             {
                 if (cloneMf == null || cloneMf.sharedMesh == null) continue;
                 visitedCloneMfs++;
-                if (!sceneById.TryGetValue(cloneMf.sharedMesh.GetInstanceID(), out var e) &&
-                    !sceneByName.TryGetValue(cloneMf.sharedMesh.name, out e))
+                if (!snapshots.TryGetValue(cloneMf.sharedMesh.name, out var snap))
                     continue;
                 matchedCloneMfs++;
 
-                Mesh sceneMesh = e.originalMesh ?? e.fbxMesh;
-                if (sceneMesh == null) continue;
+                if (snap.vertexCount != cloneMf.sharedMesh.vertexCount)
+                {
+                    UvtLog.Warn($"[FBX Export] Skip '{cloneMf.sharedMesh.name}': vertex count mismatch (scene={snap.vertexCount}, clone={cloneMf.sharedMesh.vertexCount}).");
+                    continue;
+                }
 
                 var cloneMesh = UnityEngine.Object.Instantiate(cloneMf.sharedMesh);
                 cloneMesh.name = cloneMf.sharedMesh.name;
 
-                if (sceneMesh.colors32 != null && sceneMesh.colors32.Length == cloneMesh.vertexCount)
+                if (snap.colors32 != null)
                 {
-                    cloneMesh.colors32 = sceneMesh.colors32;
+                    cloneMesh.colors32 = snap.colors32;
                     updated++;
                 }
-                else if (sceneMesh.colors != null && sceneMesh.colors.Length == cloneMesh.vertexCount)
+                else if (snap.colors != null)
                 {
-                    cloneMesh.colors = sceneMesh.colors;
+                    cloneMesh.colors = snap.colors;
                     updated++;
                 }
 
-                if (aoUvIdx >= 0)
+                if (aoUvIdx >= 0 && snap.uvs != null && snap.uvs.Length == cloneMesh.vertexCount)
                 {
-                    if (sceneMesh.vertexCount != cloneMesh.vertexCount)
-                    {
-                        UvtLog.Warn($"[FBX Export] Skip UV{aoUvIdx} copy on '{cloneMesh.name}': vertex count mismatch (scene={sceneMesh.vertexCount}, clone={cloneMesh.vertexCount}).");
-                    }
-                    else
-                    {
-                        var uvs = new List<Vector2>();
-                        sceneMesh.GetUVs(aoUvIdx, uvs);
-                        if (uvs.Count != cloneMesh.vertexCount)
-                        {
-                            UvtLog.Warn($"[FBX Export] Skip UV{aoUvIdx} copy on '{cloneMesh.name}': scene mesh has no data in UV{aoUvIdx} (got {uvs.Count}, expected {cloneMesh.vertexCount}). Did Apply run?");
-                        }
-                        else
-                        {
-                            cloneMesh.SetUVs(aoUvIdx, uvs);
-                            updated++;
-                            uvWrites++;
-                        }
-                    }
+                    cloneMesh.SetUVs(aoUvIdx, snap.uvs);
+                    updated++;
+                    uvWrites++;
+                }
+                else if (aoUvIdx >= 0 && snap.uvs == null)
+                {
+                    UvtLog.Warn($"[FBX Export] Skip UV{aoUvIdx} copy on '{cloneMesh.name}': no pre-reimport snapshot (Apply didn't write this channel).");
                 }
 
                 cloneMf.sharedMesh = cloneMesh;
