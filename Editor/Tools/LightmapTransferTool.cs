@@ -1384,6 +1384,7 @@ namespace LightmapUvTool
             // ── Phase 1: Prepare importer (single reimport, scoped to AO target) ──
             var srcImporter = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             bool needsReimport = false;
+            bool madeReadable = false;
             if (srcImporter != null)
             {
                 // generateSecondaryUV writes to Unity UV channel 1 (mesh.uv2).
@@ -1401,7 +1402,7 @@ namespace LightmapUvTool
                         { srcImporter.meshOptimizationFlags = 0; needsReimport = true; }
                 }
                 if (!srcImporter.isReadable)
-                    { srcImporter.isReadable = true; needsReimport = true; }
+                    { srcImporter.isReadable = true; needsReimport = true; madeReadable = true; }
                 if (needsReimport)
                 {
                     Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
@@ -1437,9 +1438,13 @@ namespace LightmapUvTool
 
                 // ── Phase 3: Export FBX ──
                 string fullPath = System.IO.Path.GetFullPath(sourceFbxPath);
+                // Hash the full path so two FBX files with the same filename
+                // (e.g. Assets/A/Chair.fbx and Assets/B/Chair.fbx) get distinct
+                // backup names and never overwrite each other.
+                string pathHash = Math.Abs(fullPath.GetHashCode()).ToString("X8");
                 string metaBak = System.IO.Path.Combine(
                     System.IO.Path.GetTempPath(),
-                    System.IO.Path.GetFileName(fullPath) + ".meta.bak");
+                    System.IO.Path.GetFileName(fullPath) + "." + pathHash + ".meta.bak");
                 if (System.IO.File.Exists(fullPath + ".meta"))
                     System.IO.File.Copy(fullPath + ".meta", metaBak, true);
 
@@ -1475,7 +1480,17 @@ namespace LightmapUvTool
                 ctx.Refresh(ctx.LodGroup);
             }
 
-            // ── Phase 5: Restore working copies (must be last) ──
+            // ── Phase 5: Restore isReadable and working copies ──
+            // Restore isReadable to its original value so we don't silently
+            // change project import settings for users who intentionally keep
+            // Read/Write disabled.
+            if (madeReadable && srcImporter != null)
+            {
+                srcImporter.isReadable = false;
+                Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
+                srcImporter.SaveAndReimport();
+            }
+            // Must be last — SaveAndReimport above resets MeshFilters again.
             RestoreWorkingCopiesToScene();
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
@@ -1686,8 +1701,12 @@ namespace LightmapUvTool
                 bool groupSucceeded = false;
                 bool persistentSidecarMode = PostprocessorDefineManager.IsEnabled();
                 string tempDir = System.IO.Path.GetTempPath();
-                string fbxBakName = System.IO.Path.GetFileName(
-                    System.IO.Path.GetFullPath(sourceFbxPath));
+                // Hash the full path so two FBX files with the same filename
+                // (e.g. Assets/A/Chair.fbx and Assets/B/Chair.fbx) get distinct
+                // backup names and never overwrite each other.
+                string fullSourcePath = System.IO.Path.GetFullPath(sourceFbxPath);
+                string fbxBakName = System.IO.Path.GetFileName(fullSourcePath) + "." +
+                    Math.Abs(fullSourcePath.GetHashCode()).ToString("X8");
                 if (overwriteSource)
                 {
                     if (!EditorUtility.DisplayDialog("Overwrite Source FBX",
