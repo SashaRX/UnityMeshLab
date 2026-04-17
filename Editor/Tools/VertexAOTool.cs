@@ -188,6 +188,13 @@ namespace SashaRX.UnityMeshLab
         // other mesh data is touched.
         void RefreshHierarchyEntries()
         {
+            // Snapshot user include toggles so selection changes don't reset
+            // checkboxes the user already configured in the mesh list.
+            var prevInclude = new Dictionary<int, bool>();
+            foreach (var e in hierarchyEntries)
+                if (e?.renderer != null)
+                    prevInclude[e.renderer.GetInstanceID()] = e.include;
+
             hierarchyEntries.Clear();
             hierarchyRoot = Selection.activeGameObject;
             if (hierarchyRoot == null)
@@ -204,7 +211,7 @@ namespace SashaRX.UnityMeshLab
                 if (mf == null || mf.sharedMesh == null)
                     continue;
 
-                hierarchyEntries.Add(new MeshEntry
+                var entry = new MeshEntry
                 {
                     lodIndex = 0,
                     renderer = r,
@@ -212,7 +219,10 @@ namespace SashaRX.UnityMeshLab
                     originalMesh = mf.sharedMesh,
                     fbxMesh = mf.sharedMesh,
                     meshGroupKey = UvToolContext.ExtractGroupKey(r.name)
-                });
+                };
+                if (prevInclude.TryGetValue(r.GetInstanceID(), out var prev))
+                    entry.include = prev;
+                hierarchyEntries.Add(entry);
             }
 
             SyncFbxOverwriteMap();
@@ -750,9 +760,11 @@ namespace SashaRX.UnityMeshLab
             CancelGpuJob();
             RestorePreview();
 
-            if (hierarchyMode)
-                RefreshHierarchyEntries();
-
+            // hierarchyEntries is kept fresh by OnDrawSidebar's
+            // RefreshHierarchyEntriesIfNeeded (runs every IMGUI pass when
+            // preview is off). Re-refreshing here would wipe user include
+            // toggles the snapshot restore in RefreshHierarchyEntries tries
+            // to preserve, and is redundant inside the same OnGUI pass.
             var entries = ActiveEntries()
                 .Where(e => e.include && e.renderer != null)
                 .ToList();
@@ -764,7 +776,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             var settings = BuildSettingsFromUI();
-
+            var batches = BuildLodBatches(entries, settings);
             RunBatches(batches, settings, entries, seedFromExisting: false);
         }
 
@@ -1529,9 +1541,8 @@ namespace SashaRX.UnityMeshLab
         {
             RestorePreview();
 
-            if (hierarchyMode)
-                RefreshHierarchyEntries();
-
+            // OnDrawSidebar keeps hierarchyEntries fresh; no explicit refresh
+            // here (would wipe user include toggles).
             var entries = ActiveEntries()
                 .Where(e => e.include && e.renderer != null)
                 .ToList();
