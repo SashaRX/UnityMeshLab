@@ -88,7 +88,9 @@ namespace SashaRX.UnityMeshLab
         bool hierarchyEntriesFoldout = true;
         Vector2 hierarchyEntriesScroll;
         bool fbxOverwriteFoldout = true;
+        Vector2 fbxOverwriteScroll;
         Dictionary<string, bool> fbxOverwriteMap = new Dictionary<string, bool>();
+        int listVisibleRows = 8;
 
         // ── Results ──
         Dictionary<Mesh, float[]> bakedRawAO;       // raw vertex AO (no face-area fix)
@@ -304,8 +306,12 @@ namespace SashaRX.UnityMeshLab
                 foreach (var e in hierarchyEntries) e.include = !e.include;
             EditorGUILayout.EndHorizontal();
 
+            listVisibleRows = EditorGUILayout.IntSlider(
+                new GUIContent("Rows", "Number of rows visible before scrolling. Applies to Meshes and Overwrite FBX lists."),
+                listVisibleRows, 3, 30);
+
             float rowHeight = EditorGUIUtility.singleLineHeight + 4f;
-            float listHeight = Mathf.Min(hierarchyEntries.Count, 8) * rowHeight + 6f;
+            float listHeight = Mathf.Min(hierarchyEntries.Count, listVisibleRows) * rowHeight + 6f;
             hierarchyEntriesScroll = EditorGUILayout.BeginScrollView(
                 hierarchyEntriesScroll,
                 alwaysShowHorizontal: false,
@@ -733,6 +739,18 @@ namespace SashaRX.UnityMeshLab
 
             EditorGUI.indentLevel++;
             var paths = fbxOverwriteMap.Keys.OrderBy(p => p).ToList();
+
+            float rowHeight = EditorGUIUtility.singleLineHeight + 4f;
+            float listHeight = Mathf.Min(paths.Count, listVisibleRows) * rowHeight + 6f;
+            fbxOverwriteScroll = EditorGUILayout.BeginScrollView(
+                fbxOverwriteScroll,
+                alwaysShowHorizontal: false,
+                alwaysShowVertical: false,
+                GUIStyle.none,
+                GUI.skin.verticalScrollbar,
+                GUI.skin.scrollView,
+                GUILayout.Height(listHeight));
+
             foreach (var path in paths)
             {
                 string label = System.IO.Path.GetFileName(path);
@@ -749,6 +767,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 EditorGUILayout.EndHorizontal();
             }
+            EditorGUILayout.EndScrollView();
 
             var bgc = GUI.backgroundColor;
             GUI.backgroundColor = checkedCount > 0 ? new Color(.4f, .7f, .95f) : Color.white;
