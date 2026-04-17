@@ -301,7 +301,14 @@ namespace SashaRX.UnityMeshLab
                 string label = string.IsNullOrEmpty(fbxName)
                     ? e.renderer.name
                     : $"{e.renderer.name}  —  {fbxName}";
-                e.include = EditorGUILayout.ToggleLeft(label, e.include);
+
+                EditorGUILayout.BeginHorizontal();
+                bool next = EditorGUILayout.Toggle(e.include, GUILayout.Width(16));
+                if (next != e.include) e.include = next;
+                if (GUILayout.Button(new GUIContent(label, "Click to ping in Hierarchy"),
+                        EditorStyles.label))
+                    EditorGUIUtility.PingObject(e.renderer.gameObject);
+                EditorGUILayout.EndHorizontal();
             }
             EditorGUILayout.EndScrollView();
             EditorGUI.indentLevel--;
@@ -703,8 +710,16 @@ namespace SashaRX.UnityMeshLab
             {
                 string label = System.IO.Path.GetFileName(path);
                 bool cur = fbxOverwriteMap[path];
-                bool next = EditorGUILayout.ToggleLeft(new GUIContent(label, path), cur);
+                EditorGUILayout.BeginHorizontal();
+                bool next = EditorGUILayout.Toggle(cur, GUILayout.Width(16));
                 if (next != cur) fbxOverwriteMap[path] = next;
+                if (GUILayout.Button(new GUIContent(label, path + "\nClick to ping in Project"),
+                        EditorStyles.label))
+                {
+                    var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
+                    if (asset != null) EditorGUIUtility.PingObject(asset);
+                }
+                EditorGUILayout.EndHorizontal();
             }
 
             var bgc = GUI.backgroundColor;
