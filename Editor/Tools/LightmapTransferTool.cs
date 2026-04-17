@@ -1564,24 +1564,36 @@ namespace SashaRX.UnityMeshLab
                     aoUvIdx = (ch - (int)AOTargetChannel.UV0_X) / 2;
             }
 
-            // Index entries by mesh name so we can visit each cloneMf exactly
-            // once. If multiple scene entries reference the same FBX sub-asset
-            // (hierarchy mode often has instanced meshes), sharedMesh data is
-            // already identical in the scene — keeping the last entry is fine.
+            // Index entries by their source FBX sub-asset instance ID. cloneMf
+            // is instantiated from the FBX prefab, so cloneMf.sharedMesh at
+            // walk time is still the original FBX sub-asset reference — its
+            // InstanceID matches e.fbxMesh. This is more precise than name
+            // matching (which would conflate two distinct sub-assets sharing
+            // a name) and still handles instanced geometry (same sub-asset
+            // referenced from multiple MeshFilters).
+            var sceneById = new Dictionary<int, MeshEntry>();
             var sceneByName = new Dictionary<string, MeshEntry>(StringComparer.Ordinal);
             foreach (var e in entries)
             {
                 if (e == null || !e.include) continue;
+                if (e.fbxMesh != null)
+                    sceneById[e.fbxMesh.GetInstanceID()] = e;
+                // Fallback name index for entries whose fbxMesh has since been
+                // replaced by a working copy with a different identity (weld,
+                // repack, transfer) — falls back to name lookup only when the
+                // ID index misses.
                 Mesh sm = e.originalMesh ?? e.fbxMesh;
-                if (sm == null || string.IsNullOrEmpty(sm.name)) continue;
-                sceneByName[sm.name] = e;
+                if (sm != null && !string.IsNullOrEmpty(sm.name))
+                    sceneByName[sm.name] = e;
             }
 
             int updated = 0;
             foreach (var cloneMf in tempRoot.GetComponentsInChildren<MeshFilter>(true))
             {
                 if (cloneMf == null || cloneMf.sharedMesh == null) continue;
-                if (!sceneByName.TryGetValue(cloneMf.sharedMesh.name, out var e)) continue;
+                if (!sceneById.TryGetValue(cloneMf.sharedMesh.GetInstanceID(), out var e) &&
+                    !sceneByName.TryGetValue(cloneMf.sharedMesh.name, out e))
+                    continue;
 
                 Mesh sceneMesh = e.originalMesh ?? e.fbxMesh;
                 if (sceneMesh == null) continue;

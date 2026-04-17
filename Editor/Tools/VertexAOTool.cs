@@ -143,10 +143,12 @@ namespace SashaRX.UnityMeshLab
             this.ctx = ctx;
             this.canvas = canvas;
             ActiveInstance = this;
+            EditorApplication.hierarchyChanged += OnEditorHierarchyChanged;
         }
 
         public void OnDeactivate()
         {
+            EditorApplication.hierarchyChanged -= OnEditorHierarchyChanged;
             CancelGpuJob();
             RestorePreview();
             ClearResults();
@@ -165,9 +167,12 @@ namespace SashaRX.UnityMeshLab
             ClearResults();
         }
 
-        // Rebuild hierarchy entries only when selection or mode actually changed.
-        // OnGUI fires multiple times per frame, so unconditional refresh would
-        // churn GC (renderer array + MeshEntry allocs) on larger hierarchies.
+        // Rebuild hierarchy entries only when selection / mode / root contents
+        // actually changed. OnGUI fires multiple times per frame, so
+        // unconditional refresh would churn GC on larger hierarchies.
+        // The hierarchyChanged event flips hierarchyEntriesBuilt to false on
+        // any scene mutation (add/remove/reparent/rename) — repaint rebuilds
+        // the list on the next tick, picking up the change automatically.
         void RefreshHierarchyEntriesIfNeeded()
         {
             var sel = Selection.activeGameObject;
@@ -180,6 +185,15 @@ namespace SashaRX.UnityMeshLab
             lastHierarchySelection = sel;
             lastHierarchyMode = hierarchyMode;
             hierarchyEntriesBuilt = true;
+        }
+
+        void OnEditorHierarchyChanged()
+        {
+            // Force the next RefreshHierarchyEntriesIfNeeded to rebuild. We
+            // don't rebuild here to avoid touching Selection off-frame and to
+            // keep the work inside the normal OnGUI pass (also avoids racing
+            // with active preview clones).
+            hierarchyEntriesBuilt = false;
         }
 
         // Rebuild hierarchy entries from the current selection. Only active
