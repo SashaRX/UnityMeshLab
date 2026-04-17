@@ -304,25 +304,31 @@ namespace SashaRX.UnityMeshLab
                 foreach (var e in hierarchyEntries) e.include = !e.include;
             EditorGUILayout.EndHorizontal();
 
-            float rowHeight = EditorGUIUtility.singleLineHeight + 2f;
-            float listHeight = Mathf.Min(hierarchyEntries.Count, 8) * rowHeight + 4f;
+            float rowHeight = EditorGUIUtility.singleLineHeight + 4f;
+            float listHeight = Mathf.Min(hierarchyEntries.Count, 8) * rowHeight + 6f;
             hierarchyEntriesScroll = EditorGUILayout.BeginScrollView(
-                hierarchyEntriesScroll, GUILayout.Height(listHeight));
+                hierarchyEntriesScroll,
+                alwaysShowHorizontal: false,
+                alwaysShowVertical: false,
+                GUIStyle.none,
+                GUI.skin.verticalScrollbar,
+                GUI.skin.scrollView,
+                GUILayout.Height(listHeight));
             foreach (var e in hierarchyEntries)
             {
                 if (e == null || e.renderer == null) continue;
                 string fbxName = e.fbxMesh != null
                     ? System.IO.Path.GetFileName(AssetDatabase.GetAssetPath(e.fbxMesh))
                     : null;
-                string label = string.IsNullOrEmpty(fbxName)
-                    ? e.renderer.name
-                    : $"{e.renderer.name}  —  {fbxName}";
+                string tooltip = string.IsNullOrEmpty(fbxName)
+                    ? "Click to ping in Hierarchy"
+                    : fbxName + "\nClick to ping in Hierarchy";
 
                 EditorGUILayout.BeginHorizontal();
                 bool next = EditorGUILayout.Toggle(e.include, GUILayout.Width(22));
                 if (next != e.include) e.include = next;
                 GUILayout.Space(4);
-                if (GUILayout.Button(new GUIContent(label, "Click to ping in Hierarchy"),
+                if (GUILayout.Button(new GUIContent(e.renderer.name, tooltip),
                         EditorStyles.label))
                     EditorGUIUtility.PingObject(e.renderer.gameObject);
                 EditorGUILayout.EndHorizontal();
