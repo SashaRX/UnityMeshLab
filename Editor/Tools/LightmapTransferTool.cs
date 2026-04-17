@@ -1368,14 +1368,16 @@ namespace SashaRX.UnityMeshLab
                 "Overwrite", "Cancel"))
                 return;
 
-            ExportVertexColorsToFbxCore(sourceFbxPath, ctx.MeshEntries);
+            ExportVertexColorsToFbxCore(sourceFbxPath, ctx.MeshEntries, normalizeHierarchy: true);
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
 #endif
         }
 
         // Hierarchy-mode entry point: export a specific FBX using a filtered
-        // entry list. Caller (VertexAOTool) owns user confirmation.
+        // entry list. Caller (VertexAOTool) owns user confirmation. The FBX
+        // structure is preserved as-is (no LOD-style hierarchy normalization)
+        // so unrelated submeshes / instanced refs are not mutated.
         public void ExportVertexColorsToFbx(string sourceFbxPath, IEnumerable<MeshEntry> entries)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
@@ -1392,7 +1394,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             RestoreAllPreviews();
-            ExportVertexColorsToFbxCore(sourceFbxPath, list);
+            ExportVertexColorsToFbxCore(sourceFbxPath, list, normalizeHierarchy: false);
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
 #endif
@@ -1406,7 +1408,7 @@ namespace SashaRX.UnityMeshLab
             public Vector2[] uvs;  // snapshot of aoUvIdx channel, if any
         }
 
-        void ExportVertexColorsToFbxCore(string sourceFbxPath, IEnumerable<MeshEntry> entries)
+        void ExportVertexColorsToFbxCore(string sourceFbxPath, IEnumerable<MeshEntry> entries, bool normalizeHierarchy)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (string.IsNullOrEmpty(sourceFbxPath) || entries == null) return;
@@ -1508,9 +1510,17 @@ namespace SashaRX.UnityMeshLab
                     return;
                 }
 
-                renameMap = NormalizeExportHierarchy(tempRoot);
-                PrepareCollisionMaterials(tempRoot);
-                TrimMaterialArrays(tempRoot);
+                if (normalizeHierarchy)
+                {
+                    // LOD-pipeline path: rename / reset / bake transforms into
+                    // mesh vertices. NOT for in-place overwrite — the bake
+                    // mutates shared FBX sub-asset meshes (other scene
+                    // MeshFilters using them get displaced) and would freeze
+                    // one instance's transform into the FBX file.
+                    renameMap = NormalizeExportHierarchy(tempRoot);
+                    PrepareCollisionMaterials(tempRoot);
+                    TrimMaterialArrays(tempRoot);
+                }
 
                 // ── Phase 3: Export FBX ──
                 string fullPath = System.IO.Path.GetFullPath(sourceFbxPath);
