@@ -74,6 +74,13 @@ namespace LightmapUvTool
         public bool ShowBorder = true;
         public float FillAlpha = 0.25f;
 
+        /// <summary>
+        /// When non-zero, validation fill/overlay draws only triangles whose TriIssue
+        /// intersects this mask. When zero (default) every triangle is drawn.
+        /// Toggle bits via the Validation Overlay UI in LightmapTransferTool.
+        /// </summary>
+        public TransferValidator.TriIssue ValidationFilterMask = TransferValidator.TriIssue.None;
+
         // Spot mode
         public bool SpotMode;
         public bool LockSelection;
@@ -743,6 +750,7 @@ namespace LightmapUvTool
         public void GlFillValidation(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, TransferValidator.TriIssue[] perTri)
         {
             if (perTri == null) return;
+            var mask = ValidationFilterMask;
             int tot = 0, b = 0;
             GL.Begin(GL.TRIANGLES);
             for (int f = 0; f < fN && tot < MAX_TRI; f++)
@@ -750,6 +758,7 @@ namespace LightmapUvTool
                 int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
                 if (!TOk(uv, uN, a0, a1, a2)) continue;
                 var fl = (f < perTri.Length) ? perTri[f] : TransferValidator.TriIssue.None;
+                if (mask != TransferValidator.TriIssue.None && (fl & mask) == 0) continue;
                 Color nc;
                 if      ((fl & TransferValidator.TriIssue.ZeroArea) != 0)    nc = cValZero;
                 else if ((fl & TransferValidator.TriIssue.Stretched) != 0)   nc = cValStretch;
@@ -768,12 +777,14 @@ namespace LightmapUvTool
         public void GlFillValidationOverlay(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, TransferValidator.TriIssue[] perTri)
         {
             if (perTri == null) return;
+            var mask = ValidationFilterMask;
             int tot = 0, b = 0;
             GL.Begin(GL.TRIANGLES);
             for (int f = 0; f < fN && tot < MAX_TRI; f++)
             {
                 var fl = (f < perTri.Length) ? perTri[f] : TransferValidator.TriIssue.None;
                 if (fl == TransferValidator.TriIssue.None) continue;
+                if (mask != TransferValidator.TriIssue.None && (fl & mask) == 0) continue;
                 int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
                 if (!TOk(uv, uN, a0, a1, a2)) continue;
                 Color nc;

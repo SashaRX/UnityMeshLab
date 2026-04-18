@@ -37,6 +37,8 @@ namespace LightmapUvTool
         Dictionary<int, bool> reportLodFoldouts = new Dictionary<int, bool>();
         bool foldOutput = true;
         bool foldUv0Analysis, foldRepackSettings = true;
+        bool foldLogFilters;
+        bool foldValidationOverlay;
         bool splitTargetsInSymmetryStep;
         SymmetrySplitShells.ThresholdMode symSplitThresholdMode = SymmetrySplitShells.ThresholdMode.LegacyFixed;
         HashSet<int> lastSymmetrySplitLods = new HashSet<int>();
@@ -359,6 +361,23 @@ namespace LightmapUvTool
             }
 
             EditorGUILayout.Space(4);
+            foldLogFilters = EditorGUILayout.Foldout(foldLogFilters, "Log filters", true);
+            if (foldLogFilters)
+            {
+                EditorGUI.indentLevel++;
+                UvtLog.Current = (UvtLog.Level)EditorGUILayout.EnumPopup("Level", UvtLog.Current);
+                var enabled = UvtLog.EnabledCategories;
+                foreach (UvtLog.Category cat in Enum.GetValues(typeof(UvtLog.Category)))
+                {
+                    if (cat == UvtLog.Category.All) continue;
+                    bool on = (enabled & cat) != 0;
+                    bool newOn = EditorGUILayout.ToggleLeft(cat.ToString(), on);
+                    if (newOn != on) UvtLog.SetCategoryEnabled(cat, newOn);
+                }
+                EditorGUI.indentLevel--;
+            }
+
+            EditorGUILayout.Space(4);
             foldUv0Analysis = EditorGUILayout.Foldout(foldUv0Analysis, "UV0 Analysis & Fix", true);
             if (foldUv0Analysis)
             {
@@ -480,6 +499,30 @@ namespace LightmapUvTool
                     }
                 }
                 EditorGUILayout.EndScrollView();
+
+                EditorGUILayout.Space(4);
+                foldValidationOverlay = EditorGUILayout.Foldout(foldValidationOverlay, "Validation Overlay", true);
+                if (foldValidationOverlay)
+                {
+                    EditorGUI.indentLevel++;
+                    var mask = canvas != null ? canvas.ValidationFilterMask : TransferValidator.TriIssue.None;
+                    bool changed = false;
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Inverted,    "Inverted");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Stretched,   "Stretched");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.ZeroArea,    "ZeroArea");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.OutOfBounds, "OutOfBounds");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Overlap,     "Overlap");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.TexelDensity,"TexelDensity");
+                    if (changed && canvas != null)
+                    {
+                        canvas.ValidationFilterMask = mask;
+                        requestRepaint?.Invoke();
+                    }
+                    EditorGUILayout.LabelField(
+                        mask == TransferValidator.TriIssue.None ? "(all triangles drawn)" : $"mask: {mask}",
+                        EditorStyles.miniLabel);
+                    EditorGUI.indentLevel--;
+                }
 
                 EditorGUILayout.Space(6);
                 H("Apply UV2");
@@ -3611,6 +3654,16 @@ namespace LightmapUvTool
 
         static void H(string t) { EditorGUILayout.Space(2); EditorGUILayout.LabelField(t, EditorStyles.boldLabel); }
         static void Warn(string t) { EditorGUILayout.HelpBox(t, MessageType.Warning); }
+
+        static bool ToggleIssueBit(ref TransferValidator.TriIssue mask, TransferValidator.TriIssue bit, string label)
+        {
+            bool on = (mask & bit) != 0;
+            bool newOn = EditorGUILayout.ToggleLeft(label, on);
+            if (newOn == on) return false;
+            if (newOn) mask |= bit;
+            else       mask &= ~bit;
+            return true;
+        }
 
         void ColorBtn(Color col, string l, int h, Action a)
         {
