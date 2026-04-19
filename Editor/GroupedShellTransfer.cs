@@ -100,6 +100,13 @@ namespace LightmapUvTool
             public int shellsRejected;       // shells where UV2 was not written (too many issues)
             public int shellsOverlapFixed;   // force3D shells relocated due to UV2 overlap
 
+            // ─── Topology enforcement snapshot (per-target, captured by Transfer) ───
+            // Copied from LastTopology* immediately after EnforceShellTopologyOnUv2
+            // so multi-mesh runs don't all read the final target's global values.
+            public int  topologyIterations;
+            public int  topologyFixed;
+            public bool topologyCapHit;
+
             // ─── Cross-LOD overlap hints ───
             // Populated for merged shells to propagate source selection to subsequent LODs.
             public List<OverlapSourceHint> overlapHints;
@@ -3468,6 +3475,12 @@ namespace LightmapUvTool
 
             // ── Shell topology consistency: detect & fix displaced vertices ──
             EnforceShellTopologyOnUv2(result.uv2, tVerts, tgtTris, tgtShells);
+            // Snapshot the per-call topology counters into the result so downstream
+            // consumers (BenchmarkRecorder) get accurate per-target values; the
+            // static LastTopology* fields get overwritten on the next Transfer call.
+            result.topologyIterations = LastTopologyIterations;
+            result.topologyFixed      = LastTopologyFixed;
+            result.topologyCapHit     = LastTopologyCapHit;
 
             // UV2 bounds check
             int oob = 0;

@@ -45,6 +45,19 @@ namespace LightmapUvTool
         Vector2 reportScroll;
         TestSuiteAsset sweepSuite;
 
+        // Cache of the filterable UvtLog categories — enumerated once on type init
+        // to avoid per-repaint Enum.GetValues allocations inside the Log filters UI.
+        // Composite flag UvtLog.Category.All is filtered out; only single bits remain.
+        static readonly UvtLog.Category[] s_logCategories = BuildLogCategoryList();
+        static UvtLog.Category[] BuildLogCategoryList()
+        {
+            var all = (UvtLog.Category[])Enum.GetValues(typeof(UvtLog.Category));
+            var list = new List<UvtLog.Category>(all.Length);
+            foreach (var c in all)
+                if (c != UvtLog.Category.All) list.Add(c);
+            return list.ToArray();
+        }
+
         // ── LOD generation ──
         int generateLodCount = 2;
         float[] generateLodRatios = { 0.5f, 0.25f, 0.125f, 0.0625f };
@@ -389,9 +402,9 @@ namespace LightmapUvTool
                 EditorGUI.indentLevel++;
                 UvtLog.Current = (UvtLog.Level)EditorGUILayout.EnumPopup("Level", UvtLog.Current);
                 var enabled = UvtLog.EnabledCategories;
-                foreach (UvtLog.Category cat in Enum.GetValues(typeof(UvtLog.Category)))
+                for (int i = 0; i < s_logCategories.Length; i++)
                 {
-                    if (cat == UvtLog.Category.All) continue;
+                    var cat = s_logCategories[i];
                     bool on = (enabled & cat) != 0;
                     bool newOn = EditorGUILayout.ToggleLeft(cat.ToString(), on);
                     if (newOn != on) UvtLog.SetCategoryEnabled(cat, newOn);
@@ -746,23 +759,28 @@ namespace LightmapUvTool
             try
             {
                 foreach (int r in resArr)
-                foreach (int s in padArr)
-                foreach (int b in bdrArr)
                 {
-                    if (EditorUtility.DisplayCancelableProgressBar("Pipeline Sweep",
-                            $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}",
-                            (float)done / Mathf.Max(1, total)))
-                    {
-                        cancelled = true;
-                        break;
-                    }
-                    ctx.AtlasResolution = r;
-                    ctx.ShellPaddingPx  = s;
-                    ctx.BorderPaddingPx = b;
-                    if (sm.resetBetweenRuns) ResetWorkingCopies();
-                    ExecFullPipeline($"sweep_res{r}_pad{s}_bdr{b}");
-                    done++;
                     if (cancelled) break;
+                    foreach (int s in padArr)
+                    {
+                        if (cancelled) break;
+                        foreach (int b in bdrArr)
+                        {
+                            if (EditorUtility.DisplayCancelableProgressBar("Pipeline Sweep",
+                                    $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}",
+                                    (float)done / Mathf.Max(1, total)))
+                            {
+                                cancelled = true;
+                                break;
+                            }
+                            ctx.AtlasResolution = r;
+                            ctx.ShellPaddingPx  = s;
+                            ctx.BorderPaddingPx = b;
+                            if (sm.resetBetweenRuns) ResetWorkingCopies();
+                            ExecFullPipeline($"sweep_res{r}_pad{s}_bdr{b}");
+                            done++;
+                        }
+                    }
                 }
             }
             finally

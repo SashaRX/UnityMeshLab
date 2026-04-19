@@ -179,9 +179,12 @@ namespace LightmapUvTool
 
                 symSplitFallbackCount = SymmetrySplitShells.LastFallbackCount - symSplitFallbackAt0,
                 symSplitTotalCount    = SymmetrySplitShells.LastTotalSplitCount - symSplitTotalAt0,
-                topologyIterations    = GroupedShellTransfer.LastTopologyIterations,
-                topologyFixed         = GroupedShellTransfer.LastTopologyFixed,
-                topologyCapHit        = GroupedShellTransfer.LastTopologyCapHit,
+                // Topology counters are captured per-target by Transfer() into
+                // TransferResult. The static Last* fields are unreliable here —
+                // they reflect only the last processed mesh in a multi-target run.
+                topologyIterations    = tr?.topologyIterations ?? 0,
+                topologyFixed         = tr?.topologyFixed      ?? 0,
+                topologyCapHit        = tr?.topologyCapHit     ?? false,
 
                 uv2Snapshot       = uv2Snap,
                 trianglesSnapshot = trisSnap,
