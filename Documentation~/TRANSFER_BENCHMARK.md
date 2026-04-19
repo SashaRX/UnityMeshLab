@@ -107,6 +107,34 @@ Concatenate the output for analysis:
 pandas.concat([pd.read_csv(f) for f in glob('BenchmarkReports/*_sweep_*.csv')])
 ```
 
+### FBX baseline metrics (run once before a sweep)
+
+Before running a sweep, export the source-FBX characterization so the sweep
+numbers can be interpreted against each model's baseline.
+
+Menus:
+- `Mesh Lab → Export FBX Metrics (Selected Assets)` — select one or more
+  `.fbx` assets in the Project window, then run. Scans every LODGroup /
+  Renderer inside each FBX.
+- `Mesh Lab → Export FBX Metrics (Scene LODGroup)` — select any GameObject
+  under a LODGroup in the Hierarchy, then run. Scans that LODGroup only.
+
+Output goes to `<projectRoot>/BenchmarkReports/FbxMetrics_{ts}/`:
+
+- `FbxMetrics_{ts}.csv` — one row per mesh × LOD with vertex/triangle count,
+  bounds size, avg edge length, shell count, UV0 coverage, AABB overlap
+  pairs, OOB verts, estimated mirror pairs, UV2 stats (if present), etc.
+- `png/<model>_<lodGroup>_LOD{N}_<renderer>_uv0.png` — UV0 snapshot with
+  per-shell coloring + wire + 0–1 bounding box, range `[-0.1, 1.1]` so OOB
+  verts are visible.
+- `png/<model>_<lodGroup>_LOD{N}_<renderer>_uv2.png` — same for UV2 when
+  present.
+
+Share both the FBX metrics CSV and the sweep CSVs when asking for analysis;
+joining on `(model, lodGroup, rendererName, lodIndex)` gives context for
+each sweep cell (e.g. `postRepackOverlaps=0` on a model with
+`uv0AabbOverlapPairs=120` is a much stronger signal than on a model with 2).
+
 ### Log filters
 
 When a run is noisy (e.g. Adaptive threshold messages spam the console), open
