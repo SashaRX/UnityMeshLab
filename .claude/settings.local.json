@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout:*)",
+      "Bash(ls:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh api:*)",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); [print\\(f'--- {c[\\\\\"user\\\\\"][\\\\\"login\\\\\"]} \\({c[\\\\\"path\\\\\"]}:{c.get\\(\\\\\"line\\\\\",\\\\\"\\\\\"\\)}\\)\\\\n{c[\\\\\"body\\\\\"]}\\\\n'\\) for c in data]\")",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(python3:*)",
+      "Bash(gh search:*)"
+    ]
+  }
+}
