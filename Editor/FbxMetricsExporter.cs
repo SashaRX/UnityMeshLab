@@ -15,8 +15,6 @@ namespace LightmapUvTool
 {
     public static class FbxMetricsExporter
     {
-        const int PngSize = 1024;
-
         [MenuItem("Mesh Lab/Export FBX Metrics (Selected Assets)")]
         public static void ExportForSelection()
         {
@@ -67,11 +65,11 @@ namespace LightmapUvTool
                     if (mf == null || mf.sharedMesh == null) continue;
                     var row = AnalyzeMesh(lod.name, lodIdx, r.name, mf.sharedMesh);
                     rows.Add(row);
-                    WritePng(Path.Combine(outDir, "png",
+                    UvPngWriter.Render(Path.Combine(outDir, "png",
                         $"{Sanitize(lod.name)}_LOD{lodIdx}_{Sanitize(r.name)}_uv0.png"),
                         mf.sharedMesh, 0);
                     if (row.hasUv2)
-                        WritePng(Path.Combine(outDir, "png",
+                        UvPngWriter.Render(Path.Combine(outDir, "png",
                             $"{Sanitize(lod.name)}_LOD{lodIdx}_{Sanitize(r.name)}_uv2.png"),
                             mf.sharedMesh, 1);
                 }
@@ -144,11 +142,11 @@ namespace LightmapUvTool
             var row = AnalyzeMesh($"{modelName}:{lodGroupName}", lodIdx, r.name, mesh);
             rows.Add(row);
 
-            WritePng(Path.Combine(pngDir,
+            UvPngWriter.Render(Path.Combine(pngDir,
                 $"{Sanitize(modelName)}_{Sanitize(lodGroupName)}_LOD{lodIdx}_{Sanitize(r.name)}_uv0.png"),
                 mesh, 0);
             if (row.hasUv2)
-                WritePng(Path.Combine(pngDir,
+                UvPngWriter.Render(Path.Combine(pngDir,
                     $"{Sanitize(modelName)}_{Sanitize(lodGroupName)}_LOD{lodIdx}_{Sanitize(r.name)}_uv2.png"),
                     mesh, 1);
         }
@@ -398,126 +396,6 @@ namespace LightmapUvTool
             return sb.ToString();
         }
 
-        // ── PNG rendering via RenderTexture ────────────────────────────
-
-        static Material s_glMat;
-        static Material GetGlMat()
-        {
-            if (s_glMat != null) return s_glMat;
-            var shader = Shader.Find("Hidden/Internal-Colored");
-            if (shader == null) return null;
-            s_glMat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-            s_glMat.SetInt("_SrcBlend",   (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
-            s_glMat.SetInt("_DstBlend",   (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
-            s_glMat.SetInt("_Cull",       (int)UnityEngine.Rendering.CullMode.Off);
-            s_glMat.SetInt("_ZWrite",     0);
-            return s_glMat;
-        }
-
-        static readonly Color[] Palette =
-        {
-            new Color(0.9f, 0.3f, 0.3f), new Color(0.3f, 0.8f, 0.4f),
-            new Color(0.3f, 0.6f, 0.95f), new Color(0.95f, 0.75f, 0.2f),
-            new Color(0.8f, 0.4f, 0.9f), new Color(0.3f, 0.9f, 0.85f),
-            new Color(0.95f, 0.55f, 0.2f), new Color(0.6f, 0.8f, 0.2f),
-        };
-
-        static void WritePng(string path, Mesh mesh, int uvChannel)
-        {
-            if (mesh == null) return;
-            var uvList = new List<Vector2>();
-            mesh.GetUVs(uvChannel, uvList);
-            if (uvList.Count == 0) return;
-            var uv = uvList.ToArray();
-            var tris = mesh.triangles;
-            if (tris.Length < 3) return;
-
-            var mat = GetGlMat();
-            if (mat == null) return;
-
-            var rt = RenderTexture.GetTemporary(PngSize, PngSize, 0, RenderTextureFormat.ARGB32);
-            var prevActive = RenderTexture.active;
-            RenderTexture.active = rt;
-            try
-            {
-                GL.Clear(true, true, new Color(0.08f, 0.08f, 0.09f, 1f));
-                mat.SetPass(0);
-
-                GL.PushMatrix();
-                GL.LoadPixelMatrix(0, PngSize, 0, PngSize);
-
-                // Assign shellId per face for color
-                int[] faceToShell = null;
-                try
-                {
-                    var shells = UvShellExtractor.Extract(uv, tris);
-                    faceToShell = new int[tris.Length / 3];
-                    for (int i = 0; i < faceToShell.Length; i++) faceToShell[i] = 0;
-                    foreach (var sh in shells)
-                        foreach (var fi in sh.faceIndices)
-                            if (fi >= 0 && fi < faceToShell.Length) faceToShell[fi] = sh.shellId;
-                }
-                catch { }
-
-                // Fill triangles
-                GL.Begin(GL.TRIANGLES);
-                int fN = tris.Length / 3;
-                for (int f = 0; f < fN; f++)
-                {
-                    int sid = faceToShell != null ? faceToShell[f] : 0;
-                    var col = Palette[Mathf.Abs(sid) % Palette.Length];
-                    col.a = 0.5f;
-                    GL.Color(col);
-                    int a = tris[f * 3], b = tris[f * 3 + 1], c = tris[f * 3 + 2];
-                    if (a >= uv.Length || b >= uv.Length || c >= uv.Length) continue;
-                    Vert(uv[a]); Vert(uv[b]); Vert(uv[c]);
-                }
-                GL.End();
-
-                // Wire edges
-                GL.Begin(GL.LINES);
-                GL.Color(new Color(1, 1, 1, 0.25f));
-                for (int f = 0; f < fN; f++)
-                {
-                    int a = tris[f * 3], b = tris[f * 3 + 1], c = tris[f * 3 + 2];
-                    if (a >= uv.Length || b >= uv.Length || c >= uv.Length) continue;
-                    Vert(uv[a]); Vert(uv[b]);
-                    Vert(uv[b]); Vert(uv[c]);
-                    Vert(uv[c]); Vert(uv[a]);
-                }
-                GL.End();
-
-                // 0-1 bounds
-                GL.Begin(GL.LINES);
-                GL.Color(new Color(1, 1, 0, 1));
-                Vert(new Vector2(0, 0)); Vert(new Vector2(1, 0));
-                Vert(new Vector2(1, 0)); Vert(new Vector2(1, 1));
-                Vert(new Vector2(1, 1)); Vert(new Vector2(0, 1));
-                Vert(new Vector2(0, 1)); Vert(new Vector2(0, 0));
-                GL.End();
-
-                GL.PopMatrix();
-
-                var tex = new Texture2D(PngSize, PngSize, TextureFormat.RGBA32, false);
-                tex.ReadPixels(new Rect(0, 0, PngSize, PngSize), 0, 0, false);
-                tex.Apply();
-                File.WriteAllBytes(path, tex.EncodeToPNG());
-                UnityEngine.Object.DestroyImmediate(tex);
-            }
-            finally
-            {
-                RenderTexture.active = prevActive;
-                RenderTexture.ReleaseTemporary(rt);
-            }
-        }
-
-        static void Vert(Vector2 uv)
-        {
-            // Map UV range [-0.1, 1.1] to pixels so OOB verts are visible too.
-            const float lo = -0.1f, hi = 1.1f;
-            float u = (uv.x - lo) / (hi - lo);
-            float v = (uv.y - lo) / (hi - lo);
-            GL.Vertex3(u * PngSize, v * PngSize, 0);
-        }
+        // PNG rendering delegated to UvPngWriter.
     }
 }

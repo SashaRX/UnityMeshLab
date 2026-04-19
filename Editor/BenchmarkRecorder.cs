@@ -116,6 +116,7 @@ namespace LightmapUvTool
         /// Capture per-mesh record: TransferResult, ValidationReport, and a snapshot
         /// of the volatile SymSplit/Topology counters. Call once per target mesh after
         /// validation has populated <see cref="MeshEntry.validationReport"/>.
+        /// Also snapshots UV2 + triangles so WriteArtefacts can dump a PNG per mesh.
         /// </summary>
         public void RecordMesh(MeshEntry entry)
         {
@@ -123,6 +124,27 @@ namespace LightmapUvTool
 
             var tr  = entry.shellTransferResult;
             var vr  = entry.validationReport;
+
+            // Pick the mesh whose UV2 reflects the pipeline result:
+            //   source LOD  → repackedMesh if present
+            //   target LOD  → transferredMesh if present
+            // Fall back to originalMesh if neither exists (bare re-run).
+            Mesh snapshotMesh =
+                (entry.lodIndex == sourceLodIndex ? entry.repackedMesh : entry.transferredMesh)
+                ?? entry.originalMesh;
+
+            Vector2[] uv2Snap = null;
+            int[] trisSnap = null;
+            if (snapshotMesh != null)
+            {
+                var list = new System.Collections.Generic.List<Vector2>();
+                snapshotMesh.GetUVs(1, list);
+                if (list.Count > 0)
+                {
+                    uv2Snap = list.ToArray();
+                    trisSnap = snapshotMesh.triangles;
+                }
+            }
 
             var rec = new RunRecord
             {
@@ -160,6 +182,9 @@ namespace LightmapUvTool
                 topologyIterations    = GroupedShellTransfer.LastTopologyIterations,
                 topologyFixed         = GroupedShellTransfer.LastTopologyFixed,
                 topologyCapHit        = GroupedShellTransfer.LastTopologyCapHit,
+
+                uv2Snapshot       = uv2Snap,
+                trianglesSnapshot = trisSnap,
             };
             records.Add(rec);
         }
@@ -201,7 +226,20 @@ namespace LightmapUvTool
             File.WriteAllText(csvPath,  BuildCsv(),  Encoding.UTF8);
             File.WriteAllText(jsonPath, BuildJson(), Encoding.UTF8);
 
-            UvtLog.Info(UvtLog.Category.Benchmark, $"saved {records.Count} rec(s) → {csvPath}");
+            // Per-mesh UV2 snapshots, one PNG per recorded mesh.
+            int pngCount = 0;
+            string pngDir = Path.Combine(dir, fileBase + "_png");
+            foreach (var r in records)
+            {
+                if (r.uv2Snapshot == null || r.trianglesSnapshot == null) continue;
+                string pngName = Sanitize(r.rendererName) + $"_LOD{r.lodIndex}_uv2.png";
+                if (UvPngWriter.Render(Path.Combine(pngDir, pngName),
+                        r.uv2Snapshot, r.trianglesSnapshot))
+                    pngCount++;
+            }
+
+            UvtLog.Info(UvtLog.Category.Benchmark,
+                $"saved {records.Count} rec(s){(pngCount > 0 ? $" + {pngCount} PNG" : "")} → {csvPath}");
         }
 
         string BuildCsv()
@@ -421,6 +459,11 @@ namespace LightmapUvTool
             public int symSplitFallbackCount, symSplitTotalCount;
             public int topologyIterations, topologyFixed;
             public bool topologyCapHit;
+
+            // Snapshot of the result UV2 channel for post-run PNG rendering.
+            // Not written to CSV/JSON — consumed only by WriteArtefacts.
+            public Vector2[] uv2Snapshot;
+            public int[]    trianglesSnapshot;
         }
     }
 }

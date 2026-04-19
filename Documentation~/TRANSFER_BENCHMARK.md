@@ -96,7 +96,10 @@ product (N = product of array lengths). Each cell:
    restores `originalMesh = fbxMesh` and clears pipeline flags).
 3. Runs `ExecFullPipeline("sweep_res{R}_pad{S}_bdr{B}")` — each cell's CSV
    + JSON carry the cell identifier in the filename and as the `runLabel`
-   column.
+   column. BenchmarkRecorder additionally dumps one PNG per recorded mesh
+   into a sibling `{fileBase}_png/` folder, showing the result UV2
+   (repacked mesh on source LOD, transferred mesh on target LODs) with
+   per-shell coloring — so visual diffs between cells are immediate.
 
 Original atlas/padding values are restored when the sweep finishes or is
 cancelled. A progress bar with **Cancel** is shown during the sweep.
