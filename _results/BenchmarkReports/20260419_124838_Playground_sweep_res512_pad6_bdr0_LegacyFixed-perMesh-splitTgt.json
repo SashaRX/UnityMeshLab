@@ -1,0 +1,24 @@
+﻿{
+"startedAtUtc": "2026-04-19T12:48:38.4737973Z",
+"runLabel": "sweep_res512_pad6_bdr0",
+"lodGroup": "Playground",
+"symSplitMode": "LegacyFixed",
+"repackPerMesh": true,
+"splitTargets": true,
+"atlasResolution": 512,
+"shellPad": 6,
+"borderPad": 0,
+"sourceLodIndex": 0,
+"preRepackOverlaps": -1,
+"postRepackOverlaps": -1,
+"pipelineMs": 4978,
+"repackMs": 60,
+"transferMs": 4361,
+"validateMs": 3,
+  "records": [
+    {"timestamp": "2026-04-19T12:48:43.4518338Z", "rendererName": "Playground_LOD0", "meshGroupKey": "Playground", "lodIndex": 0, "isSourceLod": true, "shellsMatched": 0, "shellsUnmatched": 0, "shellsTransform": 0, "shellsInterpolation": 0, "shellsMerged": 0, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 0, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 0, "verticesTotal": 0, "invertedCount": 0, "stretchedCount": 0, "zeroAreaCount": 0, "oobCount": 0, "cleanCount": 0, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 0, "texelDensityMedian": 0, "symSplitFallbackCount": 0, "symSplitTotalCount": 30, "topologyIterations": 0, "topologyFixed": 0, "topologyCapHit": false},
+    {"timestamp": "2026-04-19T12:48:43.4518338Z", "rendererName": "Playground_LOD1", "meshGroupKey": "Playground", "lodIndex": 1, "isSourceLod": false, "shellsMatched": 235, "shellsUnmatched": 0, "shellsTransform": 3, "shellsInterpolation": 231, "shellsMerged": 1, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 1, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 5664, "verticesTotal": 5664, "invertedCount": 4000, "stretchedCount": 34, "zeroAreaCount": 0, "oobCount": 0, "cleanCount": 3699, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 0, "texelDensityMedian": 96.9256744, "symSplitFallbackCount": 0, "symSplitTotalCount": 30, "topologyIterations": 3, "topologyFixed": 13, "topologyCapHit": false},
+    {"timestamp": "2026-04-19T12:48:43.4518338Z", "rendererName": "Playground_LOD2", "meshGroupKey": "Playground", "lodIndex": 2, "isSourceLod": false, "shellsMatched": 234, "shellsUnmatched": 0, "shellsTransform": 3, "shellsInterpolation": 231, "shellsMerged": 0, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 0, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 3466, "verticesTotal": 3466, "invertedCount": 2205, "stretchedCount": 15, "zeroAreaCount": 4, "oobCount": 0, "cleanCount": 1765, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 0, "texelDensityMedian": 97.5447159, "symSplitFallbackCount": 0, "symSplitTotalCount": 30, "topologyIterations": 5, "topologyFixed": 15, "topologyCapHit": true},
+    {"timestamp": "2026-04-19T12:48:43.4518338Z", "rendererName": "Playground_LOD3", "meshGroupKey": "Playground", "lodIndex": 3, "isSourceLod": false, "shellsMatched": 142, "shellsUnmatched": 0, "shellsTransform": 5, "shellsInterpolation": 137, "shellsMerged": 0, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 0, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 947, "verticesTotal": 947, "invertedCount": 354, "stretchedCount": 27, "zeroAreaCount": 8, "oobCount": 0, "cleanCount": 343, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 3, "texelDensityMedian": 102.811264, "symSplitFallbackCount": 0, "symSplitTotalCount": 30, "topologyIterations": 3, "topologyFixed": 17, "topologyCapHit": false}
+  ]
+}

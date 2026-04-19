@@ -1,0 +1,23 @@
+﻿{
+"startedAtUtc": "2026-04-19T13:00:13.6634935Z",
+"runLabel": "sweep_res2048_pad2_bdr0",
+"lodGroup": "Wooden_Box_Long",
+"symSplitMode": "LegacyFixed",
+"repackPerMesh": true,
+"splitTargets": true,
+"atlasResolution": 2048,
+"shellPad": 2,
+"borderPad": 0,
+"sourceLodIndex": 0,
+"preRepackOverlaps": -1,
+"postRepackOverlaps": -1,
+"pipelineMs": 756,
+"repackMs": 139,
+"transferMs": 606,
+"validateMs": 0,
+  "records": [
+    {"timestamp": "2026-04-19T13:00:14.4190835Z", "rendererName": "Wooden_Box_Long_LOD0", "meshGroupKey": "Wooden_Box_Long", "lodIndex": 0, "isSourceLod": true, "shellsMatched": 0, "shellsUnmatched": 0, "shellsTransform": 0, "shellsInterpolation": 0, "shellsMerged": 0, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 0, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 0, "verticesTotal": 0, "invertedCount": 0, "stretchedCount": 0, "zeroAreaCount": 0, "oobCount": 0, "cleanCount": 0, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 0, "texelDensityMedian": 0, "symSplitFallbackCount": 0, "symSplitTotalCount": 0, "topologyIterations": 0, "topologyFixed": 0, "topologyCapHit": false},
+    {"timestamp": "2026-04-19T13:00:14.4190835Z", "rendererName": "Wooden_Box_Long_LOD1", "meshGroupKey": "Wooden_Box_Long", "lodIndex": 1, "isSourceLod": false, "shellsMatched": 91, "shellsUnmatched": 0, "shellsTransform": 1, "shellsInterpolation": 89, "shellsMerged": 1, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 0, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 581, "verticesTotal": 581, "invertedCount": 257, "stretchedCount": 11, "zeroAreaCount": 8, "oobCount": 0, "cleanCount": 223, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 7, "texelDensityMedian": 214.930084, "symSplitFallbackCount": 0, "symSplitTotalCount": 0, "topologyIterations": 1, "topologyFixed": 0, "topologyCapHit": false},
+    {"timestamp": "2026-04-19T13:00:14.4190835Z", "rendererName": "Wooden_Box_Long_LOD2", "meshGroupKey": "Wooden_Box_Long", "lodIndex": 2, "isSourceLod": false, "shellsMatched": 90, "shellsUnmatched": 0, "shellsTransform": 2, "shellsInterpolation": 87, "shellsMerged": 1, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 1, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 376, "verticesTotal": 376, "invertedCount": 105, "stretchedCount": 5, "zeroAreaCount": 4, "oobCount": 0, "cleanCount": 82, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 2, "texelDensityMedian": 36.8532867, "symSplitFallbackCount": 0, "symSplitTotalCount": 0, "topologyIterations": 1, "topologyFixed": 0, "topologyCapHit": false}
+  ]
+}

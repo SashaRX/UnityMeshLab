@@ -1,0 +1,4 @@
+﻿model,lodGroup,renderer,lodIndex,vertexCount,triangleCount,submeshCount,boundsSizeX,boundsSizeY,boundsSizeZ,avgEdgeLengthWorld,disconnectedGeomIslands,uv0ShellCount,uv0TotalCoverage,uv0MaxShellArea,uv0MeanShellArea,uv0ShellAreaStdDev,uv0AabbOverlapPairs,uv0OobVertexCount,mirrorPairsDetected,hasUv2,uv2ShellCount,uv2AabbOverlapPairs,uv2OobVertexCount
+Wooden_Box_Long,Wooden_Box_Long,Wooden_Box_Long_LOD0,0,991,1045,1,1.25000954,2.00003171,1.24990737,0.298337072,101,101,5.2937336,0.217169508,0.0524132028,0.0519494973,1631,0,39,1,101,0,0
+Wooden_Box_Long,Wooden_Box_Long,Wooden_Box_Long_LOD1,1,599,497,1,1.25000954,2.00003171,1.24990737,0.5145537,99,99,5.2974453,0.217169508,0.05350955,0.05192238,1587,0,39,1,99,1,0
+Wooden_Box_Long,Wooden_Box_Long,Wooden_Box_Long_LOD2,2,394,196,1,1.25000954,2.00003171,1.24990737,0.876980066,98,98,5.293732,0.217169508,0.0540176742,0.0519411378,1582,0,39,1,98,0,0

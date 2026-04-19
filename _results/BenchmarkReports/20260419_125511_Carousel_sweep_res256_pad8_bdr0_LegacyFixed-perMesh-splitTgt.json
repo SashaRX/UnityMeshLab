@@ -1,0 +1,24 @@
+﻿{
+"startedAtUtc": "2026-04-19T12:55:11.6809445Z",
+"runLabel": "sweep_res256_pad8_bdr0",
+"lodGroup": "Carousel",
+"symSplitMode": "LegacyFixed",
+"repackPerMesh": true,
+"splitTargets": true,
+"atlasResolution": 256,
+"shellPad": 8,
+"borderPad": 0,
+"sourceLodIndex": 0,
+"preRepackOverlaps": -1,
+"postRepackOverlaps": -1,
+"pipelineMs": 12195,
+"repackMs": 87,
+"transferMs": 11982,
+"validateMs": 0,
+  "records": [
+    {"timestamp": "2026-04-19T12:55:23.8761265Z", "rendererName": "Carousel_LOD0", "meshGroupKey": "Carousel", "lodIndex": 0, "isSourceLod": true, "shellsMatched": 0, "shellsUnmatched": 0, "shellsTransform": 0, "shellsInterpolation": 0, "shellsMerged": 0, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 0, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 0, "verticesTotal": 0, "invertedCount": 0, "stretchedCount": 0, "zeroAreaCount": 0, "oobCount": 0, "cleanCount": 0, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 0, "texelDensityMedian": 0, "symSplitFallbackCount": 0, "symSplitTotalCount": 6, "topologyIterations": 0, "topologyFixed": 0, "topologyCapHit": false},
+    {"timestamp": "2026-04-19T12:55:23.8832722Z", "rendererName": "Carousel_LOD1", "meshGroupKey": "Carousel", "lodIndex": 1, "isSourceLod": false, "shellsMatched": 92, "shellsUnmatched": 0, "shellsTransform": 14, "shellsInterpolation": 73, "shellsMerged": 5, "shellsRejected": 0, "shellsOverlapFixed": 3, "dedupConflicts": 6, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 1700, "verticesTotal": 1700, "invertedCount": 940, "stretchedCount": 273, "zeroAreaCount": 337, "oobCount": 0, "cleanCount": 656, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 18, "texelDensityMedian": 93.848526, "symSplitFallbackCount": 0, "symSplitTotalCount": 6, "topologyIterations": 4, "topologyFixed": 5, "topologyCapHit": false},
+    {"timestamp": "2026-04-19T12:55:23.8832722Z", "rendererName": "Carousel_LOD2", "meshGroupKey": "Carousel", "lodIndex": 2, "isSourceLod": false, "shellsMatched": 78, "shellsUnmatched": 0, "shellsTransform": 11, "shellsInterpolation": 66, "shellsMerged": 1, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 1, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 1013, "verticesTotal": 1013, "invertedCount": 513, "stretchedCount": 155, "zeroAreaCount": 159, "oobCount": 0, "cleanCount": 371, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 7, "texelDensityMedian": 106.3228, "symSplitFallbackCount": 0, "symSplitTotalCount": 6, "topologyIterations": 2, "topologyFixed": 1, "topologyCapHit": false},
+    {"timestamp": "2026-04-19T12:55:23.8832722Z", "rendererName": "Carousel_LOD3", "meshGroupKey": "Carousel", "lodIndex": 3, "isSourceLod": false, "shellsMatched": 66, "shellsUnmatched": 0, "shellsTransform": 0, "shellsInterpolation": 65, "shellsMerged": 1, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 0, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 410, "verticesTotal": 410, "invertedCount": 157, "stretchedCount": 29, "zeroAreaCount": 12, "oobCount": 0, "cleanCount": 115, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 3, "texelDensityMedian": 79.74642, "symSplitFallbackCount": 0, "symSplitTotalCount": 6, "topologyIterations": 5, "topologyFixed": 34, "topologyCapHit": true}
+  ]
+}

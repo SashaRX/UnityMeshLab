@@ -1,0 +1,23 @@
+﻿{
+"startedAtUtc": "2026-04-19T12:51:22.8189563Z",
+"runLabel": "sweep_res256_pad4_bdr0",
+"lodGroup": "Gazebo",
+"symSplitMode": "LegacyFixed",
+"repackPerMesh": true,
+"splitTargets": true,
+"atlasResolution": 256,
+"shellPad": 4,
+"borderPad": 0,
+"sourceLodIndex": 0,
+"preRepackOverlaps": -1,
+"postRepackOverlaps": -1,
+"pipelineMs": 866,
+"repackMs": 14,
+"transferMs": 816,
+"validateMs": 0,
+  "records": [
+    {"timestamp": "2026-04-19T12:51:23.6863672Z", "rendererName": "Gazebo_LOD0", "meshGroupKey": "Gazebo", "lodIndex": 0, "isSourceLod": true, "shellsMatched": 0, "shellsUnmatched": 0, "shellsTransform": 0, "shellsInterpolation": 0, "shellsMerged": 0, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 0, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 0, "verticesTotal": 0, "invertedCount": 0, "stretchedCount": 0, "zeroAreaCount": 0, "oobCount": 0, "cleanCount": 0, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 0, "texelDensityMedian": 0, "symSplitFallbackCount": 0, "symSplitTotalCount": 16, "topologyIterations": 0, "topologyFixed": 0, "topologyCapHit": false},
+    {"timestamp": "2026-04-19T12:51:23.6863672Z", "rendererName": "Gazebo_LOD1", "meshGroupKey": "Gazebo", "lodIndex": 1, "isSourceLod": false, "shellsMatched": 84, "shellsUnmatched": 0, "shellsTransform": 0, "shellsInterpolation": 84, "shellsMerged": 0, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 0, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 952, "verticesTotal": 952, "invertedCount": 580, "stretchedCount": 4, "zeroAreaCount": 0, "oobCount": 0, "cleanCount": 363, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 0, "texelDensityMedian": 225.464233, "symSplitFallbackCount": 0, "symSplitTotalCount": 16, "topologyIterations": 2, "topologyFixed": 2, "topologyCapHit": false},
+    {"timestamp": "2026-04-19T12:51:23.6863672Z", "rendererName": "Gazebo_LOD2", "meshGroupKey": "Gazebo", "lodIndex": 2, "isSourceLod": false, "shellsMatched": 111, "shellsUnmatched": 0, "shellsTransform": 0, "shellsInterpolation": 110, "shellsMerged": 1, "shellsRejected": 0, "shellsOverlapFixed": 0, "dedupConflicts": 1, "fragmentsMerged": 0, "consistencyCorrected": 0, "verticesTransferred": 566, "verticesTotal": 566, "invertedCount": 226, "stretchedCount": 12, "zeroAreaCount": 6, "oobCount": 0, "cleanCount": 123, "overlapShellPairs": 0, "overlapTriangleCount": 0, "overlapSameSrcPairs": 0, "texelDensityBadCount": 2, "texelDensityMedian": 225.536835, "symSplitFallbackCount": 0, "symSplitTotalCount": 16, "topologyIterations": 1, "topologyFixed": 0, "topologyCapHit": false}
+  ]
+}
