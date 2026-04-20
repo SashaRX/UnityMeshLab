@@ -1,6 +1,6 @@
 {
-  "name": "com.sasharx.lightmap-uv-tool",
-  "version": "0.15.58",
+  "name": "com.sasharx.unitymeshlab",
+  "version": "1.0.0",
   "displayName": "Mesh Lab",
   "description": "Unity Editor tool suite: UV2 lightmap transfer, LOD generation, UV analysis, and FBX export with binary format support.",
   "unity": "6000.0",
@@ -10,8 +10,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/SashaRX/UnityLodUvLightmapTransfer.git"
+    "url": "https://github.com/SashaRX/UnityMeshLab.git"
   },
+  "documentationUrl": "https://github.com/SashaRX/UnityMeshLab",
+  "changelogUrl": "https://github.com/SashaRX/UnityMeshLab/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/SashaRX/UnityMeshLab/blob/main/LICENSE",
   "keywords": [
     "lightmap",
     "uv",
