@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(jq -r '.version' package.json)
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+          echo "Tag $GITHUB_REF_NAME matches package.json version $PKG_VERSION"
+
+      - name: Extract changelog section for this version
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v v="## [$VERSION]" '
+            $0 ~ v {capturing=1; next}
+            /^## \[/ && capturing {exit}
+            capturing {print}
+          ' CHANGELOG.md > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "::warning::No CHANGELOG section found for $VERSION; using auto-generated notes."
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "body<<EOF"
+              cat /tmp/release-notes.md
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.has_notes == 'true' && steps.changelog.outputs.body || '' }}
+          generate_release_notes: ${{ steps.changelog.outputs.has_notes != 'true' }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -1,0 +1,76 @@
+name: Unity Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  editmode:
+    name: EditMode / Unity ${{ matrix.unity-version }}
+    runs-on: ubuntu-latest
+    # Test workflow requires UNITY_LICENSE (personal) OR UNITY_SERIAL + UNITY_EMAIL +
+    # UNITY_PASSWORD (professional). Skip gracefully if absent so PRs from forks
+    # don't fail on the missing secret.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    strategy:
+      fail-fast: false
+      matrix:
+        unity-version: ['6000.0.33f1']
+        test-mode: ['editmode']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Cache Library
+        uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-${{ matrix.unity-version }}-${{ hashFiles('package.json', '**/*.asmdef', '**/*.cs') }}
+          restore-keys: |
+            Library-${{ matrix.unity-version }}-
+            Library-
+
+      - name: Run EditMode tests
+        uses: game-ci/unity-test-runner@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+        with:
+          unityVersion: ${{ matrix.unity-version }}
+          testMode: ${{ matrix.test-mode }}
+          artifactsPath: artifacts/${{ matrix.unity-version }}-${{ matrix.test-mode }}
+          githubToken: ${{ secrets.GITHUB_TOKEN }}
+          checkName: EditMode ${{ matrix.unity-version }}
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.unity-version }}-${{ matrix.test-mode }}
+          path: artifacts/**/*.xml
+          if-no-files-found: warn
+
+  summary:
+    name: Test summary
+    needs: editmode
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report
+        run: |
+          echo "EditMode outcome: ${{ needs.editmode.result }}"
+          if [ "${{ needs.editmode.result }}" = "failure" ]; then
+            exit 1
+          fi

@@ -33,11 +33,8 @@ Located under `.github/workflows/`:
 - `build-native.yml` — builds native plugin binaries (platform-specific).
 - `meta-check.yml` — verifies `.meta` file coverage.
 - `version-bump.yml` — automates `package.json` version bumps.
-
-Missing and planned (see `unity-ci-validation/SKILL.md`):
-
-- `test.yml` — EditMode/PlayMode matrix on 6000.0 minimum.
-- `release.yml` — tag-triggered GitHub Release.
+- `test.yml` — EditMode test run on Unity 6000.0. Requires `UNITY_LICENSE` (personal) OR `UNITY_SERIAL` + `UNITY_EMAIL` + `UNITY_PASSWORD` (professional) repository secrets. See `unity-ci-validation/SKILL.md`.
+- `release.yml` — tag-triggered GitHub Release; verifies `v<version>` tag matches `package.json` and extracts the matching section from `CHANGELOG.md`.
 
 ## Deviations from `_shared/naming-conventions.md`
 
