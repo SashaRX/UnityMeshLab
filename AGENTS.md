@@ -23,7 +23,7 @@ Shared rules for **all AI agents** (Codex, Claude, etc.) working on this reposit
 - Do NOT commit bulk `.meta` changes unless files were actually added/removed
 
 ### Assembly & platform
-- All Editor code under `Editor/` with `LightmapUvTool.Editor.asmdef`
+- All Editor code under `Editor/` with `SashaRX.UnityMeshLab.Editor.asmdef`
 - `includePlatforms: ["Editor"]` — never leak into runtime builds
 - Do NOT mix Runtime and Editor dependencies
 - FBX exporter code gated by `#if LIGHTMAP_UV_TOOL_FBX_EXPORTER`
@@ -40,7 +40,7 @@ Shared rules for **all AI agents** (Codex, Claude, etc.) working on this reposit
 - Document result in `EXPERIMENTS.md` before merging
 
 ### Code conventions
-- Namespace: `LightmapUvTool`
+- Namespace: `SashaRX.UnityMeshLab`
 - No `using System.Text.RegularExpressions` in `LightmapTransferTool.cs` — use fully qualified path
 - `internal` visibility for cross-tool helpers (same assembly)
 - All scene modifications via `Undo.RecordObject` / `Undo.AddComponent` / `Undo.DestroyObjectImmediate`

@@ -44,7 +44,7 @@ Missing and planned (see `unity-ci-validation/SKILL.md`):
 Both items below are known deviations captured for tracking; the migration to the canonical values is planned (see "Migration status" below).
 
 - **`package.json` `name`** is currently `com.sasharx.lightmap-uv-tool` — does NOT match the repository folder name `UnityMeshLab`. Canonical value: `com.sasharx.unitymeshlab`. Rationale for deviation: historical — the repo originated as `lightmap-uv-tool` before the mesh-lab rename. Migration breaks downstream consumers; schedule under a MAJOR SemVer bump.
-- **Root namespace** is currently `LightmapUvTool` (bare single-segment) in `.cs` files under `Editor/`. Canonical value: `SashaRX.UnityMeshLab`. Rationale for deviation: none; pre-dates the two-segment rule. Migration tracked via `migration-and-refactor-planner`.
+- *(Resolved in the `claude/skills-overhaul-phase-0-Xrg7K` branch: namespace migrated from bare `LightmapUvTool` to `SashaRX.UnityMeshLab` across 48 `.cs` files; asmdef renamed `LightmapUvTool.Editor.asmdef` → `SashaRX.UnityMeshLab.Editor.asmdef`, GUID preserved.)*
 
 ## Primary domain vocabulary
 
@@ -68,7 +68,7 @@ Shared with agents via `CLAUDE.md`:
 
 ## Migration status
 
-Tracked rename of `LightmapUvTool` → `SashaRX.UnityMeshLab` is scheduled under `migration-and-refactor-planner`. Until complete, new code in `Editor/` and `Runtime/` must still use the current bare namespace to avoid mixing conventions mid-migration. After the migration lands, this section will be removed and the Deviations section updated.
+Namespace migration to `SashaRX.UnityMeshLab` is complete. The `package.json` `name` rename from `com.sasharx.lightmap-uv-tool` to `com.sasharx.unitymeshlab` remains scheduled — it is a downstream-breaking change and must ship under a MAJOR SemVer bump with explicit user communication.
 
 ## Further reading
 

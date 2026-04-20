@@ -17,7 +17,7 @@ See `AGENTS.md` for shared rules that apply to all AI agents.
 
 ## Code Rules
 
-- Namespace: `LightmapUvTool`
+- Namespace: `SashaRX.UnityMeshLab`
 - No `using System.Text.RegularExpressions` in `LightmapTransferTool.cs` — use fully qualified `System.Text.RegularExpressions.Regex`
 - `internal` visibility for cross-tool helpers (same assembly)
 - `Undo.RecordObject` / `Undo.AddComponent` / `Undo.DestroyObjectImmediate` for all scene modifications
