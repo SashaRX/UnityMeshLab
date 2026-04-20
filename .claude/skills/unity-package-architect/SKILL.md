@@ -1,6 +1,6 @@
 ---
 name: unity-package-architect
-description: Author Unity UPM package skeletons with canonical layout — package.json, asmdef boundaries, Runtime/Editor/Tests split, Samples~ and Documentation~ tilde-hidden folders. Use when creating a new UPM package, restructuring a package, editing package.json, or adding/splitting asmdefs. Namespaces follow SashaRX.<PackageName>; see _shared/naming-conventions.md.
+description: ALWAYS invoke this skill when creating a new Unity UPM package, restructuring a package, editing package.json, adding or splitting asmdefs, or touching Runtime/Editor/Tests/Samples~/Documentation~ layout. Do not place Runtime code in an Editor asmdef or vice versa; do not use single-segment namespaces; do not ship Samples/ without the trailing tilde. Mandatory — namespaces follow SashaRX.<PackageName>, asmdef name equals file basename, includePlatforms and excludePlatforms are mutually exclusive.
 paths: ["**/package.json", "**/*.asmdef", "**/*.asmref"]
 ---
 

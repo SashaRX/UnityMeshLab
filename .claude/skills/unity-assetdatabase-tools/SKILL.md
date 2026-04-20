@@ -1,6 +1,6 @@
 ---
 name: unity-assetdatabase-tools
-description: Safely batch AssetDatabase operations, move and rename assets preserving GUIDs, and write AssetPostprocessors with recursion guards. Use when code touches AssetDatabase, AssetImporter, AssetPostprocessor, .meta files, or performs bulk asset creation, import, move, copy, or delete. Always wrap batches in try/finally with StartAssetEditing/StopAssetEditing, or AssetEditingScope on Unity 6+.
+description: ALWAYS invoke this skill when code touches AssetDatabase, AssetImporter, AssetPostprocessor, .meta files, or performs bulk asset creation/import/move/copy/delete. Do not use File.Move or File.Delete on anything under Assets/ or Packages/; do not call AssetDatabase.Refresh inside a loop; do not write an AssetPostprocessor without a static HashSet recursion guard. Mandatory — wrap batches in try/finally with StartAssetEditing and StopAssetEditing, or AssetEditingScope on Unity 6+.
 paths: ["**/*AssetPostprocessor*.cs", "**/*Importer*.cs"]
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: unity-undo-prefab-safety
-description: Make every editor mutation undoable and every prefab edit safe. Use when code modifies scene GameObjects, components, prefab assets, or prefab instance overrides, or when using Undo, PrefabUtility, PrefabStage, or EditorUtility.SetDirty. ALWAYS call Undo.RecordObject before mutation, PrefabUtility.RecordPrefabInstancePropertyModifications after instance edits, and EditPrefabContentsScope (2020.1+) for asset edits. Do not use File.* for assets — use AssetDatabase APIs (delegate to unity-assetdatabase-tools).
+description: ALWAYS invoke this skill when code modifies a Unity scene GameObject, Component, prefab asset, or prefab instance override, or when using Undo, PrefabUtility, PrefabStage, or EditorUtility.SetDirty. Do not mutate target fields directly in a CustomEditor; do not edit prefab assets via LoadAssetAtPath; do not use File.* on assets. Mandatory sequence — Undo.RecordObject BEFORE mutation, PrefabUtility.RecordPrefabInstancePropertyModifications AFTER instance edits, PrefabUtility.EditPrefabContentsScope (2020.1+) for asset edits.
 paths: ["**/Editor/**/*.cs"]
 ---
 
