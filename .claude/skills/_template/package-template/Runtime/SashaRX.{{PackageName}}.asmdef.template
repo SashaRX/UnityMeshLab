@@ -1,8 +1,8 @@
 {
-  "name": "{{Company}}.{{PackageName}}.Editor",
-  "rootNamespace": "{{Company}}.{{PackageName}}",
+  "name": "{{Namespace}}",
+  "rootNamespace": "{{Namespace}}",
   "references": [],
-  "includePlatforms": ["Editor"],
+  "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
   "overrideReferences": false,

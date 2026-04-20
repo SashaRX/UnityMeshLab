@@ -1,7 +1,12 @@
 {
-  "name": "{{Company}}.{{PackageName}}.Tests.Editor",
-  "rootNamespace": "{{Company}}.{{PackageName}}.Tests",
-  "references": ["{{Company}}.{{PackageName}}.Editor"],
+  "name": "{{Namespace}}.Tests.Editor",
+  "rootNamespace": "{{Namespace}}.Tests",
+  "references": [
+    "{{Namespace}}",
+    "{{Namespace}}.Editor",
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner"
+  ],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
@@ -9,6 +14,7 @@
   "precompiledReferences": ["nunit.framework.dll"],
   "autoReferenced": false,
   "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+  "optionalUnityReferences": ["TestAssemblies"],
   "versionDefines": [],
   "noEngineReferences": false
 }

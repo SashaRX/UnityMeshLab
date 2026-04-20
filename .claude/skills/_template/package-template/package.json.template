@@ -1,18 +1,27 @@
 {
-  "name": "com.{{company}}.{{package-name}}",
+  "name": "{{PackageId}}",
   "version": "0.1.0",
-  "displayName": "{{Display Name}}",
-  "description": "{{Описание пакета в одно предложение.}}",
-  "unity": "2021.3",
+  "displayName": "{{DisplayName}}",
+  "description": "{{Description}}",
+  "unity": "{{UnityMinVersion}}",
   "author": {
     "name": "{{Author}}",
-    "url": "https://github.com/{{author}}"
+    "url": "https://github.com/{{Author}}"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/{{author}}/{{repo}}.git"
+    "url": "https://github.com/{{Author}}/{{PackageName}}.git"
   },
-  "keywords": [],
-  "license": "MIT",
-  "dependencies": {}
+  "documentationUrl": "https://github.com/{{Author}}/{{PackageName}}",
+  "changelogUrl": "https://github.com/{{Author}}/{{PackageName}}/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/{{Author}}/{{PackageName}}/blob/main/LICENSE",
+  "license": "{{License}}",
+  "dependencies": {},
+  "samples": [
+    {
+      "displayName": "Basic",
+      "description": "Minimum usage example",
+      "path": "Samples~/Basic"
+    }
+  ]
 }

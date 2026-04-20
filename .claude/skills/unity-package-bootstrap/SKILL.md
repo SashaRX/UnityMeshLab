@@ -41,7 +41,8 @@ _template/package-template/
 │   ├── SashaRX.{{PackageName}}.asmdef.template
 │   └── PackageRuntimeEntryPoint.cs.template
 ├── Tests/Editor/
-│   └── SashaRX.{{PackageName}}.Tests.Editor.asmdef.template
+│   ├── SashaRX.{{PackageName}}.Tests.Editor.asmdef.template
+│   └── SmokeTests.cs.template
 ├── Samples~/
 │   └── Basic/
 │       └── README.md.template
@@ -65,6 +66,8 @@ Collect from the invoking user, with defaults:
 | `UnityMinVersion` | `2021.3` | `2022.3` or `6000.0` |
 | `Author` | `SashaRX` | |
 | `License` | `MIT` | |
+| `Year` | current year | `2026` (for LICENSE) |
+| `Date` | today | `2026-04-20` (for CHANGELOG) |
 
 Reject `PackageName` values that are not PascalCase, contain spaces, or equal a C# reserved word.
 
