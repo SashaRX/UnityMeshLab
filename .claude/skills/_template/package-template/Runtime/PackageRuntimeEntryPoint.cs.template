@@ -1,0 +1,8 @@
+namespace {{Namespace}}
+{
+    public static class PackageInfo
+    {
+        public const string PackageId = "{{PackageId}}";
+        public const string DisplayName = "{{DisplayName}}";
+    }
+}

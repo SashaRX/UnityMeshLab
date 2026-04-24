@@ -6,7 +6,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     /// <summary>Analysis report for one mesh's UV0 quality.</summary>
     public struct Uv0Report

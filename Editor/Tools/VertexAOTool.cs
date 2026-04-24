@@ -10,7 +10,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEditor;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     public class VertexAOTool : IUvTool
     {

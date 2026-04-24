@@ -5,7 +5,7 @@ using System;
 using System.Collections.Generic;
 using UnityEditor;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     public class AtlasPackTool : IUvTool
     {

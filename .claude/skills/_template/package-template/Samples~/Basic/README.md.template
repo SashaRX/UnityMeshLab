@@ -1,0 +1,9 @@
+# Basic sample — {{DisplayName}}
+
+Minimum usage example.
+
+## How to run
+
+1. Import this sample via **Window → Package Manager → {{DisplayName}} → Samples → Basic**.
+2. Open the sample scene (if provided) or the generated assets under `Assets/Samples/{{DisplayName}}/<version>/Basic`.
+3. Follow the in-scene instructions.

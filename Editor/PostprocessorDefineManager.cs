@@ -2,7 +2,7 @@
 // Storage now lives in MeshLabProjectSettings (per-project, committed).
 // This class is kept as a thin shim so existing call sites don't need changes.
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     static class PostprocessorDefineManager
     {

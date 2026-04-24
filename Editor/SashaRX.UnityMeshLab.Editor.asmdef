@@ -1,6 +1,6 @@
 {
-  "name": "LightmapUvTool.Editor",
-  "rootNamespace": "LightmapUvTool",
+  "name": "SashaRX.UnityMeshLab.Editor",
+  "rootNamespace": "SashaRX.UnityMeshLab",
   "references": [
     "Unity.Formats.Fbx.Editor"
   ],

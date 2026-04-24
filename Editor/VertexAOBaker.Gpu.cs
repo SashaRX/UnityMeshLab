@@ -4,7 +4,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEditor;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     public static partial class VertexAOBaker
     {

@@ -4,7 +4,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     public struct RepackOptions
     {

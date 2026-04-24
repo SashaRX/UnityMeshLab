@@ -1,0 +1,9 @@
+# Claude Code skills
+# Prettier reflows single-line YAML descriptions in frontmatter into folded
+# scalars, which the skill-loader parser then rejects — see
+# .claude/skills/_shared/anti-patterns.md item 26. Keep skill authoring
+# entirely out of Prettier's hands.
+.claude/skills/**/SKILL.md
+.claude/skills/_shared/**
+.claude/skills/_checklists/**
+.claude/skills/_template/**

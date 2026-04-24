@@ -10,7 +10,7 @@ using UnityEditor;
 using UnityEditor.Formats.Fbx.Exporter;
 #endif
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     public class LightmapTransferTool : IUvTool
     {

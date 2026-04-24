@@ -1,7 +1,7 @@
 // UvTransferPipeline.cs — Pipeline settings for UV transfer
 // The actual transfer is handled by GroupedShellTransfer.Transfer().
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     public static class UvTransferPipeline
     {

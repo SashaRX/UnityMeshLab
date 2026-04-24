@@ -6,7 +6,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     /// <summary>
     /// Fingerprint of a raw FBX mesh at the time the sidecar was created.

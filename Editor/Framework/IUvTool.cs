@@ -4,7 +4,7 @@
 using System.Collections.Generic;
 using UnityEditor;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     /// <summary>
     /// Interface for pluggable tools in Mesh Lab.

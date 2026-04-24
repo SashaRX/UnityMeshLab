@@ -9,7 +9,7 @@ using UnityEngine;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     /// <summary>
     /// Safety hook: restores all preview materials on domain reload, play mode change,

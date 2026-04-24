@@ -9,7 +9,7 @@ using System.IO;
 using UnityEngine;
 using UnityEditor;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     public class UvToolHub : EditorWindow
     {

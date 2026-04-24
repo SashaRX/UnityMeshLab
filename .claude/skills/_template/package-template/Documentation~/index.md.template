@@ -1,0 +1,13 @@
+# {{DisplayName}}
+
+{{Description}}
+
+## Contents
+
+- [Installation](../README.md#installation)
+- [Usage](../README.md#usage)
+- [Changelog](../CHANGELOG.md)
+
+## API overview
+
+_Document the public API surface here. Group by primary concept (e.g. windows, tools, utilities)._

@@ -1,7 +1,7 @@
 using UnityEngine;
 using UnityEditor;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     /// <summary>
     /// Centralized logger with verbosity levels and per-category mute mask.

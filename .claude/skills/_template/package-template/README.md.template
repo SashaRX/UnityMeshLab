@@ -1,0 +1,30 @@
+# {{DisplayName}}
+
+{{Description}}
+
+## Installation
+
+### Via Git URL (Unity Package Manager)
+
+1. Open **Window → Package Manager**.
+2. Click **+** → **Add package from git URL**.
+3. Paste: `https://github.com/{{Author}}/{{PackageName}}.git`.
+
+### Via local disk
+
+1. Clone this repository.
+2. Open **Window → Package Manager**.
+3. Click **+** → **Add package from disk**.
+4. Select the `package.json` at the repository root.
+
+## Usage
+
+_Describe the primary workflow here._
+
+## Requirements
+
+- Unity {{UnityMinVersion}} or newer.
+
+## License
+
+{{License}} — see [LICENSE](LICENSE).

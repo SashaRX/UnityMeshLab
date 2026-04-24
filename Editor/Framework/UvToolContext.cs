@@ -7,7 +7,7 @@ using System.Linq;
 using UnityEngine;
 using UnityEditor;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     /// <summary>
     /// Shared state container — one instance per <see cref="UvToolHub"/> window.

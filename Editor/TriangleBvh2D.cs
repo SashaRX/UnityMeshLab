@@ -5,7 +5,7 @@
 
 using UnityEngine;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     public class TriangleBvh2D
     {

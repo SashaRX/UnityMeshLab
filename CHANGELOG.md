@@ -1,5 +1,27 @@
 # Changelog
 
+All notable changes to this project are documented in this file.
+The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
+
+## [1.0.0] - 2026-04-20
+
+### Changed (breaking)
+- **Package identifier** renamed from `com.sasharx.lightmap-uv-tool` to `com.sasharx.unitymeshlab` to align with the repository name and the canonical `com.sasharx.<lowercase-package>` rule in `.claude/skills/_shared/naming-conventions.md`. Downstream consumers must update the entry in `Packages/manifest.json`.
+- **Root namespace** migrated from `LightmapUvTool` to `SashaRX.UnityMeshLab` across all 48 Editor C# files. The asmdef `name` and `rootNamespace` were updated and the asmdef file was renamed `LightmapUvTool.Editor.asmdef` → `SashaRX.UnityMeshLab.Editor.asmdef` (GUID preserved). External code that referenced the bare `LightmapUvTool` namespace must switch to `SashaRX.UnityMeshLab`.
+- **`repository.url`** updated from `UnityLodUvLightmapTransfer.git` to `UnityMeshLab.git` to match the current canonical GitHub URL.
+
+### Added
+- `documentationUrl`, `changelogUrl`, and `licensesUrl` fields in `package.json`.
+- `.claude/skills/` overhaul — English-language skill catalog with progressive disclosure, `_shared/` references, `_checklists/`, `_template/package-template/`, and three new skills (`unity-ci-validation`, `unity-package-bootstrap`, `repo-conventions`).
+- `.prettierignore` protecting skill YAML frontmatter from Prettier reflow.
+
+### Migration guide
+- In consumer projects, replace the old identifier in `Packages/manifest.json`:
+  ```json
+  "com.sasharx.unitymeshlab": "https://github.com/SashaRX/UnityMeshLab.git"
+  ```
+- In any code that referenced the `LightmapUvTool` namespace, switch to `SashaRX.UnityMeshLab`.
+
 ## [0.15.36] - 2026-04-07
 
 ### Added — Cleanup tool (#59)

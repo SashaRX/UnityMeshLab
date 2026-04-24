@@ -8,7 +8,7 @@ using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.Rendering;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     public static class MeshOptimizer
     {

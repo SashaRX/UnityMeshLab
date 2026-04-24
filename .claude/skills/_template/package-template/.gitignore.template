@@ -1,0 +1,29 @@
+# Unity-generated
+Library/
+Logs/
+Temp/
+Obj/
+Build/
+Builds/
+UserSettings/
+
+# IDE
+.vs/
+.idea/
+*.csproj
+*.sln
+*.user
+*.suo
+*.pidb
+*.booproj
+*.svd
+*.pdb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Sensitive
+.env
+*.key
+*.pem

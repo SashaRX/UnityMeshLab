@@ -3,7 +3,7 @@
 using System;
 using System.Runtime.InteropServices;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     public static class ConvexDecompNative
     {

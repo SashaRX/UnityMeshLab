@@ -1,0 +1,14 @@
+using NUnit.Framework;
+
+namespace {{Namespace}}.Tests
+{
+    public class SmokeTests
+    {
+        [Test]
+        public void PackageInfo_Has_NonEmpty_Identity()
+        {
+            Assert.That(PackageInfo.PackageId, Is.Not.Null.And.Not.Empty);
+            Assert.That(PackageInfo.DisplayName, Is.Not.Null.And.Not.Empty);
+        }
+    }
+}

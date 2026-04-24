@@ -6,7 +6,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
-namespace LightmapUvTool
+namespace SashaRX.UnityMeshLab
 {
     public static class CollisionMeshBuilder
     {
