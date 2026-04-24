@@ -1,4 +1,0 @@
-﻿model,lodGroup,renderer,lodIndex,vertexCount,triangleCount,submeshCount,boundsSizeX,boundsSizeY,boundsSizeZ,avgEdgeLengthWorld,disconnectedGeomIslands,uv0ShellCount,uv0TotalCoverage,uv0MaxShellArea,uv0MeanShellArea,uv0ShellAreaStdDev,uv0AabbOverlapPairs,uv0OobVertexCount,mirrorPairsDetected,hasUv2,uv2ShellCount,uv2AabbOverlapPairs,uv2OobVertexCount
-Gazebo,Gazebo,Gazebo_LOD0,0,2944,2276,1,4.81188536,2.89635,4.70578146,0.718131,363,363,0.244490072,0.03030919,0.0006735264,0.00277156453,1891,0,25,1,363,175,0
-Gazebo,Gazebo,Gazebo_LOD1,1,1809,944,1,4.81188536,2.89635,4.70578146,0.8573053,404,404,0.267438948,0.01683822,0.000661977567,0.00189947628,2375,0,14,1,404,152,0
-Gazebo,Gazebo,Gazebo_LOD2,2,666,356,1,4.81188345,2.90574861,4.71708345,1.19587517,153,153,0.207095981,0.03030872,0.00135356851,0.00481959525,615,0,0,1,153,9,0

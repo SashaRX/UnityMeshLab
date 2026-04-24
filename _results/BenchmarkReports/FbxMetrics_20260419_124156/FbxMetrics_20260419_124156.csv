@@ -1,5 +1,0 @@
-﻿model,lodGroup,renderer,lodIndex,vertexCount,triangleCount,submeshCount,boundsSizeX,boundsSizeY,boundsSizeZ,avgEdgeLengthWorld,disconnectedGeomIslands,uv0ShellCount,uv0TotalCoverage,uv0MaxShellArea,uv0MeanShellArea,uv0ShellAreaStdDev,uv0AabbOverlapPairs,uv0OobVertexCount,mirrorPairsDetected,hasUv2,uv2ShellCount,uv2AabbOverlapPairs,uv2OobVertexCount
-Carousel,Carousel,Carousel_LOD0,0,4277,5930,1,2.01039219,0.735830963,2.01039028,0.08558061,173,173,0.210971281,0.0107985055,0.00121948717,0.00272801821,2145,0,0,1,173,24,0
-Carousel,Carousel,Carousel_LOD1,1,1781,1962,1,2.000684,0.73583,2.011704,0.158555925,115,115,0.220210329,0.0107970219,0.00191487244,0.003165285,1270,0,0,1,115,27,0
-Carousel,Carousel,Carousel_LOD2,2,1033,1046,1,1.9916569,0.7358306,1.9916569,0.209839985,83,83,0.199611783,0.0107976459,0.00240496127,0.00356161245,814,0,0,1,83,10,0
-Carousel,Carousel,Carousel_LOD3,3,458,294,1,1.97851753,0.735830963,1.96000075,0.326484919,79,79,0.175305828,0.0107527925,0.00221906113,0.00367809017,500,0,0,1,79,12,0
