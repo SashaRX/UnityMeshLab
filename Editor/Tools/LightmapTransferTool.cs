@@ -1472,6 +1472,11 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Phase 4: Reimport (single refresh) ──
+            // Re-apply UV2-friendly importer flags before refresh. The .meta
+            // restore above brings back whatever the user originally had
+            // (potentially keepQuads=false, globalScale=0.01); without this
+            // fixup the re-imported FBX would be triangulated and 100× shrunk.
+            Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true);
             AssetDatabase.Refresh();
             if (ctx.LodGroup != null)
             {
@@ -2149,20 +2154,19 @@ namespace SashaRX.UnityMeshLab
                         Uv2AssetPostprocessor.transientReplayPaths.Add(sourceFbxPath);
                 }
 
-                // Always disable generateSecondaryUV after overwriting FBX with
-                // transferred UV2. This is a post-export fallback in case importer
-                // state changed during export/reimport despite the pre-lock above.
-                if (overwriteSource && groupSucceeded)
+                // Re-apply UV2-friendly importer flags after the .meta backup is
+                // restored above. The backup was captured BEFORE the pre-export
+                // lock at line 1749, so it carries the user's original settings —
+                // potentially keepQuads=false, globalScale=0.01, generateSecondaryUV=true,
+                // etc. Restoring it as-is would undo every flag we set and break
+                // triangulation/scale on the next import. peek mode lets us skip
+                // the second SaveAndReimport when nothing actually drifted.
+                if (overwriteSource && groupSucceeded &&
+                    Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true, peek: true))
                 {
-                    var fbxImp = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
-                    if (fbxImp != null && fbxImp.generateSecondaryUV)
-                    {
-                        if (!persistentSidecarMode)
-                            ArmTransientReplayForOverwrite(sourceFbxPath, transientReplayEntriesByPath);
-                        fbxImp.generateSecondaryUV = false;
-                        fbxImp.SaveAndReimport();
-                        UvtLog.Info($"[FBX Export] Disabled generateSecondaryUV on '{sourceFbxPath}'");
-                    }
+                    if (!persistentSidecarMode)
+                        ArmTransientReplayForOverwrite(sourceFbxPath, transientReplayEntriesByPath);
+                    Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true);
                 }
             }
 

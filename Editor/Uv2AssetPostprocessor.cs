@@ -82,7 +82,7 @@ namespace SashaRX.UnityMeshLab
         /// so the CleanupTool Import Settings fixer can apply the same enforcement to any
         /// tool-managed FBX without having to pre-register it.
         /// </summary>
-        internal static bool PrepareImportSettings(string assetPath, bool force = false)
+        internal static bool PrepareImportSettings(string assetPath, bool force = false, bool peek = false)
         {
             if (bypassPaths.Contains(assetPath)) return false;
 
@@ -99,15 +99,15 @@ namespace SashaRX.UnityMeshLab
             bool changed = false;
             if (modelImporter.generateSecondaryUV)
             {
-                modelImporter.generateSecondaryUV = false;
+                if (!peek) modelImporter.generateSecondaryUV = false;
                 changed = true;
-                UvtLog.Info($"[UV2 Preprocess] Disabled generateSecondaryUV on '{assetPath}'");
+                if (!peek) UvtLog.Info($"[UV2 Preprocess] Disabled generateSecondaryUV on '{assetPath}'");
             }
             if (modelImporter.weldVertices)
             {
-                modelImporter.weldVertices = false;
+                if (!peek) modelImporter.weldVertices = false;
                 changed = true;
-                UvtLog.Info($"[UV2 Preprocess] Disabled weldVertices on '{assetPath}'");
+                if (!peek) UvtLog.Info($"[UV2 Preprocess] Disabled weldVertices on '{assetPath}'");
             }
             // Disable triangulation on (re-)import so quad topology survives a
             // Setup → Repack → Transfer → Export round-trip. Unity FBX Exporter
@@ -115,9 +115,9 @@ namespace SashaRX.UnityMeshLab
             // would force the new FBX back to triangles on the next import.
             if (!modelImporter.keepQuads)
             {
-                modelImporter.keepQuads = true;
+                if (!peek) modelImporter.keepQuads = true;
                 changed = true;
-                UvtLog.Info($"[UV2 Preprocess] Enabled keepQuads on '{assetPath}'");
+                if (!peek) UvtLog.Info($"[UV2 Preprocess] Enabled keepQuads on '{assetPath}'");
             }
             // Lock scale to 1:1 metres. Unity FBX Exporter always writes the
             // file in centimetres (1 m mesh → 100 cm in FBX); useFileScale=true
@@ -126,36 +126,36 @@ namespace SashaRX.UnityMeshLab
             // (Maya cm preset) would otherwise shrink the re-saved model 100×.
             if (!modelImporter.useFileScale)
             {
-                modelImporter.useFileScale = true;
+                if (!peek) modelImporter.useFileScale = true;
                 changed = true;
-                UvtLog.Info($"[UV2 Preprocess] Enabled useFileScale on '{assetPath}'");
+                if (!peek) UvtLog.Info($"[UV2 Preprocess] Enabled useFileScale on '{assetPath}'");
             }
             if (!Mathf.Approximately(modelImporter.globalScale, 1f))
             {
-                UvtLog.Info($"[UV2 Preprocess] Reset globalScale ({modelImporter.globalScale} → 1.0) on '{assetPath}'");
-                modelImporter.globalScale = 1f;
+                if (!peek) UvtLog.Info($"[UV2 Preprocess] Reset globalScale ({modelImporter.globalScale} → 1.0) on '{assetPath}'");
+                if (!peek) modelImporter.globalScale = 1f;
                 changed = true;
             }
             if (modelImporter.meshCompression != ModelImporterMeshCompression.Off)
             {
-                UvtLog.Info($"[UV2 Preprocess] Disabled meshCompression ({modelImporter.meshCompression}) on '{assetPath}'");
-                modelImporter.meshCompression = ModelImporterMeshCompression.Off;
+                if (!peek) UvtLog.Info($"[UV2 Preprocess] Disabled meshCompression ({modelImporter.meshCompression}) on '{assetPath}'");
+                if (!peek) modelImporter.meshCompression = ModelImporterMeshCompression.Off;
                 changed = true;
             }
             // Unity 2022.1+ unified optimizeMeshPolygons/Vertices into meshOptimizationFlags.
             if (modelImporter.meshOptimizationFlags != 0)
             {
-                UvtLog.Info($"[UV2 Preprocess] Cleared meshOptimizationFlags ({modelImporter.meshOptimizationFlags}) on '{assetPath}'");
-                modelImporter.meshOptimizationFlags = 0;
+                if (!peek) UvtLog.Info($"[UV2 Preprocess] Cleared meshOptimizationFlags ({modelImporter.meshOptimizationFlags}) on '{assetPath}'");
+                if (!peek) modelImporter.meshOptimizationFlags = 0;
                 changed = true;
             }
-            if (changed)
+            if (changed && !peek)
             {
                 modelImporter.SaveAndReimport();
                 return true;
             }
 
-            return false;
+            return changed;
         }
 
         void OnPostprocessModel(GameObject root)
