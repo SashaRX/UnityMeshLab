@@ -109,6 +109,16 @@ namespace SashaRX.UnityMeshLab
                 changed = true;
                 UvtLog.Info($"[UV2 Preprocess] Disabled weldVertices on '{assetPath}'");
             }
+            // Disable triangulation on (re-)import so quad topology survives a
+            // Setup → Repack → Transfer → Export round-trip. Unity FBX Exporter
+            // writes whatever topology the source mesh has; keepQuads=false
+            // would force the new FBX back to triangles on the next import.
+            if (!modelImporter.keepQuads)
+            {
+                modelImporter.keepQuads = true;
+                changed = true;
+                UvtLog.Info($"[UV2 Preprocess] Enabled keepQuads on '{assetPath}'");
+            }
             if (modelImporter.meshCompression != ModelImporterMeshCompression.Off)
             {
                 UvtLog.Info($"[UV2 Preprocess] Disabled meshCompression ({modelImporter.meshCompression}) on '{assetPath}'");
