@@ -1931,8 +1931,11 @@ namespace SashaRX.UnityMeshLab
                 // For overwrite flow, lock import settings BEFORE export.
                 // This avoids an extra post-export reimport that can let third-party
                 // importers (e.g. Bakery) touch UV2 again before user validation.
+                // lockForFbxOverwrite=true normalizes topology and scale (keepQuads,
+                // useFileScale, globalScale=1.0) so the Setup → Repack → Transfer →
+                // Export round-trip round-trips 1:1 metres and preserves quads.
                 if (overwriteSource)
-                    Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true);
+                    Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true, lockForFbxOverwrite: true);
 
                 // Ensure FBX meshes are readable so the FBX Exporter can access
                 // vertex data (especially for _COL meshes without sidecar data).
@@ -2335,20 +2338,19 @@ namespace SashaRX.UnityMeshLab
                         Uv2AssetPostprocessor.transientReplayPaths.Add(sourceFbxPath);
                 }
 
-                // Always disable generateSecondaryUV after overwriting FBX with
-                // transferred UV2. This is a post-export fallback in case importer
-                // state changed during export/reimport despite the pre-lock above.
-                if (overwriteSource && groupSucceeded)
+                // Re-apply UV2-friendly importer flags after the .meta backup is
+                // restored above. The backup was captured BEFORE the pre-export
+                // lock at line 1749, so it carries the user's original settings —
+                // potentially keepQuads=false, globalScale=0.01, generateSecondaryUV=true,
+                // etc. Restoring it as-is would undo every flag we set and break
+                // triangulation/scale on the next import. peek mode lets us skip
+                // the second SaveAndReimport when nothing actually drifted.
+                if (overwriteSource && groupSucceeded &&
+                    Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true, peek: true, lockForFbxOverwrite: true))
                 {
-                    var fbxImp = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
-                    if (fbxImp != null && fbxImp.generateSecondaryUV)
-                    {
-                        if (!persistentSidecarMode)
-                            ArmTransientReplayForOverwrite(sourceFbxPath, transientReplayEntriesByPath);
-                        fbxImp.generateSecondaryUV = false;
-                        fbxImp.SaveAndReimport();
-                        UvtLog.Info($"[FBX Export] Disabled generateSecondaryUV on '{sourceFbxPath}'");
-                    }
+                    if (!persistentSidecarMode)
+                        ArmTransientReplayForOverwrite(sourceFbxPath, transientReplayEntriesByPath);
+                    Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true, lockForFbxOverwrite: true);
                 }
             }
 
