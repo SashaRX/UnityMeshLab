@@ -33,8 +33,11 @@ jobs:
         id: changelog
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          awk -v v="## [$VERSION]" '
-            $0 ~ v {capturing=1; next}
+          HEADER="## [$VERSION]"
+          # Use awk index() (literal substring) anchored at column 1 — regex match
+          # would treat '[' '.' ']' in a SemVer header as metacharacters and never fire.
+          awk -v header="$HEADER" '
+            index($0, header) == 1 {capturing=1; next}
             /^## \[/ && capturing {exit}
             capturing {print}
           ' CHANGELOG.md > /tmp/release-notes.md
