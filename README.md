@@ -13,7 +13,7 @@ Mesh Lab provides six integrated tools accessible via **Tools → Mesh Lab**:
 | **UV0 Optimize** | UV0 analysis and optimization |
 | **LOD Gen** | Generate LOD meshes via meshoptimizer simplification with UV2 preservation |
 | **Collision** | Generate collision meshes — simplified (non-convex) or V-HACD convex decomposition |
-| **Vertex AO** | GPU-accelerated vertex ambient occlusion baking via hemisphere depth sampling |
+| **Vertex Color Baking** | Vertex AO (GPU hemisphere depth sampling) and Solid Color batch export with FBX + Prefab variants |
 
 ## UV2 Transfer
 
@@ -62,7 +62,11 @@ When no LODGroup exists, the Setup tab and LOD Gen tab detect LOD siblings autom
 
 After creation, use LOD Gen to generate lower LODs and the naming (`_LOD1`, `_LOD2`) is handled automatically.
 
-## Vertex AO Baking
+## Vertex Color Baking
+
+A single tab with two bake modes selected by toolbar at the top:
+
+### AO mode
 
 GPU-accelerated per-vertex ambient occlusion via hemisphere depth sampling:
 
@@ -72,13 +76,23 @@ GPU-accelerated per-vertex ambient occlusion via hemisphere depth sampling:
 * CPU fallback for platforms without compute shader support
 * Results written to vertex colors or UV channels
 
+### Solid Color mode
+
+Batch export of color variants from one source FBX/prefab:
+
+* Edit a list of `(Color, suffix)` rows; `+ Add variant` to append, `−` to remove
+* `Bake (preview)` paints `variants[0]` onto working meshes for in-editor inspection without writing files
+* `Bake & Export All` runs the full pipeline per variant: paint `mesh.colors32`, export `{base}_{suffix}.fbx`, instantiate the source prefab, swap `MeshFilter.sharedMesh` references to the new sub-meshes by name, and save `{base}_{suffix}.prefab` (full clone, not a Prefab Variant)
+* Collision meshes are skipped automatically via `MeshHygieneUtility.IsCollisionNodeName`
+* Existing files are overwritten — use git to roll back unwanted variants
+
 ## Key characteristics
 
 * **Repack, not full unwrap** — preserves existing UV0 shell structure
 * **LOD-aware UV transfer** — transfers UV2 through UV0 shell correspondence
 * **Collision from any LOD** — generate collision meshes from source LOD geometry
 * **Dual save** — results persist as Unity assets and in FBX exports
-* **Vertex AO** — GPU hemisphere depth sampling for per-vertex ambient occlusion
+* **Vertex Color Baking** — AO (GPU hemisphere depth sampling) and Solid Color batch FBX + Prefab variant export
 * **Diagnostics included** — transfer quality, shell visualization, wireframe preview
 
 ## Dependencies
@@ -120,7 +134,7 @@ git clone https://github.com/SashaRX/UnityLodUvLightmapTransfer.git com.sasharx.
    - **UV2 Transfer**: Analyze → Weld → Repack → Transfer → Apply UV2 / Export FBX
    - **LOD Gen**: Configure ratios → Generate LODs (or auto-create LODGroup from renderers)
    - **Collision**: Choose mode → Generate → Apply to Scene / Save to Sidecar
-   - **Vertex AO**: Configure samples → Bake → Apply to vertex colors/UVs
+   - **Vertex Color Baking**: AO mode — Configure samples → Bake → Apply to vertex colors/UVs. Solid Color mode — Add `(Color, suffix)` variants → Bake & Export All to write `_Red.fbx` + `_Red.prefab` per variant
 
 ## Requirements
 
