@@ -15,6 +15,14 @@ namespace SashaRX.UnityMeshLab
         public bool bilinear;
         public bool blockAlign;
         public bool bruteForce;
+        /// <summary>
+        /// After xatlas pack + post-processing, uniformly rescale UV2 so the bbox
+        /// fills [padding, 1-padding] in both axes (preserves aspect ratio).
+        /// Fixes the "atlas 25 percent filled" issue on tiled-UV0 models where
+        /// xatlas auto-texelsPerUnit underestimates the needed scale. Skip is
+        /// applied automatically if the bbox is already > 95 percent filled.
+        /// </summary>
+        public bool normalizeAtlasFill;
 
         public static RepackOptions Default => new RepackOptions
         {
@@ -25,6 +33,7 @@ namespace SashaRX.UnityMeshLab
             bilinear   = true,
             blockAlign = false,
             bruteForce = false,
+            normalizeAtlasFill = true,
         };
     }
 
@@ -609,6 +618,9 @@ namespace SashaRX.UnityMeshLab
                 result.atlasHeight = XatlasNative.xatlasGetAtlasHeight();
                 result.chartCount  = XatlasNative.xatlasGetChartCount();
 
+                UvtLog.Info(UvtLog.Category.Repack,
+                    $"xatlas pack '{mesh.name}': req={opts.resolution}, actual={result.atlasWidth}x{result.atlasHeight}, charts={result.chartCount}");
+
                 // ── Get raw output data ──
                 int outVertCount  = XatlasNative.xatlasGetOutputVertexCount(0);
                 int outIndexCount = XatlasNative.xatlasGetOutputIndexCount(0);
@@ -668,6 +680,13 @@ namespace SashaRX.UnityMeshLab
                 // ── Border padding inset ──
                 if (opts.borderPadding > 0 && result.atlasWidth > 0)
                     ApplyBorderInset(uv2, opts.borderPadding, result.atlasWidth, result.atlasHeight);
+
+                // ── Normalize atlas fill (rescale UV bbox to [pad, 1-pad]) ──
+                // Mitigates xatlas's auto-texelsPerUnit underfill on tiled-UV0
+                // models where charts end up cramped in a corner. Aspect ratio
+                // preserved; skipped automatically when already well-filled.
+                if (opts.normalizeAtlasFill)
+                    NormalizeAtlasFill(uv2, opts.padding, result.atlasWidth, result.atlasHeight, mesh.name);
 
                 // ── Apply UV2 (channel 1 — Unity lightmap channel, mesh.uv2) ──
                 mesh.SetUVs(1, uv2);
@@ -897,13 +916,16 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
 
-                // Apply UV2 and border padding
+                // Apply UV2, border padding, and atlas-fill normalization
                 for (int m = 0; m < meshCount; m++)
                 {
                     if (allUv2[m] == null || !results[m].ok) continue;
 
                     if (opts.borderPadding > 0 && atlasW > 0)
                         ApplyBorderInset(allUv2[m], opts.borderPadding, atlasW, atlasH);
+
+                    if (opts.normalizeAtlasFill)
+                        NormalizeAtlasFill(allUv2[m], opts.padding, atlasW, atlasH, meshes[m].name);
 
                     meshes[m].SetUVs(1, allUv2[m]);
                 }
@@ -914,6 +936,56 @@ namespace SashaRX.UnityMeshLab
             }
 
             return results;
+        }
+
+        // ─────────────────────────────────────────────────────────────────
+        // Rescale UV2 bbox to fill [padding, 1-padding] in [0,1] uniformly.
+        // Workaround for xatlas auto-texelsPerUnit underfilling on tiled-UV0
+        // models (Wooden_Box_Long etc): observed atlas occupancy ~25% with
+        // the same metric-quality charts, just shrunk into a corner.
+        // No-op when bbox is already > 95% filled. Aspect ratio preserved.
+        // ─────────────────────────────────────────────────────────────────
+        internal static void NormalizeAtlasFill(Vector2[] uv2, uint padding, uint atlasW, uint atlasH, string meshNameForLog)
+        {
+            if (uv2 == null || uv2.Length == 0) return;
+
+            Vector2 mn = new Vector2(float.MaxValue, float.MaxValue);
+            Vector2 mx = new Vector2(float.MinValue, float.MinValue);
+            int nonZero = 0;
+            for (int i = 0; i < uv2.Length; i++)
+            {
+                if (uv2[i].sqrMagnitude < 1e-12f) continue;
+                mn = Vector2.Min(mn, uv2[i]);
+                mx = Vector2.Max(mx, uv2[i]);
+                nonZero++;
+            }
+            if (nonZero == 0) return;
+
+            Vector2 size = mx - mn;
+            if (size.x < 1e-6f || size.y < 1e-6f) return;
+
+            float padU = atlasW > 0 ? (float)padding / atlasW : 0f;
+            float padV = atlasH > 0 ? (float)padding / atlasH : 0f;
+            float availU = Mathf.Max(0.05f, 1f - 2f * padU);
+            float availV = Mathf.Max(0.05f, 1f - 2f * padV);
+
+            float scale = Mathf.Min(availU / size.x, availV / size.y);
+            if (scale <= 1.05f)
+            {
+                UvtLog.Verbose(UvtLog.Category.Repack,
+                    $"NormalizeAtlasFill '{meshNameForLog}': bbox already {size.x:F3}x{size.y:F3}, scale={scale:F2} ≤ 1.05 — skipped");
+                return;
+            }
+
+            Vector2 used = size * scale;
+            Vector2 offset = new Vector2((1f - used.x) * 0.5f, (1f - used.y) * 0.5f);
+            for (int i = 0; i < uv2.Length; i++)
+            {
+                if (uv2[i].sqrMagnitude < 1e-12f) continue;
+                uv2[i] = offset + (uv2[i] - mn) * scale;
+            }
+            UvtLog.Info(UvtLog.Category.Repack,
+                $"NormalizeAtlasFill '{meshNameForLog}': bbox {size.x:F3}x{size.y:F3} → scaled by {scale:F2}, util {(size.x*size.y):F3} → {(used.x*used.y):F3}");
         }
 
         // ─────────────────────────────────────────────────────────────────

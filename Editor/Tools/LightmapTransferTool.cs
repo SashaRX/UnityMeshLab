@@ -37,10 +37,27 @@ namespace SashaRX.UnityMeshLab
         Dictionary<int, bool> reportLodFoldouts = new Dictionary<int, bool>();
         bool foldOutput = true;
         bool foldUv0Analysis, foldRepackSettings = true;
+        bool foldLogFilters;
+        bool foldValidationOverlay;
         bool splitTargetsInSymmetryStep;
+        bool skipSymmetrySplitStep;
         SymmetrySplitShells.ThresholdMode symSplitThresholdMode = SymmetrySplitShells.ThresholdMode.LegacyFixed;
         HashSet<int> lastSymmetrySplitLods = new HashSet<int>();
         Vector2 reportScroll;
+        TestSuiteAsset sweepSuite;
+
+        // Cache of the filterable UvtLog categories — enumerated once on type init
+        // to avoid per-repaint Enum.GetValues allocations inside the Log filters UI.
+        // Composite flag UvtLog.Category.All is filtered out; only single bits remain.
+        static readonly UvtLog.Category[] s_logCategories = BuildLogCategoryList();
+        static UvtLog.Category[] BuildLogCategoryList()
+        {
+            var all = (UvtLog.Category[])Enum.GetValues(typeof(UvtLog.Category));
+            var list = new List<UvtLog.Category>(all.Length);
+            foreach (var c in all)
+                if (c != UvtLog.Category.All) list.Add(c);
+            return list.ToArray();
+        }
 
         // ── LOD generation ──
         int generateLodCount = 2;
@@ -344,6 +361,28 @@ namespace SashaRX.UnityMeshLab
             SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
             ColorBtn(new Color(.2f,.75f,.95f), "Run Full Pipeline", 30, ExecFullPipeline);
             splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft("SymSplit target LODs (advanced)", splitTargetsInSymmetryStep);
+            skipSymmetrySplitStep      = EditorGUILayout.ToggleLeft("Skip SymSplit step (diagnostic)", skipSymmetrySplitStep);
+
+            // Parameter sweep: atlasRes × shellPad × borderPad from a TestSuiteAsset.
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                sweepSuite = (TestSuiteAsset)EditorGUILayout.ObjectField(
+                    "Sweep suite", sweepSuite, typeof(TestSuiteAsset), false);
+                int cells = 0;
+                if (sweepSuite != null && sweepSuite.sweep != null)
+                {
+                    var sm = sweepSuite.sweep;
+                    int rL = sm.atlasResolutions?.Length ?? 0;
+                    int pL = sm.shellPaddingPxVariants?.Length ?? 0;
+                    int bL = sm.borderPaddingPxVariants?.Length ?? 0;
+                    cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL);
+                }
+                using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0))
+                {
+                    if (GUILayout.Button($"Run Sweep ({cells})", GUILayout.Width(130), GUILayout.Height(22)))
+                        ExecSweep(sweepSuite.sweep);
+                }
+            }
 
             EditorGUILayout.Space(6);
             H("Pipeline Settings");
@@ -355,6 +394,23 @@ namespace SashaRX.UnityMeshLab
                 ctx.PipeSettings.saveNewMeshAssets = EditorGUILayout.Toggle("Save Assets", ctx.PipeSettings.saveNewMeshAssets);
                 if (ctx.PipeSettings.saveNewMeshAssets)
                     ctx.PipeSettings.savePath = EditorGUILayout.TextField("Path", ctx.PipeSettings.savePath);
+                EditorGUI.indentLevel--;
+            }
+
+            EditorGUILayout.Space(4);
+            foldLogFilters = EditorGUILayout.Foldout(foldLogFilters, "Log filters", true);
+            if (foldLogFilters)
+            {
+                EditorGUI.indentLevel++;
+                UvtLog.Current = (UvtLog.Level)EditorGUILayout.EnumPopup("Level", UvtLog.Current);
+                var enabled = UvtLog.EnabledCategories;
+                for (int i = 0; i < s_logCategories.Length; i++)
+                {
+                    var cat = s_logCategories[i];
+                    bool on = (enabled & cat) != 0;
+                    bool newOn = EditorGUILayout.ToggleLeft(cat.ToString(), on);
+                    if (newOn != on) UvtLog.SetCategoryEnabled(cat, newOn);
+                }
                 EditorGUI.indentLevel--;
             }
 
@@ -480,6 +536,30 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
                 EditorGUILayout.EndScrollView();
+
+                EditorGUILayout.Space(4);
+                foldValidationOverlay = EditorGUILayout.Foldout(foldValidationOverlay, "Validation Overlay", true);
+                if (foldValidationOverlay)
+                {
+                    EditorGUI.indentLevel++;
+                    var mask = canvas != null ? canvas.ValidationFilterMask : TransferValidator.TriIssue.None;
+                    bool changed = false;
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Inverted,    "Inverted");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Stretched,   "Stretched");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.ZeroArea,    "ZeroArea");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.OutOfBounds, "OutOfBounds");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Overlap,     "Overlap");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.TexelDensity,"TexelDensity");
+                    if (changed && canvas != null)
+                    {
+                        canvas.ValidationFilterMask = mask;
+                        requestRepaint?.Invoke();
+                    }
+                    EditorGUILayout.LabelField(
+                        mask == TransferValidator.TriIssue.None ? "(all triangles drawn)" : $"mask: {mask}",
+                        EditorStyles.miniLabel);
+                    EditorGUI.indentLevel--;
+                }
 
                 EditorGUILayout.Space(6);
                 H("Apply UV2");
@@ -637,9 +717,87 @@ namespace SashaRX.UnityMeshLab
             requestRepaint?.Invoke();
         }
 
-        void ExecFullPipeline()
+        void ExecFullPipeline() => ExecFullPipeline("FullPipeline");
+
+        void ExecFullPipeline(string runLabel)
         {
             if (ctx.LodGroup == null) return;
+            using var _bench = BenchmarkRecorder.NewRun(ctx, runLabel,
+                splitTargetsInSymmetryStep, symSplitThresholdMode);
+            BenchmarkRecorder.Current?.StageBegin("pipeline");
+            try
+            {
+                ExecFullPipelineCore();
+            }
+            finally
+            {
+                BenchmarkRecorder.Current?.StageEnd("pipeline");
+                if (BenchmarkRecorder.Current != null)
+                    foreach (var e in ctx.MeshEntries)
+                        BenchmarkRecorder.Current.RecordMesh(e);
+            }
+        }
+
+        /// <summary>
+        /// Run the full pipeline once per cell of a sweep matrix (cartesian product of
+        /// atlasResolutions × shellPaddingPxVariants × borderPaddingPxVariants).
+        /// Each cell writes its own CSV/JSON with runLabel "sweep_res{R}_pad{S}_bdr{B}".
+        /// Original ctx values are restored on exit.
+        /// </summary>
+        void ExecSweep(TestSuiteAsset.SweepMatrix sm)
+        {
+            if (ctx.LodGroup == null || sm == null) return;
+            var resArr = (sm.atlasResolutions != null && sm.atlasResolutions.Length > 0)
+                ? sm.atlasResolutions : new[] { ctx.AtlasResolution };
+            var padArr = (sm.shellPaddingPxVariants != null && sm.shellPaddingPxVariants.Length > 0)
+                ? sm.shellPaddingPxVariants : new[] { ctx.ShellPaddingPx };
+            var bdrArr = (sm.borderPaddingPxVariants != null && sm.borderPaddingPxVariants.Length > 0)
+                ? sm.borderPaddingPxVariants : new[] { ctx.BorderPaddingPx };
+
+            int total = resArr.Length * padArr.Length * bdrArr.Length;
+            int origRes = ctx.AtlasResolution, origPad = ctx.ShellPaddingPx, origBdr = ctx.BorderPaddingPx;
+            int done = 0;
+            bool cancelled = false;
+            try
+            {
+                foreach (int r in resArr)
+                {
+                    if (cancelled) break;
+                    foreach (int s in padArr)
+                    {
+                        if (cancelled) break;
+                        foreach (int b in bdrArr)
+                        {
+                            if (EditorUtility.DisplayCancelableProgressBar("Pipeline Sweep",
+                                    $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}",
+                                    (float)done / Mathf.Max(1, total)))
+                            {
+                                cancelled = true;
+                                break;
+                            }
+                            ctx.AtlasResolution = r;
+                            ctx.ShellPaddingPx  = s;
+                            ctx.BorderPaddingPx = b;
+                            if (sm.resetBetweenRuns) ResetWorkingCopies();
+                            ExecFullPipeline($"sweep_res{r}_pad{s}_bdr{b}");
+                            done++;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+                ctx.AtlasResolution = origRes;
+                ctx.ShellPaddingPx  = origPad;
+                ctx.BorderPaddingPx = origBdr;
+                UvtLog.Info(UvtLog.Category.Benchmark,
+                    $"Sweep complete: {done}/{total} cells{(cancelled ? " (cancelled)" : "")}");
+            }
+        }
+
+        void ExecFullPipelineCore()
+        {
             string version = UnityEditor.PackageManager.PackageInfo
                 .FindForAssembly(typeof(LightmapTransferTool).Assembly)?.version ?? "0.0.0";
             UvtLog.Info($"[Pipeline] Starting full pipeline... (v{version})");
@@ -701,8 +859,11 @@ namespace SashaRX.UnityMeshLab
                         ctx.HasTransfer = false;
                     }
 
-                    // 3. SymSplit
-                    ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh);
+                    // 3. SymSplit (skipped via diagnostic toggle to isolate xatlas packing)
+                    if (!skipSymmetrySplitStep)
+                        ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh);
+                    else
+                        UvtLog.Info(UvtLog.Category.SymSplit, "[Pipeline] SymSplit step SKIPPED by user toggle");
 
                     // 4. Repack
                     var src = ctx.ForLod(ctx.SourceLodIndex);
@@ -804,6 +965,15 @@ namespace SashaRX.UnityMeshLab
         void ExecRepack(List<MeshEntry> entries)
         {
             if (entries.Count == 0) return;
+            using var _bench = BenchmarkRecorder.NewRun(ctx, "Repack",
+                splitTargetsInSymmetryStep, symSplitThresholdMode);
+            BenchmarkRecorder.Current?.StageBegin("repack");
+            try { ExecRepackCore(entries); }
+            finally { BenchmarkRecorder.Current?.StageEnd("repack"); }
+        }
+
+        void ExecRepackCore(List<MeshEntry> entries)
+        {
             UvtLog.Info($"[Repack] {entries.Count} meshes, res={ctx.AtlasResolution}, pad={ctx.ShellPaddingPx}, bdr={ctx.BorderPaddingPx}");
             var validEntries = new List<MeshEntry>();
             var meshCopies = new List<Mesh>();
@@ -856,15 +1026,29 @@ namespace SashaRX.UnityMeshLab
 
         void ExecTransferAll()
         {
-            accumulatedOverlapHints.Clear();
-            accumulatedMatchHints.Clear();
-            for (int li = 0; li < ctx.LodCount; li++)
+            using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
+                splitTargetsInSymmetryStep, symSplitThresholdMode);
+            bool ownsSession = _bench is BenchmarkRecorder;
+            BenchmarkRecorder.Current?.StageBegin("transfer");
+            try
             {
-                if (li == ctx.SourceLodIndex) continue;
-                ExecTransferLod(li);
+                accumulatedOverlapHints.Clear();
+                accumulatedMatchHints.Clear();
+                for (int li = 0; li < ctx.LodCount; li++)
+                {
+                    if (li == ctx.SourceLodIndex) continue;
+                    ExecTransferLod(li);
+                }
+                ctx.HasTransfer = true;
+                requestRepaint?.Invoke();
             }
-            ctx.HasTransfer = true;
-            requestRepaint?.Invoke();
+            finally
+            {
+                BenchmarkRecorder.Current?.StageEnd("transfer");
+                if (ownsSession && BenchmarkRecorder.Current != null)
+                    foreach (var e in ctx.MeshEntries)
+                        BenchmarkRecorder.Current.RecordMesh(e);
+            }
         }
 
         void ExecTransferLod(int tLod)
@@ -924,7 +1108,9 @@ namespace SashaRX.UnityMeshLab
                 tgt.shellTransferResult = tr;
 
                 // Validation
+                BenchmarkRecorder.Current?.StageBegin("validate");
                 tgt.validationReport = TransferValidator.Validate(tgtMesh, tr.uv2, tr);
+                BenchmarkRecorder.Current?.StageEnd("validate");
 
                 float pct = tr.verticesTotal > 0 ? tr.verticesTransferred * 100f / tr.verticesTotal : 0;
                 UvtLog.Info($"[Transfer] '{tgt.renderer.name}' LOD{tLod}: {tr.shellsMatched} shells, {pct:F0}% coverage");
@@ -3570,6 +3756,16 @@ namespace SashaRX.UnityMeshLab
 
         static void H(string t) { EditorGUILayout.Space(2); EditorGUILayout.LabelField(t, EditorStyles.boldLabel); }
         static void Warn(string t) { EditorGUILayout.HelpBox(t, MessageType.Warning); }
+
+        static bool ToggleIssueBit(ref TransferValidator.TriIssue mask, TransferValidator.TriIssue bit, string label)
+        {
+            bool on = (mask & bit) != 0;
+            bool newOn = EditorGUILayout.ToggleLeft(label, on);
+            if (newOn == on) return false;
+            if (newOn) mask |= bit;
+            else       mask &= ~bit;
+            return true;
+        }
 
         void ColorBtn(Color col, string l, int h, Action a)
         {
