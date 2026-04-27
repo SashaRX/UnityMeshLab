@@ -132,6 +132,15 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
+        /// <summary>
+        /// Store baked AO into the selected channel. Both paths clamp to
+        /// [0,1]: the vertex-color write remaps to byte [0..255], the UV
+        /// write keeps the raw float. AO values are treated as LINEAR — no
+        /// gamma encoding is applied. Shaders reading the channel must
+        /// interpret it in linear space (URP / Built-in vertex colors are
+        /// already handled linearly when the project is in Linear color
+        /// space).
+        /// </summary>
         public static void WriteToChannel(Mesh mesh, float[] aoValues, AOTargetChannel channel)
         {
             if (mesh == null || aoValues == null || aoValues.Length != mesh.vertexCount) return;
@@ -177,9 +186,14 @@ namespace SashaRX.UnityMeshLab
                 }
                 for (int i = 0; i < aoValues.Length; i++)
                 {
+                    // Clamp to [0,1] — matches the vertex-color path and keeps
+                    // downstream shaders well-defined. Upstream math (area
+                    // correction, blur) can drift slightly out of range due
+                    // to float error / user intensity tweaks.
+                    float v = Mathf.Clamp01(aoValues[i]);
                     var uv = uvs[i];
-                    if (comp == 0) uv.x = aoValues[i];
-                    else uv.y = aoValues[i];
+                    if (comp == 0) uv.x = v;
+                    else uv.y = v;
                     uvs[i] = uv;
                 }
                 mesh.SetUVs(uvIdx, uvs);

@@ -1,4 +1,4 @@
-// ModelBuilderPreview.cs — 3D scene preview helper for Model Builder tool.
+// PrefabBuilderPreview.cs — 3D scene preview helper for Prefab Builder tool.
 // Manages mesh clone backup/restore and visualization modes:
 //   Channel visualization (vertex colors, normals, tangents, UV channels)
 //   Edge wireframe overlay (colored by EdgeAnalyzer classification)
@@ -11,7 +11,7 @@ using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
-    internal class ModelBuilderPreview
+    internal class PrefabBuilderPreview
     {
         // ── Backup ──
 
@@ -30,7 +30,7 @@ namespace SashaRX.UnityMeshLab
 
         // ── Safety guard: static instance for domain reload cleanup ──
 
-        internal static ModelBuilderPreview ActiveInstance { get; private set; }
+        internal static PrefabBuilderPreview ActiveInstance { get; private set; }
 
         internal static void RestoreIfActive()
         {

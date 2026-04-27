@@ -64,8 +64,8 @@ namespace SashaRX.UnityMeshLab
             if (ShellColorModelPreview.IsActive)
                 ShellColorModelPreview.Restore();
 
-            // Model Builder preview is per-tool instance — static guard.
-            ModelBuilderPreview.RestoreIfActive();
+            // Prefab Builder preview is per-tool instance — static guard.
+            PrefabBuilderPreview.RestoreIfActive();
 
             // Lightmap preview is per-window instance — find open Mesh Lab windows and restore.
             var hubs = Resources.FindObjectsOfTypeAll<UvToolHub>();

@@ -8,7 +8,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using UnityEngine;
-using UnityEngine.Rendering;
 using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
@@ -329,186 +328,33 @@ namespace SashaRX.UnityMeshLab
             if (generatedObjects.Count > 0) ClearGeneratedLods();
             lastResults.Clear();
 
-            var sourceMeshes = new List<(MeshEntry entry, Mesh mesh)>();
-            foreach (var e in ctx.MeshEntries)
+            var opts = new LodPipelineOps.Options
             {
-                if (!e.include || e.lodIndex != ctx.SourceLodIndex) continue;
-                Mesh src = e.repackedMesh ?? e.originalMesh;
-                if (src != null) sourceMeshes.Add((e, src));
-            }
-            if (sourceMeshes.Count == 0) { UvtLog.Error("[GenerateLOD] No source meshes found."); return; }
+                count = generateLodCount,
+                ratios = generateLodRatios,
+                targetError = generateTargetError,
+                uv2Weight = generateUv2Weight,
+                normalWeight = generateNormalWeight,
+                lockBorder = generateLockBorder,
+                progressiveScaleInLightmap = false
+            };
 
-            // No .asset files — meshes live in memory, exported via FBX
+            var result = LodPipelineOps.Generate(ctx, startLod, opts);
+            if (!result.ok) { UvtLog.Error($"[GenerateLOD] {result.error}"); return; }
 
-            UvToolContext.CompactLodArray(ctx.LodGroup, removeEmptySlots: true);
-            var lods = ctx.LodGroup.GetLODs();
-            var newLods = new List<LOD>(lods);
-
-            try
+            generatedObjects.AddRange(result.generatedObjects);
+            foreach (var info in result.perLod)
             {
-                for (int lodIdx = 0; lodIdx < generateLodCount; lodIdx++)
+                lastResults.Add(new GeneratedLodInfo
                 {
-                    float ratio = generateLodRatios[lodIdx];
-                    var settings = new MeshSimplifier.SimplifySettings
-                    {
-                        targetRatio  = ratio,
-                        targetError  = generateTargetError,
-                        uv2Weight    = generateUv2Weight,
-                        normalWeight = generateNormalWeight,
-                        lockBorder   = generateLockBorder,
-                        uvChannel    = 1
-                    };
-
-                    float progress = (float)lodIdx / generateLodCount;
-                    EditorUtility.DisplayProgressBar("Generate LODs",
-                        $"LOD{startLod + lodIdx} (ratio {ratio:P0})", progress);
-
-                    var lodRenderers = new List<Renderer>();
-                    int lodLevel = startLod + lodIdx;
-
-                    // Build source parent → LOD container mapping for hierarchy preservation
-                    // If source renderers are nested (e.g. LOD0/Door_LOD0), create matching containers
-                    var parentToContainer = new Dictionary<Transform, Transform>();
-
-                    foreach (var (entry, srcMesh) in sourceMeshes)
-                    {
-                        var r = MeshSimplifier.Simplify(srcMesh, settings);
-                        if (!r.ok) { UvtLog.Error($"[GenerateLOD] Failed on {srcMesh.name}: {r.error}"); continue; }
-
-                        int sourceTriCount = GetTriangleCount(srcMesh);
-                        float actualRatio = sourceTriCount > 0
-                            ? (float)r.simplifiedTriCount / sourceTriCount : 1f;
-                        bool hitLimit = actualRatio > ratio * 1.2f;
-                        if (hitLimit)
-                            UvtLog.Warn($"[GenerateLOD] LOD{lodLevel}: target {ratio:P0} but got {actualRatio:P0} — increase Target Error");
-
-                        string baseName = entry.fbxMesh != null ? entry.fbxMesh.name : srcMesh.name;
-                        baseName = Regex.Replace(baseName, @"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$", "");
-                        string meshName = baseName + "_LOD" + lodLevel;
-                        r.simplifiedMesh.name = meshName;
-
-                        // Mesh stays in memory — exported to FBX via sidebar footer button
-                        UvtLog.Info($"[GenerateLOD] {meshName}: {r.originalTriCount} → {r.simplifiedTriCount} tris ({actualRatio:P0})");
-
-                        lastResults.Add(new GeneratedLodInfo
-                        {
-                            meshName = meshName,
-                            simplifiedTris = r.simplifiedTriCount,
-                            lodLevel = lodLevel,
-                            targetRatio = ratio,
-                            actualRatio = actualRatio,
-                            hitErrorLimit = hitLimit
-                        });
-
-                        // Create scene GameObject preserving source hierarchy
-                        if (entry.renderer != null)
-                        {
-                            var go = new GameObject(meshName);
-
-                            // Determine correct parent: mirror source hierarchy
-                            Transform srcParent = entry.renderer.transform.parent;
-                            Transform lodGroupTransform = ctx.LodGroup.transform;
-
-                            if (srcParent != lodGroupTransform && srcParent != null)
-                            {
-                                // Nested renderer — find or create matching container
-                                if (parentToContainer.TryGetValue(srcParent, out var container))
-                                    go.transform.SetParent(container, false);
-                                else
-                                    go.transform.SetParent(lodGroupTransform, false);
-                            }
-                            else
-                            {
-                                go.transform.SetParent(lodGroupTransform, false);
-                            }
-
-                            // Register this GO as container for its source transform
-                            // so nested renderers can be parented under it
-                            parentToContainer[entry.renderer.transform] = go.transform;
-                            go.transform.localPosition = entry.renderer.transform.localPosition;
-                            go.transform.localRotation = entry.renderer.transform.localRotation;
-                            go.transform.localScale    = entry.renderer.transform.localScale;
-                            var mf = go.AddComponent<MeshFilter>();
-                            mf.sharedMesh = r.simplifiedMesh;
-                            var mr = go.AddComponent<MeshRenderer>();
-                            LightmapTransferTool.CopyRendererSettings(entry.renderer, mr);
-                            GameObjectUtility.SetStaticEditorFlags(go,
-                                GameObjectUtility.GetStaticEditorFlags(entry.renderer.gameObject));
-                            Undo.RegisterCreatedObjectUndo(go, "Generate LOD");
-                            generatedObjects.Add(go);
-                            lodRenderers.Add(mr);
-                        }
-                    }
-
-                    if (lodRenderers.Count > 0)
-                    {
-                        if (lodLevel < newLods.Count)
-                        {
-                            // Replace existing LOD
-                            var oldRenderers = newLods[lodLevel].renderers;
-                            if (oldRenderers != null)
-                                foreach (var oldR in oldRenderers)
-                                    if (oldR != null && oldR.gameObject != null)
-                                        Undo.DestroyObjectImmediate(oldR.gameObject);
-                            newLods[lodLevel] = new LOD(newLods[lodLevel].screenRelativeTransitionHeight, lodRenderers.ToArray());
-                        }
-                        else
-                        {
-                            float baseHeight = newLods.Count > 0 ? newLods[newLods.Count - 1].screenRelativeTransitionHeight : 0.5f;
-                            newLods.Add(new LOD(baseHeight * 0.5f, lodRenderers.ToArray()));
-                        }
-                    }
-                }
-
-                Undo.RecordObject(ctx.LodGroup, "Generate LODs");
-                ctx.LodGroup.SetLODs(newLods.ToArray());
-                AssetDatabase.SaveAssets();
+                    meshName = info.meshName,
+                    simplifiedTris = info.simplifiedTris,
+                    lodLevel = info.lodLevel,
+                    targetRatio = info.targetRatio,
+                    actualRatio = info.actualRatio,
+                    hitErrorLimit = info.hitErrorLimit
+                });
             }
-            finally { EditorUtility.ClearProgressBar(); }
-
-            // Rename source LOD0 renderers to add _LOD0 suffix for cross-LOD matching
-            foreach (var (entry, srcMesh) in sourceMeshes)
-            {
-                if (entry.renderer == null) continue;
-                bool hasLodSuffix = Regex.IsMatch(
-                    entry.renderer.name, @"[_\-\s]+LOD\d+$",
-                    RegexOptions.IgnoreCase);
-                if (!hasLodSuffix)
-                {
-                    Undo.RecordObject(entry.renderer.gameObject, "Rename LOD0");
-                    string newName = entry.renderer.gameObject.name + "_LOD0";
-                    UvtLog.Info($"[GenerateLOD] Renamed source: {entry.renderer.gameObject.name} → {newName}");
-                    entry.renderer.gameObject.name = newName;
-                }
-            }
-
-            // Add new MeshEntries for generated LODs without touching existing state
-            var currentLods = ctx.LodGroup.GetLODs();
-            for (int li = 0; li < currentLods.Length; li++)
-            {
-                if (ctx.MeshEntries.Any(e => e.lodIndex == li)) continue;
-                if (currentLods[li].renderers == null) continue;
-                foreach (var r in currentLods[li].renderers)
-                {
-                    if (r == null) continue;
-                    var mf = r.GetComponent<MeshFilter>();
-                    if (mf == null || mf.sharedMesh == null) continue;
-                    var fbm = mf.sharedMesh;
-                    var uv2Check = new List<Vector2>();
-                    fbm.GetUVs(1, uv2Check);
-                    ctx.MeshEntries.Add(new MeshEntry
-                    {
-                        lodIndex = li,
-                        renderer = r,
-                        meshFilter = mf,
-                        originalMesh = fbm,
-                        fbxMesh = fbm,
-                        hasExistingUv2 = uv2Check.Count > 0,
-                        meshGroupKey = UvToolContext.ExtractGroupKey(r.name)
-                    });
-                }
-            }
-            ctx.ClearAllCaches();
             requestRepaint?.Invoke();
         }
 

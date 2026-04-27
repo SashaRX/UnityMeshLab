@@ -1,0 +1,2282 @@
+// VertexColorBakingTool.cs — Vertex color baking tool (IUvTool tab).
+// Bake modes: AO (GPU/CPU BVH ray tracing) and Solid Color (uniform fill).
+// GPU: non-blocking async BVH ray tracing via compute shader.
+// CPU: synchronous BVH ray tracing with Parallel.For.
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEditor;
+
+namespace SashaRX.UnityMeshLab
+{
+    public class VertexColorBakingTool : IUvTool
+    {
+        UvToolContext ctx;
+        UvCanvasView canvas;
+        Action requestRepaint;
+
+        public string ToolName  => "Vertex Color Baking";
+        public string ToolId    => "vertex_color_baking";
+        public int    ToolOrder => 50;
+
+        public Action RequestRepaint { set => requestRepaint = value; }
+
+        // ── Settings ──
+        static readonly int[] sampleCounts    = { 64, 128, 256, 512 };
+        static readonly string[] sampleLabels = { "64", "128", "256", "512" };
+        static readonly int[] resolutions     = { 256, 512, 1024 };
+        static readonly string[] resLabels    = { "256", "512", "1024" };
+        static readonly string[] channelTypeNames = { "Vertex Color", "UV0", "UV1", "UV2", "UV3", "UV4" };
+        static readonly string[] colorCompNames  = { "R", "G", "B", "A" };
+        static readonly string[] uvCompNames     = { "X", "Y" };
+        static readonly string[] occluderModeLabels = { "Self Only", "Same Root + Nearby" };
+
+        int channelType = MeshLabProjectSettings.Instance.aoChannelType;
+        int channelComp = MeshLabProjectSettings.Instance.aoChannelComp;
+
+        int sampleCountIndex = 2;   // 256
+        int resolutionIndex  = 1;   // 512
+        float maxRadius      = 10f;
+        float intensity      = 1.0f;
+        bool  groundPlane    = true;
+        float groundOffset   = 0.01f;
+        AOTargetChannel TargetChannel =>
+            channelType == 0
+                ? (AOTargetChannel)channelComp
+                : (AOTargetChannel)(4 + (channelType - 1) * 2 + channelComp);
+
+        string TargetChannelName => channelTypeNames[channelType] + " " + (channelType == 0 ? colorCompNames : uvCompNames)[channelComp];
+
+        // ── Post-processing ──
+        // Topology blur
+        int   topoBlurIter = 0;
+        float topoBlurStr  = 0.5f;
+        bool  topoCrossHardEdges = true;
+        bool  topoCrossUvSeams   = true;
+        // 3D Spatial blur
+        int   spatialBlurIter = 0;
+        float spatialBlurStr  = 0.5f;
+        float spatialBlurRadius = 0.1f;
+        // Face-area correction + levels
+        float faceAreaStrength = 0f;
+        float ppBrightness = 0f;
+        float ppContrast   = 1f;
+        // Bake settings
+        bool  backfaceCulling = true;
+        bool  cosineWeighted  = true;
+        int   bakeMode = 0; // 0=GPU, 1=CPU
+        int   bakeTypeIndex = 0; // 0=AO, 1=Thickness
+        int   occluderModeIndex = (int)VertexAOOccluderMode.SameRootNearby;
+        float occluderRadiusMultiplier = 2.0f;
+        bool  includeCollisionOccluders;
+        static readonly string[] bakeModeLabels = { "GPU", "CPU" };
+        static readonly string[] bakeTypeLabels = { "Ambient Occlusion", "Thickness" };
+        bool applySelectedRendererOnly;
+        bool applySelectedSubmeshOnly;
+        int selectedSubmeshIndex;
+
+        // ── Bake Kind (AO vs Solid Color) ──
+        internal enum BakeKind { AO = 0, SolidColor = 1 }
+        BakeKind bakeKind = BakeKind.AO;
+        static readonly string[] bakeKindLabels = { "AO", "Solid Color" };
+
+        // ── Solid Color variants (batch export) ──
+        List<VariantExportPipeline.Variant> variants = new List<VariantExportPipeline.Variant>
+        {
+            new VariantExportPipeline.Variant { color = Color.red, suffix = "Red" }
+        };
+
+        // ── Hierarchy mode (no LODGroup, all descendant MeshRenderers as one batch) ──
+        bool hierarchyMode;
+        GameObject hierarchyRoot;
+        List<MeshEntry> hierarchyEntries = new List<MeshEntry>();
+        GameObject lastHierarchySelection;
+        bool lastHierarchyMode;
+        bool hierarchyEntriesBuilt;
+        bool hierarchyEntriesFoldout = true;
+        Vector2 hierarchyEntriesScroll;
+        bool fbxOverwriteFoldout = true;
+        Vector2 fbxOverwriteScroll;
+        Dictionary<string, bool> fbxOverwriteMap = new Dictionary<string, bool>();
+        int listVisibleRows = 8;
+
+        // ── Results ──
+        Dictionary<Mesh, float[]> bakedRawAO;       // raw vertex AO (no face-area fix)
+        Dictionary<Mesh, float[]> bakedFaceAreaAO;  // face-area corrected AO
+        Dictionary<Mesh, float[]> bakedFinalAO;     // after blend + blur + brightness/contrast
+        float bakeTimeSeconds;
+        int   bakedVertexCount;
+        int   lastTargetMeshCount;
+        int   lastRenderableOccluderCount;
+        int   lastColliderOccluderCount;
+        bool  lastUsedSidecarCollisionFallback;
+
+        // ── Async GPU bake ──
+        VertexAOBaker.GpuAOBakeJob activeGpuJob;
+        List<LodBakeBatch> pendingLodBatches;
+        int pendingLodBatchIndex;
+        Dictionary<Mesh, float[]> pendingRawAO;
+        Dictionary<Mesh, float[]> pendingFaceAreaAO;
+        List<MeshEntry> pendingBakeEntries;
+        VertexAOSettings pendingBakeSettings;
+        Stopwatch bakeStopwatch;
+
+        // ── Preview ──
+        bool previewActive;
+        List<(MeshFilter mf, Mesh originalMesh, Material[] originalMats)> previewBackups
+            = new List<(MeshFilter, Mesh, Material[])>();
+        Material previewMaterial;
+
+        // ── Lifecycle ──
+
+        internal static VertexColorBakingTool ActiveInstance { get; private set; }
+        internal static AOTargetChannel? LastAppliedTargetChannel { get; private set; }
+
+        class LodBakeBatch
+        {
+            public int lodIndex;
+            public List<MeshEntry> targetEntries = new List<MeshEntry>();
+            public List<(Mesh mesh, Matrix4x4 transform)> targetMeshes = new List<(Mesh mesh, Matrix4x4 transform)>();
+            public List<(Mesh mesh, Matrix4x4 transform)> occluderMeshes = new List<(Mesh mesh, Matrix4x4 transform)>();
+            public List<Mesh> temporaryMeshesToDestroy = new List<Mesh>();
+            public int renderableOccluderCount;
+            public int colliderOccluderCount;
+            public bool usedSidecarCollisionFallback;
+            // Optional: renderers already folded into occluderMeshes manually
+            // (rebake-selected adds hierarchy siblings). CollectAdditionalOccluders
+            // skips them to avoid double-add.
+            public HashSet<int> preAddedOccluderRendererIds;
+        }
+
+        public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
+        {
+            this.ctx = ctx;
+            this.canvas = canvas;
+            ActiveInstance = this;
+            EditorApplication.hierarchyChanged += OnEditorHierarchyChanged;
+        }
+
+        public void OnDeactivate()
+        {
+            EditorApplication.hierarchyChanged -= OnEditorHierarchyChanged;
+            CancelGpuJob();
+            RestorePreview();
+            ClearResults();
+            hierarchyEntries.Clear();
+            hierarchyRoot = null;
+            lastHierarchySelection = null;
+            lastHierarchyMode = false;
+            hierarchyEntriesBuilt = false;
+            fbxOverwriteMap.Clear();
+        }
+
+        public void OnRefresh()
+        {
+            CancelGpuJob();
+            RestorePreview();
+            ClearResults();
+        }
+
+        // Rebuild hierarchy entries only when selection / mode / root contents
+        // actually changed. OnGUI fires multiple times per frame, so
+        // unconditional refresh would churn GC on larger hierarchies.
+        // The hierarchyChanged event flips hierarchyEntriesBuilt to false on
+        // any scene mutation (add/remove/reparent/rename) — repaint rebuilds
+        // the list on the next tick, picking up the change automatically.
+        void RefreshHierarchyEntriesIfNeeded()
+        {
+            var sel = Selection.activeGameObject;
+            if (hierarchyEntriesBuilt &&
+                hierarchyMode == lastHierarchyMode &&
+                sel == lastHierarchySelection)
+                return;
+
+            // Row-click sets Selection to a descendant so the canvas shows
+            // that mesh's UV — keep the original root and mesh list intact.
+            if (hierarchyEntriesBuilt &&
+                hierarchyMode == lastHierarchyMode &&
+                hierarchyRoot != null &&
+                sel != null &&
+                (sel == hierarchyRoot || sel.transform.IsChildOf(hierarchyRoot.transform)))
+            {
+                lastHierarchySelection = sel;
+                return;
+            }
+
+            RefreshHierarchyEntries();
+            lastHierarchySelection = sel;
+            lastHierarchyMode = hierarchyMode;
+            hierarchyEntriesBuilt = true;
+        }
+
+        void OnEditorHierarchyChanged()
+        {
+            // Force the next RefreshHierarchyEntriesIfNeeded to rebuild. We
+            // don't rebuild here to avoid touching Selection off-frame and to
+            // keep the work inside the normal OnGUI pass (also avoids racing
+            // with active preview clones).
+            hierarchyEntriesBuilt = false;
+        }
+
+        // Rebuild hierarchy entries from the current selection. Only active
+        // MeshRenderer descendants are collected; collision nodes are skipped.
+        // AO application writes only to the configured vertex channel — no
+        // other mesh data is touched.
+        void RefreshHierarchyEntries()
+        {
+            // Snapshot user include toggles so selection changes don't reset
+            // checkboxes the user already configured in the mesh list.
+            var prevInclude = new Dictionary<int, bool>();
+            foreach (var e in hierarchyEntries)
+                if (e?.renderer != null)
+                    prevInclude[e.renderer.GetInstanceID()] = e.include;
+
+            hierarchyEntries.Clear();
+            hierarchyRoot = Selection.activeGameObject;
+            if (hierarchyRoot == null)
+                return;
+
+            var renderers = hierarchyRoot.GetComponentsInChildren<MeshRenderer>(true);
+            foreach (var r in renderers)
+            {
+                if (r == null || !r.enabled || !r.gameObject.activeInHierarchy)
+                    continue;
+                if (MeshHygieneUtility.IsCollisionNodeName(r.name))
+                    continue;
+                var mf = r.GetComponent<MeshFilter>();
+                if (mf == null || mf.sharedMesh == null)
+                    continue;
+                // Skip empty meshes — they can't participate in AO bake and
+                // would trip GPU compute buffer creation (count must be > 0).
+                if (mf.sharedMesh.vertexCount == 0)
+                    continue;
+
+                var entry = new MeshEntry
+                {
+                    lodIndex = 0,
+                    renderer = r,
+                    meshFilter = mf,
+                    originalMesh = mf.sharedMesh,
+                    fbxMesh = mf.sharedMesh,
+                    meshGroupKey = UvToolContext.ExtractGroupKey(r.name)
+                };
+                if (prevInclude.TryGetValue(r.GetInstanceID(), out var prev))
+                    entry.include = prev;
+                hierarchyEntries.Add(entry);
+            }
+            // fbxOverwriteMap is resynced each paint inside DrawFbxOverwritePicker;
+            // no separate sync here.
+        }
+
+        // Keep fbxOverwriteMap in sync with unique FBX asset paths referenced
+        // by INCLUDED hierarchyEntries. Excluded meshes drop out of the
+        // overwrite picker — only FBX files that AO actually applied to are
+        // candidates for re-save. New paths default to checked; paths that
+        // disappear (entry unchecked or removed) are dropped.
+        void SyncFbxOverwriteMap()
+        {
+            var current = new HashSet<string>();
+            foreach (var e in hierarchyEntries)
+            {
+                if (e == null || !e.include || e.fbxMesh == null) continue;
+                string p = AssetDatabase.GetAssetPath(e.fbxMesh);
+                if (string.IsNullOrEmpty(p)) continue;
+                if (!p.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase)) continue;
+                current.Add(p);
+                if (!fbxOverwriteMap.ContainsKey(p))
+                    fbxOverwriteMap[p] = true;
+            }
+            // Drop stale keys.
+            var stale = fbxOverwriteMap.Keys.Where(k => !current.Contains(k)).ToList();
+            foreach (var k in stale)
+                fbxOverwriteMap.Remove(k);
+        }
+
+        // Entries that drive bake / load / apply / preview.
+        IEnumerable<MeshEntry> ActiveEntries()
+        {
+            if (hierarchyMode)
+                return hierarchyEntries;
+            return ctx != null && ctx.MeshEntries != null
+                ? (IEnumerable<MeshEntry>)ctx.MeshEntries
+                : System.Array.Empty<MeshEntry>();
+        }
+
+        // Per-renderer include checkboxes (Hierarchy Mode only). Drives which
+        // meshes participate in Bake / Apply. Reuses MeshEntry.include which
+        // ExecuteBake / ApplyToMesh already filter by.
+        void DrawHierarchyMeshList()
+        {
+            int included = 0;
+            foreach (var e in hierarchyEntries) if (e.include) included++;
+
+            hierarchyEntriesFoldout = EditorGUILayout.Foldout(
+                hierarchyEntriesFoldout,
+                $"Meshes  ({included} / {hierarchyEntries.Count} included)",
+                true);
+            if (!hierarchyEntriesFoldout) return;
+
+            EditorGUI.indentLevel++;
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("All", EditorStyles.miniButtonLeft))
+                foreach (var e in hierarchyEntries) e.include = true;
+            if (GUILayout.Button("None", EditorStyles.miniButtonMid))
+                foreach (var e in hierarchyEntries) e.include = false;
+            if (GUILayout.Button("Invert", EditorStyles.miniButtonRight))
+                foreach (var e in hierarchyEntries) e.include = !e.include;
+            EditorGUILayout.EndHorizontal();
+
+            listVisibleRows = EditorGUILayout.IntSlider(
+                new GUIContent("Rows", "Number of rows visible before scrolling. Applies to Meshes and Overwrite FBX lists."),
+                listVisibleRows, 3, 30);
+
+            float rowHeight = EditorGUIUtility.singleLineHeight + 4f;
+            float listHeight = Mathf.Min(hierarchyEntries.Count, listVisibleRows) * rowHeight + 6f;
+            hierarchyEntriesScroll = EditorGUILayout.BeginScrollView(
+                hierarchyEntriesScroll,
+                alwaysShowHorizontal: false,
+                alwaysShowVertical: false,
+                GUIStyle.none,
+                GUI.skin.verticalScrollbar,
+                GUI.skin.scrollView,
+                GUILayout.Height(listHeight));
+            foreach (var e in hierarchyEntries)
+            {
+                if (e == null || e.renderer == null) continue;
+                string fbxName = e.fbxMesh != null
+                    ? System.IO.Path.GetFileName(AssetDatabase.GetAssetPath(e.fbxMesh))
+                    : null;
+                string tooltip = string.IsNullOrEmpty(fbxName)
+                    ? "Click to ping in Hierarchy"
+                    : fbxName + "\nClick to ping in Hierarchy";
+
+                EditorGUILayout.BeginHorizontal();
+                bool next = EditorGUILayout.Toggle(e.include, GUILayout.Width(22));
+                if (next != e.include) e.include = next;
+                GUILayout.Space(4);
+                if (GUILayout.Button(new GUIContent(e.renderer.name, tooltip),
+                        EditorStyles.label))
+                {
+                    // Select (not just ping) so the UV canvas can refresh onto
+                    // this mesh. Root / mesh list survives via the
+                    // descendant-of-root guard in RefreshHierarchyEntriesIfNeeded.
+                    Selection.activeGameObject = e.renderer.gameObject;
+                    EditorGUIUtility.PingObject(e.renderer.gameObject);
+                }
+                EditorGUILayout.EndHorizontal();
+            }
+            EditorGUILayout.EndScrollView();
+            EditorGUI.indentLevel--;
+        }
+
+        void ClearResults()
+        {
+            bakedRawAO = null;
+            bakedFaceAreaAO = null;
+            bakedFinalAO = null;
+            bakedVertexCount = 0;
+            lastTargetMeshCount = 0;
+            lastRenderableOccluderCount = 0;
+            lastColliderOccluderCount = 0;
+            lastUsedSidecarCollisionFallback = false;
+        }
+
+        void CancelGpuJob()
+        {
+            if (activeGpuJob != null && activeGpuJob.IsRunning)
+                activeGpuJob.Cancel();
+            EditorApplication.update -= RepaintDuringBake;
+            activeGpuJob = null;
+            DisposePendingBatchTempMeshes();
+            pendingLodBatches = null;
+            pendingLodBatchIndex = 0;
+            pendingRawAO = null;
+            pendingFaceAreaAO = null;
+            pendingBakeEntries = null;
+            pendingBakeSettings = null;
+            bakeStopwatch = null;
+        }
+
+        // ── UI ──
+
+        // Draws header toggle + hierarchy root info (or standalone/LOD help
+        // box). Returns false when nothing is selected that the tool can
+        // bake — caller should bail out.
+        bool DrawSelectionGate()
+        {
+            hierarchyMode = EditorGUILayout.ToggleLeft(
+                new GUIContent("Hierarchy Mode",
+                    "Bake AO across all active MeshRenderer descendants of the selected root as a single batch. " +
+                    "Applies only the vertex AO channel — other mesh data is untouched."),
+                hierarchyMode);
+
+            if (hierarchyMode)
+            {
+                // While preview is active, MeshFilters hold clone meshes —
+                // don't rebuild from them or Apply would target the clones.
+                // Preview is always restored before bake/load/apply, so the
+                // stale window is user-visible only (ok).
+                if (!previewActive)
+                    RefreshHierarchyEntriesIfNeeded();
+                if (hierarchyRoot == null || hierarchyEntries.Count == 0)
+                {
+                    EditorGUILayout.HelpBox(
+                        "Select a root GameObject that has active MeshRenderer descendants.",
+                        MessageType.Info);
+                    return false;
+                }
+                EditorGUILayout.LabelField(
+                    $"Root: {hierarchyRoot.name}  ({hierarchyEntries.Count} meshes)",
+                    EditorStyles.miniLabel);
+                DrawHierarchyMeshList();
+                return true;
+            }
+
+            if (ctx == null || ctx.MeshEntries == null || ctx.MeshEntries.Count == 0)
+            {
+                EditorGUILayout.HelpBox(
+                    "Select a LODGroup or an individual MeshRenderer to bake vertex AO.",
+                    MessageType.Info);
+                return false;
+            }
+            return true;
+        }
+
+        // Bake-mode selector + target channel + sample / res / radius /
+        // intensity + ground plane / backface / cosine + occluder mode.
+        void DrawBakeSettings()
+        {
+            bool gpuAvailable = SystemInfo.supportsComputeShaders;
+            if (gpuAvailable)
+            {
+                bakeMode = EditorGUILayout.Popup(
+                    new GUIContent("Bake Mode", "GPU: fast depth-map hemisphere sampling via compute shader.\nCPU: BVH ray tracing, slower but works on all platforms."),
+                    bakeMode, bakeModeLabels);
+            }
+            else
+            {
+                bakeMode = 1; // force CPU
+                EditorGUILayout.HelpBox(
+                    "CPU mode (" + SystemInfo.graphicsDeviceType + " — no compute support). " +
+                    "Switch to DX11/DX12/Vulkan/Metal for GPU acceleration.",
+                    MessageType.Warning);
+            }
+
+            EditorGUILayout.Space(4);
+
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.PrefixLabel(new GUIContent("Target", "Channel to store AO values."));
+            channelType = EditorGUILayout.Popup(channelType, channelTypeNames);
+            var compNames = channelType == 0 ? colorCompNames : uvCompNames;
+            if (channelComp >= compNames.Length) channelComp = 0;
+            channelComp = EditorGUILayout.Popup(channelComp, compNames);
+            EditorGUILayout.EndHorizontal();
+
+            bakeTypeIndex = EditorGUILayout.Popup(
+                new GUIContent("Bake Type", "Ambient Occlusion: how exposed each vertex is.\nThickness: how thin the mesh is (inverted normals, for SSS/translucency)."),
+                bakeTypeIndex, bakeTypeLabels);
+
+            EditorGUILayout.Space(4);
+
+            sampleCountIndex = EditorGUILayout.Popup(
+                new GUIContent("Sample Count", "Number of hemisphere directions to sample. Higher = smoother AO, slower bake."),
+                sampleCountIndex, sampleLabels);
+            if (gpuAvailable && bakeMode == 0)
+            {
+                resolutionIndex = EditorGUILayout.Popup(
+                    new GUIContent("Resolution", "Depth map resolution per sample. Higher = sharper shadow edges. GPU only."),
+                    resolutionIndex, resLabels);
+            }
+            maxRadius = EditorGUILayout.Slider(
+                new GUIContent("Radius", "Maximum occlusion distance. Objects beyond this radius don't contribute to AO."),
+                maxRadius, 0.1f, 100f);
+            intensity = EditorGUILayout.Slider(
+                new GUIContent("Intensity", "AO contrast. >1 = darker shadows, <1 = softer."),
+                intensity, 0.5f, 3.0f);
+
+            if (bakeTypeIndex == 0)
+            {
+                EditorGUILayout.Space(4);
+                groundPlane = EditorGUILayout.Toggle(
+                    new GUIContent("Ground Plane", "Add virtual ground plane below object for bottom occlusion."),
+                    groundPlane);
+                if (groundPlane)
+                {
+                    EditorGUI.indentLevel++;
+                    groundOffset = EditorGUILayout.FloatField(
+                        new GUIContent("Offset", "Distance below mesh bounds minimum."),
+                        groundOffset);
+                    groundOffset = Mathf.Max(0, groundOffset);
+                    EditorGUI.indentLevel--;
+                }
+
+                EditorGUILayout.Space(4);
+                backfaceCulling = EditorGUILayout.Toggle(
+                    new GUIContent("Backface Culling", "Ignore hits on back side of triangles. Reduces false occlusion on thin walls."),
+                    backfaceCulling);
+            }
+            cosineWeighted = EditorGUILayout.Toggle(
+                new GUIContent("Cosine Weighted", "Cosine: rays near normal contribute more (physically correct).\nUniform: all hemisphere directions contribute equally (harder shadows)."),
+                cosineWeighted);
+
+            if (bakeTypeIndex == 0)
+            {
+                EditorGUILayout.Space(4);
+                occluderModeIndex = EditorGUILayout.Popup(
+                    new GUIContent("Occluders", "Self Only: bake only against the selected target meshes.\nSame Root + Nearby: include nearby sibling geometry from the same model root as extra occluders."),
+                    occluderModeIndex,
+                    occluderModeLabels);
+
+                if ((VertexAOOccluderMode)occluderModeIndex != VertexAOOccluderMode.SelfOnly)
+                {
+                    occluderRadiusMultiplier = EditorGUILayout.Slider(
+                        new GUIContent("Occluder Radius", "Nearby occluders are accepted when their bounds are within this multiple of the target batch bounds radius."),
+                        occluderRadiusMultiplier,
+                        0.25f,
+                        8f);
+                    includeCollisionOccluders = EditorGUILayout.Toggle(
+                        new GUIContent("Use collision meshes as occluders", "Include same-root collision meshes. Falls back to sidecar collision meshes when no live collision objects are present."),
+                        includeCollisionOccluders);
+                }
+            }
+        }
+
+        public void OnDrawSidebar()
+        {
+            EditorGUILayout.Space(8);
+            EditorGUILayout.LabelField("Vertex Color Baking", EditorStyles.boldLabel);
+            EditorGUILayout.Space(4);
+
+            DrawBakeKindSelector();
+            EditorGUILayout.Space(4);
+
+            if (!DrawSelectionGate()) return;
+
+            if (bakeKind == BakeKind.AO)
+            {
+                DrawBakeSettings();
+
+                EditorGUILayout.Space(8);
+
+                DrawBakeActionsRow();
+
+                if (bakedFinalAO == null || bakedFinalAO.Count == 0) return;
+
+                DrawResults();
+                DrawPostProcessing();
+                DrawApplyFilters();
+                DrawApplyAndExportRow();
+            }
+            else // BakeKind.SolidColor
+            {
+                DrawSolidColorSettings();
+                EditorGUILayout.Space(8);
+                DrawSolidBakeActionsRow();
+            }
+        }
+
+        void DrawBakeKindSelector()
+        {
+            EditorGUI.BeginChangeCheck();
+            int newKind = GUILayout.Toolbar((int)bakeKind, bakeKindLabels, GUILayout.Height(22));
+            if (EditorGUI.EndChangeCheck())
+            {
+                bakeKind = (BakeKind)newKind;
+                if (bakeKind == BakeKind.SolidColor && previewActive)
+                    RestorePreview();
+                requestRepaint?.Invoke();
+            }
+        }
+
+        void DrawSolidColorSettings()
+        {
+            EditorGUILayout.LabelField("Solid Color Variants", EditorStyles.boldLabel);
+
+            int? removeIndex = null;
+            for (int i = 0; i < variants.Count; i++)
+            {
+                var v = variants[i];
+                EditorGUILayout.BeginHorizontal();
+                v.color = EditorGUILayout.ColorField(GUIContent.none, v.color, true, true, false, GUILayout.Width(80));
+                v.suffix = EditorGUILayout.TextField(v.suffix);
+                using (new EditorGUI.DisabledScope(variants.Count <= 1))
+                {
+                    if (GUILayout.Button("−", GUILayout.Width(24))) removeIndex = i;
+                }
+                EditorGUILayout.EndHorizontal();
+                variants[i] = v; // struct write-back
+            }
+            if (removeIndex.HasValue) variants.RemoveAt(removeIndex.Value);
+
+            if (GUILayout.Button("+ Add variant"))
+            {
+                variants.Add(new VariantExportPipeline.Variant
+                {
+                    color  = Color.white,
+                    suffix = $"Variant{variants.Count + 1}"
+                });
+            }
+
+            string fbxPath = ctx?.SourceFbxPath;
+            string baseName = !string.IsNullOrEmpty(fbxPath)
+                ? System.IO.Path.GetFileNameWithoutExtension(fbxPath)
+                : "(no FBX)";
+            string preview = string.Join(", ", variants.Select(v => $"{baseName}_{v.suffix}.fbx"));
+            EditorGUILayout.LabelField($"→ {preview}", EditorStyles.miniLabel);
+            EditorGUILayout.HelpBox(
+                "Skips collision meshes. Existing files are overwritten — use git to revert.",
+                MessageType.None);
+        }
+
+        void DrawSolidBakeActionsRow()
+        {
+            var bgc = GUI.backgroundColor;
+            EditorGUILayout.BeginHorizontal();
+            GUI.backgroundColor = new Color(.4f, .8f, .4f);
+            if (GUILayout.Button("Bake (preview)", GUILayout.Height(28)))
+                ExecuteBakeFirstVariant();
+            GUI.backgroundColor = new Color(.4f, .7f, .95f);
+            if (GUILayout.Button("Bake & Export All", GUILayout.Height(28)))
+                ExecuteBakeAndExportVariants();
+            GUI.backgroundColor = bgc;
+            EditorGUILayout.EndHorizontal();
+        }
+
+        void ExecuteBakeFirstVariant()
+        {
+            if (variants.Count == 0)
+            {
+                UvtLog.Warn("[Vertex Colors] No variants defined.");
+                return;
+            }
+            var entries = ActiveEntries()
+                .Where(e => e.include && e.renderer != null)
+                .ToList();
+            if (entries.Count == 0)
+            {
+                UvtLog.Warn("[Vertex Colors] No meshes selected.");
+                return;
+            }
+            var first = variants[0];
+            int painted = VariantExportPipeline.BakeSolidColorOnEntries(entries, first.color);
+            if (painted == 0)
+            {
+                UvtLog.Warn("[Vertex Colors] Nothing painted (all collision, excluded, or empty).");
+                return;
+            }
+            string hex = ColorUtility.ToHtmlStringRGBA(first.color);
+            UvtLog.Info($"[Vertex Colors] Preview: '{first.suffix}' #{hex} on {painted} mesh(es).");
+            requestRepaint?.Invoke();
+        }
+
+        void ExecuteBakeAndExportVariants()
+        {
+            if (variants.Count == 0)
+            {
+                UvtLog.Warn("[Vertex Colors] No variants defined.");
+                return;
+            }
+            var entries = ActiveEntries()
+                .Where(e => e.include && e.renderer != null)
+                .ToList();
+            if (entries.Count == 0)
+            {
+                UvtLog.Warn("[Vertex Colors] No meshes selected.");
+                return;
+            }
+
+            string sourceFbxPath = ctx?.SourceFbxPath;
+            if (string.IsNullOrEmpty(sourceFbxPath))
+            {
+                UvtLog.Error("[Vertex Colors] No source FBX path resolved on the current selection.");
+                return;
+            }
+
+            var hub = Resources.FindObjectsOfTypeAll<UvToolHub>();
+            if (hub.Length == 0)
+            {
+                UvtLog.Error("[Vertex Colors] UvToolHub not found.");
+                return;
+            }
+            var fbxExporter = hub[0].FindTool<LightmapTransferTool>();
+            if (fbxExporter == null)
+            {
+                UvtLog.Error("[Vertex Colors] LightmapTransferTool not found.");
+                return;
+            }
+
+            var sourcePrefab = ResolveSourcePrefab();
+            if (sourcePrefab == null)
+                UvtLog.Warn("[Vertex Colors] No source prefab on selection — exporting FBX only.");
+
+            var results = VariantExportPipeline.ExportVariants(
+                fbxExporter, sourceFbxPath, sourcePrefab,
+                entries, variants,
+                VariantExportPipeline.ConflictPolicy.Overwrite);
+
+            int ok = results.Count(r => r.ok);
+            int fail = results.Count - ok;
+            UvtLog.Info($"[Vertex Colors] Variant export — {ok} ok, {fail} failed (of {variants.Count}).");
+            foreach (var r in results)
+                if (!r.ok) UvtLog.Error($"[Vertex Colors] '{r.suffix}': {r.error}");
+
+            requestRepaint?.Invoke();
+        }
+
+        GameObject ResolveSourcePrefab()
+        {
+            GameObject go = ctx?.LodGroup != null ? ctx.LodGroup.gameObject : null;
+            if (go == null && ctx?.MeshEntries != null && ctx.MeshEntries.Count > 0)
+                go = ctx.MeshEntries[0].renderer != null ? ctx.MeshEntries[0].renderer.gameObject : null;
+            if (go == null) return null;
+            var instanceRoot = PrefabUtility.GetNearestPrefabInstanceRoot(go);
+            if (instanceRoot == null) return null;
+            return PrefabUtility.GetCorrespondingObjectFromSource(instanceRoot) as GameObject;
+        }
+
+        // Bake / Load / Rebake Selected buttons, or progress + cancel while
+        // a GPU job is running.
+        void DrawBakeActionsRow()
+        {
+            bool isBaking = activeGpuJob != null && activeGpuJob.IsRunning;
+            var bgc = GUI.backgroundColor;
+
+            if (isBaking)
+            {
+                var rect = EditorGUILayout.GetControlRect(false, 22);
+                EditorGUI.ProgressBar(rect, activeGpuJob.Progress, activeGpuJob.StatusText);
+                GUI.backgroundColor = new Color(.9f, .5f, .3f);
+                if (GUILayout.Button("Cancel", GUILayout.Height(24)))
+                {
+                    CancelGpuJob();
+                    UvtLog.Info("[Vertex AO] GPU bake cancelled.");
+                }
+                GUI.backgroundColor = bgc;
+                return;
+            }
+
+            EditorGUILayout.BeginHorizontal();
+            GUI.backgroundColor = new Color(.4f, .8f, .4f);
+            if (GUILayout.Button("Bake Vertex AO", GUILayout.Height(28)))
+                ExecuteBake();
+            GUI.backgroundColor = new Color(.6f, .75f, .9f);
+            if (GUILayout.Button("Load from Mesh", GUILayout.Height(28)))
+                LoadFromMesh();
+            GUI.backgroundColor = bgc;
+            EditorGUILayout.EndHorizontal();
+
+            if (!hierarchyMode) return;
+
+            var selectedEntry = FindSelectedHierarchyEntry();
+            GUI.backgroundColor = new Color(.85f, .75f, .4f);
+            using (new EditorGUI.DisabledScope(selectedEntry == null))
+            {
+                string label = selectedEntry != null
+                    ? $"Rebake Selected ({selectedEntry.renderer.name})"
+                    : "Rebake Selected";
+                if (GUILayout.Button(new GUIContent(label,
+                    "Rebake AO for the currently selected hierarchy mesh using current UI settings. " +
+                    "Other meshes' results are preserved."), GUILayout.Height(24)))
+                    ExecuteRebakeSelected(selectedEntry);
+            }
+            GUI.backgroundColor = bgc;
+        }
+
+        // Readonly post-bake summary labels.
+        void DrawResults()
+        {
+            EditorGUILayout.Space(8);
+            EditorGUILayout.LabelField("Results", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(
+                $"  {bakedVertexCount:N0} vertices, {sampleCounts[sampleCountIndex]} samples, {bakeTimeSeconds:F1}s",
+                EditorStyles.miniLabel);
+            EditorGUILayout.LabelField(
+                $"  Target: {TargetChannelName}",
+                EditorStyles.miniLabel);
+            EditorGUILayout.LabelField(
+                $"  Bake meshes: {lastTargetMeshCount}, nearby occluders: {lastRenderableOccluderCount}, collision occluders: {lastColliderOccluderCount}",
+                EditorStyles.miniLabel);
+            if (lastUsedSidecarCollisionFallback)
+                EditorGUILayout.LabelField("  Collision source: sidecar fallback", EditorStyles.miniLabel);
+        }
+
+        // Face-area / topo blur / 3D blur / brightness+contrast. All re-run
+        // ApplyBlur on change for live preview.
+        void DrawPostProcessing()
+        {
+            EditorGUILayout.Space(4);
+            EditorGUILayout.LabelField("Post-Processing", EditorStyles.boldLabel);
+            EditorGUI.BeginChangeCheck();
+
+            faceAreaStrength = EditorGUILayout.Slider(
+                new GUIContent("Face-Area Fix", "Blend raw AO with face-area corrected. Fixes black polygons with open surfaces."),
+                faceAreaStrength, 0f, 1f);
+
+            EditorGUILayout.Space(2);
+            topoBlurIter = EditorGUILayout.IntSlider(
+                new GUIContent("Topo Blur", "Topology blur along mesh edges."),
+                topoBlurIter, 0, 10);
+            if (topoBlurIter > 0)
+            {
+                topoBlurStr = EditorGUILayout.Slider(
+                    new GUIContent("  Strength", "Blend factor per iteration."),
+                    topoBlurStr, 0f, 1f);
+                topoCrossHardEdges = EditorGUILayout.Toggle(
+                    new GUIContent("  Cross Hard Edges", "Blur across hard edges."),
+                    topoCrossHardEdges);
+                topoCrossUvSeams = EditorGUILayout.Toggle(
+                    new GUIContent("  Cross UV Seams", "Blur across UV shell boundaries."),
+                    topoCrossUvSeams);
+            }
+
+            EditorGUILayout.Space(2);
+            spatialBlurIter = EditorGUILayout.IntSlider(
+                new GUIContent("3D Blur", "3D spatial blur — ignores topology, crosses all seams."),
+                spatialBlurIter, 0, 10);
+            if (spatialBlurIter > 0)
+            {
+                spatialBlurStr = EditorGUILayout.Slider(
+                    new GUIContent("  Strength", "Blend factor per iteration."),
+                    spatialBlurStr, 0f, 1f);
+                spatialBlurRadius = EditorGUILayout.Slider(
+                    new GUIContent("  Radius", "3D search radius in world units."),
+                    spatialBlurRadius, 0.01f, 2f);
+            }
+
+            EditorGUILayout.Space(2);
+            ppBrightness = EditorGUILayout.Slider(
+                new GUIContent("Brightness", "Shift AO values. + lighter, - darker."),
+                ppBrightness, -1f, 1f);
+            ppContrast = EditorGUILayout.Slider(
+                new GUIContent("Contrast", "AO contrast around 0.5. >1 = sharper, <1 = flatter."),
+                ppContrast, 0f, 3f);
+            if (EditorGUI.EndChangeCheck())
+                ApplyBlur();
+        }
+
+        // Optional narrow-target apply: only selected renderer / submesh.
+        void DrawApplyFilters()
+        {
+            EditorGUILayout.Space(8);
+            applySelectedRendererOnly = EditorGUILayout.ToggleLeft(
+                new GUIContent("Apply only selected renderer", "Apply AO only to currently selected mesh renderer/skinned renderer."),
+                applySelectedRendererOnly);
+            if (!applySelectedRendererOnly) return;
+
+            var selectedRenderer = Selection.activeGameObject != null
+                ? Selection.activeGameObject.GetComponentInParent<Renderer>()
+                : null;
+            int subCount = GetRendererSubmeshCount(selectedRenderer);
+            if (selectedRenderer == null || subCount <= 0)
+            {
+                EditorGUILayout.HelpBox("Select an object with MeshRenderer/SkinnedMeshRenderer for selective apply.", MessageType.Warning);
+                return;
+            }
+
+            applySelectedSubmeshOnly = EditorGUILayout.ToggleLeft(
+                new GUIContent("Only selected submesh", "Apply AO only to vertices used by the chosen submesh. Other parts stay untouched."),
+                applySelectedSubmeshOnly);
+            if (applySelectedSubmeshOnly)
+            {
+                selectedSubmeshIndex = EditorGUILayout.IntSlider(
+                    new GUIContent("Submesh Index"),
+                    Mathf.Clamp(selectedSubmeshIndex, 0, subCount - 1),
+                    0,
+                    subCount - 1);
+            }
+        }
+
+        // Preview / Apply / Clear row + FBX overwrite (picker in hierarchy
+        // mode, single-button shortcut for LODGroup / standalone paths).
+        void DrawApplyAndExportRow()
+        {
+            var bgc = GUI.backgroundColor;
+
+            EditorGUILayout.BeginHorizontal();
+            var prevBg = GUI.backgroundColor;
+            GUI.backgroundColor = previewActive ? new Color(.3f, .7f, 1f) : Color.white;
+            if (GUILayout.Button(previewActive ? "Preview ON" : "Preview", GUILayout.Height(24)))
+            {
+                if (previewActive) RestorePreview();
+                else ActivatePreview();
+            }
+            GUI.backgroundColor = prevBg;
+
+            GUI.backgroundColor = new Color(.3f, .85f, .4f);
+            if (GUILayout.Button("Apply to Mesh", GUILayout.Height(24)))
+                ApplyToMesh();
+            GUI.backgroundColor = new Color(.9f, .3f, .3f);
+            if (GUILayout.Button("Clear", GUILayout.Height(24)))
+            {
+                RestorePreview();
+                ClearResults();
+                requestRepaint?.Invoke();
+            }
+            GUI.backgroundColor = bgc;
+            EditorGUILayout.EndHorizontal();
+
+            if (hierarchyMode)
+            {
+                DrawFbxOverwritePicker();
+                return;
+            }
+
+            GUI.backgroundColor = new Color(.4f, .7f, .95f);
+            if (GUILayout.Button("Overwrite FBX (Vertex Colors)", GUILayout.Height(22)))
+            {
+                var hub = Resources.FindObjectsOfTypeAll<UvToolHub>();
+                if (hub.Length > 0)
+                {
+                    var transferTool = hub[0].FindTool<LightmapTransferTool>();
+                    if (transferTool != null)
+                        transferTool.ExportVertexColorsToFbx();
+                    else
+                        UvtLog.Error("[Vertex AO] LightmapTransferTool not found.");
+                }
+            }
+            GUI.backgroundColor = bgc;
+        }
+
+        // Per-FBX overwrite picker for Hierarchy Mode. Lists each unique FBX
+        // referenced by hierarchyEntries; only checked files get rewritten.
+        void DrawFbxOverwritePicker()
+        {
+            // Re-sync each paint so toggling Meshes checkboxes updates the
+            // FBX list immediately. Cheap — set ops over hierarchyEntries.
+            SyncFbxOverwriteMap();
+
+            if (fbxOverwriteMap.Count == 0)
+            {
+                EditorGUILayout.HelpBox(
+                    "No included FBX-backed meshes. Tick at least one row in the Meshes list above.",
+                    MessageType.Info);
+                return;
+            }
+
+            int checkedCount = 0;
+            foreach (var v in fbxOverwriteMap.Values) if (v) checkedCount++;
+
+            fbxOverwriteFoldout = EditorGUILayout.Foldout(
+                fbxOverwriteFoldout,
+                $"Overwrite FBX  ({checkedCount} / {fbxOverwriteMap.Count} selected)",
+                true);
+            if (!fbxOverwriteFoldout) return;
+
+            EditorGUI.indentLevel++;
+            var paths = fbxOverwriteMap.Keys.OrderBy(p => p).ToList();
+
+            float rowHeight = EditorGUIUtility.singleLineHeight + 4f;
+            float listHeight = Mathf.Min(paths.Count, listVisibleRows) * rowHeight + 6f;
+            fbxOverwriteScroll = EditorGUILayout.BeginScrollView(
+                fbxOverwriteScroll,
+                alwaysShowHorizontal: false,
+                alwaysShowVertical: false,
+                GUIStyle.none,
+                GUI.skin.verticalScrollbar,
+                GUI.skin.scrollView,
+                GUILayout.Height(listHeight));
+
+            foreach (var path in paths)
+            {
+                string label = System.IO.Path.GetFileName(path);
+                bool cur = fbxOverwriteMap[path];
+                EditorGUILayout.BeginHorizontal();
+                bool next = EditorGUILayout.Toggle(cur, GUILayout.Width(22));
+                if (next != cur) fbxOverwriteMap[path] = next;
+                GUILayout.Space(4);
+                if (GUILayout.Button(new GUIContent(label, path + "\nClick to ping in Project"),
+                        EditorStyles.label))
+                {
+                    var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
+                    if (asset != null) EditorGUIUtility.PingObject(asset);
+                }
+                EditorGUILayout.EndHorizontal();
+            }
+            EditorGUILayout.EndScrollView();
+
+            var bgc = GUI.backgroundColor;
+            GUI.backgroundColor = checkedCount > 0 ? new Color(.4f, .7f, .95f) : Color.white;
+            using (new EditorGUI.DisabledScope(checkedCount == 0))
+            {
+                if (GUILayout.Button($"Overwrite Selected FBX  ({checkedCount})", GUILayout.Height(22)))
+                    OverwriteSelectedFbx();
+            }
+            GUI.backgroundColor = bgc;
+            EditorGUI.indentLevel--;
+        }
+
+        void OverwriteSelectedFbx()
+        {
+            var selected = fbxOverwriteMap
+                .Where(kv => kv.Value)
+                .Select(kv => kv.Key)
+                .ToList();
+            if (selected.Count == 0) return;
+
+            string list = string.Join("\n", selected.Select(p => "  • " + System.IO.Path.GetFileName(p)));
+            if (!EditorUtility.DisplayDialog(
+                "Overwrite Selected FBX",
+                $"Overwrite {selected.Count} FBX file(s)?\n\n{list}\n\nOnly vertex colors are updated. UV2 and topology stay unchanged.",
+                "Overwrite", "Cancel"))
+                return;
+
+            var hub = Resources.FindObjectsOfTypeAll<UvToolHub>();
+            if (hub.Length == 0) return;
+            var transferTool = hub[0].FindTool<LightmapTransferTool>();
+            if (transferTool == null)
+            {
+                UvtLog.Error("[Vertex AO] LightmapTransferTool not found.");
+                return;
+            }
+
+            foreach (var path in selected)
+            {
+                var entriesForPath = hierarchyEntries
+                    .Where(e => e.fbxMesh != null &&
+                                string.Equals(AssetDatabase.GetAssetPath(e.fbxMesh), path, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (entriesForPath.Count == 0)
+                {
+                    UvtLog.Warn($"[Vertex AO] No hierarchy entries map to '{path}', skipping.");
+                    continue;
+                }
+                transferTool.ExportVertexColorsToFbx(path, entriesForPath);
+            }
+        }
+
+        // ── Bake ──
+
+        void ExecuteBake()
+        {
+            CancelGpuJob();
+            RestorePreview();
+
+            // hierarchyEntries is kept fresh by OnDrawSidebar's
+            // RefreshHierarchyEntriesIfNeeded (runs every IMGUI pass when
+            // preview is off). Re-refreshing here would wipe user include
+            // toggles the snapshot restore in RefreshHierarchyEntries tries
+            // to preserve, and is redundant inside the same OnGUI pass.
+            var entries = ActiveEntries()
+                .Where(e => e.include && e.renderer != null)
+                .ToList();
+
+            if (entries.Count == 0)
+            {
+                UvtLog.Warn("[Vertex AO] No meshes found.");
+                return;
+            }
+
+            var settings = BuildSettingsFromUI();
+
+            // Color-space sanity: AO is computed + stored in LINEAR [0,1].
+            // In a Linear-space project the preview shader renders linearly
+            // and Unity does the final linear→sRGB for display; vertex-color
+            // writes are raw byte-remapped (no gamma conversion). In a Gamma
+            // project the byte value is displayed as-is. Log once so the
+            // user can verify this matches their shader's expectations.
+            UvtLog.Info($"[Vertex AO] Project color space: {PlayerSettings.colorSpace}. " +
+                        $"AO values are linear in [0,1]; vertex color / UV writes store them as-is.");
+
+            var batches = BuildLodBatches(entries, settings);
+            RunBatches(batches, settings, entries, seedFromExisting: false);
+        }
+
+        VertexAOSettings BuildSettingsFromUI() => new VertexAOSettings
+        {
+            sampleCount     = sampleCounts[sampleCountIndex],
+            depthResolution = resolutions[resolutionIndex],
+            maxRadius       = maxRadius,
+            intensity       = intensity,
+            groundPlane     = groundPlane,
+            groundOffset    = groundOffset,
+            backfaceCulling = backfaceCulling,
+            cosineWeighted  = cosineWeighted,
+            useGPU          = bakeMode == 0,
+            bakeType        = (AOBakeType)bakeTypeIndex,
+            occluderMode    = bakeTypeIndex == 0
+                ? (VertexAOOccluderMode)occluderModeIndex
+                : VertexAOOccluderMode.SelfOnly,
+            occluderRadiusMultiplier = Mathf.Max(occluderRadiusMultiplier, 0.01f),
+            includeCollisionOccluders = bakeTypeIndex == 0 && includeCollisionOccluders
+        };
+
+        // Kick off batches via GPU (async) or CPU (sync). When seedFromExisting
+        // is true, pre-populate pending dicts from current bakedRaw/FaceArea so
+        // a partial rebake merges into existing results instead of replacing.
+        void RunBatches(
+            List<LodBakeBatch> batches,
+            VertexAOSettings settings,
+            List<MeshEntry> entries,
+            bool seedFromExisting)
+        {
+            if (batches.Count == 0)
+            {
+                UvtLog.Warn("[Vertex AO] No valid meshes to bake.");
+                return;
+            }
+            StoreBatchStats(batches);
+
+            bakeStopwatch = Stopwatch.StartNew();
+
+            var seedRaw = seedFromExisting && bakedRawAO != null
+                ? new Dictionary<Mesh, float[]>(bakedRawAO)
+                : new Dictionary<Mesh, float[]>();
+            var seedFace = seedFromExisting && bakedFaceAreaAO != null
+                ? new Dictionary<Mesh, float[]>(bakedFaceAreaAO)
+                : new Dictionary<Mesh, float[]>();
+
+            if (settings.useGPU && SystemInfo.supportsComputeShaders)
+            {
+                pendingLodBatches = batches;
+                pendingLodBatchIndex = 0;
+                pendingRawAO = seedRaw;
+                pendingFaceAreaAO = seedFace;
+                pendingBakeEntries = entries;
+                pendingBakeSettings = settings;
+
+                // Subscribe repaint pump so progress bar updates.
+                EditorApplication.update += RepaintDuringBake;
+                StartNextGpuLodBatch();
+            }
+            else
+            {
+                if (settings.useGPU && !SystemInfo.supportsComputeShaders)
+                    UvtLog.Warn("[Vertex AO] Compute shaders not supported. Falling back to CPU.");
+                ExecuteBakeCPU(batches, settings, entries, seedRaw, seedFace);
+            }
+        }
+
+        MeshEntry FindSelectedHierarchyEntry()
+        {
+            if (!hierarchyMode) return null;
+            var go = Selection.activeGameObject;
+            if (go == null) return null;
+            var mr = go.GetComponentInParent<MeshRenderer>();
+            if (mr == null) return null;
+            foreach (var e in hierarchyEntries)
+                if (e.renderer == mr) return e;
+            return null;
+        }
+
+        void ExecuteRebakeSelected(MeshEntry selEntry)
+        {
+            if (selEntry == null || selEntry.renderer == null)
+            {
+                UvtLog.Warn("[Vertex AO] Select a hierarchy mesh in the scene to rebake.");
+                return;
+            }
+
+            Mesh selectedMesh = selEntry.originalMesh ?? selEntry.fbxMesh;
+            if (selectedMesh == null) return;
+
+            CancelGpuJob();
+            RestorePreview();
+
+            var settings = BuildSettingsFromUI();
+
+            // Single-target batch; other hierarchy targets become occluders so
+            // the context matches a full bake. CollectAdditionalOccluders then
+            // layers in nearby / collision geometry per user's occluder mode
+            // (skipping renderers we pre-added here to avoid double-add).
+            var batch = new LodBakeBatch { lodIndex = 0 };
+            batch.targetEntries.Add(selEntry);
+            batch.targetMeshes.Add((selectedMesh, selEntry.renderer.transform.localToWorldMatrix));
+            batch.preAddedOccluderRendererIds = new HashSet<int>();
+
+            foreach (var e in hierarchyEntries)
+            {
+                if (e == selEntry || !e.include || e.renderer == null) continue;
+                Mesh m = e.originalMesh ?? e.fbxMesh;
+                if (m == null) continue;
+                batch.occluderMeshes.Add((m, e.renderer.transform.localToWorldMatrix));
+                batch.renderableOccluderCount++;
+                batch.preAddedOccluderRendererIds.Add(e.renderer.GetInstanceID());
+            }
+
+            CollectAdditionalOccluders(batch, hierarchyEntries, settings);
+
+            RunBatches(
+                new List<LodBakeBatch> { batch },
+                settings,
+                new List<MeshEntry> { selEntry },
+                seedFromExisting: true);
+        }
+
+        List<LodBakeBatch> BuildLodBatches(List<MeshEntry> entries, VertexAOSettings settings)
+        {
+            var batches = new List<LodBakeBatch>();
+
+            foreach (var group in entries.GroupBy(e => e.lodIndex).OrderBy(g => g.Key))
+            {
+                var batch = new LodBakeBatch { lodIndex = group.Key };
+                foreach (var entry in group)
+                {
+                    if (entry?.renderer == null)
+                        continue;
+
+                    Mesh mesh = entry.originalMesh ?? entry.fbxMesh;
+                    if (mesh == null)
+                        continue;
+
+                    batch.targetEntries.Add(entry);
+                    batch.targetMeshes.Add((mesh, entry.renderer.transform.localToWorldMatrix));
+                }
+
+                if (batch.targetMeshes.Count == 0)
+                {
+                    DisposeBatchTemporaryMeshes(batch);
+                    continue;
+                }
+
+                CollectAdditionalOccluders(batch, entries, settings);
+                batches.Add(batch);
+            }
+
+            return batches;
+        }
+
+        void CollectAdditionalOccluders(
+            LodBakeBatch batch,
+            List<MeshEntry> allEntries,
+            VertexAOSettings settings)
+        {
+            if (batch == null || batch.targetEntries.Count == 0)
+                return;
+            if (settings.bakeType != AOBakeType.AmbientOcclusion)
+                return;
+            if (settings.occluderMode == VertexAOOccluderMode.SelfOnly)
+                return;
+
+            var root = ResolveOccluderRoot(batch.targetEntries);
+            if (root == null)
+                return;
+
+            var candidateRenderers = root.GetComponentsInChildren<Renderer>(true);
+            if (candidateRenderers == null || candidateRenderers.Length == 0)
+                return;
+
+            var targetAnchors = ComputeTargetAnchors(batch.targetEntries, out Bounds targetBounds, out var perTargetBounds);
+            // Base the radius on the largest single target extent (not the
+            // encapsulated extent), so spread-out target sets don't inflate
+            // the radius into absurd values that pull in irrelevant geometry.
+            float largestTargetExtent = 0f;
+            for (int i = 0; i < perTargetBounds.Count; i++)
+            {
+                float e = perTargetBounds[i].extents.magnitude;
+                if (e > largestTargetExtent) largestTargetExtent = e;
+            }
+            if (largestTargetExtent <= 0f)
+                largestTargetExtent = targetBounds.extents.magnitude;
+            float effectiveRadius = Mathf.Max(largestTargetExtent * settings.occluderRadiusMultiplier, 0.01f);
+
+            var targetRendererIds = new HashSet<int>(
+                batch.targetEntries
+                    .Where(e => e.renderer != null)
+                    .Select(e => e.renderer.GetInstanceID()));
+
+            var alternateLodRendererIds = new HashSet<int>();
+            if (ctx?.LodGroup != null)
+            {
+                foreach (var entry in allEntries)
+                {
+                    if (entry?.renderer == null || entry.lodIndex == batch.lodIndex)
+                        continue;
+                    alternateLodRendererIds.Add(entry.renderer.GetInstanceID());
+                }
+            }
+
+            // When colliders are enabled as occluders, a collider mesh whose
+            // .name ends with "_COL" REPLACES the renderer whose mesh name
+            // equals the collider base (the collider name minus "_COL"). The
+            // suffix lives on the mesh asset name — the GameObject node may
+            // be named anything. Pre-walk collision mesh candidates to
+            // collect base keys; renderers whose mesh name matches are
+            // skipped below.
+            HashSet<string> collCoveredKeys = null;
+            if (settings.includeCollisionOccluders)
+            {
+                collCoveredKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var collCandidates = new List<(GameObject go, Mesh mesh)>();
+                CollectCollisionMeshCandidates(root.transform, collCandidates);
+                foreach (var c in collCandidates)
+                {
+                    string baseName = StripColSuffix(c.mesh.name);
+                    if (!string.IsNullOrEmpty(baseName))
+                        collCoveredKeys.Add(baseName);
+                }
+            }
+
+            var seenRenderers = new HashSet<int>();
+            foreach (var renderer in candidateRenderers)
+            {
+                if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy)
+                    continue;
+
+                int rendererId = renderer.GetInstanceID();
+                if (!seenRenderers.Add(rendererId))
+                    continue;
+                if (targetRendererIds.Contains(rendererId))
+                    continue;
+                if (alternateLodRendererIds.Contains(rendererId))
+                    continue;
+                if (batch.preAddedOccluderRendererIds != null &&
+                    batch.preAddedOccluderRendererIds.Contains(rendererId))
+                    continue;
+                if (MeshHygieneUtility.IsCollisionNodeName(renderer.name))
+                    continue;
+                if (!TryGetRendererOccluderData(renderer, out var mesh, out var matrix, out var bounds, out var anchor))
+                    continue;
+                if (collCoveredKeys != null && collCoveredKeys.Count > 0 &&
+                    mesh != null && collCoveredKeys.Contains(mesh.name))
+                    continue; // replaced by matching "<meshName>_COL" collider below
+                if (!IsWithinOccluderRange(targetBounds, perTargetBounds, targetAnchors, bounds, anchor, effectiveRadius))
+                    continue;
+
+                batch.occluderMeshes.Add((mesh, matrix));
+                batch.renderableOccluderCount++;
+            }
+
+            if (!settings.includeCollisionOccluders)
+                return;
+
+            int liveColliderCount = CollectLiveCollisionOccluders(batch, root, targetBounds, perTargetBounds, targetAnchors, effectiveRadius);
+            if (liveColliderCount > 0 || string.IsNullOrEmpty(ctx?.SourceFbxPath))
+                return;
+
+            CollectSidecarCollisionOccluders(batch, candidateRenderers, targetBounds, perTargetBounds, targetAnchors, effectiveRadius);
+        }
+
+        GameObject ResolveOccluderRoot(List<MeshEntry> targetEntries)
+        {
+            // Hierarchy mode searches across the whole scene root (not only
+            // under the user-selected subtree) so a single selected mesh can
+            // still pick up nearby occluders / _COL* siblings from elsewhere
+            // in the level. Targets themselves are filtered out via
+            // targetRendererIds in CollectAdditionalOccluders; range test
+            // keeps things local.
+            if (hierarchyMode && hierarchyRoot != null)
+                return hierarchyRoot.transform.root.gameObject;
+
+            if (ctx?.LodGroup != null)
+                return ctx.LodGroup.gameObject;
+
+            var firstRenderer = targetEntries.FirstOrDefault(e => e?.renderer != null)?.renderer;
+            if (firstRenderer == null)
+                return null;
+
+            var prefabRoot = PrefabUtility.GetNearestPrefabInstanceRoot(firstRenderer.gameObject);
+            return prefabRoot != null ? prefabRoot : firstRenderer.transform.root.gameObject;
+        }
+
+        int CollectLiveCollisionOccluders(
+            LodBakeBatch batch,
+            GameObject root,
+            Bounds targetBounds,
+            List<Bounds> perTargetBounds,
+            List<Vector3> targetAnchors,
+            float effectiveRadius)
+        {
+            int added = 0;
+            var candidates = new List<(GameObject go, Mesh mesh)>();
+            CollectCollisionMeshCandidates(root.transform, candidates);
+            // CollectCollisionMeshCandidates already dedups per (GO, mesh);
+            // don't dedup by mesh ID alone — instanced colliders (same
+            // _COL asset at different world positions) must each contribute
+            // a distinct occluder in the BVH.
+            foreach (var c in candidates)
+            {
+                if (c.go == null || !c.go.activeInHierarchy) continue;
+
+                var matrix = c.go.transform.localToWorldMatrix;
+                var bounds = TransformBounds(c.mesh.bounds, matrix);
+                var anchor = GetMeshWorldAnchor(c.mesh, matrix);
+                if (!IsWithinOccluderRange(targetBounds, perTargetBounds, targetAnchors, bounds, anchor, effectiveRadius))
+                    continue;
+
+                batch.occluderMeshes.Add((c.mesh, matrix));
+                batch.colliderOccluderCount++;
+                added++;
+            }
+            return added;
+        }
+
+        // Collision detection is by MESH-NAME suffix "_COL", not by GameObject
+        // node name. Walks both MeshCollider.sharedMesh and MeshFilter.
+        // sharedMesh; dedups per (GO, mesh) so a GO with both MC+MF pointing
+        // at the same asset isn't added twice. Strict trailing-"_COL" rule
+        // mirrors the renderer-skip key (mesh name minus "_COL").
+        static void CollectCollisionMeshCandidates(
+            Transform root,
+            List<(GameObject go, Mesh mesh)> result)
+        {
+            if (root == null) return;
+
+            foreach (var mc in root.GetComponentsInChildren<MeshCollider>(true))
+            {
+                if (mc == null || mc.sharedMesh == null) continue;
+                if (!EndsWithColSuffix(mc.sharedMesh.name)) continue;
+                result.Add((mc.gameObject, mc.sharedMesh));
+            }
+
+            foreach (var mf in root.GetComponentsInChildren<MeshFilter>(true))
+            {
+                if (mf == null || mf.sharedMesh == null) continue;
+                if (!EndsWithColSuffix(mf.sharedMesh.name)) continue;
+
+                bool dup = false;
+                for (int i = 0; i < result.Count; i++)
+                {
+                    if (result[i].go == mf.gameObject && result[i].mesh == mf.sharedMesh)
+                    { dup = true; break; }
+                }
+                if (!dup) result.Add((mf.gameObject, mf.sharedMesh));
+            }
+        }
+
+        // Collider mesh-name convention: "_COL" OR "_COL_Hull{digits}"
+        // (convex hull decomposition suffix). Both forms map to the same
+        // base name via StripColSuffix.
+        static bool EndsWithColSuffix(string name)
+            => StripColSuffix(name) != name;
+
+        static string StripColSuffix(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return name;
+            if (name.EndsWith("_COL", StringComparison.OrdinalIgnoreCase))
+                return name.Substring(0, name.Length - 4);
+            int hullIdx = name.LastIndexOf("_COL_Hull", StringComparison.OrdinalIgnoreCase);
+            if (hullIdx < 0) return name;
+            int digitStart = hullIdx + 9; // "_COL_Hull".Length
+            if (digitStart >= name.Length) return name;
+            for (int i = digitStart; i < name.Length; i++)
+                if (!char.IsDigit(name[i])) return name;
+            return name.Substring(0, hullIdx);
+        }
+
+        void CollectSidecarCollisionOccluders(
+            LodBakeBatch batch,
+            Renderer[] candidateRenderers,
+            Bounds targetBounds,
+            List<Bounds> perTargetBounds,
+            List<Vector3> targetAnchors,
+            float effectiveRadius)
+        {
+            var sidecarEntries = CollisionMeshTool.GetCollisionMeshesFromSidecar(ctx.SourceFbxPath);
+            if (sidecarEntries == null || sidecarEntries.Count == 0)
+                return;
+
+            var seenHullKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            bool addedAny = false;
+
+            foreach (var (meshName, meshes, _) in sidecarEntries)
+            {
+                if (meshes == null || meshes.Count == 0)
+                    continue;
+
+                foreach (var mesh in meshes)
+                {
+                    if (mesh != null && !batch.temporaryMeshesToDestroy.Contains(mesh))
+                        batch.temporaryMeshesToDestroy.Add(mesh);
+                }
+
+                var matchedRenderer = FindBestSidecarRenderer(meshName, candidateRenderers, batch);
+                if (matchedRenderer == null)
+                    continue;
+
+                var matrix = matchedRenderer.transform.localToWorldMatrix;
+                for (int i = 0; i < meshes.Count; i++)
+                {
+                    var mesh = meshes[i];
+                    if (mesh == null)
+                        continue;
+
+                    string hullKey = $"{meshName}:{i}";
+                    if (!seenHullKeys.Add(hullKey))
+                        continue;
+
+                    var bounds = TransformBounds(mesh.bounds, matrix);
+                    var anchor = GetMeshWorldAnchor(mesh, matrix);
+                    if (!IsWithinOccluderRange(targetBounds, perTargetBounds, targetAnchors, bounds, anchor, effectiveRadius))
+                        continue;
+
+                    batch.occluderMeshes.Add((mesh, matrix));
+                    batch.colliderOccluderCount++;
+                    addedAny = true;
+                }
+            }
+
+            batch.usedSidecarCollisionFallback = addedAny;
+        }
+
+        Renderer FindBestSidecarRenderer(string meshName, Renderer[] candidateRenderers, LodBakeBatch batch)
+        {
+            Renderer best = null;
+            int bestScore = 0;
+
+            foreach (var renderer in candidateRenderers)
+            {
+                if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy)
+                    continue;
+
+                int score = GetSidecarRendererScore(meshName, renderer, batch);
+                if (score <= 0 || score <= bestScore)
+                    continue;
+
+                bestScore = score;
+                best = renderer;
+            }
+
+            return best;
+        }
+
+        int GetSidecarRendererScore(string meshName, Renderer renderer, LodBakeBatch batch)
+        {
+            int score = 0;
+            string rendererGroupKey = UvToolContext.ExtractGroupKey(renderer.name);
+            if (NamesEqual(meshName, rendererGroupKey))
+                score = 40;
+            else if (TryGetRendererMesh(renderer, out var mesh) && mesh != null && NamesEqual(meshName, mesh.name))
+                score = 30;
+            else if (NamesEqual(meshName, renderer.name))
+                score = 20;
+
+            if (score == 0)
+                return 0;
+
+            var ownerEntry = ctx?.MeshEntries?.FirstOrDefault(e => e?.renderer == renderer);
+            if (ownerEntry != null && ownerEntry.lodIndex == batch.lodIndex)
+                score += 5;
+            if (batch.targetEntries.Any(e => e?.renderer == renderer))
+                score += 10;
+
+            return score;
+        }
+
+        static bool NamesEqual(string a, string b)
+            => !string.IsNullOrEmpty(a) &&
+               !string.IsNullOrEmpty(b) &&
+               string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+        static bool TryGetRendererMesh(Renderer renderer, out Mesh mesh)
+        {
+            mesh = null;
+            if (renderer is SkinnedMeshRenderer smr && smr.sharedMesh != null)
+            {
+                mesh = smr.sharedMesh;
+                return true;
+            }
+
+            var mf = renderer.GetComponent<MeshFilter>();
+            if (mf != null && mf.sharedMesh != null)
+            {
+                mesh = mf.sharedMesh;
+                return true;
+            }
+
+            return false;
+        }
+
+        static bool TryGetRendererOccluderData(
+            Renderer renderer,
+            out Mesh mesh,
+            out Matrix4x4 matrix,
+            out Bounds bounds,
+            out Vector3 anchor)
+        {
+            mesh = null;
+            matrix = Matrix4x4.identity;
+            bounds = default;
+            anchor = Vector3.zero;
+            if (!TryGetRendererMesh(renderer, out mesh) || mesh == null)
+                return false;
+
+            matrix = renderer.transform.localToWorldMatrix;
+            bounds = GetRendererWorldBounds(renderer, mesh, matrix);
+            anchor = GetRendererWorldAnchor(renderer, mesh, matrix);
+            return true;
+        }
+
+        static List<Vector3> ComputeTargetAnchors(
+            List<MeshEntry> entries,
+            out Bounds bounds,
+            out List<Bounds> perTargetBounds)
+        {
+            bounds = default;
+            bool hasBounds = false;
+            var anchors = new List<Vector3>();
+            perTargetBounds = new List<Bounds>();
+            foreach (var entry in entries)
+            {
+                if (entry?.renderer == null)
+                    continue;
+
+                var mesh = entry.originalMesh ?? entry.fbxMesh;
+                if (mesh == null)
+                    continue;
+
+                var matrix = entry.renderer.transform.localToWorldMatrix;
+                var worldBounds = GetRendererWorldBounds(entry.renderer, mesh, matrix);
+                anchors.Add(GetRendererWorldAnchor(entry.renderer, mesh, matrix));
+                perTargetBounds.Add(worldBounds);
+
+                if (!hasBounds)
+                {
+                    bounds = worldBounds;
+                    hasBounds = true;
+                }
+                else
+                {
+                    bounds.Encapsulate(worldBounds);
+                }
+            }
+
+            if (!hasBounds)
+                bounds = new Bounds(Vector3.zero, Vector3.one * 0.01f);
+            return anchors;
+        }
+
+        static Bounds GetRendererWorldBounds(Renderer renderer, Mesh mesh, Matrix4x4 matrix)
+        {
+            if (renderer is SkinnedMeshRenderer || mesh == null)
+                return renderer.bounds;
+            return TransformBounds(mesh.bounds, matrix);
+        }
+
+        static Vector3 GetRendererWorldAnchor(Renderer renderer, Mesh mesh, Matrix4x4 matrix)
+        {
+            if (renderer is SkinnedMeshRenderer || mesh == null)
+                return renderer.bounds.center;
+            return GetMeshWorldAnchor(mesh, matrix);
+        }
+
+        static Vector3 GetMeshWorldAnchor(Mesh mesh, Matrix4x4 matrix)
+        {
+            if (mesh == null)
+                return matrix.MultiplyPoint3x4(Vector3.zero);
+            return matrix.MultiplyPoint3x4(mesh.bounds.center);
+        }
+
+        static Bounds TransformBounds(Bounds localBounds, Matrix4x4 matrix)
+        {
+            var corners = new[]
+            {
+                new Vector3(localBounds.min.x, localBounds.min.y, localBounds.min.z),
+                new Vector3(localBounds.max.x, localBounds.min.y, localBounds.min.z),
+                new Vector3(localBounds.min.x, localBounds.max.y, localBounds.min.z),
+                new Vector3(localBounds.max.x, localBounds.max.y, localBounds.min.z),
+                new Vector3(localBounds.min.x, localBounds.min.y, localBounds.max.z),
+                new Vector3(localBounds.max.x, localBounds.min.y, localBounds.max.z),
+                new Vector3(localBounds.min.x, localBounds.max.y, localBounds.max.z),
+                new Vector3(localBounds.max.x, localBounds.max.y, localBounds.max.z)
+            };
+
+            Bounds worldBounds = new Bounds(matrix.MultiplyPoint3x4(corners[0]), Vector3.zero);
+            for (int i = 1; i < corners.Length; i++)
+                worldBounds.Encapsulate(matrix.MultiplyPoint3x4(corners[i]));
+            return worldBounds;
+        }
+
+        static bool IsWithinOccluderRange(
+            Bounds targetBounds,
+            List<Bounds> perTargetBounds,
+            List<Vector3> targetAnchors,
+            Bounds candidateBounds,
+            Vector3 candidateAnchor,
+            float radius)
+        {
+            // Combined bbox vs candidate bbox — fast accept for candidates
+            // close to the overall target region.
+            if (BoundsDistance(targetBounds, candidateBounds) <= radius)
+                return true;
+
+            // Per-target bbox vs candidate bbox — catches candidates that are
+            // near an individual target but far from the combined centroid
+            // (common in spread-out hierarchies). Uses bbox-to-bbox distance
+            // so a large candidate next to a small target is still captured.
+            if (perTargetBounds != null)
+            {
+                for (int i = 0; i < perTargetBounds.Count; i++)
+                {
+                    if (BoundsDistance(perTargetBounds[i], candidateBounds) <= radius)
+                        return true;
+                }
+            }
+
+            // Pivot-to-pivot fallback (cheap, catches edge cases where bounds
+            // are tiny / degenerate).
+            if (targetAnchors != null && targetAnchors.Count > 0)
+            {
+                float sqrRadius = radius * radius;
+                for (int i = 0; i < targetAnchors.Count; i++)
+                {
+                    if ((targetAnchors[i] - candidateAnchor).sqrMagnitude <= sqrRadius)
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
+        static float BoundsDistance(Bounds a, Bounds b)
+        {
+            float dx = Mathf.Max(0f, Mathf.Max(a.min.x - b.max.x, b.min.x - a.max.x));
+            float dy = Mathf.Max(0f, Mathf.Max(a.min.y - b.max.y, b.min.y - a.max.y));
+            float dz = Mathf.Max(0f, Mathf.Max(a.min.z - b.max.z, b.min.z - a.max.z));
+            return Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        void StoreBatchStats(List<LodBakeBatch> batches)
+        {
+            lastTargetMeshCount = batches.Sum(b => b.targetMeshes.Count);
+            lastRenderableOccluderCount = batches.Sum(b => b.renderableOccluderCount);
+            lastColliderOccluderCount = batches.Sum(b => b.colliderOccluderCount);
+            lastUsedSidecarCollisionFallback = batches.Any(b => b.usedSidecarCollisionFallback);
+        }
+
+        void DisposePendingBatchTempMeshes()
+        {
+            if (pendingLodBatches == null)
+                return;
+
+            foreach (var batch in pendingLodBatches)
+                DisposeBatchTemporaryMeshes(batch);
+        }
+
+        static void DisposeBatchTemporaryMeshes(LodBakeBatch batch)
+        {
+            if (batch?.temporaryMeshesToDestroy == null)
+                return;
+
+            foreach (var mesh in batch.temporaryMeshesToDestroy)
+            {
+                if (mesh != null)
+                    UnityEngine.Object.DestroyImmediate(mesh);
+            }
+            batch.temporaryMeshesToDestroy.Clear();
+        }
+
+        void StartNextGpuLodBatch()
+        {
+            if (pendingLodBatches == null || pendingLodBatchIndex >= pendingLodBatches.Count)
+            {
+                bakedRawAO = pendingRawAO ?? new Dictionary<Mesh, float[]>();
+                bakedFaceAreaAO = pendingFaceAreaAO;
+                pendingLodBatches = null;
+                pendingLodBatchIndex = 0;
+                pendingRawAO = null;
+                pendingFaceAreaAO = null;
+
+                var finalEntries = pendingBakeEntries ?? new List<MeshEntry>();
+                pendingBakeEntries = null;
+                pendingBakeSettings = null;
+                FinalizeBake(finalEntries);
+                return;
+            }
+
+            var batch = pendingLodBatches[pendingLodBatchIndex];
+
+            activeGpuJob = VertexAOBaker.StartGPUBake(batch.targetMeshes, batch.occluderMeshes, pendingBakeSettings,
+                result => OnGpuLodBakeComplete(result, batch),
+                error => OnGpuLodBakeError(error, batch));
+
+            if (activeGpuJob == null)
+            {
+                UvtLog.Warn($"[Vertex AO] GPU setup failed on LOD{batch.lodIndex}. Falling back to CPU for remaining LODs.");
+                ExecuteRemainingCpuBatchesFrom(pendingLodBatchIndex);
+                return;
+            }
+
+            UvtLog.Info(
+                $"[Vertex AO] GPU bake started for LOD{batch.lodIndex} ({pendingLodBatchIndex + 1}/{pendingLodBatches.Count}) — " +
+                $"targets={batch.targetMeshes.Count}, nearby={batch.renderableOccluderCount}, collision={batch.colliderOccluderCount}" +
+                (batch.usedSidecarCollisionFallback ? ", sidecar collision fallback." : "."));
+        }
+
+        void OnGpuLodBakeComplete(Dictionary<Mesh, float[]> result, LodBakeBatch batch)
+        {
+            activeGpuJob = null;
+            try
+            {
+                if (pendingRawAO == null) pendingRawAO = new Dictionary<Mesh, float[]>();
+                foreach (var kvp in result)
+                    pendingRawAO[kvp.Key] = kvp.Value;
+
+                var faceArea = VertexAOBaker.ApplyFaceAreaCorrection(
+                    result,
+                    batch.targetMeshes,
+                    batch.occluderMeshes,
+                    pendingBakeSettings);
+                if (pendingFaceAreaAO == null) pendingFaceAreaAO = new Dictionary<Mesh, float[]>();
+                foreach (var kvp in faceArea)
+                    pendingFaceAreaAO[kvp.Key] = kvp.Value;
+            }
+            finally
+            {
+                DisposeBatchTemporaryMeshes(batch);
+            }
+
+            pendingLodBatchIndex++;
+            StartNextGpuLodBatch();
+        }
+
+        void OnGpuLodBakeError(string error, LodBakeBatch batch)
+        {
+            UvtLog.Error($"[Vertex AO] GPU bake failed on LOD{batch.lodIndex}: {error}. Falling back to CPU for remaining LODs.");
+            activeGpuJob = null;
+            ExecuteRemainingCpuBatchesFrom(pendingLodBatchIndex);
+        }
+
+        void ExecuteRemainingCpuBatchesFrom(int startIndex)
+        {
+            if (pendingLodBatches == null || pendingBakeSettings == null)
+                return;
+
+            for (int i = startIndex; i < pendingLodBatches.Count; i++)
+            {
+                var batch = pendingLodBatches[i];
+                UvtLog.Info(
+                    $"[Vertex AO] CPU fallback for LOD{batch.lodIndex} — targets={batch.targetMeshes.Count}, nearby={batch.renderableOccluderCount}, collision={batch.colliderOccluderCount}" +
+                    (batch.usedSidecarCollisionFallback ? ", sidecar collision fallback." : "."));
+
+                try
+                {
+                    var raw = VertexAOBaker.BakeMultiMesh(batch.targetMeshes, batch.occluderMeshes, pendingBakeSettings);
+                    var face = VertexAOBaker.ApplyFaceAreaCorrection(
+                        raw,
+                        batch.targetMeshes,
+                        batch.occluderMeshes,
+                        pendingBakeSettings);
+
+                    if (pendingRawAO == null) pendingRawAO = new Dictionary<Mesh, float[]>();
+                    foreach (var kvp in raw)
+                        pendingRawAO[kvp.Key] = kvp.Value;
+
+                    if (pendingFaceAreaAO == null) pendingFaceAreaAO = new Dictionary<Mesh, float[]>();
+                    foreach (var kvp in face)
+                        pendingFaceAreaAO[kvp.Key] = kvp.Value;
+                }
+                finally
+                {
+                    DisposeBatchTemporaryMeshes(batch);
+                }
+            }
+
+            pendingLodBatchIndex = pendingLodBatches.Count;
+            StartNextGpuLodBatch();
+        }
+
+        void RepaintDuringBake()
+        {
+            if (activeGpuJob == null || !activeGpuJob.IsRunning)
+            {
+                EditorApplication.update -= RepaintDuringBake;
+                return;
+            }
+            requestRepaint?.Invoke();
+        }
+
+        void ExecuteBakeCPU(
+            List<LodBakeBatch> batches,
+            VertexAOSettings settings,
+            List<MeshEntry> entries,
+            Dictionary<Mesh, float[]> seedRaw = null,
+            Dictionary<Mesh, float[]> seedFace = null)
+        {
+            bakedRawAO = seedRaw ?? new Dictionary<Mesh, float[]>();
+            bakedFaceAreaAO = seedFace ?? new Dictionary<Mesh, float[]>();
+
+            foreach (var batch in batches)
+            {
+                UvtLog.Info(
+                    $"[Vertex AO] CPU bake for LOD{batch.lodIndex} — targets={batch.targetMeshes.Count}, nearby={batch.renderableOccluderCount}, collision={batch.colliderOccluderCount}" +
+                    (batch.usedSidecarCollisionFallback ? ", sidecar collision fallback." : "."));
+
+                try
+                {
+                    var raw = VertexAOBaker.BakeMultiMesh(batch.targetMeshes, batch.occluderMeshes, settings);
+                    var face = VertexAOBaker.ApplyFaceAreaCorrection(raw, batch.targetMeshes, batch.occluderMeshes, settings);
+                    foreach (var kvp in raw)
+                        bakedRawAO[kvp.Key] = kvp.Value;
+                    foreach (var kvp in face)
+                        bakedFaceAreaAO[kvp.Key] = kvp.Value;
+                }
+                finally
+                {
+                    DisposeBatchTemporaryMeshes(batch);
+                }
+            }
+
+            FinalizeBake(entries);
+        }
+
+        void FinalizeBake(List<MeshEntry> entries)
+        {
+            bakeStopwatch?.Stop();
+            bakeTimeSeconds = bakeStopwatch != null ? (float)bakeStopwatch.Elapsed.TotalSeconds : 0f;
+            bakeStopwatch = null;
+
+            bakedVertexCount = 0;
+            foreach (var kvp in bakedRawAO)
+                bakedVertexCount += kvp.Value.Length;
+
+            ApplyBlurInternal();
+
+            int lodCount = entries.Select(e => e.lodIndex).Distinct().Count();
+            string bakeTypeName = bakeTypeIndex == 0 ? "AO" : "Thickness";
+            UvtLog.Info(
+                $"[Vertex AO] Baked {bakeTypeName} for {bakedVertexCount} vertices across {lodCount} LOD(s) in {bakeTimeSeconds:F1}s " +
+                $"(targets={lastTargetMeshCount}, nearby={lastRenderableOccluderCount}, collision={lastColliderOccluderCount}" +
+                (lastUsedSidecarCollisionFallback ? ", sidecar collision fallback)." : ")."));
+
+            ActivatePreview();
+            requestRepaint?.Invoke();
+        }
+
+        void LoadFromMesh()
+        {
+            RestorePreview();
+
+            // OnDrawSidebar keeps hierarchyEntries fresh; no explicit refresh
+            // here (would wipe user include toggles).
+            var entries = ActiveEntries()
+                .Where(e => e.include && e.renderer != null)
+                .ToList();
+
+            if (entries.Count == 0)
+            {
+                UvtLog.Warn("[Vertex AO] No meshes found.");
+                return;
+            }
+
+            var channel = TargetChannel;
+            bakedRawAO = new Dictionary<Mesh, float[]>();
+            bakedFaceAreaAO = null;
+            bakedVertexCount = 0;
+
+            foreach (var e in entries)
+            {
+                Mesh mesh = e.originalMesh ?? e.fbxMesh;
+                if (ctx != null && ctx.StandaloneMesh &&
+                    e.renderer != null &&
+                    TryGetRendererMesh(e.renderer, out var currentMesh) &&
+                    currentMesh != null)
+                {
+                    mesh = currentMesh;
+                }
+                if (mesh == null) continue;
+
+                var ao = ReadFromChannel(mesh, channel);
+                if (ao == null) continue;
+
+                bakedRawAO[mesh] = ao;
+                bakedVertexCount += ao.Length;
+            }
+
+            if (bakedRawAO.Count == 0)
+            {
+                UvtLog.Warn($"[Vertex AO] No AO data found in {TargetChannelName}.");
+                bakedRawAO = null;
+                return;
+            }
+
+            lastTargetMeshCount = bakedRawAO.Count;
+            lastRenderableOccluderCount = 0;
+            lastColliderOccluderCount = 0;
+            lastUsedSidecarCollisionFallback = false;
+            bakeTimeSeconds = 0;
+            ApplyBlurInternal();
+            ActivatePreview();
+            requestRepaint?.Invoke();
+            UvtLog.Info($"[Vertex AO] Loaded {bakedVertexCount} vertices from {TargetChannelName}");
+        }
+
+        static float[] ReadFromChannel(Mesh mesh, AOTargetChannel channel)
+        {
+            int ch = (int)channel;
+            int vertCount = mesh.vertexCount;
+
+            if (ch <= (int)AOTargetChannel.VertexColorA)
+            {
+                var colors = mesh.colors32;
+                if (colors == null || colors.Length != vertCount) return null;
+                int comp = ch - (int)AOTargetChannel.VertexColorR;
+                var ao = new float[vertCount];
+                for (int i = 0; i < vertCount; i++)
+                {
+                    var c = colors[i];
+                    ao[i] = (comp == 0 ? c.r : comp == 1 ? c.g : comp == 2 ? c.b : c.a) / 255f;
+                }
+                return ao;
+            }
+            else
+            {
+                int uvIdx = (ch - (int)AOTargetChannel.UV0_X) / 2;
+                int comp  = (ch - (int)AOTargetChannel.UV0_X) % 2;
+                var uvs = new List<Vector2>();
+                mesh.GetUVs(uvIdx, uvs);
+                if (uvs.Count != vertCount) return null;
+                var ao = new float[vertCount];
+                for (int i = 0; i < vertCount; i++)
+                    ao[i] = Mathf.Clamp01(comp == 0 ? uvs[i].x : uvs[i].y);
+                return ao;
+            }
+        }
+
+        void ApplyBlur()
+        {
+            if (bakedRawAO == null) return;
+            // Reset to raw, then apply blur
+            bakedFinalAO = new Dictionary<Mesh, float[]>();
+            foreach (var kvp in bakedRawAO)
+                bakedFinalAO[kvp.Key] = (float[])kvp.Value.Clone();
+            ApplyBlurInternal();
+            if (previewActive)
+            {
+                // Re-create preview with updated blur results
+                RestorePreview();
+                ActivatePreview();
+            }
+            requestRepaint?.Invoke();
+        }
+
+        void ApplyBlurInternal()
+        {
+            if (bakedRawAO == null) return;
+
+            // Start from raw or face-area-blended base
+            bakedFinalAO = new Dictionary<Mesh, float[]>();
+            foreach (var mesh in bakedRawAO.Keys)
+            {
+                var raw = bakedRawAO[mesh];
+                if (faceAreaStrength > 0f && bakedFaceAreaAO != null && bakedFaceAreaAO.TryGetValue(mesh, out var faa))
+                {
+                    var blended = new float[raw.Length];
+                    for (int i = 0; i < raw.Length; i++)
+                        blended[i] = Mathf.Lerp(raw[i], faa[i], faceAreaStrength);
+                    bakedFinalAO[mesh] = blended;
+                }
+                else
+                {
+                    bakedFinalAO[mesh] = (float[])raw.Clone();
+                }
+            }
+
+            // 1. Topology blur
+            if (topoBlurIter > 0)
+            {
+                foreach (var mesh in bakedFinalAO.Keys.ToList())
+                {
+                    var uv0List = new List<Vector2>();
+                    mesh.GetUVs(0, uv0List);
+                    var uv0Arr = uv0List.Count == mesh.vertexCount ? uv0List.ToArray() : null;
+
+                    bakedFinalAO[mesh] = VertexAOBaker.BlurAO(
+                        bakedFinalAO[mesh], mesh.triangles, mesh.vertexCount,
+                        topoBlurIter, topoBlurStr,
+                        mesh.vertices, mesh.normals, uv0Arr,
+                        topoCrossHardEdges, topoCrossUvSeams);
+                }
+            }
+
+            // 2. 3D Spatial blur (stacks on top of topology blur)
+            if (spatialBlurIter > 0)
+            {
+                foreach (var mesh in bakedFinalAO.Keys.ToList())
+                {
+                    bakedFinalAO[mesh] = VertexAOBaker.BlurAO3D(
+                        bakedFinalAO[mesh], mesh.vertices,
+                        spatialBlurIter, spatialBlurStr, spatialBlurRadius);
+                }
+            }
+
+            // 3. Brightness / Contrast
+            if (ppBrightness != 0f || ppContrast != 1f)
+            {
+                foreach (var mesh in bakedFinalAO.Keys.ToList())
+                {
+                    var ao = bakedFinalAO[mesh];
+                    for (int i = 0; i < ao.Length; i++)
+                    {
+                        float v = (ao[i] - 0.5f) * ppContrast + 0.5f + ppBrightness;
+                        ao[i] = Mathf.Clamp01(v);
+                    }
+                }
+            }
+        }
+
+        // ── Apply ──
+
+        void ApplyToMesh()
+        {
+            if (bakedFinalAO == null) return;
+            RestorePreview();
+
+            var channel = TargetChannel;
+            LastAppliedTargetChannel = channel;
+            var appliedMeshes = new HashSet<Mesh>();
+            var selectedRenderer = Selection.activeGameObject != null
+                ? Selection.activeGameObject.GetComponentInParent<Renderer>()
+                : null;
+            foreach (var kvp in bakedFinalAO)
+            {
+                Mesh seedMesh = kvp.Key;
+                var ao = kvp.Value;
+                if (seedMesh == null || ao == null) continue;
+
+                // AO bake runs on original working meshes, but FBX export can use
+                // repacked/transferred variants. Mirror AO into all mesh variants
+                // of the same entry so overwrite export persists the selected channel.
+                var targetMeshes = new List<Mesh> { seedMesh };
+                MeshEntry owner = ActiveEntries().FirstOrDefault(e =>
+                    e.originalMesh == seedMesh ||
+                    e.fbxMesh == seedMesh ||
+                    e.repackedMesh == seedMesh ||
+                    e.transferredMesh == seedMesh);
+                if (owner != null)
+                {
+                    if (owner.originalMesh != null) targetMeshes.Add(owner.originalMesh);
+                    if (owner.repackedMesh != null) targetMeshes.Add(owner.repackedMesh);
+                    if (owner.transferredMesh != null) targetMeshes.Add(owner.transferredMesh);
+                    if (owner.fbxMesh != null) targetMeshes.Add(owner.fbxMesh);
+                }
+
+                if (applySelectedRendererOnly)
+                {
+                    if (selectedRenderer == null)
+                        continue;
+                    if (owner == null || owner.renderer != selectedRenderer)
+                        continue;
+                }
+                foreach (var mesh in targetMeshes)
+                {
+                    if (mesh == null) continue;
+                    if (!appliedMeshes.Add(mesh)) continue;
+                    if (mesh.vertexCount != ao.Length) continue;
+
+                    if (applySelectedRendererOnly && applySelectedSubmeshOnly)
+                    {
+                        var merged = ReadFromChannel(mesh, channel) ?? new float[mesh.vertexCount];
+                        if (selectedSubmeshIndex < 0 || selectedSubmeshIndex >= mesh.subMeshCount)
+                        {
+                            UvtLog.Warn($"[Vertex AO] Submesh index {selectedSubmeshIndex} is out of range for mesh '{mesh.name}'.");
+                            continue;
+                        }
+
+                        var triangles = mesh.GetTriangles(selectedSubmeshIndex);
+                        for (int ti = 0; ti < triangles.Length; ti++)
+                        {
+                            int vi = triangles[ti];
+                            if (vi >= 0 && vi < merged.Length)
+                                merged[vi] = ao[vi];
+                        }
+                        VertexAOBaker.WriteToChannel(mesh, merged, channel);
+                    }
+                    else
+                    {
+                        VertexAOBaker.WriteToChannel(mesh, ao, channel);
+                    }
+                    EditorUtility.SetDirty(mesh);
+                }
+            }
+
+            UvtLog.Info($"[Vertex AO] Applied to {appliedMeshes.Count} mesh(es) → {TargetChannelName}");
+        }
+
+        static int GetRendererSubmeshCount(Renderer renderer)
+        {
+            if (renderer == null) return 0;
+            if (renderer is SkinnedMeshRenderer smr && smr.sharedMesh != null)
+                return smr.sharedMesh.subMeshCount;
+            var mf = renderer.GetComponent<MeshFilter>();
+            if (mf != null && mf.sharedMesh != null)
+                return mf.sharedMesh.subMeshCount;
+            return 0;
+        }
+
+        // ── Preview ──
+
+        void ActivatePreview()
+        {
+            if (bakedFinalAO == null || previewActive) return;
+
+            if (previewMaterial == null)
+            {
+                var sh = Shader.Find("Hidden/Internal-Colored");
+                previewMaterial = new Material(sh)
+                {
+                    hideFlags = HideFlags.HideAndDontSave
+                };
+                previewMaterial.SetInt("_SrcBlend", (int)BlendMode.One);
+                previewMaterial.SetInt("_DstBlend", (int)BlendMode.Zero);
+                previewMaterial.SetInt("_Cull", (int)CullMode.Back);
+                previewMaterial.SetInt("_ZWrite", 1);
+            }
+
+            foreach (var e in ActiveEntries())
+            {
+                if (!e.include || e.renderer == null) continue;
+                var mf = e.meshFilter;
+                if (mf == null) continue;
+                Mesh mesh = e.originalMesh ?? e.fbxMesh;
+                if (mesh == null || !bakedFinalAO.ContainsKey(mesh)) continue;
+
+                var mr = e.renderer as MeshRenderer;
+                if (mr == null) continue;
+
+                // Backup
+                previewBackups.Add((mf, mf.sharedMesh, mr.sharedMaterials));
+
+                // Clone mesh with AO in vertex colors
+                var clone = UnityEngine.Object.Instantiate(mesh);
+                clone.hideFlags = HideFlags.HideAndDontSave;
+                var colors = new Color32[clone.vertexCount];
+                var ao = bakedFinalAO[mesh];
+                for (int i = 0; i < colors.Length; i++)
+                {
+                    byte v = (byte)(Mathf.Clamp01(ao[i]) * 255f);
+                    colors[i] = new Color32(v, v, v, 255);
+                }
+                clone.colors32 = colors;
+                mf.sharedMesh = clone;
+
+                var mats = new Material[mr.sharedMaterials.Length];
+                for (int i = 0; i < mats.Length; i++)
+                    mats[i] = previewMaterial;
+                mr.sharedMaterials = mats;
+            }
+
+            previewActive = true;
+            SceneView.RepaintAll();
+        }
+
+        internal void RestorePreview()
+        {
+            if (!previewActive) return;
+
+            foreach (var (mf, originalMesh, originalMats) in previewBackups)
+            {
+                if (mf == null) continue;
+                if (mf.sharedMesh != null && mf.sharedMesh != originalMesh)
+                    UnityEngine.Object.DestroyImmediate(mf.sharedMesh);
+                mf.sharedMesh = originalMesh;
+                var mr = mf.GetComponent<MeshRenderer>();
+                if (mr != null) mr.sharedMaterials = originalMats;
+            }
+            previewBackups.Clear();
+            previewActive = false;
+            SceneView.RepaintAll();
+        }
+
+        // ── Unused interface ──
+
+        public void OnDrawToolbarExtra() { }
+        public void OnDrawStatusBar() { }
+        public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float sz) { }
+        public IEnumerable<UvCanvasView.FillModeEntry> GetFillModes() { yield break; }
+        public void OnSceneGUI(SceneView sv) { }
+    }
+}

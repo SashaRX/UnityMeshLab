@@ -140,7 +140,7 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Returns the set of vertex indices that participate in false seams
-        /// (duplicate position+UV0+normal). Used by Model Builder problem preview.
+        /// (duplicate position+UV0+normal). Used by Prefab Builder problem preview.
         /// Returns null if no false seams found or mesh has no UV0.
         /// </summary>
         internal static HashSet<int> GetFalseSeamVertices(Mesh mesh)

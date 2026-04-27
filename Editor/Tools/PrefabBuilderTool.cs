@@ -1,22 +1,24 @@
-// ModelBuilderTool.cs — Model Builder tool (IUvTool tab).
+// PrefabBuilderTool.cs — Prefab Builder tool (IUvTool tab).
 // Provides 3D scene preview of mesh channels, edge topology, and problem areas.
 // PR #1: preview modes only. PR #2: cleanup scan/fix migration. PR #3: LOD + collision management.
 
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 
 namespace SashaRX.UnityMeshLab
 {
-    public class ModelBuilderTool : IUvTool
+    public class PrefabBuilderTool : IUvTool
     {
         UvToolContext ctx;
         UvCanvasView canvas;
         System.Action requestRepaint;
 
         // ── Identity ──
-        public string ToolName  => "Model Builder";
-        public string ToolId    => "model_builder";
+        public string ToolName  => "Prefab Builder";
+        public string ToolId    => "prefab_builder";
         public int    ToolOrder => 44;
         public System.Action RequestRepaint { set => requestRepaint = value; }
 
@@ -33,7 +35,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         PreviewMode previewMode = PreviewMode.None;
-        ModelBuilderPreview preview;
+        PrefabBuilderPreview preview;
 
         // ── Hierarchy editing state ──
         Dictionary<int, string> pendingNames; // instanceID → edited name
@@ -58,6 +60,19 @@ namespace SashaRX.UnityMeshLab
 
         // ── LOD management state ──
         bool lodFoldout = true;
+
+        // ── Build pipeline state ──
+        bool buildFoldout;
+        bool editInPrefabStage;
+        int buildLodCount = 2;
+        float[] buildLodRatios = { 0.5f, 0.25f, 0.125f, 0.0625f };
+        float buildTargetError = 0.2f;
+        float buildUv2Weight = 20f;
+        float buildNormalWeight = 1f;
+        bool buildLockBorder = false;
+        List<BuildValidator.Issue> buildIssues;
+        Dictionary<BuildValidator.IssueGroup, bool> buildIssueFoldouts =
+            new Dictionary<BuildValidator.IssueGroup, bool>();
 
         // ── Collision management state ──
         bool collisionFoldout;
@@ -86,7 +101,7 @@ namespace SashaRX.UnityMeshLab
         {
             this.ctx = ctx;
             this.canvas = canvas;
-            if (preview == null) preview = new ModelBuilderPreview();
+            if (preview == null) preview = new PrefabBuilderPreview();
             pendingNames = new Dictionary<int, string>();
         }
 
@@ -105,6 +120,7 @@ namespace SashaRX.UnityMeshLab
             pendingNames?.Clear();
             splitCandidates = null;
             mergeCandidates = null;
+            buildIssues = null;
         }
 
         // ── UI: Sidebar ──
@@ -112,7 +128,7 @@ namespace SashaRX.UnityMeshLab
         public void OnDrawSidebar()
         {
             EditorGUILayout.Space(8);
-            EditorGUILayout.LabelField("Model Builder", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Prefab Builder", EditorStyles.boldLabel);
             EditorGUILayout.Space(4);
 
             if (ctx == null || (ctx.LodGroup == null && !ctx.StandaloneMesh))
@@ -126,6 +142,7 @@ namespace SashaRX.UnityMeshLab
             DrawPreviewModeToolbar();
             DrawHierarchySection();
             DrawLodManagementSection();
+            DrawBuildPipelineSection();
             DrawCollisionSection();
             DrawSplitMergeSection();
             DrawMeshInfo();
@@ -421,7 +438,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (pendingNames == null || pendingNames.Count == 0) return;
 
-            Undo.SetCurrentGroupName("Model Builder: Rename");
+            Undo.SetCurrentGroupName("Prefab Builder: Rename");
             int group = Undo.GetCurrentGroup();
 
             foreach (var kvp in pendingNames)
@@ -446,7 +463,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (ctx.LodGroup == null) return;
 
-            Undo.SetCurrentGroupName("Model Builder: Normalize");
+            Undo.SetCurrentGroupName("Prefab Builder: Normalize");
             int group = Undo.GetCurrentGroup();
 
             var root = ctx.LodGroup.transform;
@@ -821,6 +838,241 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ═══════════════════════════════════════════════════════════
+        // Build Pipeline section: Open Prefab → Generate LODs (with
+        // progressive scaleInLightmap) → Validate → Save FBX.
+        // ═══════════════════════════════════════════════════════════
+
+        void DrawBuildPipelineSection()
+        {
+            EditorGUILayout.Space(8);
+            buildFoldout = EditorGUILayout.Foldout(buildFoldout, "Build Pipeline", true);
+            if (!buildFoldout) return;
+
+            if (ctx.LodGroup == null)
+            {
+                EditorGUILayout.HelpBox("No LODGroup selected.", MessageType.Info);
+                return;
+            }
+
+            DrawBuildOpenPrefab();
+            EditorGUILayout.Space(6);
+            DrawBuildGenerateLods();
+            EditorGUILayout.Space(6);
+            DrawBuildValidate();
+            EditorGUILayout.Space(6);
+            DrawBuildSave();
+        }
+
+        void DrawBuildOpenPrefab()
+        {
+            EditorGUILayout.LabelField("Open Prefab", EditorStyles.miniBoldLabel);
+
+            var stage = PrefabStageUtility.GetCurrentPrefabStage();
+            bool inStage = stage != null;
+            editInPrefabStage = inStage;
+
+            bool desired = EditorGUILayout.Toggle("Edit in isolated Prefab Stage", editInPrefabStage);
+
+            string prefabPath = ResolvePrefabPathForEdit();
+            using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(prefabPath) && !inStage))
+            {
+                string label = desired == inStage
+                    ? (inStage ? "Reload Prefab Stage" : "Open / Focus Prefab")
+                    : (desired ? "Open Prefab Stage" : "Return to Main Stage");
+                if (GUILayout.Button(label, GUILayout.Height(22)))
+                    ApplyPrefabStage(desired, prefabPath, inStage);
+            }
+
+            if (inStage)
+                EditorGUILayout.LabelField($"Stage: {System.IO.Path.GetFileName(stage.assetPath)}", EditorStyles.miniLabel);
+            else if (!string.IsNullOrEmpty(prefabPath))
+                EditorGUILayout.LabelField($"Source: {System.IO.Path.GetFileName(prefabPath)}", EditorStyles.miniLabel);
+        }
+
+        string ResolvePrefabPathForEdit()
+        {
+            if (ctx.LodGroup == null) return null;
+            var go = ctx.LodGroup.gameObject;
+            if (PrefabUtility.IsPartOfPrefabInstance(go))
+                return PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(go);
+            if (PrefabUtility.IsPartOfPrefabAsset(go))
+                return AssetDatabase.GetAssetPath(go);
+            return null;
+        }
+
+        void ApplyPrefabStage(bool wantStage, string prefabPath, bool currentlyInStage)
+        {
+            if (!wantStage)
+            {
+                if (currentlyInStage) StageUtility.GoToMainStage();
+                UvtLog.Info("[LightmapUV] Switched to main stage.");
+                requestRepaint?.Invoke();
+                return;
+            }
+            if (string.IsNullOrEmpty(prefabPath))
+            {
+                UvtLog.Warn("[LightmapUV] No prefab asset path resolved for current LODGroup.");
+                return;
+            }
+            var stage = PrefabStageUtility.OpenPrefab(prefabPath);
+            if (stage == null) { UvtLog.Warn($"[LightmapUV] Failed to open {prefabPath}"); return; }
+            var root = stage.prefabContentsRoot;
+            var lg = root != null ? root.GetComponentInChildren<LODGroup>() : null;
+            if (lg != null) ctx.Refresh(lg);
+            UvtLog.Info($"[LightmapUV] Opened prefab {prefabPath}");
+            requestRepaint?.Invoke();
+        }
+
+        void DrawBuildGenerateLods()
+        {
+            EditorGUILayout.LabelField("Generate LODs", EditorStyles.miniBoldLabel);
+
+            buildLodCount = EditorGUILayout.IntSlider("Count (new)", buildLodCount, 1, 4);
+            for (int i = 0; i < buildLodCount && i < buildLodRatios.Length; i++)
+            {
+                float maxRatio = i == 0 ? 0.99f : buildLodRatios[i - 1] * 0.99f;
+                if (maxRatio < 0.001f) maxRatio = 0.001f;
+                if (buildLodRatios[i] > maxRatio) buildLodRatios[i] = maxRatio * 0.5f;
+                buildLodRatios[i] = EditorGUILayout.Slider($"  LOD{i + 1} ratio", buildLodRatios[i], 0.001f, maxRatio);
+            }
+
+            buildTargetError  = EditorGUILayout.Slider("Target Error", buildTargetError, 0.001f, 0.5f);
+            buildUv2Weight    = EditorGUILayout.Slider("UV2 Weight", buildUv2Weight, 0f, 500f);
+            buildNormalWeight = EditorGUILayout.Slider("Normal Weight", buildNormalWeight, 0f, 10f);
+            buildLockBorder   = EditorGUILayout.Toggle("Lock Border", buildLockBorder);
+
+            var preview = new System.Text.StringBuilder("scaleInLightmap: LOD0=inherit");
+            for (int i = 1; i <= buildLodCount; i++)
+                preview.Append($", LOD{i}={Mathf.Pow(0.5f, i):F3}");
+            EditorGUILayout.LabelField(preview.ToString(), EditorStyles.miniLabel);
+
+            var bg = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(.7f, .4f, .95f);
+            if (GUILayout.Button("Generate LODs", GUILayout.Height(26)))
+                ExecBuildGenerateLods();
+            GUI.backgroundColor = bg;
+        }
+
+        void ExecBuildGenerateLods()
+        {
+            int startLod = 1;
+            var lods = ctx.LodGroup.GetLODs();
+            for (int li = 0; li < lods.Length; li++)
+                if (lods[li].renderers != null && lods[li].renderers.Length > 0)
+                    startLod = li + 1;
+            if (startLod == 0) startLod = 1;
+
+            var opts = new LodPipelineOps.Options
+            {
+                count = buildLodCount,
+                ratios = buildLodRatios,
+                targetError = buildTargetError,
+                uv2Weight = buildUv2Weight,
+                normalWeight = buildNormalWeight,
+                lockBorder = buildLockBorder,
+                progressiveScaleInLightmap = true
+            };
+            var result = LodPipelineOps.Generate(ctx, startLod, opts);
+            if (!result.ok)
+            {
+                UvtLog.Error($"[Build] Generate failed: {result.error}");
+                return;
+            }
+            buildIssues = null;
+            requestRepaint?.Invoke();
+        }
+
+        void DrawBuildValidate()
+        {
+            EditorGUILayout.LabelField("Validate", EditorStyles.miniBoldLabel);
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Validate", GUILayout.Height(22)))
+                buildIssues = BuildValidator.Run(ctx);
+            using (new EditorGUI.DisabledScope(buildIssues == null || buildIssues.Count == 0))
+            {
+                if (GUILayout.Button("Clear", GUILayout.Width(80), GUILayout.Height(22)))
+                    buildIssues = null;
+            }
+            EditorGUILayout.EndHorizontal();
+
+            if (buildIssues == null) return;
+            if (buildIssues.Count == 0)
+            {
+                EditorGUILayout.HelpBox("No issues found.", MessageType.Info);
+                return;
+            }
+
+            int blockers = buildIssues.Count(i => BuildValidator.IsBlocker(i.group));
+            int warns = buildIssues.Count - blockers;
+            EditorGUILayout.LabelField($"Total: {buildIssues.Count}  (blockers: {blockers}, warnings: {warns})",
+                EditorStyles.miniLabel);
+
+            foreach (BuildValidator.IssueGroup grp in System.Enum.GetValues(typeof(BuildValidator.IssueGroup)))
+            {
+                var inGroup = buildIssues.Where(i => i.group == grp).ToList();
+                if (inGroup.Count == 0) continue;
+                if (!buildIssueFoldouts.TryGetValue(grp, out var open)) open = true;
+                string badge = BuildValidator.IsBlocker(grp) ? "✖" : "⚠";
+                open = EditorGUILayout.Foldout(open, $"  {badge} {grp} ({inGroup.Count})", true);
+                buildIssueFoldouts[grp] = open;
+                if (!open) continue;
+                foreach (var issue in inGroup)
+                {
+                    EditorGUILayout.BeginHorizontal();
+                    EditorGUILayout.LabelField($"    {issue.meshName}: {issue.detail}", EditorStyles.miniLabel);
+                    using (new EditorGUI.DisabledScope(issue.target == null))
+                    {
+                        if (GUILayout.Button("Ping", GUILayout.Width(40), GUILayout.Height(16)))
+                            EditorGUIUtility.PingObject(issue.target);
+                    }
+                    EditorGUILayout.EndHorizontal();
+                }
+            }
+        }
+
+        void DrawBuildSave()
+        {
+            EditorGUILayout.LabelField("Save", EditorStyles.miniBoldLabel);
+
+            EditorGUILayout.BeginHorizontal();
+            var bg = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(.4f, .8f, .4f);
+            if (GUILayout.Button("Overwrite Source FBX", GUILayout.Height(26)))
+                ExecBuildSave(overwriteSource: true);
+            GUI.backgroundColor = new Color(.3f, .7f, 1f);
+            if (GUILayout.Button("Save As New FBX…", GUILayout.Height(26)))
+                ExecBuildSave(overwriteSource: false);
+            GUI.backgroundColor = bg;
+            EditorGUILayout.EndHorizontal();
+        }
+
+        void ExecBuildSave(bool overwriteSource)
+        {
+            if (buildIssues == null) buildIssues = BuildValidator.Run(ctx);
+            var blockers = buildIssues.Where(i => BuildValidator.IsBlocker(i.group)).ToList();
+            if (blockers.Count > 0)
+            {
+                string msg = "Fix blocking issues first:\n\n" +
+                    string.Join("\n", blockers.Take(6).Select(b => $"• [{b.group}] {b.meshName}: {b.detail}"));
+                if (blockers.Count > 6) msg += $"\n… +{blockers.Count - 6} more";
+                EditorUtility.DisplayDialog("Build blocked", msg, "OK");
+                return;
+            }
+
+            var hubs = Resources.FindObjectsOfTypeAll<UvToolHub>();
+            var hub = hubs != null && hubs.Length > 0 ? hubs[0] : null;
+            var transferTool = hub != null ? hub.FindTool<LightmapTransferTool>() : null;
+            if (transferTool == null)
+            {
+                UvtLog.Error("[Build] UV2 Transfer tool not found — cannot export FBX.");
+                return;
+            }
+            transferTool.ExportFbxPublic(overwriteSource);
+            buildIssues = null;
+        }
+
+        // ═══════════════════════════════════════════════════════════
         // LOD management section
         // ═══════════════════════════════════════════════════════════
 
@@ -874,6 +1126,20 @@ namespace SashaRX.UnityMeshLab
                 EditorGUILayout.LabelField($"{rendCount}r {totalVerts:N0}v",
                     EditorStyles.miniLabel, GUILayout.Width(80));
 
+                // Per-row Regenerate button (LOD >= 1 only — LOD0 is the source).
+                if (li > 0)
+                {
+                    GUI.backgroundColor = new Color(.6f, .75f, .9f);
+                    if (GUILayout.Button(new GUIContent("\u21BB",
+                            "Regenerate this LOD mesh from LOD0 via mesh simplifier."),
+                            GUILayout.Width(22), GUILayout.Height(18)))
+                    {
+                        RegenerateLod(li);
+                        return; // UI invalidated
+                    }
+                    GUI.backgroundColor = Color.white;
+                }
+
                 // Remove LOD button
                 if (lods.Length > 1)
                 {
@@ -925,10 +1191,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             if (changed)
-            {
-                Undo.RecordObject(ctx.LodGroup, "Edit LOD Transitions");
-                ctx.LodGroup.SetLODs(lods);
-            }
+                LodGroupUtility.ApplyLods(ctx.LodGroup, lods);
 
             // Add LOD button
             EditorGUILayout.Space(4);
@@ -943,16 +1206,14 @@ namespace SashaRX.UnityMeshLab
         {
             if (ctx.LodGroup == null) return;
 
-            Undo.RecordObject(ctx.LodGroup, "Add LOD Level");
             var lods = ctx.LodGroup.GetLODs();
             var newLods = new LOD[lods.Length + 1];
             System.Array.Copy(lods, newLods, lods.Length);
 
-            // New LOD with lower transition than the last one
             float lastTrans = lods.Length > 0 ? lods[lods.Length - 1].screenRelativeTransitionHeight : 0.5f;
             newLods[lods.Length] = new LOD(lastTrans * 0.5f, new Renderer[0]);
 
-            ctx.LodGroup.SetLODs(newLods);
+            LodGroupUtility.ApplyLods(ctx.LodGroup, newLods);
             ctx.Refresh(ctx.LodGroup);
             requestRepaint?.Invoke();
             UvtLog.Info($"Added LOD{lods.Length} (transition: {lastTrans * 0.5f:F3})");
@@ -962,7 +1223,6 @@ namespace SashaRX.UnityMeshLab
         {
             if (ctx.LodGroup == null) return;
 
-            Undo.RecordObject(ctx.LodGroup, "Remove LOD Level");
             var lods = ctx.LodGroup.GetLODs();
             if (lodIndex < 0 || lodIndex >= lods.Length) return;
 
@@ -973,11 +1233,113 @@ namespace SashaRX.UnityMeshLab
                 newLods[j++] = lods[i];
             }
 
-            ctx.LodGroup.SetLODs(newLods);
+            LodGroupUtility.ApplyLods(ctx.LodGroup, newLods);
             ctx.LodGroup.RecalculateBounds();
             ctx.Refresh(ctx.LodGroup);
             requestRepaint?.Invoke();
             UvtLog.Info($"Removed LOD{lodIndex}");
+        }
+
+        // Regenerate a single LOD's meshes from the matching LOD0 source via
+        // mesh simplifier. Preserves existing LOD renderer GameObjects — we
+        // just swap mf.sharedMesh — so prefab-instance structure stays
+        // intact. Matches sources by stripped group key (UvToolContext.
+        // ExtractGroupKey), so LOD0 'Wall' pairs with LODN 'Wall_LOD2', etc.
+        void RegenerateLod(int lodIndex)
+        {
+            if (ctx.LodGroup == null) return;
+            if (lodIndex <= 0)
+            {
+                UvtLog.Warn("[LOD] Can't regenerate LOD0 — it is the source.");
+                return;
+            }
+            var lods = ctx.LodGroup.GetLODs();
+            if (lodIndex >= lods.Length)
+            {
+                UvtLog.Warn($"[LOD] Invalid LOD index {lodIndex}.");
+                return;
+            }
+
+            var lod0 = lods[0].renderers ?? new Renderer[0];
+            var lodN = lods[lodIndex].renderers ?? new Renderer[0];
+            if (lod0.Length == 0 || lodN.Length == 0)
+            {
+                UvtLog.Warn($"[LOD] Regenerate LOD{lodIndex}: empty source or target.");
+                return;
+            }
+
+            // Index LOD0 source meshes by stripped base name.
+            var sourceByKey = new System.Collections.Generic.Dictionary<string, Mesh>();
+            foreach (var r in lod0)
+            {
+                if (r == null) continue;
+                var mf = r.GetComponent<MeshFilter>();
+                if (mf == null || mf.sharedMesh == null) continue;
+                var key = UvToolContext.ExtractGroupKey(r.name);
+                if (!string.IsNullOrEmpty(key))
+                    sourceByKey[key] = mf.sharedMesh;
+            }
+
+            if (sourceByKey.Count == 0)
+            {
+                UvtLog.Warn($"[LOD] Regenerate LOD{lodIndex}: no LOD0 source meshes found.");
+                return;
+            }
+
+            // Ratio: 0.5^lodIndex against LOD0. Reasonable default for most
+            // pipelines; user can tweak via LodGen tab for finer control.
+            float ratio = Mathf.Clamp(Mathf.Pow(0.5f, lodIndex), 0.05f, 0.95f);
+            var settings = new MeshSimplifier.SimplifySettings
+            {
+                targetRatio  = ratio,
+                targetError  = 0.1f,
+                uv2Weight    = 0.5f,
+                normalWeight = 0.5f,
+                lockBorder   = true,
+                uvChannel    = 1,
+            };
+
+            int regenerated = 0;
+            try
+            {
+                foreach (var r in lodN)
+                {
+                    if (r == null) continue;
+                    var mf = r.GetComponent<MeshFilter>();
+                    if (mf == null) continue;
+                    var key = UvToolContext.ExtractGroupKey(r.name);
+                    if (string.IsNullOrEmpty(key)) continue;
+                    if (!sourceByKey.TryGetValue(key, out var sourceMesh)) continue;
+
+                    var res = MeshSimplifier.Simplify(sourceMesh, settings);
+                    if (!res.ok)
+                    {
+                        UvtLog.Warn($"[LOD] Simplify failed for '{sourceMesh.name}': {res.error}");
+                        continue;
+                    }
+                    res.simplifiedMesh.name = sourceMesh.name + "_LOD" + lodIndex;
+
+                    Undo.RecordObject(mf, "Regenerate LOD");
+                    mf.sharedMesh = res.simplifiedMesh;
+                    regenerated++;
+                }
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+            }
+
+            if (regenerated > 0)
+            {
+                UvtLog.Info($"[LOD] Regenerated LOD{lodIndex}: {regenerated} mesh(es), ratio={ratio:P0}");
+                ctx.LodGroup.RecalculateBounds();
+                ctx.Refresh(ctx.LodGroup);
+                requestRepaint?.Invoke();
+            }
+            else
+            {
+                UvtLog.Warn($"[LOD] Regenerate LOD{lodIndex}: nothing matched (check that LODN renderer names share a base with LOD0).");
+            }
         }
 
         void MoveRendererBetweenLods(Renderer renderer, int fromLod, int toLod)
@@ -1369,7 +1731,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (splitCandidates == null) return;
 
-            Undo.SetCurrentGroupName("Model Builder: Split by Material");
+            Undo.SetCurrentGroupName("Prefab Builder: Split by Material");
             int undoGroup = Undo.GetCurrentGroup();
             int split = 0;
 
@@ -1446,7 +1808,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (mergeCandidates == null) return;
 
-            Undo.SetCurrentGroupName("Model Builder: Merge");
+            Undo.SetCurrentGroupName("Prefab Builder: Merge");
             int undoGroup = Undo.GetCurrentGroup();
             int merged = 0;
 

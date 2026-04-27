@@ -3,6 +3,19 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **Vertex AO tab renamed to Vertex Color Baking.** `VertexAOTool` → `VertexColorBakingTool`, `ToolId` `vertex_ao` → `vertex_color_baking`. Asset GUID preserved so existing references stay intact. AO functionality is unchanged and reachable via the new toolbar at the top of the tab.
+
+### Added
+- **Solid Color bake mode.** Fills `mesh.colors32` with a uniform `Color32` across every mesh variant of an entry (`originalMesh`, `repackedMesh`, `transferredMesh`, `fbxMesh`). Collision meshes are skipped via `MeshHygieneUtility.IsCollisionNodeName`. Each write goes through `Undo.RecordObject` + `EditorUtility.SetDirty`.
+- **Batch variant export pipeline.** New `VariantExportPipeline` (`Editor/Tools/VariantExportPipeline.cs`) drives a list of `(Color, suffix)` variants against a source FBX and an optional source prefab. Per variant it paints, exports `{base}_{suffix}.fbx`, instantiates the source prefab, unpacks it (full clone, not a Prefab Variant), swaps `MeshFilter.sharedMesh` to the matching new sub-mesh by name, and saves `{base}_{suffix}.prefab`. The whole batch runs inside `AssetDatabase.StartAssetEditing/StopAssetEditing` with a single refresh. Suffixes are validated against `^[A-Za-z0-9_]+$` and duplicates inside a batch are rejected upfront. Conflicts are overwritten — git is the rollback path.
+- **`LightmapTransferTool.ExportVertexColorsToFbxAs(sourceFbxPath, outputFbxPath, entries, uvChannelOverride)`** — public entry point that writes a new FBX next to (or anywhere relative to) the source without mutating the source importer, scene mesh bindings, or working copies.
+
+### Refactored
+- `LightmapTransferTool.ExportVertexColorsToFbxCore` now accepts an optional `outputFbxPathOverride` and returns `bool` for success. When the override is set and differs from the source path, Phase 1 (source importer mutation), Phase 4 scene relink, and Phase 5 restore are skipped so the source FBX and live scene stay untouched. Existing overwrite and hierarchy-mode callers keep their void-style usage.
+
 ## [1.0.0] - 2026-04-20
 
 ### Changed (breaking)
