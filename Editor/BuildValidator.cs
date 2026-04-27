@@ -86,7 +86,10 @@ namespace SashaRX.UnityMeshLab
             Mesh mesh = e.originalMesh ?? e.fbxMesh;
             if (mesh == null) return;
             if (!mesh.isReadable)
+            {
                 issues.Add(new Issue { group = IssueGroup.Uv2Readable, meshName = label, detail = "mesh not readable", target = target });
+                return;
+            }
             var uv2 = new List<Vector2>();
             mesh.GetUVs(1, uv2);
             if (uv2.Count == 0)

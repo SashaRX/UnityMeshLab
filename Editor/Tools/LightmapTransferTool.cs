@@ -1565,6 +1565,10 @@ namespace SashaRX.UnityMeshLab
             }
             catch (Exception ex)
             {
+                // Drop the overwrite marker — the export failed so no reimport
+                // will consume it, and a stale entry would skip sidecar UV2
+                // injection on the next normal reimport of the same FBX.
+                Uv2AssetPostprocessor.fbxOverwritePaths.Remove(sourceFbxPath);
                 UvtLog.Error("[FBX Export] Vertex color export failed: " + ex);
                 return;
             }
