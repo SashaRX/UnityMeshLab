@@ -45,6 +45,7 @@ float _NormalOffset;
 float _MinHitDist;
 float _Intensity;
 float _CosineWeighted;
+float _BinaryHit;
 float _FlipNormals;
 float _BackfaceCulling;
 float _GroundPlane;
@@ -206,7 +207,7 @@ void BakeAO(uint3 id : SV_DispatchThreadID)
 
             if (!isBackface)
             {
-                float falloff = 1.0 - hitT / _MaxDist;
+                float falloff = (_BinaryHit > 0.5) ? 1.0 : (1.0 - hitT / _MaxDist);
                 uint wOcc = (uint)(weight * falloff * FP_SCALE);
                 wOccluded += wOcc;
                 didOcclude = true;
@@ -220,7 +221,7 @@ void BakeAO(uint3 id : SV_DispatchThreadID)
             float t = (_GroundY - origin.y) / jitteredDir.y;
             if (t > 0.0 && t < _MaxDist)
             {
-                float falloff = 1.0 - t / _MaxDist;
+                float falloff = (_BinaryHit > 0.5) ? 1.0 : (1.0 - t / _MaxDist);
                 uint wOcc = (uint)(weight * falloff * FP_SCALE);
                 wOccluded += wOcc;
             }
