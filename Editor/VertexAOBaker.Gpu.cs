@@ -260,6 +260,7 @@ namespace SashaRX.UnityMeshLab
                 cs.SetFloat("_NormalOffset", normalOffset);
                 cs.SetFloat("_MinHitDist", minHitDist);
                 cs.SetFloat("_CosineWeighted", settings.cosineWeighted ? 1f : 0f);
+                cs.SetFloat("_BinaryHit", settings.binaryHit ? 1f : 0f);
                 cs.SetFloat("_FlipNormals", isThickness ? 1f : 0f);
                 cs.SetFloat("_BackfaceCulling", settings.backfaceCulling ? 1f : 0f);
                 cs.SetFloat("_GroundPlane", (settings.groundPlane && !isThickness) ? 1f : 0f);

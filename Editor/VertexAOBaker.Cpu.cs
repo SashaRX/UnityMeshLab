@@ -103,6 +103,7 @@ namespace SashaRX.UnityMeshLab
                     float jCos = Mathf.Cos(jitterAngle), jSin = Mathf.Sin(jitterAngle);
 
                     bool cosW = settings.cosineWeighted;
+                    bool binaryHit = settings.binaryHit;
                     float occludedWeight = 0f, totalWeight = 0f;
                     for (int d = 0; d < directions.Length; d++)
                     {
@@ -132,8 +133,9 @@ namespace SashaRX.UnityMeshLab
                             }
                             else
                             {
-                                // Distance falloff: closer hits occlude more
-                                float falloff = 1f - hit.t / maxDist;
+                                // Binary: any hit fully occludes (Fewes-style, harder corners).
+                                // Falloff: closer hits occlude more (default, softer).
+                                float falloff = binaryHit ? 1f : (1f - hit.t / maxDist);
                                 occludedWeight += weight * falloff;
                                 continue;
                             }
@@ -145,7 +147,7 @@ namespace SashaRX.UnityMeshLab
                             float t = (groundY - origin.y) / jitteredDir.y;
                             if (t > 0 && t < maxDist)
                             {
-                                float falloff = 1f - t / maxDist;
+                                float falloff = binaryHit ? 1f : (1f - t / maxDist);
                                 occludedWeight += weight * falloff;
                             }
                         }
