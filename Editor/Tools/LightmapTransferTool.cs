@@ -1449,6 +1449,12 @@ namespace SashaRX.UnityMeshLab
                     OverwriteUvChannel(sidecarMesh, entry.originalMesh, 1);
                 }
 
+                // TBN: keep tangent presence in sync with the source FBX. If the FBX
+                // import did not produce tangents, do not let derived/welded meshes
+                // smuggle a synthesized tangent stream into the sidecar payload.
+                // When tangents are present, validate the W (handedness) component.
+                TangentValidator.EnforceTangentsMatchOriginal(sidecarMesh, entry.fbxMesh, "Sidecar");
+
                 Vector2[] auxiliaryUv = null;
                 int auxiliaryTargetUvChannel = -1;
                 if (hasAppliedAoTarget && aoUvChannel != 1)
@@ -1987,6 +1993,7 @@ namespace SashaRX.UnityMeshLab
                             if (uv2Donor != null)
                                 MergeUvComponentFromDonor(exportMesh, uv2Donor, aoUvChannel, aoUvComponent);
                         }
+                        TangentValidator.EnforceTangentsMatchOriginal(exportMesh, entry.fbxMesh, "FBX Export");
                         string meshName = ResolveExportMeshName(entry, resultMesh);
                         meshReplacements[meshName] = exportMesh;
                         if (entry.renderer != null)
@@ -2057,6 +2064,7 @@ namespace SashaRX.UnityMeshLab
                             if (uv2Donor != null)
                                 MergeUvComponentFromDonor(exportMesh, uv2Donor, aoUvChannel, aoUvComponent);
                         }
+                        TangentValidator.EnforceTangentsMatchOriginal(exportMesh, entry.fbxMesh, "FBX Export");
                         newMf.sharedMesh = exportMesh;
                         var mr = child.AddComponent<MeshRenderer>();
                         if (lastLodRendererTemplate != null)
@@ -2237,19 +2245,25 @@ namespace SashaRX.UnityMeshLab
                             for (int s = 0; s < srcCol.subMeshCount; s++)
                                 stripped.SetTriangles(srcCol.GetTriangles(s), s);
                             stripped.RecalculateNormals();
-                            // Generate tangents from normals (no UVs to derive from)
-                            var normals = stripped.normals;
-                            var tangents = new Vector4[normals.Length];
-                            for (int ti = 0; ti < normals.Length; ti++)
+                            // Only synthesize tangents when the source actually had them.
+                            // Otherwise downstream tooling sees added TBN data that did
+                            // not exist in the original FBX import.
+                            if (TangentValidator.HasTangents(srcCol))
                             {
-                                Vector3 n = normals[ti];
-                                Vector3 t = Vector3.Cross(n, Vector3.up);
-                                if (t.sqrMagnitude < 0.001f)
-                                    t = Vector3.Cross(n, Vector3.right);
-                                t.Normalize();
-                                tangents[ti] = new Vector4(t.x, t.y, t.z, 1f);
+                                var normals = stripped.normals;
+                                var tangents = new Vector4[normals.Length];
+                                for (int ti = 0; ti < normals.Length; ti++)
+                                {
+                                    Vector3 n = normals[ti];
+                                    Vector3 t = Vector3.Cross(n, Vector3.up);
+                                    if (t.sqrMagnitude < 0.001f)
+                                        t = Vector3.Cross(n, Vector3.right);
+                                    t.Normalize();
+                                    tangents[ti] = new Vector4(t.x, t.y, t.z, 1f);
+                                }
+                                stripped.tangents = tangents;
+                                TangentValidator.ValidateTangentsW(tangents, stripped.name, "FBX Export (collision)");
                             }
-                            stripped.tangents = tangents;
                             stripped.RecalculateBounds();
                             colMf.sharedMesh = stripped;
                         }
@@ -3090,6 +3104,7 @@ namespace SashaRX.UnityMeshLab
             {
                 Mesh m = GetResultMesh(e);
                 if (m == null) continue;
+                TangentValidator.EnforceTangentsMatchOriginal(m, e.fbxMesh, "SaveAll");
                 string ap = AssetDatabase.GenerateUniqueAssetPath(p + "/" + m.name + ".asset");
                 AssetDatabase.CreateAsset(m, ap); n++;
             }

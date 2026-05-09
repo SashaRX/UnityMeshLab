@@ -42,6 +42,7 @@ namespace SashaRX.UnityMeshLab
         public bool backfaceCulling = true;
         public bool useGPU        = true;
         public bool cosineWeighted = true;
+        public bool binaryHit     = false;
         public AOBakeType bakeType = AOBakeType.AmbientOcclusion;
         public VertexAOOccluderMode occluderMode = VertexAOOccluderMode.SameRootNearby;
         public float occluderRadiusMultiplier = 2.0f;
