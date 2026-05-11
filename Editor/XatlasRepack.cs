@@ -194,8 +194,50 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
-        static bool IsEquivalentShellForTileMerge(Vector2[] uv0, int[] tris, UvShell rep, UvShell candidate)
+        static bool IsEquivalentShellForTileMerge(Vector2[] uv0, int[] tris, Vector3[] positions, UvShell rep, UvShell candidate)
         {
+            // ── 3D shape gate (size only, orientation-independent) ──
+            // Two shells that share UV0 region but live on differently-sized
+            // 3D parts are NOT tile-instances — e.g. the wood plank and the
+            // box lid both reference the same wood-texture UV0 region, but
+            // collapsing them would bake the lid with the same lightmap as
+            // a single plank. Compare the 3D bounding-box extents, sorted to
+            // strip orientation, and require each dim within 30%. This
+            // accepts re-tessellated tile instances, mirrored instances, or
+            // 90°-rotated tile placements (same {L,W,H} multiset) while
+            // rejecting radically different-sized geometry that happens to
+            // overlap in UV0.
+            if (positions != null && positions.Length > 0)
+            {
+                Vector3 rMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                Vector3 rMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+                Vector3 cMin = rMin, cMax = rMax;
+                foreach (int v in rep.vertexIndices)
+                    if ((uint)v < (uint)positions.Length)
+                    {
+                        rMin = Vector3.Min(rMin, positions[v]);
+                        rMax = Vector3.Max(rMax, positions[v]);
+                    }
+                foreach (int v in candidate.vertexIndices)
+                    if ((uint)v < (uint)positions.Length)
+                    {
+                        cMin = Vector3.Min(cMin, positions[v]);
+                        cMax = Vector3.Max(cMax, positions[v]);
+                    }
+                Vector3 rSz = rMax - rMin;
+                Vector3 cSz = cMax - cMin;
+                float[] rDims = { Mathf.Abs(rSz.x), Mathf.Abs(rSz.y), Mathf.Abs(rSz.z) };
+                float[] cDims = { Mathf.Abs(cSz.x), Mathf.Abs(cSz.y), Mathf.Abs(cSz.z) };
+                System.Array.Sort(rDims);
+                System.Array.Sort(cDims);
+                for (int d = 0; d < 3; d++)
+                {
+                    float maxDim = Mathf.Max(rDims[d], cDims[d]);
+                    if (maxDim < 1e-6f) continue;
+                    if (Mathf.Abs(rDims[d] - cDims[d]) / maxDim > 0.3f) return false;
+                }
+            }
+
             // ── Tile-instance fast path via UV0 AABB IoU ──
             // Models with tiled UV0 (Wooden_Box_Long planks, brick walls,
             // wood floors) frequently have shells that share the same UV0
@@ -709,6 +751,12 @@ namespace SashaRX.UnityMeshLab
             int vertCount = mesh.vertexCount;
             int faceCount = tris.Length / 3;
 
+            // 3D vertex positions — needed by tile-merge guard to compare
+            // shell 3D AABB size (rejects same-UV0-region shells whose 3D
+            // shapes differ, e.g. wood-plank vs box-lid sharing the same
+            // wood-texture UV0 region).
+            Vector3[] positions = mesh.vertices;
+
             // ── Extract shells + build per-face shell IDs ──
             List<UvShell> shells;
             List<List<int>> overlapGroups;
@@ -763,7 +811,7 @@ namespace SashaRX.UnityMeshLab
                     {
                         int sid = group[gi];
                         if (sid < 0 || sid >= shells.Count) continue;
-                        if (!IsEquivalentShellForTileMerge(uv0, tris, shells[rep], shells[sid]))
+                        if (!IsEquivalentShellForTileMerge(uv0, tris, positions, shells[rep], shells[sid]))
                             continue;
                         skipShell[sid] = true;
                         shellToRep[sid] = rep;
@@ -1031,6 +1079,7 @@ namespace SashaRX.UnityMeshLab
             // ── Per-mesh pre-processing data ──
             var allUv0        = new Vector2[meshCount][];
             var allTris       = new int[meshCount][];
+            var allPositions  = new Vector3[meshCount][];
             var allShells     = new List<UvShell>[meshCount];
             var allOverlap    = new List<List<int>>[meshCount];
             var allFaceShells = new uint[meshCount][];
@@ -1046,6 +1095,7 @@ namespace SashaRX.UnityMeshLab
                     return results;
                 }
                 allTris[m] = mesh.triangles;
+                allPositions[m] = mesh.vertices;
                 List<UvShell> shells;
                 List<List<int>> overlapGroups;
                 allFaceShells[m] = UvShellExtractor.BuildPerFaceShellIds(
@@ -1113,7 +1163,7 @@ namespace SashaRX.UnityMeshLab
                             {
                                 int sid = group[gi];
                                 if (sid < 0 || sid >= shells.Count) continue;
-                                if (!IsEquivalentShellForTileMerge(allUv0[m], allTris[m], shells[rep], shells[sid]))
+                                if (!IsEquivalentShellForTileMerge(allUv0[m], allTris[m], allPositions[m], shells[rep], shells[sid]))
                                     continue;
                                 skipShell[sid] = true;
                                 shellToRep[sid] = rep;
