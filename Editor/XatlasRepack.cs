@@ -16,20 +16,14 @@ namespace SashaRX.UnityMeshLab
         public bool blockAlign;
         public bool bruteForce;
         /// <summary>
-        /// After xatlas pack + post-processing, uniformly rescale UV2 so the bbox
-        /// fills [padding, 1-padding] in both axes (preserves aspect ratio).
-        /// Fixes the "atlas 25 percent filled" issue on tiled-UV0 models where
-        /// xatlas auto-texelsPerUnit underestimates the needed scale. Skip is
-        /// applied automatically if the bbox is already > 95 percent filled.
+        /// Group-aware repack: for each overlap-group, feed xatlas ONE
+        /// representative shell, dispatch UV2 to the duplicate tiles after.
+        /// Critical for tiled-UV0 models — without this, 100 instanced tiles
+        /// are packed into 100 independent atlas regions and most of the
+        /// atlas stays empty. Tiles deliberately share the UV2 region of
+        /// their representative.
         /// </summary>
-        public bool normalizeAtlasFill;
-        /// <summary>
-        /// Rotate UV0 shells whose bbox aspect ratio exceeds 3:1 by 90 degrees
-        /// around their own centroid before feeding xatlas. Compensates for
-        /// bad bin-packing on tiled-mesh-edge shells (long thin strips). No
-        /// effect on shells that are already square-ish.
-        /// </summary>
-        public bool preRotateThinShells;
+        public bool mergeOverlappingTiles;
 
         public static RepackOptions Default => new RepackOptions
         {
@@ -40,8 +34,7 @@ namespace SashaRX.UnityMeshLab
             bilinear   = true,
             blockAlign = false,
             bruteForce = false,
-            normalizeAtlasFill = true,
-            preRotateThinShells = true,
+            mergeOverlappingTiles = true,
         };
     }
 
@@ -101,66 +94,6 @@ namespace SashaRX.UnityMeshLab
                 flipped++;
             }
             return flipped;
-        }
-
-        /// <summary>
-        /// Pre-repack: rotate UV0 shells with aspect ratio > 3:1 by 90° around their
-        /// own centroid in the flat UV0 copy. xatlas's bin-packer is very bad on
-        /// long thin charts (tiled mesh edges produce these), leaving most of the
-        /// atlas empty. Rotating them to more square-ish shapes before xatlas sees
-        /// them gives much denser packing.
-        ///
-        /// Does NOT modify mesh.uv (only the flat copy fed to xatlas). The transfer
-        /// pipeline matches shells on source.uv0 ↔ target.uv0, then copies the
-        /// resulting UV2 via similarity transform — so a rotated source UV2 layout
-        /// propagates correctly to all target LODs.
-        /// </summary>
-        internal static void PreRotateThinShells(
-            float[] uvFlat, List<UvShell> shells, int vertCount, string meshNameForLog)
-        {
-            if (uvFlat == null || shells == null || shells.Count == 0) return;
-            const float ASPECT_THRESHOLD = 3.0f;  // rotate when long-side / short-side > 3
-
-            int rotated = 0;
-            foreach (var sh in shells)
-            {
-                if (sh.vertexIndices == null || sh.vertexIndices.Count < 3) continue;
-
-                // Recompute fresh bbox from current uvFlat (overlap-perturb may have nudged it).
-                float minX = float.MaxValue, minY = float.MaxValue;
-                float maxX = float.MinValue, maxY = float.MinValue;
-                foreach (int vi in sh.vertexIndices)
-                {
-                    if (vi < 0 || vi >= vertCount) continue;
-                    float u = uvFlat[vi * 2], v = uvFlat[vi * 2 + 1];
-                    if (u < minX) minX = u; if (u > maxX) maxX = u;
-                    if (v < minY) minY = v; if (v > maxY) maxY = v;
-                }
-                float w = maxX - minX, h = maxY - minY;
-                if (w <= 1e-6f || h <= 1e-6f) continue;
-                float aspect = (w > h) ? w / h : h / w;
-                if (aspect <= ASPECT_THRESHOLD) continue;
-
-                // Rotate 90° around centroid (cx, cy). For width-dominant shell:
-                //   new_u = cx + (v - cy)
-                //   new_v = cy - (u - cx)
-                // This swaps the dominant axis while keeping texel content identical.
-                float cx = (minX + maxX) * 0.5f;
-                float cy = (minY + maxY) * 0.5f;
-                foreach (int vi in sh.vertexIndices)
-                {
-                    if (vi < 0 || vi >= vertCount) continue;
-                    float u = uvFlat[vi * 2], v = uvFlat[vi * 2 + 1];
-                    float du = u - cx, dv = v - cy;
-                    uvFlat[vi * 2]     = cx + dv;
-                    uvFlat[vi * 2 + 1] = cy - du;
-                }
-                rotated++;
-            }
-
-            if (rotated > 0)
-                UvtLog.Info(UvtLog.Category.Repack,
-                    $"PreRotateThinShells '{meshNameForLog}': rotated {rotated}/{shells.Count} thin shells (aspect > {ASPECT_THRESHOLD}:1)");
         }
 
         /// <summary>
@@ -644,22 +577,83 @@ namespace SashaRX.UnityMeshLab
                 uvFlat[i * 2 + 1] = uv0[i].y;
             }
 
-            // ── Perturb overlapping shells to break xatlas packing symmetry ──
-            PerturbOverlapShellsUv0(uvFlat, shells, overlapGroups);
+            // ── If not merging tiles, fall back to legacy perturb (helps xatlas
+            //    distinguish SymSplit halves that still need independent packing).
+            if (!opts.mergeOverlappingTiles)
+                PerturbOverlapShellsUv0(uvFlat, shells, overlapGroups);
 
-            // ── Rotate thin shells to improve atlas packing ──
-            // xatlas's bin-packer is poor on very long/narrow charts (tiled mesh
-            // edges produce these in UV0). Rotating shells with aspect > 3:1 by
-            // 90° around their own centroid makes them more square-ish without
-            // changing texel content — packing density jumps from ~25% to ~85%
-            // on the affected models (Wooden_Box_Long et al).
-            if (opts.preRotateThinShells)
-                PreRotateThinShells(uvFlat, shells, vertCount, mesh.name);
+            // ── Group-aware merge of overlapping shells ──
+            // Tiled-UV0 models (Wooden_Box_Long etc.) carry N>>K shells where
+            // K-many representative patches are duplicated N times by tile
+            // instancing — all overlapping in UV0. xatlas would pack the N
+            // independent charts and leave most of the atlas empty. Instead,
+            // we pick one representative per overlap-group, feed xatlas ONLY
+            // the representative faces, then dispatch the resulting UV2 to
+            // every duplicate tile so they share the same atlas region.
+            // Mesh.uv (UV0) is never modified — only the indices array sent
+            // to xatlas is filtered. Transfer pipeline keeps working against
+            // the full set of source shells.
+            var shellToRep = new int[shells.Count];           // shellId -> representativeShellId
+            var skipShell  = new bool[shells.Count];          // true for duplicate tiles (skip in xatlas)
+            for (int si = 0; si < shells.Count; si++) shellToRep[si] = si;
+            int skippedShellCount = 0;
+            int skippedFaceCount  = 0;
+            if (opts.mergeOverlappingTiles && overlapGroups != null)
+            {
+                foreach (var group in overlapGroups)
+                {
+                    if (group == null || group.Count < 2) continue;
+                    int rep = group[0]; // deterministic — first by shellId
+                    for (int gi = 1; gi < group.Count; gi++)
+                    {
+                        int sid = group[gi];
+                        if (sid < 0 || sid >= shells.Count) continue;
+                        skipShell[sid] = true;
+                        shellToRep[sid] = rep;
+                        skippedShellCount++;
+                        skippedFaceCount += shells[sid].faceIndices.Count;
+                    }
+                }
+            }
 
-            // ── Flatten indices ──
-            uint[] indices = new uint[tris.Length];
-            for (int i = 0; i < tris.Length; i++)
-                indices[i] = (uint)tris[i];
+            // ── Flatten indices, excluding faces of duplicate tile shells ──
+            var faceIsDup = new bool[faceCount];
+            for (int si = 0; si < shells.Count; si++)
+            {
+                if (!skipShell[si]) continue;
+                foreach (int f in shells[si].faceIndices)
+                    if (f >= 0 && f < faceCount) faceIsDup[f] = true;
+            }
+            uint[] indices;
+            uint[] xatlasFaceShellIds;
+            uint   xatlasFaceCount;
+            if (skippedShellCount > 0)
+            {
+                int keepFaces = faceCount - skippedFaceCount;
+                if (keepFaces < 0) keepFaces = 0;
+                indices = new uint[keepFaces * 3];
+                xatlasFaceShellIds = new uint[keepFaces];
+                int w = 0, fw = 0;
+                for (int f = 0; f < faceCount; f++)
+                {
+                    if (faceIsDup[f]) continue;
+                    indices[w++] = (uint)tris[f * 3];
+                    indices[w++] = (uint)tris[f * 3 + 1];
+                    indices[w++] = (uint)tris[f * 3 + 2];
+                    xatlasFaceShellIds[fw++] = faceShellIds[f];
+                }
+                xatlasFaceCount = (uint)keepFaces;
+                UvtLog.Info(UvtLog.Category.Repack,
+                    $"Group-aware repack '{mesh.name}': {shells.Count} shells → {shells.Count - skippedShellCount} fed to xatlas ({skippedShellCount} duplicates merged into {overlapGroups.Count} groups)");
+            }
+            else
+            {
+                indices = new uint[tris.Length];
+                for (int i = 0; i < tris.Length; i++)
+                    indices[i] = (uint)tris[i];
+                xatlasFaceShellIds = faceShellIds;
+                xatlasFaceCount = (uint)faceCount;
+            }
 
             // ── xatlas pipeline ──
             XatlasNative.xatlasCreate();
@@ -669,7 +663,7 @@ namespace SashaRX.UnityMeshLab
                 int addErr = XatlasNative.xatlasAddUvMesh(
                     uvFlat, (uint)vertCount,
                     indices, (uint)indices.Length,
-                    faceShellIds, (uint)faceCount);
+                    xatlasFaceShellIds, xatlasFaceCount);
 
                 if (addErr != 0)
                 {
@@ -727,22 +721,74 @@ namespace SashaRX.UnityMeshLab
 
                 result.conflictVertices = conflicts;
 
+                // ── Dispatch UV2 to duplicate tile shells (group-aware repack) ──
+                // For each duplicate-tile shell skipped above, copy UV2 from the
+                // representative shell's vertices via UV0 nearest-neighbor match.
+                // Tiles overlap perfectly in UV0, so each tile vertex finds a
+                // representative vertex with near-identical UV0 → identical UV2.
+                if (skippedShellCount > 0)
+                {
+                    int dispatched = 0;
+                    for (int si = 0; si < shells.Count; si++)
+                    {
+                        if (!skipShell[si]) continue;
+                        int repId = shellToRep[si];
+                        if (repId < 0 || repId >= shells.Count) continue;
+                        var repShell = shells[repId];
+                        var dupShell = shells[si];
+                        if (repShell.vertexIndices == null || repShell.vertexIndices.Count == 0) continue;
+                        // Build a small lookup of representative verts for NN search
+                        var repVerts = new List<int>(repShell.vertexIndices);
+                        foreach (int dv in dupShell.vertexIndices)
+                        {
+                            if (dv < 0 || dv >= vertCount) continue;
+                            // Skip verts that xatlas already filled (vertex shared with rep shell)
+                            if (uv2[dv].sqrMagnitude > 1e-12f) continue;
+                            float dux = uvFlat[dv * 2], duy = uvFlat[dv * 2 + 1];
+                            int   bestRv = -1;
+                            float bestD2 = float.MaxValue;
+                            for (int k = 0; k < repVerts.Count; k++)
+                            {
+                                int rv = repVerts[k];
+                                if (rv < 0 || rv >= vertCount) continue;
+                                float ddx = uvFlat[rv * 2] - dux;
+                                float ddy = uvFlat[rv * 2 + 1] - duy;
+                                float d2 = ddx * ddx + ddy * ddy;
+                                if (d2 < bestD2) { bestD2 = d2; bestRv = rv; }
+                            }
+                            if (bestRv >= 0 && uv2[bestRv].sqrMagnitude > 1e-12f)
+                            {
+                                uv2[dv] = uv2[bestRv];
+                                dispatched++;
+                            }
+                        }
+                    }
+                    UvtLog.Info(UvtLog.Category.Repack,
+                        $"Dispatched UV2 to {dispatched} tile vertices across {skippedShellCount} duplicate shells");
+                }
+
                 // ── Post-process: fix overlapping UV2 shells ──
                 // Phase 1: known UV0 overlap groups (fast path, catches SymSplit halves in same group)
-                FixOverlappingUv2Shells(uv2, shells, overlapGroups,
-                    opts.padding, result.atlasWidth, result.atlasHeight, skipRescale: true);
+                // NOTE: skip when group-merge dispatched tiles — those are *intentionally* overlapping in UV2.
+                if (skippedShellCount == 0)
+                    FixOverlappingUv2Shells(uv2, shells, overlapGroups,
+                        opts.padding, result.atlasWidth, result.atlasHeight, skipRescale: true);
 
-                // Phase 2: centroid-proximity safety net — find shells packed at
-                // nearly identical UV2 positions (true SymSplit near-duplicates).
-                // Only checks pairs within 4px centroid distance, avoiding the
-                // false positives of the old global N² pass on dense atlases.
-                FixNearDuplicateUv2Shells(uv2, shells,
-                    opts.padding, result.atlasWidth, result.atlasHeight);
-
-                // Phase 3: free-space relocator for any remaining overlaps.
-                if (shells.Count > 1)
-                    RelocateToFreeSpace(uv2, shells,
+                // Phase 2 + 3: skip near-duplicate detection / free-space relocation
+                // when group-aware merge dispatched tiles into intentional UV2
+                // overlap. Those phases would un-do the deliberate sharing.
+                if (skippedShellCount == 0)
+                {
+                    // Phase 2: centroid-proximity safety net — find shells packed at
+                    // nearly identical UV2 positions (true SymSplit near-duplicates).
+                    FixNearDuplicateUv2Shells(uv2, shells,
                         opts.padding, result.atlasWidth, result.atlasHeight);
+
+                    // Phase 3: free-space relocator for any remaining overlaps.
+                    if (shells.Count > 1)
+                        RelocateToFreeSpace(uv2, shells,
+                            opts.padding, result.atlasWidth, result.atlasHeight);
+                }
 
                 // ── Post-process: fix orphan vertices ──
                 int orphanVerts, orphanTris, snapped;
@@ -757,13 +803,6 @@ namespace SashaRX.UnityMeshLab
                 // ── Border padding inset ──
                 if (opts.borderPadding > 0 && result.atlasWidth > 0)
                     ApplyBorderInset(uv2, opts.borderPadding, result.atlasWidth, result.atlasHeight);
-
-                // ── Normalize atlas fill (rescale UV bbox to [pad, 1-pad]) ──
-                // Mitigates xatlas's auto-texelsPerUnit underfill on tiled-UV0
-                // models where charts end up cramped in a corner. Aspect ratio
-                // preserved; skipped automatically when already well-filled.
-                if (opts.normalizeAtlasFill)
-                    NormalizeAtlasFill(uv2, opts.padding, result.atlasWidth, result.atlasHeight, mesh.name);
 
                 // ── Apply UV2 (channel 1 — Unity lightmap channel, mesh.uv2) ──
                 mesh.SetUVs(1, uv2);
@@ -843,6 +882,13 @@ namespace SashaRX.UnityMeshLab
             for (int m = 0; m < meshCount; m++)
                 results[m].flippedShells = 0;
 
+            // Per-mesh group-merge state, retained so post-processing can
+            // dispatch UV2 to the duplicate tile shells skipped during xatlas.
+            var allUvFlat      = new float[meshCount][];
+            var allShellToRep  = new int[meshCount][];
+            var allSkipShell   = new bool[meshCount][];
+            var allSkippedCount = new int[meshCount];
+
             // ── Single xatlas session for all meshes ──
             XatlasNative.xatlasCreate();
             try
@@ -860,22 +906,84 @@ namespace SashaRX.UnityMeshLab
                         uvFlat[i * 2]     = allUv0[m][i].x;
                         uvFlat[i * 2 + 1] = allUv0[m][i].y;
                     }
+                    allUvFlat[m] = uvFlat;
 
-                    // Perturb overlapping shells to break xatlas packing symmetry
-                    PerturbOverlapShellsUv0(uvFlat, allShells[m], allOverlap[m]);
+                    if (!opts.mergeOverlappingTiles)
+                        PerturbOverlapShellsUv0(uvFlat, allShells[m], allOverlap[m]);
 
-                    // Rotate thin shells (aspect > 3:1) by 90° to improve packing
-                    if (opts.preRotateThinShells)
-                        PreRotateThinShells(uvFlat, allShells[m], vertCount, meshes[m].name);
+                    // Group-aware merge: pick representative per overlap-group,
+                    // hide duplicate tile faces from xatlas.
+                    var shells = allShells[m];
+                    var overlapGroups = allOverlap[m];
+                    var shellToRep = new int[shells.Count];
+                    var skipShell  = new bool[shells.Count];
+                    for (int si = 0; si < shells.Count; si++) shellToRep[si] = si;
+                    int skippedShellCount = 0;
+                    int skippedFaceCount  = 0;
+                    if (opts.mergeOverlappingTiles && overlapGroups != null)
+                    {
+                        foreach (var group in overlapGroups)
+                        {
+                            if (group == null || group.Count < 2) continue;
+                            int rep = group[0];
+                            for (int gi = 1; gi < group.Count; gi++)
+                            {
+                                int sid = group[gi];
+                                if (sid < 0 || sid >= shells.Count) continue;
+                                skipShell[sid] = true;
+                                shellToRep[sid] = rep;
+                                skippedShellCount++;
+                                skippedFaceCount += shells[sid].faceIndices.Count;
+                            }
+                        }
+                    }
+                    allShellToRep[m] = shellToRep;
+                    allSkipShell[m]  = skipShell;
+                    allSkippedCount[m] = skippedShellCount;
 
-                    uint[] indices = new uint[allTris[m].Length];
-                    for (int i = 0; i < allTris[m].Length; i++)
-                        indices[i] = (uint)allTris[m][i];
+                    var faceIsDup = new bool[faceCount];
+                    for (int si = 0; si < shells.Count; si++)
+                    {
+                        if (!skipShell[si]) continue;
+                        foreach (int f in shells[si].faceIndices)
+                            if (f >= 0 && f < faceCount) faceIsDup[f] = true;
+                    }
+
+                    uint[] indices;
+                    uint[] xatlasFaceShellIds;
+                    uint   xatlasFaceCount;
+                    if (skippedShellCount > 0)
+                    {
+                        int keepFaces = faceCount - skippedFaceCount;
+                        if (keepFaces < 0) keepFaces = 0;
+                        indices = new uint[keepFaces * 3];
+                        xatlasFaceShellIds = new uint[keepFaces];
+                        int w = 0, fw = 0;
+                        for (int f = 0; f < faceCount; f++)
+                        {
+                            if (faceIsDup[f]) continue;
+                            indices[w++] = (uint)allTris[m][f * 3];
+                            indices[w++] = (uint)allTris[m][f * 3 + 1];
+                            indices[w++] = (uint)allTris[m][f * 3 + 2];
+                            xatlasFaceShellIds[fw++] = allFaceShells[m][f];
+                        }
+                        xatlasFaceCount = (uint)keepFaces;
+                        UvtLog.Info(UvtLog.Category.Repack,
+                            $"Group-aware repack '{mesh.name}': {shells.Count} shells → {shells.Count - skippedShellCount} fed to xatlas ({skippedShellCount} duplicates merged into {overlapGroups.Count} groups)");
+                    }
+                    else
+                    {
+                        indices = new uint[allTris[m].Length];
+                        for (int i = 0; i < allTris[m].Length; i++)
+                            indices[i] = (uint)allTris[m][i];
+                        xatlasFaceShellIds = allFaceShells[m];
+                        xatlasFaceCount = (uint)faceCount;
+                    }
 
                     int addErr = XatlasNative.xatlasAddUvMesh(
                         uvFlat, (uint)vertCount,
                         indices, (uint)indices.Length,
-                        allFaceShells[m], (uint)faceCount);
+                        xatlasFaceShellIds, xatlasFaceCount);
 
                     if (addErr != 0)
                     {
@@ -948,18 +1056,66 @@ namespace SashaRX.UnityMeshLab
                               out uv2, out vertChartId, out conflicts);
                     results[m].conflictVertices = conflicts;
 
-                    // Fix overlapping UV2 shells (skip per-mesh rescale — do global rescale below)
-                    totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], allOverlap[m],
-                        opts.padding, atlasW, atlasH, skipRescale: true);
+                    // ── Dispatch UV2 to duplicate tile shells (group-aware repack) ──
+                    int skippedShellCount = allSkippedCount[m];
+                    if (skippedShellCount > 0)
+                    {
+                        var shellsM     = allShells[m];
+                        var skipShellM  = allSkipShell[m];
+                        var shellToRepM = allShellToRep[m];
+                        var uvFlatM     = allUvFlat[m];
+                        int dispatched  = 0;
+                        for (int si = 0; si < shellsM.Count; si++)
+                        {
+                            if (!skipShellM[si]) continue;
+                            int repId = shellToRepM[si];
+                            if (repId < 0 || repId >= shellsM.Count) continue;
+                            var repShell = shellsM[repId];
+                            var dupShell = shellsM[si];
+                            if (repShell.vertexIndices == null || repShell.vertexIndices.Count == 0) continue;
+                            var repVerts = new List<int>(repShell.vertexIndices);
+                            foreach (int dv in dupShell.vertexIndices)
+                            {
+                                if (dv < 0 || dv >= vertCount) continue;
+                                if (uv2[dv].sqrMagnitude > 1e-12f) continue;
+                                float dux = uvFlatM[dv * 2], duy = uvFlatM[dv * 2 + 1];
+                                int bestRv = -1; float bestD2 = float.MaxValue;
+                                for (int k = 0; k < repVerts.Count; k++)
+                                {
+                                    int rv = repVerts[k];
+                                    if (rv < 0 || rv >= vertCount) continue;
+                                    float ddx = uvFlatM[rv * 2] - dux;
+                                    float ddy = uvFlatM[rv * 2 + 1] - duy;
+                                    float d2 = ddx * ddx + ddy * ddy;
+                                    if (d2 < bestD2) { bestD2 = d2; bestRv = rv; }
+                                }
+                                if (bestRv >= 0 && uv2[bestRv].sqrMagnitude > 1e-12f)
+                                {
+                                    uv2[dv] = uv2[bestRv];
+                                    dispatched++;
+                                }
+                            }
+                        }
+                        UvtLog.Info(UvtLog.Category.Repack,
+                            $"Dispatched UV2 to {dispatched} tile vertices across {skippedShellCount} duplicate shells");
 
-                    // Centroid-proximity safety net for near-duplicate SymSplit shells
-                    totalShifted += FixNearDuplicateUv2Shells(uv2, allShells[m],
-                        opts.padding, atlasW, atlasH, skipRescale: true);
+                        // Skip overlap-fix phases — duplicate tiles are *intentionally* overlapping in UV2.
+                    }
+                    else
+                    {
+                        // Fix overlapping UV2 shells (skip per-mesh rescale — do global rescale below)
+                        totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], allOverlap[m],
+                            opts.padding, atlasW, atlasH, skipRescale: true);
 
-                    // Free-space relocator for any remaining overlaps
-                    if (allShells[m].Count > 1)
-                        totalShifted += RelocateToFreeSpace(uv2, allShells[m],
-                            opts.padding, atlasW, atlasH);
+                        // Centroid-proximity safety net for near-duplicate SymSplit shells
+                        totalShifted += FixNearDuplicateUv2Shells(uv2, allShells[m],
+                            opts.padding, atlasW, atlasH, skipRescale: true);
+
+                        // Free-space relocator for any remaining overlaps
+                        if (allShells[m].Count > 1)
+                            totalShifted += RelocateToFreeSpace(uv2, allShells[m],
+                                opts.padding, atlasW, atlasH);
+                    }
 
                     // Fix orphan vertices
                     int orphanVerts, orphanTris, snapped;
@@ -1005,9 +1161,6 @@ namespace SashaRX.UnityMeshLab
                     if (opts.borderPadding > 0 && atlasW > 0)
                         ApplyBorderInset(allUv2[m], opts.borderPadding, atlasW, atlasH);
 
-                    if (opts.normalizeAtlasFill)
-                        NormalizeAtlasFill(allUv2[m], opts.padding, atlasW, atlasH, meshes[m].name);
-
                     meshes[m].SetUVs(1, allUv2[m]);
                 }
             }
@@ -1017,56 +1170,6 @@ namespace SashaRX.UnityMeshLab
             }
 
             return results;
-        }
-
-        // ─────────────────────────────────────────────────────────────────
-        // Rescale UV2 bbox to fill [padding, 1-padding] in [0,1] uniformly.
-        // Workaround for xatlas auto-texelsPerUnit underfilling on tiled-UV0
-        // models (Wooden_Box_Long etc): observed atlas occupancy ~25% with
-        // the same metric-quality charts, just shrunk into a corner.
-        // No-op when bbox is already > 95% filled. Aspect ratio preserved.
-        // ─────────────────────────────────────────────────────────────────
-        internal static void NormalizeAtlasFill(Vector2[] uv2, uint padding, uint atlasW, uint atlasH, string meshNameForLog)
-        {
-            if (uv2 == null || uv2.Length == 0) return;
-
-            Vector2 mn = new Vector2(float.MaxValue, float.MaxValue);
-            Vector2 mx = new Vector2(float.MinValue, float.MinValue);
-            int nonZero = 0;
-            for (int i = 0; i < uv2.Length; i++)
-            {
-                if (uv2[i].sqrMagnitude < 1e-12f) continue;
-                mn = Vector2.Min(mn, uv2[i]);
-                mx = Vector2.Max(mx, uv2[i]);
-                nonZero++;
-            }
-            if (nonZero == 0) return;
-
-            Vector2 size = mx - mn;
-            if (size.x < 1e-6f || size.y < 1e-6f) return;
-
-            float padU = atlasW > 0 ? (float)padding / atlasW : 0f;
-            float padV = atlasH > 0 ? (float)padding / atlasH : 0f;
-            float availU = Mathf.Max(0.05f, 1f - 2f * padU);
-            float availV = Mathf.Max(0.05f, 1f - 2f * padV);
-
-            float scale = Mathf.Min(availU / size.x, availV / size.y);
-            if (scale <= 1.05f)
-            {
-                UvtLog.Verbose(UvtLog.Category.Repack,
-                    $"NormalizeAtlasFill '{meshNameForLog}': bbox already {size.x:F3}x{size.y:F3}, scale={scale:F2} ≤ 1.05 — skipped");
-                return;
-            }
-
-            Vector2 used = size * scale;
-            Vector2 offset = new Vector2((1f - used.x) * 0.5f, (1f - used.y) * 0.5f);
-            for (int i = 0; i < uv2.Length; i++)
-            {
-                if (uv2[i].sqrMagnitude < 1e-12f) continue;
-                uv2[i] = offset + (uv2[i] - mn) * scale;
-            }
-            UvtLog.Info(UvtLog.Category.Repack,
-                $"NormalizeAtlasFill '{meshNameForLog}': bbox {size.x:F3}x{size.y:F3} → scaled by {scale:F2}, util {(size.x*size.y):F3} → {(used.x*used.y):F3}");
         }
 
         // ─────────────────────────────────────────────────────────────────
