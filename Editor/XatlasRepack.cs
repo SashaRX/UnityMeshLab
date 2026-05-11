@@ -141,6 +141,80 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        static float ComputeShellUvAreaAbs(Vector2[] uv, int[] tris, UvShell shell)
+        {
+            double area2 = 0.0;
+            foreach (int f in shell.faceIndices)
+            {
+                int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
+                if ((uint)i0 >= (uint)uv.Length || (uint)i1 >= (uint)uv.Length || (uint)i2 >= (uint)uv.Length)
+                    continue;
+                var a = uv[i0];
+                var b = uv[i1];
+                var c = uv[i2];
+                area2 += (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+            }
+            return Mathf.Abs((float)area2 * 0.5f);
+        }
+
+        static bool IsEquivalentShellForTileMerge(Vector2[] uv0, int[] tris, UvShell rep, UvShell candidate)
+        {
+            if (rep.faceIndices.Count != candidate.faceIndices.Count) return false;
+            if (rep.vertexIndices.Count != candidate.vertexIndices.Count) return false;
+
+            Vector2 repSize = rep.boundsMax - rep.boundsMin;
+            Vector2 candSize = candidate.boundsMax - candidate.boundsMin;
+            float sx = Mathf.Max(1e-6f, Mathf.Abs(repSize.x), Mathf.Abs(candSize.x));
+            float sy = Mathf.Max(1e-6f, Mathf.Abs(repSize.y), Mathf.Abs(candSize.y));
+            if (Mathf.Abs(repSize.x - candSize.x) > sx * 0.01f) return false;
+            if (Mathf.Abs(repSize.y - candSize.y) > sy * 0.01f) return false;
+
+            float repArea = ComputeShellUvAreaAbs(uv0, tris, rep);
+            float candArea = ComputeShellUvAreaAbs(uv0, tris, candidate);
+            float areaDen = Mathf.Max(1e-8f, repArea, candArea);
+            if (Mathf.Abs(repArea - candArea) / areaDen > 0.02f) return false;
+
+            // Stronger geometry gate: require the normalized radial signature
+            // around shell centroid to match (order-independent, mirror-safe).
+            // This avoids collapsing merely-overlapping charts that share AABB
+            // and area but have different shape.
+            const float radialTol = 0.03f;
+            var repSig = new List<float>(rep.vertexIndices.Count);
+            var candSig = new List<float>(candidate.vertexIndices.Count);
+            Vector2 repCtr = (rep.boundsMin + rep.boundsMax) * 0.5f;
+            Vector2 candCtr = (candidate.boundsMin + candidate.boundsMax) * 0.5f;
+            for (int i = 0; i < rep.vertexIndices.Count; i++)
+            {
+                int rvi = rep.vertexIndices[i];
+                int cvi = candidate.vertexIndices[i];
+                if ((uint)rvi < (uint)uv0.Length)
+                {
+                    Vector2 d = uv0[rvi] - repCtr;
+                    repSig.Add(d.sqrMagnitude);
+                }
+                if ((uint)cvi < (uint)uv0.Length)
+                {
+                    Vector2 d = uv0[cvi] - candCtr;
+                    candSig.Add(d.sqrMagnitude);
+                }
+            }
+            if (repSig.Count != candSig.Count || repSig.Count == 0) return false;
+            repSig.Sort();
+            candSig.Sort();
+            float repMax = repSig[repSig.Count - 1];
+            float candMax = candSig[candSig.Count - 1];
+            float repDen = Mathf.Max(1e-8f, repMax);
+            float candDen = Mathf.Max(1e-8f, candMax);
+            for (int i = 0; i < repSig.Count; i++)
+            {
+                float rn = repSig[i] / repDen;
+                float cn = candSig[i] / candDen;
+                if (Mathf.Abs(rn - cn) > radialTol) return false;
+            }
+
+            return true;
+        }
+
         /// <summary>
         /// Post-repack: detect overlapping UV2 bounding boxes among shells that
         /// shared UV0 space (overlap groups) and shift colliding shells apart.
@@ -614,6 +688,8 @@ namespace SashaRX.UnityMeshLab
                     {
                         int sid = group[gi];
                         if (sid < 0 || sid >= shells.Count) continue;
+                        if (!IsEquivalentShellForTileMerge(uv0, tris, shells[rep], shells[sid]))
+                            continue;
                         skipShell[sid] = true;
                         shellToRep[sid] = rep;
                         skippedShellCount++;
@@ -778,25 +854,19 @@ namespace SashaRX.UnityMeshLab
                 // ── Post-process: fix overlapping UV2 shells ──
                 // Phase 1: known UV0 overlap groups (fast path, catches SymSplit halves in same group)
                 // NOTE: skip when group-merge dispatched tiles — those are *intentionally* overlapping in UV2.
-                if (skippedShellCount == 0)
-                    FixOverlappingUv2Shells(uv2, shells, overlapGroups,
-                        opts.padding, result.atlasWidth, result.atlasHeight, skipRescale: true);
+                // Always run overlap cleanup; duplicate shells intentionally share UV2,
+                // but accidental non-merged overlaps still need fixing.
+                FixOverlappingUv2Shells(uv2, shells, overlapGroups,
+                    opts.padding, result.atlasWidth, result.atlasHeight, skipRescale: true);
 
-                // Phase 2 + 3: skip near-duplicate detection / free-space relocation
-                // when group-aware merge dispatched tiles into intentional UV2
-                // overlap. Those phases would un-do the deliberate sharing.
-                if (skippedShellCount == 0)
-                {
-                    // Phase 2: centroid-proximity safety net — find shells packed at
-                    // nearly identical UV2 positions (true SymSplit near-duplicates).
-                    FixNearDuplicateUv2Shells(uv2, shells,
+                // Phase 2: centroid-proximity safety net.
+                FixNearDuplicateUv2Shells(uv2, shells,
+                    opts.padding, result.atlasWidth, result.atlasHeight);
+
+                // Phase 3: free-space relocator for any remaining overlaps.
+                if (shells.Count > 1)
+                    RelocateToFreeSpace(uv2, shells,
                         opts.padding, result.atlasWidth, result.atlasHeight);
-
-                    // Phase 3: free-space relocator for any remaining overlaps.
-                    if (shells.Count > 1)
-                        RelocateToFreeSpace(uv2, shells,
-                            opts.padding, result.atlasWidth, result.atlasHeight);
-                }
 
                 // ── Post-process: fix orphan vertices ──
                 int orphanVerts, orphanTris, snapped;
@@ -938,6 +1008,8 @@ namespace SashaRX.UnityMeshLab
                             {
                                 int sid = group[gi];
                                 if (sid < 0 || sid >= shells.Count) continue;
+                                if (!IsEquivalentShellForTileMerge(allUv0[m], allTris[m], shells[rep], shells[sid]))
+                                    continue;
                                 skipShell[sid] = true;
                                 shellToRep[sid] = rep;
                                 skippedShellCount++;
@@ -1109,23 +1181,20 @@ namespace SashaRX.UnityMeshLab
                         UvtLog.Info(UvtLog.Category.Repack,
                             $"Dispatched UV2 to {dispatched} tile vertices across {skippedShellCount} duplicate shells");
 
-                        // Skip overlap-fix phases — duplicate tiles are *intentionally* overlapping in UV2.
                     }
-                    else
-                    {
-                        // Fix overlapping UV2 shells (skip per-mesh rescale — do global rescale below)
-                        totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], allOverlap[m],
-                            opts.padding, atlasW, atlasH, skipRescale: true);
+                    // Always run overlap cleanup; merged duplicates are intentional
+                    // overlaps but non-merged accidental overlaps must be fixed.
+                    totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], allOverlap[m],
+                        opts.padding, atlasW, atlasH, skipRescale: true);
 
-                        // Centroid-proximity safety net for near-duplicate SymSplit shells
-                        totalShifted += FixNearDuplicateUv2Shells(uv2, allShells[m],
-                            opts.padding, atlasW, atlasH, skipRescale: true);
+                    // Centroid-proximity safety net for near-duplicate SymSplit shells
+                    totalShifted += FixNearDuplicateUv2Shells(uv2, allShells[m],
+                        opts.padding, atlasW, atlasH, skipRescale: true);
 
-                        // Free-space relocator for any remaining overlaps
-                        if (allShells[m].Count > 1)
-                            totalShifted += RelocateToFreeSpace(uv2, allShells[m],
-                                opts.padding, atlasW, atlasH);
-                    }
+                    // Free-space relocator for any remaining overlaps
+                    if (allShells[m].Count > 1)
+                        totalShifted += RelocateToFreeSpace(uv2, allShells[m],
+                            opts.padding, atlasW, atlasH);
 
                     // Fix orphan vertices
                     int orphanVerts, orphanTris, snapped;
