@@ -854,6 +854,11 @@ namespace SashaRX.UnityMeshLab
                 if (skippedShellCount > 0)
                 {
                     int dispatched = 0;
+                    int diagDupVerts = 0;
+                    int diagAlreadyFilled = 0;
+                    int diagNoCandidate = 0;
+                    int diagRepNoUv2 = 0;
+                    int diagOutOfRange = 0;
                     for (int si = 0; si < shells.Count; si++)
                     {
                         if (!skipShell[si]) continue;
@@ -866,9 +871,10 @@ namespace SashaRX.UnityMeshLab
                         var repVerts = new List<int>(repShell.vertexIndices);
                         foreach (int dv in dupShell.vertexIndices)
                         {
-                            if (dv < 0 || dv >= vertCount) continue;
+                            diagDupVerts++;
+                            if (dv < 0 || dv >= vertCount) { diagOutOfRange++; continue; }
                             // Skip verts that xatlas already filled (vertex shared with rep shell)
-                            if (uv2[dv].sqrMagnitude > 1e-12f) continue;
+                            if (uv2[dv].sqrMagnitude > 1e-12f) { diagAlreadyFilled++; continue; }
                             float dux = uvFlat[dv * 2], duy = uvFlat[dv * 2 + 1];
                             int   bestRv = -1;
                             float bestD2 = float.MaxValue;
@@ -881,15 +887,16 @@ namespace SashaRX.UnityMeshLab
                                 float d2 = ddx * ddx + ddy * ddy;
                                 if (d2 < bestD2) { bestD2 = d2; bestRv = rv; }
                             }
-                            if (bestRv >= 0 && uv2[bestRv].sqrMagnitude > 1e-12f)
-                            {
-                                uv2[dv] = uv2[bestRv];
-                                dispatched++;
-                            }
+                            if (bestRv < 0) { diagNoCandidate++; continue; }
+                            if (uv2[bestRv].sqrMagnitude <= 1e-12f) { diagRepNoUv2++; continue; }
+                            uv2[dv] = uv2[bestRv];
+                            dispatched++;
                         }
                     }
                     UvtLog.Info(UvtLog.Category.Repack,
-                        $"Dispatched UV2 to {dispatched} tile vertices across {skippedShellCount} duplicate shells");
+                        $"Dispatched UV2 to {dispatched} tile vertices across {skippedShellCount} duplicate shells " +
+                        $"(diag: dupVerts={diagDupVerts} alreadyFilled={diagAlreadyFilled} " +
+                        $"oor={diagOutOfRange} noCand={diagNoCandidate} repNoUv2={diagRepNoUv2})");
                 }
 
                 // ── Post-process: fix overlapping UV2 shells ──
@@ -1206,6 +1213,15 @@ namespace SashaRX.UnityMeshLab
                         var shellToRepM = allShellToRep[m];
                         var uvFlatM     = allUvFlat[m];
                         int dispatched  = 0;
+                        int diagDupVerts = 0;
+                        int diagAlreadyFilled = 0;
+                        int diagNoCandidate = 0;
+                        int diagRepNoUv2 = 0;
+                        int diagOutOfRange = 0;
+                        int diagFirstFilledIdx = -1;
+                        Vector2 diagFirstFilledUv = default;
+                        int diagFirstRepNoUv2Rv = -1;
+                        Vector2 diagFirstRepNoUv2RepUv2 = default;
                         for (int si = 0; si < shellsM.Count; si++)
                         {
                             if (!skipShellM[si]) continue;
@@ -1217,8 +1233,14 @@ namespace SashaRX.UnityMeshLab
                             var repVerts = new List<int>(repShell.vertexIndices);
                             foreach (int dv in dupShell.vertexIndices)
                             {
-                                if (dv < 0 || dv >= vertCount) continue;
-                                if (uv2[dv].sqrMagnitude > 1e-12f) continue;
+                                diagDupVerts++;
+                                if (dv < 0 || dv >= vertCount) { diagOutOfRange++; continue; }
+                                if (uv2[dv].sqrMagnitude > 1e-12f)
+                                {
+                                    if (diagFirstFilledIdx < 0) { diagFirstFilledIdx = dv; diagFirstFilledUv = uv2[dv]; }
+                                    diagAlreadyFilled++;
+                                    continue;
+                                }
                                 float dux = uvFlatM[dv * 2], duy = uvFlatM[dv * 2 + 1];
                                 int bestRv = -1; float bestD2 = float.MaxValue;
                                 for (int k = 0; k < repVerts.Count; k++)
@@ -1230,16 +1252,27 @@ namespace SashaRX.UnityMeshLab
                                     float d2 = ddx * ddx + ddy * ddy;
                                     if (d2 < bestD2) { bestD2 = d2; bestRv = rv; }
                                 }
-                                if (bestRv >= 0 && uv2[bestRv].sqrMagnitude > 1e-12f)
+                                if (bestRv < 0) { diagNoCandidate++; continue; }
+                                if (uv2[bestRv].sqrMagnitude <= 1e-12f)
                                 {
-                                    uv2[dv] = uv2[bestRv];
-                                    dispatched++;
+                                    if (diagFirstRepNoUv2Rv < 0) { diagFirstRepNoUv2Rv = bestRv; diagFirstRepNoUv2RepUv2 = uv2[bestRv]; }
+                                    diagRepNoUv2++;
+                                    continue;
                                 }
+                                uv2[dv] = uv2[bestRv];
+                                dispatched++;
                             }
                         }
                         UvtLog.Info(UvtLog.Category.Repack,
-                            $"Dispatched UV2 to {dispatched} tile vertices across {skippedShellCount} duplicate shells");
-
+                            $"Dispatched UV2 to {dispatched} tile vertices across {skippedShellCount} duplicate shells " +
+                            $"(diag: dupVerts={diagDupVerts} alreadyFilled={diagAlreadyFilled} " +
+                            $"oor={diagOutOfRange} noCand={diagNoCandidate} repNoUv2={diagRepNoUv2})");
+                        if (diagAlreadyFilled > 0)
+                            UvtLog.Info(UvtLog.Category.Repack,
+                                $"  diag alreadyFilled first: dv={diagFirstFilledIdx} uv2={diagFirstFilledUv}");
+                        if (diagRepNoUv2 > 0)
+                            UvtLog.Info(UvtLog.Category.Repack,
+                                $"  diag repNoUv2 first: rv={diagFirstRepNoUv2Rv} uv2={diagFirstRepNoUv2RepUv2}");
                     }
                     // Run overlap cleanup against the non-duplicate subset so that
                     // intentional tile-merge overlaps remain shared while any
