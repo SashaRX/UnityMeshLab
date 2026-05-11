@@ -116,7 +116,17 @@ namespace SashaRX.UnityMeshLab
             if (overlapGroups == null || overlapGroups.Count == 0)
                 return;
 
-            const float EPSILON_SCALE = 0.002f; // 0.2% per shell
+            // 2% per group-member is large enough that xatlas's bin-packer
+            // sees each tile-instance as a distinct chart and assigns it a
+            // unique atlas slot. 0.2% was too small — xatlas dedupped
+            // near-identical charts onto the same slot, producing overlapping
+            // UV2 that the post-process tried to relocate, pushing shells
+            // past [0,1] and forcing a global rescale that wasted >40% of
+            // the atlas (observed: Wooden_Box_Long with 45-shell wood-plank
+            // group, 198 false overlaps detected, atlas 411x444 rescaled by
+            // 0.56). Geometry is unaffected — uvFlat is a local copy fed to
+            // xatlas only; mesh.uv stays untouched.
+            const float EPSILON_SCALE = 0.02f;
 
             foreach (var group in overlapGroups)
             {
@@ -1016,15 +1026,25 @@ namespace SashaRX.UnityMeshLab
                     ? BuildNonDuplicateOverlapGroups(overlapGroups, skipShell)
                     : overlapGroups;
 
-                FixOverlappingUv2Shells(uv2, shells, groupsForFix,
-                    opts.padding, result.atlasWidth, result.atlasHeight, skipRescale: true);
+                // ── Post-process UV2 overlap fix passes ──
+                // Only run when group-merge mode is on (legacy path). With
+                // merge OFF and perturbation always active, xatlas hands us
+                // a clean non-overlapping packing — the AABB-based fix-pass
+                // misreads wide-shell-containing-narrow-shells as overlaps,
+                // shifts them past [0,1], and forces a global rescale that
+                // wastes most of the atlas. Trust xatlas's output instead.
+                if (opts.mergeOverlappingTiles)
+                {
+                    FixOverlappingUv2Shells(uv2, shells, groupsForFix,
+                        opts.padding, result.atlasWidth, result.atlasHeight, skipRescale: true);
 
-                FixNearDuplicateUv2Shells(uv2, shellsForFix,
-                    opts.padding, result.atlasWidth, result.atlasHeight);
-
-                if (shellsForFix.Count > 1)
-                    RelocateToFreeSpace(uv2, shellsForFix,
+                    FixNearDuplicateUv2Shells(uv2, shellsForFix,
                         opts.padding, result.atlasWidth, result.atlasHeight);
+
+                    if (shellsForFix.Count > 1)
+                        RelocateToFreeSpace(uv2, shellsForFix,
+                            opts.padding, result.atlasWidth, result.atlasHeight);
+                }
 
                 // ── Post-process: fix orphan vertices ──
                 int orphanVerts, orphanTris, snapped;
@@ -1372,15 +1392,24 @@ namespace SashaRX.UnityMeshLab
                         ? BuildNonDuplicateOverlapGroups(allOverlap[m], allSkipShell[m])
                         : allOverlap[m];
 
-                    totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], groupsForFixM,
-                        opts.padding, atlasW, atlasH, skipRescale: true);
+                    // Only run when group-merge mode is on (legacy path).
+                    // With merge OFF and perturbation always active, xatlas's
+                    // packing is authoritative — the AABB-based overlap fix
+                    // misreads wide-band shells containing narrow shells as
+                    // overlaps, shifts them past [0,1], and the rescale
+                    // wastes most of the atlas.
+                    if (opts.mergeOverlappingTiles)
+                    {
+                        totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], groupsForFixM,
+                            opts.padding, atlasW, atlasH, skipRescale: true);
 
-                    totalShifted += FixNearDuplicateUv2Shells(uv2, shellsForFixM,
-                        opts.padding, atlasW, atlasH, skipRescale: true);
+                        totalShifted += FixNearDuplicateUv2Shells(uv2, shellsForFixM,
+                            opts.padding, atlasW, atlasH, skipRescale: true);
 
-                    if (shellsForFixM.Count > 1)
-                        totalShifted += RelocateToFreeSpace(uv2, shellsForFixM,
-                            opts.padding, atlasW, atlasH);
+                        if (shellsForFixM.Count > 1)
+                            totalShifted += RelocateToFreeSpace(uv2, shellsForFixM,
+                                opts.padding, atlasW, atlasH);
+                    }
 
                     // Fix orphan vertices
                     int orphanVerts, orphanTris, snapped;
