@@ -220,15 +220,19 @@ namespace SashaRX.UnityMeshLab
             var candSig = new List<float>(candidate.vertexIndices.Count);
             Vector2 repCtr = (rep.boundsMin + rep.boundsMax) * 0.5f;
             Vector2 candCtr = (candidate.boundsMin + candidate.boundsMax) * 0.5f;
-            for (int i = 0; i < rep.vertexIndices.Count; i++)
+            // vertexIndices is a HashSet — enumerate each set independently;
+            // the .Sort() below makes the signature comparison order- and
+            // pairing-independent (and therefore mirror-safe).
+            foreach (int rvi in rep.vertexIndices)
             {
-                int rvi = rep.vertexIndices[i];
-                int cvi = candidate.vertexIndices[i];
                 if ((uint)rvi < (uint)uv0.Length)
                 {
                     Vector2 d = uv0[rvi] - repCtr;
                     repSig.Add(d.sqrMagnitude);
                 }
+            }
+            foreach (int cvi in candidate.vertexIndices)
+            {
                 if ((uint)cvi < (uint)uv0.Length)
                 {
                     Vector2 d = uv0[cvi] - candCtr;
