@@ -26,5 +26,8 @@
   "license": "MIT",
   "dependencies": {
     "com.unity.formats.fbx": "5.1.5"
-  }
+  },
+  "testables": [
+    "SashaRX.UnityMeshLab.Editor"
+  ]
 }
