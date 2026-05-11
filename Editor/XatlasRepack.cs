@@ -22,10 +22,12 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Group-aware repack: for each overlap-group, feed xatlas ONE
         /// representative shell, dispatch UV2 to the duplicate tiles after.
-        /// Critical for tiled-UV0 models — without this, 100 instanced tiles
-        /// are packed into 100 independent atlas regions and most of the
-        /// atlas stays empty. Tiles deliberately share the UV2 region of
-        /// their representative.
+        /// Collapse UV0-overlapping tile shells into one xatlas chart and
+        /// copy the rep's UV2 to all duplicates. WRONG for lightmap UV2 —
+        /// UV2 is a unique-per-shell channel, tile-instances must each get
+        /// their own atlas slot. Default OFF; perturbation runs
+        /// unconditionally on overlap-grouped shells so xatlas treats
+        /// near-identical UV0 inputs as unique charts.
         /// </summary>
         public bool mergeOverlappingTiles;
 
@@ -40,7 +42,7 @@ namespace SashaRX.UnityMeshLab
             bruteForce = false,
             rotateCharts = true,
             rotateChartsToAxis = true,
-            mergeOverlappingTiles = true,
+            mergeOverlappingTiles = false,
         };
     }
 
@@ -780,10 +782,13 @@ namespace SashaRX.UnityMeshLab
                 uvFlat[i * 2 + 1] = uv0[i].y;
             }
 
-            // ── If not merging tiles, fall back to legacy perturb (helps xatlas
-            //    distinguish SymSplit halves that still need independent packing).
-            if (!opts.mergeOverlappingTiles)
-                PerturbOverlapShellsUv0(uvFlat, shells, overlapGroups);
+            // ── Perturb UV0 of overlap-grouped shells ──
+            // xatlas dedups charts whose input UVs look identical and lays
+            // them at the same atlas slot — catastrophic for lightmap UV2,
+            // which must be unique per shell. A tiny 0.2%-per-group-member
+            // pre-scale around the rep's centroid breaks the tie so xatlas
+            // gives every tile-instance its own atlas region.
+            PerturbOverlapShellsUv0(uvFlat, shells, overlapGroups);
 
             // ── Group-aware merge of overlapping shells ──
             // Tiled-UV0 models (Wooden_Box_Long etc.) carry N>>K shells where
@@ -1141,8 +1146,11 @@ namespace SashaRX.UnityMeshLab
                     }
                     allUvFlat[m] = uvFlat;
 
-                    if (!opts.mergeOverlappingTiles)
-                        PerturbOverlapShellsUv0(uvFlat, allShells[m], allOverlap[m]);
+                    // Perturb UV0 of overlap-grouped shells so xatlas treats
+                    // every tile-instance as a unique chart (lightmap UV2 must
+                    // be unique per shell; xatlas otherwise dedups identical
+                    // input UVs into the same atlas slot).
+                    PerturbOverlapShellsUv0(uvFlat, allShells[m], allOverlap[m]);
 
                     // Group-aware merge: pick representative per overlap-group,
                     // hide duplicate tile faces from xatlas.
