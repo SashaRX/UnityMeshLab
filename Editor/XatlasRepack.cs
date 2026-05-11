@@ -31,6 +31,39 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public bool mergeOverlappingTiles;
 
+        /// <summary>
+        /// Per-group-member UV0 scale offset used to break xatlas's chart
+        /// dedup on tile-instance shells (so each tile occupies a unique
+        /// atlas slot — required for lightmap UV2 uniqueness).
+        /// 0 = adaptive: derive from atlas resolution + padding.
+        /// >0 = manual override, where N means each subsequent shell in an
+        /// overlap-group is scaled around the rep's centroid by 1 + (i*N).
+        /// Typical adaptive output: 0.01..0.03. Larger values handle more
+        /// aggressive xatlas dedup at the cost of texel-density variance
+        /// within the group.
+        /// </summary>
+        public float perturbStrength;
+
+        /// <summary>
+        /// Tile-merge guard — IoU of UV0 AABB above which a candidate counts
+        /// as tile-equivalent to the rep (subject to face-count and 3D-size
+        /// gates). Only used when mergeOverlappingTiles=true.
+        /// </summary>
+        public float tileMergeIoUThreshold;
+
+        /// <summary>
+        /// Tile-merge guard — max ratio of face counts (rep vs candidate)
+        /// allowed for IoU-based acceptance. Blocks radically different
+        /// geometries that happen to share UV0 AABB.
+        /// </summary>
+        public float tileMergeFaceCountRatio;
+
+        /// <summary>
+        /// Tile-merge guard — max relative difference in sorted 3D AABB
+        /// dimensions (orientation-independent). 0.3 = 30%.
+        /// </summary>
+        public float tileMerge3DSizeTolerance;
+
         public static RepackOptions Default => new RepackOptions
         {
             padding    = 4,
@@ -43,6 +76,10 @@ namespace SashaRX.UnityMeshLab
             rotateCharts = true,
             rotateChartsToAxis = true,
             mergeOverlappingTiles = false,
+            perturbStrength = 0f,             // adaptive
+            tileMergeIoUThreshold = 0.9f,
+            tileMergeFaceCountRatio = 4f,
+            tileMerge3DSizeTolerance = 0.3f,
         };
     }
 
@@ -110,24 +147,40 @@ namespace SashaRX.UnityMeshLab
         /// packing identical SymSplit halves at the same atlas position.
         /// Operates on the flat UV0 copy — does NOT modify the original mesh.
         /// </summary>
+        /// <summary>
+        /// Adaptive default for tile-instance UV0 perturbation strength.
+        /// Goal: each subsequent shell in an overlap-group needs to differ
+        /// from the previous one by at least a few atlas pixels after
+        /// pixel-quantization, otherwise xatlas's bin-packer dedups them
+        /// onto the same atlas slot (which collapses lightmap UV2). Smaller
+        /// atlases quantize coarser → need bigger perturbation. Padding
+        /// scales the floor because xatlas absorbs sub-padding differences.
+        /// Output clamped to [0.01, 0.05] — 1% is enough at high resolution,
+        /// 5% is the largest we accept before texel density variance becomes
+        /// visible in baked lightmaps.
+        /// </summary>
+        internal static float ComputeAdaptivePerturbStrength(uint atlasResolution, uint padding)
+        {
+            const float MIN_STRENGTH = 0.01f;
+            const float MAX_STRENGTH = 0.05f;
+            if (atlasResolution == 0) return MIN_STRENGTH * 2f; // sensible fallback
+            // 4 padding-pixels of UV-space separation per group step keeps
+            // perturbed charts distinguishable through xatlas's quantization.
+            float padPixels = Mathf.Max(1f, padding);
+            float adaptive = 4f * padPixels / atlasResolution;
+            return Mathf.Clamp(adaptive, MIN_STRENGTH, MAX_STRENGTH);
+        }
+
         internal static void PerturbOverlapShellsUv0(
-            float[] uvFlat, List<UvShell> shells, List<List<int>> overlapGroups)
+            float[] uvFlat, List<UvShell> shells, List<List<int>> overlapGroups,
+            float strength)
         {
             if (overlapGroups == null || overlapGroups.Count == 0)
                 return;
+            if (strength <= 0f) return;
 
-            // 2% per group-member is large enough that xatlas's bin-packer
-            // sees each tile-instance as a distinct chart and assigns it a
-            // unique atlas slot. 0.2% was too small — xatlas dedupped
-            // near-identical charts onto the same slot, producing overlapping
-            // UV2 that the post-process tried to relocate, pushing shells
-            // past [0,1] and forcing a global rescale that wasted >40% of
-            // the atlas (observed: Wooden_Box_Long with 45-shell wood-plank
-            // group, 198 false overlaps detected, atlas 411x444 rescaled by
-            // 0.56). Geometry is unaffected — uvFlat is a local copy fed to
-            // xatlas only; mesh.uv stays untouched.
-            const float EPSILON_SCALE = 0.02f;
-
+            // Geometry is unaffected — uvFlat is a local copy fed to xatlas
+            // only; mesh.uv stays untouched.
             foreach (var group in overlapGroups)
             {
                 if (group.Count < 2) continue;
@@ -138,7 +191,7 @@ namespace SashaRX.UnityMeshLab
 
                 for (int g = 1; g < group.Count; g++)
                 {
-                    float scale = 1f + g * EPSILON_SCALE;
+                    float scale = 1f + g * strength;
                     var shell = shells[group[g]];
                     foreach (int vi in shell.vertexIndices)
                     {
@@ -206,7 +259,8 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
-        static bool IsEquivalentShellForTileMerge(Vector2[] uv0, int[] tris, Vector3[] positions, UvShell rep, UvShell candidate)
+        static bool IsEquivalentShellForTileMerge(Vector2[] uv0, int[] tris, Vector3[] positions, UvShell rep, UvShell candidate,
+            float iouThreshold, float faceCountRatioMax, float aabb3DSizeTolerance)
         {
             // ── 3D shape gate (size only, orientation-independent) ──
             // Two shells that share UV0 region but live on differently-sized
@@ -246,7 +300,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     float maxDim = Mathf.Max(rDims[d], cDims[d]);
                     if (maxDim < 1e-6f) continue;
-                    if (Mathf.Abs(rDims[d] - cDims[d]) / maxDim > 0.3f) return false;
+                    if (Mathf.Abs(rDims[d] - cDims[d]) / maxDim > aabb3DSizeTolerance) return false;
                 }
             }
 
@@ -281,7 +335,7 @@ namespace SashaRX.UnityMeshLab
                 int repFc  = Mathf.Max(1, rep.faceIndices.Count);
                 int candFc = Mathf.Max(1, candidate.faceIndices.Count);
                 float fcRatio = (float)Mathf.Max(repFc, candFc) / Mathf.Min(repFc, candFc);
-                if (iou >= 0.9f && fcRatio <= 4f) return true;
+                if (iou >= iouThreshold && fcRatio <= faceCountRatioMax) return true;
             }
 
             if (rep.faceIndices.Count != candidate.faceIndices.Count) return false;
@@ -723,15 +777,9 @@ namespace SashaRX.UnityMeshLab
         public static Vector2[] RepackUv(Mesh mesh, Vector2[] uv0, uint[] faceShellIds,
             int resolution, int padding, bool rotate)
         {
-            var opts = new RepackOptions
-            {
-                resolution = (uint)resolution,
-                padding = (uint)padding,
-                texelsPerUnit = 0f,
-                bilinear = true,
-                blockAlign = false,
-                bruteForce = false,
-            };
+            var opts = RepackOptions.Default;
+            opts.resolution = (uint)resolution;
+            opts.padding = (uint)padding;
             // Work on a temporary copy so original mesh is untouched
             var tmp = Object.Instantiate(mesh);
             tmp.name = mesh.name + "_repack_tmp";
@@ -795,10 +843,15 @@ namespace SashaRX.UnityMeshLab
             // ── Perturb UV0 of overlap-grouped shells ──
             // xatlas dedups charts whose input UVs look identical and lays
             // them at the same atlas slot — catastrophic for lightmap UV2,
-            // which must be unique per shell. A tiny 0.2%-per-group-member
-            // pre-scale around the rep's centroid breaks the tie so xatlas
-            // gives every tile-instance its own atlas region.
-            PerturbOverlapShellsUv0(uvFlat, shells, overlapGroups);
+            // which must be unique per shell. A per-group-member pre-scale
+            // around the rep's centroid breaks the tie so xatlas gives
+            // every tile-instance its own atlas region. Strength is either
+            // user-supplied via opts.perturbStrength or computed adaptively
+            // from atlas resolution + padding.
+            float perturbStrength = opts.perturbStrength > 0f
+                ? opts.perturbStrength
+                : ComputeAdaptivePerturbStrength(opts.resolution, opts.padding);
+            PerturbOverlapShellsUv0(uvFlat, shells, overlapGroups, perturbStrength);
 
             // ── Group-aware merge of overlapping shells ──
             // Tiled-UV0 models (Wooden_Box_Long etc.) carry N>>K shells where
@@ -826,7 +879,8 @@ namespace SashaRX.UnityMeshLab
                     {
                         int sid = group[gi];
                         if (sid < 0 || sid >= shells.Count) continue;
-                        if (!IsEquivalentShellForTileMerge(uv0, tris, positions, shells[rep], shells[sid]))
+                        if (!IsEquivalentShellForTileMerge(uv0, tris, positions, shells[rep], shells[sid],
+                                opts.tileMergeIoUThreshold, opts.tileMergeFaceCountRatio, opts.tileMerge3DSizeTolerance))
                             continue;
                         skipShell[sid] = true;
                         shellToRep[sid] = rep;
@@ -1169,8 +1223,13 @@ namespace SashaRX.UnityMeshLab
                     // Perturb UV0 of overlap-grouped shells so xatlas treats
                     // every tile-instance as a unique chart (lightmap UV2 must
                     // be unique per shell; xatlas otherwise dedups identical
-                    // input UVs into the same atlas slot).
-                    PerturbOverlapShellsUv0(uvFlat, allShells[m], allOverlap[m]);
+                    // input UVs into the same atlas slot). Strength is either
+                    // user-supplied or computed adaptively from atlas
+                    // resolution + padding.
+                    float perturbStrengthM = opts.perturbStrength > 0f
+                        ? opts.perturbStrength
+                        : ComputeAdaptivePerturbStrength(opts.resolution, opts.padding);
+                    PerturbOverlapShellsUv0(uvFlat, allShells[m], allOverlap[m], perturbStrengthM);
 
                     // Group-aware merge: pick representative per overlap-group,
                     // hide duplicate tile faces from xatlas.
@@ -1191,7 +1250,8 @@ namespace SashaRX.UnityMeshLab
                             {
                                 int sid = group[gi];
                                 if (sid < 0 || sid >= shells.Count) continue;
-                                if (!IsEquivalentShellForTileMerge(allUv0[m], allTris[m], allPositions[m], shells[rep], shells[sid]))
+                                if (!IsEquivalentShellForTileMerge(allUv0[m], allTris[m], allPositions[m], shells[rep], shells[sid],
+                                        opts.tileMergeIoUThreshold, opts.tileMergeFaceCountRatio, opts.tileMerge3DSizeTolerance))
                                     continue;
                                 skipShell[sid] = true;
                                 shellToRep[sid] = rep;
