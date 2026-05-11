@@ -196,6 +196,40 @@ namespace SashaRX.UnityMeshLab
 
         static bool IsEquivalentShellForTileMerge(Vector2[] uv0, int[] tris, UvShell rep, UvShell candidate)
         {
+            // ── Tile-instance fast path via UV0 AABB IoU ──
+            // Models with tiled UV0 (Wooden_Box_Long planks, brick walls,
+            // wood floors) frequently have shells that share the same UV0
+            // region but differ slightly in topology — one plank has a
+            // chamfered corner that adds 1–2 verts, another is split into
+            // 3 faces instead of 2. The strict topology gate below rejects
+            // them, xatlas then sees them as N near-identical charts,
+            // collapses some into a single atlas slot, and the post-process
+            // overlap-fix tries to relocate them — blowing UV2 past [0,1]
+            // and forcing a global rescale that wastes most of the atlas
+            // (observed: 67-chart Wooden_Box_Long packing at 25% utilisation
+            // after rescale). When AABB IoU is very high we treat the
+            // candidate as a tile-instance regardless of topology mismatch.
+            // Lightmap UV2 is sample-direction-agnostic so mirrored or
+            // re-tessellated shells safely share the rep's atlas slot.
+            // Face-count ratio gate (≤4×) blocks radically different
+            // geometries that just happen to occupy the same UV0 AABB.
+            float ixMin = Mathf.Max(rep.boundsMin.x, candidate.boundsMin.x);
+            float iyMin = Mathf.Max(rep.boundsMin.y, candidate.boundsMin.y);
+            float ixMax = Mathf.Min(rep.boundsMax.x, candidate.boundsMax.x);
+            float iyMax = Mathf.Min(rep.boundsMax.y, candidate.boundsMax.y);
+            if (ixMax > ixMin && iyMax > iyMin)
+            {
+                float inter = (ixMax - ixMin) * (iyMax - iyMin);
+                float ra = (rep.boundsMax.x - rep.boundsMin.x) * (rep.boundsMax.y - rep.boundsMin.y);
+                float ca = (candidate.boundsMax.x - candidate.boundsMin.x) * (candidate.boundsMax.y - candidate.boundsMin.y);
+                float uni = ra + ca - inter;
+                float iou = uni > 1e-8f ? inter / uni : 0f;
+                int repFc  = Mathf.Max(1, rep.faceIndices.Count);
+                int candFc = Mathf.Max(1, candidate.faceIndices.Count);
+                float fcRatio = (float)Mathf.Max(repFc, candFc) / Mathf.Min(repFc, candFc);
+                if (iou >= 0.9f && fcRatio <= 4f) return true;
+            }
+
             if (rep.faceIndices.Count != candidate.faceIndices.Count) return false;
             if (rep.vertexIndices.Count != candidate.vertexIndices.Count) return false;
 
