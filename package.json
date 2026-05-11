@@ -28,6 +28,6 @@
     "com.unity.formats.fbx": "5.1.5"
   },
   "testables": [
-    "SashaRX.UnityMeshLab.Editor"
+    "com.sasharx.unitymeshlab"
   ]
 }

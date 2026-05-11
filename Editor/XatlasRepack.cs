@@ -157,6 +157,43 @@ namespace SashaRX.UnityMeshLab
             return Mathf.Abs((float)area2 * 0.5f);
         }
 
+        /// <summary>
+        /// Build the subset of shells that are NOT marked as duplicate tiles by
+        /// the group-aware merge. Used to drive overlap-fix passes on a mesh
+        /// that has both intentional tile-merge overlaps (which must stay) and
+        /// accidental shell overlaps elsewhere (which must be relocated).
+        /// </summary>
+        static List<UvShell> BuildNonDuplicateShells(List<UvShell> shells, bool[] skipShell)
+        {
+            var result = new List<UvShell>(shells.Count);
+            for (int i = 0; i < shells.Count; i++)
+                if (skipShell == null || i >= skipShell.Length || !skipShell[i])
+                    result.Add(shells[i]);
+            return result;
+        }
+
+        /// <summary>
+        /// Filter overlap-groups so each group keeps only members whose
+        /// skipShell is false. Drops groups that lose more than one member
+        /// (single-member groups have no overlap to fix). Preserves the
+        /// original shellId references inside the surviving groups.
+        /// </summary>
+        static List<List<int>> BuildNonDuplicateOverlapGroups(List<List<int>> groups, bool[] skipShell)
+        {
+            var result = new List<List<int>>();
+            if (groups == null) return result;
+            foreach (var g in groups)
+            {
+                if (g == null) continue;
+                var filtered = new List<int>(g.Count);
+                foreach (int sid in g)
+                    if (skipShell == null || sid >= skipShell.Length || !skipShell[sid])
+                        filtered.Add(sid);
+                if (filtered.Count >= 2) result.Add(filtered);
+            }
+            return result;
+        }
+
         static bool IsEquivalentShellForTileMerge(Vector2[] uv0, int[] tris, UvShell rep, UvShell candidate)
         {
             if (rep.faceIndices.Count != candidate.faceIndices.Count) return false;
@@ -852,20 +889,28 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 // ── Post-process: fix overlapping UV2 shells ──
-                // Phase 1: known UV0 overlap groups (fast path, catches SymSplit halves in same group)
-                // NOTE: skip when group-merge dispatched tiles — those are *intentionally* overlapping in UV2.
-                // Always run overlap cleanup; duplicate shells intentionally share UV2,
-                // but accidental non-merged overlaps still need fixing.
-                FixOverlappingUv2Shells(uv2, shells, overlapGroups,
+                // Mixed-content mesh case: a model can simultaneously have
+                // (a) intentionally-merged tile shells (share UV2 region with
+                // their representative) and (b) accidental overlaps between
+                // unrelated shells (need to be relocated). The fix passes
+                // must NOT touch (a) but MUST handle (b). Filter the shells
+                // list and overlap-groups so only non-duplicate shells reach
+                // the cleanup passes.
+                var shellsForFix = (skippedShellCount > 0)
+                    ? BuildNonDuplicateShells(shells, skipShell)
+                    : shells;
+                var groupsForFix = (skippedShellCount > 0)
+                    ? BuildNonDuplicateOverlapGroups(overlapGroups, skipShell)
+                    : overlapGroups;
+
+                FixOverlappingUv2Shells(uv2, shellsForFix, groupsForFix,
                     opts.padding, result.atlasWidth, result.atlasHeight, skipRescale: true);
 
-                // Phase 2: centroid-proximity safety net.
-                FixNearDuplicateUv2Shells(uv2, shells,
+                FixNearDuplicateUv2Shells(uv2, shellsForFix,
                     opts.padding, result.atlasWidth, result.atlasHeight);
 
-                // Phase 3: free-space relocator for any remaining overlaps.
-                if (shells.Count > 1)
-                    RelocateToFreeSpace(uv2, shells,
+                if (shellsForFix.Count > 1)
+                    RelocateToFreeSpace(uv2, shellsForFix,
                         opts.padding, result.atlasWidth, result.atlasHeight);
 
                 // ── Post-process: fix orphan vertices ──
@@ -1182,18 +1227,24 @@ namespace SashaRX.UnityMeshLab
                             $"Dispatched UV2 to {dispatched} tile vertices across {skippedShellCount} duplicate shells");
 
                     }
-                    // Always run overlap cleanup; merged duplicates are intentional
-                    // overlaps but non-merged accidental overlaps must be fixed.
-                    totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], allOverlap[m],
+                    // Run overlap cleanup against the non-duplicate subset so that
+                    // intentional tile-merge overlaps remain shared while any
+                    // accidental overlaps between unrelated shells still get fixed.
+                    var shellsForFixM = (skippedShellCount > 0)
+                        ? BuildNonDuplicateShells(allShells[m], allSkipShell[m])
+                        : allShells[m];
+                    var groupsForFixM = (skippedShellCount > 0)
+                        ? BuildNonDuplicateOverlapGroups(allOverlap[m], allSkipShell[m])
+                        : allOverlap[m];
+
+                    totalShifted += FixOverlappingUv2Shells(uv2, shellsForFixM, groupsForFixM,
                         opts.padding, atlasW, atlasH, skipRescale: true);
 
-                    // Centroid-proximity safety net for near-duplicate SymSplit shells
-                    totalShifted += FixNearDuplicateUv2Shells(uv2, allShells[m],
+                    totalShifted += FixNearDuplicateUv2Shells(uv2, shellsForFixM,
                         opts.padding, atlasW, atlasH, skipRescale: true);
 
-                    // Free-space relocator for any remaining overlaps
-                    if (allShells[m].Count > 1)
-                        totalShifted += RelocateToFreeSpace(uv2, allShells[m],
+                    if (shellsForFixM.Count > 1)
+                        totalShifted += RelocateToFreeSpace(uv2, shellsForFixM,
                             opts.padding, atlasW, atlasH);
 
                     // Fix orphan vertices

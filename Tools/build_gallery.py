@@ -38,7 +38,12 @@ CELL_PATTERN = re.compile(
 
 
 def discover_cells(root):
-    """Return list of dicts describing every sweep cell with its CSV rows + PNG dir."""
+    """Return list of dicts describing every sweep cell with its CSV rows + PNG dir.
+
+    png_dir is stored as an ABSOLUTE path. The renderer rewrites it to a path
+    relative to the output HTML's directory at emit time, so the gallery keeps
+    working when --out points outside data_dir.
+    """
     cells = []
     for csv_path in sorted(glob.glob(os.path.join(root, "*_sweep_*.csv"))):
         m = CELL_PATTERN.match(os.path.basename(csv_path))
@@ -51,7 +56,7 @@ def discover_cells(root):
                 rows.append(row)
         cells.append(dict(
             csv=csv_path,
-            png_dir=os.path.basename(png_dir),
+            png_dir=os.path.abspath(png_dir),
             png_dir_exists=os.path.isdir(png_dir),
             ts=m.group("ts"),
             lodGroup=m.group("lodGroup"),
@@ -299,8 +304,14 @@ document.addEventListener('DOMContentLoaded', () => {
 """
 
 
-def cell_html(cell, model, renderer, lod, res_axis, pad_axis, root_dir):
-    """Return HTML rows for one (renderer, lod) — one row per atlasRes."""
+def cell_html(cell, model, renderer, lod, res_axis, pad_axis, bdr_axis, out_dir):
+    """Return HTML rows for one (renderer, lod) — one row per atlasRes.
+
+    out_dir is where the .html lives; PNG hrefs are written relative to it so
+    galleries keep working when --out points outside the data directory.
+    The lookup key carries borderPad so sweeps with multiple bdr values don't
+    collapse cells onto each other.
+    """
     lookup = {}
     for c in cell.values():
         for r in c["rows"]:
@@ -308,58 +319,65 @@ def cell_html(cell, model, renderer, lod, res_axis, pad_axis, root_dir):
                 continue
             if r.get("rendererName") != renderer or int(r.get("lodIndex", -1)) != lod:
                 continue
-            key = (int(c["res"]), int(c["pad"]))
+            key = (int(c["res"]), int(c["pad"]), int(c["bdr"]))
             lookup[key] = (c, r)
 
     out = []
+    bdr_list = list(bdr_axis) if bdr_axis else [0]
     for res in res_axis:
-        out.append(f'<tr><th>res={res}</th>')
-        for pad in pad_axis:
-            entry = lookup.get((res, pad))
-            if not entry:
-                out.append('<td class="empty cell" data-cell-id="">—</td>')
-                continue
-            c, r = entry
-            cell_id = f"{model}|{renderer}|lod{lod}|res{res}|pad{pad}"
-            inv = int(float(r.get("invertedCount", 0)))
-            stt = int(float(r.get("stretchedCount", 0)))
-            za  = int(float(r.get("zeroAreaCount", 0)))
-            tex = float(r.get("texelDensityMedian", 0))
-            topfx = int(float(r.get("topologyFixed", 0)))
-            cap = r.get("topologyCapHit", "False").lower() in ("1","true")
-            try: util = float(r.get("atlasUtilization", 0) or 0)
-            except: util = 0.0
-            png_name = f"{r.get('rendererName')}_LOD{lod}_uv2.png"
-            png_path = os.path.join(c["png_dir"], png_name)
-            full_png = os.path.join(root_dir, png_path)
-            img_html = (f'<a href="{html.escape(png_path)}" target="_blank">'
-                        f'<img src="{html.escape(png_path)}" loading="lazy"/></a>') \
-                       if os.path.exists(full_png) else '<span style="color:#555">no png</span>'
-            cls = ["cell"]
-            if cap: cls.append("capHit")
-            if za > 100: cls.append("bad")
-            tag_panel = '<div class="tag-panel">'
-            for t in VOTE_TAGS:
-                tag_panel += f'<label><input type="checkbox" value="{t}"> {t}</label>'
-            tag_panel += '<textarea placeholder="note (optional)"></textarea></div>'
-            vote_buttons = ''.join(
-                f'<span class="vote-btn" data-rating="{r}">{r}</span>'
-                for r in (1,2,3,4,5)
-            )
-            util_label = (f'util={util*100:.0f}%' if util > 0 else 'util=?')
-            if util > 0 and util < 0.5: cls.append('lowUtil')
-            out.append(
-                f'<td class="{ " ".join(cls)}" data-cell-id="{html.escape(cell_id)}">'
-                f'{img_html}'
-                f'<div class="meta">inv={inv} str={stt} 0A={za} {util_label}<br/>tex={tex:.0f} topFx={topfx}{"⛔" if cap else ""}</div>'
-                f'<div class="vote-row">'
-                f'  <div class="vote-btns">{vote_buttons}</div>'
-                f'  <span class="tag-toggle" title="toggle tags">tags</span>'
-                f'</div>'
-                f'{tag_panel}'
-                f'</td>'
-            )
-        out.append('</tr>')
+        for bdr_idx, bdr in enumerate(bdr_list):
+            label = f"res={res}" + (f" bdr={bdr}" if len(bdr_list) > 1 else "")
+            out.append(f'<tr><th>{label}</th>')
+            for pad in pad_axis:
+                entry = lookup.get((res, pad, bdr))
+                if not entry:
+                    out.append('<td class="empty cell" data-cell-id="">—</td>')
+                    continue
+                c, r = entry
+                cell_id = f"{model}|{renderer}|lod{lod}|res{res}|pad{pad}|bdr{bdr}"
+                inv = int(float(r.get("invertedCount", 0)))
+                stt = int(float(r.get("stretchedCount", 0)))
+                za  = int(float(r.get("zeroAreaCount", 0)))
+                tex = float(r.get("texelDensityMedian", 0))
+                topfx = int(float(r.get("topologyFixed", 0)))
+                cap = r.get("topologyCapHit", "False").lower() in ("1","true")
+                try: util = float(r.get("atlasUtilization", 0) or 0)
+                except: util = 0.0
+                png_name = f"{r.get('rendererName')}_LOD{lod}_uv2.png"
+                full_png = os.path.join(c["png_dir"], png_name)
+                # Absolute PNG path -> path relative to the gallery HTML directory
+                try:
+                    png_path = os.path.relpath(full_png, out_dir).replace("\\", "/")
+                except ValueError:
+                    png_path = full_png
+                img_html = (f'<a href="{html.escape(png_path)}" target="_blank">'
+                            f'<img src="{html.escape(png_path)}" loading="lazy"/></a>') \
+                           if os.path.exists(full_png) else '<span style="color:#555">no png</span>'
+                cls = ["cell"]
+                if cap: cls.append("capHit")
+                if za > 100: cls.append("bad")
+                tag_panel = '<div class="tag-panel">'
+                for t in VOTE_TAGS:
+                    tag_panel += f'<label><input type="checkbox" value="{t}"> {t}</label>'
+                tag_panel += '<textarea placeholder="note (optional)"></textarea></div>'
+                vote_buttons = ''.join(
+                    f'<span class="vote-btn" data-rating="{rb}">{rb}</span>'
+                    for rb in (1,2,3,4,5)
+                )
+                util_label = (f'util={util*100:.0f}%' if util > 0 else 'util=?')
+                if util > 0 and util < 0.5: cls.append('lowUtil')
+                out.append(
+                    f'<td class="{ " ".join(cls)}" data-cell-id="{html.escape(cell_id)}">'
+                    f'{img_html}'
+                    f'<div class="meta">inv={inv} str={stt} 0A={za} {util_label}<br/>tex={tex:.0f} topFx={topfx}{"⛔" if cap else ""}</div>'
+                    f'<div class="vote-row">'
+                    f'  <div class="vote-btns">{vote_buttons}</div>'
+                    f'  <span class="tag-toggle" title="toggle tags">tags</span>'
+                    f'</div>'
+                    f'{tag_panel}'
+                    f'</td>'
+                )
+            out.append('</tr>')
     return "".join(out)
 
 
@@ -376,9 +394,10 @@ def render_index(out_dir, models, gallery_id):
         f.write("\n".join(parts))
 
 
-def render_model(out_dir, gallery_id, model, all_cells, res_axis, pad_axis, root_dir):
+def render_model(out_dir, gallery_id, model, all_cells, res_axis, pad_axis, bdr_axis):
     cells_for_model = [c for c in all_cells if c["lodGroup"] == model]
-    cells_by_res_pad = {(c["res"], c["pad"]): c for c in cells_for_model}
+    # Key carries borderPad so sweeps with multiple bdr values don't collide.
+    cells_by_key = {(c["res"], c["pad"], c["bdr"]): c for c in cells_for_model}
 
     # collect (renderer, lod) pairs
     pairs = set()
@@ -408,7 +427,7 @@ def render_model(out_dir, gallery_id, model, all_cells, res_axis, pad_axis, root
         parts.append('<table><thead><tr><th>res \\ pad</th>')
         for p in pad_axis: parts.append(f'<th>pad={p}</th>')
         parts.append('</tr></thead><tbody>')
-        parts.append(cell_html(cells_by_res_pad, model, renderer, lod, res_axis, pad_axis, root_dir))
+        parts.append(cell_html(cells_by_key, model, renderer, lod, res_axis, pad_axis, bdr_axis, out_dir))
         parts.append('</tbody></table>')
 
     parts.append('<div id="bar">'
@@ -452,13 +471,14 @@ def main():
 
     res_axis = sorted({c["res"] for c in cells})
     pad_axis = sorted({c["pad"] for c in cells})
+    bdr_axis = sorted({c["bdr"] for c in cells})
     models = sorted({c["lodGroup"] for c in cells})
 
     global MODELS_ORDER
     MODELS_ORDER = models
 
     for m in models:
-        render_model(out_dir, gallery_id, m, cells, res_axis, pad_axis, args.data_dir)
+        render_model(out_dir, gallery_id, m, cells, res_axis, pad_axis, bdr_axis)
     render_index(out_dir, models, gallery_id)
 
     print(f"Wrote galleries → {out_dir}")

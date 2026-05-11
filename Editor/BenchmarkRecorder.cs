@@ -244,7 +244,11 @@ namespace SashaRX.UnityMeshLab
             string dir = Path.Combine(projectRoot, "BenchmarkReports");
             Directory.CreateDirectory(dir);
 
-            string stamp = startedAtUtc.ToString("yyyyMMdd_HHmmss");
+            // Millisecond-precision timestamp — second-level collided when an
+            // operator rerun the same mode/label within ~1 second (scripted
+            // sweeps or quick UI clicks). Adding ms ensures every run writes
+            // to its own file even at sub-second cadence.
+            string stamp = startedAtUtc.ToString("yyyyMMdd_HHmmss_fff");
             string fileBase = $"{stamp}_{lodGroupName}_{runLabel}_{Sanitize(modeTag)}";
             string csvPath = Path.Combine(dir, fileBase + ".csv");
             string jsonPath = Path.Combine(dir, fileBase + ".json");
