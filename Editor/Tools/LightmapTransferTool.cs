@@ -453,6 +453,28 @@ namespace SashaRX.UnityMeshLab
                 ctx.AtlasResolution = EditorGUILayout.IntField("Resolution", ctx.AtlasResolution);
                 ctx.ShellPaddingPx = EditorGUILayout.IntSlider("Shell Padding", ctx.ShellPaddingPx, 0, 16);
                 ctx.BorderPaddingPx = EditorGUILayout.IntSlider("Border Padding", ctx.BorderPaddingPx, 0, 16);
+                EditorGUILayout.Space(4);
+                EditorGUILayout.LabelField("xatlas options", EditorStyles.miniBoldLabel);
+                ctx.MergeOverlappingTiles = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Merge overlap tiles",
+                        "Group-aware repack: collapse UV0-overlapping tile shells into one chart; "
+                        + "duplicates share the representative's UV2 region. Critical for tiled-UV0 models."),
+                    ctx.MergeOverlappingTiles);
+                ctx.XatlasBruteForce = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Brute force pack",
+                        "Run xatlas's exhaustive packer (slower, tighter atlas). Off by default."),
+                    ctx.XatlasBruteForce);
+                ctx.XatlasRotateCharts = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Rotate charts",
+                        "xatlas may rotate charts to fit better (recommended)."),
+                    ctx.XatlasRotateCharts);
+                using (new EditorGUI.DisabledScope(!ctx.XatlasRotateCharts))
+                {
+                    ctx.XatlasRotateChartsToAxis = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Snap rotation to axis",
+                            "Constrain chart rotation to 0/90/180/270° (preserves texel alignment)."),
+                        ctx.XatlasRotateChartsToAxis);
+                }
                 EditorGUI.indentLevel--;
             }
             var src = ctx.ForLod(ctx.SourceLodIndex);
@@ -993,6 +1015,10 @@ namespace SashaRX.UnityMeshLab
             opts.resolution = (uint)ctx.AtlasResolution;
             opts.padding = (uint)ctx.ShellPaddingPx;
             opts.borderPadding = (uint)ctx.BorderPaddingPx;
+            opts.bruteForce = ctx.XatlasBruteForce;
+            opts.rotateCharts = ctx.XatlasRotateCharts;
+            opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
+            opts.mergeOverlappingTiles = ctx.MergeOverlappingTiles;
 
             var results = XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);
             for (int i = 0; i < validEntries.Count; i++)

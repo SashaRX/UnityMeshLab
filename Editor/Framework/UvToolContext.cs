@@ -27,6 +27,14 @@ namespace SashaRX.UnityMeshLab
         public int ShellPaddingPx;
         public int BorderPaddingPx;
         public bool RepackPerMesh;
+        /// <summary>xatlas brute-force pack — slower but tighter atlas. Default off.</summary>
+        public bool XatlasBruteForce;
+        /// <summary>xatlas rotate charts during pack (rotateCharts native option). Default true.</summary>
+        public bool XatlasRotateCharts = true;
+        /// <summary>xatlas align rotation to axis (rotateChartsToAxis native option). Default true.</summary>
+        public bool XatlasRotateChartsToAxis = true;
+        /// <summary>Merge UV0 overlapping tile shells into one chart before xatlas. Default true.</summary>
+        public bool MergeOverlappingTiles = true;
         public int IsolatedMeshGroup = -1;
 
         public UvToolContext()

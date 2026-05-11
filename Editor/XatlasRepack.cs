@@ -15,6 +15,10 @@ namespace SashaRX.UnityMeshLab
         public bool bilinear;
         public bool blockAlign;
         public bool bruteForce;
+        /// <summary>xatlas may rotate charts to fit better during packing (default true).</summary>
+        public bool rotateCharts;
+        /// <summary>Constrain chart rotation to axis-aligned 90° increments (default true).</summary>
+        public bool rotateChartsToAxis;
         /// <summary>
         /// Group-aware repack: for each overlap-group, feed xatlas ONE
         /// representative shell, dispatch UV2 to the duplicate tiles after.
@@ -34,6 +38,8 @@ namespace SashaRX.UnityMeshLab
             bilinear   = true,
             blockAlign = false,
             bruteForce = false,
+            rotateCharts = true,
+            rotateChartsToAxis = true,
             mergeOverlappingTiles = true,
         };
     }
@@ -677,7 +683,9 @@ namespace SashaRX.UnityMeshLab
                     0, opts.padding, opts.texelsPerUnit, opts.resolution,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
-                    opts.bruteForce ? 1 : 0);
+                    opts.bruteForce ? 1 : 0,
+                    opts.rotateCharts ? 1 : 0,
+                    opts.rotateChartsToAxis ? 1 : 0);
 
                 if (XatlasNative.xatlasGetMeshCount() == 0)
                 {
@@ -998,7 +1006,9 @@ namespace SashaRX.UnityMeshLab
                     0, opts.padding, opts.texelsPerUnit, opts.resolution,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
-                    opts.bruteForce ? 1 : 0);
+                    opts.bruteForce ? 1 : 0,
+                    opts.rotateCharts ? 1 : 0,
+                    opts.rotateChartsToAxis ? 1 : 0);
 
                 int outMeshCount = XatlasNative.xatlasGetMeshCount();
                 if (outMeshCount == 0)

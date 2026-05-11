@@ -76,18 +76,22 @@ EXPORT void xatlasPackCharts(
     uint32_t resolution,
     int      bilinear,
     int      blockAlign,
-    int      bruteForce)
+    int      bruteForce,
+    int      rotateCharts,
+    int      rotateChartsToAxis)
 {
     if (!s_atlas) return;
 
     xatlas::PackOptions opts;
-    opts.maxChartSize  = maxChartSize;
-    opts.padding       = padding;
-    opts.texelsPerUnit = texelsPerUnit;
-    opts.resolution    = resolution;
-    opts.bilinear      = (bilinear  != 0);
-    opts.blockAlign    = (blockAlign != 0);
-    opts.bruteForce    = (bruteForce != 0);
+    opts.maxChartSize        = maxChartSize;
+    opts.padding             = padding;
+    opts.texelsPerUnit       = texelsPerUnit;
+    opts.resolution          = resolution;
+    opts.bilinear            = (bilinear  != 0);
+    opts.blockAlign          = (blockAlign != 0);
+    opts.bruteForce          = (bruteForce != 0);
+    opts.rotateCharts        = (rotateCharts       != 0);
+    opts.rotateChartsToAxis  = (rotateChartsToAxis != 0);
 
     xatlas::PackCharts(s_atlas, opts);
 }
