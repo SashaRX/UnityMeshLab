@@ -897,9 +897,19 @@ namespace SashaRX.UnityMeshLab
                 // (a) intentionally-merged tile shells (share UV2 region with
                 // their representative) and (b) accidental overlaps between
                 // unrelated shells (need to be relocated). The fix passes
-                // must NOT touch (a) but MUST handle (b). Filter the shells
-                // list and overlap-groups so only non-duplicate shells reach
-                // the cleanup passes.
+                // must NOT touch (a) but MUST handle (b).
+                //
+                // FixOverlappingUv2Shells walks overlapGroups and indexes
+                // shells[group[i]] using the ORIGINAL shell IDs — pass the
+                // full shells list with the filtered groups (duplicate-tile
+                // members are already dropped inside each group, so group
+                // IDs stay valid against the full list and no duplicate gets
+                // shifted).
+                //
+                // FixNearDuplicateUv2Shells and RelocateToFreeSpace iterate
+                // shells[i] by their own index and have no group input, so
+                // we hand them the compacted shellsForFix subset to exclude
+                // duplicate tiles from being shifted/relocated.
                 var shellsForFix = (skippedShellCount > 0)
                     ? BuildNonDuplicateShells(shells, skipShell)
                     : shells;
@@ -907,7 +917,7 @@ namespace SashaRX.UnityMeshLab
                     ? BuildNonDuplicateOverlapGroups(overlapGroups, skipShell)
                     : overlapGroups;
 
-                FixOverlappingUv2Shells(uv2, shellsForFix, groupsForFix,
+                FixOverlappingUv2Shells(uv2, shells, groupsForFix,
                     opts.padding, result.atlasWidth, result.atlasHeight, skipRescale: true);
 
                 FixNearDuplicateUv2Shells(uv2, shellsForFix,
@@ -1234,6 +1244,9 @@ namespace SashaRX.UnityMeshLab
                     // Run overlap cleanup against the non-duplicate subset so that
                     // intentional tile-merge overlaps remain shared while any
                     // accidental overlaps between unrelated shells still get fixed.
+                    // FixOverlappingUv2Shells needs the FULL shells list because
+                    // group entries carry original shell IDs; the filtered groups
+                    // already drop duplicate-tile members so no duplicate is touched.
                     var shellsForFixM = (skippedShellCount > 0)
                         ? BuildNonDuplicateShells(allShells[m], allSkipShell[m])
                         : allShells[m];
@@ -1241,7 +1254,7 @@ namespace SashaRX.UnityMeshLab
                         ? BuildNonDuplicateOverlapGroups(allOverlap[m], allSkipShell[m])
                         : allOverlap[m];
 
-                    totalShifted += FixOverlappingUv2Shells(uv2, shellsForFixM, groupsForFixM,
+                    totalShifted += FixOverlappingUv2Shells(uv2, allShells[m], groupsForFixM,
                         opts.padding, atlasW, atlasH, skipRescale: true);
 
                     totalShifted += FixNearDuplicateUv2Shells(uv2, shellsForFixM,
