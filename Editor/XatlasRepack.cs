@@ -407,6 +407,65 @@ namespace SashaRX.UnityMeshLab
                 $"[Density:postUV2] '{meshLabel}' shells={dCount} | au2/a3: min={dMin:G3}(shell#{shellIdMin}) max={dMax:G3}(shell#{shellIdMax}) mean={dMean:G3} maxRatio={ratio:F2}x | within±10%: {withinTenPct}/{dCount}");
         }
 
+        /// <summary>
+        /// Raw xatlas output density diagnostic. Operates on the buffers returned
+        /// by xatlasGetOutputVertexData/Indices (atlas-pixel space, grouped by
+        /// xatlas chart ID, not by our original shell IDs).
+        ///
+        /// xatlas applies a single global texelsPerUnit scale to every chart
+        /// (sqrt(surfaceArea/parametricArea) == 1 for UvMesh input), so per-chart
+        /// UV-area ratios should match the *input* UV-area ratios exactly. If
+        /// they don't, something inside xatlas's pack stage (maxChartSize clamp,
+        /// per-chart rotation+fit, sub-atlas split) altered them.
+        ///
+        /// Note: this measures area per xatlas chart, NOT per original shell.
+        /// A shell that xatlas split into N charts will appear as N rows here.
+        /// </summary>
+        static void LogRawXatlasDensity(
+            float[] outUV, uint[] outChart, uint[] outIdx,
+            int outVertCount, int outIndexCount,
+            string meshLabel)
+        {
+            if (outUV == null || outChart == null || outIdx == null) return;
+            int triCount = outIndexCount / 3;
+            if (triCount == 0) return;
+
+            // Build chart → list of triangle areas.
+            var chartArea = new Dictionary<uint, double>();
+            for (int t = 0; t < triCount; t++)
+            {
+                int ti = t * 3;
+                uint i0 = outIdx[ti], i1 = outIdx[ti + 1], i2 = outIdx[ti + 2];
+                if (i0 >= (uint)outVertCount || i1 >= (uint)outVertCount || i2 >= (uint)outVertCount) continue;
+                // Chart ID — pick from one vertex; all three should match for an unsplit tri.
+                uint cId = outChart[i0];
+                int u0 = (int)i0 * 2, u1 = (int)i1 * 2, u2 = (int)i2 * 2;
+                double ax = outUV[u0],     ay = outUV[u0 + 1];
+                double bx = outUV[u1],     by = outUV[u1 + 1];
+                double cx = outUV[u2],     cy = outUV[u2 + 1];
+                double a = Math.Abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) * 0.5;
+                if (chartArea.TryGetValue(cId, out double cur))
+                    chartArea[cId] = cur + a;
+                else
+                    chartArea[cId] = a;
+            }
+
+            if (chartArea.Count == 0) return;
+            double cMin = double.MaxValue, cMax = 0.0, cSum = 0.0;
+            foreach (var kv in chartArea)
+            {
+                if (kv.Value <= 0.0) continue;
+                if (kv.Value < cMin) cMin = kv.Value;
+                if (kv.Value > cMax) cMax = kv.Value;
+                cSum += kv.Value;
+            }
+            double cMean = cSum / chartArea.Count;
+            double cRatio = (cMin > 1e-30) ? cMax / cMin : 0.0;
+
+            UvtLog.Info(UvtLog.Category.Repack,
+                $"[Density:xatlasRaw] '{meshLabel}' charts={chartArea.Count} | chart UV-area (atlas-px²): min={cMin:G3} max={cMax:G3} mean={cMean:G3} maxRatio={cRatio:F2}x");
+        }
+
 
         /// <summary>
         /// Convenience wrapper: repack UV0 shells into UV2, return packed UV2 array.
@@ -621,6 +680,8 @@ namespace SashaRX.UnityMeshLab
                 XatlasNative.xatlasGetOutputVertexData(0, outXref, outUV, outChart, outVertCount);
                 XatlasNative.xatlasGetOutputIndices(0, outIdx, outIndexCount);
 
+                LogRawXatlasDensity(outUV, outChart, outIdx, outVertCount, outIndexCount, mesh.name);
+
                 // ── C#-side UV2 assignment ──
                 Vector2[] uv2;
                 uint[] vertChartId;
@@ -632,6 +693,8 @@ namespace SashaRX.UnityMeshLab
 
                 result.conflictVertices = conflicts;
 
+                LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postAssign]");
+
                 // ── Post-process: fix orphan vertices ──
                 int orphanVerts, orphanTris, snapped;
                 FixOrphanVertices(uv2, tris, vertChartId, out orphanVerts, out orphanTris, out snapped);
@@ -639,12 +702,17 @@ namespace SashaRX.UnityMeshLab
                 result.orphanTriangles = orphanTris;
                 result.snappedVertices = snapped;
 
+                LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postOrphan]");
+
                 // ── Diagnostic: top longest UV2 edges (after fix) ──
                 DiagnoseLongestEdges(uv2, tris, faceShellIds, vertChartId, 10);
 
                 // ── Border padding inset ──
                 if (opts.borderPadding > 0 && result.atlasWidth > 0)
+                {
                     ApplyBorderInset(uv2, opts.borderPadding, result.atlasWidth, result.atlasHeight);
+                    LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postBorder]");
+                }
 
                 // ── Apply UV2 (channel 1 — Unity lightmap channel, mesh.uv2) ──
                 int clampedOutOfUnit = 0;
@@ -660,7 +728,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info(UvtLog.Category.Repack,
                     $"Atlas utilization: {coverage * 100.0:F1}% of [0,1]² covered ({shells.Count} shells)");
 
-                LogPostPackDensity(uv2, tris, positions, shells, mesh.name);
+                LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [final]");
 
                 // ── Stats ──
                 int nonZero = 0;
@@ -888,6 +956,8 @@ namespace SashaRX.UnityMeshLab
                     XatlasNative.xatlasGetOutputVertexData(m, outXref, outUV, outChart, outVertCount);
                     XatlasNative.xatlasGetOutputIndices(m, outIdx, outIndexCount);
 
+                    LogRawXatlasDensity(outUV, outChart, outIdx, outVertCount, outIndexCount, meshes[m].name);
+
                     results[m].chartCount = (uint)outVertCount; // per-mesh chart count approximation
 
                     // Assign UV2
@@ -900,6 +970,7 @@ namespace SashaRX.UnityMeshLab
                               out uv2, out vertChartId, out conflicts);
                     results[m].conflictVertices = conflicts;
 
+                    LogPostPackDensity(uv2, allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postAssign]");
 
                     // Fix orphan vertices
                     int orphanVerts, orphanTris, snapped;
@@ -907,6 +978,8 @@ namespace SashaRX.UnityMeshLab
                     results[m].orphanVertices  = orphanVerts;
                     results[m].orphanTriangles = orphanTris;
                     results[m].snappedVertices = snapped;
+
+                    LogPostPackDensity(uv2, allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postOrphan]");
 
                     allUv2[m] = uv2;
                     results[m].ok = true;
@@ -923,14 +996,17 @@ namespace SashaRX.UnityMeshLab
                     if (allUv2[m] == null || !results[m].ok) continue;
 
                     if (opts.borderPadding > 0 && atlasW > 0)
+                    {
                         ApplyBorderInset(allUv2[m], opts.borderPadding, atlasW, atlasH);
+                        LogPostPackDensity(allUv2[m], allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postBorder]");
+                    }
 
                     if (opts.clampLightmapToUnit)
                         clampedTotal += ClampUvsToUnit(allUv2[m]);
 
                     meshes[m].SetUVs(1, allUv2[m]);
 
-                    LogPostPackDensity(allUv2[m], allTris[m], allPositions[m], allShells[m], meshes[m].name);
+                    LogPostPackDensity(allUv2[m], allTris[m], allPositions[m], allShells[m], meshes[m].name + " [final]");
                 }
                 if (clampedTotal > 0)
                     UvtLog.Verbose(UvtLog.Category.Repack,
