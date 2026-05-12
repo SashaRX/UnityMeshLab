@@ -73,14 +73,6 @@ namespace SashaRX.UnityMeshLab
         public bool XatlasRotateCharts = true;
         /// <summary>xatlas align rotation to axis (rotateChartsToAxis native option). Default true.</summary>
         public bool XatlasRotateChartsToAxis = true;
-        /// <summary>
-        /// Merge UV0-overlapping tile shells into a single xatlas chart and dispatch
-        /// the rep's UV2 to all duplicates. WRONG for lightmap UV2 — UV2 is unique
-        /// per-shell, tile-instances must occupy distinct atlas slots. Kept as an
-        /// opt-in for experimentation only; perturbation runs unconditionally on
-        /// overlap-grouped shells so xatlas treats them as unique charts.
-        /// </summary>
-        public bool MergeOverlappingTiles = false;
 
         /// <summary>
         /// Pre-pack rescale of each shell's UV0 so UV-area is proportional

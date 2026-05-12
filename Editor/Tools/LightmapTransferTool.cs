@@ -492,11 +492,6 @@ namespace SashaRX.UnityMeshLab
                 }
                 EditorGUILayout.Space(4);
                 EditorGUILayout.LabelField("xatlas options", EditorStyles.miniBoldLabel);
-                ctx.MergeOverlappingTiles = EditorGUILayout.ToggleLeft(
-                    new GUIContent("Merge overlap tiles",
-                        "Group-aware repack: collapse UV0-overlapping tile shells into one chart; "
-                        + "duplicates share the representative's UV2 region. Critical for tiled-UV0 models."),
-                    ctx.MergeOverlappingTiles);
                 ctx.XatlasBruteForce = EditorGUILayout.ToggleLeft(
                     new GUIContent("Brute force pack",
                         "Run xatlas's exhaustive packer (slower, tighter atlas). Off by default."),
@@ -1082,7 +1077,6 @@ namespace SashaRX.UnityMeshLab
             opts.bruteForce = ctx.XatlasBruteForce;
             opts.rotateCharts = ctx.XatlasRotateCharts;
             opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
-            opts.mergeOverlappingTiles = ctx.MergeOverlappingTiles;
             opts.normalizeTexelDensity = ctx.NormalizeTexelDensity;
             opts.normalizeShellAspect = ctx.NormalizeShellAspect;
             opts.maxShellAspect = ctx.MaxShellAspect;
