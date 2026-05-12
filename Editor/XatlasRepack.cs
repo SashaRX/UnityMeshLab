@@ -3,6 +3,8 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
+using UnityEditor;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
@@ -552,6 +554,85 @@ namespace SashaRX.UnityMeshLab
         static bool IsFiniteD(double x) => !(double.IsNaN(x) || double.IsInfinity(x));
 
         /// <summary>
+        /// Run xatlas ComputeCharts + PackCharts on a background thread while
+        /// the main thread polls a cancellable progress bar. xatlas itself
+        /// can't be interrupted mid-pack (no native cancel API), so a "cancel"
+        /// click here means: stop showing progress, wait for the in-flight
+        /// pack to finish (since xatlas state is a process-wide singleton —
+        /// can't safely abandon it), then return cancelled. The user gets
+        /// reactive UI feedback even when the pack is slow.
+        ///
+        /// Returns true if pack completed normally, false if user cancelled
+        /// (caller should clean up via xatlasDestroy and skip output read).
+        /// </summary>
+        static bool RunPackCancelable(
+            string label, int shellCount, uint internalRes,
+            int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
+            int bilinear, int blockAlign, int bruteForce,
+            int rotateCharts, int rotateChartsToAxis)
+        {
+            // Cost preflight — refuse impossibly large packs up front instead
+            // of hanging for hours. Brute force is O(shells × W × H); the
+            // random heuristic is much cheaper but still scales with area.
+            long packCost = (long)shellCount * (long)internalRes * (long)internalRes;
+            const long kBruteCostBudget = 500_000_000L;     // ~5-10s wall
+            const long kHeuristicCostBudget = 20_000_000_000L; // ~30-60s wall
+
+            if (bruteForce != 0 && packCost > kBruteCostBudget)
+            {
+                UvtLog.Info(UvtLog.Category.Repack,
+                    $"[xatlas] Brute force pack disabled — cost {packCost / 1_000_000L}M ops × {shellCount} shells × {internalRes}² atlas would exceed {kBruteCostBudget / 1_000_000L}M budget");
+                bruteForce = 0;
+            }
+            if (packCost > kHeuristicCostBudget)
+            {
+                UvtLog.Warn(UvtLog.Category.Repack,
+                    $"[xatlas] Pack cost {packCost / 1_000_000_000L}B ops is past the {kHeuristicCostBudget / 1_000_000_000L}B safety budget — refusing to start pack. Lower internal oversample or atlas resolution.");
+                return false;
+            }
+
+            var packTask = Task.Run(() =>
+            {
+                XatlasNative.xatlasComputeCharts();
+                XatlasNative.xatlasPackCharts(
+                    maxChartSize, padding, texelsPerUnit, resolution,
+                    bilinear, blockAlign, bruteForce,
+                    rotateCharts, rotateChartsToAxis);
+            });
+
+            double startTime = EditorApplication.timeSinceStartup;
+            bool cancelled = false;
+            try
+            {
+                while (!packTask.IsCompleted)
+                {
+                    double elapsed = EditorApplication.timeSinceStartup - startTime;
+                    string msg = $"{label} — atlas {internalRes}×{internalRes}, {shellCount} shells, {elapsed:F0}s elapsed";
+                    if (EditorUtility.DisplayCancelableProgressBar("xatlas pack", msg, -1f))
+                    {
+                        cancelled = true;
+                        break;
+                    }
+                    System.Threading.Thread.Sleep(50);
+                }
+
+                // xatlas has no native cancel — wait for the task to actually
+                // finish before returning, otherwise the singleton state is
+                // mid-mutation and the next xatlasCreate would race against it.
+                packTask.Wait();
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+            }
+
+            if (cancelled)
+                UvtLog.Warn(UvtLog.Category.Repack, "[xatlas] Pack cancelled by user (xatlas finished its in-flight operation; result discarded)");
+
+            return !cancelled;
+        }
+
+        /// <summary>
         /// Raw xatlas output density diagnostic. Operates on the buffers returned
         /// by xatlasGetOutputVertexData/Indices (atlas-pixel space, grouped by
         /// xatlas chart ID, not by our original shell IDs).
@@ -783,8 +864,6 @@ namespace SashaRX.UnityMeshLab
                     return result;
                 }
 
-                XatlasNative.xatlasComputeCharts();
-
                 // Oversample the internal xatlas atlas. xatlas's unconditional
                 // per-chart ceil(extents) stretch (xatlas.cpp:8345-8362) breaks
                 // uniform density when shells have sub-pixel extents in atlas
@@ -796,25 +875,19 @@ namespace SashaRX.UnityMeshLab
                 uint internalRes = opts.resolution * (uint)oversample;
                 uint internalPad = opts.padding    * (uint)oversample;
 
-                // Brute force pack is O(N × W × H). At 8× oversample on a
-                // 256-px user resolution that's 149 × 2048 × 2048 = 600M ops
-                // per atlas, multiplied by 3 auto-tune configs = minutes-to-
-                // hours wall time. Disable brute force when oversample makes
-                // the search space too large; the random heuristic is fine at
-                // these atlas sizes anyway (the win from brute force was on
-                // tiny atlases where mis-placement leaves visible gaps).
-                bool effectiveBruteForce = opts.bruteForce && oversample <= 4;
-                if (opts.bruteForce && !effectiveBruteForce)
-                    UvtLog.Info(UvtLog.Category.Repack,
-                        $"[xatlas] Brute force pack disabled (oversample {oversample}× would push search space past minutes-per-atlas budget)");
-
-                XatlasNative.xatlasPackCharts(
+                bool packed = RunPackCancelable(
+                    mesh.name, shells.Count, internalRes,
                     opts.maxChartSize, internalPad, opts.texelsPerUnit, internalRes,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
-                    effectiveBruteForce ? 1 : 0,
+                    opts.bruteForce ? 1 : 0,
                     opts.rotateCharts ? 1 : 0,
                     opts.rotateChartsToAxis ? 1 : 0);
+                if (!packed)
+                {
+                    result.error = "cancelled";
+                    return result;
+                }
 
                 if (XatlasNative.xatlasGetMeshCount() == 0)
                 {
@@ -1082,24 +1155,30 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 // Pack all charts together into one atlas
-                XatlasNative.xatlasComputeCharts();
-
-                // See RepackSingle for oversample rationale + brute-force guard.
+                // See RepackSingle for oversample rationale (ceil-stretch fix)
+                // and RunPackCancelable for cost-budget + cancel handling.
                 int oversampleM = opts.internalOversample > 0 ? opts.internalOversample : 1;
                 uint internalResM = opts.resolution * (uint)oversampleM;
                 uint internalPadM = opts.padding    * (uint)oversampleM;
-                bool effectiveBruteForceM = opts.bruteForce && oversampleM <= 4;
-                if (opts.bruteForce && !effectiveBruteForceM)
-                    UvtLog.Info(UvtLog.Category.Repack,
-                        $"[xatlas] Brute force pack disabled (oversample {oversampleM}× would push search space past minutes-per-atlas budget)");
 
-                XatlasNative.xatlasPackCharts(
+                int totalShellsM = 0;
+                for (int m = 0; m < meshCount; m++)
+                    if (allShells[m] != null) totalShellsM += allShells[m].Count;
+
+                bool packedM = RunPackCancelable(
+                    "MultiMesh", totalShellsM, internalResM,
                     opts.maxChartSize, internalPadM, opts.texelsPerUnit, internalResM,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
-                    effectiveBruteForceM ? 1 : 0,
+                    opts.bruteForce ? 1 : 0,
                     opts.rotateCharts ? 1 : 0,
                     opts.rotateChartsToAxis ? 1 : 0);
+                if (!packedM)
+                {
+                    for (int m = 0; m < meshCount; m++)
+                        results[m].error = "cancelled";
+                    return results;
+                }
 
                 int outMeshCount = XatlasNative.xatlasGetMeshCount();
                 if (outMeshCount == 0)
