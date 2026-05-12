@@ -5,6 +5,7 @@
 
 #include "xatlas.h"
 #include "meshoptimizer.h"
+#include <cstdio>
 #include <cstring>
 #include <cstdint>
 #include <vector>
