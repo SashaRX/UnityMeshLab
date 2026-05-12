@@ -1,15 +1,20 @@
-// TexelDensityNormalizer.cs — pre-pack UV0 reshaping in two passes:
+// TexelDensityNormalizer.cs — pre-pack UV0 reshaping in three passes:
 //   1) Global unwrap-aspect normalization. Detect the AABB of all UV0 vertices
 //      across the mesh. If the artist authored on a non-square atlas (e.g.
 //      1:2 or 1:0.5 unwrap), apply a single non-uniform global scale around
 //      the bbox centre to make the overall span 1:1. Area-preserving by
-//      construction (sx·sy = 1). Per-shell anisotropy is intentionally NOT
-//      addressed here — that's a separate concern handled elsewhere.
+//      construction (sx·sy = 1).
+//   1.5) (Opt-in) Per-shell aspect normalization. For each shell, take a 3D
+//      PCA in the shell's tangent plane (σ1≥σ2 → 3D aspect = √(σ1/σ2)),
+//      align the UV principal axis with the 3D principal axis via a 2×2 SVD
+//      between UV offsets and tangent-plane offsets, then area-preserving
+//      non-uniformly scale so UV bbox aspect matches the (clamped) 3D PCA
+//      aspect. Reduces UV slivers caused by elongated unwraps.
 //   2) Texel density correction (uniform per-shell scale) bringing UV-area
 //      proportional to 3D-area, plus a global coverage budget that leaves
 //      slack for xatlas's bin-packing.
 //
-// Both passes mutate the local uvFlat copy fed to xatlas. mesh.uv is never
+// All passes mutate the local uvFlat copy fed to xatlas. mesh.uv is never
 // touched (project invariant).
 
 using System;
@@ -21,9 +26,10 @@ namespace SashaRX.UnityMeshLab
     internal static class TexelDensityNormalizer
     {
         /// <summary>
-        /// Two-pass per-shell UV0 reshape: (1) global unwrap-aspect to 1:1,
-        /// (2) area-based density correction. Pass 1 runs first so pass 2
-        /// measures UV area on the squared layout.
+        /// Three-pass per-shell UV0 reshape: (1) global unwrap-aspect to 1:1,
+        /// (1.5, opt-in) per-shell aspect to match 3D PCA aspect,
+        /// (2) area-based density correction. Earlier passes run first so the
+        /// later passes measure UV area / shape on the reshaped layout.
         /// </summary>
         /// <param name="uvFlat">Flat UV0 array (vertexCount * 2 floats). Mutated in place.</param>
         /// <param name="shells">Per-mesh shells (read-only).</param>
@@ -37,9 +43,11 @@ namespace SashaRX.UnityMeshLab
         /// to this fraction of [0,1]² so xatlas doesn't overflow the requested atlas resolution due to
         /// bin-packing slack. Default 0.75. ≤0 or ≥1 disables the budget step.</param>
         /// <param name="normalizeAspect">Enable pass 1 (global unwrap-aspect to 1:1). Default true.</param>
-        /// <param name="maxAspect">Currently unused — preserved for API stability while per-shell aspect
-        /// correction is deferred to a separate pass.</param>
-        /// <returns>1 if pass 1 modified UVs, plus the count of shells modified by pass 2.</returns>
+        /// <param name="maxAspect">Upper bound on the per-shell 3D-PCA aspect used by the
+        /// per-shell aspect pass. The shell's √(σ1/σ2) is clamped to [1, maxAspect] before being
+        /// used as the UV aspect target. Default 10.</param>
+        /// <param name="perShellAspect">Enable pass 1.5 (per-shell aspect → 3D PCA aspect). Default false.</param>
+        /// <returns>1 if any pre-density pass modified UVs, plus the count of shells modified by pass 2.</returns>
         internal static int Normalize(
             float[] uvFlat,
             List<UvShell> shells,
@@ -50,7 +58,8 @@ namespace SashaRX.UnityMeshLab
             bool medianDensity = false,
             float targetCoverage = 0.75f,
             bool normalizeAspect = true,
-            float maxAspect = 2f)
+            float maxAspect = 10f,
+            bool perShellAspect = false)
         {
             if (uvFlat == null || shells == null || shells.Count == 0) return 0;
             if (tris == null || positions == null) return 0;
@@ -128,6 +137,18 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
             }
+
+            // ── PASS 1.5: per-shell aspect → 3D PCA aspect (opt-in) ──
+            // For each shell, take a 3D PCA in its tangent plane (top-2
+            // eigenvectors of the 3×3 position covariance). Align the UV
+            // principal axis with the 3D principal axis via a 2×2 SVD
+            // between UV offsets and tangent-plane offsets, then apply an
+            // area-preserving non-uniform scale so the UV bbox aspect (in
+            // the aligned frame) equals √(σ1/σ2), clamped to [1, maxAspect].
+            // Rotates back, leaving the shell's centroid in place.
+            if (perShellAspect)
+                ApplyPerShellAspect(uvFlat, shells, positions, scaleMin, scaleMax, maxAspect,
+                    ref aspectModified);
 
             // ── PASS 2: density correction ──
             // Re-measure UV area on the (possibly aspect-corrected) layout, then
@@ -240,6 +261,435 @@ namespace SashaRX.UnityMeshLab
             }
 
             return Mathf.Max(aspectModified ? 1 : 0, modifiedDensity);
+        }
+
+        // ────────────────────────────────────────────────────────────────
+        // PASS 1.5 helpers — per-shell aspect → 3D PCA aspect
+        // ────────────────────────────────────────────────────────────────
+
+        // Skip-condition tuning. Lifted to consts for grep-ability.
+        private const float kPerShellMinSigma2     = 1e-10f; // absolute σ2 floor
+        private const float kPerShellMinSigmaRatio = 1e-6f;  // σ2/σ1 floor (vs degenerate line/point shells)
+        private const float kPerShellTrivialEps    = 1e-3f;  // |a3D − aUV| under which we skip
+        private const float kPerShellTangentEps    = 1e-12f; // 3D tangent-plane offset sumSq floor
+        private const float kPerShellUvEps         = 1e-12f; // UV offset sumSq floor
+
+        /// <summary>
+        /// Per-shell aspect normalization. For each shell, computes the 3D
+        /// PCA tangent plane (two top eigenvectors of the 3×3 position
+        /// covariance), aligns the UV principal axis to the 3D principal
+        /// axis via a 2×2 SVD between the centered UV offsets and the
+        /// tangent-plane offsets, then applies an area-preserving non-uniform
+        /// scale around the UV centroid so the UV bbox aspect in the aligned
+        /// frame equals √(σ1/σ2) clamped to [1, maxAspect]. Finally rotates
+        /// the shell back. Centroid is preserved.
+        /// </summary>
+        private static void ApplyPerShellAspect(
+            float[] uvFlat,
+            List<UvShell> shells,
+            Vector3[] positions,
+            float scaleMin,
+            float scaleMax,
+            float maxAspect,
+            ref bool anyModified)
+        {
+            int n = shells.Count;
+            int uvLen = uvFlat.Length;
+
+            int modified = 0;
+            int skipDegenerate = 0;
+            int skipTrivial = 0;
+            int skipNumeric = 0;
+            int skipClamp = 0;
+
+            float maxAspectClamp = maxAspect > 1f ? maxAspect : 1f;
+
+            for (int si = 0; si < n; si++)
+            {
+                var shell = shells[si];
+                if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3)
+                {
+                    skipDegenerate++;
+                    continue;
+                }
+
+                // 3D PCA — top-2 eigenvectors of position covariance.
+                if (!Compute3DShellAxes(shell, positions,
+                        out double sigma1, out double sigma2,
+                        out Vector3 e1_3D, out Vector3 e2_3D,
+                        out Vector3 c3D))
+                {
+                    skipDegenerate++;
+                    continue;
+                }
+
+                if (sigma2 < kPerShellMinSigma2 || sigma1 <= 0.0 ||
+                    sigma2 / sigma1 < kPerShellMinSigmaRatio)
+                {
+                    skipDegenerate++;
+                    continue;
+                }
+
+                double aspect3D_raw = Math.Sqrt(sigma1 / sigma2);
+                if (double.IsNaN(aspect3D_raw) || double.IsInfinity(aspect3D_raw))
+                {
+                    skipNumeric++;
+                    continue;
+                }
+                float aspect3D = Mathf.Clamp((float)aspect3D_raw, 1f, maxAspectClamp);
+
+                // UV centroid + paired tangent-plane / UV offset accumulators
+                // for the 2×2 cross-covariance.
+                Vector2 cUv = Vector2.zero;
+                int cn = 0;
+                foreach (int v in shell.vertexIndices)
+                {
+                    int idx = v * 2;
+                    if ((uint)(idx + 1) >= (uint)uvLen) continue;
+                    cUv.x += uvFlat[idx];
+                    cUv.y += uvFlat[idx + 1];
+                    cn++;
+                }
+                if (cn < 3)
+                {
+                    skipDegenerate++;
+                    continue;
+                }
+                cUv.x /= cn;
+                cUv.y /= cn;
+
+                // M = Σ [uOff; vOff] · [t1, t2]
+                double m00 = 0.0, m01 = 0.0, m10 = 0.0, m11 = 0.0;
+                double tSumSq = 0.0, uSumSq = 0.0;
+                int posLen = positions.Length;
+                foreach (int v in shell.vertexIndices)
+                {
+                    int idx = v * 2;
+                    if ((uint)(idx + 1) >= (uint)uvLen) continue;
+                    if ((uint)v >= (uint)posLen) continue;
+
+                    Vector3 d3 = positions[v] - c3D;
+                    double t1 = Vector3.Dot(d3, e1_3D);
+                    double t2 = Vector3.Dot(d3, e2_3D);
+
+                    double uOff = uvFlat[idx]     - cUv.x;
+                    double vOff = uvFlat[idx + 1] - cUv.y;
+
+                    m00 += uOff * t1;
+                    m01 += uOff * t2;
+                    m10 += vOff * t1;
+                    m11 += vOff * t2;
+
+                    tSumSq += t1 * t1 + t2 * t2;
+                    uSumSq += uOff * uOff + vOff * vOff;
+                }
+
+                if (tSumSq < kPerShellTangentEps || uSumSq < kPerShellUvEps)
+                {
+                    skipDegenerate++;
+                    continue;
+                }
+
+                // 2×2 SVD → rotation angle θ that aligns UV principal axis
+                // with 3D principal axis. R = U·V^T. We only need θ.
+                if (!Compute2DRotationAngle(m00, m01, m10, m11, out double theta))
+                {
+                    skipNumeric++;
+                    continue;
+                }
+
+                // Rotate UV offsets by −θ around cUv → axis-align with 3D PCA.
+                float cosT = (float)Math.Cos(-theta);
+                float sinT = (float)Math.Sin(-theta);
+
+                // First pass: measure aligned bbox.
+                float minA = float.MaxValue, minB = float.MaxValue;
+                float maxA = float.MinValue, maxB = float.MinValue;
+                foreach (int v in shell.vertexIndices)
+                {
+                    int idx = v * 2;
+                    if ((uint)(idx + 1) >= (uint)uvLen) continue;
+                    float du = uvFlat[idx]     - cUv.x;
+                    float dv = uvFlat[idx + 1] - cUv.y;
+                    float a = du * cosT - dv * sinT;
+                    float b = du * sinT + dv * cosT;
+                    if (a < minA) minA = a;
+                    if (a > maxA) maxA = a;
+                    if (b < minB) minB = b;
+                    if (b > maxB) maxB = b;
+                }
+
+                float wA = maxA - minA;
+                float hB = maxB - minB;
+                if (wA < 1e-6f || hB < 1e-6f)
+                {
+                    skipDegenerate++;
+                    continue;
+                }
+
+                // If the swap protector fires the SVD result was off — flip
+                // axes by adding π/2 to θ. This re-derives a, b on the fly
+                // below; cheaper to just recompute cos/sin and bbox.
+                if (wA < hB)
+                {
+                    theta += Math.PI * 0.5;
+                    cosT = (float)Math.Cos(-theta);
+                    sinT = (float)Math.Sin(-theta);
+                    minA = float.MaxValue; minB = float.MaxValue;
+                    maxA = float.MinValue; maxB = float.MinValue;
+                    foreach (int v in shell.vertexIndices)
+                    {
+                        int idx = v * 2;
+                        if ((uint)(idx + 1) >= (uint)uvLen) continue;
+                        float du = uvFlat[idx]     - cUv.x;
+                        float dv = uvFlat[idx + 1] - cUv.y;
+                        float a = du * cosT - dv * sinT;
+                        float b = du * sinT + dv * cosT;
+                        if (a < minA) minA = a;
+                        if (a > maxA) maxA = a;
+                        if (b < minB) minB = b;
+                        if (b > maxB) maxB = b;
+                    }
+                    wA = maxA - minA;
+                    hB = maxB - minB;
+                    if (wA < 1e-6f || hB < 1e-6f)
+                    {
+                        skipDegenerate++;
+                        continue;
+                    }
+                }
+
+                float aspectUV = wA / hB;
+
+                if (Mathf.Abs(aspect3D - aspectUV) < kPerShellTrivialEps)
+                {
+                    skipTrivial++;
+                    continue;
+                }
+
+                // Area-preserving non-uniform scale: along A (principal) by
+                // sx = √(aspect3D / aspectUV), perpendicular by sy = 1/sx.
+                float sx = Mathf.Sqrt(aspect3D / aspectUV);
+                float sy = aspectUV > 0f ? Mathf.Sqrt(aspectUV / aspect3D) : 0f;
+                if (float.IsNaN(sx) || float.IsInfinity(sx) ||
+                    float.IsNaN(sy) || float.IsInfinity(sy) ||
+                    sx <= 0f || sy <= 0f)
+                {
+                    skipNumeric++;
+                    continue;
+                }
+                if (sx < scaleMin || sx > scaleMax || sy < scaleMin || sy > scaleMax)
+                {
+                    skipClamp++;
+                    continue;
+                }
+
+                // Compose: rotate −θ, scale (sx,sy), rotate +θ, around cUv.
+                // Precompute the 2×2 matrix R(+θ) · diag(sx,sy) · R(−θ).
+                float cosP = (float)Math.Cos(theta);
+                float sinP = (float)Math.Sin(theta);
+                // After the algebra:
+                //   M[0,0] =  cosP*sx*cosT + sinP*sy*sinT  (note R(−θ) entries)
+                // Compute via R(+θ) * diag(sx,sy) * R(−θ) explicitly.
+                // R(−θ) = [[cosT, -sinT],[sinT, cosT]]
+                // diag·R(−θ) = [[sx*cosT, -sx*sinT],[sy*sinT, sy*cosT]]
+                // R(+θ) * that:
+                //   row0 = cosP*[sx*cosT,-sx*sinT] - sinP*[sy*sinT, sy*cosT]
+                //        = [cosP*sx*cosT - sinP*sy*sinT, -cosP*sx*sinT - sinP*sy*cosT]
+                //   row1 = sinP*[sx*cosT,-sx*sinT] + cosP*[sy*sinT, sy*cosT]
+                //        = [sinP*sx*cosT + cosP*sy*sinT, -sinP*sx*sinT + cosP*sy*cosT]
+                float a00 =  cosP * sx * cosT - sinP * sy * sinT;
+                float a01 = -cosP * sx * sinT - sinP * sy * cosT;
+                float a10 =  sinP * sx * cosT + cosP * sy * sinT;
+                float a11 = -sinP * sx * sinT + cosP * sy * cosT;
+
+                bool numericFail = false;
+                foreach (int v in shell.vertexIndices)
+                {
+                    int idx = v * 2;
+                    if ((uint)(idx + 1) >= (uint)uvLen) continue;
+                    float du = uvFlat[idx]     - cUv.x;
+                    float dv = uvFlat[idx + 1] - cUv.y;
+                    float nu = cUv.x + a00 * du + a01 * dv;
+                    float nv = cUv.y + a10 * du + a11 * dv;
+                    if (float.IsNaN(nu) || float.IsInfinity(nu) ||
+                        float.IsNaN(nv) || float.IsInfinity(nv))
+                    {
+                        numericFail = true;
+                        break;
+                    }
+                    uvFlat[idx]     = nu;
+                    uvFlat[idx + 1] = nv;
+                }
+
+                if (numericFail)
+                {
+                    skipNumeric++;
+                    continue;
+                }
+
+                modified++;
+                UvtLog.Verbose(UvtLog.Category.Repack,
+                    $"[Repack] PerShellAspect: shell {si} 3D {aspect3D:F2}:1 UV {aspectUV:F2}:1 " +
+                    $"θ={theta * (180.0 / Math.PI):F1}° scale=({sx:F3},{sy:F3})");
+            }
+
+            if (modified > 0) anyModified = true;
+
+            UvtLog.Info(UvtLog.Category.Repack,
+                $"[Repack] PerShellAspect: normalized {modified}/{n} shells " +
+                $"(skipped {skipDegenerate} degenerate, {skipTrivial} already normalized, " +
+                $"{skipNumeric} numeric, {skipClamp} out-of-scale-range)");
+        }
+
+        /// <summary>
+        /// Power-iteration + deflation on the 3×3 position covariance of the
+        /// shell. Returns the top-2 eigenvalues (σ1≥σ2) and eigenvectors as
+        /// the shell's tangent plane, plus the 3D centroid. Returns false if
+        /// the shell has too few vertices or the covariance is degenerate.
+        /// </summary>
+        private static bool Compute3DShellAxes(
+            UvShell shell, Vector3[] positions,
+            out double sigma1, out double sigma2,
+            out Vector3 e1, out Vector3 e2,
+            out Vector3 centroid)
+        {
+            sigma1 = 0.0; sigma2 = 0.0;
+            e1 = Vector3.right; e2 = Vector3.up;
+            centroid = Vector3.zero;
+
+            int posLen = positions.Length;
+            int count = 0;
+            Vector3 sum = Vector3.zero;
+            foreach (int v in shell.vertexIndices)
+            {
+                if ((uint)v >= (uint)posLen) continue;
+                sum += positions[v];
+                count++;
+            }
+            if (count < 3) return false;
+            centroid = sum / count;
+
+            double cxx = 0, cxy = 0, cxz = 0;
+            double cyy = 0, cyz = 0, czz = 0;
+            foreach (int v in shell.vertexIndices)
+            {
+                if ((uint)v >= (uint)posLen) continue;
+                double dx = positions[v].x - centroid.x;
+                double dy = positions[v].y - centroid.y;
+                double dz = positions[v].z - centroid.z;
+                cxx += dx * dx; cxy += dx * dy; cxz += dx * dz;
+                cyy += dy * dy; cyz += dy * dz;
+                czz += dz * dz;
+            }
+            double inv = 1.0 / count;
+            cxx *= inv; cxy *= inv; cxz *= inv;
+            cyy *= inv; cyz *= inv; czz *= inv;
+
+            // Power iteration for largest eigen-pair.
+            Vector3 v1 = new Vector3(1f, 0.5f, 0.25f).normalized;
+            for (int iter = 0; iter < 64; iter++)
+            {
+                double nx = cxx * v1.x + cxy * v1.y + cxz * v1.z;
+                double ny = cxy * v1.x + cyy * v1.y + cyz * v1.z;
+                double nz = cxz * v1.x + cyz * v1.y + czz * v1.z;
+                double len = Math.Sqrt(nx * nx + ny * ny + nz * nz);
+                if (len < 1e-14) return false;
+                v1 = new Vector3((float)(nx / len), (float)(ny / len), (float)(nz / len));
+            }
+            // Eigenvalue (Rayleigh quotient).
+            double a1x = cxx * v1.x + cxy * v1.y + cxz * v1.z;
+            double a1y = cxy * v1.x + cyy * v1.y + cyz * v1.z;
+            double a1z = cxz * v1.x + cyz * v1.y + czz * v1.z;
+            sigma1 = v1.x * a1x + v1.y * a1y + v1.z * a1z;
+            if (sigma1 <= 0.0) return false;
+
+            // Deflate and iterate for second eigen-pair.
+            double dxx = cxx - sigma1 * v1.x * v1.x;
+            double dxy = cxy - sigma1 * v1.x * v1.y;
+            double dxz = cxz - sigma1 * v1.x * v1.z;
+            double dyy = cyy - sigma1 * v1.y * v1.y;
+            double dyz = cyz - sigma1 * v1.y * v1.z;
+            double dzz = czz - sigma1 * v1.z * v1.z;
+
+            // Seed orthogonal to v1.
+            Vector3 seed = Mathf.Abs(Vector3.Dot(v1, Vector3.up)) < 0.95f
+                ? Vector3.Cross(v1, Vector3.up).normalized
+                : Vector3.Cross(v1, Vector3.right).normalized;
+            Vector3 v2 = seed;
+            for (int iter = 0; iter < 64; iter++)
+            {
+                double nx = dxx * v2.x + dxy * v2.y + dxz * v2.z;
+                double ny = dxy * v2.x + dyy * v2.y + dyz * v2.z;
+                double nz = dxz * v2.x + dyz * v2.y + dzz * v2.z;
+                // Re-orthogonalize against v1 (numerical hygiene).
+                double dot = v1.x * nx + v1.y * ny + v1.z * nz;
+                nx -= dot * v1.x; ny -= dot * v1.y; nz -= dot * v1.z;
+                double len = Math.Sqrt(nx * nx + ny * ny + nz * nz);
+                if (len < 1e-14) return false;
+                v2 = new Vector3((float)(nx / len), (float)(ny / len), (float)(nz / len));
+            }
+            double a2x = cxx * v2.x + cxy * v2.y + cxz * v2.z;
+            double a2y = cxy * v2.x + cyy * v2.y + cyz * v2.z;
+            double a2z = cxz * v2.x + cyz * v2.y + czz * v2.z;
+            sigma2 = v2.x * a2x + v2.y * a2y + v2.z * a2z;
+            if (sigma2 <= 0.0) return false;
+
+            e1 = v1;
+            e2 = v2;
+            return true;
+        }
+
+        /// <summary>
+        /// 2×2 SVD reduced to the rotation angle θ such that U·V^T = R(θ) =
+        /// [[cosθ,-sinθ],[sinθ,cosθ]], where M = U·Σ·V^T. Derivation:
+        ///   • S = M^T·M is 2×2 symmetric; its eigenvectors form V's columns.
+        ///   • The principal eigenvector of S (largest eigenvalue) gives the
+        ///     direction in the *input* space (= 3D-tangent-plane axes here)
+        ///     that M maps to the largest principal direction in the output
+        ///     space (= UV plane).
+        ///   • U[:,0] = M·V[:,0] / s1 (largest singular value).
+        ///   • R = U·V^T rotates V's first column onto U's first column —
+        ///     i.e. rotates the 3D-aligned-frame's principal axis into the
+        ///     UV-frame's principal axis. We want the *inverse*: rotate UV
+        ///     to be aligned with 3D-PCA, so the caller applies R(−θ).
+        /// Reflection (det(R) &lt; 0) is folded out by flipping V's second
+        /// column, yielding a pure rotation; θ is unaffected.
+        /// </summary>
+        private static bool Compute2DRotationAngle(
+            double m00, double m01, double m10, double m11, out double theta)
+        {
+            theta = 0.0;
+            if (Math.Abs(m00) + Math.Abs(m01) + Math.Abs(m10) + Math.Abs(m11) < 1e-20)
+                return false;
+
+            // S = M^T M, 2×2 symmetric.
+            //   S[0,0] = m00² + m10²
+            //   S[1,1] = m01² + m11²
+            //   S[0,1] = S[1,0] = m00*m01 + m10*m11
+            double s00 = m00 * m00 + m10 * m10;
+            double s11 = m01 * m01 + m11 * m11;
+            double s01 = m00 * m01 + m10 * m11;
+
+            // Eigen-angle φ of S: tan(2φ) = 2·s01 / (s00 − s11). The
+            // principal eigenvector V[:,0] = (cos φ, sin φ).
+            double phi = 0.5 * Math.Atan2(2.0 * s01, s00 - s11);
+            double cosPhi = Math.Cos(phi);
+            double sinPhi = Math.Sin(phi);
+
+            // u = M · V[:,0]  (un-normalized first column of U·Σ).
+            double ux = m00 * cosPhi + m01 * sinPhi;
+            double uy = m10 * cosPhi + m11 * sinPhi;
+            double s1 = Math.Sqrt(ux * ux + uy * uy);
+            if (s1 < 1e-15) return false;
+
+            // U[:,0] = (cos ψ, sin ψ).
+            double psi = Math.Atan2(uy, ux);
+
+            // R = U·V^T. U = R(ψ) · diag(±1,±1) absorbing reflection into V
+            // (no effect on rotation). So R = R(ψ − φ).
+            theta = psi - phi;
+            return !double.IsNaN(theta) && !double.IsInfinity(theta);
         }
     }
 }

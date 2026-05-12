@@ -104,10 +104,24 @@ namespace SashaRX.UnityMeshLab
         public bool NormalizeShellAspect = true;
 
         /// <summary>
-        /// Reserved for the per-shell aspect normalization stage (currently
-        /// not wired up). Kept for API stability; default 2.
+        /// Per-shell aspect normalization. After the global unwrap-aspect
+        /// pass, each shell is independently rotated to align its principal
+        /// UV axis with its 3D PCA principal axis, then area-preserving
+        /// non-uniformly scaled so its UV bbox aspect matches the 3D PCA
+        /// aspect. Reduces UV slivers caused by elongated UV0 unwraps.
+        /// Off by default; opt-in because it can degrade quality on shells
+        /// with deliberately non-PCA-aligned authored layouts. Only effective
+        /// when NormalizeTexelDensity is on.
         /// </summary>
-        public float MaxShellAspect = 2f;
+        public bool PerShellAspectNormalize = false;
+
+        /// <summary>
+        /// Upper bound on the 3D-PCA aspect ratio used as the UV aspect
+        /// target by <see cref="PerShellAspectNormalize"/>. Protects against
+        /// extreme cases (very long thin shells) producing degenerate UVs.
+        /// Default 10.
+        /// </summary>
+        public float MaxShellAspect = 10f;
 
         /// <summary>
         /// Fraction of [0,1]² atlas the normalized UVs should sum to.

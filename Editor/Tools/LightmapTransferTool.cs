@@ -472,6 +472,12 @@ namespace SashaRX.UnityMeshLab
                             + "texel density into every shell. Per-shell aspect issues are "
                             + "a separate concern and not addressed here."),
                         ctx.NormalizeShellAspect);
+                    ctx.PerShellAspectNormalize = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Per-shell aspect normalize",
+                            "Scales each shell's UV0 so its aspect ratio matches its 3D shape "
+                            + "(area-preserving). Reduces UV slivers caused by elongated UV0 "
+                            + "unwrap. Off by default."),
+                        ctx.PerShellAspectNormalize);
                     ctx.TargetUvCoverage = EditorGUILayout.Slider(
                         new GUIContent("UV coverage budget",
                             "Fraction of [0,1]² atlas that normalized UVs sum to. "
@@ -1096,6 +1102,7 @@ namespace SashaRX.UnityMeshLab
             opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
             opts.normalizeTexelDensity = ctx.NormalizeTexelDensity;
             opts.normalizeShellAspect = ctx.NormalizeShellAspect;
+            opts.perShellAspectNormalize = ctx.PerShellAspectNormalize;
             opts.maxShellAspect = ctx.MaxShellAspect;
             opts.targetUvCoverage = ctx.TargetUvCoverage;
             opts.maxChartSize = ctx.XatlasMaxChartSize;
