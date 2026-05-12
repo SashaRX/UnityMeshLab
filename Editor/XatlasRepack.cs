@@ -422,6 +422,25 @@ namespace SashaRX.UnityMeshLab
                 uvFlat[i * 2 + 1] = uv0[i].y;
             }
 
+            // ── Pre-classify ribbon shells (used by both density-normalize
+            // skip-list and the ARAP pass below). When ARAP-on-ribbons is on,
+            // per-shell aspect must NOT also touch ribbons — otherwise the
+            // two passes fight each other and collapse the strip. Cheaper to
+            // collect the indices once.
+            int[] ribbonShellIndices = null;
+            if (opts.reparameterizeRibbons)
+            {
+                var ribbonList = new List<int>();
+                for (int si = 0; si < shells.Count; si++)
+                {
+                    var shell = shells[si];
+                    if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
+                    if (StripParameterization.IsRibbon(shell, positions, tris, out _, out _, out _))
+                        ribbonList.Add(si);
+                }
+                ribbonShellIndices = ribbonList.ToArray();
+            }
+
             // ── Texel-density normalization (pre-pack) ──
             // Rescale each shell's UV0 so UV-area is proportional to 3D-area
             // — gives xatlas charts whose relative size matches their real-
@@ -436,7 +455,8 @@ namespace SashaRX.UnityMeshLab
                     normalizeAspect: opts.normalizeShellAspect,
                     maxAspect: opts.maxShellAspect,
                     perShellAspect: opts.perShellAspectNormalize,
-                    perShellAspectThreshold: opts.perShellAspectThreshold);
+                    perShellAspectThreshold: opts.perShellAspectThreshold,
+                    perShellAspectSkipShells: ribbonShellIndices);
                 UvtLog.Verbose(UvtLog.Category.Repack,
                     $"Texel density: rescaled {rescaled}/{shells.Count} shells to uniform UV/3D area ratio");
             }
@@ -446,14 +466,14 @@ namespace SashaRX.UnityMeshLab
             // get an LSCM-style unwrap from xatlas that often collapses them into
             // sliver charts. Replacing the UV0 with an ARAP local/global solve
             // straightens the strip in UV space before xatlas re-packs it.
-            if (opts.reparameterizeRibbons)
+            if (opts.reparameterizeRibbons && ribbonShellIndices != null)
             {
-                int ribbonsFound = 0, ribbonsConverged = 0, ribbonsSkipped = 0;
-                foreach (var shell in shells)
+                int ribbonsFound = ribbonShellIndices.Length;
+                int ribbonsConverged = 0, ribbonsSkipped = 0;
+                for (int ri = 0; ri < ribbonShellIndices.Length; ri++)
                 {
-                    if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
-                    if (!StripParameterization.IsRibbon(shell, positions, tris, out _, out _, out _)) continue;
-                    ribbonsFound++;
+                    var shell = shells[ribbonShellIndices[ri]];
+                    if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) { ribbonsSkipped++; continue; }
                     var shellTriIndices = shell.faceIndices?.ToArray() ?? new int[0];
                     if (shellTriIndices.Length == 0) { ribbonsSkipped++; continue; }
                     if (ArapParameterization.Reparameterize(
@@ -690,6 +710,24 @@ namespace SashaRX.UnityMeshLab
                     }
                     allUvFlat[m] = uvFlat;
 
+                    // Pre-classify ribbon shells once: feeds both the density
+                    // normalizer's skip-list (so per-shell aspect doesn't
+                    // touch ribbons that ARAP will re-parameterize) and the
+                    // ARAP loop below. Off when reparameterizeRibbons is off.
+                    int[] ribbonShellIndicesM = null;
+                    if (opts.reparameterizeRibbons)
+                    {
+                        var ribbonListM = new List<int>();
+                        for (int si = 0; si < allShells[m].Count; si++)
+                        {
+                            var shell = allShells[m][si];
+                            if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
+                            if (StripParameterization.IsRibbon(shell, allPositions[m], allTris[m], out _, out _, out _))
+                                ribbonListM.Add(si);
+                        }
+                        ribbonShellIndicesM = ribbonListM.ToArray();
+                    }
+
                     // Texel-density normalization (pre-pack): per-shell UV0
                     // rescale so UV-area ∝ 3D-area. Result: uniform lightmap
                     // texels-per-world-unit across the model. Local uvFlat
@@ -702,21 +740,22 @@ namespace SashaRX.UnityMeshLab
                             normalizeAspect: opts.normalizeShellAspect,
                             maxAspect: opts.maxShellAspect,
                             perShellAspect: opts.perShellAspectNormalize,
-                            perShellAspectThreshold: opts.perShellAspectThreshold);
+                            perShellAspectThreshold: opts.perShellAspectThreshold,
+                            perShellAspectSkipShells: ribbonShellIndicesM);
                         UvtLog.Verbose(UvtLog.Category.Repack,
                             $"Texel density mesh {m}: rescaled {rescaledM}/{allShells[m].Count} shells");
                     }
 
                     // ARAP re-parameterization of ribbon shells — same as in
                     // RepackSingle, scoped per-mesh inputs. Off by default.
-                    if (opts.reparameterizeRibbons)
+                    if (opts.reparameterizeRibbons && ribbonShellIndicesM != null)
                     {
-                        int ribbonsFoundM = 0, ribbonsConvergedM = 0, ribbonsSkippedM = 0;
-                        foreach (var shell in allShells[m])
+                        int ribbonsFoundM = ribbonShellIndicesM.Length;
+                        int ribbonsConvergedM = 0, ribbonsSkippedM = 0;
+                        for (int ri = 0; ri < ribbonShellIndicesM.Length; ri++)
                         {
-                            if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
-                            if (!StripParameterization.IsRibbon(shell, allPositions[m], allTris[m], out _, out _, out _)) continue;
-                            ribbonsFoundM++;
+                            var shell = allShells[m][ribbonShellIndicesM[ri]];
+                            if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) { ribbonsSkippedM++; continue; }
                             var shellTriIndices = shell.faceIndices?.ToArray() ?? new int[0];
                             if (shellTriIndices.Length == 0) { ribbonsSkippedM++; continue; }
                             if (ArapParameterization.Reparameterize(

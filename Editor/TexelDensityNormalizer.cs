@@ -50,6 +50,9 @@ namespace SashaRX.UnityMeshLab
         /// <param name="perShellAspectThreshold">Relative skip threshold for the per-shell aspect pass:
         /// shells with |aspect3D − aspectUV| / max(aspect3D, aspectUV) below this value are left alone.
         /// Default 0.001 (effectively "fix anything that differs"). Larger → only fix grossly anisotropic shells.</param>
+        /// <param name="perShellAspectSkipShells">Optional set of shell indices that should be excluded from the per-shell
+        /// aspect pass. Used by the caller to hand off ribbon-classified shells to ARAP reparameterization instead
+        /// (running both on the same ribbon collapses it). Null = no skips.</param>
         /// <returns>1 if any pre-density pass modified UVs, plus the count of shells modified by pass 2.</returns>
         internal static int Normalize(
             float[] uvFlat,
@@ -63,7 +66,8 @@ namespace SashaRX.UnityMeshLab
             bool normalizeAspect = true,
             float maxAspect = 10f,
             bool perShellAspect = false,
-            float perShellAspectThreshold = 0.001f)
+            float perShellAspectThreshold = 0.001f,
+            int[] perShellAspectSkipShells = null)
         {
             if (uvFlat == null || shells == null || shells.Count == 0) return 0;
             if (tris == null || positions == null) return 0;
@@ -152,7 +156,7 @@ namespace SashaRX.UnityMeshLab
             // Rotates back, leaving the shell's centroid in place.
             if (perShellAspect)
                 ApplyPerShellAspect(uvFlat, shells, positions, scaleMin, scaleMax, maxAspect,
-                    perShellAspectThreshold, ref aspectModified);
+                    perShellAspectThreshold, perShellAspectSkipShells, ref aspectModified);
 
             // ── PASS 2: density correction ──
             // Re-measure UV area on the (possibly aspect-corrected) layout, then
@@ -296,6 +300,7 @@ namespace SashaRX.UnityMeshLab
             float scaleMax,
             float maxAspect,
             float relativeTrivialThreshold,
+            int[] skipShellIndices,
             ref bool anyModified)
         {
             int n = shells.Count;
@@ -306,11 +311,28 @@ namespace SashaRX.UnityMeshLab
             int skipTrivial = 0;
             int skipNumeric = 0;
             int skipClamp = 0;
+            int skipExternal = 0;
 
             float maxAspectClamp = maxAspect > 1f ? maxAspect : 1f;
 
+            // Build a lookup set so the caller can route ribbon-classified
+            // shells to ARAP without per-shell aspect also operating on them
+            // (running both crushes ribbon UVs into degenerate slivers).
+            HashSet<int> skipSet = null;
+            if (skipShellIndices != null && skipShellIndices.Length > 0)
+            {
+                skipSet = new HashSet<int>();
+                for (int i = 0; i < skipShellIndices.Length; i++)
+                    skipSet.Add(skipShellIndices[i]);
+            }
+
             for (int si = 0; si < n; si++)
             {
+                if (skipSet != null && skipSet.Contains(si))
+                {
+                    skipExternal++;
+                    continue;
+                }
                 var shell = shells[si];
                 if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3)
                 {
@@ -548,7 +570,7 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Info(UvtLog.Category.Repack,
                 $"[Repack] PerShellAspect: normalized {modified}/{n} shells " +
                 $"(skipped {skipDegenerate} degenerate, {skipTrivial} already normalized, " +
-                $"{skipNumeric} numeric, {skipClamp} out-of-scale-range)");
+                $"{skipNumeric} numeric, {skipClamp} out-of-scale-range, {skipExternal} caller-skipped)");
         }
 
         /// <summary>

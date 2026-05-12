@@ -71,6 +71,17 @@ namespace SashaRX.UnityMeshLab
             int triCount = shellTriIndices.Length;
             int n = shellVertexIndices.Count;
 
+            // Early-exit on trivial shells. ARAP on a 2-tri / <4-vert patch is
+            // numerically meaningless (single rotation, two-vertex pin) and on
+            // ribbon-classified flat plates only burns cycles and risks UV
+            // corruption — keep the original UV0 untouched.
+            if (n < 4 || triCount < 2)
+            {
+                UvtLog.Verbose(UvtLog.Category.Repack,
+                    $"[ARAP] shell verts={n} tris={triCount} below minimum size — skipped");
+                return false;
+            }
+
             // ── Build global → local vertex index map ───────────────────────
             // Sorted local-index assignment by global index keeps the
             // resulting linear system deterministic across runs.
@@ -330,6 +341,32 @@ namespace SashaRX.UnityMeshLab
             }
             initialFlipCount = flipped;
 
+            // Mirror-fix: if every triangle is CW in input UV0 (a common
+            // authoring choice on symmetric models — the unwrap is mirrored)
+            // the rest 2D triangles built above are CCW (x̃₂ in upper
+            // half-plane), so ARAP's local rotation step would have to encode
+            // a reflection it cannot represent in SO(2). Tutte fallback would
+            // then discard topology entirely. Cheaper and faithful: flip uLocal
+            // around 0 (centroid) so every tri becomes CCW, and run ARAP
+            // normally. Recompute flipped — should drop to 0.
+            if (flipped == triValidCount && triValidCount > 0)
+            {
+                for (int i = 0; i < n; i++) uLocal[i] = -uLocal[i];
+                int reflipped = 0;
+                for (int t = 0; t < triValidCount; t++)
+                {
+                    int l0 = triLocal[t * 3 + 0];
+                    int l1 = triLocal[t * 3 + 1];
+                    int l2 = triLocal[t * 3 + 2];
+                    double a = (uLocal[l1] - uLocal[l0]) * (vLocal[l2] - vLocal[l0])
+                             - (uLocal[l2] - uLocal[l0]) * (vLocal[l1] - vLocal[l0]);
+                    if (a < 0) reflipped++;
+                }
+                UvtLog.Verbose(UvtLog.Category.Repack,
+                    $"[ARAP] shell verts={n} tris={triValidCount}: input UV is mirrored (all {triValidCount} tris CW) → flip-fix and continue (post-flip flipped={reflipped})");
+                flipped = reflipped;
+            }
+
             // Fallback: collapsed or majority-flipped initial UV → Tutte embed
             // onto the boundary circle. Tutte requires a discoverable boundary
             // loop (open shell with a topological boundary).
@@ -516,6 +553,43 @@ namespace SashaRX.UnityMeshLab
             double newH = Math.Max(1e-20, newMaxV - newMinV);
             double oldW = Math.Max(1e-20, maxU - minU);
             double oldH = Math.Max(1e-20, maxV - minV);
+
+            // ── Quality gate: only accept the new UV if it's actually better ──
+            // ARAP can converge to a degenerate / heavily-flipped layout when
+            // the input is pathological (Tutte fallback used, near-collinear
+            // boundary, high-curvature ribbon). In those cases overwriting the
+            // original UV0 with the worse result actively hurts downstream
+            // pack/density passes. Reject if the output is worse on any
+            // tracked metric and let the caller keep the original UVs.
+            int outFlipCount = 0;
+            int outDegenerate = 0;
+            for (int t = 0; t < triValidCount; t++)
+            {
+                int l0 = triLocal[t * 3 + 0];
+                int l1 = triLocal[t * 3 + 1];
+                int l2 = triLocal[t * 3 + 2];
+                double a = (uLocal[l1] - uLocal[l0]) * (vLocal[l2] - vLocal[l0])
+                         - (uLocal[l2] - uLocal[l0]) * (vLocal[l1] - vLocal[l0]);
+                if (a < 0) outFlipCount++;
+                if (Math.Abs(a) < 1e-12) outDegenerate++;
+            }
+            double outBboxArea = Math.Max(0.0, newMaxU - newMinU) * Math.Max(0.0, newMaxV - newMinV);
+            // initialFlipCount above is the count BEFORE mirror-fix; compare
+            // against `flipped`, the post-mirror count, so the gate is
+            // consistent with the layout we actually started ARAP with.
+            int gateInitFlips = flipped;
+            bool rejectFlips      = outFlipCount > gateInitFlips;
+            bool rejectDegenerate = outDegenerate > triValidCount * 0.05;
+            bool rejectCollapse   = outBboxArea < bboxArea * 0.3;
+            if (rejectFlips || rejectDegenerate || rejectCollapse)
+            {
+                UvtLog.Verbose(UvtLog.Category.Repack,
+                    $"[ARAP] shell verts={n} tris={triValidCount}/{triCount} REJECTED: " +
+                    $"outFlips={outFlipCount}/{triValidCount} (init={gateInitFlips}), " +
+                    $"outDegenerate={outDegenerate}, bboxArea={outBboxArea:G3}/{bboxArea:G3} " +
+                    $"→ keeping original UV0");
+                return false;
+            }
 
             // Uniform area-preserving scale so the new UV bbox has the same
             // area as the original (texel-density normalization later will
