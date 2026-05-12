@@ -364,31 +364,31 @@ namespace SashaRX.UnityMeshLab
             skipSymmetrySplitStep      = EditorGUILayout.ToggleLeft("Skip SymSplit step (diagnostic)", skipSymmetrySplitStep);
 
             // Parameter sweep: atlasRes × shellPad × borderPad from a TestSuiteAsset.
+            sweepSuite = (TestSuiteAsset)EditorGUILayout.ObjectField(
+                "Sweep suite", sweepSuite, typeof(TestSuiteAsset), false);
+            int cells = 0;
+            if (sweepSuite != null && sweepSuite.sweep != null)
+            {
+                var sm = sweepSuite.sweep;
+                int rL  = sm.atlasResolutions?.Length            ?? 0;
+                int pL  = sm.shellPaddingPxVariants?.Length      ?? 0;
+                int bL  = sm.borderPaddingPxVariants?.Length     ?? 0;
+                int aL  = sm.perShellAspectVariants?.Length      ?? 0;
+                int arL = sm.ribbonArapIterationsVariants?.Length ?? 0;
+                cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL)
+                      * Mathf.Max(1, aL) * Mathf.Max(1, arL);
+            }
             using (new EditorGUILayout.HorizontalScope())
             {
-                sweepSuite = (TestSuiteAsset)EditorGUILayout.ObjectField(
-                    "Sweep suite", sweepSuite, typeof(TestSuiteAsset), false);
-                int cells = 0;
-                if (sweepSuite != null && sweepSuite.sweep != null)
-                {
-                    var sm = sweepSuite.sweep;
-                    int rL  = sm.atlasResolutions?.Length            ?? 0;
-                    int pL  = sm.shellPaddingPxVariants?.Length      ?? 0;
-                    int bL  = sm.borderPaddingPxVariants?.Length     ?? 0;
-                    int aL  = sm.perShellAspectVariants?.Length      ?? 0;
-                    int arL = sm.ribbonArapIterationsVariants?.Length ?? 0;
-                    cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL)
-                          * Mathf.Max(1, aL) * Mathf.Max(1, arL);
-                }
                 using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0))
                 {
-                    if (GUILayout.Button($"Run Sweep ({cells})", GUILayout.Width(130), GUILayout.Height(22)))
+                    if (GUILayout.Button($"Run Sweep ({cells})", GUILayout.Height(22)))
                         ExecSweep(sweepSuite.sweep);
                 }
-                if (GUILayout.Button(new GUIContent("Rebuild Sweep Report",
+                if (GUILayout.Button(new GUIContent("Rebuild Report",
                         "Pick a BenchmarkReports/ folder and rebuild summary.csv / winner.json / index.html " +
                         "from the per-cell CSVs already on disk. Use this after a mid-sweep Unity crash."),
-                        GUILayout.Width(150), GUILayout.Height(22)))
+                        GUILayout.Height(22)))
                 {
                     ExecRebuildSweepReport();
                 }
