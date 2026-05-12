@@ -560,6 +560,19 @@ namespace SashaRX.UnityMeshLab
                             + "grow past the requested resolution. Lower → safer fit, smaller "
                             + "charts; higher → tighter pack but risk of overflow + downscale."),
                         ctx.TargetUvCoverage, 0.3f, 0.95f);
+                    ctx.PreserveChartScale = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Preserve chart scale (forked xatlas)",
+                            "Skip xatlas's per-chart ceil(extents) rescale in PackCharts "
+                            + "(xatlas.cpp ~line 8345). Stock xatlas non-uniformly stretches "
+                            + "every chart to its integer pixel bbox, which destroys uniform "
+                            + "per-shell lightmap texel density (Issue #18 upstream, closed "
+                            + "wontfix). The patched DLL gates that block under this flag.\n\n"
+                            + "ON: uniform per-shell density end-to-end. Sub-pixel-thin "
+                            + "shells take a 1×1-texel slot with empty margin (lower atlas "
+                            + "utilization). Required for lightmap UV2.\n"
+                            + "OFF: stock xatlas behaviour. Tight pack but per-chart density "
+                            + "variance up to ~14× on typical artist UVs."),
+                        ctx.PreserveChartScale);
                     ctx.PostPackDensityCorrection = EditorGUILayout.ToggleLeft(
                         new GUIContent("Post-pack density correction (experimental)",
                             "After xatlas pack, measure per-shell au2/a3 and shrink over-dense "
@@ -1431,6 +1444,7 @@ namespace SashaRX.UnityMeshLab
             opts.targetUvCoverage = ctx.TargetUvCoverage;
             opts.postPackDensityCorrection = ctx.PostPackDensityCorrection;
             opts.internalOversample = ctx.InternalOversample > 0 ? ctx.InternalOversample : 1;
+            opts.preserveChartScale = ctx.PreserveChartScale;
             opts.maxChartSize = ctx.XatlasMaxChartSize;
             opts.bilinear = ctx.XatlasBilinear;
             opts.blockAlign = ctx.XatlasBlockAlign;

@@ -34,7 +34,8 @@ namespace SashaRX.UnityMeshLab
             int  blockAlign,
             int  bruteForce,
             int  rotateCharts,
-            int  rotateChartsToAxis);
+            int  rotateChartsToAxis,
+            int  preserveChartScale);
 
         // ── Queries ──
         [DllImport(DLL)] public static extern int  xatlasGetMeshCount();

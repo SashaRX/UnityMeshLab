@@ -9,6 +9,11 @@
 #include <cstdint>
 #include <vector>
 
+// SashaRX.UnityMeshLab fork: forward declaration for the patched scale-
+// preservation setter implemented in xatlas.cpp. Lets us toggle the
+// per-chart ceil(extents) rescale on a per-pack basis from the C# side.
+namespace xatlas { void SetPreserveChartScale(bool preserve); }
+
 #ifdef _WIN32
 #define EXPORT extern "C" __declspec(dllexport)
 #else
@@ -78,7 +83,8 @@ EXPORT void xatlasPackCharts(
     int      blockAlign,
     int      bruteForce,
     int      rotateCharts,
-    int      rotateChartsToAxis)
+    int      rotateChartsToAxis,
+    int      preserveChartScale)
 {
     if (!s_atlas) return;
 
@@ -93,7 +99,9 @@ EXPORT void xatlasPackCharts(
     opts.rotateCharts        = (rotateCharts       != 0);
     opts.rotateChartsToAxis  = (rotateChartsToAxis != 0);
 
+    xatlas::SetPreserveChartScale(preserveChartScale != 0);
     xatlas::PackCharts(s_atlas, opts);
+    xatlas::SetPreserveChartScale(false); // restore default for subsequent stock callers
 }
 
 // ── Queries ──

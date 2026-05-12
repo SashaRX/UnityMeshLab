@@ -150,6 +150,17 @@ namespace SashaRX.UnityMeshLab
         /// experimental, may leave gaps in the atlas where shrunk shells were.
         /// </summary>
         /// <summary>
+        /// SashaRX.UnityMeshLab fork-only xatlas knob: skip xatlas's per-chart
+        /// ceil(extents) rescale in PackCharts (the "Scale charts to use the
+        /// entire texel area" block at xatlas.cpp ~line 8345). Preserves
+        /// uniform per-shell texel density end-to-end at the cost of some
+        /// atlas utilization (sub-pixel-thin shells now occupy 1×1-texel
+        /// slots with empty margin). Default ON — uniform lightmap density
+        /// matters more than packing tightness for lightmap UV2.
+        /// </summary>
+        public bool PreserveChartScale = true;
+
+        /// <summary>
         /// Post-pack density correction. xatlas internally applies per-chart
         /// scaling (sub-pixel anisotropic ceil + per-chart normalization for
         /// extreme aspect ratios) that breaks uniform density. This pass

@@ -118,6 +118,15 @@ namespace SashaRX.UnityMeshLab
         public int internalOversample;
 
         /// <summary>
+        /// SashaRX.UnityMeshLab fork-only: skip xatlas's per-chart ceil(extents)
+        /// rescale during PackCharts. Preserves uniform per-shell texel density
+        /// at the cost of atlas utilization (sub-pixel-thin shells now occupy
+        /// a 1-texel slot with empty margin). Required for lightmap UV2 — for
+        /// regular texture atlases stock behaviour (false) packs tighter.
+        /// </summary>
+        public bool preserveChartScale;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas that normalized UVs should sum to AFTER
         /// per-shell density equalisation. Bin-packing leaves slack, so
         /// total chart area below 1.0 keeps xatlas from overflowing the
@@ -149,8 +158,9 @@ namespace SashaRX.UnityMeshLab
             stretchThreshold = 1.5f,
             arapIterations = 50,
             clampLightmapToUnit = true,
-            postPackDensityCorrection = true,
+            postPackDensityCorrection = false,
             internalOversample = 1,
+            preserveChartScale = true,
         };
     }
 
@@ -569,7 +579,8 @@ namespace SashaRX.UnityMeshLab
             string label, int shellCount, uint internalRes,
             int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
             int bilinear, int blockAlign, int bruteForce,
-            int rotateCharts, int rotateChartsToAxis)
+            int rotateCharts, int rotateChartsToAxis,
+            int preserveChartScale)
         {
             // Cost preflight — refuse impossibly large packs up front instead
             // of hanging for hours. Brute force is O(shells × W × H); the
@@ -597,7 +608,8 @@ namespace SashaRX.UnityMeshLab
                 XatlasNative.xatlasPackCharts(
                     maxChartSize, padding, texelsPerUnit, resolution,
                     bilinear, blockAlign, bruteForce,
-                    rotateCharts, rotateChartsToAxis);
+                    rotateCharts, rotateChartsToAxis,
+                    preserveChartScale);
             });
 
             double startTime = EditorApplication.timeSinceStartup;
@@ -882,7 +894,8 @@ namespace SashaRX.UnityMeshLab
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
                     opts.rotateCharts ? 1 : 0,
-                    opts.rotateChartsToAxis ? 1 : 0);
+                    opts.rotateChartsToAxis ? 1 : 0,
+                    opts.preserveChartScale ? 1 : 0);
                 if (!packed)
                 {
                     result.error = "cancelled";
@@ -1172,7 +1185,8 @@ namespace SashaRX.UnityMeshLab
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
                     opts.rotateCharts ? 1 : 0,
-                    opts.rotateChartsToAxis ? 1 : 0);
+                    opts.rotateChartsToAxis ? 1 : 0,
+                    opts.preserveChartScale ? 1 : 0);
                 if (!packedM)
                 {
                     for (int m = 0; m < meshCount; m++)
