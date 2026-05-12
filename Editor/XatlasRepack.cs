@@ -116,7 +116,7 @@ namespace SashaRX.UnityMeshLab
             rotateChartsToAxis = true,
             perturbStrength = 0f,             // adaptive
             normalizeTexelDensity = true,
-            targetUvCoverage = 0.75f,
+            targetUvCoverage = 0.95f,
             reparameterizeStretchedShells = true,
             stretchThreshold = 1.5f,
             arapIterations = 50,

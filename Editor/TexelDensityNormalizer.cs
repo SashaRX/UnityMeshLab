@@ -47,7 +47,7 @@ namespace SashaRX.UnityMeshLab
             float scaleMin = 0.1f,
             float scaleMax = 10f,
             bool medianDensity = false,
-            float targetCoverage = 0.75f)
+            float targetCoverage = 0.95f)
         {
             if (uvFlat == null || shells == null || shells.Count == 0) return 0;
             if (tris == null || positions == null) return 0;
