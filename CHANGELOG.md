@@ -3,6 +3,22 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.5] - 2026-05-12
+
+### Added
+- **xatlas fork** with `PreserveChartScale` option (default ON). Patches the per-chart `ceil(extents)` rescale in `PackCharts` (xatlas.cpp ~line 8345) that destroyed uniform per-shell lightmap texel density. Upstream Issue #18 (closed wontfix) tracks the same problem. The patched source lives in `Native~/third_party/xatlas/`; CMake builds it directly instead of FetchContent.
+- Auto-resolution mode for Repack (`ResolutionMode.AutoFromTexelDensity`) — pick a target texels-per-meter density and the tool computes the atlas resolution from total 3D area. Manual mode unchanged.
+- `[Density]` and `[Density:postUV2]` diagnostic logs at multiple pipeline checkpoints (postAssign / postOrphan / postBorder / postCorrection / final) so per-shell density drift is visible per stage.
+- Cancellable xatlas pack — `xatlasPackCharts` now runs on a background `Task` while the main thread polls `DisplayCancelableProgressBar`. xatlas itself has no native cancel API, so cancel = wait for in-flight pack to finish, then discard result and stop pipeline.
+- Pack cost-budget preflight — refuses packs that would take many minutes (brute-force budget 500M ops, heuristic 20B). Auto-disables brute force above the budget instead of hanging the editor.
+- UI toggles in Pre-pack panel: `Preserve chart scale (forked xatlas)`, `Post-pack density correction (experimental)`, `Internal pack oversample` popup.
+
+### Fixed
+- Per-shell lightmap texel density variance on real artist UVs (target ~1× from ~14× spread with the patched DLL).
+
+### Changed
+- `TexelDensityNormalizer` now logs a rich `[Density] pre … post … scale …` summary at Info level instead of a terse "rescaled N/N shells" line.
+
 ## [1.0.0] - 2026-04-20
 
 ### Changed (breaking)
