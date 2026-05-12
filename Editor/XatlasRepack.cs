@@ -90,6 +90,15 @@ namespace SashaRX.UnityMeshLab
         public bool clampLightmapToUnit;
 
         /// <summary>
+        /// Post-pack density correction (experimental). xatlas internally applies
+        /// per-chart ceil(extents) stretch which breaks uniform density for thin
+        /// shells. This pass measures per-shell au2/a3 after pack and SHRINKS
+        /// over-dense shells around their UV2 centroid to match the median.
+        /// Shrink-only (never expands) so neighbours can't collide. Default false.
+        /// </summary>
+        public bool postPackDensityCorrection;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas that normalized UVs should sum to AFTER
         /// per-shell density equalisation. Bin-packing leaves slack, so
         /// total chart area below 1.0 keeps xatlas from overflowing the
@@ -121,6 +130,7 @@ namespace SashaRX.UnityMeshLab
             stretchThreshold = 1.5f,
             arapIterations = 50,
             clampLightmapToUnit = true,
+            postPackDensityCorrection = false,
         };
     }
 
@@ -406,6 +416,122 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Info(UvtLog.Category.Repack,
                 $"[Density:postUV2] '{meshLabel}' shells={dCount} | au2/a3: min={dMin:G3}(shell#{shellIdMin}) max={dMax:G3}(shell#{shellIdMax}) mean={dMean:G3} maxRatio={ratio:F2}x | within±10%: {withinTenPct}/{dCount}");
         }
+
+        /// <summary>
+        /// Shrink-only post-pack density correction. After xatlas packs charts
+        /// into the atlas its internal ceil(extents) stretch (xatlas.cpp:8345-
+        /// 8362) amplifies thin/anisotropic shells more than fat ones, breaking
+        /// the uniform density we set up in TexelDensityNormalizer. This pass
+        /// measures per-shell au2/a3 and shrinks shells whose density is above
+        /// the median toward it, keeping each shell anchored on its UV2
+        /// centroid. Shrink only — never expand — so the layout stays valid
+        /// (shells can't collide into neighbours). The atlas ends up with some
+        /// gaps where shrunk shells used to be; this trades coverage for density
+        /// uniformity, which is the correct trade for lightmap bake quality.
+        /// </summary>
+        static int ApplyPostPackDensityCorrection(
+            Vector2[] uv2, int[] tris, Vector3[] positions,
+            List<UvShell> shells, string meshLabel)
+        {
+            if (uv2 == null || tris == null || positions == null || shells == null) return 0;
+            int uvLen = uv2.Length;
+            int posLen = positions.Length;
+            int n = shells.Count;
+            if (n == 0) return 0;
+
+            var a3Arr = new double[n];
+            var au2Arr = new double[n];
+            var densArr = new double[n];
+            var validShells = new List<int>(n);
+            for (int si = 0; si < n; si++)
+            {
+                var shell = shells[si];
+                if (shell?.faceIndices == null) continue;
+                double a3 = 0.0, au = 0.0;
+                foreach (int f in shell.faceIndices)
+                {
+                    int t = f * 3;
+                    if ((uint)(t + 2) >= (uint)tris.Length) continue;
+                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
+                    if ((uint)i0 >= (uint)posLen || (uint)i1 >= (uint)posLen || (uint)i2 >= (uint)posLen) continue;
+                    if ((uint)i0 >= (uint)uvLen || (uint)i1 >= (uint)uvLen || (uint)i2 >= (uint)uvLen) continue;
+                    Vector3 p0 = positions[i0], p1 = positions[i1], p2 = positions[i2];
+                    a3 += Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5;
+                    Vector2 a = uv2[i0], b = uv2[i1], c = uv2[i2];
+                    au += Math.Abs((double)(b.x - a.x) * (c.y - a.y) - (double)(c.x - a.x) * (b.y - a.y)) * 0.5;
+                }
+                a3Arr[si] = a3;
+                au2Arr[si] = au;
+                if (a3 < 1e-12 || au < 1e-12) continue;
+                densArr[si] = au / a3;
+                validShells.Add(si);
+            }
+
+            if (validShells.Count == 0) return 0;
+
+            // Median density as the target — robust to a handful of extreme outliers
+            // (degenerate L²=1000 shells) that would skew the mean.
+            var sortedDens = new List<double>(validShells.Count);
+            foreach (int si in validShells) sortedDens.Add(densArr[si]);
+            sortedDens.Sort();
+            double targetDensity = sortedDens[sortedDens.Count / 2];
+            if (targetDensity < 1e-12) return 0;
+
+            int modified = 0;
+            double appliedScaleMin = 1.0, appliedScaleMax = 1.0;
+            foreach (int si in validShells)
+            {
+                double density = densArr[si];
+                if (density <= targetDensity * 1.05) continue; // within 5% of target — leave alone
+
+                // Bring density down to target. au2 scales with scale²;
+                // density_new = (au2 * scale²) / a3 = density * scale² = target
+                // → scale = sqrt(target / density). Shrink only.
+                double scaleD = Math.Sqrt(targetDensity / density);
+                if (!IsFiniteD(scaleD) || scaleD <= 0.0) continue;
+                if (scaleD >= 0.999) continue; // basically no-op
+                float scale = (float)scaleD;
+                if (scale < appliedScaleMin) appliedScaleMin = scale;
+                if (scale > appliedScaleMax) appliedScaleMax = scale;
+
+                var shell = shells[si];
+                if (shell.vertexIndices == null || shell.vertexIndices.Count == 0) continue;
+
+                // UV2 centroid (uniform shrink leaves the centroid fixed → the
+                // shell stays where xatlas put it; only the bbox contracts
+                // inward, so neighbours stay outside the shrunken bbox).
+                Vector2 c = Vector2.zero;
+                int cn = 0;
+                foreach (int v in shell.vertexIndices)
+                {
+                    int idx = v;
+                    if ((uint)idx >= (uint)uvLen) continue;
+                    c.x += uv2[idx].x;
+                    c.y += uv2[idx].y;
+                    cn++;
+                }
+                if (cn == 0) continue;
+                c.x /= cn;
+                c.y /= cn;
+
+                foreach (int v in shell.vertexIndices)
+                {
+                    int idx = v;
+                    if ((uint)idx >= (uint)uvLen) continue;
+                    Vector2 uv = uv2[idx];
+                    uv2[idx] = new Vector2(
+                        c.x + (uv.x - c.x) * scale,
+                        c.y + (uv.y - c.y) * scale);
+                }
+                modified++;
+            }
+
+            UvtLog.Info(UvtLog.Category.Repack,
+                $"[Density:correction] '{meshLabel}' shrunk {modified}/{validShells.Count} over-dense shells toward median={targetDensity:G3} | applied scale: min={appliedScaleMin:F3} max={appliedScaleMax:F3}");
+            return modified;
+        }
+
+        static bool IsFiniteD(double x) => !(double.IsNaN(x) || double.IsInfinity(x));
 
         /// <summary>
         /// Raw xatlas output density diagnostic. Operates on the buffers returned
@@ -707,6 +833,12 @@ namespace SashaRX.UnityMeshLab
                 // ── Diagnostic: top longest UV2 edges (after fix) ──
                 DiagnoseLongestEdges(uv2, tris, faceShellIds, vertChartId, 10);
 
+                if (opts.postPackDensityCorrection)
+                {
+                    ApplyPostPackDensityCorrection(uv2, tris, positions, shells, mesh.name);
+                    LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postCorrection]");
+                }
+
                 // ── Border padding inset ──
                 if (opts.borderPadding > 0 && result.atlasWidth > 0)
                 {
@@ -980,6 +1112,12 @@ namespace SashaRX.UnityMeshLab
                     results[m].snappedVertices = snapped;
 
                     LogPostPackDensity(uv2, allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postOrphan]");
+
+                    if (opts.postPackDensityCorrection)
+                    {
+                        ApplyPostPackDensityCorrection(uv2, allTris[m], allPositions[m], allShells[m], meshes[m].name);
+                        LogPostPackDensity(uv2, allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postCorrection]");
+                    }
 
                     allUv2[m] = uv2;
                     results[m].ok = true;

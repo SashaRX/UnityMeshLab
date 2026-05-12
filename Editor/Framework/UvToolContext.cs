@@ -141,6 +141,17 @@ namespace SashaRX.UnityMeshLab
         public bool ClampLightmapToUnit = true;
 
         /// <summary>
+        /// Experimental post-pack density correction. xatlas internally applies
+        /// per-chart ceil(extents.x/y) stretch (xatlas.cpp:8345-8362) that breaks
+        /// uniform density for thin/anisotropic shells. This pass measures the
+        /// resulting per-shell au2/a3 and shrinks over-dense shells uniformly
+        /// around their UV2 centroid to match the median. Shrink-only (never
+        /// expands) so shells can't collide with neighbours. Default OFF —
+        /// experimental, may leave gaps in the atlas where shrunk shells were.
+        /// </summary>
+        public bool PostPackDensityCorrection = false;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas the normalized UVs should sum to.
         /// Leaves slack for bin-packing inefficiency so the atlas doesn't
         /// grow past the requested resolution. Default 0.75 (= 25% safety

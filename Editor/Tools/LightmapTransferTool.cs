@@ -560,6 +560,15 @@ namespace SashaRX.UnityMeshLab
                             + "grow past the requested resolution. Lower → safer fit, smaller "
                             + "charts; higher → tighter pack but risk of overflow + downscale."),
                         ctx.TargetUvCoverage, 0.3f, 0.95f);
+                    ctx.PostPackDensityCorrection = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Post-pack density correction (experimental)",
+                            "After xatlas pack, measure per-shell au2/a3 and shrink over-dense "
+                            + "shells toward the median around their UV2 centroid. Compensates "
+                            + "xatlas's per-chart ceil(extents) stretch which breaks uniform "
+                            + "density for thin/anisotropic shells. Shrink-only (never expands) "
+                            + "so neighbours can't collide. Leaves gaps in the atlas where "
+                            + "shrunk shells used to be — trades coverage for density uniformity."),
+                        ctx.PostPackDensityCorrection);
                 }
                 EditorGUILayout.Space(4);
                 EditorGUILayout.LabelField("xatlas options", EditorStyles.miniBoldLabel);
@@ -1401,6 +1410,7 @@ namespace SashaRX.UnityMeshLab
             opts.arapIterations = ctx.ArapIterations;
             opts.clampLightmapToUnit = ctx.ClampLightmapToUnit;
             opts.targetUvCoverage = ctx.TargetUvCoverage;
+            opts.postPackDensityCorrection = ctx.PostPackDensityCorrection;
             opts.maxChartSize = ctx.XatlasMaxChartSize;
             opts.bilinear = ctx.XatlasBilinear;
             opts.blockAlign = ctx.XatlasBlockAlign;
