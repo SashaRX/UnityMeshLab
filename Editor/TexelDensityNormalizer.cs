@@ -1,9 +1,15 @@
 // TexelDensityNormalizer.cs — pre-pack UV0 reshaping in two passes:
-//   1) Aspect correction (PCA-based, area-preserving) along the shell's
-//      principal UV directions. Fixes shells whose UV0 was authored with the
-//      wrong proportions vs the real-world surface, even when the UV layout
-//      isn't axis-aligned (diagonal/rotated UV islands are handled correctly
-//      because PCA finds the true principal axes, unlike AABB).
+//   1) Anisotropic stretch correction (Sander L² metric, SIGGRAPH 2001
+//      "Texture Mapping Progressive Meshes"). For each shell we average the
+//      metric tensor M = JᵀJ of the UV→3D parameterisation over triangles,
+//      weighted by 3D area. Its eigenvalues σ₁² ≥ σ₂² are the principal
+//      texture stretches; their ratio is the anisotropy we want to remove.
+//      A non-uniform UV scale along the principal directions reduces the
+//      ratio to a configurable cap, preserving area by construction
+//      (k_along × k_across = 1). Unlike PCA over vertex positions, this is
+//      invariant to vertex distribution, shell curvature, and UV-island
+//      rotation — it measures the actual UV→3D mapping, not where vertices
+//      sit.
 //   2) Texel density correction (uniform per-shell scale) bringing UV-area
 //      proportional to 3D-area, plus a global coverage budget that leaves
 //      slack for xatlas's bin-packing.
@@ -20,11 +26,11 @@ namespace SashaRX.UnityMeshLab
     internal static class TexelDensityNormalizer
     {
         /// <summary>
-        /// Two-pass per-shell UV0 reshape: (1) PCA-based aspect correction,
-        /// (2) area-based density correction. Pass 1 runs first so that pass 2
-        /// measures UV area on the already-aspect-corrected shape — produces
-        /// uniform texels-per-world-unit AND a UV layout whose per-axis stretch
-        /// matches the surface in 3D.
+        /// Two-pass per-shell UV0 reshape: (1) Sander-metric anisotropy
+        /// correction, (2) area-based density correction. Pass 1 runs first so
+        /// pass 2 measures UV area on the already-reshaped layout — the result
+        /// is uniform texels-per-world-unit AND a UV layout whose per-axis
+        /// stretch matches the surface in 3D.
         /// </summary>
         /// <param name="uvFlat">Flat UV0 array (vertexCount * 2 floats). Mutated in place.</param>
         /// <param name="shells">Per-mesh shells (read-only).</param>
@@ -37,10 +43,11 @@ namespace SashaRX.UnityMeshLab
         /// <param name="targetCoverage">After per-shell density normalisation, total UV area is rescaled
         /// to this fraction of [0,1]² so xatlas doesn't overflow the requested atlas resolution due to
         /// bin-packing slack. Default 0.75. ≤0 or ≥1 disables the budget step.</param>
-        /// <param name="normalizeAspect">Enable pass 1 (aspect correction). Default true.</param>
-        /// <param name="maxAspect">Cap on the 3D-side aspect ratio target. Most real surfaces are
-        /// near-square; values above ~2 mean the surface is a strip or ribbon and the cap protects
-        /// the UV layout from being stretched into a needle. Default 2.0.</param>
+        /// <param name="normalizeAspect">Enable pass 1 (Sander stretch correction). Default true.</param>
+        /// <param name="maxAspect">Cap on the post-correction σ₁/σ₂ ratio. Triangles whose mapping is
+        /// hopelessly anisotropic (sliver shells, σ₁/σ₂ > 100) would otherwise force runaway non-uniform
+        /// UV scale. With cap C: maximum stretch factor along the long axis is √(current_ratio / C),
+        /// so the minimum UV dimension shrinks by at most √(C/current_ratio). Default 2.</param>
         /// <returns>Number of shells that received a non-identity transform across both passes.</returns>
         internal static int Normalize(
             float[] uvFlat,
@@ -66,57 +73,53 @@ namespace SashaRX.UnityMeshLab
             int modifiedAspect = 0;
             int modifiedDensity = 0;
 
-            // ── PASS 1: aspect correction ──
-            // Per-shell, run PCA on the UV0 vertex positions and on the 3D vertex
-            // positions projected onto the shell's mean tangent plane. The ratio
-            // of the principal std-devs (σ1/σ2) is the "true" anisotropy of each
-            // shape regardless of how the UV island is rotated. We then apply a
-            // non-uniform scale along the UV principal axes — sigma1 *= sqrt(target/current),
-            // sigma2 /= sqrt(target/current) — so triangle area is preserved exactly.
+            // ── PASS 1: anisotropy correction via Sander L² stretch metric ──
+            // For each shell, average M = JᵀJ over its triangles (weighted by
+            // 3D area). Eigendecompose to get principal UV directions and
+            // singular values (3D length per unit UV step). Apply non-uniform
+            // UV scale along those directions to bring σ₁/σ₂ down to the cap.
             if (normalizeAspect)
             {
                 for (int si = 0; si < n; si++)
                 {
                     var shell = shells[si];
-                    if (shell.faceIndices == null || shell.vertexIndices == null) continue;
+                    if (shell?.faceIndices == null || shell.vertexIndices == null) continue;
                     if (shell.vertexIndices.Count < 3) continue;
 
-                    if (!ComputeShellUvPca(shell, uvFlat, out var uvCentroid, out var uvAxis1,
-                                           out float uvSigma1, out float uvSigma2)) continue;
-                    if (uvSigma1 < 1e-6f || uvSigma2 < 1e-6f) continue;
+                    if (!ComputeShellStretchMetric(shell, uvFlat, tris, positions,
+                            out var uvCentroid, out var axisU,
+                            out float sigmaU, out float sigmaV)) continue;
 
-                    if (!ComputeShell3DInPlanePca(shell, tris, positions, out float s3D_1, out float s3D_2)) continue;
-                    if (s3D_1 < 1e-6f || s3D_2 < 1e-6f) continue;
+                    if (sigmaU < 1e-8f || sigmaV < 1e-8f) continue;
 
-                    float aspectUV = uvSigma1 / uvSigma2;
-                    float aspect3D = s3D_1 / s3D_2;
-                    if (aspect3D > aspectClamp) aspect3D = aspectClamp;
-                    if (aspect3D < 1f) aspect3D = 1f;
+                    // sigmaU ≥ sigmaV by construction (eigenvalue ordering).
+                    float currentRatio = sigmaU / sigmaV;
+                    if (currentRatio <= aspectClamp + 1e-3f) continue;
 
-                    // corr = sqrt(target_aspect / current_aspect)
-                    // scaleAlong_σ1 = corr  (long axis becomes longer or shorter as needed)
-                    // scaleAlong_σ2 = 1/corr
-                    // Product == 1 → triangle area exactly preserved.
-                    float corr = Mathf.Sqrt(aspect3D / Mathf.Max(1e-6f, aspectUV));
-                    if (Mathf.Abs(corr - 1f) < 1e-3f) continue;
+                    // Stretch UV along axisU by kU (long axis becomes longer in UV);
+                    // shrink along axisV by kV = 1/kU. Triangle area preserved.
+                    // Target post-correction ratio = aspectClamp.
+                    //   (sigmaU / kU) / (sigmaV / kV) = aspectClamp
+                    //   with kU·kV = 1  →  kU² = currentRatio / aspectClamp
+                    float kU = Mathf.Sqrt(currentRatio / aspectClamp);
+                    float kV = 1f / kU;
+                    kU = Mathf.Clamp(kU, scaleMin, scaleMax);
+                    kV = Mathf.Clamp(kV, scaleMin, scaleMax);
+                    if (Mathf.Abs(kU - 1f) < 1e-3f) continue;
 
-                    float sA = Mathf.Clamp(corr, scaleMin, scaleMax);
-                    float sB = Mathf.Clamp(1f / corr, scaleMin, scaleMax);
-
-                    Vector2 axis2 = new Vector2(-uvAxis1.y, uvAxis1.x);
+                    Vector2 axisV = new Vector2(-axisU.y, axisU.x);
                     foreach (int v in shell.vertexIndices)
                     {
                         int idx = v * 2;
                         if ((uint)(idx + 1) >= (uint)uvLen) continue;
-                        float dx = uvFlat[idx] - uvCentroid.x;
+                        float dx = uvFlat[idx]     - uvCentroid.x;
                         float dy = uvFlat[idx + 1] - uvCentroid.y;
-                        // Project onto principal axes, scale, project back.
-                        float a1 = dx * uvAxis1.x + dy * uvAxis1.y;
-                        float a2 = dx * axis2.x   + dy * axis2.y;
-                        a1 *= sA;
-                        a2 *= sB;
-                        uvFlat[idx]     = uvCentroid.x + a1 * uvAxis1.x + a2 * axis2.x;
-                        uvFlat[idx + 1] = uvCentroid.y + a1 * uvAxis1.y + a2 * axis2.y;
+                        float a1 = dx * axisU.x + dy * axisU.y;
+                        float a2 = dx * axisV.x + dy * axisV.y;
+                        a1 *= kU;
+                        a2 *= kV;
+                        uvFlat[idx]     = uvCentroid.x + a1 * axisU.x + a2 * axisV.x;
+                        uvFlat[idx + 1] = uvCentroid.y + a1 * axisU.y + a2 * axisV.y;
                     }
                     modifiedAspect++;
                 }
@@ -235,22 +238,41 @@ namespace SashaRX.UnityMeshLab
             return Mathf.Max(modifiedAspect, modifiedDensity);
         }
 
-        // ── PCA helpers ──
+        // ── Sander L² stretch metric ──
 
         /// <summary>
-        /// 2D PCA over the shell's UV0 vertex positions: centroid, primary
-        /// principal axis (unit vector), and the two std-devs (sqrt of the
-        /// eigenvalues). Returns false on degenerate input.
+        /// Computes the shell-averaged metric tensor M = JᵀJ of the UV0→3D
+        /// parameterisation, weighted by 3D triangle area, then eigendecomposes
+        /// the 2×2 result.
+        ///
+        /// For triangle with 3D vertices p0,p1,p2 and UV vertices q0,q1,q2 the
+        /// affine UV→3D map has Jacobian J (3×2) defined by:
+        ///   J·(q1-q0) = p1-p0   and   J·(q2-q0) = p2-p0
+        /// Solving:
+        ///   ∂P/∂u =  ( (q2.y-q0.y)·(p1-p0) - (q1.y-q0.y)·(p2-p0) ) / detUV
+        ///   ∂P/∂v =  (-(q2.x-q0.x)·(p1-p0) + (q1.x-q0.x)·(p2-p0) ) / detUV
+        /// where detUV is twice the signed UV-area of the triangle.
+        ///
+        /// The 2×2 symmetric M_tri = JᵀJ has eigenvalues σ₁² ≥ σ₂² that are
+        /// the squared principal stretches (3D length / UV unit) along
+        /// orthogonal UV directions — the singular values of J in 2D parlance.
+        /// Averaging area-weighted M_tri over the shell gives the Sander L²
+        /// shell metric.
         /// </summary>
-        static bool ComputeShellUvPca(UvShell shell, float[] uvFlat,
-            out Vector2 centroid, out Vector2 axis1, out float sigma1, out float sigma2)
+        static bool ComputeShellStretchMetric(
+            UvShell shell, float[] uvFlat, int[] tris, Vector3[] positions,
+            out Vector2 uvCentroid, out Vector2 axisU,
+            out float sigmaU, out float sigmaV)
         {
-            centroid = Vector2.zero;
-            axis1 = new Vector2(1, 0);
-            sigma1 = 0; sigma2 = 0;
-            if (shell?.vertexIndices == null || shell.vertexIndices.Count == 0) return false;
+            uvCentroid = Vector2.zero;
+            axisU = new Vector2(1, 0);
+            sigmaU = 0f; sigmaV = 0f;
+            if (shell?.faceIndices == null || shell.vertexIndices == null) return false;
+
+            int posLen = positions.Length;
             int uvLen = uvFlat.Length;
 
+            // UV centroid (used by the caller to apply the non-uniform scale).
             double sx = 0, sy = 0;
             int count = 0;
             foreach (int v in shell.vertexIndices)
@@ -262,110 +284,86 @@ namespace SashaRX.UnityMeshLab
                 count++;
             }
             if (count == 0) return false;
-            double mx = sx / count, my = sy / count;
-            centroid = new Vector2((float)mx, (float)my);
+            uvCentroid = new Vector2((float)(sx / count), (float)(sy / count));
 
-            double cxx = 0, cyy = 0, cxy = 0;
-            foreach (int v in shell.vertexIndices)
-            {
-                int idx = v * 2;
-                if ((uint)(idx + 1) >= (uint)uvLen) continue;
-                double dx = uvFlat[idx] - mx;
-                double dy = uvFlat[idx + 1] - my;
-                cxx += dx * dx;
-                cyy += dy * dy;
-                cxy += dx * dy;
-            }
-            cxx /= count; cyy /= count; cxy /= count;
+            // Area-weighted accumulator of M = JᵀJ.
+            double M00 = 0, M01 = 0, M11 = 0;
+            double totalArea3D = 0;
 
-            double tr = cxx + cyy;
-            double det = cxx * cyy - cxy * cxy;
-            double disc = Math.Sqrt(Math.Max(0.0, tr * tr * 0.25 - det));
-            double lambda1 = tr * 0.5 + disc;
-            double lambda2 = tr * 0.5 - disc;
-            if (lambda2 < 0) lambda2 = 0;
-
-            // Primary eigenvector v1 satisfies (C - λ1 I) v1 = 0.
-            // Choosing v1 = (cxy, λ1 - cxx) when cxy != 0 avoids the diagonal
-            // singularity; fall back to axis-aligned when cov matrix is diagonal.
-            if (Math.Abs(cxy) > 1e-14)
-            {
-                Vector2 v = new Vector2((float)cxy, (float)(lambda1 - cxx));
-                if (v.sqrMagnitude < 1e-14f) v = new Vector2(1, 0);
-                axis1 = v.normalized;
-            }
-            else
-            {
-                axis1 = (cxx >= cyy) ? new Vector2(1, 0) : new Vector2(0, 1);
-            }
-            sigma1 = (float)Math.Sqrt(lambda1);
-            sigma2 = (float)Math.Sqrt(lambda2);
-            return true;
-        }
-
-        /// <summary>
-        /// 3D PCA constrained to the shell's mean tangent plane. Returns the
-        /// std-devs along the two in-plane principal directions; the
-        /// out-of-plane component (= surface thickness) is discarded. Approximate
-        /// for highly curved surfaces but accurate for flat / near-flat shells.
-        /// </summary>
-        static bool ComputeShell3DInPlanePca(UvShell shell, int[] tris, Vector3[] positions,
-            out float sigma1, out float sigma2)
-        {
-            sigma1 = 0; sigma2 = 0;
-            if (shell?.faceIndices == null || shell.vertexIndices == null) return false;
-            int posLen = positions.Length;
-
-            // Area-weighted normal (so big faces dominate; avoids tiny-edge artefacts).
-            Vector3 sumNormal = Vector3.zero;
             foreach (int f in shell.faceIndices)
             {
                 int t = f * 3;
                 if ((uint)(t + 2) >= (uint)tris.Length) continue;
                 int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
                 if ((uint)i0 >= (uint)posLen || (uint)i1 >= (uint)posLen || (uint)i2 >= (uint)posLen) continue;
-                sumNormal += Vector3.Cross(positions[i1] - positions[i0], positions[i2] - positions[i0]);
+                int u0 = i0 * 2, u1 = i1 * 2, u2 = i2 * 2;
+                if ((uint)(u0 + 1) >= (uint)uvLen ||
+                    (uint)(u1 + 1) >= (uint)uvLen ||
+                    (uint)(u2 + 1) >= (uint)uvLen) continue;
+
+                Vector3 p0 = positions[i0], p1 = positions[i1], p2 = positions[i2];
+                Vector3 e1 = p1 - p0, e2 = p2 - p0;
+                double area3D = Vector3.Cross(e1, e2).magnitude * 0.5;
+                if (area3D < 1e-14) continue;
+
+                double q0x = uvFlat[u0],     q0y = uvFlat[u0 + 1];
+                double q1x = uvFlat[u1],     q1y = uvFlat[u1 + 1];
+                double q2x = uvFlat[u2],     q2y = uvFlat[u2 + 1];
+                double d1x = q1x - q0x, d1y = q1y - q0y;
+                double d2x = q2x - q0x, d2y = q2y - q0y;
+                double det = d1x * d2y - d2x * d1y;
+                if (Math.Abs(det) < 1e-14) continue;
+                double invDet = 1.0 / det;
+
+                // ∂P/∂u = ( d2y·e1 - d1y·e2 ) · invDet
+                // ∂P/∂v = (-d2x·e1 + d1x·e2 ) · invDet
+                double ku1 =  d2y * invDet, ku2 = -d1y * invDet;
+                double kv1 = -d2x * invDet, kv2 =  d1x * invDet;
+                double dPu_x = ku1 * e1.x + ku2 * e2.x;
+                double dPu_y = ku1 * e1.y + ku2 * e2.y;
+                double dPu_z = ku1 * e1.z + ku2 * e2.z;
+                double dPv_x = kv1 * e1.x + kv2 * e2.x;
+                double dPv_y = kv1 * e1.y + kv2 * e2.y;
+                double dPv_z = kv1 * e1.z + kv2 * e2.z;
+
+                double m00 = dPu_x * dPu_x + dPu_y * dPu_y + dPu_z * dPu_z;
+                double m11 = dPv_x * dPv_x + dPv_y * dPv_y + dPv_z * dPv_z;
+                double m01 = dPu_x * dPv_x + dPu_y * dPv_y + dPu_z * dPv_z;
+
+                M00 += area3D * m00;
+                M01 += area3D * m01;
+                M11 += area3D * m11;
+                totalArea3D += area3D;
             }
-            Vector3 normal = sumNormal.sqrMagnitude > 1e-12f ? sumNormal.normalized : Vector3.up;
 
-            // Orthonormal basis on the plane.
-            Vector3 helper = Mathf.Abs(normal.x) < 0.9f ? Vector3.right : Vector3.up;
-            Vector3 e1 = Vector3.Cross(normal, helper).normalized;
-            Vector3 e2 = Vector3.Cross(normal, e1).normalized;
+            if (totalArea3D < 1e-14) return false;
+            M00 /= totalArea3D;
+            M01 /= totalArea3D;
+            M11 /= totalArea3D;
 
-            // Centroid in 3D, then build 2D in-plane points.
-            Vector3 sumPos = Vector3.zero;
-            int count = 0;
-            foreach (int v in shell.vertexIndices)
-            {
-                if ((uint)v >= (uint)posLen) continue;
-                sumPos += positions[v];
-                count++;
-            }
-            if (count == 0) return false;
-            Vector3 centroid3D = sumPos / count;
-
-            double cxx = 0, cyy = 0, cxy = 0;
-            foreach (int v in shell.vertexIndices)
-            {
-                if ((uint)v >= (uint)posLen) continue;
-                Vector3 d = positions[v] - centroid3D;
-                double a = Vector3.Dot(d, e1);
-                double b = Vector3.Dot(d, e2);
-                cxx += a * a;
-                cyy += b * b;
-                cxy += a * b;
-            }
-            cxx /= count; cyy /= count; cxy /= count;
-
-            double tr = cxx + cyy;
-            double det = cxx * cyy - cxy * cxy;
-            double disc = Math.Sqrt(Math.Max(0.0, tr * tr * 0.25 - det));
-            double lambda1 = tr * 0.5 + disc;
-            double lambda2 = tr * 0.5 - disc;
+            // Eigendecompose 2×2 symmetric [M00 M01; M01 M11].
+            double tr = M00 + M11;
+            double det2 = M00 * M11 - M01 * M01;
+            double disc = Math.Sqrt(Math.Max(0.0, tr * tr * 0.25 - det2));
+            double lambda1 = tr * 0.5 + disc;          // larger eigenvalue
+            double lambda2 = tr * 0.5 - disc;          // smaller eigenvalue
             if (lambda2 < 0) lambda2 = 0;
-            sigma1 = (float)Math.Sqrt(lambda1);
-            sigma2 = (float)Math.Sqrt(lambda2);
+
+            // Eigenvector for λ₁ lives in UV space and gives the principal
+            // stretch direction. Standard form: (M01, λ₁ - M00) when M01 ≠ 0;
+            // axis-aligned fallback when the metric tensor is diagonal.
+            if (Math.Abs(M01) > 1e-14)
+            {
+                Vector2 v = new Vector2((float)M01, (float)(lambda1 - M00));
+                if (v.sqrMagnitude < 1e-14f) v = new Vector2(1, 0);
+                axisU = v.normalized;
+            }
+            else
+            {
+                axisU = (M00 >= M11) ? new Vector2(1, 0) : new Vector2(0, 1);
+            }
+            sigmaU = (float)Math.Sqrt(lambda1);
+            sigmaV = (float)Math.Sqrt(lambda2);
             return true;
         }
     }

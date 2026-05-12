@@ -60,20 +60,25 @@ namespace SashaRX.UnityMeshLab
         public bool normalizeTexelDensity;
 
         /// <summary>
-        /// Additionally apply non-uniform per-shell UV scale so the UV bounding-box
-        /// aspect ratio mimics the shell's 3D shape aspect (ratio of the two largest
-        /// 3D AABB extents). The non-uniform scale is composed with the density scale
-        /// so triangle area is preserved (scaleU × scaleV = density-scale²). Fixes
-        /// shells that were authored 1:1 in UV but represent 10:1 planks in 3D,
-        /// preventing per-axis texel stretch. Only used when normalizeTexelDensity
-        /// is true. Approximate for curved surfaces (cylinders, spheres) because
-        /// AABB extents don't reflect the unrolled parameterization.
+        /// Apply non-uniform per-shell UV scale to minimise the Sander L²
+        /// texture-stretch metric (SIGGRAPH 2001, "Texture Mapping Progressive
+        /// Meshes"). The shell-averaged metric tensor M = JᵀJ of the UV→3D
+        /// map (area-weighted over triangles) is eigendecomposed; UV is scaled
+        /// along the principal directions so the σ₁/σ₂ stretch ratio drops to
+        /// maxShellAspect. Area-preserving by construction. Handles curved
+        /// shells, non-uniform vertex distribution and rotated UV islands
+        /// correctly — unlike PCA over vertex positions, the Jacobian metric
+        /// measures the UV→3D mapping itself rather than where vertices sit.
+        /// Only used when normalizeTexelDensity is true.
         /// </summary>
         public bool normalizeShellAspect;
 
         /// <summary>
-        /// Clamp on the 3D aspect ratio used as per-shell target. Sliver / edge shells
-        /// in 3D (aspect 100:1+) would force runaway UV stretch otherwise. Default 10:1.
+        /// Cap on the post-correction principal-stretch ratio σ₁/σ₂. A shell
+        /// whose mapping is hopelessly anisotropic (sliver shell, σ₁/σ₂ = 100)
+        /// would otherwise force runaway non-uniform UV scale; capping at C
+        /// limits the UV long-axis stretch factor to √(current_ratio / C) and
+        /// the short-axis shrink to √(C / current_ratio). Default 2.
         /// </summary>
         public float maxShellAspect;
 

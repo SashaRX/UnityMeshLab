@@ -92,21 +92,30 @@ namespace SashaRX.UnityMeshLab
         public bool NormalizeTexelDensity = true;
 
         /// <summary>
-        /// On top of density normalisation, apply non-uniform per-shell scale so the
-        /// UV bbox aspect matches the shell's 3D shape aspect (ratio of the two
-        /// largest 3D AABB extents). Fixes UV0 squished 1:1 onto a 10:1 plank in 3D.
-        /// Area-preserving by construction. Only effective when NormalizeTexelDensity
-        /// is on. Default ON.
+        /// On top of density normalisation, apply non-uniform per-shell UV scale
+        /// to minimise the Sander L² texture-stretch metric (SIGGRAPH 2001,
+        /// "Texture Mapping Progressive Meshes"). For each shell the metric
+        /// tensor M = JᵀJ of the UV→3D parameterisation is averaged over
+        /// triangles (weighted by 3D area). Its eigenvalues σ₁² ≥ σ₂² are the
+        /// principal stretches; their ratio σ₁/σ₂ is the texture anisotropy
+        /// that causes lightmap pixels to be non-square on the surface. The
+        /// pass applies non-uniform scale along the principal UV directions so
+        /// the corrected ratio is capped at MaxShellAspectClamp. Area-preserving
+        /// by construction (k_along × k_across = 1). Handles curved shells,
+        /// non-uniform vertex distribution and rotated UV islands correctly —
+        /// unlike PCA over vertex positions, which is biased by where vertices
+        /// sit rather than how UV maps to 3D. Only effective when
+        /// NormalizeTexelDensity is on.
         /// </summary>
         public bool NormalizeShellAspect = true;
 
         /// <summary>
-        /// Cap on the 3D-side aspect target (σ1/σ2 from in-plane PCA). Real
-        /// surfaces are mostly close to square — values above ~2 mean the
-        /// surface is a strip / ribbon. Capping prevents the UV layout from
-        /// being stretched into a needle when the source mesh has a sliver
-        /// shell (which would otherwise force scale_axis ≈ √(N/1) for some
-        /// large N). Default 2.
+        /// Cap on the post-correction principal-stretch ratio σ₁/σ₂ from the
+        /// Sander metric tensor. With cap C, a shell whose current stretch
+        /// ratio is R gets its long axis scaled by √(R/C) and short axis by
+        /// √(C/R) — so the minimum UV dimension shrinks by at most √(C/R).
+        /// Lower C = more aggressive correction (closer to isotropic), but
+        /// also more shrinkage of the short axis for sliver inputs. Default 2.
         /// </summary>
         public float MaxShellAspect = 2f;
 

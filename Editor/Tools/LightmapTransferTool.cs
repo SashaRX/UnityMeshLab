@@ -465,22 +465,26 @@ namespace SashaRX.UnityMeshLab
                 {
                     ctx.NormalizeShellAspect = EditorGUILayout.ToggleLeft(
                         new GUIContent("Normalize shell aspect",
-                            "PCA-based per-shell reshape so the UV island's principal-axis "
-                            + "aspect ratio (σ1/σ2) matches the surface's in-plane 3D aspect. "
-                            + "Runs BEFORE density normalization. Handles rotated / diagonal "
-                            + "UV islands correctly (PCA finds the true principal axes). "
-                            + "Area-preserving by construction."),
+                            "Per-shell reshape that minimises the Sander L² texture-stretch "
+                            + "metric (SIGGRAPH 2001). Averages the metric tensor M = JᵀJ of "
+                            + "the UV→3D map over triangles (3D-area weighted), eigendecomposes, "
+                            + "then non-uniformly scales UV along the principal directions so "
+                            + "the σ1/σ2 stretch ratio drops to the cap below. Runs BEFORE "
+                            + "density normalization. Area-preserving by construction. "
+                            + "Invariant to vertex distribution, shell curvature and UV-island "
+                            + "rotation — it measures the UV→3D mapping itself, not vertex "
+                            + "positions like the old PCA-based variant did."),
                         ctx.NormalizeShellAspect);
                     using (new EditorGUI.DisabledScope(!ctx.NormalizeShellAspect))
                     {
                         ctx.MaxShellAspect = EditorGUILayout.Slider(
                             new GUIContent("Max stretch (N:1)",
-                                "Upper limit on how much UV can be stretched to match the "
-                                + "surface. 1.0 = force square islands; 2.0 = matches typical "
-                                + "rectangular surfaces but caps elongation; >2 only useful "
-                                + "for ribbon-like geometry (long strips, edges). <1 actively "
-                                + "compresses elongated UVs back toward square."),
-                            ctx.MaxShellAspect, 0.5f, 10f);
+                                "Cap on post-correction σ1/σ2 ratio. 1.0 = force isotropic "
+                                + "(longest-axis stretch √(current_ratio), most aggressive); "
+                                + "2.0 = sensible default for typical surfaces; higher leaves "
+                                + "more residual stretch and is gentler on sliver shells. "
+                                + "Capping protects sub-pixel UV dimensions on extreme inputs."),
+                            ctx.MaxShellAspect, 1f, 10f);
                     }
                     ctx.TargetUvCoverage = EditorGUILayout.Slider(
                         new GUIContent("UV coverage budget",
