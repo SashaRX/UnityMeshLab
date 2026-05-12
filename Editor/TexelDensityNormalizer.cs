@@ -4,12 +4,19 @@
 //      1:2 or 1:0.5 unwrap), apply a single non-uniform global scale around
 //      the bbox centre to make the overall span 1:1. Area-preserving by
 //      construction (sx·sy = 1).
-//   1.5) (Opt-in) Per-shell aspect normalization. For each shell, take a 3D
-//      PCA in the shell's tangent plane (σ1≥σ2 → 3D aspect = √(σ1/σ2)),
-//      align the UV principal axis with the 3D principal axis via a 2×2 SVD
-//      between UV offsets and tangent-plane offsets, then area-preserving
-//      non-uniformly scale so UV bbox aspect matches the (clamped) 3D PCA
-//      aspect. Reduces UV slivers caused by elongated unwraps.
+//   1.5) (Opt-in) Per-shell aspect normalization. For each shell, compute
+//      the *surface* aspect by edge-based BFS unfold of the triangle mesh
+//      into 2D (developable approximation: hinges each new triangle across a
+//      shared edge, flipped to the opposite half-plane from the parent's
+//      third vertex). The unfold's 2D bbox aspect drives the UV target.
+//      Then filter shells via Sander L² CV — if UV0 already preserves area
+//      ratios well (cv < 0.5) we leave them alone, since they're the
+//      artist's good unwraps. Otherwise align the UV principal axis to the
+//      unfold's principal axis via a 2×2 SVD between UV offsets and unfold
+//      offsets, and apply an area-preserving non-uniform scale to match the
+//      (clamped) surface aspect. PCA on 3D positions is **deliberately
+//      avoided** — it underestimates aspect for curved strips (a U-shaped
+//      beam has σ1≈σ2≈σ3 even when the surface is a 20:1 ribbon).
 //   2) Texel density correction (uniform per-shell scale) bringing UV-area
 //      proportional to 3D-area, plus a global coverage budget that leaves
 //      slack for xatlas's bin-packing.
@@ -43,13 +50,14 @@ namespace SashaRX.UnityMeshLab
         /// to this fraction of [0,1]² so xatlas doesn't overflow the requested atlas resolution due to
         /// bin-packing slack. Default 0.75. ≤0 or ≥1 disables the budget step.</param>
         /// <param name="normalizeAspect">Enable pass 1 (global unwrap-aspect to 1:1). Default true.</param>
-        /// <param name="maxAspect">Upper bound on the per-shell 3D-PCA aspect used by the
-        /// per-shell aspect pass. The shell's √(σ1/σ2) is clamped to [1, maxAspect] before being
+        /// <param name="maxAspect">Upper bound on the per-shell surface aspect used by the
+        /// per-shell aspect pass. The shell's unfold aspect is clamped to [1, maxAspect] before being
         /// used as the UV aspect target. Default 10.</param>
-        /// <param name="perShellAspect">Enable pass 1.5 (per-shell aspect → 3D PCA aspect). Default false.</param>
+        /// <param name="perShellAspect">Enable pass 1.5 (per-shell aspect → surface unfold aspect). Default false.</param>
         /// <param name="perShellAspectThreshold">Relative skip threshold for the per-shell aspect pass:
-        /// shells with |aspect3D − aspectUV| / max(aspect3D, aspectUV) below this value are left alone.
-        /// Default 0.001 (effectively "fix anything that differs"). Larger → only fix grossly anisotropic shells.</param>
+        /// shells with |aspectSurface − aspectUV| / max(aspectSurface, aspectUV) below this value are
+        /// left alone. Default 0.001 (effectively "fix anything that differs"). Larger → only fix
+        /// grossly anisotropic shells.</param>
         /// <param name="perShellAspectSkipShells">Optional set of shell indices that should be excluded from the per-shell
         /// aspect pass. Used by the caller to hand off ribbon-classified shells to ARAP reparameterization instead
         /// (running both on the same ribbon collapses it). Null = no skips.</param>
@@ -146,16 +154,17 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            // ── PASS 1.5: per-shell aspect → 3D PCA aspect (opt-in) ──
-            // For each shell, take a 3D PCA in its tangent plane (top-2
-            // eigenvectors of the 3×3 position covariance). Align the UV
-            // principal axis with the 3D principal axis via a 2×2 SVD
-            // between UV offsets and tangent-plane offsets, then apply an
-            // area-preserving non-uniform scale so the UV bbox aspect (in
-            // the aligned frame) equals √(σ1/σ2), clamped to [1, maxAspect].
-            // Rotates back, leaving the shell's centroid in place.
+            // ── PASS 1.5: per-shell aspect → surface unfold aspect (opt-in) ──
+            // For each shell, unfold the triangle mesh edge-by-edge into 2D
+            // (BFS, hinging across shared edges with the opposite-half-plane
+            // rule). The 2D bbox aspect of the unfold is the surface aspect
+            // target. Skip when Sander L² CV indicates the artist's UV0 is
+            // already well proportioned. When applied, align UV principal
+            // axis to the unfold principal axis via 2×2 SVD and apply an
+            // area-preserving non-uniform scale; rotates back, centroid
+            // preserved.
             if (perShellAspect)
-                ApplyPerShellAspect(uvFlat, shells, positions, scaleMin, scaleMax, maxAspect,
+                ApplyPerShellAspect(uvFlat, shells, tris, positions, scaleMin, scaleMax, maxAspect,
                     perShellAspectThreshold, perShellAspectSkipShells, ref aspectModified);
 
             // ── PASS 2: density correction ──
@@ -272,29 +281,35 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ────────────────────────────────────────────────────────────────
-        // PASS 1.5 helpers — per-shell aspect → 3D PCA aspect
+        // PASS 1.5 helpers — per-shell aspect → surface unfold aspect
         // ────────────────────────────────────────────────────────────────
 
         // Skip-condition tuning. Lifted to consts for grep-ability.
-        private const float kPerShellMinSigma2     = 1e-10f; // absolute σ2 floor
-        private const float kPerShellMinSigmaRatio = 1e-6f;  // σ2/σ1 floor (vs degenerate line/point shells)
-        private const float kPerShellTrivialEps    = 1e-3f;  // |a3D − aUV| under which we skip
-        private const float kPerShellTangentEps    = 1e-12f; // 3D tangent-plane offset sumSq floor
-        private const float kPerShellUvEps         = 1e-12f; // UV offset sumSq floor
+        private const int   kPerShellMinTriangles    = 3;     // shells with fewer triangles are trivial
+        private const float kPerShellMinAspectRatio  = 1e-6f; // surface aspect denom floor
+        private const float kPerShellTrivialEps      = 1e-3f; // relative |aS - aUV| skip default
+        private const float kPerShellUnfoldEps       = 1e-12f; // unfold offset sumSq floor
+        private const float kPerShellUvEps           = 1e-12f; // UV offset sumSq floor
+        private const float kPerShellSanderCvSkip    = 0.5f;  // CV under which we trust the artist's UV0
+        private const float kPerShellUnfoldCoverage  = 0.5f;  // min fraction of shell verts that must unfold
 
         /// <summary>
-        /// Per-shell aspect normalization. For each shell, computes the 3D
-        /// PCA tangent plane (two top eigenvectors of the 3×3 position
-        /// covariance), aligns the UV principal axis to the 3D principal
+        /// Per-shell aspect normalization. For each shell, edge-unfolds the
+        /// triangle strip into 2D to measure the **surface** aspect (rather
+        /// than 3D-position PCA, which collapses on curved strips). Skips
+        /// shells whose UV0 already preserves per-triangle area ratios
+        /// (Sander L² CV &lt; 0.5 → trust the artist). For shells that need
+        /// correction, aligns the UV principal axis to the unfold principal
         /// axis via a 2×2 SVD between the centered UV offsets and the
-        /// tangent-plane offsets, then applies an area-preserving non-uniform
+        /// unfold offsets, then applies an area-preserving non-uniform
         /// scale around the UV centroid so the UV bbox aspect in the aligned
-        /// frame equals √(σ1/σ2) clamped to [1, maxAspect]. Finally rotates
-        /// the shell back. Centroid is preserved.
+        /// frame equals the surface aspect clamped to [1, maxAspect].
+        /// Finally rotates back; the UV centroid is preserved.
         /// </summary>
         private static void ApplyPerShellAspect(
             float[] uvFlat,
             List<UvShell> shells,
+            int[] tris,
             Vector3[] positions,
             float scaleMin,
             float scaleMax,
@@ -308,7 +323,9 @@ namespace SashaRX.UnityMeshLab
 
             int modified = 0;
             int skipDegenerate = 0;
-            int skipTrivial = 0;
+            int skipTrivial = 0;          // surface aspect ≈ UV aspect already
+            int skipAlreadyUniform = 0;   // Sander CV < threshold → trust artist
+            int skipUnfoldFail = 0;       // BFS unfold did not cover enough verts
             int skipNumeric = 0;
             int skipClamp = 0;
             int skipExternal = 0;
@@ -326,6 +343,11 @@ namespace SashaRX.UnityMeshLab
                     skipSet.Add(skipShellIndices[i]);
             }
 
+            // Per-vertex 2D unfold positions. Reused across shells to avoid
+            // GC; we keep a HashSet of which vertices have a valid entry
+            // for the current shell. (Dictionary clear is O(count) anyway.)
+            var unfold2D = new Dictionary<int, Vector2>(256);
+
             for (int si = 0; si < n; si++)
             {
                 if (skipSet != null && skipSet.Contains(si))
@@ -334,45 +356,72 @@ namespace SashaRX.UnityMeshLab
                     continue;
                 }
                 var shell = shells[si];
-                if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3)
+                if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3 ||
+                    shell.faceIndices == null || shell.faceIndices.Count < kPerShellMinTriangles)
                 {
                     skipDegenerate++;
                     continue;
                 }
 
-                // 3D PCA — top-2 eigenvectors of position covariance.
-                if (!Compute3DShellAxes(shell, positions,
-                        out double sigma1, out double sigma2,
-                        out Vector3 e1_3D, out Vector3 e2_3D,
-                        out Vector3 c3D))
+                // Surface aspect via edge-based BFS unfold (developable
+                // approximation). Replaces 3D PCA which underestimates
+                // aspect on curved strips (σ1≈σ2≈σ3 for a U-shaped beam).
+                unfold2D.Clear();
+                if (!ComputeSurfaceAspectByUnfold(shell, tris, positions, unfold2D,
+                        out float surfaceAspect, out Vector2 unfoldMin, out Vector2 unfoldMax,
+                        out int unfoldedVertCount))
+                {
+                    skipUnfoldFail++;
+                    UvtLog.Verbose(UvtLog.Category.Repack,
+                        $"[Repack] PerShellAspect: shell {si} unfold incomplete → skipping");
+                    continue;
+                }
+
+                // Minimum coverage — disconnected components or degenerate
+                // adjacency may leave most verts un-placed.
+                int totalVerts = shell.vertexIndices.Count;
+                if (totalVerts <= 0 || (float)unfoldedVertCount / totalVerts < kPerShellUnfoldCoverage)
+                {
+                    skipUnfoldFail++;
+                    UvtLog.Verbose(UvtLog.Category.Repack,
+                        $"[Repack] PerShellAspect: shell {si} unfold incomplete " +
+                        $"({unfoldedVertCount}/{totalVerts} verts placed) → skipping");
+                    continue;
+                }
+
+                float uw = unfoldMax.x - unfoldMin.x;
+                float uh = unfoldMax.y - unfoldMin.y;
+                if (uw < 1e-6f || uh < 1e-6f || surfaceAspect < kPerShellMinAspectRatio)
                 {
                     skipDegenerate++;
                     continue;
                 }
 
-                if (sigma2 < kPerShellMinSigma2 || sigma1 <= 0.0 ||
-                    sigma2 / sigma1 < kPerShellMinSigmaRatio)
+                float aspectSurface = Mathf.Clamp(surfaceAspect, 1f, maxAspectClamp);
+
+                // Sander L² CV — if the artist's UV0 already preserves
+                // per-triangle area ratios then triangles are well-shaped
+                // and we should not disturb them. Threshold is empirical
+                // (cv < 0.5 ≈ "uniform enough" given typical artist unwraps).
+                float sanderCv = ComputeSanderCV(shell, tris, positions, uvFlat);
+                if (sanderCv >= 0f && sanderCv < kPerShellSanderCvSkip)
                 {
-                    skipDegenerate++;
+                    skipAlreadyUniform++;
+                    UvtLog.Verbose(UvtLog.Category.Repack,
+                        $"[Repack] PerShellAspect: shell {si} surfaceAspect={aspectSurface:F2}:1 " +
+                        $"cv={sanderCv:F2} (<{kPerShellSanderCvSkip:F2}) → already-uniform, skipping");
                     continue;
                 }
 
-                double aspect3D_raw = Math.Sqrt(sigma1 / sigma2);
-                if (double.IsNaN(aspect3D_raw) || double.IsInfinity(aspect3D_raw))
-                {
-                    skipNumeric++;
-                    continue;
-                }
-                float aspect3D = Mathf.Clamp((float)aspect3D_raw, 1f, maxAspectClamp);
-
-                // UV centroid + paired tangent-plane / UV offset accumulators
-                // for the 2×2 cross-covariance.
+                // UV centroid + paired unfold / UV offset accumulators for
+                // the 2×2 cross-covariance.
                 Vector2 cUv = Vector2.zero;
                 int cn = 0;
                 foreach (int v in shell.vertexIndices)
                 {
                     int idx = v * 2;
                     if ((uint)(idx + 1) >= (uint)uvLen) continue;
+                    if (!unfold2D.ContainsKey(v)) continue;
                     cUv.x += uvFlat[idx];
                     cUv.y += uvFlat[idx + 1];
                     cn++;
@@ -385,51 +434,52 @@ namespace SashaRX.UnityMeshLab
                 cUv.x /= cn;
                 cUv.y /= cn;
 
-                // M = Σ [uOff; vOff] · [t1, t2]
+                // Unfold centroid (over the placed verts only).
+                Vector2 cFold = (unfoldMin + unfoldMax) * 0.5f;
+
+                // M = Σ [uOff; vOff] · [fOff_x, fOff_y]
                 double m00 = 0.0, m01 = 0.0, m10 = 0.0, m11 = 0.0;
-                double tSumSq = 0.0, uSumSq = 0.0;
-                int posLen = positions.Length;
+                double fSumSq = 0.0, uSumSq = 0.0;
                 foreach (int v in shell.vertexIndices)
                 {
                     int idx = v * 2;
                     if ((uint)(idx + 1) >= (uint)uvLen) continue;
-                    if ((uint)v >= (uint)posLen) continue;
+                    if (!unfold2D.TryGetValue(v, out Vector2 fp)) continue;
 
-                    Vector3 d3 = positions[v] - c3D;
-                    double t1 = Vector3.Dot(d3, e1_3D);
-                    double t2 = Vector3.Dot(d3, e2_3D);
+                    double f1 = fp.x - cFold.x;
+                    double f2 = fp.y - cFold.y;
 
                     double uOff = uvFlat[idx]     - cUv.x;
                     double vOff = uvFlat[idx + 1] - cUv.y;
 
-                    m00 += uOff * t1;
-                    m01 += uOff * t2;
-                    m10 += vOff * t1;
-                    m11 += vOff * t2;
+                    m00 += uOff * f1;
+                    m01 += uOff * f2;
+                    m10 += vOff * f1;
+                    m11 += vOff * f2;
 
-                    tSumSq += t1 * t1 + t2 * t2;
+                    fSumSq += f1 * f1 + f2 * f2;
                     uSumSq += uOff * uOff + vOff * vOff;
                 }
 
-                if (tSumSq < kPerShellTangentEps || uSumSq < kPerShellUvEps)
+                if (fSumSq < kPerShellUnfoldEps || uSumSq < kPerShellUvEps)
                 {
                     skipDegenerate++;
                     continue;
                 }
 
                 // 2×2 SVD → rotation angle θ that aligns UV principal axis
-                // with 3D principal axis. R = U·V^T. We only need θ.
+                // with the unfold's principal axis. R = U·V^T. We only need θ.
                 if (!Compute2DRotationAngle(m00, m01, m10, m11, out double theta))
                 {
                     skipNumeric++;
                     continue;
                 }
 
-                // Rotate UV offsets by −θ around cUv → axis-align with 3D PCA.
+                // Rotate UV offsets by −θ around cUv → axis-align with the
+                // unfold's principal axis. Measure aligned bbox.
                 float cosT = (float)Math.Cos(-theta);
                 float sinT = (float)Math.Sin(-theta);
 
-                // First pass: measure aligned bbox.
                 float minA = float.MaxValue, minB = float.MaxValue;
                 float maxA = float.MinValue, maxB = float.MinValue;
                 foreach (int v in shell.vertexIndices)
@@ -454,9 +504,9 @@ namespace SashaRX.UnityMeshLab
                     continue;
                 }
 
-                // If the swap protector fires the SVD result was off — flip
-                // axes by adding π/2 to θ. This re-derives a, b on the fly
-                // below; cheaper to just recompute cos/sin and bbox.
+                // If the principal axis ended up shorter than the secondary,
+                // the SVD picked the wrong column — rotate by +π/2 and
+                // recompute. (Same swap protector as the previous version.)
                 if (wA < hB)
                 {
                     theta += Math.PI * 0.5;
@@ -488,20 +538,20 @@ namespace SashaRX.UnityMeshLab
 
                 float aspectUV = wA / hB;
 
-                float denom = Mathf.Max(aspect3D, aspectUV);
+                float denom = Mathf.Max(aspectSurface, aspectUV);
                 float threshold = relativeTrivialThreshold > 0f
                     ? relativeTrivialThreshold
                     : kPerShellTrivialEps;
-                if (denom > 0f && Mathf.Abs(aspect3D - aspectUV) / denom < threshold)
+                if (denom > 0f && Mathf.Abs(aspectSurface - aspectUV) / denom < threshold)
                 {
                     skipTrivial++;
                     continue;
                 }
 
                 // Area-preserving non-uniform scale: along A (principal) by
-                // sx = √(aspect3D / aspectUV), perpendicular by sy = 1/sx.
-                float sx = Mathf.Sqrt(aspect3D / aspectUV);
-                float sy = aspectUV > 0f ? Mathf.Sqrt(aspectUV / aspect3D) : 0f;
+                // sx = √(aspectSurface / aspectUV), perpendicular by sy = 1/sx.
+                float sx = Mathf.Sqrt(aspectSurface / aspectUV);
+                float sy = aspectUV > 0f ? Mathf.Sqrt(aspectUV / aspectSurface) : 0f;
                 if (float.IsNaN(sx) || float.IsInfinity(sx) ||
                     float.IsNaN(sy) || float.IsInfinity(sy) ||
                     sx <= 0f || sy <= 0f)
@@ -519,16 +569,11 @@ namespace SashaRX.UnityMeshLab
                 // Precompute the 2×2 matrix R(+θ) · diag(sx,sy) · R(−θ).
                 float cosP = (float)Math.Cos(theta);
                 float sinP = (float)Math.Sin(theta);
-                // After the algebra:
-                //   M[0,0] =  cosP*sx*cosT + sinP*sy*sinT  (note R(−θ) entries)
-                // Compute via R(+θ) * diag(sx,sy) * R(−θ) explicitly.
                 // R(−θ) = [[cosT, -sinT],[sinT, cosT]]
                 // diag·R(−θ) = [[sx*cosT, -sx*sinT],[sy*sinT, sy*cosT]]
                 // R(+θ) * that:
                 //   row0 = cosP*[sx*cosT,-sx*sinT] - sinP*[sy*sinT, sy*cosT]
-                //        = [cosP*sx*cosT - sinP*sy*sinT, -cosP*sx*sinT - sinP*sy*cosT]
                 //   row1 = sinP*[sx*cosT,-sx*sinT] + cosP*[sy*sinT, sy*cosT]
-                //        = [sinP*sx*cosT + cosP*sy*sinT, -sinP*sx*sinT + cosP*sy*cosT]
                 float a00 =  cosP * sx * cosT - sinP * sy * sinT;
                 float a01 = -cosP * sx * sinT - sinP * sy * cosT;
                 float a10 =  sinP * sx * cosT + cosP * sy * sinT;
@@ -561,7 +606,8 @@ namespace SashaRX.UnityMeshLab
 
                 modified++;
                 UvtLog.Verbose(UvtLog.Category.Repack,
-                    $"[Repack] PerShellAspect: shell {si} 3D {aspect3D:F2}:1 UV {aspectUV:F2}:1 " +
+                    $"[Repack] PerShellAspect: shell {si} surfaceAspect={aspectSurface:F2}:1 " +
+                    $"UV={aspectUV:F2}:1 cv={sanderCv:F2} " +
                     $"θ={theta * (180.0 / Math.PI):F1}° scale=({sx:F3},{sy:F3})");
             }
 
@@ -569,106 +615,321 @@ namespace SashaRX.UnityMeshLab
 
             UvtLog.Info(UvtLog.Category.Repack,
                 $"[Repack] PerShellAspect: normalized {modified}/{n} shells " +
-                $"(skipped {skipDegenerate} degenerate, {skipTrivial} already normalized, " +
-                $"{skipNumeric} numeric, {skipClamp} out-of-scale-range, {skipExternal} caller-skipped)");
+                $"(skipped {skipDegenerate} degenerate, {skipTrivial} trivial, " +
+                $"{skipAlreadyUniform} already-uniform [cv<{kPerShellSanderCvSkip:F2}], " +
+                $"{skipUnfoldFail} unfold-incomplete, " +
+                $"{skipNumeric} numeric, {skipClamp} out-of-scale-range, " +
+                $"{skipExternal} caller-skipped)");
         }
 
         /// <summary>
-        /// Power-iteration + deflation on the 3×3 position covariance of the
-        /// shell. Returns the top-2 eigenvalues (σ1≥σ2) and eigenvectors as
-        /// the shell's tangent plane, plus the 3D centroid. Returns false if
-        /// the shell has too few vertices or the covariance is degenerate.
+        /// Edge-based BFS unfold of a shell's triangle strip into 2D. Hinges
+        /// each newly visited triangle across its shared edge with an
+        /// already-placed parent, choosing the half-plane opposite the
+        /// parent's third vertex so the unfold never folds back on itself.
+        /// For developable surfaces (cylinders unrolled to strips, cones,
+        /// planes) the unfold is exact; for slightly curved surfaces it is
+        /// a good approximation; for strongly curved surfaces (spheres) it
+        /// overestimates aspect, which is still strictly better than 3D-PCA
+        /// (which underestimates).
+        ///
+        /// Outputs `out2D` populated with global-vertex-index → 2D position
+        /// for every vertex reachable via triangle adjacency from the seed
+        /// triangle. Disconnected components beyond the seed component are
+        /// not placed; the caller decides whether the coverage is enough.
+        /// Returns false only when the seed triangle itself is degenerate.
         /// </summary>
-        private static bool Compute3DShellAxes(
-            UvShell shell, Vector3[] positions,
-            out double sigma1, out double sigma2,
-            out Vector3 e1, out Vector3 e2,
-            out Vector3 centroid)
+        private static bool ComputeSurfaceAspectByUnfold(
+            UvShell shell, int[] tris, Vector3[] positions,
+            Dictionary<int, Vector2> out2D,
+            out float surfaceAspect, out Vector2 bboxMin, out Vector2 bboxMax,
+            out int unfoldedVertexCount)
         {
-            sigma1 = 0.0; sigma2 = 0.0;
-            e1 = Vector3.right; e2 = Vector3.up;
-            centroid = Vector3.zero;
+            surfaceAspect = 0f;
+            bboxMin = new Vector2(float.MaxValue, float.MaxValue);
+            bboxMax = new Vector2(float.MinValue, float.MinValue);
+            unfoldedVertexCount = 0;
 
             int posLen = positions.Length;
-            int count = 0;
-            Vector3 sum = Vector3.zero;
-            foreach (int v in shell.vertexIndices)
+            int trisLen = tris.Length;
+            var faceIndices = shell.faceIndices;
+            int faceCount = faceIndices.Count;
+
+            // Gather valid triangle vertex triples (skipping out-of-range
+            // and zero-area). localTriV[i*3+{0,1,2}] holds the three global
+            // vertex indices of the i-th valid (local) triangle.
+            var localTriV = new List<int>(faceCount * 3);
+
+            for (int li = 0; li < faceCount; li++)
             {
-                if ((uint)v >= (uint)posLen) continue;
-                sum += positions[v];
-                count++;
-            }
-            if (count < 3) return false;
-            centroid = sum / count;
+                int f = faceIndices[li];
+                int t = f * 3;
+                if ((uint)(t + 2) >= (uint)trisLen) continue;
+                int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
+                if ((uint)i0 >= (uint)posLen || (uint)i1 >= (uint)posLen || (uint)i2 >= (uint)posLen) continue;
+                if (i0 == i1 || i1 == i2 || i0 == i2) continue;
 
-            double cxx = 0, cxy = 0, cxz = 0;
-            double cyy = 0, cyz = 0, czz = 0;
-            foreach (int v in shell.vertexIndices)
+                Vector3 p0 = positions[i0], p1 = positions[i1], p2 = positions[i2];
+                if (Vector3.Cross(p1 - p0, p2 - p0).sqrMagnitude < 1e-24f) continue;
+
+                localTriV.Add(i0); localTriV.Add(i1); localTriV.Add(i2);
+            }
+
+            int triCount = localTriV.Count / 3;
+            if (triCount < kPerShellMinTriangles) return false;
+
+            // Edge → adjacent local triangle list. Edge key is (min,max) of
+            // global vertex indices packed into a ulong.
+            var edgeToTris = new Dictionary<ulong, List<int>>(triCount * 3);
+            for (int li = 0; li < triCount; li++)
             {
-                if ((uint)v >= (uint)posLen) continue;
-                double dx = positions[v].x - centroid.x;
-                double dy = positions[v].y - centroid.y;
-                double dz = positions[v].z - centroid.z;
-                cxx += dx * dx; cxy += dx * dy; cxz += dx * dz;
-                cyy += dy * dy; cyz += dy * dz;
-                czz += dz * dz;
+                int a = localTriV[li * 3];
+                int b = localTriV[li * 3 + 1];
+                int c = localTriV[li * 3 + 2];
+                AddEdge(edgeToTris, a, b, li);
+                AddEdge(edgeToTris, b, c, li);
+                AddEdge(edgeToTris, a, c, li);
             }
-            double inv = 1.0 / count;
-            cxx *= inv; cxy *= inv; cxz *= inv;
-            cyy *= inv; cyz *= inv; czz *= inv;
 
-            // Power iteration for largest eigen-pair.
-            Vector3 v1 = new Vector3(1f, 0.5f, 0.25f).normalized;
-            for (int iter = 0; iter < 64; iter++)
+            // BFS from triangle 0 (first valid triangle of the shell).
+            var visited = new bool[triCount];
+            var queue   = new Queue<int>(triCount);
+
+            // Lay out seed triangle in 2D.
+            int s0 = localTriV[0], s1 = localTriV[1], s2 = localTriV[2];
+            Vector3 sp0 = positions[s0], sp1 = positions[s1], sp2 = positions[s2];
+            Vector3 e01 = sp1 - sp0;
+            float l01 = e01.magnitude;
+            if (l01 < 1e-12f) return false;
+
+            // v0 = (0,0); v1 = (l01, 0); v2 placed in upper half-plane.
+            Vector2 p2D_0 = Vector2.zero;
+            Vector2 p2D_1 = new Vector2(l01, 0f);
+            Vector3 e01n = e01 / l01;
+            Vector3 e02 = sp2 - sp0;
+            float dotProj = Vector3.Dot(e02, e01n);
+            float perpLen2 = e02.sqrMagnitude - dotProj * dotProj;
+            if (perpLen2 < 0f) perpLen2 = 0f;
+            float perpLen = Mathf.Sqrt(perpLen2);
+            if (perpLen < 1e-12f) return false; // already filtered, defensive
+            Vector2 p2D_2 = new Vector2(dotProj, perpLen);
+
+            out2D[s0] = p2D_0;
+            out2D[s1] = p2D_1;
+            out2D[s2] = p2D_2;
+            UpdateBbox(ref bboxMin, ref bboxMax, p2D_0);
+            UpdateBbox(ref bboxMin, ref bboxMax, p2D_1);
+            UpdateBbox(ref bboxMin, ref bboxMax, p2D_2);
+
+            visited[0] = true;
+            queue.Enqueue(0);
+
+            while (queue.Count > 0)
             {
-                double nx = cxx * v1.x + cxy * v1.y + cxz * v1.z;
-                double ny = cxy * v1.x + cyy * v1.y + cyz * v1.z;
-                double nz = cxz * v1.x + cyz * v1.y + czz * v1.z;
-                double len = Math.Sqrt(nx * nx + ny * ny + nz * nz);
-                if (len < 1e-14) return false;
-                v1 = new Vector3((float)(nx / len), (float)(ny / len), (float)(nz / len));
+                int li = queue.Dequeue();
+                int va = localTriV[li * 3];
+                int vb = localTriV[li * 3 + 1];
+                int vc = localTriV[li * 3 + 2];
+
+                TryHinge(li, va, vb, vc, edgeToTris, localTriV, positions, visited, queue, out2D, ref bboxMin, ref bboxMax);
+                TryHinge(li, vb, vc, va, edgeToTris, localTriV, positions, visited, queue, out2D, ref bboxMin, ref bboxMax);
+                TryHinge(li, va, vc, vb, edgeToTris, localTriV, positions, visited, queue, out2D, ref bboxMin, ref bboxMax);
             }
-            // Eigenvalue (Rayleigh quotient).
-            double a1x = cxx * v1.x + cxy * v1.y + cxz * v1.z;
-            double a1y = cxy * v1.x + cyy * v1.y + cyz * v1.z;
-            double a1z = cxz * v1.x + cyz * v1.y + czz * v1.z;
-            sigma1 = v1.x * a1x + v1.y * a1y + v1.z * a1z;
-            if (sigma1 <= 0.0) return false;
 
-            // Deflate and iterate for second eigen-pair.
-            double dxx = cxx - sigma1 * v1.x * v1.x;
-            double dxy = cxy - sigma1 * v1.x * v1.y;
-            double dxz = cxz - sigma1 * v1.x * v1.z;
-            double dyy = cyy - sigma1 * v1.y * v1.y;
-            double dyz = cyz - sigma1 * v1.y * v1.z;
-            double dzz = czz - sigma1 * v1.z * v1.z;
+            unfoldedVertexCount = out2D.Count;
 
-            // Seed orthogonal to v1.
-            Vector3 seed = Mathf.Abs(Vector3.Dot(v1, Vector3.up)) < 0.95f
-                ? Vector3.Cross(v1, Vector3.up).normalized
-                : Vector3.Cross(v1, Vector3.right).normalized;
-            Vector3 v2 = seed;
-            for (int iter = 0; iter < 64; iter++)
-            {
-                double nx = dxx * v2.x + dxy * v2.y + dxz * v2.z;
-                double ny = dxy * v2.x + dyy * v2.y + dyz * v2.z;
-                double nz = dxz * v2.x + dyz * v2.y + dzz * v2.z;
-                // Re-orthogonalize against v1 (numerical hygiene).
-                double dot = v1.x * nx + v1.y * ny + v1.z * nz;
-                nx -= dot * v1.x; ny -= dot * v1.y; nz -= dot * v1.z;
-                double len = Math.Sqrt(nx * nx + ny * ny + nz * nz);
-                if (len < 1e-14) return false;
-                v2 = new Vector3((float)(nx / len), (float)(ny / len), (float)(nz / len));
-            }
-            double a2x = cxx * v2.x + cxy * v2.y + cxz * v2.z;
-            double a2y = cxy * v2.x + cyy * v2.y + cyz * v2.z;
-            double a2z = cxz * v2.x + cyz * v2.y + czz * v2.z;
-            sigma2 = v2.x * a2x + v2.y * a2y + v2.z * a2z;
-            if (sigma2 <= 0.0) return false;
+            float w = bboxMax.x - bboxMin.x;
+            float h = bboxMax.y - bboxMin.y;
+            if (w < 1e-12f || h < 1e-12f) return false;
 
-            e1 = v1;
-            e2 = v2;
+            surfaceAspect = w >= h ? w / h : h / w;
             return true;
+        }
+
+        /// <summary>
+        /// Hinge the unique unvisited neighbour of triangle T (current) across
+        /// the shared edge (eA, eB), placing the neighbour's third vertex on
+        /// the half-plane opposite T's third vertex (vOpp). No-op if no such
+        /// neighbour, if the edge is degenerate in 2D, or if the third vertex
+        /// is already placed inconsistently.
+        /// </summary>
+        private static void TryHinge(
+            int currentLocal, int eA, int eB, int vOpp,
+            Dictionary<ulong, List<int>> edgeToTris,
+            List<int> localTriV,
+            Vector3[] positions,
+            bool[] visited,
+            Queue<int> queue,
+            Dictionary<int, Vector2> out2D,
+            ref Vector2 bboxMin, ref Vector2 bboxMax)
+        {
+            ulong key = EdgeKey(eA, eB);
+            if (!edgeToTris.TryGetValue(key, out var adj)) return;
+
+            // Find the first unvisited neighbour through this edge.
+            int nextLocal = -1;
+            for (int k = 0; k < adj.Count; k++)
+            {
+                int cand = adj[k];
+                if (cand == currentLocal) continue;
+                if (visited[cand]) continue;
+                nextLocal = cand;
+                break;
+            }
+            if (nextLocal < 0) return;
+
+            // The neighbour's third vertex (not eA, not eB).
+            int n0 = localTriV[nextLocal * 3];
+            int n1 = localTriV[nextLocal * 3 + 1];
+            int n2 = localTriV[nextLocal * 3 + 2];
+            int vC = (n0 != eA && n0 != eB) ? n0 :
+                     (n1 != eA && n1 != eB) ? n1 :
+                                              n2;
+
+            // 2D positions of the shared edge endpoints. Must already exist
+            // because the current triangle has been placed in full.
+            if (!out2D.TryGetValue(eA, out Vector2 pA)) return;
+            if (!out2D.TryGetValue(eB, out Vector2 pB)) return;
+
+            Vector2 e = pB - pA;
+            float eLen = e.magnitude;
+            if (eLen < 1e-12f)
+            {
+                // Degenerate edge in 2D — still mark visited so we don't loop.
+                visited[nextLocal] = true;
+                queue.Enqueue(nextLocal);
+                return;
+            }
+            Vector2 eN = e / eLen;
+            Vector2 ePerp = new Vector2(-eN.y, eN.x);
+
+            // 3D distances from vC to eA and eB.
+            Vector3 pA3 = positions[eA];
+            Vector3 pB3 = positions[eB];
+            Vector3 pC3 = positions[vC];
+            float dCA = (pC3 - pA3).magnitude;
+            float dCB = (pC3 - pB3).magnitude;
+
+            // Solve for vC in 2D: |vC - pA| = dCA, |vC - pB| = dCB.
+            // Coordinate along edge: t = (dCA² - dCB² + eLen²) / (2·eLen).
+            // Perpendicular distance: h² = dCA² - t².
+            float t = (dCA * dCA - dCB * dCB + eLen * eLen) / (2f * eLen);
+            float h2 = dCA * dCA - t * t;
+            if (h2 < 0f) h2 = 0f; // clamp tiny numerical underflow
+            float hOff = Mathf.Sqrt(h2);
+
+            // Determine the half-plane of vOpp (current triangle's third
+            // vertex) relative to the edge, then place vC on the OPPOSITE
+            // side so the unfold never folds back.
+            if (!out2D.TryGetValue(vOpp, out Vector2 pOpp))
+            {
+                // Defensive — shouldn't happen because the current triangle's
+                // verts are all placed. Treat as "place on +perp side".
+                pOpp = pA - ePerp;
+            }
+            Vector2 oppDelta = pOpp - pA;
+            float oppPerp = Vector2.Dot(oppDelta, ePerp);
+            float sideSign = oppPerp >= 0f ? -1f : +1f;
+
+            Vector2 pC2D = pA + eN * t + ePerp * (sideSign * hOff);
+
+            // If vC was already placed earlier in the BFS (cycle), keep the
+            // earlier placement — it's consistent with that branch's history.
+            if (!out2D.ContainsKey(vC))
+            {
+                out2D[vC] = pC2D;
+                UpdateBbox(ref bboxMin, ref bboxMax, pC2D);
+            }
+
+            visited[nextLocal] = true;
+            queue.Enqueue(nextLocal);
+        }
+
+        private static void AddEdge(Dictionary<ulong, List<int>> map, int a, int b, int triLocal)
+        {
+            ulong key = EdgeKey(a, b);
+            if (!map.TryGetValue(key, out var list))
+            {
+                list = new List<int>(2);
+                map[key] = list;
+            }
+            list.Add(triLocal);
+        }
+
+        private static ulong EdgeKey(int a, int b)
+        {
+            int lo = a < b ? a : b;
+            int hi = a < b ? b : a;
+            return ((ulong)(uint)lo << 32) | (uint)hi;
+        }
+
+        private static void UpdateBbox(ref Vector2 min, ref Vector2 max, Vector2 p)
+        {
+            if (p.x < min.x) min.x = p.x;
+            if (p.y < min.y) min.y = p.y;
+            if (p.x > max.x) max.x = p.x;
+            if (p.y > max.y) max.y = p.y;
+        }
+
+        /// <summary>
+        /// Sander L² coefficient of variation: per-triangle ratio
+        /// (A_3D / A_UV), summarized as stddev / mean. Low CV (well below
+        /// 1) means the artist's UV0 preserves area ratios across the
+        /// shell — triangles are proportionally sized — and we should not
+        /// disturb them. Returns -1 if too few triangles are usable for a
+        /// stable estimate.
+        /// </summary>
+        private static float ComputeSanderCV(UvShell shell, int[] tris, Vector3[] positions, float[] uvFlat)
+        {
+            int posLen = positions.Length;
+            int trisLen = tris.Length;
+            int uvLen = uvFlat.Length;
+
+            // Two-pass: collect ratios, then mean+variance. Use a List so we
+            // can skip degenerate UV-area triangles cleanly.
+            var ratios = new List<double>(shell.faceIndices.Count);
+            for (int li = 0; li < shell.faceIndices.Count; li++)
+            {
+                int f = shell.faceIndices[li];
+                int t = f * 3;
+                if ((uint)(t + 2) >= (uint)trisLen) continue;
+                int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
+                if ((uint)i0 >= (uint)posLen || (uint)i1 >= (uint)posLen || (uint)i2 >= (uint)posLen) continue;
+
+                Vector3 p0 = positions[i0], p1 = positions[i1], p2 = positions[i2];
+                double a3D = Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5;
+                if (a3D < 1e-18) continue;
+
+                int u0 = i0 * 2, u1 = i1 * 2, u2 = i2 * 2;
+                if ((uint)(u0 + 1) >= (uint)uvLen ||
+                    (uint)(u1 + 1) >= (uint)uvLen ||
+                    (uint)(u2 + 1) >= (uint)uvLen) continue;
+                double ax = uvFlat[u0],     ay = uvFlat[u0 + 1];
+                double bx = uvFlat[u1],     by = uvFlat[u1 + 1];
+                double cx = uvFlat[u2],     cy = uvFlat[u2 + 1];
+                double aUV = Math.Abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) * 0.5;
+                if (aUV < 1e-18) continue;
+
+                ratios.Add(a3D / aUV);
+            }
+
+            if (ratios.Count < 3) return -1f;
+
+            double mean = 0.0;
+            for (int i = 0; i < ratios.Count; i++) mean += ratios[i];
+            mean /= ratios.Count;
+            if (mean <= 1e-18) return -1f;
+
+            double variance = 0.0;
+            for (int i = 0; i < ratios.Count; i++)
+            {
+                double d = ratios[i] - mean;
+                variance += d * d;
+            }
+            variance /= ratios.Count;
+
+            double stddev = Math.Sqrt(variance);
+            return (float)(stddev / mean);
         }
 
         /// <summary>
@@ -676,14 +937,15 @@ namespace SashaRX.UnityMeshLab
         /// [[cosθ,-sinθ],[sinθ,cosθ]], where M = U·Σ·V^T. Derivation:
         ///   • S = M^T·M is 2×2 symmetric; its eigenvectors form V's columns.
         ///   • The principal eigenvector of S (largest eigenvalue) gives the
-        ///     direction in the *input* space (= 3D-tangent-plane axes here)
+        ///     direction in the *input* space (= unfold-plane axes here)
         ///     that M maps to the largest principal direction in the output
         ///     space (= UV plane).
         ///   • U[:,0] = M·V[:,0] / s1 (largest singular value).
         ///   • R = U·V^T rotates V's first column onto U's first column —
-        ///     i.e. rotates the 3D-aligned-frame's principal axis into the
+        ///     i.e. rotates the unfold-frame's principal axis into the
         ///     UV-frame's principal axis. We want the *inverse*: rotate UV
-        ///     to be aligned with 3D-PCA, so the caller applies R(−θ).
+        ///     to be aligned with the unfold's principal axis, so the
+        ///     caller applies R(−θ).
         /// Reflection (det(R) &lt; 0) is folded out by flipping V's second
         /// column, yielding a pure rotation; θ is unaffected.
         /// </summary>
