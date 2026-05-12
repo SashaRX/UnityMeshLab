@@ -81,11 +81,6 @@ namespace SashaRX.UnityMeshLab
                      "grid size.")]
             public float[] stretchThresholdVariants = { 1.5f };
 
-            [Tooltip("Global unwrap-aspect normalization variants. When ON, the whole UV0 bbox is scaled to 1:1 " +
-                     "before ARAP / density passes (fixes 2:1 / 1:2 authored atlases). Default {true} — sweep " +
-                     "{false, true} to A/B-test the effect on this asset.")]
-            public bool[] normalizeShellAspectVariants = { true };
-
             [Tooltip("Call ResetPipelineState between sweep cells so each cell starts from the " +
                      "unmodified FBX meshes. Disable only for debugging a single cell.")]
             public bool resetBetweenRuns = true;

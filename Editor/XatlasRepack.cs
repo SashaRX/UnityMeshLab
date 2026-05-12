@@ -60,16 +60,6 @@ namespace SashaRX.UnityMeshLab
         public bool normalizeTexelDensity;
 
         /// <summary>
-        /// Detect the overall UV0 bbox aspect across all shells and apply a
-        /// single area-preserving non-uniform global scale to make it 1:1.
-        /// Fixes the case where the artist authored the unwrap on a non-square
-        /// atlas (1:2 or 1:0.5). Per-shell aspect issues are not addressed —
-        /// they are a separate concern. Only used when normalizeTexelDensity
-        /// is true.
-        /// </summary>
-        public bool normalizeShellAspect;
-
-        /// <summary>
         /// Auto-reparameterize shells whose UV0 stretch (Sander L² metric) exceeds
         /// <see cref="stretchThreshold"/>. Replaces the previous IsRibbon-based
         /// trigger — now driven by an actual UV quality metric. ARAP local-global
@@ -126,7 +116,6 @@ namespace SashaRX.UnityMeshLab
             rotateChartsToAxis = true,
             perturbStrength = 0f,             // adaptive
             normalizeTexelDensity = true,
-            normalizeShellAspect = true,
             targetUvCoverage = 0.75f,
             reparameterizeStretchedShells = true,
             stretchThreshold = 1.5f,
@@ -415,29 +404,17 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Pre-pack pipeline ──
-            // Correct architectural order:
-            //   1. Global aspect normalize (whole-atlas bbox → 1:1) — fixes
-            //      a 2:1 / 1:2 authored atlas so ARAP sees a fair input.
-            //   2. ARAP re-parameterization of stretched shells (Sander L²
+            // Two stages:
+            //   1. ARAP re-parameterization of stretched shells (Sander L²
             //      gate) — fixes per-shell distortion at the vertex level.
-            //   3. Texel density correction (per-shell uniform scale) —
+            //   2. Texel density correction (per-shell uniform scale) —
             //      equalises post-ARAP shell areas. Uniform scale doesn't
             //      distort the just-relaxed shapes.
             //
-            // Running global aspect AFTER ARAP would anisotropically stretch
-            // the just-relaxed shells; running density BEFORE ARAP would
-            // invalidate its per-shell areas. Both wrong; this order is
-            // the only sequence where each pass sees a coherent input.
-            // Operates on the local uvFlat copy; mesh.uv is untouched.
-
-            if (opts.normalizeTexelDensity && opts.normalizeShellAspect)
-            {
-                TexelDensityNormalizer.Normalize(
-                    uvFlat, shells, tris, positions,
-                    targetCoverage: opts.targetUvCoverage,
-                    normalizeAspect: true,
-                    normalizeDensity: false);
-            }
+            // The earlier global-aspect bbox-to-1:1 pre-pass was removed:
+            // xatlas does not require a 1:1 input UV0, and anisotropic global
+            // scale only fought ARAP's per-shell output. Operates on the
+            // local uvFlat copy; mesh.uv is untouched.
 
             if (opts.reparameterizeStretchedShells)
             {
@@ -471,9 +448,7 @@ namespace SashaRX.UnityMeshLab
             {
                 int rescaled = TexelDensityNormalizer.Normalize(
                     uvFlat, shells, tris, positions,
-                    targetCoverage: opts.targetUvCoverage,
-                    normalizeAspect: false,
-                    normalizeDensity: true);
+                    targetCoverage: opts.targetUvCoverage);
                 UvtLog.Verbose(UvtLog.Category.Repack,
                     $"Texel density: rescaled {rescaled}/{shells.Count} shells to uniform UV/3D area ratio");
             }
@@ -683,7 +658,7 @@ namespace SashaRX.UnityMeshLab
                 results[m].flippedShells = 0;
 
             // Local UV0 copies (flattened) per mesh — fed to xatlas, mutated
-            // by pre-pack passes (perturbation + density+aspect normalisation);
+            // by pre-pack passes (ARAP + density normalisation + perturbation);
             // mesh.uv is never touched.
             var allUvFlat = new float[meshCount][];
 
@@ -706,19 +681,9 @@ namespace SashaRX.UnityMeshLab
                     }
                     allUvFlat[m] = uvFlat;
 
-                    // Pre-pack pipeline (same architectural order as RepackSingle):
-                    //   1. Global aspect → 1:1 (bbox-level, before ARAP).
-                    //   2. ARAP on stretched shells (Sander L²).
-                    //   3. Texel density (per-shell uniform scale).
-                    if (opts.normalizeTexelDensity && opts.normalizeShellAspect)
-                    {
-                        TexelDensityNormalizer.Normalize(
-                            uvFlat, allShells[m], allTris[m], allPositions[m],
-                            targetCoverage: opts.targetUvCoverage,
-                            normalizeAspect: true,
-                            normalizeDensity: false);
-                    }
-
+                    // Pre-pack pipeline (same two stages as RepackSingle):
+                    //   1. ARAP on stretched shells (Sander L²).
+                    //   2. Texel density (per-shell uniform scale).
                     if (opts.reparameterizeStretchedShells)
                     {
                         int stretchedFoundM = 0, convergedM = 0, skippedM = 0;
@@ -751,9 +716,7 @@ namespace SashaRX.UnityMeshLab
                     {
                         int rescaledM = TexelDensityNormalizer.Normalize(
                             uvFlat, allShells[m], allTris[m], allPositions[m],
-                            targetCoverage: opts.targetUvCoverage,
-                            normalizeAspect: false,
-                            normalizeDensity: true);
+                            targetCoverage: opts.targetUvCoverage);
                         UvtLog.Verbose(UvtLog.Category.Repack,
                             $"Texel density mesh {m}: rescaled {rescaledM}/{allShells[m].Count} shells");
                     }

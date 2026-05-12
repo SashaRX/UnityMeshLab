@@ -92,18 +92,6 @@ namespace SashaRX.UnityMeshLab
         public bool NormalizeTexelDensity = true;
 
         /// <summary>
-        /// Detect the overall UV0 bbox aspect across all shells and apply a
-        /// single area-preserving non-uniform global scale to make it 1:1.
-        /// Fixes the case where the artist authored the unwrap on a non-square
-        /// atlas (1:2 or 1:0.5) which bakes anisotropic texel density into
-        /// every shell. Only effective when NormalizeTexelDensity is on.
-        ///
-        /// Per-shell aspect issues (an individual shell's UV0 shape mismatching
-        /// its 3D shape) are a separate concern and are NOT addressed here.
-        /// </summary>
-        public bool NormalizeShellAspect = true;
-
-        /// <summary>
         /// Auto-reparameterize shells whose UV0 stretch (Sander L² metric) exceeds
         /// <see cref="StretchThreshold"/>. Replaces the previous IsRibbon-based
         /// trigger — now driven by an actual UV quality metric. ARAP local-global
