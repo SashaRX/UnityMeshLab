@@ -360,6 +360,8 @@ namespace SashaRX.UnityMeshLab
                 "SymSplit thresholds", symSplitThresholdMode);
             SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
             ColorBtn(new Color(.2f,.75f,.95f), "Run Full Pipeline", 30, ExecFullPipeline);
+            ColorBtn(new Color(.85f,.6f,.95f), "Run Benchmark Sweep (12 runs)", 24,
+                () => BenchmarkSweep.Run(ctx, label => ExecFullPipeline(label)));
             splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft("SymSplit target LODs (advanced)", splitTargetsInSymmetryStep);
             skipSymmetrySplitStep      = EditorGUILayout.ToggleLeft("Skip SymSplit step (diagnostic)", skipSymmetrySplitStep);
 

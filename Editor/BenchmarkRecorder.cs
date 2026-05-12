@@ -20,6 +20,14 @@ namespace SashaRX.UnityMeshLab
     {
         public static BenchmarkRecorder Current { get; private set; }
 
+        /// <summary>
+        /// Absolute path of the most recent CSV written by <see cref="WriteArtefacts"/>.
+        /// Used by <see cref="BenchmarkSweep"/> to locate per-cell artefacts after a
+        /// nested run finishes (the sweep driver does not own the recorder session,
+        /// so it can't get the path from Current — which has already been cleared).
+        /// </summary>
+        public static string LastWrittenCsvPath { get; private set; }
+
         // Sentinel for nested calls — caller treats it as a scope that does nothing on Dispose.
         sealed class NoOpScope : IDisposable { public static readonly NoOpScope Instance = new NoOpScope(); public void Dispose() { } }
 
@@ -46,6 +54,18 @@ namespace SashaRX.UnityMeshLab
         readonly int    shellPad;
         readonly int    borderPad;
         readonly int    sourceLodIndex;
+        // Pre-pack params snapshot — captured from UvToolContext so each cell
+        // of a parameter sweep stamps its CSV/JSON with the values that
+        // produced the run, regardless of subsequent context mutations.
+        readonly bool   perShellAspect;
+        readonly float  maxShellAspect;
+        readonly float  perShellAspectThreshold;
+        readonly bool   arapEnabled;
+        readonly int    arapIterations;
+        // TODO: capture actualAtlasWidth/actualAtlasHeight from RepackResult.
+        // Currently RepackResult is consumed inside ExecRepackCore and not
+        // surfaced on MeshEntry. Threading it through would require a new
+        // field on MeshEntry — out of scope for this iteration.
 
         // Per-mesh records (one row per recorded mesh)
         readonly List<RunRecord> records = new List<RunRecord>();
@@ -62,6 +82,11 @@ namespace SashaRX.UnityMeshLab
             shellPad        = ctx?.ShellPaddingPx ?? 0;
             borderPad       = ctx?.BorderPaddingPx ?? 0;
             sourceLodIndex  = ctx?.SourceLodIndex ?? 0;
+            perShellAspect          = ctx?.PerShellAspectNormalize ?? false;
+            maxShellAspect          = ctx?.MaxShellAspect ?? 0f;
+            perShellAspectThreshold = ctx?.PerShellAspectThreshold ?? 0f;
+            arapEnabled             = ctx?.ReparameterizeRibbons ?? false;
+            arapIterations          = ctx?.RibbonArapIterations ?? 0;
             modeTag         = $"{symSplitMode}{(repackPerMesh ? "-perMesh" : "")}{(splitTargets ? "-splitTgt" : "")}";
             startedAtUtc    = DateTime.UtcNow;
 
@@ -251,6 +276,9 @@ namespace SashaRX.UnityMeshLab
 
             File.WriteAllText(csvPath,  BuildCsv(),  Encoding.UTF8);
             File.WriteAllText(jsonPath, BuildJson(), Encoding.UTF8);
+            // Publish path so external orchestrators (e.g. BenchmarkSweep) can
+            // locate the artefacts of the most recently finished session.
+            LastWrittenCsvPath = csvPath;
 
             // Per-mesh UV2 snapshots, one PNG per recorded mesh.
             int pngCount = 0;
@@ -272,7 +300,9 @@ namespace SashaRX.UnityMeshLab
         {
             var sb = new StringBuilder();
             sb.AppendLine("timestamp,runLabel,lodGroup,symSplitMode,repackPerMesh,splitTargets," +
-                "atlasRes,shellPad,borderPad,sourceLod," +
+                "atlasRes,shellPad,borderPad," +
+                "perShellAspect,maxShellAspect,perShellAspectThreshold,arapEnabled,arapIterations," +
+                "sourceLod," +
                 "rendererName,meshGroupKey,lodIndex,isSourceLod," +
                 "shellsMatched,shellsUnmatched,shellsTransform,shellsInterpolation,shellsMerged," +
                 "shellsRejected,shellsOverlapFixed,dedupConflicts,fragmentsMerged,consistencyCorrected," +
@@ -301,6 +331,11 @@ namespace SashaRX.UnityMeshLab
                 sb.Append(atlasResolution.ToString(inv)).Append(',');
                 sb.Append(shellPad.ToString(inv)).Append(',');
                 sb.Append(borderPad.ToString(inv)).Append(',');
+                sb.Append(perShellAspect ? '1' : '0').Append(',');
+                sb.Append(maxShellAspect.ToString("R", inv)).Append(',');
+                sb.Append(perShellAspectThreshold.ToString("R", inv)).Append(',');
+                sb.Append(arapEnabled ? '1' : '0').Append(',');
+                sb.Append(arapIterations.ToString(inv)).Append(',');
                 sb.Append(sourceLodIndex.ToString(inv)).Append(',');
                 sb.Append(Csv(r.rendererName)).Append(',');
                 sb.Append(Csv(r.meshGroupKey)).Append(',');
@@ -361,6 +396,11 @@ namespace SashaRX.UnityMeshLab
             AppendJsonKv(sb, "atlasResolution", atlasResolution); sb.Append(",\n");
             AppendJsonKv(sb, "shellPad",  shellPad);  sb.Append(",\n");
             AppendJsonKv(sb, "borderPad", borderPad); sb.Append(",\n");
+            AppendJsonKv(sb, "perShellAspect",          perShellAspect);          sb.Append(",\n");
+            AppendJsonKv(sb, "maxShellAspect",          maxShellAspect);          sb.Append(",\n");
+            AppendJsonKv(sb, "perShellAspectThreshold", perShellAspectThreshold); sb.Append(",\n");
+            AppendJsonKv(sb, "arapEnabled",             arapEnabled);             sb.Append(",\n");
+            AppendJsonKv(sb, "arapIterations",          arapIterations);          sb.Append(",\n");
             AppendJsonKv(sb, "sourceLodIndex", sourceLodIndex); sb.Append(",\n");
             AppendJsonKv(sb, "pipelineMs", pipelineMs); sb.Append(",\n");
             AppendJsonKv(sb, "repackMs",   repackMs);   sb.Append(",\n");
