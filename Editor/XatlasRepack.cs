@@ -116,7 +116,7 @@ namespace SashaRX.UnityMeshLab
             rotateChartsToAxis = true,
             perturbStrength = 0f,             // adaptive
             normalizeTexelDensity = true,
-            targetUvCoverage = 0.95f,
+            targetUvCoverage = 0.75f,
             reparameterizeStretchedShells = true,
             stretchThreshold = 1.5f,
             arapIterations = 50,
@@ -582,21 +582,8 @@ namespace SashaRX.UnityMeshLab
 
                 XatlasNative.xatlasComputeCharts();
 
-                // texelsPerUnit=0 makes xatlas auto-pick a per-chart scale —
-                // it then RENORMALISES each chart independently to its own
-                // bbox, which destroys the per-shell density correction we
-                // just applied via TexelDensityNormalizer. Forcing a single
-                // global texelsPerUnit makes xatlas treat input UV
-                // coordinates as authoritative absolute scales (1 UV unit →
-                // N texels uniformly for every chart). After Normalize the
-                // total UV area ≈ targetUvCoverage of [0,1]², so a value of
-                // `resolution` gives the requested atlas dims at the budget.
-                float effectiveTpU = opts.texelsPerUnit > 0f
-                    ? opts.texelsPerUnit
-                    : opts.resolution;
-
                 XatlasNative.xatlasPackCharts(
-                    opts.maxChartSize, opts.padding, effectiveTpU, opts.resolution,
+                    opts.maxChartSize, opts.padding, opts.texelsPerUnit, opts.resolution,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
@@ -850,14 +837,8 @@ namespace SashaRX.UnityMeshLab
 
                 // Pack all charts together into one atlas
                 XatlasNative.xatlasComputeCharts();
-                // See RepackSingle for the texelsPerUnit=0 vs explicit rationale:
-                // auto mode lets xatlas renormalise each chart independently and
-                // throws away the per-shell density correction.
-                float effectiveTpUMulti = opts.texelsPerUnit > 0f
-                    ? opts.texelsPerUnit
-                    : opts.resolution;
                 XatlasNative.xatlasPackCharts(
-                    opts.maxChartSize, opts.padding, effectiveTpUMulti, opts.resolution,
+                    opts.maxChartSize, opts.padding, opts.texelsPerUnit, opts.resolution,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,

@@ -556,14 +556,9 @@ namespace SashaRX.UnityMeshLab
                     ctx.TargetUvCoverage = EditorGUILayout.Slider(
                         new GUIContent("UV coverage budget",
                             "Fraction of [0,1]² atlas that normalized UVs sum to. "
-                            + "Per-shell density stays uniform regardless of this value — it "
-                            + "only sets the overall scale.\n\n"
-                            + "Higher → shells fill more of the atlas (better lightmap utilisation, "
-                            + "atlas may grow past requested resolution to fit padding gaps).\n"
-                            + "Lower → empty space inside the atlas (wasted lightmap area, but "
-                            + "fits the requested resolution exactly).\n\n"
-                            + "Default 0.95 — packing inefficiency + padding take the remaining "
-                            + "5-50% depending on shell count and padding size."),
+                            + "Leaves slack for bin-packing inefficiency so the atlas doesn't "
+                            + "grow past the requested resolution. Lower → safer fit, smaller "
+                            + "charts; higher → tighter pack but risk of overflow + downscale."),
                         ctx.TargetUvCoverage, 0.3f, 0.95f);
                 }
                 EditorGUILayout.Space(4);

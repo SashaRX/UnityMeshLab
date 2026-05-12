@@ -147,7 +147,7 @@ namespace SashaRX.UnityMeshLab
         /// margin). Lower → safer fit, smaller charts; higher → tighter
         /// pack but risk of atlas overflow + downscale.
         /// </summary>
-        public float TargetUvCoverage = 0.95f;
+        public float TargetUvCoverage = 0.75f;
 
         /// <summary>
         /// Strategy for choosing the repack atlas resolution. Manual uses the
