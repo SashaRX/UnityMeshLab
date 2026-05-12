@@ -3482,6 +3482,14 @@ namespace SashaRX.UnityMeshLab
             result.topologyFixed      = LastTopologyFixed;
             result.topologyCapHit     = LastTopologyCapHit;
 
+            // ── Collapse-to-line diagnostic ──
+            // Detect target shells whose UV2 layout has collapsed to a line
+            // (one bbox dim near zero) or extreme sliver (UV aspect ≫ 3D
+            // aspect) — pure logging, no behaviour change. Especially useful
+            // on lower LODs where degenerate parameterisation can ride
+            // through similarity-transform / strip-param transfer.
+            DiagnoseCollapsedTargetShells(tgtShells, tgtTris, tVerts, result.uv2);
+
             // UV2 bounds check
             int oob = 0;
             Vector2 uvMin = Vector2.one * float.MaxValue, uvMax = Vector2.one * float.MinValue;
@@ -4752,6 +4760,124 @@ namespace SashaRX.UnityMeshLab
             }
 
             return newShells;
+        }
+
+        /// <summary>
+        /// Post-transfer diagnostic: scan target shells for UV2 layouts that
+        /// have collapsed to a line / extreme sliver. Detection is geometric
+        /// only (UV2 bbox + UV2 aspect vs 3D in-plane aspect), independent of
+        /// the source/transfer path that produced the UV2. Pure logging — no
+        /// modifications to uv2.
+        ///
+        /// Flags:
+        ///   - bbox.x &lt; epsilon OR bbox.y &lt; epsilon → "line"
+        ///   - uv2_aspect / 3d_aspect ≥ 5 → "sliver" (UV stretched far beyond
+        ///     what the surface shape would warrant)
+        ///   - uv2 triangle-area / uv2 bbox-area &lt; 0.05 → "degenerate"
+        ///     (verts collinear within the bbox)
+        /// </summary>
+        static void DiagnoseCollapsedTargetShells(
+            List<UvShell> tgtShells, int[] tgtTris, Vector3[] tVerts, Vector2[] uv2)
+        {
+            if (tgtShells == null || tgtTris == null || tVerts == null || uv2 == null) return;
+            const float LINE_EPS = 1e-5f;
+            const float ASPECT_RATIO_THRESHOLD = 5f;
+            const float FILL_RATIO_THRESHOLD = 0.05f;
+            int reported = 0;
+            const int MAX_REPORTS = 15;
+
+            var sb = new System.Text.StringBuilder(128);
+            int totalCollapsed = 0;
+            for (int si = 0; si < tgtShells.Count; si++)
+            {
+                var shell = tgtShells[si];
+                if (shell?.vertexIndices == null || shell.vertexIndices.Count == 0) continue;
+                if (shell.faceIndices == null || shell.faceIndices.Count == 0) continue;
+
+                // UV2 bbox + triangle area
+                Vector2 mn = new Vector2(float.MaxValue, float.MaxValue);
+                Vector2 mx = new Vector2(float.MinValue, float.MinValue);
+                foreach (int v in shell.vertexIndices)
+                {
+                    if ((uint)v >= (uint)uv2.Length) continue;
+                    mn = Vector2.Min(mn, uv2[v]);
+                    mx = Vector2.Max(mx, uv2[v]);
+                }
+                Vector2 sz = mx - mn;
+                if (sz.x < 0f || sz.y < 0f) continue;
+
+                double triAreaUv2 = 0.0;
+                double triArea3D = 0.0;
+                foreach (int f in shell.faceIndices)
+                {
+                    int t = f * 3;
+                    if ((uint)(t + 2) >= (uint)tgtTris.Length) continue;
+                    int i0 = tgtTris[t], i1 = tgtTris[t + 1], i2 = tgtTris[t + 2];
+                    if ((uint)i0 >= (uint)uv2.Length || (uint)i1 >= (uint)uv2.Length || (uint)i2 >= (uint)uv2.Length) continue;
+                    Vector2 a = uv2[i0], b = uv2[i1], c = uv2[i2];
+                    triAreaUv2 += System.Math.Abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) * 0.5;
+                    if ((uint)i0 < (uint)tVerts.Length && (uint)i1 < (uint)tVerts.Length && (uint)i2 < (uint)tVerts.Length)
+                    {
+                        Vector3 p0 = tVerts[i0], p1 = tVerts[i1], p2 = tVerts[i2];
+                        triArea3D += Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5;
+                    }
+                }
+
+                string reason = null;
+
+                bool collapsedToLine = sz.x < LINE_EPS || sz.y < LINE_EPS;
+                if (collapsedToLine)
+                {
+                    reason = "line (bbox dim ≈ 0)";
+                }
+                else
+                {
+                    float uv2Aspect = Mathf.Max(sz.x, sz.y) / Mathf.Max(LINE_EPS, Mathf.Min(sz.x, sz.y));
+
+                    // Cheap 3D aspect estimate: AABB of shell verts, drop smallest
+                    // dim, ratio of the other two. Doesn't need PCA for a sanity
+                    // check.
+                    Vector3 mn3 = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                    Vector3 mx3 = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+                    foreach (int v in shell.vertexIndices)
+                    {
+                        if ((uint)v >= (uint)tVerts.Length) continue;
+                        mn3 = Vector3.Min(mn3, tVerts[v]);
+                        mx3 = Vector3.Max(mx3, tVerts[v]);
+                    }
+                    Vector3 sz3 = mx3 - mn3;
+                    float dx = Mathf.Abs(sz3.x), dy = Mathf.Abs(sz3.y), dz = Mathf.Abs(sz3.z);
+                    float d0 = Mathf.Min(dx, Mathf.Min(dy, dz));
+                    float d2 = Mathf.Max(dx, Mathf.Max(dy, dz));
+                    float d1 = dx + dy + dz - d0 - d2;
+                    float aspect3D = d1 > 1e-8f ? d2 / d1 : 1f;
+
+                    if (uv2Aspect / Mathf.Max(1f, aspect3D) >= ASPECT_RATIO_THRESHOLD)
+                        reason = $"sliver (uv2 {uv2Aspect:F1}:1 vs 3D {aspect3D:F1}:1)";
+                    else
+                    {
+                        float bboxAreaUv2 = sz.x * sz.y;
+                        if (bboxAreaUv2 > 1e-12f)
+                        {
+                            float fill = (float)(triAreaUv2 / bboxAreaUv2);
+                            if (fill < FILL_RATIO_THRESHOLD && triAreaUv2 > 0)
+                                reason = $"degenerate (fill {fill * 100f:F1}%)";
+                        }
+                    }
+                }
+
+                if (reason == null) continue;
+                totalCollapsed++;
+                if (reported < MAX_REPORTS)
+                {
+                    UvtLog.Warn(UvtLog.Category.Validation,
+                        $"[CollapseDiag] target shell #{si} ({shell.faceIndices.Count}f, {shell.vertexIndices.Count}v) UV2 bbox=({sz.x:F5}, {sz.y:F5}) area={triAreaUv2:F6} — {reason}");
+                    reported++;
+                }
+            }
+            if (totalCollapsed > 0)
+                UvtLog.Warn(UvtLog.Category.Validation,
+                    $"[CollapseDiag] {totalCollapsed} target shell(s) flagged as collapsed/sliver/degenerate (first {Mathf.Min(totalCollapsed, MAX_REPORTS)} logged above)");
         }
     }
 }
