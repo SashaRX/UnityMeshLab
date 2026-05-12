@@ -360,8 +360,6 @@ namespace SashaRX.UnityMeshLab
                 "SymSplit thresholds", symSplitThresholdMode);
             SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
             ColorBtn(new Color(.2f,.75f,.95f), "Run Full Pipeline", 30, ExecFullPipeline);
-            ColorBtn(new Color(.85f,.6f,.95f), "Run Benchmark Sweep (12 runs)", 24,
-                () => BenchmarkSweep.Run(ctx, label => ExecFullPipeline(label)));
             splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft("SymSplit target LODs (advanced)", splitTargetsInSymmetryStep);
             skipSymmetrySplitStep      = EditorGUILayout.ToggleLeft("Skip SymSplit step (diagnostic)", skipSymmetrySplitStep);
 
@@ -374,10 +372,13 @@ namespace SashaRX.UnityMeshLab
                 if (sweepSuite != null && sweepSuite.sweep != null)
                 {
                     var sm = sweepSuite.sweep;
-                    int rL = sm.atlasResolutions?.Length ?? 0;
-                    int pL = sm.shellPaddingPxVariants?.Length ?? 0;
-                    int bL = sm.borderPaddingPxVariants?.Length ?? 0;
-                    cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL);
+                    int rL  = sm.atlasResolutions?.Length            ?? 0;
+                    int pL  = sm.shellPaddingPxVariants?.Length      ?? 0;
+                    int bL  = sm.borderPaddingPxVariants?.Length     ?? 0;
+                    int aL  = sm.perShellAspectVariants?.Length      ?? 0;
+                    int arL = sm.ribbonArapIterationsVariants?.Length ?? 0;
+                    cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL)
+                          * Mathf.Max(1, aL) * Mathf.Max(1, arL);
                 }
                 using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0))
                 {
@@ -882,9 +883,12 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Run the full pipeline once per cell of a sweep matrix (cartesian product of
-        /// atlasResolutions × shellPaddingPxVariants × borderPaddingPxVariants).
-        /// Each cell writes its own CSV/JSON with runLabel "sweep_res{R}_pad{S}_bdr{B}".
-        /// Original ctx values are restored on exit.
+        /// atlasResolutions × shellPaddingPxVariants × borderPaddingPxVariants ×
+        /// perShellAspectVariants × ribbonArapIterationsVariants). Each cell writes
+        /// its own CSV/JSON with runLabel "sweep_res{R}_pad{S}_bdr{B}_psa{0|1}_arap{N}".
+        /// After the loop, if at least two cells completed, BenchmarkSweep.WriteAggregateReport
+        /// is invoked to score the cells and write a sweep_<timestamp>/summary.csv +
+        /// winner.json under BenchmarkReports/. Original ctx values are restored on exit.
         /// </summary>
         void ExecSweep(TestSuiteAsset.SweepMatrix sm)
         {
@@ -895,9 +899,28 @@ namespace SashaRX.UnityMeshLab
                 ? sm.shellPaddingPxVariants : new[] { ctx.ShellPaddingPx };
             var bdrArr = (sm.borderPaddingPxVariants != null && sm.borderPaddingPxVariants.Length > 0)
                 ? sm.borderPaddingPxVariants : new[] { ctx.BorderPaddingPx };
+            var perShellAspArr = (sm.perShellAspectVariants != null && sm.perShellAspectVariants.Length > 0)
+                ? sm.perShellAspectVariants : new[] { ctx.PerShellAspectNormalize };
+            var arapItersArr = (sm.ribbonArapIterationsVariants != null && sm.ribbonArapIterationsVariants.Length > 0)
+                ? sm.ribbonArapIterationsVariants
+                : new[] { ctx.ReparameterizeRibbons ? ctx.RibbonArapIterations : 0 };
 
-            int total = resArr.Length * padArr.Length * bdrArr.Length;
-            int origRes = ctx.AtlasResolution, origPad = ctx.ShellPaddingPx, origBdr = ctx.BorderPaddingPx;
+            int total = resArr.Length * padArr.Length * bdrArr.Length
+                      * perShellAspArr.Length * arapItersArr.Length;
+
+            // Snapshot ctx fields we mutate — restored unconditionally below.
+            int  origRes        = ctx.AtlasResolution;
+            int  origPad        = ctx.ShellPaddingPx;
+            int  origBdr        = ctx.BorderPaddingPx;
+            bool origPerShellAsp = ctx.PerShellAspectNormalize;
+            bool origArapOn     = ctx.ReparameterizeRibbons;
+            int  origArapIters  = ctx.RibbonArapIterations;
+
+            // Aligned lists: writtenCsvPaths[i] is the CSV path produced by
+            // cellConfigs[i]. Passed to BenchmarkSweep after the loop completes.
+            var writtenCsvPaths = new List<string>(total);
+            var cellConfigs     = new List<BenchmarkSweep.CellConfig>(total);
+
             int done = 0;
             bool cancelled = false;
             try
@@ -910,19 +933,61 @@ namespace SashaRX.UnityMeshLab
                         if (cancelled) break;
                         foreach (int b in bdrArr)
                         {
-                            if (EditorUtility.DisplayCancelableProgressBar("Pipeline Sweep",
-                                    $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}",
-                                    (float)done / Mathf.Max(1, total)))
+                            if (cancelled) break;
+                            foreach (bool pa in perShellAspArr)
                             {
-                                cancelled = true;
-                                break;
+                                if (cancelled) break;
+                                foreach (int arapIters in arapItersArr)
+                                {
+                                    if (EditorUtility.DisplayCancelableProgressBar("Pipeline Sweep",
+                                            $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}, " +
+                                            $"psa={(pa ? 1 : 0)}, arap={arapIters}",
+                                            (float)done / Mathf.Max(1, total)))
+                                    {
+                                        cancelled = true;
+                                        break;
+                                    }
+
+                                    ctx.AtlasResolution         = r;
+                                    ctx.ShellPaddingPx          = s;
+                                    ctx.BorderPaddingPx         = b;
+                                    ctx.PerShellAspectNormalize = pa;
+                                    ctx.ReparameterizeRibbons   = arapIters > 0;
+                                    if (arapIters > 0) ctx.RibbonArapIterations = arapIters;
+
+                                    if (sm.resetBetweenRuns) ResetWorkingCopies();
+
+                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_psa{(pa ? 1 : 0)}_arap{arapIters}";
+                                    string csvBefore = BenchmarkRecorder.LastWrittenCsvPath;
+                                    try
+                                    {
+                                        ExecFullPipeline(label);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        UvtLog.Error(UvtLog.Category.Benchmark,
+                                            $"[Sweep] Cell {done + 1}/{total} threw: {ex.Message}");
+                                    }
+
+                                    // Capture the CSV the recorder just wrote (null if
+                                    // the pipeline aborted before WriteArtefacts ran).
+                                    string csvAfter = BenchmarkRecorder.LastWrittenCsvPath;
+                                    string csvPath = (csvAfter != null && csvAfter != csvBefore)
+                                        ? csvAfter : null;
+
+                                    writtenCsvPaths.Add(csvPath);
+                                    cellConfigs.Add(new BenchmarkSweep.CellConfig
+                                    {
+                                        atlasRes       = r,
+                                        shellPad       = s,
+                                        borderPad      = b,
+                                        perShellAspect = pa,
+                                        arapEnabled    = arapIters > 0,
+                                        arapIterations = arapIters,
+                                    });
+                                    done++;
+                                }
                             }
-                            ctx.AtlasResolution = r;
-                            ctx.ShellPaddingPx  = s;
-                            ctx.BorderPaddingPx = b;
-                            if (sm.resetBetweenRuns) ResetWorkingCopies();
-                            ExecFullPipeline($"sweep_res{r}_pad{s}_bdr{b}");
-                            done++;
                         }
                     }
                 }
@@ -930,11 +995,31 @@ namespace SashaRX.UnityMeshLab
             finally
             {
                 EditorUtility.ClearProgressBar();
-                ctx.AtlasResolution = origRes;
-                ctx.ShellPaddingPx  = origPad;
-                ctx.BorderPaddingPx = origBdr;
+                ctx.AtlasResolution         = origRes;
+                ctx.ShellPaddingPx          = origPad;
+                ctx.BorderPaddingPx         = origBdr;
+                ctx.PerShellAspectNormalize = origPerShellAsp;
+                ctx.ReparameterizeRibbons   = origArapOn;
+                ctx.RibbonArapIterations    = origArapIters;
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     $"Sweep complete: {done}/{total} cells{(cancelled ? " (cancelled)" : "")}");
+
+                // Aggregate per-cell CSVs into a sweep_<timestamp>/summary.csv +
+                // winner.json. No-op when fewer than two cells completed; safe
+                // to call even if individual cells produced no CSV (they are
+                // recorded as failed entries in the summary).
+                if (writtenCsvPaths.Count >= 2)
+                {
+                    try
+                    {
+                        BenchmarkSweep.WriteAggregateReport(writtenCsvPaths, cellConfigs);
+                    }
+                    catch (Exception ex)
+                    {
+                        UvtLog.Error(UvtLog.Category.Benchmark,
+                            $"[Sweep] Aggregate report failed: {ex.Message}");
+                    }
+                }
             }
         }
 

@@ -71,6 +71,15 @@ namespace SashaRX.UnityMeshLab
                      "to vary it — a single-value array still produces N×M×1 combinations.")]
             public int[] borderPaddingPxVariants = { 0 };
 
+            [Tooltip("Per-shell aspect normalize variants. Sweep the algorithm on/off so you can compare " +
+                     "how much it helps on this asset. Default {false, true}.")]
+            public bool[] perShellAspectVariants = { false, true };
+
+            [Tooltip("ARAP ribbon reparameterization variants. 0 = OFF; >0 = ON with that many local-global " +
+                     "iterations. Default {0} (ARAP off — opt in by adding e.g. 50 or 100 to this list). " +
+                     "Each non-zero value spawns a separate sweep cell.")]
+            public int[] ribbonArapIterationsVariants = { 0 };
+
             [Tooltip("Call ResetPipelineState between sweep cells so each cell starts from the " +
                      "unmodified FBX meshes. Disable only for debugging a single cell.")]
             public bool resetBetweenRuns = true;
