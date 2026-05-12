@@ -155,7 +155,7 @@ namespace SashaRX.UnityMeshLab
             perShellAspectThreshold = 0.05f,
             targetUvCoverage = 0.75f,
             reparameterizeRibbons = false,
-            ribbonArapIterations = 10,
+            ribbonArapIterations = 50,
             clampLightmapToUnit = true,
         };
     }

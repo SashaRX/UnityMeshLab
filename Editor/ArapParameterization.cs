@@ -419,9 +419,11 @@ namespace SashaRX.UnityMeshLab
 
             int convergedRuns = 0;
             bool converged = false;
+            int itersDone = 0;
 
             for (int iter = 0; iter < iterations; iter++)
             {
+                itersDone = iter + 1;
                 // Local step: best 2x2 rotation per triangle.
                 for (int t = 0; t < triValidCount; t++)
                 {
@@ -625,7 +627,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             UvtLog.Verbose(UvtLog.Category.Repack,
-                $"[ARAP] shell verts={n} tris={triValidCount}/{triCount} (degenerate={degenerateTris}) iters={iterations} initFlipped={initialFlipCount} converged={converged}");
+                $"[ARAP] shell verts={n} tris={triValidCount}/{triCount} (degenerate={degenerateTris}) iters={itersDone}/{iterations} initFlipped={initialFlipCount} converged={converged}");
 
             return true;
         }

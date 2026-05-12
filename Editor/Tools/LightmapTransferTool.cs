@@ -512,10 +512,12 @@ namespace SashaRX.UnityMeshLab
                         EditorGUI.indentLevel++;
                         ctx.RibbonArapIterations = EditorGUILayout.IntSlider(
                             new GUIContent("  ARAP iterations",
-                                "Number of local-global iterations. 10 is sufficient for most "
-                                + "ribbons; raise to 20-30 for highly curved strips. Each "
-                                + "iteration is one SVD-per-triangle + one CG solve."),
-                            ctx.RibbonArapIterations, 5, 30);
+                                "Local-global iteration count. Comparable to 3ds Max's "
+                                + "Relax-by-polygon-angles. 50 is the default and matches the "
+                                + "typical Relax setting; 100-200 for highly curved/twisted "
+                                + "strips. Each iteration is one SVD-per-triangle + one CG "
+                                + "solve — runtime grows linearly with this number."),
+                            ctx.RibbonArapIterations, 10, 200);
                         EditorGUI.indentLevel--;
                     }
                     ctx.ClampLightmapToUnit = EditorGUILayout.ToggleLeft(

@@ -140,9 +140,12 @@ namespace SashaRX.UnityMeshLab
         public bool ReparameterizeRibbons = false;
 
         /// <summary>
-        /// ARAP iteration count for ribbon re-parameterization. Default 10.
+        /// ARAP iteration count for ribbon re-parameterization. Default 50 —
+        /// matches the convergence behaviour of 3ds Max's Relax-by-polygon-
+        /// angles at typical settings. 10 is too few for highly curved
+        /// strips; the local-global solve needs ~50-100 to settle.
         /// </summary>
-        public int RibbonArapIterations = 10;
+        public int RibbonArapIterations = 50;
 
         /// <summary>
         /// Clamp final lightmap UV2 coordinates into [0,1] on both source
