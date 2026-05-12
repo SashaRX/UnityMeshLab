@@ -3295,12 +3295,19 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Info($"[GroupedTransfer] Post-fix total: {totalOutlierVerts} outlier verts corrected");
             }
 
-            // ── Post-transfer UV2 overlap detection & relocation ──
-            // Force3D shells may land in UV2 regions occupied by other shells.
-            // Detect overlapping force3D shells and collapse them to their source's
-            // UV2 centroid to eliminate overlaps.
+            // ── Post-transfer UV2 overlap detection & reporting ──
+            // Force3D fallback shells may land in UV2 regions occupied by other
+            // shells. Previously this stage collapsed every offender to its
+            // source's UV2 centroid — a "fix" that destroyed the shell: 40
+            // faces sharing one UV2 point bake into a single lightmap pixel,
+            // far worse than the bleeding the collapse was meant to prevent.
+            //
+            // We now only DETECT and report the overlap, leaving the shell's
+            // 3D-projected UV2 layout intact. The bake gets some bleeding for
+            // the offending shells but each face still owns a distinct texel.
+            // A proper free-space relocator (preserving shell shape) is the
+            // right long-term fix — until then, bleeding beats collapse.
             {
-                // Build per-shell UV2 AABB
                 var shellUv2Min = new Vector2[tgtShells.Count];
                 var shellUv2Max = new Vector2[tgtShells.Count];
                 var shellHasUv2 = new bool[tgtShells.Count];
@@ -3324,51 +3331,41 @@ namespace SashaRX.UnityMeshLab
                     shellHasUv2[tsi] = hasAny;
                 }
 
-                int overlapsFixed = 0;
+                int overlapsReported = 0;
                 for (int tsi = 0; tsi < tgtShells.Count; tsi++)
                 {
                     if (!tgtForce3DFallback[tsi]) continue;
                     if (!shellHasUv2[tsi]) continue;
 
-                    bool overlaps = false;
+                    int firstOverlapWith = -1;
                     for (int tsj = 0; tsj < tgtShells.Count; tsj++)
                     {
                         if (tsj == tsi) continue;
                         if (!shellHasUv2[tsj]) continue;
-                        if (tgtForce3DFallback[tsj]) continue; // don't compare force3D vs force3D
+                        if (tgtForce3DFallback[tsj]) continue;
 
                         if (shellUv2Min[tsi].x < shellUv2Max[tsj].x &&
                             shellUv2Max[tsi].x > shellUv2Min[tsj].x &&
                             shellUv2Min[tsi].y < shellUv2Max[tsj].y &&
                             shellUv2Max[tsi].y > shellUv2Min[tsj].y)
                         {
-                            overlaps = true;
+                            firstOverlapWith = tsj;
                             break;
                         }
                     }
 
-                    if (overlaps)
+                    if (firstOverlapWith >= 0)
                     {
-                        int src = result.targetShellToSourceShell[tsi];
-                        Vector2 centroid;
-                        if (src >= 0 && src < srcUv2Min.Length)
-                            centroid = (srcUv2Min[src] + srcUv2Max[src]) * 0.5f;
-                        else
-                            centroid = (shellUv2Min[tsi] + shellUv2Max[tsi]) * 0.5f;
-
-                        foreach (int vi in tgtShells[tsi].vertexIndices)
-                        {
-                            if (vi < result.uv2.Length)
-                                result.uv2[vi] = centroid;
-                        }
-                        overlapsFixed++;
+                        overlapsReported++;
                         result.shellsOverlapFixed++;
-                        UvtLog.Info($"[GroupedTransfer] Overlap fix: t{tsi} collapsed to " +
-                            $"src{src} centroid ({centroid.x:F4},{centroid.y:F4})");
+                        UvtLog.Warn($"[GroupedTransfer] UV2 overlap: t{tsi} (force3D fallback) " +
+                            $"overlaps t{firstOverlapWith} — leaving UV2 untouched " +
+                            $"(bleeding > collapse; consider re-unwrapping in DCC)");
                     }
                 }
-                if (overlapsFixed > 0)
-                    UvtLog.Info($"[GroupedTransfer] Overlap fix: {overlapsFixed} force3D shells relocated");
+                if (overlapsReported > 0)
+                    UvtLog.Warn($"[GroupedTransfer] UV2 overlap: {overlapsReported} force3D shells " +
+                        $"have overlapping UV2 with non-fallback shells (lightmap bleeding likely)");
             }
 
             // ── Classify all shells ──
