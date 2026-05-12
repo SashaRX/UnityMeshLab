@@ -1,6 +1,7 @@
 // XatlasRepack.cs — High-level xatlas repack with C#-side UV2 write-back
 // Place in Assets/Editor/
 
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
