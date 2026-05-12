@@ -1062,15 +1062,19 @@ namespace SashaRX.UnityMeshLab
             if (entries.Count == 0) return;
             using var _bench = BenchmarkRecorder.NewRun(ctx, "Repack",
                 splitTargetsInSymmetryStep, symSplitThresholdMode);
+            // Mirror the ownership guard ExecTransferAll uses: only the
+            // outermost benchmark session writes per-mesh rows. A nested
+            // ExecRepack inside ExecFullPipeline / sweep would otherwise
+            // double-record (the outer run already records all meshes at
+            // its own end), inflating CSV/JSON aggregates and breaking
+            // sweep comparisons.
+            bool ownsSession = _bench is BenchmarkRecorder;
             BenchmarkRecorder.Current?.StageBegin("repack");
             try { ExecRepackCore(entries); }
             finally
             {
                 BenchmarkRecorder.Current?.StageEnd("repack");
-                // RecordMesh per entry so WriteArtefacts has rows to emit.
-                // Without this the Repack-only benchmark path produces zero
-                // CSV/JSON output (records.Count stays 0).
-                if (BenchmarkRecorder.Current != null)
+                if (ownsSession && BenchmarkRecorder.Current != null)
                     foreach (var e in entries)
                         BenchmarkRecorder.Current.RecordMesh(e);
             }

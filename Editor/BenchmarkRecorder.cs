@@ -140,6 +140,16 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            // Validation report can be stale: a mesh that failed transfer in
+            // a later sweep cell would otherwise carry the previous cell's
+            // ValidationReport into this row. Gate validation fields on
+            // "transfer actually happened this run" (= tr != null).
+            var v = (tr != null) ? vr : null;
+            // SymSplit counters are session-level (delta from session start).
+            // Writing them on every row would cause SUM aggregations to scale
+            // by mesh count; pin them to the first row of the session.
+            bool firstRow = records.Count == 0;
+
             var rec = new RunRecord
             {
                 timestamp       = DateTime.UtcNow,
@@ -160,19 +170,21 @@ namespace SashaRX.UnityMeshLab
                 verticesTransferred = tr?.verticesTransferred ?? 0,
                 verticesTotal       = tr?.verticesTotal       ?? 0,
 
-                invertedCount       = vr?.invertedCount       ?? 0,
-                stretchedCount      = vr?.stretchedCount      ?? 0,
-                zeroAreaCount       = vr?.zeroAreaCount       ?? 0,
-                oobCount            = vr?.oobCount            ?? 0,
-                cleanCount          = vr?.cleanCount          ?? 0,
-                overlapShellPairs   = vr?.overlapShellPairs   ?? 0,
-                overlapTriangleCount= vr?.overlapTriangleCount?? 0,
-                overlapSameSrcPairs = vr?.overlapSameSrcPairs ?? 0,
-                texelDensityBadCount= vr?.texelDensityBadCount?? 0,
-                texelDensityMedian  = vr?.texelDensityMedian  ?? 0f,
+                invertedCount       = v?.invertedCount       ?? 0,
+                stretchedCount      = v?.stretchedCount      ?? 0,
+                zeroAreaCount       = v?.zeroAreaCount       ?? 0,
+                oobCount            = v?.oobCount            ?? 0,
+                cleanCount          = v?.cleanCount          ?? 0,
+                overlapShellPairs   = v?.overlapShellPairs   ?? 0,
+                overlapTriangleCount= v?.overlapTriangleCount?? 0,
+                overlapSameSrcPairs = v?.overlapSameSrcPairs ?? 0,
+                texelDensityBadCount= v?.texelDensityBadCount?? 0,
+                texelDensityMedian  = v?.texelDensityMedian  ?? 0f,
 
-                symSplitFallbackCount = SymmetrySplitShells.LastFallbackCount - symSplitFallbackAt0,
-                symSplitTotalCount    = SymmetrySplitShells.LastTotalSplitCount - symSplitTotalAt0,
+                // Run-level — written only on the first row of the session so
+                // SUM aggregations don't multiply them by mesh count.
+                symSplitFallbackCount = firstRow ? (SymmetrySplitShells.LastFallbackCount - symSplitFallbackAt0) : 0,
+                symSplitTotalCount    = firstRow ? (SymmetrySplitShells.LastTotalSplitCount - symSplitTotalAt0)    : 0,
                 // Topology counters are captured per-target by Transfer() into
                 // TransferResult. The static Last* fields are unreliable here —
                 // they reflect only the last processed mesh in a multi-target run.
@@ -184,27 +196,17 @@ namespace SashaRX.UnityMeshLab
                 trianglesSnapshot = trisSnap,
             };
 
-            // atlasUtilization = bbox area of UV2 in [0,1] space (1.0 = full atlas).
-            // Catches the "atlas only 25% filled" failure mode that shell-level
-            // metrics miss because individual triangles can be valid but the
-            // whole layout is squished into a corner.
-            if (uv2Snap != null && uv2Snap.Length > 0)
+            // atlasUtilization = sum of |triangle area| in UV2 space — true
+            // chart coverage of [0,1]² (1.0 = full atlas, bin-packing
+            // typically lands at 0.55-0.85). Uses the same triangle-sum
+            // helper RepackSingle/Multi log so the metric is consistent with
+            // the per-mesh log line. The previous bbox-based version dropped
+            // any UV with sqrMagnitude near zero (excluding legitimate verts
+            // at the atlas origin) and reported bbox area instead of true
+            // coverage, so layouts touching (0,0) under-reported.
+            if (uv2Snap != null && uv2Snap.Length > 0 && trisSnap != null)
             {
-                Vector2 mn = new Vector2(float.MaxValue, float.MaxValue);
-                Vector2 mx = new Vector2(float.MinValue, float.MinValue);
-                int nz = 0;
-                for (int i = 0; i < uv2Snap.Length; i++)
-                {
-                    if (uv2Snap[i].sqrMagnitude < 1e-12f) continue;
-                    mn = Vector2.Min(mn, uv2Snap[i]);
-                    mx = Vector2.Max(mx, uv2Snap[i]);
-                    nz++;
-                }
-                if (nz > 0)
-                {
-                    Vector2 sz = mx - mn;
-                    rec.atlasUtilization = Mathf.Max(0f, sz.x) * Mathf.Max(0f, sz.y);
-                }
+                rec.atlasUtilization = (float)XatlasRepack.ComputeUv2CoverageFraction(uv2Snap, trisSnap);
             }
             records.Add(rec);
         }

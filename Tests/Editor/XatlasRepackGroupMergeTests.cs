@@ -1,12 +1,11 @@
-// XatlasRepackGroupMergeTests.cs — exercises XatlasRepack.RepackSingle with
-// synthetic tiled-UV0 meshes. Verifies the group-aware-merge contract:
-//   1. mergeOverlappingTiles=true → all duplicate tile vertices share UV2 with
-//      their representative.
-//   2. mergeOverlappingTiles=false → each tile gets a distinct UV2 region
-//      (legacy behaviour preserved).
-//   3. mesh.uv (UV0) is never modified.
+// XatlasRepackTests.cs — exercises XatlasRepack.RepackSingle with synthetic
+// tiled-UV0 meshes. Verifies the current pipeline contract:
+//   1. Every tile-instance shell ends up with a distinct UV2 region (UV2 is
+//      a unique-per-shell channel for lightmap baking; the legacy
+//      mergeOverlappingTiles mode that shared UV2 across tiles was removed).
+//   2. mesh.uv (UV0) is never mutated by the repack pipeline.
 //
-// These tests load the native xatlas plugin at runtime. If the DLL is missing
+// The native xatlas plugin is loaded at runtime; if the DLL is missing
 // (CI Linux without xatlas built), the tests are explicitly skipped.
 
 using NUnit.Framework;
@@ -15,7 +14,7 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
-    public class XatlasRepackGroupMergeTests
+    public class XatlasRepackTests
     {
         static bool s_nativeAvailable;
         static bool s_nativeProbed;
@@ -44,7 +43,7 @@ namespace SashaRX.UnityMeshLab.Tests
         static Mesh BuildTiledMesh(int tileCount, float tileSize = 0.3f)
         {
             // N identical quads, each a topologically-disconnected 4-vertex patch,
-            // all with the same UV0 bbox (= stacked tiles).
+            // all with the same UV0 bbox (= stacked tiles in UV).
             var verts = new List<Vector3>();
             var uvs   = new List<Vector2>();
             var tris  = new List<int>();
@@ -73,45 +72,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void GroupMergeOn_TilesShareUv2WithRepresentative()
-        {
-            if (!NativeAvailable()) Assert.Ignore("xatlas native plugin not available");
-
-            const int tileCount = 5;
-            var mesh = BuildTiledMesh(tileCount);
-            try
-            {
-                var opts = RepackOptions.Default;
-                opts.resolution = 256;
-                opts.padding = 2;
-                opts.mergeOverlappingTiles = true;
-
-                var result = XatlasRepack.RepackSingle(mesh, opts);
-                Assert.IsTrue(result.ok, $"Repack failed: {result.error}");
-
-                var uv2 = mesh.uv2;
-                Assert.AreEqual(tileCount * 4, uv2.Length);
-
-                // All tiles use the same 4 UV0 corners → after group-merge all
-                // 4-vertex sets should share the same UV2 positions.
-                Vector2 e0 = uv2[0], e1 = uv2[1], e2 = uv2[2], e3 = uv2[3];
-                for (int t = 1; t < tileCount; t++)
-                {
-                    int b = t * 4;
-                    Assert.AreEqual(e0, uv2[b + 0], $"Tile {t} corner 0 should match representative");
-                    Assert.AreEqual(e1, uv2[b + 1], $"Tile {t} corner 1 should match representative");
-                    Assert.AreEqual(e2, uv2[b + 2], $"Tile {t} corner 2 should match representative");
-                    Assert.AreEqual(e3, uv2[b + 3], $"Tile {t} corner 3 should match representative");
-                }
-            }
-            finally
-            {
-                Object.DestroyImmediate(mesh);
-            }
-        }
-
-        [Test]
-        public void GroupMergeOff_TilesGetDistinctUv2Regions()
+        public void Tiles_GetDistinctUv2Regions()
         {
             if (!NativeAvailable()) Assert.Ignore("xatlas native plugin not available");
 
@@ -122,7 +83,6 @@ namespace SashaRX.UnityMeshLab.Tests
                 var opts = RepackOptions.Default;
                 opts.resolution = 512;
                 opts.padding = 2;
-                opts.mergeOverlappingTiles = false;
 
                 var result = XatlasRepack.RepackSingle(mesh, opts);
                 Assert.IsTrue(result.ok, $"Repack failed: {result.error}");
@@ -130,7 +90,9 @@ namespace SashaRX.UnityMeshLab.Tests
                 var uv2 = mesh.uv2;
                 Assert.AreEqual(tileCount * 4, uv2.Length);
 
-                // Each tile should get a centroid distinct from the others
+                // Each tile should land in a distinct atlas region — perturb +
+                // pre-pack normalisation must keep xatlas from collapsing
+                // identical input UVs onto the same slot.
                 var centroids = new Vector2[tileCount];
                 for (int t = 0; t < tileCount; t++)
                 {
@@ -145,7 +107,7 @@ namespace SashaRX.UnityMeshLab.Tests
 
                 int totalPairs = tileCount * (tileCount - 1) / 2;
                 Assert.GreaterOrEqual(distinctPairs, totalPairs / 2,
-                    "At least half of the tile centroids should be distinct when merge is off");
+                    "At least half of the tile centroids should be distinct (pipeline must not collapse tile-instances onto a shared UV2 slot).");
             }
             finally
             {
