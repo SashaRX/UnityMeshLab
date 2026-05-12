@@ -454,6 +454,14 @@ namespace SashaRX.UnityMeshLab
                 ctx.ShellPaddingPx = EditorGUILayout.IntSlider("Shell Padding", ctx.ShellPaddingPx, 0, 16);
                 ctx.BorderPaddingPx = EditorGUILayout.IntSlider("Border Padding", ctx.BorderPaddingPx, 0, 16);
                 EditorGUILayout.Space(4);
+                EditorGUILayout.LabelField("Pre-pack", EditorStyles.miniBoldLabel);
+                ctx.NormalizeTexelDensity = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Normalize texel density",
+                        "Per-shell UV0 rescale so UV-area is proportional to 3D surface area. "
+                        + "Produces uniform texels-per-world-unit in the baked lightmap. "
+                        + "Disable to preserve an existing baked-texture UV layout."),
+                    ctx.NormalizeTexelDensity);
+                EditorGUILayout.Space(4);
                 EditorGUILayout.LabelField("xatlas options", EditorStyles.miniBoldLabel);
                 ctx.MergeOverlappingTiles = EditorGUILayout.ToggleLeft(
                     new GUIContent("Merge overlap tiles",
@@ -1019,6 +1027,7 @@ namespace SashaRX.UnityMeshLab
             opts.rotateCharts = ctx.XatlasRotateCharts;
             opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
             opts.mergeOverlappingTiles = ctx.MergeOverlappingTiles;
+            opts.normalizeTexelDensity = ctx.NormalizeTexelDensity;
 
             var results = XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);
             for (int i = 0; i < validEntries.Count; i++)

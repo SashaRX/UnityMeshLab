@@ -45,6 +45,17 @@ namespace SashaRX.UnityMeshLab
         public float perturbStrength;
 
         /// <summary>
+        /// Pre-pack pass that rescales each shell's UV0 so its UV-area is
+        /// proportional to its 3D surface area (uniform texels-per-world-unit
+        /// in the final lightmap). Without this, authored UV0 with mixed
+        /// scales propagates straight to UV2 and the baked lightmap has
+        /// detail varying by 10x+ across the model. Default ON for lightmap
+        /// use. Disable only when preserving an existing baked-texture UV
+        /// layout that already encodes desired non-uniform density.
+        /// </summary>
+        public bool normalizeTexelDensity;
+
+        /// <summary>
         /// Tile-merge guard — IoU of UV0 AABB above which a candidate counts
         /// as tile-equivalent to the rep (subject to face-count and 3D-size
         /// gates). Only used when mergeOverlappingTiles=true.
@@ -77,6 +88,7 @@ namespace SashaRX.UnityMeshLab
             rotateChartsToAxis = true,
             mergeOverlappingTiles = false,
             perturbStrength = 0f,             // adaptive
+            normalizeTexelDensity = true,
             tileMergeIoUThreshold = 0.9f,
             tileMergeFaceCountRatio = 4f,
             tileMerge3DSizeTolerance = 0.3f,
@@ -840,6 +852,20 @@ namespace SashaRX.UnityMeshLab
                 uvFlat[i * 2 + 1] = uv0[i].y;
             }
 
+            // ── Texel-density normalization (pre-pack) ──
+            // Rescale each shell's UV0 so UV-area is proportional to 3D-area
+            // — gives xatlas charts whose relative size matches their real-
+            // world surface, and the final lightmap has uniform texels per
+            // world unit instead of 10x density variance across the model.
+            // Operates on the local uvFlat copy; mesh.uv is untouched.
+            if (opts.normalizeTexelDensity)
+            {
+                int rescaled = TexelDensityNormalizer.Normalize(
+                    uvFlat, shells, tris, positions);
+                UvtLog.Verbose(UvtLog.Category.Repack,
+                    $"Texel density: rescaled {rescaled}/{shells.Count} shells to uniform UV/3D area ratio");
+            }
+
             // ── Perturb UV0 of overlap-grouped shells ──
             // xatlas dedups charts whose input UVs look identical and lays
             // them at the same atlas slot — catastrophic for lightmap UV2,
@@ -1219,6 +1245,18 @@ namespace SashaRX.UnityMeshLab
                         uvFlat[i * 2 + 1] = allUv0[m][i].y;
                     }
                     allUvFlat[m] = uvFlat;
+
+                    // Texel-density normalization (pre-pack): per-shell UV0
+                    // rescale so UV-area ∝ 3D-area. Result: uniform lightmap
+                    // texels-per-world-unit across the model. Local uvFlat
+                    // mutated only; mesh.uv stays intact.
+                    if (opts.normalizeTexelDensity)
+                    {
+                        int rescaledM = TexelDensityNormalizer.Normalize(
+                            uvFlat, allShells[m], allTris[m], allPositions[m]);
+                        UvtLog.Verbose(UvtLog.Category.Repack,
+                            $"Texel density mesh {m}: rescaled {rescaledM}/{allShells[m].Count} shells");
+                    }
 
                     // Perturb UV0 of overlap-grouped shells so xatlas treats
                     // every tile-instance as a unique chart (lightmap UV2 must

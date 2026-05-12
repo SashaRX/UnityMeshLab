@@ -41,6 +41,16 @@ namespace SashaRX.UnityMeshLab
         /// overlap-grouped shells so xatlas treats them as unique charts.
         /// </summary>
         public bool MergeOverlappingTiles = false;
+
+        /// <summary>
+        /// Pre-pack rescale of each shell's UV0 so UV-area is proportional
+        /// to 3D surface area. Produces uniform texels-per-world-unit in
+        /// the baked lightmap. Default ON for lightmap use; disable only
+        /// when preserving a baked-texture UV layout with intentional
+        /// non-uniform density.
+        /// </summary>
+        public bool NormalizeTexelDensity = true;
+
         public int IsolatedMeshGroup = -1;
 
         public UvToolContext()
