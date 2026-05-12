@@ -47,6 +47,9 @@ namespace SashaRX.UnityMeshLab
         /// per-shell aspect pass. The shell's √(σ1/σ2) is clamped to [1, maxAspect] before being
         /// used as the UV aspect target. Default 10.</param>
         /// <param name="perShellAspect">Enable pass 1.5 (per-shell aspect → 3D PCA aspect). Default false.</param>
+        /// <param name="perShellAspectThreshold">Relative skip threshold for the per-shell aspect pass:
+        /// shells with |aspect3D − aspectUV| / max(aspect3D, aspectUV) below this value are left alone.
+        /// Default 0.001 (effectively "fix anything that differs"). Larger → only fix grossly anisotropic shells.</param>
         /// <returns>1 if any pre-density pass modified UVs, plus the count of shells modified by pass 2.</returns>
         internal static int Normalize(
             float[] uvFlat,
@@ -59,7 +62,8 @@ namespace SashaRX.UnityMeshLab
             float targetCoverage = 0.75f,
             bool normalizeAspect = true,
             float maxAspect = 10f,
-            bool perShellAspect = false)
+            bool perShellAspect = false,
+            float perShellAspectThreshold = 0.001f)
         {
             if (uvFlat == null || shells == null || shells.Count == 0) return 0;
             if (tris == null || positions == null) return 0;
@@ -148,7 +152,7 @@ namespace SashaRX.UnityMeshLab
             // Rotates back, leaving the shell's centroid in place.
             if (perShellAspect)
                 ApplyPerShellAspect(uvFlat, shells, positions, scaleMin, scaleMax, maxAspect,
-                    ref aspectModified);
+                    perShellAspectThreshold, ref aspectModified);
 
             // ── PASS 2: density correction ──
             // Re-measure UV area on the (possibly aspect-corrected) layout, then
@@ -291,6 +295,7 @@ namespace SashaRX.UnityMeshLab
             float scaleMin,
             float scaleMax,
             float maxAspect,
+            float relativeTrivialThreshold,
             ref bool anyModified)
         {
             int n = shells.Count;
@@ -461,7 +466,11 @@ namespace SashaRX.UnityMeshLab
 
                 float aspectUV = wA / hB;
 
-                if (Mathf.Abs(aspect3D - aspectUV) < kPerShellTrivialEps)
+                float denom = Mathf.Max(aspect3D, aspectUV);
+                float threshold = relativeTrivialThreshold > 0f
+                    ? relativeTrivialThreshold
+                    : kPerShellTrivialEps;
+                if (denom > 0f && Mathf.Abs(aspect3D - aspectUV) / denom < threshold)
                 {
                     skipTrivial++;
                     continue;

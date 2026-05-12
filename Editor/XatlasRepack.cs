@@ -93,6 +93,14 @@ namespace SashaRX.UnityMeshLab
         public float maxShellAspect;
 
         /// <summary>
+        /// Relative skip threshold for <see cref="perShellAspectNormalize"/>.
+        /// A shell is left untouched when
+        /// |aspect3D − aspectUV| / max(aspect3D, aspectUV) &lt; this value.
+        /// Default 0.05 (5%). 0 = fix any shell that differs at all.
+        /// </summary>
+        public float perShellAspectThreshold;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas that normalized UVs should sum to AFTER
         /// per-shell density equalisation. Bin-packing leaves slack, so
         /// total chart area below 1.0 keeps xatlas from overflowing the
@@ -122,6 +130,7 @@ namespace SashaRX.UnityMeshLab
             normalizeShellAspect = true,
             perShellAspectNormalize = false,
             maxShellAspect = 10f,
+            perShellAspectThreshold = 0.05f,
             targetUvCoverage = 0.75f,
         };
     }
@@ -410,7 +419,8 @@ namespace SashaRX.UnityMeshLab
                     targetCoverage: opts.targetUvCoverage,
                     normalizeAspect: opts.normalizeShellAspect,
                     maxAspect: opts.maxShellAspect,
-                    perShellAspect: opts.perShellAspectNormalize);
+                    perShellAspect: opts.perShellAspectNormalize,
+                    perShellAspectThreshold: opts.perShellAspectThreshold);
                 UvtLog.Verbose(UvtLog.Category.Repack,
                     $"Texel density: rescaled {rescaled}/{shells.Count} shells to uniform UV/3D area ratio");
             }
@@ -648,7 +658,8 @@ namespace SashaRX.UnityMeshLab
                             targetCoverage: opts.targetUvCoverage,
                             normalizeAspect: opts.normalizeShellAspect,
                             maxAspect: opts.maxShellAspect,
-                            perShellAspect: opts.perShellAspectNormalize);
+                            perShellAspect: opts.perShellAspectNormalize,
+                            perShellAspectThreshold: opts.perShellAspectThreshold);
                         UvtLog.Verbose(UvtLog.Category.Repack,
                             $"Texel density mesh {m}: rescaled {rescaledM}/{allShells[m].Count} shells");
                     }

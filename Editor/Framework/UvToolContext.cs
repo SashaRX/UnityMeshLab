@@ -124,6 +124,15 @@ namespace SashaRX.UnityMeshLab
         public float MaxShellAspect = 10f;
 
         /// <summary>
+        /// Relative threshold below which <see cref="PerShellAspectNormalize"/>
+        /// leaves a shell untouched. Skip condition is
+        /// |aspect3D − aspectUV| / max(aspect3D, aspectUV) &lt; threshold.
+        /// Default 0.05 (5%). Larger → only fix grossly anisotropic shells;
+        /// 0 → fix every shell that differs at all.
+        /// </summary>
+        public float PerShellAspectThreshold = 0.05f;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas the normalized UVs should sum to.
         /// Leaves slack for bin-packing inefficiency so the atlas doesn't
         /// grow past the requested resolution. Default 0.75 (= 25% safety

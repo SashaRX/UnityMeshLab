@@ -478,6 +478,25 @@ namespace SashaRX.UnityMeshLab
                             + "(area-preserving). Reduces UV slivers caused by elongated UV0 "
                             + "unwrap. Off by default."),
                         ctx.PerShellAspectNormalize);
+                    using (new EditorGUI.DisabledScope(!ctx.PerShellAspectNormalize))
+                    {
+                        EditorGUI.indentLevel++;
+                        ctx.MaxShellAspect = EditorGUILayout.Slider(
+                            new GUIContent("  Max target aspect",
+                                "Upper bound on a shell's target aspect ratio. The shell's 3D "
+                                + "PCA aspect √(σ1/σ2) is clamped to [1, max] before being used "
+                                + "as the UV target. Lower → more conservative; higher → allow "
+                                + "long thin shells to retain their elongation."),
+                            ctx.MaxShellAspect, 2f, 20f);
+                        ctx.PerShellAspectThreshold = EditorGUILayout.Slider(
+                            new GUIContent("  Min delta to apply",
+                                "Skip shells whose UV vs 3D aspect ratio differ by less than "
+                                + "this fraction. 0.05 = ignore shells within 5% of their target. "
+                                + "Raise to only fix grossly anisotropic shells; lower → fix "
+                                + "everything that differs."),
+                            ctx.PerShellAspectThreshold, 0f, 0.5f);
+                        EditorGUI.indentLevel--;
+                    }
                     ctx.TargetUvCoverage = EditorGUILayout.Slider(
                         new GUIContent("UV coverage budget",
                             "Fraction of [0,1]² atlas that normalized UVs sum to. "
@@ -1104,6 +1123,7 @@ namespace SashaRX.UnityMeshLab
             opts.normalizeShellAspect = ctx.NormalizeShellAspect;
             opts.perShellAspectNormalize = ctx.PerShellAspectNormalize;
             opts.maxShellAspect = ctx.MaxShellAspect;
+            opts.perShellAspectThreshold = ctx.PerShellAspectThreshold;
             opts.targetUvCoverage = ctx.TargetUvCoverage;
             opts.maxChartSize = ctx.XatlasMaxChartSize;
             opts.bilinear = ctx.XatlasBilinear;
