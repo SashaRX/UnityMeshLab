@@ -519,6 +519,20 @@ namespace SashaRX.UnityMeshLab
                         + "Costs ~3-8% packing efficiency. Enable when shipping BC-compressed "
                         + "lightmaps; leave OFF for uncompressed progressive bakes."),
                     ctx.XatlasBlockAlign);
+                using (new EditorGUI.DisabledScope(!ctx.XatlasBlockAlign))
+                {
+                    int[] blockSizes = { 4, 5, 6, 8, 10, 12 };
+                    string[] blockLabels = { "4×4 (BC/ETC/DXT)", "5×5 (ASTC)", "6×6 (ASTC)", "8×8 (ASTC)", "10×10 (ASTC)", "12×12 (ASTC)" };
+                    int currentIdx = System.Array.IndexOf(blockSizes, ctx.XatlasBlockSize);
+                    if (currentIdx < 0) currentIdx = 0;
+                    int newIdx = EditorGUILayout.Popup(
+                        new GUIContent("Block size",
+                            "Compression block size. 4×4 covers BC1/BC3/BC5/BC7/ETC2/DXT*. "
+                            + "ASTC variants (5..12) surface the intent — actual snap to >4 grids "
+                            + "is a follow-up; at 4 behaviour matches xatlas exactly."),
+                        currentIdx, blockLabels);
+                    ctx.XatlasBlockSize = blockSizes[newIdx];
+                }
                 ctx.XatlasMaxChartSize = EditorGUILayout.IntField(
                     new GUIContent("Max chart size (px)",
                         "Hard cap on individual chart dimension in atlas pixels. 0 = unbounded. "
@@ -1093,6 +1107,7 @@ namespace SashaRX.UnityMeshLab
             opts.maxChartSize = ctx.XatlasMaxChartSize;
             opts.bilinear = ctx.XatlasBilinear;
             opts.blockAlign = ctx.XatlasBlockAlign;
+            opts.blockSize = ctx.XatlasBlockSize;
             opts.texelsPerUnit = ctx.XatlasTexelsPerUnit;
 
             var results = XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);

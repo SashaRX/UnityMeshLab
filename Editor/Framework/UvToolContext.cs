@@ -53,6 +53,14 @@ namespace SashaRX.UnityMeshLab
         public bool XatlasBlockAlign = false;
 
         /// <summary>
+        /// Compression block size in texels. xatlas's blockAlign snaps to 4×4
+        /// (BC1/BC3/BC5/BC7/ETC2/DXT*). Set to 5/6/8/10/12 for ASTC variants
+        /// — surfaces the intent but the actual post-pack snap to non-4 grids
+        /// is a follow-up; at 4 behaviour matches xatlas exactly.
+        /// </summary>
+        public int XatlasBlockSize = 4;
+
+        /// <summary>
         /// xatlas texelsPerUnit override in texels/UV-unit. 0 = let xatlas
         /// auto-derive from atlas resolution. Manual values are useful when
         /// a project enforces a fixed real-world texel density across all

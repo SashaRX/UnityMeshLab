@@ -20,6 +20,16 @@ namespace SashaRX.UnityMeshLab
         public int maxChartSize;
         public bool bilinear;
         public bool blockAlign;
+        /// <summary>
+        /// Compression block size in texels for blockAlign. xatlas snaps charts
+        /// to a hard-coded 4×4 grid (correct for BC1/BC3/BC5/BC7/ETC2/DXT*).
+        /// For ASTC the block is variable (4, 5, 6, 8, 10, 12). The field is
+        /// surfaced here and in the UI so projects can declare their target
+        /// alignment; the actual post-pack snap to non-4 grids is not wired
+        /// yet — at default 4 behaviour matches xatlas exactly, and for >4 a
+        /// follow-up will add per-chart snapping after pack. Tracked as TODO.
+        /// </summary>
+        public int blockSize;
         public bool bruteForce;
         /// <summary>xatlas may rotate charts to fit better during packing (default true).</summary>
         public bool rotateCharts;
@@ -88,6 +98,7 @@ namespace SashaRX.UnityMeshLab
             maxChartSize = 0,                 // 0 = unbounded
             bilinear   = true,
             blockAlign = false,
+            blockSize  = 4,                   // BC/ETC/DXT default; ASTC: 4/5/6/8/10/12
             bruteForce = true,
             rotateCharts = true,
             rotateChartsToAxis = true,
