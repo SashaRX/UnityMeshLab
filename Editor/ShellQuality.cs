@@ -3,6 +3,7 @@
 // standard area-weighted RMS of per-triangle isometric distortion.
 // 1.0 = isometric; 1.5 = mild; 2.0+ = noticeable; 3.0+ = severe.
 
+using System;
 using UnityEngine;
 using System.Collections.Generic;
 
