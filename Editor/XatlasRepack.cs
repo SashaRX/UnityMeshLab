@@ -582,6 +582,22 @@ namespace SashaRX.UnityMeshLab
             int rotateCharts, int rotateChartsToAxis,
             int preserveChartScale)
         {
+            // Verify the patched DLL is loaded (probe returns 0x5A5A5A5A on
+            // fork build, throws DllNotFoundException/MissingMethodException
+            // on stock build). Log once per pack so we can spot stale DLL
+            // load from a single line in the user's Unity console.
+            try
+            {
+                int probe = XatlasNative.xatlasIsPatchedBuild();
+                UvtLog.Info(UvtLog.Category.Repack,
+                    $"[xatlas-bridge] probe=0x{probe:X8} preserveChartScale={preserveChartScale} (expected 0x5A5A5A5A for patched build)");
+            }
+            catch (System.Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Repack,
+                    $"[xatlas-bridge] STOCK DLL loaded (patched probe failed: {ex.GetType().Name}) — PreserveChartScale will have no effect");
+            }
+
             // Cost preflight — refuse impossibly large packs up front instead
             // of hanging for hours. Brute force is O(shells × W × H); the
             // random heuristic is much cheaper but still scales with area.

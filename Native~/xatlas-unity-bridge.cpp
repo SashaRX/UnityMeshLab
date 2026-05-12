@@ -15,6 +15,18 @@
 // per-chart ceil(extents) rescale on a per-pack basis from the C# side.
 namespace xatlas { void SetPreserveChartScale(bool preserve); }
 
+// Probe function that confirms this is the patched build. Lets C# log
+// whether the loaded DLL is the fork or the stock build. Returns a magic
+// value that wouldn't appear by accident if the symbol was missing.
+extern "C" {
+#ifdef _WIN32
+__declspec(dllexport)
+#else
+__attribute__((visibility("default")))
+#endif
+int xatlasIsPatchedBuild() { return 0x5A5A5A5A; }
+}
+
 #ifdef _WIN32
 #define EXPORT extern "C" __declspec(dllexport)
 #else
@@ -101,11 +113,6 @@ EXPORT void xatlasPackCharts(
     opts.rotateChartsToAxis  = (rotateChartsToAxis != 0);
 
     xatlas::SetPreserveChartScale(preserveChartScale != 0);
-    // SashaRX.UnityMeshLab fork build marker — prints to Unity console
-    // so we can verify the patched DLL is actually loaded (vs cached
-    // stock xatlas-unity.dll). Remove after density issue is solved.
-    fprintf(stdout, "[xatlas-bridge] PATCHED build, preserveChartScale=%d\n", preserveChartScale);
-    fflush(stdout);
     xatlas::PackCharts(s_atlas, opts);
     xatlas::SetPreserveChartScale(false); // restore default for subsequent stock callers
 }

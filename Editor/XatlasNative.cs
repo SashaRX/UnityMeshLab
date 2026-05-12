@@ -9,6 +9,9 @@ namespace SashaRX.UnityMeshLab
     {
         const string DLL = "xatlas-unity";
 
+        // ── Fork probe — returns 0x5A5A5A5A on patched build, link error on stock ──
+        [DllImport(DLL)] public static extern int xatlasIsPatchedBuild();
+
         // ── Lifecycle ──
         [DllImport(DLL)] public static extern void xatlasCreate();
         [DllImport(DLL)] public static extern void xatlasDestroy();
