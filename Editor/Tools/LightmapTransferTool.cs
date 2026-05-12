@@ -493,6 +493,33 @@ namespace SashaRX.UnityMeshLab
                             "Constrain chart rotation to 0/90/180/270° (preserves texel alignment)."),
                         ctx.XatlasRotateChartsToAxis);
                 }
+                ctx.XatlasBilinear = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Bilinear-safe padding",
+                        "Pad each chart by 1 extra texel so bilinear sampling at runtime "
+                        + "doesn't leak neighbor charts. Default ON for lightmap use."),
+                    ctx.XatlasBilinear);
+                ctx.XatlasBlockAlign = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Block-align (BC/DXT)",
+                        "Snap chart placement to 4×4 texel blocks. Required for compressed "
+                        + "lightmaps (BC1/DXT) to avoid color bleed across block boundaries. "
+                        + "Costs ~3-8% packing efficiency. Enable when shipping BC-compressed "
+                        + "lightmaps; leave OFF for uncompressed progressive bakes."),
+                    ctx.XatlasBlockAlign);
+                ctx.XatlasMaxChartSize = EditorGUILayout.IntField(
+                    new GUIContent("Max chart size (px)",
+                        "Hard cap on individual chart dimension in atlas pixels. 0 = unbounded. "
+                        + "A single oversized chart can force the atlas to grow past the "
+                        + "requested resolution and trigger downscale; capping prevents that. "
+                        + "Set to atlas resolution (or smaller) for a safe ceiling."),
+                    ctx.XatlasMaxChartSize);
+                if (ctx.XatlasMaxChartSize < 0) ctx.XatlasMaxChartSize = 0;
+                ctx.XatlasTexelsPerUnit = EditorGUILayout.FloatField(
+                    new GUIContent("Texels per UV unit",
+                        "Override xatlas's auto-derived texel density (default 0 = auto-derive "
+                        + "from atlas resolution). Manual value pins a fixed texels-per-UV-unit "
+                        + "for projects that need consistent texel density across lightmaps."),
+                    ctx.XatlasTexelsPerUnit);
+                if (ctx.XatlasTexelsPerUnit < 0f) ctx.XatlasTexelsPerUnit = 0f;
                 EditorGUI.indentLevel--;
             }
             var src = ctx.ForLod(ctx.SourceLodIndex);
@@ -1039,6 +1066,10 @@ namespace SashaRX.UnityMeshLab
             opts.mergeOverlappingTiles = ctx.MergeOverlappingTiles;
             opts.normalizeTexelDensity = ctx.NormalizeTexelDensity;
             opts.targetUvCoverage = ctx.TargetUvCoverage;
+            opts.maxChartSize = ctx.XatlasMaxChartSize;
+            opts.bilinear = ctx.XatlasBilinear;
+            opts.blockAlign = ctx.XatlasBlockAlign;
+            opts.texelsPerUnit = ctx.XatlasTexelsPerUnit;
 
             var results = XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);
             for (int i = 0; i < validEntries.Count; i++)

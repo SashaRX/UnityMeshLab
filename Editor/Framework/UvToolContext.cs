@@ -27,6 +27,38 @@ namespace SashaRX.UnityMeshLab
         public int ShellPaddingPx;
         public int BorderPaddingPx;
         public bool RepackPerMesh;
+
+        /// <summary>
+        /// xatlas maxChartSize in pixels. 0 = unbounded — a single huge chart
+        /// can force the atlas to grow past the requested resolution and
+        /// trigger downscale. Setting this to AtlasResolution (or smaller)
+        /// keeps every chart inside the atlas budget.
+        /// </summary>
+        public int XatlasMaxChartSize = 0;
+
+        /// <summary>
+        /// xatlas bilinear — pads charts by 1 extra texel to keep bilinear
+        /// sampling from leaking neighbor charts at runtime. Default ON for
+        /// lightmap use (Unity samples lightmaps bilinearly).
+        /// </summary>
+        public bool XatlasBilinear = true;
+
+        /// <summary>
+        /// xatlas blockAlign — snap chart placement to 4×4 texel blocks.
+        /// Required for compressed (BC1/DXT) lightmaps to avoid color bleed
+        /// across block boundaries. Costs some packing efficiency (typically
+        /// 3-8%). Default OFF since Unity progressive lightmaps usually run
+        /// uncompressed; flip to ON when shipping BC-compressed lightmaps.
+        /// </summary>
+        public bool XatlasBlockAlign = false;
+
+        /// <summary>
+        /// xatlas texelsPerUnit override in texels/UV-unit. 0 = let xatlas
+        /// auto-derive from atlas resolution. Manual values are useful when
+        /// a project enforces a fixed real-world texel density across all
+        /// lightmaps (e.g. 10 texels/m).
+        /// </summary>
+        public float XatlasTexelsPerUnit = 0f;
         /// <summary>
         /// xatlas brute-force packer — exhaustively searches placements for
         /// each chart instead of using the fast heuristic. Default ON because

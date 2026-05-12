@@ -13,6 +13,11 @@ namespace SashaRX.UnityMeshLab
         public uint borderPadding;   // atlas edge padding (pixels), default 0
         public uint resolution;
         public float texelsPerUnit;
+        /// <summary>Max chart dimension in pixels. 0 = no limit; xatlas may emit a
+        /// chart larger than the atlas which then forces atlas growth. Set to a value
+        /// ≤ resolution (e.g. resolution/2 or resolution) to keep individual charts
+        /// inside the requested atlas size.</summary>
+        public int maxChartSize;
         public bool bilinear;
         public bool blockAlign;
         public bool bruteForce;
@@ -94,6 +99,7 @@ namespace SashaRX.UnityMeshLab
             borderPadding = 0,
             resolution = 0,
             texelsPerUnit = 0f,
+            maxChartSize = 0,                 // 0 = unbounded
             bilinear   = true,
             blockAlign = false,
             bruteForce = true,
@@ -1013,7 +1019,7 @@ namespace SashaRX.UnityMeshLab
                 XatlasNative.xatlasComputeCharts();
 
                 XatlasNative.xatlasPackCharts(
-                    0, opts.padding, opts.texelsPerUnit, opts.resolution,
+                    opts.maxChartSize, opts.padding, opts.texelsPerUnit, opts.resolution,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
@@ -1400,7 +1406,7 @@ namespace SashaRX.UnityMeshLab
                 // Pack all charts together into one atlas
                 XatlasNative.xatlasComputeCharts();
                 XatlasNative.xatlasPackCharts(
-                    0, opts.padding, opts.texelsPerUnit, opts.resolution,
+                    opts.maxChartSize, opts.padding, opts.texelsPerUnit, opts.resolution,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
