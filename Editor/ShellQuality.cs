@@ -122,8 +122,30 @@ namespace SashaRX.UnityMeshLab
                 float lam1 = tr * 0.5f + sqdisc;
                 float lam2 = Mathf.Max(0f, tr * 0.5f - sqdisc);
 
-                // Triangle stretch² = (σ1² + σ2²) / 2 = (lam1 + lam2) / 2 = tr / 2
-                float triS2 = tr * 0.5f;
+                // Triangle stretch² = (σ1² + σ2²) / (2 · σ1·σ2) — SCALE-INVARIANT
+                // condition-number metric. The naïve Sander L² ((σ1²+σ2²)/2)
+                // is sensitive to absolute Jacobian magnitude, which is set
+                // by the upstream texel-density pass and has nothing to do
+                // with the shape distortion we actually want to measure.
+                //
+                // For an isometric triangle (σ1=σ2): metric = 1.
+                // For a 2:1 stretch:                metric ≈ 1.118.
+                // For a 5:1 stretch:                metric ≈ 1.61.
+                // For a 10:1 stretch:               metric ≈ 2.24.
+                // For an N:1 stretch (large N):     metric ≈ N/√2.
+                //
+                // lam1·lam2 = σ1²·σ2² = det(J)². Take sqrt → |det(J)| = σ1·σ2.
+                double detSq = (double)lam1 * (double)lam2;
+                if (detSq < 1e-30)
+                {
+                    // J is rank-deficient — UV triangle collapsed to a line.
+                    // Infinite stretch; flag the shell as severely broken.
+                    hasInfinite = true;
+                    sumArea += 0.5 * area3DTimes2;
+                    continue;
+                }
+                double sigmaProduct = Math.Sqrt(detSq);
+                float triS2 = (float)((double)tr / (2.0 * sigmaProduct));
 
                 double a3d = 0.5 * area3DTimes2;
                 sumArea += a3d;
