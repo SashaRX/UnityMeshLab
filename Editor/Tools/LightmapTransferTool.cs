@@ -845,14 +845,21 @@ namespace SashaRX.UnityMeshLab
             using var _bench = BenchmarkRecorder.NewRun(ctx, runLabel,
                 splitTargetsInSymmetryStep, symSplitThresholdMode);
             BenchmarkRecorder.Current?.StageBegin("pipeline");
+            bool completedSuccessfully = false;
             try
             {
-                ExecFullPipelineCore();
+                completedSuccessfully = ExecFullPipelineCore();
             }
             finally
             {
                 BenchmarkRecorder.Current?.StageEnd("pipeline");
-                if (BenchmarkRecorder.Current != null)
+                // When the pipeline aborts early (user-cancel or exception)
+                // the per-mesh shellTransferResult / validation state is stale
+                // from a previous run — recording it would emit misleading
+                // metrics that taint sweep winners. Skip RecordMesh entirely
+                // in that case; the sweep aggregator already treats cells
+                // with no CSV row as failed.
+                if (completedSuccessfully && BenchmarkRecorder.Current != null)
                     foreach (var e in ctx.MeshEntries)
                         BenchmarkRecorder.Current.RecordMesh(e);
             }
@@ -1110,7 +1117,14 @@ namespace SashaRX.UnityMeshLab
                 "OK");
         }
 
-        void ExecFullPipelineCore()
+        /// <summary>
+        /// Run the auto-tune full pipeline. Returns <c>true</c> when the
+        /// pipeline ran end-to-end and the in-memory per-mesh state reflects
+        /// the just-completed run; returns <c>false</c> when the user
+        /// cancelled mid-flight so the caller can skip artefact recording
+        /// (stale state from a prior run would otherwise be written).
+        /// </summary>
+        bool ExecFullPipelineCore()
         {
             string version = UnityEditor.PackageManager.PackageInfo
                 .FindForAssembly(typeof(LightmapTransferTool).Assembly)?.version ?? "0.0.0";
@@ -1266,7 +1280,7 @@ namespace SashaRX.UnityMeshLab
             if (cancelled)
             {
                 requestRepaint?.Invoke();
-                return;
+                return false;
             }
             if (separationConfigs.Length > 1 && bestConfigIdx > 0)
                 UvtLog.Info($"[Pipeline] Auto-tune: selected config #{bestConfigIdx} " +
@@ -1274,6 +1288,7 @@ namespace SashaRX.UnityMeshLab
 
             UvtLog.Info("[Pipeline] Complete.");
             requestRepaint?.Invoke();
+            return true;
         }
 
         void ExecRepack(List<MeshEntry> entries)

@@ -26,8 +26,5 @@
   "license": "MIT",
   "dependencies": {
     "com.unity.formats.fbx": "5.1.5"
-  },
-  "testables": [
-    "com.sasharx.unitymeshlab"
-  ]
+  }
 }

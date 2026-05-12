@@ -211,10 +211,10 @@ namespace SashaRX.UnityMeshLab
                 summary.hadFailure = true;
                 return summary;
             }
-            var header = lines[0].Split(',');
+            var header = ParseCsvRow(lines[0]);
             int idx(string col)
             {
-                for (int i = 0; i < header.Length; i++)
+                for (int i = 0; i < header.Count; i++)
                     if (string.Equals(header[i], col, StringComparison.Ordinal))
                         return i;
                 return -1;
@@ -230,20 +230,23 @@ namespace SashaRX.UnityMeshLab
             int iRepack      = idx("repackMs");
             int iTransfer    = idx("transferMs");
             int iValidate    = idx("validateMs");
+            int iShellsMatch = idx("shellsMatched");
+            int iVertsXfer   = idx("verticesTransferred");
 
             int slivers = 0, overlap = 0;
             int utilCount = 0;
             float utilSum = 0f;
             long totalMs = 0;
             bool stageRead = false;
+            bool hadFailure = false;
 
             var inv = CultureInfo.InvariantCulture;
             for (int li = 1; li < lines.Length; li++)
             {
                 var line = lines[li];
                 if (string.IsNullOrWhiteSpace(line)) continue;
-                var c = line.Split(',');
-                if (c.Length < header.Length) continue;
+                var c = ParseCsvRow(line);
+                if (c.Count < header.Count) continue;
 
                 bool isSource = iIsSource >= 0 && c[iIsSource] == "1";
                 // Only target-LOD rows carry meaningful validation. The
@@ -255,9 +258,22 @@ namespace SashaRX.UnityMeshLab
                     slivers += SafeInt(c, iInverted)  + SafeInt(c, iStretched)
                              + SafeInt(c, iZero)     + SafeInt(c, iOob);
                     overlap += SafeInt(c, iOverlap);
+
+                    // A target-LOD row with zero shells matched AND zero
+                    // vertices transferred means the transfer never ran (or
+                    // ran but produced nothing). Without this guard the run
+                    // looks "clean" (0 slivers, 0 overlaps) and can win the
+                    // sweep despite a broken transfer.
+                    if (iShellsMatch >= 0 && iVertsXfer >= 0
+                        && SafeInt(c, iShellsMatch) == 0
+                        && SafeInt(c, iVertsXfer) == 0)
+                    {
+                        hadFailure = true;
+                    }
                 }
 
-                if (iAtlasUtil >= 0 && float.TryParse(c[iAtlasUtil],
+                if (iAtlasUtil >= 0 && iAtlasUtil < c.Count
+                    && float.TryParse(c[iAtlasUtil],
                         NumberStyles.Float, inv, out float util) && util > 0f)
                 {
                     utilSum += util;
@@ -278,13 +294,51 @@ namespace SashaRX.UnityMeshLab
             summary.overlapShellPairs    = overlap;
             summary.meanAtlasUtilization = utilCount > 0 ? utilSum / utilCount : 0f;
             summary.totalMs              = totalMs;
+            summary.hadFailure           = hadFailure;
             return summary;
         }
 
-        static int  SafeInt (string[] c, int i)
-            => (i >= 0 && i < c.Length && int.TryParse(c[i], NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) ? v : 0;
-        static long SafeLong(string[] c, int i)
-            => (i >= 0 && i < c.Length && long.TryParse(c[i], NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) ? v : 0;
+        /// <summary>
+        /// Minimal CSV row parser that respects double-quoted fields (with
+        /// <c>""</c> as an escaped quote inside a quoted field). Required
+        /// because <see cref="BenchmarkRecorder"/> wraps values containing
+        /// commas in quotes — a naive <c>line.Split(',')</c> would shift
+        /// columns whenever a renderer name contains a comma, silently
+        /// corrupting the winner picked by the aggregator.
+        /// </summary>
+        static List<string> ParseCsvRow(string line)
+        {
+            var cells = new List<string>();
+            if (line == null) { cells.Add(""); return cells; }
+            var sb = new StringBuilder();
+            bool inQuotes = false;
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+                if (inQuotes)
+                {
+                    if (c == '"')
+                    {
+                        if (i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; }
+                        else inQuotes = false;
+                    }
+                    else sb.Append(c);
+                }
+                else
+                {
+                    if (c == ',') { cells.Add(sb.ToString()); sb.Clear(); }
+                    else if (c == '"' && sb.Length == 0) inQuotes = true;
+                    else sb.Append(c);
+                }
+            }
+            cells.Add(sb.ToString());
+            return cells;
+        }
+
+        static int  SafeInt (List<string> c, int i)
+            => (i >= 0 && i < c.Count && int.TryParse(c[i], NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) ? v : 0;
+        static long SafeLong(List<string> c, int i)
+            => (i >= 0 && i < c.Count && long.TryParse(c[i], NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) ? v : 0;
 
         internal static void WriteSummaryCsv(string path, List<RunSummary> runs, string sweepDir)
         {
@@ -336,10 +390,10 @@ namespace SashaRX.UnityMeshLab
             sb.Append("    \"arapEnabled\": ").Append(w.config.arapEnabled ? "true" : "false").Append(",\n");
             sb.Append("    \"arapIterations\": ").Append(w.config.arapIterations.ToString(inv)).Append(",\n");
             sb.Append("    \"stretchThreshold\": ").Append(w.config.stretchThreshold.ToString("R", inv)).Append(",\n");
-            sb.Append("    \"score\": ").Append(w.score.ToString("R", inv)).Append(",\n");
+            sb.Append("    \"score\": ").Append(JsonFloat(w.score, inv)).Append(",\n");
             sb.Append("    \"totalSlivers\": ").Append(w.totalSlivers.ToString(inv)).Append(",\n");
             sb.Append("    \"overlapShellPairs\": ").Append(w.overlapShellPairs.ToString(inv)).Append(",\n");
-            sb.Append("    \"meanAtlasUtilization\": ").Append(w.meanAtlasUtilization.ToString("R", inv)).Append(",\n");
+            sb.Append("    \"meanAtlasUtilization\": ").Append(JsonFloat(w.meanAtlasUtilization, inv)).Append(",\n");
             sb.Append("    \"totalMs\": ").Append(w.totalMs.ToString(inv)).Append(",\n");
             sb.Append("    \"csvPath\": ").Append(JsonString(w.csvPath ?? "")).Append("\n");
             sb.Append("  },\n");
@@ -367,9 +421,9 @@ namespace SashaRX.UnityMeshLab
                 sb.Append("\"stretchThreshold\": ").Append(r.config.stretchThreshold.ToString("R", inv)).Append(", ");
                 sb.Append("\"totalSlivers\": ").Append(r.totalSlivers.ToString(inv)).Append(", ");
                 sb.Append("\"overlapShellPairs\": ").Append(r.overlapShellPairs.ToString(inv)).Append(", ");
-                sb.Append("\"meanAtlasUtilization\": ").Append(r.meanAtlasUtilization.ToString("R", inv)).Append(", ");
+                sb.Append("\"meanAtlasUtilization\": ").Append(JsonFloat(r.meanAtlasUtilization, inv)).Append(", ");
                 sb.Append("\"totalMs\": ").Append(r.totalMs.ToString(inv)).Append(", ");
-                sb.Append("\"score\": ").Append(r.score.ToString("R", inv)).Append(", ");
+                sb.Append("\"score\": ").Append(JsonFloat(r.score, inv)).Append(", ");
                 sb.Append("\"hadFailure\": ").Append(r.hadFailure ? "true" : "false").Append(", ");
                 sb.Append("\"csvPath\": ").Append(JsonString(r.csvPath ?? ""));
                 sb.Append("}");
@@ -808,6 +862,15 @@ namespace SashaRX.UnityMeshLab
             }
             return sb.ToString();
         }
+
+        /// <summary>
+        /// Format a float for JSON output. <c>NaN</c> / <c>±Infinity</c> are
+        /// not valid JSON numbers, so emit <c>"null"</c> for those cases —
+        /// failed sweep runs land on <c>float.NegativeInfinity</c> via
+        /// <see cref="Score"/>, and a downstream parser would otherwise fail.
+        /// </summary>
+        static string JsonFloat(float v, CultureInfo inv)
+            => (float.IsNaN(v) || float.IsInfinity(v)) ? "null" : v.ToString("R", inv);
 
         static string JsonString(string s)
         {
