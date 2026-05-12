@@ -127,7 +127,7 @@ namespace SashaRX.UnityMeshLab
             perturbStrength = 0f,             // adaptive
             normalizeTexelDensity = true,
             normalizeShellAspect = true,
-            maxShellAspect = 10f,
+            maxShellAspect = 2f,
             targetUvCoverage = 0.75f,
             tileMergeIoUThreshold = 0.9f,
             tileMergeFaceCountRatio = 4f,

@@ -101,11 +101,14 @@ namespace SashaRX.UnityMeshLab
         public bool NormalizeShellAspect = true;
 
         /// <summary>
-        /// Clamp on the 3D aspect ratio used as the target for shell aspect
-        /// normalisation. Sliver / edge shells with 3D aspect 100:1 or more would
-        /// stretch to absurd shapes in UV otherwise. Default 10 (plank-sized).
+        /// Cap on the 3D-side aspect target (σ1/σ2 from in-plane PCA). Real
+        /// surfaces are mostly close to square — values above ~2 mean the
+        /// surface is a strip / ribbon. Capping prevents the UV layout from
+        /// being stretched into a needle when the source mesh has a sliver
+        /// shell (which would otherwise force scale_axis ≈ √(N/1) for some
+        /// large N). Default 2.
         /// </summary>
-        public float MaxShellAspect = 10f;
+        public float MaxShellAspect = 2f;
 
         /// <summary>
         /// Fraction of [0,1]² atlas the normalized UVs should sum to.

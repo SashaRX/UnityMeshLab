@@ -465,17 +465,21 @@ namespace SashaRX.UnityMeshLab
                 {
                     ctx.NormalizeShellAspect = EditorGUILayout.ToggleLeft(
                         new GUIContent("Normalize shell aspect",
-                            "Additionally apply non-uniform per-shell scale so the UV bbox "
-                            + "aspect ratio matches the shell's 3D shape aspect. Fixes UV0 "
-                            + "authored 1:1 onto a 10:1 plank in 3D (per-axis texel stretch). "
-                            + "Area-preserving — composed with density normalization."),
+                            "PCA-based per-shell reshape so the UV island's principal-axis "
+                            + "aspect ratio (σ1/σ2) matches the surface's in-plane 3D aspect. "
+                            + "Runs BEFORE density normalization. Handles rotated / diagonal "
+                            + "UV islands correctly (PCA finds the true principal axes). "
+                            + "Area-preserving by construction."),
                         ctx.NormalizeShellAspect);
                     using (new EditorGUI.DisabledScope(!ctx.NormalizeShellAspect))
                     {
                         ctx.MaxShellAspect = EditorGUILayout.Slider(
-                            new GUIContent("Max shell aspect",
-                                "Clamp on 3D aspect ratio target. Sliver shells (100:1+) "
-                                + "would stretch to absurd shapes in UV otherwise."),
+                            new GUIContent("Max stretch (N:1)",
+                                "Upper limit on how much UV can be stretched to match the "
+                                + "surface. 1.0 = force square islands; 2.0 = matches typical "
+                                + "rectangular surfaces but caps elongation; >2 only useful "
+                                + "for ribbon-like geometry (long strips, edges). <1 actively "
+                                + "compresses elongated UVs back toward square."),
                             ctx.MaxShellAspect, 0.5f, 10f);
                     }
                     ctx.TargetUvCoverage = EditorGUILayout.Slider(
