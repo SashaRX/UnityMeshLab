@@ -60,25 +60,18 @@ namespace SashaRX.UnityMeshLab
         public bool normalizeTexelDensity;
 
         /// <summary>
-        /// Apply non-uniform per-shell UV scale to minimise the Sander L²
-        /// texture-stretch metric (SIGGRAPH 2001, "Texture Mapping Progressive
-        /// Meshes"). The shell-averaged metric tensor M = JᵀJ of the UV→3D
-        /// map (area-weighted over triangles) is eigendecomposed; UV is scaled
-        /// along the principal directions so the σ₁/σ₂ stretch ratio drops to
-        /// maxShellAspect. Area-preserving by construction. Handles curved
-        /// shells, non-uniform vertex distribution and rotated UV islands
-        /// correctly — unlike PCA over vertex positions, the Jacobian metric
-        /// measures the UV→3D mapping itself rather than where vertices sit.
-        /// Only used when normalizeTexelDensity is true.
+        /// Detect the overall UV0 bbox aspect across all shells and apply a
+        /// single area-preserving non-uniform global scale to make it 1:1.
+        /// Fixes the case where the artist authored the unwrap on a non-square
+        /// atlas (1:2 or 1:0.5). Per-shell aspect issues are not addressed —
+        /// they are a separate concern. Only used when normalizeTexelDensity
+        /// is true.
         /// </summary>
         public bool normalizeShellAspect;
 
         /// <summary>
-        /// Cap on the post-correction principal-stretch ratio σ₁/σ₂. A shell
-        /// whose mapping is hopelessly anisotropic (sliver shell, σ₁/σ₂ = 100)
-        /// would otherwise force runaway non-uniform UV scale; capping at C
-        /// limits the UV long-axis stretch factor to √(current_ratio / C) and
-        /// the short-axis shrink to √(C / current_ratio). Default 2.
+        /// Reserved for the per-shell aspect normalization stage (currently
+        /// not wired up). Kept for API stability.
         /// </summary>
         public float maxShellAspect;
 

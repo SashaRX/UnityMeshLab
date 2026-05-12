@@ -464,28 +464,14 @@ namespace SashaRX.UnityMeshLab
                 using (new EditorGUI.DisabledScope(!ctx.NormalizeTexelDensity))
                 {
                     ctx.NormalizeShellAspect = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Normalize shell aspect",
-                            "Per-shell reshape that minimises the Sander L² texture-stretch "
-                            + "metric (SIGGRAPH 2001). Averages the metric tensor M = JᵀJ of "
-                            + "the UV→3D map over triangles (3D-area weighted), eigendecomposes, "
-                            + "then non-uniformly scales UV along the principal directions so "
-                            + "the σ1/σ2 stretch ratio drops to the cap below. Runs BEFORE "
-                            + "density normalization. Area-preserving by construction. "
-                            + "Invariant to vertex distribution, shell curvature and UV-island "
-                            + "rotation — it measures the UV→3D mapping itself, not vertex "
-                            + "positions like the old PCA-based variant did."),
+                        new GUIContent("Normalize unwrap aspect",
+                            "Detect the overall UV0 bbox aspect across all shells and apply "
+                            + "a single area-preserving non-uniform scale to make it 1:1. "
+                            + "Fixes the case where the artist authored the unwrap on a "
+                            + "non-square atlas (1:2, 1:0.5, …) which bakes anisotropic "
+                            + "texel density into every shell. Per-shell aspect issues are "
+                            + "a separate concern and not addressed here."),
                         ctx.NormalizeShellAspect);
-                    using (new EditorGUI.DisabledScope(!ctx.NormalizeShellAspect))
-                    {
-                        ctx.MaxShellAspect = EditorGUILayout.Slider(
-                            new GUIContent("Max stretch (N:1)",
-                                "Cap on post-correction σ1/σ2 ratio. 1.0 = force isotropic "
-                                + "(longest-axis stretch √(current_ratio), most aggressive); "
-                                + "2.0 = sensible default for typical surfaces; higher leaves "
-                                + "more residual stretch and is gentler on sliver shells. "
-                                + "Capping protects sub-pixel UV dimensions on extreme inputs."),
-                            ctx.MaxShellAspect, 1f, 10f);
-                    }
                     ctx.TargetUvCoverage = EditorGUILayout.Slider(
                         new GUIContent("UV coverage budget",
                             "Fraction of [0,1]² atlas that normalized UVs sum to. "

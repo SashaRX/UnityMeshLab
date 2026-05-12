@@ -92,30 +92,20 @@ namespace SashaRX.UnityMeshLab
         public bool NormalizeTexelDensity = true;
 
         /// <summary>
-        /// On top of density normalisation, apply non-uniform per-shell UV scale
-        /// to minimise the Sander L² texture-stretch metric (SIGGRAPH 2001,
-        /// "Texture Mapping Progressive Meshes"). For each shell the metric
-        /// tensor M = JᵀJ of the UV→3D parameterisation is averaged over
-        /// triangles (weighted by 3D area). Its eigenvalues σ₁² ≥ σ₂² are the
-        /// principal stretches; their ratio σ₁/σ₂ is the texture anisotropy
-        /// that causes lightmap pixels to be non-square on the surface. The
-        /// pass applies non-uniform scale along the principal UV directions so
-        /// the corrected ratio is capped at MaxShellAspectClamp. Area-preserving
-        /// by construction (k_along × k_across = 1). Handles curved shells,
-        /// non-uniform vertex distribution and rotated UV islands correctly —
-        /// unlike PCA over vertex positions, which is biased by where vertices
-        /// sit rather than how UV maps to 3D. Only effective when
-        /// NormalizeTexelDensity is on.
+        /// Detect the overall UV0 bbox aspect across all shells and apply a
+        /// single area-preserving non-uniform global scale to make it 1:1.
+        /// Fixes the case where the artist authored the unwrap on a non-square
+        /// atlas (1:2 or 1:0.5) which bakes anisotropic texel density into
+        /// every shell. Only effective when NormalizeTexelDensity is on.
+        ///
+        /// Per-shell aspect issues (an individual shell's UV0 shape mismatching
+        /// its 3D shape) are a separate concern and are NOT addressed here.
         /// </summary>
         public bool NormalizeShellAspect = true;
 
         /// <summary>
-        /// Cap on the post-correction principal-stretch ratio σ₁/σ₂ from the
-        /// Sander metric tensor. With cap C, a shell whose current stretch
-        /// ratio is R gets its long axis scaled by √(R/C) and short axis by
-        /// √(C/R) — so the minimum UV dimension shrinks by at most √(C/R).
-        /// Lower C = more aggressive correction (closer to isotropic), but
-        /// also more shrinkage of the short axis for sliver inputs. Default 2.
+        /// Reserved for the per-shell aspect normalization stage (currently
+        /// not wired up). Kept for API stability; default 2.
         /// </summary>
         public float MaxShellAspect = 2f;
 
