@@ -101,6 +101,20 @@ namespace SashaRX.UnityMeshLab
         public float perShellAspectThreshold;
 
         /// <summary>
+        /// Reparameterize ribbon-classified shells (long thin strips) via ARAP
+        /// before passing to xatlas. Fixes elongated sliver-prone UV0 unwraps
+        /// at the source. Off by default. Requires per-shell area to be valid
+        /// (boundary loop discoverable).
+        /// </summary>
+        public bool reparameterizeRibbons;
+
+        /// <summary>
+        /// ARAP local-global iteration count for ribbon reparameterization.
+        /// 10 is typically sufficient; raise to 20-30 for highly curved strips.
+        /// </summary>
+        public int ribbonArapIterations;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas that normalized UVs should sum to AFTER
         /// per-shell density equalisation. Bin-packing leaves slack, so
         /// total chart area below 1.0 keeps xatlas from overflowing the
@@ -132,6 +146,8 @@ namespace SashaRX.UnityMeshLab
             maxShellAspect = 10f,
             perShellAspectThreshold = 0.05f,
             targetUvCoverage = 0.75f,
+            reparameterizeRibbons = false,
+            ribbonArapIterations = 10,
         };
     }
 
@@ -425,6 +441,33 @@ namespace SashaRX.UnityMeshLab
                     $"Texel density: rescaled {rescaled}/{shells.Count} shells to uniform UV/3D area ratio");
             }
 
+            // ── ARAP re-parameterization of ribbon-shaped shells ──
+            // Ribbons (long thin strips classified by StripParameterization.IsRibbon)
+            // get an LSCM-style unwrap from xatlas that often collapses them into
+            // sliver charts. Replacing the UV0 with an ARAP local/global solve
+            // straightens the strip in UV space before xatlas re-packs it.
+            if (opts.reparameterizeRibbons)
+            {
+                int ribbonsFound = 0, ribbonsConverged = 0, ribbonsSkipped = 0;
+                foreach (var shell in shells)
+                {
+                    if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
+                    if (!StripParameterization.IsRibbon(shell, positions, tris, out _, out _, out _)) continue;
+                    ribbonsFound++;
+                    var shellTriIndices = shell.faceIndices?.ToArray() ?? new int[0];
+                    if (shellTriIndices.Length == 0) { ribbonsSkipped++; continue; }
+                    if (ArapParameterization.Reparameterize(
+                            positions, tris, shellTriIndices, shell.vertexIndices,
+                            uvFlat, opts.ribbonArapIterations, out int _initFlipped))
+                        ribbonsConverged++;
+                    else
+                        ribbonsSkipped++;
+                }
+                if (ribbonsFound > 0)
+                    UvtLog.Info(UvtLog.Category.Repack,
+                        $"[Repack] ARAP: reparameterized {ribbonsConverged}/{ribbonsFound} ribbon shells (skipped {ribbonsSkipped})");
+            }
+
             // ── Perturb UV0 of overlap-grouped shells ──
             // xatlas dedups charts whose input UVs look identical and lays
             // them at the same atlas slot — catastrophic for lightmap UV2,
@@ -662,6 +705,30 @@ namespace SashaRX.UnityMeshLab
                             perShellAspectThreshold: opts.perShellAspectThreshold);
                         UvtLog.Verbose(UvtLog.Category.Repack,
                             $"Texel density mesh {m}: rescaled {rescaledM}/{allShells[m].Count} shells");
+                    }
+
+                    // ARAP re-parameterization of ribbon shells — same as in
+                    // RepackSingle, scoped per-mesh inputs. Off by default.
+                    if (opts.reparameterizeRibbons)
+                    {
+                        int ribbonsFoundM = 0, ribbonsConvergedM = 0, ribbonsSkippedM = 0;
+                        foreach (var shell in allShells[m])
+                        {
+                            if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
+                            if (!StripParameterization.IsRibbon(shell, allPositions[m], allTris[m], out _, out _, out _)) continue;
+                            ribbonsFoundM++;
+                            var shellTriIndices = shell.faceIndices?.ToArray() ?? new int[0];
+                            if (shellTriIndices.Length == 0) { ribbonsSkippedM++; continue; }
+                            if (ArapParameterization.Reparameterize(
+                                    allPositions[m], allTris[m], shellTriIndices, shell.vertexIndices,
+                                    uvFlat, opts.ribbonArapIterations, out int _initFlippedM))
+                                ribbonsConvergedM++;
+                            else
+                                ribbonsSkippedM++;
+                        }
+                        if (ribbonsFoundM > 0)
+                            UvtLog.Info(UvtLog.Category.Repack,
+                                $"[Repack] ARAP mesh {m}: reparameterized {ribbonsConvergedM}/{ribbonsFoundM} ribbon shells (skipped {ribbonsSkippedM})");
                     }
 
                     // Perturb UV0 of overlap-grouped shells so xatlas treats

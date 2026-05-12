@@ -133,6 +133,18 @@ namespace SashaRX.UnityMeshLab
         public float PerShellAspectThreshold = 0.05f;
 
         /// <summary>
+        /// Re-parameterize ribbon-classified shells via ARAP before xatlas pack.
+        /// Fixes elongated slivers at the source instead of compensating after.
+        /// Off by default; opt-in. Independent of NormalizeTexelDensity.
+        /// </summary>
+        public bool ReparameterizeRibbons = false;
+
+        /// <summary>
+        /// ARAP iteration count for ribbon re-parameterization. Default 10.
+        /// </summary>
+        public int RibbonArapIterations = 10;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas the normalized UVs should sum to.
         /// Leaves slack for bin-packing inefficiency so the atlas doesn't
         /// grow past the requested resolution. Default 0.75 (= 25% safety

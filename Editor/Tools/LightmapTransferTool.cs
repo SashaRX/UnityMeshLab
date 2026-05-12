@@ -497,6 +497,25 @@ namespace SashaRX.UnityMeshLab
                             ctx.PerShellAspectThreshold, 0f, 0.5f);
                         EditorGUI.indentLevel--;
                     }
+                    ctx.ReparameterizeRibbons = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Reparameterize ribbons (ARAP)",
+                            "Detect ribbon-shaped shells (long thin strips) and re-unwrap them via "
+                            + "ARAP local-global parameterization before xatlas packing. Fixes "
+                            + "elongated UV slivers at the source instead of compensating after. "
+                            + "Off by default — opt-in because ARAP requires a discoverable "
+                            + "boundary loop (skips closed shells)."),
+                        ctx.ReparameterizeRibbons);
+                    using (new EditorGUI.DisabledScope(!ctx.ReparameterizeRibbons))
+                    {
+                        EditorGUI.indentLevel++;
+                        ctx.RibbonArapIterations = EditorGUILayout.IntSlider(
+                            new GUIContent("  ARAP iterations",
+                                "Number of local-global iterations. 10 is sufficient for most "
+                                + "ribbons; raise to 20-30 for highly curved strips. Each "
+                                + "iteration is one SVD-per-triangle + one CG solve."),
+                            ctx.RibbonArapIterations, 5, 30);
+                        EditorGUI.indentLevel--;
+                    }
                     ctx.TargetUvCoverage = EditorGUILayout.Slider(
                         new GUIContent("UV coverage budget",
                             "Fraction of [0,1]² atlas that normalized UVs sum to. "
@@ -1124,6 +1143,8 @@ namespace SashaRX.UnityMeshLab
             opts.perShellAspectNormalize = ctx.PerShellAspectNormalize;
             opts.maxShellAspect = ctx.MaxShellAspect;
             opts.perShellAspectThreshold = ctx.PerShellAspectThreshold;
+            opts.reparameterizeRibbons = ctx.ReparameterizeRibbons;
+            opts.ribbonArapIterations = ctx.RibbonArapIterations;
             opts.targetUvCoverage = ctx.TargetUvCoverage;
             opts.maxChartSize = ctx.XatlasMaxChartSize;
             opts.bilinear = ctx.XatlasBilinear;
