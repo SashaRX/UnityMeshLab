@@ -412,23 +412,13 @@ namespace SashaRX.UnityMeshLab
             // world surface, and the final lightmap has uniform texels per
             // world unit instead of 10x density variance across the model.
             // Operates on the local uvFlat copy; mesh.uv is untouched.
-            if (opts.normalizeTexelDensity)
-            {
-                int rescaled = TexelDensityNormalizer.Normalize(
-                    uvFlat, shells, tris, positions,
-                    targetCoverage: opts.targetUvCoverage,
-                    normalizeAspect: opts.normalizeShellAspect);
-                UvtLog.Verbose(UvtLog.Category.Repack,
-                    $"Texel density: rescaled {rescaled}/{shells.Count} shells to uniform UV/3D area ratio");
-            }
 
-            // ── ARAP re-parameterization of stretched shells ──
-            // Measure each shell's Sander L² stretch (industry-standard
-            // area-weighted RMS of per-triangle isometric distortion) and
-            // re-parameterize via ARAP local-global any shell whose stretch
-            // exceeds opts.stretchThreshold. Replaces the previous IsRibbon
-            // classifier with an actual UV quality metric, so the trigger
-            // now reflects authored UV0 distortion rather than 3D shape.
+            // ── ARAP re-parameterization of stretched shells (FIRST) ──
+            // Must run BEFORE the texel-density / global-aspect passes so
+            // L² stretch is measured on the artist's authored UV0 (not the
+            // already-rescaled one), and so the downstream area equalisation
+            // sees the post-ARAP per-shell areas — not the pre-ARAP ones
+            // that ARAP will then redistribute and invalidate.
             if (opts.reparameterizeStretchedShells)
             {
                 int stretchedFound = 0, converged = 0, skipped = 0;
@@ -455,6 +445,15 @@ namespace SashaRX.UnityMeshLab
                 if (stretchedFound > 0)
                     UvtLog.Info(UvtLog.Category.Repack,
                         $"[Repack] ARAP: reparameterized {converged}/{stretchedFound} stretched shells (L²>{opts.stretchThreshold:F2}, skipped {skipped})");
+            }
+            if (opts.normalizeTexelDensity)
+            {
+                int rescaled = TexelDensityNormalizer.Normalize(
+                    uvFlat, shells, tris, positions,
+                    targetCoverage: opts.targetUvCoverage,
+                    normalizeAspect: opts.normalizeShellAspect);
+                UvtLog.Verbose(UvtLog.Category.Repack,
+                    $"Texel density: rescaled {rescaled}/{shells.Count} shells to uniform UV/3D area ratio");
             }
 
             // ── Perturb UV0 of overlap-grouped shells ──
@@ -685,22 +684,9 @@ namespace SashaRX.UnityMeshLab
                     }
                     allUvFlat[m] = uvFlat;
 
-                    // Texel-density normalization (pre-pack): per-shell UV0
-                    // rescale so UV-area ∝ 3D-area. Result: uniform lightmap
-                    // texels-per-world-unit across the model. Local uvFlat
-                    // mutated only; mesh.uv stays intact.
-                    if (opts.normalizeTexelDensity)
-                    {
-                        int rescaledM = TexelDensityNormalizer.Normalize(
-                            uvFlat, allShells[m], allTris[m], allPositions[m],
-                            targetCoverage: opts.targetUvCoverage,
-                            normalizeAspect: opts.normalizeShellAspect);
-                        UvtLog.Verbose(UvtLog.Category.Repack,
-                            $"Texel density mesh {m}: rescaled {rescaledM}/{allShells[m].Count} shells");
-                    }
-
-                    // ARAP re-parameterization of stretched shells — same Sander
-                    // L² gate as in RepackSingle, scoped per-mesh inputs.
+                    // ARAP re-parameterization of stretched shells (FIRST) —
+                    // same Sander L² gate as in RepackSingle. Must precede
+                    // density / aspect passes so they measure post-ARAP shape.
                     if (opts.reparameterizeStretchedShells)
                     {
                         int stretchedFoundM = 0, convergedM = 0, skippedM = 0;
@@ -727,6 +713,20 @@ namespace SashaRX.UnityMeshLab
                         if (stretchedFoundM > 0)
                             UvtLog.Info(UvtLog.Category.Repack,
                                 $"[Repack] ARAP mesh {m}: reparameterized {convergedM}/{stretchedFoundM} stretched shells (L²>{opts.stretchThreshold:F2}, skipped {skippedM})");
+                    }
+
+                    // Texel-density normalization (pre-pack): per-shell UV0
+                    // rescale so UV-area ∝ 3D-area. Result: uniform lightmap
+                    // texels-per-world-unit across the model. Local uvFlat
+                    // mutated only; mesh.uv stays intact.
+                    if (opts.normalizeTexelDensity)
+                    {
+                        int rescaledM = TexelDensityNormalizer.Normalize(
+                            uvFlat, allShells[m], allTris[m], allPositions[m],
+                            targetCoverage: opts.targetUvCoverage,
+                            normalizeAspect: opts.normalizeShellAspect);
+                        UvtLog.Verbose(UvtLog.Category.Repack,
+                            $"Texel density mesh {m}: rescaled {rescaledM}/{allShells[m].Count} shells");
                     }
 
                     // Perturb UV0 of overlap-grouped shells so xatlas treats
