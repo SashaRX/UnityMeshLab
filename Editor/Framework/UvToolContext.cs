@@ -10,6 +10,18 @@ using UnityEditor;
 namespace SashaRX.UnityMeshLab
 {
     /// <summary>
+    /// Repack atlas resolution selection strategy.
+    /// <see cref="Manual"/> uses <see cref="UvToolContext.AtlasResolution"/> directly;
+    /// <see cref="AutoFromTexelDensity"/> derives the resolution from total 3D
+    /// surface area and <see cref="UvToolContext.LightmapDensity"/>.
+    /// </summary>
+    public enum ResolutionMode
+    {
+        Manual,
+        AutoFromTexelDensity,
+    }
+
+    /// <summary>
     /// Shared state container — one instance per <see cref="UvToolHub"/> window.
     /// Created in <c>OnEnable</c>, populated by <see cref="Refresh"/>.
     /// All tools receive a reference via <see cref="IUvTool.OnActivate"/>.
@@ -136,6 +148,20 @@ namespace SashaRX.UnityMeshLab
         /// pack but risk of atlas overflow + downscale.
         /// </summary>
         public float TargetUvCoverage = 0.95f;
+
+        /// <summary>
+        /// Strategy for choosing the repack atlas resolution. Manual uses the
+        /// explicit <see cref="AtlasResolution"/> field; AutoFromTexelDensity
+        /// derives it from total 3D surface area and <see cref="LightmapDensity"/>.
+        /// </summary>
+        public ResolutionMode RepackResolutionMode = ResolutionMode.Manual;
+
+        /// <summary>
+        /// Target lightmap density in texels per meter. Used only when
+        /// <see cref="RepackResolutionMode"/> is <see cref="ResolutionMode.AutoFromTexelDensity"/>.
+        /// Default 10 texels/m matches a typical Unity progressive lightmap baseline.
+        /// </summary>
+        public float LightmapDensity = 10f;
 
         public int IsolatedMeshGroup = -1;
 

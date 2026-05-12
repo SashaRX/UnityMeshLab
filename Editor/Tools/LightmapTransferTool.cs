@@ -460,7 +460,53 @@ namespace SashaRX.UnityMeshLab
             if (foldRepackSettings)
             {
                 EditorGUI.indentLevel++;
-                ctx.AtlasResolution = EditorGUILayout.IntField("Resolution", ctx.AtlasResolution);
+                ctx.RepackResolutionMode = (ResolutionMode)EditorGUILayout.EnumPopup(
+                    new GUIContent("Resolution mode",
+                        "Manual: you pick the atlas resolution (power of two) and "
+                        + "the tool shows the effective texel density.\n"
+                        + "Auto from texel density: you pick a target texels/meter "
+                        + "and the tool sizes the atlas from total 3D surface area, "
+                        + "rounded up to the next power of two and clamped to "
+                        + "[64, 4096]. Padding stays in pixels in both modes."),
+                    ctx.RepackResolutionMode);
+
+                double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
+                    ctx.ForLod(ctx.SourceLodIndex)
+                        .Where(e => e.originalMesh != null)
+                        .Select(e => e.originalMesh));
+
+                if (ctx.RepackResolutionMode == ResolutionMode.Manual)
+                {
+                    ctx.AtlasResolution = EditorGUILayout.IntField(
+                        new GUIContent("Resolution",
+                            "Atlas resolution in pixels. Power-of-two values are "
+                            + "recommended (64, 128, 256, 512, 1024, 2048, 4096)."),
+                        ctx.AtlasResolution);
+                    int resForDisplay = Mathf.Max(1, ctx.AtlasResolution);
+                    double effDensity = total3DArea > 0.0
+                        ? resForDisplay / System.Math.Sqrt(total3DArea / Mathf.Max(0.0001f, ctx.TargetUvCoverage))
+                        : 0.0;
+                    EditorGUILayout.LabelField(
+                        " ",
+                        $"3D area: {total3DArea:F2} m² · effective ≈ {effDensity:F1} texels/m",
+                        EditorStyles.miniLabel);
+                }
+                else
+                {
+                    ctx.LightmapDensity = EditorGUILayout.Slider(
+                        new GUIContent("Texels per meter",
+                            "Target lightmap density. Tool computes the atlas "
+                            + "resolution as ceil_pow2(sqrt(area × density² / coverage)), "
+                            + "clamped to [64, 4096]. Typical values: 5-20 for props, "
+                            + "1-5 for large environment pieces."),
+                        ctx.LightmapDensity, 0.5f, 100f);
+                    uint autoRes = MeshAreaHelper.ComputeAutoResolution(
+                        total3DArea, ctx.LightmapDensity, ctx.TargetUvCoverage);
+                    EditorGUILayout.LabelField(
+                        " ",
+                        $"3D area: {total3DArea:F2} m² · computed resolution: {autoRes} px",
+                        EditorStyles.miniLabel);
+                }
                 ctx.ShellPaddingPx = EditorGUILayout.IntSlider("Shell Padding", ctx.ShellPaddingPx, 0, 16);
                 ctx.BorderPaddingPx = EditorGUILayout.IntSlider("Border Padding", ctx.BorderPaddingPx, 0, 16);
                 EditorGUILayout.Space(4);
@@ -1321,7 +1367,18 @@ namespace SashaRX.UnityMeshLab
 
         void ExecRepackCore(List<MeshEntry> entries)
         {
-            UvtLog.Info($"[Repack] {entries.Count} meshes, res={ctx.AtlasResolution}, pad={ctx.ShellPaddingPx}, bdr={ctx.BorderPaddingPx}");
+            uint resolvedResolution = (uint)ctx.AtlasResolution;
+            if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
+            {
+                double area = MeshAreaHelper.ComputeTotal3DAreaMeters(
+                    entries.Where(e => e.originalMesh != null).Select(e => e.originalMesh));
+                resolvedResolution = MeshAreaHelper.ComputeAutoResolution(
+                    area, ctx.LightmapDensity, ctx.TargetUvCoverage);
+                UvtLog.Info(
+                    $"[Repack] Auto-resolution: area={area:F2} m², density={ctx.LightmapDensity:F2} tex/m, " +
+                    $"coverage={ctx.TargetUvCoverage:F2} → {resolvedResolution} px");
+            }
+            UvtLog.Info($"[Repack] {entries.Count} meshes, res={resolvedResolution}, pad={ctx.ShellPaddingPx}, bdr={ctx.BorderPaddingPx}");
             var validEntries = new List<MeshEntry>();
             var meshCopies = new List<Mesh>();
             foreach (var e in entries)
@@ -1337,7 +1394,7 @@ namespace SashaRX.UnityMeshLab
             if (meshCopies.Count == 0) return;
 
             var opts = RepackOptions.Default;
-            opts.resolution = (uint)ctx.AtlasResolution;
+            opts.resolution = resolvedResolution;
             opts.padding = (uint)ctx.ShellPaddingPx;
             opts.borderPadding = (uint)ctx.BorderPaddingPx;
             opts.bruteForce = ctx.XatlasBruteForce;
