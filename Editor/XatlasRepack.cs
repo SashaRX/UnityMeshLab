@@ -237,9 +237,15 @@ namespace SashaRX.UnityMeshLab
             {
                 if (group.Count < 2) continue;
 
-                // Compute centroid U of first shell to use as scale pivot
+                // Compute centroid (U,V) of first shell to use as scale pivot.
+                // Must scale BOTH axes uniformly — scaling U only flattens
+                // shells (fan-shaped discs become horizontal slivers when an
+                // N-fold symmetry group accumulates scale on each copy).
+                // Uniform scale only changes size, not shape; xatlas still
+                // sees them as distinct charts (different bbox dimensions).
                 var firstShell = shells[group[0]];
                 float pivotU = (firstShell.boundsMin.x + firstShell.boundsMax.x) * 0.5f;
+                float pivotV = (firstShell.boundsMin.y + firstShell.boundsMax.y) * 0.5f;
 
                 for (int g = 1; g < group.Count; g++)
                 {
@@ -251,7 +257,9 @@ namespace SashaRX.UnityMeshLab
                         if ((uint)idx + 1 < (uint)uvFlat.Length)
                         {
                             float u = uvFlat[idx];
-                            uvFlat[idx] = pivotU + (u - pivotU) * scale;
+                            float v = uvFlat[idx + 1];
+                            uvFlat[idx]     = pivotU + (u - pivotU) * scale;
+                            uvFlat[idx + 1] = pivotV + (v - pivotV) * scale;
                         }
                     }
                 }
