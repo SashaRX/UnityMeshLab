@@ -290,7 +290,6 @@ namespace SashaRX.UnityMeshLab
         private const float kPerShellTrivialEps      = 1e-3f; // relative |aS - aUV| skip default
         private const float kPerShellUnfoldEps       = 1e-12f; // unfold offset sumSq floor
         private const float kPerShellUvEps           = 1e-12f; // UV offset sumSq floor
-        private const float kPerShellSanderCvSkip    = 0.5f;  // CV under which we trust the artist's UV0
         private const float kPerShellUnfoldCoverage  = 0.5f;  // min fraction of shell verts that must unfold
 
         /// <summary>
@@ -324,7 +323,6 @@ namespace SashaRX.UnityMeshLab
             int modified = 0;
             int skipDegenerate = 0;
             int skipTrivial = 0;          // surface aspect ≈ UV aspect already
-            int skipAlreadyUniform = 0;   // Sander CV < threshold → trust artist
             int skipUnfoldFail = 0;       // BFS unfold did not cover enough verts
             int skipNumeric = 0;
             int skipClamp = 0;
@@ -399,19 +397,13 @@ namespace SashaRX.UnityMeshLab
 
                 float aspectSurface = Mathf.Clamp(surfaceAspect, 1f, maxAspectClamp);
 
-                // Sander L² CV — if the artist's UV0 already preserves
-                // per-triangle area ratios then triangles are well-shaped
-                // and we should not disturb them. Threshold is empirical
-                // (cv < 0.5 ≈ "uniform enough" given typical artist unwraps).
+                // Sander L² CV: informational only — logged for diagnostics.
+                // Originally used as a skip gate ("artist's UV is uniform →
+                // trust it"), but that gate also skips shells that are
+                // uniformly stretched the wrong direction (low intra-shell
+                // CV, but bbox aspect way off the surface aspect). The
+                // aspect-delta threshold (next step) is the real gate.
                 float sanderCv = ComputeSanderCV(shell, tris, positions, uvFlat);
-                if (sanderCv >= 0f && sanderCv < kPerShellSanderCvSkip)
-                {
-                    skipAlreadyUniform++;
-                    UvtLog.Verbose(UvtLog.Category.Repack,
-                        $"[Repack] PerShellAspect: shell {si} surfaceAspect={aspectSurface:F2}:1 " +
-                        $"cv={sanderCv:F2} (<{kPerShellSanderCvSkip:F2}) → already-uniform, skipping");
-                    continue;
-                }
 
                 // UV centroid + paired unfold / UV offset accumulators for
                 // the 2×2 cross-covariance.
@@ -616,7 +608,6 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Info(UvtLog.Category.Repack,
                 $"[Repack] PerShellAspect: normalized {modified}/{n} shells " +
                 $"(skipped {skipDegenerate} degenerate, {skipTrivial} trivial, " +
-                $"{skipAlreadyUniform} already-uniform [cv<{kPerShellSanderCvSkip:F2}], " +
                 $"{skipUnfoldFail} unfold-incomplete, " +
                 $"{skipNumeric} numeric, {skipClamp} out-of-scale-range, " +
                 $"{skipExternal} caller-skipped)");
