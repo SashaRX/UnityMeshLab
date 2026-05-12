@@ -92,6 +92,22 @@ namespace SashaRX.UnityMeshLab
         public bool NormalizeTexelDensity = true;
 
         /// <summary>
+        /// On top of density normalisation, apply non-uniform per-shell scale so the
+        /// UV bbox aspect matches the shell's 3D shape aspect (ratio of the two
+        /// largest 3D AABB extents). Fixes UV0 squished 1:1 onto a 10:1 plank in 3D.
+        /// Area-preserving by construction. Only effective when NormalizeTexelDensity
+        /// is on. Default ON.
+        /// </summary>
+        public bool NormalizeShellAspect = true;
+
+        /// <summary>
+        /// Clamp on the 3D aspect ratio used as the target for shell aspect
+        /// normalisation. Sliver / edge shells with 3D aspect 100:1 or more would
+        /// stretch to absurd shapes in UV otherwise. Default 10 (plank-sized).
+        /// </summary>
+        public float MaxShellAspect = 10f;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas the normalized UVs should sum to.
         /// Leaves slack for bin-packing inefficiency so the atlas doesn't
         /// grow past the requested resolution. Default 0.75 (= 25% safety

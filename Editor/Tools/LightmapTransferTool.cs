@@ -463,6 +463,21 @@ namespace SashaRX.UnityMeshLab
                     ctx.NormalizeTexelDensity);
                 using (new EditorGUI.DisabledScope(!ctx.NormalizeTexelDensity))
                 {
+                    ctx.NormalizeShellAspect = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Normalize shell aspect",
+                            "Additionally apply non-uniform per-shell scale so the UV bbox "
+                            + "aspect ratio matches the shell's 3D shape aspect. Fixes UV0 "
+                            + "authored 1:1 onto a 10:1 plank in 3D (per-axis texel stretch). "
+                            + "Area-preserving — composed with density normalization."),
+                        ctx.NormalizeShellAspect);
+                    using (new EditorGUI.DisabledScope(!ctx.NormalizeShellAspect))
+                    {
+                        ctx.MaxShellAspect = EditorGUILayout.Slider(
+                            new GUIContent("Max shell aspect",
+                                "Clamp on 3D aspect ratio target. Sliver shells (100:1+) "
+                                + "would stretch to absurd shapes in UV otherwise."),
+                            ctx.MaxShellAspect, 2f, 50f);
+                    }
                     ctx.TargetUvCoverage = EditorGUILayout.Slider(
                         new GUIContent("UV coverage budget",
                             "Fraction of [0,1]² atlas that normalized UVs sum to. "
@@ -1065,6 +1080,8 @@ namespace SashaRX.UnityMeshLab
             opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
             opts.mergeOverlappingTiles = ctx.MergeOverlappingTiles;
             opts.normalizeTexelDensity = ctx.NormalizeTexelDensity;
+            opts.normalizeShellAspect = ctx.NormalizeShellAspect;
+            opts.maxShellAspect = ctx.MaxShellAspect;
             opts.targetUvCoverage = ctx.TargetUvCoverage;
             opts.maxChartSize = ctx.XatlasMaxChartSize;
             opts.bilinear = ctx.XatlasBilinear;

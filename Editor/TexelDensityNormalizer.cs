@@ -50,6 +50,19 @@ namespace SashaRX.UnityMeshLab
         /// downscale and loses texel density). Default 0.75 — leaves 25% slack as a
         /// safety margin for the packer. Set to 0 or ≥1 to disable the budget step
         /// and preserve total UV area exactly.</param>
+        /// <param name="normalizeAspect">When true, apply non-uniform per-shell scale so the UV
+        /// bounding-box aspect ratio matches the shell's 3D shape aspect (ratio of the two
+        /// largest 3D AABB extents — the third dimension is treated as plane thickness and
+        /// discarded). The non-uniform scale is composed with the uniform texel-density scale
+        /// such that triangle area is preserved (scaleU × scaleV = density-scale²). Works
+        /// well for flat or near-flat shells (planks, walls, panels); approximate for curved
+        /// surfaces (cylinders, spheres) because AABB extents don't reflect the unrolled
+        /// surface parameterization. Disable if a project depends on artist-authored UV
+        /// aspect ratios.</param>
+        /// <param name="maxAspect">Clamp on the 3D aspect ratio used as target. Without this,
+        /// edge-like or sliver shells (aspect 1000:1) would force runaway stretch. Default 10
+        /// matches typical plank/panel ratios; extreme tile-strips above this fall back to
+        /// 10:1 stretch.</param>
         /// <returns>Number of shells whose UV0 was rescaled (excludes scale≈1 no-ops).</returns>
         internal static int Normalize(
             float[] uvFlat,
@@ -59,7 +72,9 @@ namespace SashaRX.UnityMeshLab
             float scaleMin = 0.1f,
             float scaleMax = 10f,
             bool medianDensity = false,
-            float targetCoverage = 0.75f)
+            float targetCoverage = 0.75f,
+            bool normalizeAspect = true,
+            float maxAspect = 10f)
         {
             if (uvFlat == null || shells == null || shells.Count == 0) return 0;
             if (tris == null || positions == null) return 0;
@@ -69,17 +84,21 @@ namespace SashaRX.UnityMeshLab
             int n = shells.Count;
             var area3DPerShell = new double[n];
             var areaUVPerShell = new double[n];
+            var aspect3DPerShell = normalizeAspect ? new double[n] : null;
             double sumArea3D = 0.0;
             double sumAreaUV = 0.0;
 
             int triPosLen = positions.Length;
             int uvLen = uvFlat.Length;
+            float aspectClamp = Mathf.Max(1f, maxAspect);
 
             for (int si = 0; si < n; si++)
             {
                 var shell = shells[si];
                 if (shell.faceIndices == null) continue;
                 double a3 = 0.0, au = 0.0;
+                Vector3 mn3 = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                Vector3 mx3 = new Vector3(float.MinValue, float.MinValue, float.MinValue);
                 foreach (int f in shell.faceIndices)
                 {
                     int t = f * 3;
@@ -93,6 +112,12 @@ namespace SashaRX.UnityMeshLab
                     Vector3 cross = Vector3.Cross(p1 - p0, p2 - p0);
                     a3 += cross.magnitude * 0.5;
 
+                    if (aspect3DPerShell != null)
+                    {
+                        mn3 = Vector3.Min(mn3, Vector3.Min(p0, Vector3.Min(p1, p2)));
+                        mx3 = Vector3.Max(mx3, Vector3.Max(p0, Vector3.Max(p1, p2)));
+                    }
+
                     int u0 = i0 * 2, u1 = i1 * 2, u2 = i2 * 2;
                     if ((uint)(u0 + 1) >= (uint)uvLen ||
                         (uint)(u1 + 1) >= (uint)uvLen ||
@@ -101,6 +126,22 @@ namespace SashaRX.UnityMeshLab
                     double bx = uvFlat[u1],     by = uvFlat[u1 + 1];
                     double cx = uvFlat[u2],     cy = uvFlat[u2 + 1];
                     au += Math.Abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) * 0.5;
+                }
+                if (aspect3DPerShell != null)
+                {
+                    Vector3 sz = mx3 - mn3;
+                    // Sort 3D AABB dims ascending: [thickness, short, long]. Treat the
+                    // smallest as the plane normal direction; the ratio of the other two
+                    // is the surface aspect we want UV to mimic. Clamped to maxAspect to
+                    // avoid runaway stretch for sliver / edge shells.
+                    float dx = Mathf.Abs(sz.x), dy = Mathf.Abs(sz.y), dz = Mathf.Abs(sz.z);
+                    float d0 = Mathf.Min(dx, Mathf.Min(dy, dz));
+                    float d2 = Mathf.Max(dx, Mathf.Max(dy, dz));
+                    float d1 = dx + dy + dz - d0 - d2;
+                    double asp = d1 > 1e-8f ? (double)d2 / d1 : 1.0;
+                    if (asp > aspectClamp) asp = aspectClamp;
+                    if (asp < 1.0) asp = 1.0;
+                    aspect3DPerShell[si] = asp;
                 }
                 area3DPerShell[si] = a3;
                 areaUVPerShell[si] = au;
@@ -160,13 +201,40 @@ namespace SashaRX.UnityMeshLab
                 double desired = a3 * densityTarget;
                 double scaleSq = desired / au;
                 if (double.IsNaN(scaleSq) || double.IsInfinity(scaleSq) || scaleSq <= 0.0) continue;
-                float scale = (float)Math.Sqrt(scaleSq);
-                if (float.IsNaN(scale) || float.IsInfinity(scale)) continue;
-                scale = Mathf.Clamp(scale, scaleMin, scaleMax);
-                if (Mathf.Abs(scale - 1f) < 1e-4f) continue;
+                double uniformScale = Math.Sqrt(scaleSq);
+                if (double.IsNaN(uniformScale) || double.IsInfinity(uniformScale)) continue;
+
+                double scaleUd = uniformScale, scaleVd = uniformScale;
 
                 var shell = shells[si];
                 if (shell.vertexIndices == null || shell.vertexIndices.Count == 0) continue;
+
+                // Aspect-ratio correction: decompose the UV scale into u/v factors
+                // whose product equals uniformScale² (so triangle area is preserved
+                // exactly) but whose ratio brings the UV bbox aspect toward the 3D
+                // shell aspect. correction = sqrt(target / current); long axis gets
+                // *=correction, short axis /=correction.
+                if (aspect3DPerShell != null)
+                {
+                    float du = Mathf.Max(1e-8f, shell.boundsMax.x - shell.boundsMin.x);
+                    float dv = Mathf.Max(1e-8f, shell.boundsMax.y - shell.boundsMin.y);
+                    double curAsp = du >= dv ? (double)du / dv : (double)dv / du;
+                    double tgtAsp = aspect3DPerShell[si];
+                    if (tgtAsp > 1.0 && curAsp > 0.0)
+                    {
+                        double aspectRatio = tgtAsp / curAsp;
+                        double corr = Math.Sqrt(aspectRatio);
+                        if (!double.IsNaN(corr) && !double.IsInfinity(corr) && corr > 0.0)
+                        {
+                            if (du >= dv) { scaleUd *= corr; scaleVd /= corr; }
+                            else          { scaleUd /= corr; scaleVd *= corr; }
+                        }
+                    }
+                }
+
+                float scaleU = Mathf.Clamp((float)scaleUd, scaleMin, scaleMax);
+                float scaleV = Mathf.Clamp((float)scaleVd, scaleMin, scaleMax);
+                if (Mathf.Abs(scaleU - 1f) < 1e-4f && Mathf.Abs(scaleV - 1f) < 1e-4f) continue;
 
                 Vector2 c = (shell.boundsMin + shell.boundsMax) * 0.5f;
                 foreach (int v in shell.vertexIndices)
@@ -175,8 +243,8 @@ namespace SashaRX.UnityMeshLab
                     if ((uint)(idx + 1) >= (uint)uvLen) continue;
                     float u = uvFlat[idx];
                     float w = uvFlat[idx + 1];
-                    uvFlat[idx]     = c.x + (u - c.x) * scale;
-                    uvFlat[idx + 1] = c.y + (w - c.y) * scale;
+                    uvFlat[idx]     = c.x + (u - c.x) * scaleU;
+                    uvFlat[idx + 1] = c.y + (w - c.y) * scaleV;
                 }
                 modified++;
             }

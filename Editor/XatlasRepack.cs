@@ -62,6 +62,24 @@ namespace SashaRX.UnityMeshLab
         public bool normalizeTexelDensity;
 
         /// <summary>
+        /// Additionally apply non-uniform per-shell UV scale so the UV bounding-box
+        /// aspect ratio mimics the shell's 3D shape aspect (ratio of the two largest
+        /// 3D AABB extents). The non-uniform scale is composed with the density scale
+        /// so triangle area is preserved (scaleU × scaleV = density-scale²). Fixes
+        /// shells that were authored 1:1 in UV but represent 10:1 planks in 3D,
+        /// preventing per-axis texel stretch. Only used when normalizeTexelDensity
+        /// is true. Approximate for curved surfaces (cylinders, spheres) because
+        /// AABB extents don't reflect the unrolled parameterization.
+        /// </summary>
+        public bool normalizeShellAspect;
+
+        /// <summary>
+        /// Clamp on the 3D aspect ratio used as per-shell target. Sliver / edge shells
+        /// in 3D (aspect 100:1+) would force runaway UV stretch otherwise. Default 10:1.
+        /// </summary>
+        public float maxShellAspect;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas that normalized UVs should sum to AFTER
         /// per-shell density equalisation. Bin-packing leaves slack, so
         /// total chart area below 1.0 keeps xatlas from overflowing the
@@ -108,6 +126,8 @@ namespace SashaRX.UnityMeshLab
             mergeOverlappingTiles = false,
             perturbStrength = 0f,             // adaptive
             normalizeTexelDensity = true,
+            normalizeShellAspect = true,
+            maxShellAspect = 10f,
             targetUvCoverage = 0.75f,
             tileMergeIoUThreshold = 0.9f,
             tileMergeFaceCountRatio = 4f,
@@ -906,7 +926,9 @@ namespace SashaRX.UnityMeshLab
             {
                 int rescaled = TexelDensityNormalizer.Normalize(
                     uvFlat, shells, tris, positions,
-                    targetCoverage: opts.targetUvCoverage);
+                    targetCoverage: opts.targetUvCoverage,
+                    normalizeAspect: opts.normalizeShellAspect,
+                    maxAspect: opts.maxShellAspect);
                 UvtLog.Verbose(UvtLog.Category.Repack,
                     $"Texel density: rescaled {rescaled}/{shells.Count} shells to uniform UV/3D area ratio");
             }
@@ -1303,7 +1325,9 @@ namespace SashaRX.UnityMeshLab
                     {
                         int rescaledM = TexelDensityNormalizer.Normalize(
                             uvFlat, allShells[m], allTris[m], allPositions[m],
-                            targetCoverage: opts.targetUvCoverage);
+                            targetCoverage: opts.targetUvCoverage,
+                            normalizeAspect: opts.normalizeShellAspect,
+                            maxAspect: opts.maxShellAspect);
                         UvtLog.Verbose(UvtLog.Category.Repack,
                             $"Texel density mesh {m}: rescaled {rescaledM}/{allShells[m].Count} shells");
                     }
