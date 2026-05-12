@@ -250,6 +250,39 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
+        /// Run HardEdgeShellAnalyzer and emit a one-line summary + up to 10
+        /// per-shell rows for shells that would split into ≥2 sub-components
+        /// with ≥2 faces each (user rule: don't cut if the outcome is just
+        /// unstitching one face from the rest). Pure logging — the result is
+        /// not yet applied to faceShellIds. Threshold 45° matches the
+        /// classic "smoothing-group / hard-edge" cutoff used by DCC tools.
+        /// </summary>
+        static void LogHardEdgeAnalysis(List<UvShell> shells, int[] tris, Vector3[] positions, string meshLabel)
+        {
+            var r = HardEdgeShellAnalyzer.Analyze(shells, tris, positions, angleThresholdDeg: 45f, minSubshellFaces: 2);
+            if (r.shellsSplittable == 0)
+            {
+                if (r.shellsWithHardEdges > 0)
+                    UvtLog.Verbose(UvtLog.Category.Repack,
+                        $"[HardEdgeAnalysis] '{meshLabel}': {r.shellsWithHardEdges}/{r.totalShellsAnalyzed} shells contain hard edges but none would split into ≥2 chunks — nothing to cut.");
+                return;
+            }
+            UvtLog.Info(UvtLog.Category.Repack,
+                $"[HardEdgeAnalysis] '{meshLabel}': {r.shellsSplittable}/{r.totalShellsAnalyzed} shell(s) would split into ≥2 sub-components on hard edges (45°). " +
+                $"({r.shellsWithHardEdges} shells contain at least one hard edge.)");
+            int n = Mathf.Min(r.splittable.Count, 10);
+            for (int i = 0; i < n; i++)
+            {
+                var info = r.splittable[i];
+                UvtLog.Info(UvtLog.Category.Repack,
+                    $"[HardEdgeAnalysis]   shell #{info.shellId}: {info.eligibleComponents} eligible sub-components (raw {info.totalComponents}, {info.hardEdgeCount} hard edge pairs)");
+            }
+            if (r.splittable.Count > n)
+                UvtLog.Info(UvtLog.Category.Repack,
+                    $"[HardEdgeAnalysis]   …and {r.splittable.Count - n} more.");
+        }
+
+        /// <summary>
         /// Sum of signed UV2 triangle areas across the mesh. uv2 is in [0,1]
         /// so the result equals the atlas utilization fraction (1.0 == 100%
         /// of the atlas covered by charts; bin-packing typically lands at
@@ -331,6 +364,11 @@ namespace SashaRX.UnityMeshLab
             int overlapPairCount = UvShellExtractor.CountAabbOverlaps(shells);
             UvtLog.Verbose($"[xatlas] Pre-repack: {shells.Count} shells, " +
                 $"{overlapGroups.Count} overlap groups, {overlapPairCount} overlapping pairs");
+
+            // Hard-edge shell-split analysis. Pure diagnostic for now — the
+            // result is logged but the perFaceComponent map is not applied to
+            // faceShellIds. A future opt-in will materialise the split.
+            LogHardEdgeAnalysis(shells, tris, mesh.vertices, meshLabel: mesh.name);
 
             // UV0 winding normalized by ExecWeldUv0.
             result.flippedShells = 0;
@@ -551,6 +589,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Verbose($"[xatlas] Pre-repack mesh {m}: {shells.Count} shells, " +
                     $"{overlapGroups.Count} overlap groups, {overlapPairs} overlapping pairs");
 
+                LogHardEdgeAnalysis(shells, allTris[m], allPositions[m], meshLabel: mesh.name);
             }
 
             // UV0 winding normalized by ExecWeldUv0.
