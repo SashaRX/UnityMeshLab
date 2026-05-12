@@ -56,6 +56,18 @@ namespace SashaRX.UnityMeshLab
         public bool normalizeTexelDensity;
 
         /// <summary>
+        /// Fraction of [0,1]² atlas that normalized UVs should sum to AFTER
+        /// per-shell density equalisation. Bin-packing leaves slack, so
+        /// total chart area below 1.0 keeps xatlas from overflowing the
+        /// requested resolution and downscaling. Default 0.75 — 25% safety
+        /// margin matching typical bruteForce packing efficiency on
+        /// mixed-aspect chart sets. 0 disables the budget step (preserves
+        /// original total UV area). Only used when normalizeTexelDensity
+        /// is true.
+        /// </summary>
+        public float targetUvCoverage;
+
+        /// <summary>
         /// Tile-merge guard — IoU of UV0 AABB above which a candidate counts
         /// as tile-equivalent to the rep (subject to face-count and 3D-size
         /// gates). Only used when mergeOverlappingTiles=true.
@@ -83,12 +95,13 @@ namespace SashaRX.UnityMeshLab
             texelsPerUnit = 0f,
             bilinear   = true,
             blockAlign = false,
-            bruteForce = false,
+            bruteForce = true,
             rotateCharts = true,
             rotateChartsToAxis = true,
             mergeOverlappingTiles = false,
             perturbStrength = 0f,             // adaptive
             normalizeTexelDensity = true,
+            targetUvCoverage = 0.75f,
             tileMergeIoUThreshold = 0.9f,
             tileMergeFaceCountRatio = 4f,
             tileMerge3DSizeTolerance = 0.3f,
@@ -240,6 +253,30 @@ namespace SashaRX.UnityMeshLab
         /// that has both intentional tile-merge overlaps (which must stay) and
         /// accidental shell overlaps elsewhere (which must be relocated).
         /// </summary>
+
+        /// <summary>
+        /// Sum of signed UV2 triangle areas across the mesh. uv2 is in [0,1]
+        /// so the result equals the atlas utilization fraction (1.0 == 100%
+        /// of the atlas covered by charts; bin-packing typically lands at
+        /// 0.55–0.85 depending on chart shape mix and packer mode).
+        /// </summary>
+        internal static double ComputeUv2CoverageFraction(Vector2[] uv2, int[] tris)
+        {
+            if (uv2 == null || tris == null) return 0.0;
+            double sum = 0.0;
+            int triCount = tris.Length / 3;
+            int uvLen = uv2.Length;
+            for (int f = 0; f < triCount; f++)
+            {
+                int t = f * 3;
+                int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
+                if ((uint)i0 >= (uint)uvLen || (uint)i1 >= (uint)uvLen || (uint)i2 >= (uint)uvLen) continue;
+                Vector2 a = uv2[i0], b = uv2[i1], c = uv2[i2];
+                sum += Math.Abs((double)(b.x - a.x) * (c.y - a.y) - (double)(c.x - a.x) * (b.y - a.y)) * 0.5;
+            }
+            return sum;
+        }
+
         static List<UvShell> BuildNonDuplicateShells(List<UvShell> shells, bool[] skipShell)
         {
             var result = new List<UvShell>(shells.Count);
@@ -861,7 +898,8 @@ namespace SashaRX.UnityMeshLab
             if (opts.normalizeTexelDensity)
             {
                 int rescaled = TexelDensityNormalizer.Normalize(
-                    uvFlat, shells, tris, positions);
+                    uvFlat, shells, tris, positions,
+                    targetCoverage: opts.targetUvCoverage);
                 UvtLog.Verbose(UvtLog.Category.Repack,
                     $"Texel density: rescaled {rescaled}/{shells.Count} shells to uniform UV/3D area ratio");
             }
@@ -1144,6 +1182,10 @@ namespace SashaRX.UnityMeshLab
                 mesh.SetUVs(1, uv2);
                 result.ok = true;
 
+                double coverage = ComputeUv2CoverageFraction(uv2, tris);
+                UvtLog.Info(UvtLog.Category.Repack,
+                    $"Atlas utilization: {coverage * 100.0:F1}% of [0,1]² covered ({shells.Count} shells)");
+
                 // ── Stats ──
                 int nonZero = 0;
                 float minU = float.MaxValue, maxU = float.MinValue;
@@ -1253,7 +1295,8 @@ namespace SashaRX.UnityMeshLab
                     if (opts.normalizeTexelDensity)
                     {
                         int rescaledM = TexelDensityNormalizer.Normalize(
-                            uvFlat, allShells[m], allTris[m], allPositions[m]);
+                            uvFlat, allShells[m], allTris[m], allPositions[m],
+                            targetCoverage: opts.targetUvCoverage);
                         UvtLog.Verbose(UvtLog.Category.Repack,
                             $"Texel density mesh {m}: rescaled {rescaledM}/{allShells[m].Count} shells");
                     }
@@ -1518,6 +1561,10 @@ namespace SashaRX.UnityMeshLab
 
                     allUv2[m] = uv2;
                     results[m].ok = true;
+
+                    double coverageM = ComputeUv2CoverageFraction(uv2, allTris[m]);
+                    UvtLog.Info(UvtLog.Category.Repack,
+                        $"Atlas utilization mesh {m}: {coverageM * 100.0:F1}% of [0,1]² covered ({allShells[m].Count} shells)");
                 }
 
                 // Global rescale across all meshes to maintain cross-mesh UV2 consistency

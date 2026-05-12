@@ -461,6 +461,16 @@ namespace SashaRX.UnityMeshLab
                         + "Produces uniform texels-per-world-unit in the baked lightmap. "
                         + "Disable to preserve an existing baked-texture UV layout."),
                     ctx.NormalizeTexelDensity);
+                using (new EditorGUI.DisabledScope(!ctx.NormalizeTexelDensity))
+                {
+                    ctx.TargetUvCoverage = EditorGUILayout.Slider(
+                        new GUIContent("UV coverage budget",
+                            "Fraction of [0,1]² atlas that normalized UVs sum to. "
+                            + "Leaves slack for bin-packing inefficiency so the atlas doesn't "
+                            + "grow past the requested resolution. Lower → safer fit, smaller "
+                            + "charts; higher → tighter pack but risk of overflow + downscale."),
+                        ctx.TargetUvCoverage, 0.3f, 0.95f);
+                }
                 EditorGUILayout.Space(4);
                 EditorGUILayout.LabelField("xatlas options", EditorStyles.miniBoldLabel);
                 ctx.MergeOverlappingTiles = EditorGUILayout.ToggleLeft(
@@ -1028,6 +1038,7 @@ namespace SashaRX.UnityMeshLab
             opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
             opts.mergeOverlappingTiles = ctx.MergeOverlappingTiles;
             opts.normalizeTexelDensity = ctx.NormalizeTexelDensity;
+            opts.targetUvCoverage = ctx.TargetUvCoverage;
 
             var results = XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);
             for (int i = 0; i < validEntries.Count; i++)

@@ -42,6 +42,14 @@ namespace SashaRX.UnityMeshLab
         /// target (robust against a few extreme outliers). When false, use the area-weighted
         /// global average — preserves total UV area exactly but is sensitive to outliers.
         /// Default false (area-weighted).</param>
+        /// <param name="targetCoverage">After per-shell density equalisation, the total UV
+        /// area is globally scaled so it sums to this fraction of [0,1]². Bin-packing
+        /// in xatlas typically achieves 0.55–0.85 utilisation depending on chart aspect
+        /// ratios; setting target below that leaves headroom and prevents the atlas
+        /// from growing past the requested resolution (which forces an external
+        /// downscale and loses texel density). Default 0.75 — leaves 25% slack as a
+        /// safety margin for the packer. Set to 0 or ≥1 to disable the budget step
+        /// and preserve total UV area exactly.</param>
         /// <returns>Number of shells whose UV0 was rescaled (excludes scale≈1 no-ops).</returns>
         internal static int Normalize(
             float[] uvFlat,
@@ -50,7 +58,8 @@ namespace SashaRX.UnityMeshLab
             Vector3[] positions,
             float scaleMin = 0.1f,
             float scaleMax = 10f,
-            bool medianDensity = false)
+            bool medianDensity = false,
+            float targetCoverage = 0.75f)
         {
             if (uvFlat == null || shells == null || shells.Count == 0) return 0;
             if (tris == null || positions == null) return 0;
@@ -125,6 +134,18 @@ namespace SashaRX.UnityMeshLab
             }
 
             if (densityTarget < 1e-12) return 0;
+
+            // Global coverage budget: shrink (or expand) density so total
+            // post-normalize UV area = targetCoverage fraction of [0,1]².
+            // After per-shell rescale every shell will have areaUV = a3 *
+            // densityTarget, so total area = Σ a3 * densityTarget. To make
+            // that equal targetCoverage we replace densityTarget with
+            //   densityTarget' = targetCoverage / Σ a3
+            // Disabled (preserve total UV area) when target ≤ 0 or ≥ 1.
+            if (targetCoverage > 0f && targetCoverage < 1f && sumArea3D > 1e-12)
+            {
+                densityTarget = targetCoverage / sumArea3D;
+            }
 
             int modified = 0;
             for (int si = 0; si < n; si++)

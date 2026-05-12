@@ -27,8 +27,16 @@ namespace SashaRX.UnityMeshLab
         public int ShellPaddingPx;
         public int BorderPaddingPx;
         public bool RepackPerMesh;
-        /// <summary>xatlas brute-force pack — slower but tighter atlas. Default off.</summary>
-        public bool XatlasBruteForce;
+        /// <summary>
+        /// xatlas brute-force packer — exhaustively searches placements for
+        /// each chart instead of using the fast heuristic. Default ON because
+        /// the heuristic leaves visible holes when chart sizes vary widely
+        /// (which happens whenever NormalizeTexelDensity is on). Cost is
+        /// ~1–3 seconds of extra wall-time per repack for typical models;
+        /// disable only if iteration speed beats atlas quality on a given
+        /// asset.
+        /// </summary>
+        public bool XatlasBruteForce = true;
         /// <summary>xatlas rotate charts during pack (rotateCharts native option). Default true.</summary>
         public bool XatlasRotateCharts = true;
         /// <summary>xatlas align rotation to axis (rotateChartsToAxis native option). Default true.</summary>
@@ -50,6 +58,15 @@ namespace SashaRX.UnityMeshLab
         /// non-uniform density.
         /// </summary>
         public bool NormalizeTexelDensity = true;
+
+        /// <summary>
+        /// Fraction of [0,1]² atlas the normalized UVs should sum to.
+        /// Leaves slack for bin-packing inefficiency so the atlas doesn't
+        /// grow past the requested resolution. Default 0.75 (= 25% safety
+        /// margin). Lower → safer fit, smaller charts; higher → tighter
+        /// pack but risk of atlas overflow + downscale.
+        /// </summary>
+        public float TargetUvCoverage = 0.75f;
 
         public int IsolatedMeshGroup = -1;
 
