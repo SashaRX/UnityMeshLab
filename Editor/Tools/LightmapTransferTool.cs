@@ -476,7 +476,7 @@ namespace SashaRX.UnityMeshLab
                             new GUIContent("Max shell aspect",
                                 "Clamp on 3D aspect ratio target. Sliver shells (100:1+) "
                                 + "would stretch to absurd shapes in UV otherwise."),
-                            ctx.MaxShellAspect, 2f, 50f);
+                            ctx.MaxShellAspect, 1f, 10f);
                     }
                     ctx.TargetUvCoverage = EditorGUILayout.Slider(
                         new GUIContent("UV coverage budget",
