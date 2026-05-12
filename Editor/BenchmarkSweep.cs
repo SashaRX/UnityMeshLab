@@ -123,6 +123,8 @@ namespace SashaRX.UnityMeshLab
             {
                 WriteSummaryCsv(Path.Combine(sweepDir, "summary.csv"), summaries, sweepDir);
                 WriteWinnerJson(Path.Combine(sweepDir, "winner.json"), summaries, bestIdx);
+                WriteGalleryHtml(Path.Combine(sweepDir, "index.html"), summaries, bestIdx,
+                    BuildRecommendation(summaries, bestIdx), reportsDir);
             }
             catch (Exception ex)
             {
@@ -356,6 +358,192 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
+        /// Emit a self-contained <c>index.html</c> gallery into the sweep
+        /// directory. One sortable row per run with per-LOD UV2 thumbnails
+        /// linking back into <c>BenchmarkReports/&lt;csvBase&gt;_png/</c>. The
+        /// winner row is highlighted via a <c>winner</c> CSS class. The file
+        /// is UTF-8 (no BOM) and uses no external dependencies.
+        /// </summary>
+        internal static void WriteGalleryHtml(string path, List<RunSummary> runs, int bestIdx,
+            string recommendation, string benchmarkReportsRoot)
+        {
+            var inv = CultureInfo.InvariantCulture;
+            string sweepName = Path.GetFileName(Path.GetDirectoryName(path) ?? "");
+            string isoStamp  = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", inv);
+
+            string winnerLabel = "—";
+            string winnerScore = "—";
+            if (bestIdx >= 0 && bestIdx < runs.Count)
+            {
+                var w = runs[bestIdx];
+                winnerLabel = $"res={w.config.atlasRes}, pad={w.config.shellPad}, bdr={w.config.borderPad}, " +
+                              $"psa={(w.config.perShellAspect ? 1 : 0)}, " +
+                              $"arap={(w.config.arapEnabled ? w.config.arapIterations : 0)}";
+                winnerScore = w.score.ToString("F2", inv);
+            }
+
+            var sb = new StringBuilder();
+            sb.Append("<!DOCTYPE html>\n");
+            sb.Append("<html>\n<head>\n");
+            sb.Append("  <meta charset=\"utf-8\">\n");
+            sb.Append("  <title>Sweep: ").Append(HtmlEscape(sweepName))
+              .Append(" (").Append(runs.Count.ToString(inv)).Append(" cells)</title>\n");
+            sb.Append("  <style>\n");
+            sb.Append("    body { font-family: sans-serif; margin: 16px; background: #1e1e1e; color: #ddd; }\n");
+            sb.Append("    h1 { color: #fff; }\n");
+            sb.Append("    .winner { background: #2a4a2a; }\n");
+            sb.Append("    table { border-collapse: collapse; margin: 16px 0; }\n");
+            sb.Append("    th, td { border: 1px solid #444; padding: 6px 10px; text-align: right; }\n");
+            sb.Append("    th { background: #333; cursor: pointer; user-select: none; }\n");
+            sb.Append("    th:hover { background: #444; }\n");
+            sb.Append("    td.label { text-align: left; font-family: monospace; }\n");
+            sb.Append("    .thumbs { display: flex; gap: 4px; flex-wrap: wrap; }\n");
+            sb.Append("    .thumb { display: block; }\n");
+            sb.Append("    .thumb img { width: 96px; height: 96px; object-fit: contain; background: #000; border: 1px solid #333; }\n");
+            sb.Append("    .thumb-label { font-size: 10px; text-align: center; color: #888; }\n");
+            sb.Append("  </style>\n");
+            sb.Append("</head>\n<body>\n");
+            sb.Append("  <h1>Sweep: ").Append(HtmlEscape(sweepName)).Append("</h1>\n");
+            sb.Append("  <p>Generated: ").Append(HtmlEscape(isoStamp))
+              .Append(". Runs: ").Append(runs.Count.ToString(inv))
+              .Append(". Best: ").Append(HtmlEscape(winnerLabel))
+              .Append(" (score ").Append(HtmlEscape(winnerScore)).Append(").</p>\n");
+
+            sb.Append("  <h2>Recommendation</h2>\n");
+            sb.Append("  <p>").Append(HtmlEscape(recommendation ?? "")).Append("</p>\n");
+
+            sb.Append("  <h2>Per-run metrics</h2>\n");
+            sb.Append("  <table id=\"runs\">\n");
+            sb.Append("    <thead>\n");
+            sb.Append("      <tr>\n");
+            sb.Append("        <th onclick=\"sortBy(0)\">#</th>\n");
+            sb.Append("        <th onclick=\"sortBy(1)\">atlasRes</th>\n");
+            sb.Append("        <th onclick=\"sortBy(2)\">shellPad</th>\n");
+            sb.Append("        <th onclick=\"sortBy(3)\">borderPad</th>\n");
+            sb.Append("        <th onclick=\"sortBy(4)\">perShellAspect</th>\n");
+            sb.Append("        <th onclick=\"sortBy(5)\">arapEnabled</th>\n");
+            sb.Append("        <th onclick=\"sortBy(6)\">arapIters</th>\n");
+            sb.Append("        <th onclick=\"sortBy(7)\">slivers</th>\n");
+            sb.Append("        <th onclick=\"sortBy(8)\">overlap</th>\n");
+            sb.Append("        <th onclick=\"sortBy(9)\">atlas%</th>\n");
+            sb.Append("        <th onclick=\"sortBy(10)\">ms</th>\n");
+            sb.Append("        <th onclick=\"sortBy(11)\">score</th>\n");
+            sb.Append("        <th>UV2 thumbs</th>\n");
+            sb.Append("      </tr>\n");
+            sb.Append("    </thead>\n");
+            sb.Append("    <tbody>\n");
+
+            for (int i = 0; i < runs.Count; i++)
+            {
+                var r = runs[i];
+                string cls = (i == bestIdx) ? " class=\"winner\"" : "";
+                sb.Append("      <tr").Append(cls).Append(">\n");
+                sb.Append("        <td>").Append((i + 1).ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.config.atlasRes.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.config.shellPad.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.config.borderPad.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.config.perShellAspect ? "1" : "0").Append("</td>\n");
+                sb.Append("        <td>").Append(r.config.arapEnabled    ? "1" : "0").Append("</td>\n");
+                sb.Append("        <td>").Append(r.config.arapIterations.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.totalSlivers.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.overlapShellPairs.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append((r.meanAtlasUtilization * 100f).ToString("F2", inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.totalMs.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.score.ToString("F2", inv)).Append("</td>\n");
+                sb.Append("        <td class=\"label\">").Append(BuildThumbsCell(r.csvPath, benchmarkReportsRoot)).Append("</td>\n");
+                sb.Append("      </tr>\n");
+            }
+
+            sb.Append("    </tbody>\n");
+            sb.Append("  </table>\n");
+
+            sb.Append("  <script>\n");
+            sb.Append("    function sortBy(col) {\n");
+            sb.Append("      const tbl = document.getElementById('runs');\n");
+            sb.Append("      const rows = Array.from(tbl.tBodies[0].rows);\n");
+            sb.Append("      const asc = tbl._sortCol !== col || tbl._sortAsc === false;\n");
+            sb.Append("      rows.sort((a, b) => {\n");
+            sb.Append("        let av = a.cells[col].textContent;\n");
+            sb.Append("        let bv = b.cells[col].textContent;\n");
+            sb.Append("        const af = parseFloat(av), bf = parseFloat(bv);\n");
+            sb.Append("        if (!isNaN(af) && !isNaN(bf)) return asc ? af - bf : bf - af;\n");
+            sb.Append("        return asc ? av.localeCompare(bv) : bv.localeCompare(av);\n");
+            sb.Append("      });\n");
+            sb.Append("      tbl._sortCol = col; tbl._sortAsc = asc;\n");
+            sb.Append("      const tb = tbl.tBodies[0];\n");
+            sb.Append("      rows.forEach(r => tb.appendChild(r));\n");
+            sb.Append("    }\n");
+            sb.Append("  </script>\n");
+            sb.Append("</body>\n</html>\n");
+
+            File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
+            UvtLog.Info(UvtLog.Category.Benchmark, $"[Sweep] gallery → {path}");
+        }
+
+        /// <summary>
+        /// Resolve the sibling <c>&lt;csvBase&gt;_png/</c> directory for a
+        /// run's CSV and emit the inner HTML for the "UV2 thumbs" cell —
+        /// one anchored thumbnail per PNG, sorted by file name so LOD0 lands
+        /// before LOD1, LOD2, … Returns <c>&lt;em&gt;(no PNG)&lt;/em&gt;</c>
+        /// when the directory is missing or empty.
+        /// </summary>
+        static string BuildThumbsCell(string csvPath, string benchmarkReportsRoot)
+        {
+            if (string.IsNullOrEmpty(csvPath)) return "<em>(no PNG)</em>";
+            string csvBase = Path.GetFileNameWithoutExtension(csvPath);
+            if (string.IsNullOrEmpty(csvBase) || string.IsNullOrEmpty(benchmarkReportsRoot))
+                return "<em>(no PNG)</em>";
+
+            string pngDirName = csvBase + "_png";
+            string pngDirAbs  = Path.Combine(benchmarkReportsRoot, pngDirName);
+            if (!Directory.Exists(pngDirAbs)) return "<em>(no PNG)</em>";
+
+            string[] pngs;
+            try { pngs = Directory.GetFiles(pngDirAbs, "*.png"); }
+            catch { return "<em>(no PNG)</em>"; }
+            if (pngs == null || pngs.Length == 0) return "<em>(no PNG)</em>";
+
+            Array.Sort(pngs, StringComparer.Ordinal);
+
+            var sb = new StringBuilder();
+            sb.Append("<div class=\"thumbs\">");
+            foreach (string pngAbs in pngs)
+            {
+                string fileName = Path.GetFileName(pngAbs);
+                // Sweep dir is sibling of the PNG dir under BenchmarkReports/,
+                // so "../<base>_png/<file>" is the stable relative link.
+                string rel = "../" + pngDirName + "/" + fileName;
+                string label = ExtractLodLabel(fileName);
+                sb.Append("<div class=\"thumb\">");
+                sb.Append("<a href=\"").Append(HtmlEscape(rel)).Append("\" target=\"_blank\">");
+                sb.Append("<img src=\"").Append(HtmlEscape(rel)).Append("\" alt=\"")
+                  .Append(HtmlEscape(fileName)).Append("\">");
+                sb.Append("</a>");
+                sb.Append("<div class=\"thumb-label\">").Append(HtmlEscape(label)).Append("</div>");
+                sb.Append("</div>");
+            }
+            sb.Append("</div>");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Pull the "LOD&lt;N&gt;" token out of a PNG file name like
+        /// <c>Wooden_Box_Long_LOD0_uv2.png</c>. Falls back to the whole base
+        /// name when the convention doesn't match.
+        /// </summary>
+        static string ExtractLodLabel(string fileName)
+        {
+            string baseName = Path.GetFileNameWithoutExtension(fileName);
+            if (string.IsNullOrEmpty(baseName)) return fileName;
+            int lodIdx = baseName.IndexOf("LOD", StringComparison.Ordinal);
+            if (lodIdx < 0) return baseName;
+            int end = lodIdx + 3;
+            while (end < baseName.Length && char.IsDigit(baseName[end])) end++;
+            if (end == lodIdx + 3) return baseName;
+            return baseName.Substring(lodIdx, end - lodIdx);
+        }
+
+        /// <summary>
         /// Build a short English summary contrasting the winner against the
         /// alternatives along each grid axis. Reads as: "use this resolution,
         /// per-shell-aspect helped/didn't, ARAP helped/didn't".
@@ -430,6 +618,31 @@ namespace SashaRX.UnityMeshLab
             bool needQuote = s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0;
             if (!needQuote) return s;
             return "\"" + s.Replace("\"", "\"\"") + "\"";
+        }
+
+        /// <summary>
+        /// Minimal HTML escape covering the four characters that can break
+        /// attribute values or text content in our generated index.html
+        /// (<c>&amp;</c>, <c>&lt;</c>, <c>&gt;</c>, <c>"</c>). Sufficient because
+        /// the gallery is self-contained and we never embed user-supplied
+        /// scripts.
+        /// </summary>
+        static string HtmlEscape(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var sb = new StringBuilder(s.Length);
+            foreach (char c in s)
+            {
+                switch (c)
+                {
+                    case '&': sb.Append("&amp;");  break;
+                    case '<': sb.Append("&lt;");   break;
+                    case '>': sb.Append("&gt;");   break;
+                    case '"': sb.Append("&quot;"); break;
+                    default:  sb.Append(c);        break;
+                }
+            }
+            return sb.ToString();
         }
 
         static string JsonString(string s)
