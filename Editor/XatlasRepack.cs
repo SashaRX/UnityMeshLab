@@ -70,49 +70,26 @@ namespace SashaRX.UnityMeshLab
         public bool normalizeShellAspect;
 
         /// <summary>
-        /// Per-shell aspect normalization. After global unwrap-aspect
-        /// (<see cref="normalizeShellAspect"/>) is applied, each shell's UV0
-        /// is independently rotated to align its principal UV axis with the
-        /// shell's 3D principal axis, then area-preserving non-uniformly
-        /// scaled so its UV bbox aspect matches the shell's 3D PCA aspect.
-        /// Reduces UV slivers caused by elongated UV0 unwraps (e.g. a thin
-        /// strip of geometry unwrapped as a square). Off by default; opt-in
-        /// because it can degrade quality on shells with deliberately
-        /// non-PCA-aligned authored layouts. Only used when
-        /// <see cref="normalizeTexelDensity"/> is true.
+        /// Auto-reparameterize shells whose UV0 stretch (Sander L² metric) exceeds
+        /// <see cref="stretchThreshold"/>. Replaces the previous IsRibbon-based
+        /// trigger — now driven by an actual UV quality metric. ARAP local-global
+        /// solver redistributes vertices to minimize per-triangle isometric
+        /// distortion.
         /// </summary>
-        public bool perShellAspectNormalize;
+        public bool reparameterizeStretchedShells;
 
         /// <summary>
-        /// Upper bound on the per-shell aspect ratio used by
-        /// <see cref="perShellAspectNormalize"/>. The shell's 3D PCA aspect
-        /// (σ1/σ2 sqrt) is clamped to [1, maxShellAspect] before being used
-        /// as the UV aspect target — protects against extreme cases (long
-        /// stems / hairs) producing degenerate UVs. Default 10.
+        /// Sander L² stretch above which a shell triggers ARAP re-parameterization.
+        /// 1.0 = isometric; 1.5 = mild; 2.0 = noticeably stretched; 3.0+ = severe.
+        /// Default 1.5.
         /// </summary>
-        public float maxShellAspect;
+        public float stretchThreshold;
 
         /// <summary>
-        /// Relative skip threshold for <see cref="perShellAspectNormalize"/>.
-        /// A shell is left untouched when
-        /// |aspect3D − aspectUV| / max(aspect3D, aspectUV) &lt; this value.
-        /// Default 0.05 (5%). 0 = fix any shell that differs at all.
+        /// ARAP local-global iteration count for stretched-shell reparameterization.
+        /// 50 is the default; raise to 100-200 for highly curved/twisted strips.
         /// </summary>
-        public float perShellAspectThreshold;
-
-        /// <summary>
-        /// Reparameterize ribbon-classified shells (long thin strips) via ARAP
-        /// before passing to xatlas. Fixes elongated sliver-prone UV0 unwraps
-        /// at the source. Off by default. Requires per-shell area to be valid
-        /// (boundary loop discoverable).
-        /// </summary>
-        public bool reparameterizeRibbons;
-
-        /// <summary>
-        /// ARAP local-global iteration count for ribbon reparameterization.
-        /// 10 is typically sufficient; raise to 20-30 for highly curved strips.
-        /// </summary>
-        public int ribbonArapIterations;
+        public int arapIterations;
 
         /// <summary>
         /// Clamp the source mesh's UV2 channel into [0,1] right after xatlas
@@ -150,12 +127,10 @@ namespace SashaRX.UnityMeshLab
             perturbStrength = 0f,             // adaptive
             normalizeTexelDensity = true,
             normalizeShellAspect = true,
-            perShellAspectNormalize = false,
-            maxShellAspect = 10f,
-            perShellAspectThreshold = 0.05f,
             targetUvCoverage = 0.75f,
-            reparameterizeRibbons = false,
-            ribbonArapIterations = 50,
+            reparameterizeStretchedShells = true,
+            stretchThreshold = 1.5f,
+            arapIterations = 50,
             clampLightmapToUnit = true,
         };
     }
@@ -431,25 +406,6 @@ namespace SashaRX.UnityMeshLab
                 uvFlat[i * 2 + 1] = uv0[i].y;
             }
 
-            // ── Pre-classify ribbon shells (used by both density-normalize
-            // skip-list and the ARAP pass below). When ARAP-on-ribbons is on,
-            // per-shell aspect must NOT also touch ribbons — otherwise the
-            // two passes fight each other and collapse the strip. Cheaper to
-            // collect the indices once.
-            int[] ribbonShellIndices = null;
-            if (opts.reparameterizeRibbons)
-            {
-                var ribbonList = new List<int>();
-                for (int si = 0; si < shells.Count; si++)
-                {
-                    var shell = shells[si];
-                    if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
-                    if (StripParameterization.IsRibbon(shell, positions, tris, out _, out _, out _))
-                        ribbonList.Add(si);
-                }
-                ribbonShellIndices = ribbonList.ToArray();
-            }
-
             // ── Texel-density normalization (pre-pack) ──
             // Rescale each shell's UV0 so UV-area is proportional to 3D-area
             // — gives xatlas charts whose relative size matches their real-
@@ -461,40 +417,44 @@ namespace SashaRX.UnityMeshLab
                 int rescaled = TexelDensityNormalizer.Normalize(
                     uvFlat, shells, tris, positions,
                     targetCoverage: opts.targetUvCoverage,
-                    normalizeAspect: opts.normalizeShellAspect,
-                    maxAspect: opts.maxShellAspect,
-                    perShellAspect: opts.perShellAspectNormalize,
-                    perShellAspectThreshold: opts.perShellAspectThreshold,
-                    perShellAspectSkipShells: ribbonShellIndices);
+                    normalizeAspect: opts.normalizeShellAspect);
                 UvtLog.Verbose(UvtLog.Category.Repack,
                     $"Texel density: rescaled {rescaled}/{shells.Count} shells to uniform UV/3D area ratio");
             }
 
-            // ── ARAP re-parameterization of ribbon-shaped shells ──
-            // Ribbons (long thin strips classified by StripParameterization.IsRibbon)
-            // get an LSCM-style unwrap from xatlas that often collapses them into
-            // sliver charts. Replacing the UV0 with an ARAP local/global solve
-            // straightens the strip in UV space before xatlas re-packs it.
-            if (opts.reparameterizeRibbons && ribbonShellIndices != null)
+            // ── ARAP re-parameterization of stretched shells ──
+            // Measure each shell's Sander L² stretch (industry-standard
+            // area-weighted RMS of per-triangle isometric distortion) and
+            // re-parameterize via ARAP local-global any shell whose stretch
+            // exceeds opts.stretchThreshold. Replaces the previous IsRibbon
+            // classifier with an actual UV quality metric, so the trigger
+            // now reflects authored UV0 distortion rather than 3D shape.
+            if (opts.reparameterizeStretchedShells)
             {
-                int ribbonsFound = ribbonShellIndices.Length;
-                int ribbonsConverged = 0, ribbonsSkipped = 0;
-                for (int ri = 0; ri < ribbonShellIndices.Length; ri++)
+                int stretchedFound = 0, converged = 0, skipped = 0;
+                for (int si = 0; si < shells.Count; si++)
                 {
-                    var shell = shells[ribbonShellIndices[ri]];
-                    if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) { ribbonsSkipped++; continue; }
+                    var shell = shells[si];
+                    if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
+                    float l2 = ShellQuality.ComputeL2Stretch(shell, tris, positions, uvFlat);
+                    if (float.IsNaN(l2) || l2 < opts.stretchThreshold) continue;
+                    stretchedFound++;
                     var shellTriIndices = shell.faceIndices?.ToArray() ?? new int[0];
-                    if (shellTriIndices.Length == 0) { ribbonsSkipped++; continue; }
+                    if (shellTriIndices.Length == 0) { skipped++; continue; }
                     if (ArapParameterization.Reparameterize(
                             positions, tris, shellTriIndices, shell.vertexIndices,
-                            uvFlat, opts.ribbonArapIterations, out int _initFlipped))
-                        ribbonsConverged++;
+                            uvFlat, opts.arapIterations, out int _initFlipped))
+                    {
+                        converged++;
+                        UvtLog.Verbose(UvtLog.Category.Repack,
+                            $"[Repack] ARAP: shell {si} L²={l2:F2} (>{opts.stretchThreshold:F2}) → reparameterized");
+                    }
                     else
-                        ribbonsSkipped++;
+                        skipped++;
                 }
-                if (ribbonsFound > 0)
+                if (stretchedFound > 0)
                     UvtLog.Info(UvtLog.Category.Repack,
-                        $"[Repack] ARAP: reparameterized {ribbonsConverged}/{ribbonsFound} ribbon shells (skipped {ribbonsSkipped})");
+                        $"[Repack] ARAP: reparameterized {converged}/{stretchedFound} stretched shells (L²>{opts.stretchThreshold:F2}, skipped {skipped})");
             }
 
             // ── Perturb UV0 of overlap-grouped shells ──
@@ -725,24 +685,6 @@ namespace SashaRX.UnityMeshLab
                     }
                     allUvFlat[m] = uvFlat;
 
-                    // Pre-classify ribbon shells once: feeds both the density
-                    // normalizer's skip-list (so per-shell aspect doesn't
-                    // touch ribbons that ARAP will re-parameterize) and the
-                    // ARAP loop below. Off when reparameterizeRibbons is off.
-                    int[] ribbonShellIndicesM = null;
-                    if (opts.reparameterizeRibbons)
-                    {
-                        var ribbonListM = new List<int>();
-                        for (int si = 0; si < allShells[m].Count; si++)
-                        {
-                            var shell = allShells[m][si];
-                            if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
-                            if (StripParameterization.IsRibbon(shell, allPositions[m], allTris[m], out _, out _, out _))
-                                ribbonListM.Add(si);
-                        }
-                        ribbonShellIndicesM = ribbonListM.ToArray();
-                    }
-
                     // Texel-density normalization (pre-pack): per-shell UV0
                     // rescale so UV-area ∝ 3D-area. Result: uniform lightmap
                     // texels-per-world-unit across the model. Local uvFlat
@@ -752,37 +694,39 @@ namespace SashaRX.UnityMeshLab
                         int rescaledM = TexelDensityNormalizer.Normalize(
                             uvFlat, allShells[m], allTris[m], allPositions[m],
                             targetCoverage: opts.targetUvCoverage,
-                            normalizeAspect: opts.normalizeShellAspect,
-                            maxAspect: opts.maxShellAspect,
-                            perShellAspect: opts.perShellAspectNormalize,
-                            perShellAspectThreshold: opts.perShellAspectThreshold,
-                            perShellAspectSkipShells: ribbonShellIndicesM);
+                            normalizeAspect: opts.normalizeShellAspect);
                         UvtLog.Verbose(UvtLog.Category.Repack,
                             $"Texel density mesh {m}: rescaled {rescaledM}/{allShells[m].Count} shells");
                     }
 
-                    // ARAP re-parameterization of ribbon shells — same as in
-                    // RepackSingle, scoped per-mesh inputs. Off by default.
-                    if (opts.reparameterizeRibbons && ribbonShellIndicesM != null)
+                    // ARAP re-parameterization of stretched shells — same Sander
+                    // L² gate as in RepackSingle, scoped per-mesh inputs.
+                    if (opts.reparameterizeStretchedShells)
                     {
-                        int ribbonsFoundM = ribbonShellIndicesM.Length;
-                        int ribbonsConvergedM = 0, ribbonsSkippedM = 0;
-                        for (int ri = 0; ri < ribbonShellIndicesM.Length; ri++)
+                        int stretchedFoundM = 0, convergedM = 0, skippedM = 0;
+                        for (int si = 0; si < allShells[m].Count; si++)
                         {
-                            var shell = allShells[m][ribbonShellIndicesM[ri]];
-                            if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) { ribbonsSkippedM++; continue; }
+                            var shell = allShells[m][si];
+                            if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
+                            float l2 = ShellQuality.ComputeL2Stretch(shell, allTris[m], allPositions[m], uvFlat);
+                            if (float.IsNaN(l2) || l2 < opts.stretchThreshold) continue;
+                            stretchedFoundM++;
                             var shellTriIndices = shell.faceIndices?.ToArray() ?? new int[0];
-                            if (shellTriIndices.Length == 0) { ribbonsSkippedM++; continue; }
+                            if (shellTriIndices.Length == 0) { skippedM++; continue; }
                             if (ArapParameterization.Reparameterize(
                                     allPositions[m], allTris[m], shellTriIndices, shell.vertexIndices,
-                                    uvFlat, opts.ribbonArapIterations, out int _initFlippedM))
-                                ribbonsConvergedM++;
+                                    uvFlat, opts.arapIterations, out int _initFlippedM))
+                            {
+                                convergedM++;
+                                UvtLog.Verbose(UvtLog.Category.Repack,
+                                    $"[Repack] ARAP mesh {m}: shell {si} L²={l2:F2} (>{opts.stretchThreshold:F2}) → reparameterized");
+                            }
                             else
-                                ribbonsSkippedM++;
+                                skippedM++;
                         }
-                        if (ribbonsFoundM > 0)
+                        if (stretchedFoundM > 0)
                             UvtLog.Info(UvtLog.Category.Repack,
-                                $"[Repack] ARAP mesh {m}: reparameterized {ribbonsConvergedM}/{ribbonsFoundM} ribbon shells (skipped {ribbonsSkippedM})");
+                                $"[Repack] ARAP mesh {m}: reparameterized {convergedM}/{stretchedFoundM} stretched shells (L²>{opts.stretchThreshold:F2}, skipped {skippedM})");
                     }
 
                     // Perturb UV0 of overlap-grouped shells so xatlas treats

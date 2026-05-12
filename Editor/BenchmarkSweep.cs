@@ -37,12 +37,16 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         internal struct CellConfig
         {
-            public int  atlasRes;
-            public int  shellPad;
-            public int  borderPad;
-            public bool perShellAspect;
-            public bool arapEnabled;
-            public int  arapIterations;
+            public int   atlasRes;
+            public int   shellPad;
+            public int   borderPad;
+            // Stretched-shell ARAP: enabled flag + iteration count + Sander L²
+            // gate threshold. Replaces the old per-shell-aspect axis, which
+            // applied a flawed affine transform that couldn't fix bad
+            // parameterization (only redistributing vertices via ARAP can).
+            public bool  arapEnabled;
+            public int   arapIterations;
+            public float stretchThreshold;
         }
 
         internal struct RunSummary
@@ -157,8 +161,8 @@ namespace SashaRX.UnityMeshLab
             var w = summaries[bestIdx];
             UvtLog.Info(UvtLog.Category.Benchmark,
                 $"[Sweep] Winner: res={w.config.atlasRes}, pad={w.config.shellPad}, bdr={w.config.borderPad}, " +
-                $"perShellAspect={w.config.perShellAspect}, arap={(w.config.arapEnabled ? w.config.arapIterations : 0)} " +
-                $"(score={w.score:F2})");
+                $"arap={(w.config.arapEnabled ? w.config.arapIterations : 0)}, " +
+                $"stretchThr={w.config.stretchThreshold:F2} (score={w.score:F2})");
         }
 
         /// <summary>
@@ -286,7 +290,7 @@ namespace SashaRX.UnityMeshLab
         {
             var inv = CultureInfo.InvariantCulture;
             var sb = new StringBuilder();
-            sb.AppendLine("atlasRes,shellPad,borderPad,perShellAspect,arapEnabled,arapIterations," +
+            sb.AppendLine("atlasRes,shellPad,borderPad,arapEnabled,arapIterations,stretchThreshold," +
                           "totalSlivers,overlapShellPairs,meanAtlasUtilization,totalMs,score,csvPath");
             foreach (var r in runs)
             {
@@ -303,9 +307,9 @@ namespace SashaRX.UnityMeshLab
                 sb.Append(r.config.atlasRes.ToString(inv)).Append(',');
                 sb.Append(r.config.shellPad.ToString(inv)).Append(',');
                 sb.Append(r.config.borderPad.ToString(inv)).Append(',');
-                sb.Append(r.config.perShellAspect ? '1' : '0').Append(',');
-                sb.Append(r.config.arapEnabled    ? '1' : '0').Append(',');
+                sb.Append(r.config.arapEnabled ? '1' : '0').Append(',');
                 sb.Append(r.config.arapIterations.ToString(inv)).Append(',');
+                sb.Append(r.config.stretchThreshold.ToString("R", inv)).Append(',');
                 sb.Append(r.totalSlivers.ToString(inv)).Append(',');
                 sb.Append(r.overlapShellPairs.ToString(inv)).Append(',');
                 sb.Append(r.meanAtlasUtilization.ToString("R", inv)).Append(',');
@@ -329,9 +333,9 @@ namespace SashaRX.UnityMeshLab
             sb.Append("    \"atlasRes\": ").Append(w.config.atlasRes.ToString(inv)).Append(",\n");
             sb.Append("    \"shellPad\": ").Append(w.config.shellPad.ToString(inv)).Append(",\n");
             sb.Append("    \"borderPad\": ").Append(w.config.borderPad.ToString(inv)).Append(",\n");
-            sb.Append("    \"perShellAspect\": ").Append(w.config.perShellAspect ? "true" : "false").Append(",\n");
             sb.Append("    \"arapEnabled\": ").Append(w.config.arapEnabled ? "true" : "false").Append(",\n");
             sb.Append("    \"arapIterations\": ").Append(w.config.arapIterations.ToString(inv)).Append(",\n");
+            sb.Append("    \"stretchThreshold\": ").Append(w.config.stretchThreshold.ToString("R", inv)).Append(",\n");
             sb.Append("    \"score\": ").Append(w.score.ToString("R", inv)).Append(",\n");
             sb.Append("    \"totalSlivers\": ").Append(w.totalSlivers.ToString(inv)).Append(",\n");
             sb.Append("    \"overlapShellPairs\": ").Append(w.overlapShellPairs.ToString(inv)).Append(",\n");
@@ -358,9 +362,9 @@ namespace SashaRX.UnityMeshLab
                 sb.Append("\"atlasRes\": ").Append(r.config.atlasRes.ToString(inv)).Append(", ");
                 sb.Append("\"shellPad\": ").Append(r.config.shellPad.ToString(inv)).Append(", ");
                 sb.Append("\"borderPad\": ").Append(r.config.borderPad.ToString(inv)).Append(", ");
-                sb.Append("\"perShellAspect\": ").Append(r.config.perShellAspect ? "true" : "false").Append(", ");
                 sb.Append("\"arapEnabled\": ").Append(r.config.arapEnabled ? "true" : "false").Append(", ");
                 sb.Append("\"arapIterations\": ").Append(r.config.arapIterations.ToString(inv)).Append(", ");
+                sb.Append("\"stretchThreshold\": ").Append(r.config.stretchThreshold.ToString("R", inv)).Append(", ");
                 sb.Append("\"totalSlivers\": ").Append(r.totalSlivers.ToString(inv)).Append(", ");
                 sb.Append("\"overlapShellPairs\": ").Append(r.overlapShellPairs.ToString(inv)).Append(", ");
                 sb.Append("\"meanAtlasUtilization\": ").Append(r.meanAtlasUtilization.ToString("R", inv)).Append(", ");
@@ -399,8 +403,8 @@ namespace SashaRX.UnityMeshLab
             {
                 var w = runs[bestIdx];
                 winnerLabel = $"res={w.config.atlasRes}, pad={w.config.shellPad}, bdr={w.config.borderPad}, " +
-                              $"psa={(w.config.perShellAspect ? 1 : 0)}, " +
-                              $"arap={(w.config.arapEnabled ? w.config.arapIterations : 0)}";
+                              $"arap={(w.config.arapEnabled ? w.config.arapIterations : 0)}, " +
+                              $"stretchThr={w.config.stretchThreshold.ToString("F2", inv)}";
                 winnerScore = w.score.ToString("F2", inv);
             }
 
@@ -442,9 +446,9 @@ namespace SashaRX.UnityMeshLab
             sb.Append("        <th onclick=\"sortBy(1)\">atlasRes</th>\n");
             sb.Append("        <th onclick=\"sortBy(2)\">shellPad</th>\n");
             sb.Append("        <th onclick=\"sortBy(3)\">borderPad</th>\n");
-            sb.Append("        <th onclick=\"sortBy(4)\">perShellAspect</th>\n");
-            sb.Append("        <th onclick=\"sortBy(5)\">arapEnabled</th>\n");
-            sb.Append("        <th onclick=\"sortBy(6)\">arapIters</th>\n");
+            sb.Append("        <th onclick=\"sortBy(4)\">arapEnabled</th>\n");
+            sb.Append("        <th onclick=\"sortBy(5)\">arapIters</th>\n");
+            sb.Append("        <th onclick=\"sortBy(6)\">stretchThr</th>\n");
             sb.Append("        <th onclick=\"sortBy(7)\">slivers</th>\n");
             sb.Append("        <th onclick=\"sortBy(8)\">overlap</th>\n");
             sb.Append("        <th onclick=\"sortBy(9)\">atlas%</th>\n");
@@ -464,9 +468,9 @@ namespace SashaRX.UnityMeshLab
                 sb.Append("        <td>").Append(r.config.atlasRes.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.config.shellPad.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.config.borderPad.ToString(inv)).Append("</td>\n");
-                sb.Append("        <td>").Append(r.config.perShellAspect ? "1" : "0").Append("</td>\n");
                 sb.Append("        <td>").Append(r.config.arapEnabled    ? "1" : "0").Append("</td>\n");
                 sb.Append("        <td>").Append(r.config.arapIterations.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.config.stretchThreshold.ToString("F2", inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.totalSlivers.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.overlapShellPairs.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append((r.meanAtlasUtilization * 100f).ToString("F2", inv)).Append("</td>\n");
@@ -568,7 +572,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Build a short English summary contrasting the winner against the
         /// alternatives along each grid axis. Reads as: "use this resolution,
-        /// per-shell-aspect helped/didn't, ARAP helped/didn't".
+        /// stretched-shell ARAP helped/didn't at this threshold".
         /// </summary>
         static string BuildRecommendation(List<RunSummary> runs, int bestIdx)
         {
@@ -577,23 +581,16 @@ namespace SashaRX.UnityMeshLab
             sb.Append("Use ").Append(w.config.atlasRes).Append(" resolution");
             sb.Append(", shellPad=").Append(w.config.shellPad);
             sb.Append(", borderPad=").Append(w.config.borderPad);
-            sb.Append(" with per-shell aspect normalize ");
-            sb.Append(w.config.perShellAspect ? "ON" : "OFF");
-            sb.Append(" and ARAP ribbon re-parameterization ");
+            sb.Append(" with stretched-shell ARAP ");
             sb.Append(w.config.arapEnabled
-                ? $"ON ({w.config.arapIterations} iters)"
+                ? $"ON ({w.config.arapIterations} iters, L²>{w.config.stretchThreshold.ToString("F2", CultureInfo.InvariantCulture)})"
                 : "OFF");
             sb.Append('.');
 
-            // Compare against the same config with the toggle flipped, if present.
-            bool? aspectHelped = ComparePair(runs, w, flipAspect: true);
-            bool? arapHelped   = ComparePair(runs, w, flipAspect: false);
-            if (aspectHelped.HasValue)
-                sb.Append(" Per-shell aspect ")
-                  .Append(aspectHelped.Value ? "improved" : "did not improve")
-                  .Append(" results on this asset.");
+            // Compare against the same config with ARAP toggled.
+            bool? arapHelped = ComparePair(runs, w);
             if (arapHelped.HasValue)
-                sb.Append(" ARAP ")
+                sb.Append(" Stretched-shell ARAP ")
                   .Append(arapHelped.Value ? "improved" : "did not improve")
                   .Append(" results on this asset.");
             return sb.ToString();
@@ -601,32 +598,26 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Looks up the run that shares the winner's resolution/padding and
-        /// the non-flipped flag, then reports whether the winner's enabled
-        /// flag out-scored its disabled counterpart. Returns null if the pair
-        /// is not in the grid.
+        /// stretch threshold but has ARAP toggled the other way, then reports
+        /// whether the winner's enabled flag out-scored its disabled counterpart.
+        /// Returns null if the pair is not in the grid.
         /// </summary>
-        static bool? ComparePair(List<RunSummary> runs, RunSummary w, bool flipAspect)
+        static bool? ComparePair(List<RunSummary> runs, RunSummary w)
         {
             foreach (var r in runs)
             {
                 if (r.config.atlasRes  != w.config.atlasRes)  continue;
                 if (r.config.shellPad  != w.config.shellPad)  continue;
                 if (r.config.borderPad != w.config.borderPad) continue;
-                if (flipAspect)
-                {
-                    if (r.config.arapEnabled    != w.config.arapEnabled)    continue;
-                    if (r.config.arapIterations != w.config.arapIterations) continue;
-                    if (r.config.perShellAspect == w.config.perShellAspect) continue;
-                }
-                else
-                {
-                    if (r.config.perShellAspect != w.config.perShellAspect) continue;
-                    // For ARAP, treat any enabled/disabled flip as the pair —
-                    // varying iter-counts are separate cells but still count
-                    // as "ARAP on" for the on/off recommendation comparison.
-                    if (r.config.arapEnabled == w.config.arapEnabled) continue;
-                }
-                bool winnerOn = flipAspect ? w.config.perShellAspect : w.config.arapEnabled;
+                // Stretch threshold is irrelevant when ARAP is off — match the
+                // winner's threshold on the ON side and ignore it on the OFF
+                // side. Either way, the pair is "this config with ARAP toggled".
+                if (w.config.arapEnabled && r.config.arapEnabled &&
+                    !Mathf.Approximately(r.config.stretchThreshold, w.config.stretchThreshold))
+                    continue;
+                if (r.config.arapEnabled == w.config.arapEnabled) continue;
+
+                bool winnerOn = w.config.arapEnabled;
                 bool winnerBetter = w.score > r.score;
                 return winnerOn ? winnerBetter : !winnerBetter;
             }
@@ -677,8 +668,11 @@ namespace SashaRX.UnityMeshLab
                 return null;
             }
 
+            // The stretch threshold is encoded as "<int>p<2-digit>" in the
+            // label (e.g. 1.50 → "1p50") because Sanitize() collapses '.' to
+            // '_'. We split it back into a float here.
             var rx = new System.Text.RegularExpressions.Regex(
-                @"_sweep_res(\d+)_pad(\d+)_bdr(\d+)_psa([01])_arap(\d+)_",
+                @"_sweep_res(\d+)_pad(\d+)_bdr(\d+)_arap(\d+)_stretch(\d+)p(\d+)_",
                 System.Text.RegularExpressions.RegexOptions.Compiled);
 
             var matched = new List<(string path, CellConfig cfg, DateTime mtime)>();
@@ -690,8 +684,11 @@ namespace SashaRX.UnityMeshLab
                 if (!int.TryParse(m.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int res)) continue;
                 if (!int.TryParse(m.Groups[2].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int pad)) continue;
                 if (!int.TryParse(m.Groups[3].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int bdr)) continue;
-                bool psa = m.Groups[4].Value == "1";
-                if (!int.TryParse(m.Groups[5].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int arapIters)) continue;
+                if (!int.TryParse(m.Groups[4].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int arapIters)) continue;
+                // Reassemble float "<int>p<frac>" → <int>.<frac>
+                string stretchStr = m.Groups[5].Value + "." + m.Groups[6].Value;
+                if (!float.TryParse(stretchStr, NumberStyles.Float, CultureInfo.InvariantCulture, out float stretchThr))
+                    stretchThr = 1.5f;
 
                 DateTime mtime;
                 try { mtime = File.GetLastWriteTimeUtc(csv); }
@@ -699,19 +696,19 @@ namespace SashaRX.UnityMeshLab
 
                 matched.Add((csv, new CellConfig
                 {
-                    atlasRes       = res,
-                    shellPad       = pad,
-                    borderPad      = bdr,
-                    perShellAspect = psa,
-                    arapEnabled    = arapIters > 0,
-                    arapIterations = arapIters,
+                    atlasRes         = res,
+                    shellPad         = pad,
+                    borderPad        = bdr,
+                    arapEnabled      = arapIters > 0,
+                    arapIterations   = arapIters,
+                    stretchThreshold = stretchThr,
                 }, mtime));
             }
 
             if (matched.Count == 0)
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
-                    $"[Sweep] Recovery: no CSV matched the sweep_resR_padS_bdrB_psaP_arapA pattern in {benchmarkReportsRoot}");
+                    $"[Sweep] Recovery: no CSV matched the sweep_resR_padS_bdrB_arapA_stretchT pattern in {benchmarkReportsRoot}");
                 return null;
             }
 

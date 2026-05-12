@@ -104,48 +104,30 @@ namespace SashaRX.UnityMeshLab
         public bool NormalizeShellAspect = true;
 
         /// <summary>
-        /// Per-shell aspect normalization. After the global unwrap-aspect
-        /// pass, each shell is independently rotated to align its principal
-        /// UV axis with its 3D PCA principal axis, then area-preserving
-        /// non-uniformly scaled so its UV bbox aspect matches the 3D PCA
-        /// aspect. Reduces UV slivers caused by elongated UV0 unwraps.
-        /// Off by default; opt-in because it can degrade quality on shells
-        /// with deliberately non-PCA-aligned authored layouts. Only effective
-        /// when NormalizeTexelDensity is on.
+        /// Auto-reparameterize shells whose UV0 stretch (Sander L² metric) exceeds
+        /// <see cref="StretchThreshold"/>. Replaces the previous IsRibbon-based
+        /// trigger — now driven by an actual UV quality metric. ARAP local-global
+        /// solver redistributes vertices to minimize per-triangle isometric
+        /// distortion. Off by default (opt-in safety), but recommended ON for most
+        /// assets — stretched ribbons, twisted strips, and any high-distortion
+        /// shells get cleaned up at the parameterization level instead of via
+        /// downstream affine hacks.
         /// </summary>
-        public bool PerShellAspectNormalize = false;
+        public bool ReparameterizeStretchedShells = true;  // DEFAULT ON
 
         /// <summary>
-        /// Upper bound on the 3D-PCA aspect ratio used as the UV aspect
-        /// target by <see cref="PerShellAspectNormalize"/>. Protects against
-        /// extreme cases (very long thin shells) producing degenerate UVs.
-        /// Default 10.
+        /// Sander L² stretch above which a shell triggers ARAP re-parameterization.
+        /// 1.0 = isometric (perfect); 1.5 = mild stretch (typical artist unwrap);
+        /// 2.0 = noticeably stretched; 3.0+ = severely distorted. Default 1.5 fires
+        /// ARAP only on shells with measurable distortion.
         /// </summary>
-        public float MaxShellAspect = 10f;
+        public float StretchThreshold = 1.5f;
 
         /// <summary>
-        /// Relative threshold below which <see cref="PerShellAspectNormalize"/>
-        /// leaves a shell untouched. Skip condition is
-        /// |aspect3D − aspectUV| / max(aspect3D, aspectUV) &lt; threshold.
-        /// Default 0.05 (5%). Larger → only fix grossly anisotropic shells;
-        /// 0 → fix every shell that differs at all.
+        /// ARAP iteration count for stretched-shell re-parameterization. Default 50,
+        /// matching 3ds Max's Relax-by-polygon-angles convergence behaviour.
         /// </summary>
-        public float PerShellAspectThreshold = 0.05f;
-
-        /// <summary>
-        /// Re-parameterize ribbon-classified shells via ARAP before xatlas pack.
-        /// Fixes elongated slivers at the source instead of compensating after.
-        /// Off by default; opt-in. Independent of NormalizeTexelDensity.
-        /// </summary>
-        public bool ReparameterizeRibbons = false;
-
-        /// <summary>
-        /// ARAP iteration count for ribbon re-parameterization. Default 50 —
-        /// matches the convergence behaviour of 3ds Max's Relax-by-polygon-
-        /// angles at typical settings. 10 is too few for highly curved
-        /// strips; the local-global solve needs ~50-100 to settle.
-        /// </summary>
-        public int RibbonArapIterations = 50;
+        public int ArapIterations = 50;
 
         /// <summary>
         /// Clamp final lightmap UV2 coordinates into [0,1] on both source

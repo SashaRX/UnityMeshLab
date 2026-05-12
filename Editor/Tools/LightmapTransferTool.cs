@@ -373,10 +373,10 @@ namespace SashaRX.UnityMeshLab
                 int rL  = sm.atlasResolutions?.Length            ?? 0;
                 int pL  = sm.shellPaddingPxVariants?.Length      ?? 0;
                 int bL  = sm.borderPaddingPxVariants?.Length     ?? 0;
-                int aL  = sm.perShellAspectVariants?.Length      ?? 0;
-                int arL = sm.ribbonArapIterationsVariants?.Length ?? 0;
+                int arL = sm.arapIterationsVariants?.Length    ?? 0;
+                int stL = sm.stretchThresholdVariants?.Length   ?? 0;
                 cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL)
-                      * Mathf.Max(1, aL) * Mathf.Max(1, arL);
+                      * Mathf.Max(1, arL) * Mathf.Max(1, stL);
             }
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -482,50 +482,29 @@ namespace SashaRX.UnityMeshLab
                             + "texel density into every shell. Per-shell aspect issues are "
                             + "a separate concern and not addressed here."),
                         ctx.NormalizeShellAspect);
-                    ctx.PerShellAspectNormalize = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Per-shell aspect normalize",
-                            "Scales each shell's UV0 so its aspect ratio matches its 3D shape "
-                            + "(area-preserving). Reduces UV slivers caused by elongated UV0 "
-                            + "unwrap. Off by default."),
-                        ctx.PerShellAspectNormalize);
-                    using (new EditorGUI.DisabledScope(!ctx.PerShellAspectNormalize))
+                    ctx.ReparameterizeStretchedShells = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Auto-fix stretched shells (ARAP)",
+                            "Measure each shell's Sander L² stretch (UV vs 3D isometric distortion) and "
+                            + "re-parameterize shells above the threshold via ARAP local-global. "
+                            + "Replaces the previous per-shell-aspect affine hack — this works at the "
+                            + "parameterization level, redistributing vertices rather than scaling the "
+                            + "whole shell. Default ON; turn off only when preserving artist's exact UV0."),
+                        ctx.ReparameterizeStretchedShells);
+                    using (new EditorGUI.DisabledScope(!ctx.ReparameterizeStretchedShells))
                     {
                         EditorGUI.indentLevel++;
-                        ctx.MaxShellAspect = EditorGUILayout.Slider(
-                            new GUIContent("  Max target aspect",
-                                "Upper bound on a shell's target aspect ratio. The shell's 3D "
-                                + "PCA aspect √(σ1/σ2) is clamped to [1, max] before being used "
-                                + "as the UV target. Lower → more conservative; higher → allow "
-                                + "long thin shells to retain their elongation."),
-                            ctx.MaxShellAspect, 2f, 20f);
-                        ctx.PerShellAspectThreshold = EditorGUILayout.Slider(
-                            new GUIContent("  Min delta to apply",
-                                "Skip shells whose UV vs 3D aspect ratio differ by less than "
-                                + "this fraction. 0.05 = ignore shells within 5% of their target. "
-                                + "Raise to only fix grossly anisotropic shells; lower → fix "
-                                + "everything that differs."),
-                            ctx.PerShellAspectThreshold, 0f, 0.5f);
-                        EditorGUI.indentLevel--;
-                    }
-                    ctx.ReparameterizeRibbons = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Reparameterize ribbons (ARAP)",
-                            "Detect ribbon-shaped shells (long thin strips) and re-unwrap them via "
-                            + "ARAP local-global parameterization before xatlas packing. Fixes "
-                            + "elongated UV slivers at the source instead of compensating after. "
-                            + "Off by default — opt-in because ARAP requires a discoverable "
-                            + "boundary loop (skips closed shells)."),
-                        ctx.ReparameterizeRibbons);
-                    using (new EditorGUI.DisabledScope(!ctx.ReparameterizeRibbons))
-                    {
-                        EditorGUI.indentLevel++;
-                        ctx.RibbonArapIterations = EditorGUILayout.IntSlider(
+                        ctx.StretchThreshold = EditorGUILayout.Slider(
+                            new GUIContent("  L² stretch threshold",
+                                "Shells with Sander L² stretch above this value are sent to ARAP. "
+                                + "1.0 = isometric (perfect); 1.5 = typical artist unwrap (default); "
+                                + "2.0 = noticeable stretch; 3.0+ = severely distorted. Lower fires "
+                                + "ARAP on more shells; higher reserves it for clearly broken cases."),
+                            ctx.StretchThreshold, 1.0f, 3.0f);
+                        ctx.ArapIterations = EditorGUILayout.IntSlider(
                             new GUIContent("  ARAP iterations",
-                                "Local-global iteration count. Comparable to 3ds Max's "
-                                + "Relax-by-polygon-angles. 50 is the default and matches the "
-                                + "typical Relax setting; 100-200 for highly curved/twisted "
-                                + "strips. Each iteration is one SVD-per-triangle + one CG "
-                                + "solve — runtime grows linearly with this number."),
-                            ctx.RibbonArapIterations, 10, 200);
+                                "Local-global iteration count. 50 is the default and matches 3ds Max's "
+                                + "Relax-by-polygon-angles. 100-200 for highly curved/twisted strips."),
+                            ctx.ArapIterations, 10, 200);
                         EditorGUI.indentLevel--;
                     }
                     ctx.ClampLightmapToUnit = EditorGUILayout.ToggleLeft(
@@ -891,8 +870,8 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Run the full pipeline once per cell of a sweep matrix (cartesian product of
         /// atlasResolutions × shellPaddingPxVariants × borderPaddingPxVariants ×
-        /// perShellAspectVariants × ribbonArapIterationsVariants). Each cell writes
-        /// its own CSV/JSON with runLabel "sweep_res{R}_pad{S}_bdr{B}_psa{0|1}_arap{N}".
+        /// arapIterationsVariants × stretchThresholdVariants). Each cell writes
+        /// its own CSV/JSON with runLabel "sweep_res{R}_pad{S}_bdr{B}_arap{N}_stretch{T}".
         /// After the loop, if at least two cells completed, BenchmarkSweep.WriteAggregateReport
         /// is invoked to score the cells and write a sweep_<timestamp>/summary.csv +
         /// winner.json under BenchmarkReports/. Original ctx values are restored on exit.
@@ -906,22 +885,22 @@ namespace SashaRX.UnityMeshLab
                 ? sm.shellPaddingPxVariants : new[] { ctx.ShellPaddingPx };
             var bdrArr = (sm.borderPaddingPxVariants != null && sm.borderPaddingPxVariants.Length > 0)
                 ? sm.borderPaddingPxVariants : new[] { ctx.BorderPaddingPx };
-            var perShellAspArr = (sm.perShellAspectVariants != null && sm.perShellAspectVariants.Length > 0)
-                ? sm.perShellAspectVariants : new[] { ctx.PerShellAspectNormalize };
-            var arapItersArr = (sm.ribbonArapIterationsVariants != null && sm.ribbonArapIterationsVariants.Length > 0)
-                ? sm.ribbonArapIterationsVariants
-                : new[] { ctx.ReparameterizeRibbons ? ctx.RibbonArapIterations : 0 };
+            var arapItersArr = (sm.arapIterationsVariants != null && sm.arapIterationsVariants.Length > 0)
+                ? sm.arapIterationsVariants
+                : new[] { ctx.ReparameterizeStretchedShells ? ctx.ArapIterations : 0 };
+            var stretchArr = (sm.stretchThresholdVariants != null && sm.stretchThresholdVariants.Length > 0)
+                ? sm.stretchThresholdVariants : new[] { ctx.StretchThreshold };
 
             int total = resArr.Length * padArr.Length * bdrArr.Length
-                      * perShellAspArr.Length * arapItersArr.Length;
+                      * arapItersArr.Length * stretchArr.Length;
 
             // Snapshot ctx fields we mutate — restored unconditionally below.
-            int  origRes        = ctx.AtlasResolution;
-            int  origPad        = ctx.ShellPaddingPx;
-            int  origBdr        = ctx.BorderPaddingPx;
-            bool origPerShellAsp = ctx.PerShellAspectNormalize;
-            bool origArapOn     = ctx.ReparameterizeRibbons;
-            int  origArapIters  = ctx.RibbonArapIterations;
+            int   origRes         = ctx.AtlasResolution;
+            int   origPad         = ctx.ShellPaddingPx;
+            int   origBdr         = ctx.BorderPaddingPx;
+            bool  origArapOn      = ctx.ReparameterizeStretchedShells;
+            int   origArapIters   = ctx.ArapIterations;
+            float origStretchThr  = ctx.StretchThreshold;
 
             // Aligned lists: writtenCsvPaths[i] is the CSV path produced by
             // cellConfigs[i]. Passed to BenchmarkSweep after the loop completes.
@@ -959,14 +938,14 @@ namespace SashaRX.UnityMeshLab
                         foreach (int b in bdrArr)
                         {
                             if (cancelled) break;
-                            foreach (bool pa in perShellAspArr)
+                            foreach (int arapIters in arapItersArr)
                             {
                                 if (cancelled) break;
-                                foreach (int arapIters in arapItersArr)
+                                foreach (float stretchThr in stretchArr)
                                 {
                                     if (EditorUtility.DisplayCancelableProgressBar("Pipeline Sweep",
                                             $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}, " +
-                                            $"psa={(pa ? 1 : 0)}, arap={arapIters}",
+                                            $"arap={arapIters}, stretch={stretchThr:F2}",
                                             (float)done / Mathf.Max(1, total)))
                                     {
                                         cancelled = true;
@@ -977,16 +956,20 @@ namespace SashaRX.UnityMeshLab
                                         $"[Sweep] cell {done + 1}/{total}: GC heap " +
                                         $"{GC.GetTotalMemory(false) / (1024 * 1024)} MB");
 
-                                    ctx.AtlasResolution         = r;
-                                    ctx.ShellPaddingPx          = s;
-                                    ctx.BorderPaddingPx         = b;
-                                    ctx.PerShellAspectNormalize = pa;
-                                    ctx.ReparameterizeRibbons   = arapIters > 0;
-                                    if (arapIters > 0) ctx.RibbonArapIterations = arapIters;
+                                    ctx.AtlasResolution               = r;
+                                    ctx.ShellPaddingPx                = s;
+                                    ctx.BorderPaddingPx               = b;
+                                    ctx.ReparameterizeStretchedShells = arapIters > 0;
+                                    if (arapIters > 0) ctx.ArapIterations = arapIters;
+                                    ctx.StretchThreshold              = stretchThr;
 
                                     if (sm.resetBetweenRuns) ResetWorkingCopies();
 
-                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_psa{(pa ? 1 : 0)}_arap{arapIters}";
+                                    // Encode stretch threshold as e.g. "1p50" — Sanitize() collapses '.' to '_'
+                                    // and that would break the recovery regex's _stretch(\d+p\d+)_ token.
+                                    int stretchHundredths = Mathf.RoundToInt(stretchThr * 100f);
+                                    string stretchTag = $"{stretchHundredths / 100}p{(stretchHundredths % 100):D2}";
+                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_arap{arapIters}_stretch{stretchTag}";
                                     string csvBefore = BenchmarkRecorder.LastWrittenCsvPath;
                                     try
                                     {
@@ -1007,12 +990,12 @@ namespace SashaRX.UnityMeshLab
                                     writtenCsvPaths.Add(csvPath);
                                     cellConfigs.Add(new BenchmarkSweep.CellConfig
                                     {
-                                        atlasRes       = r,
-                                        shellPad       = s,
-                                        borderPad      = b,
-                                        perShellAspect = pa,
-                                        arapEnabled    = arapIters > 0,
-                                        arapIterations = arapIters,
+                                        atlasRes         = r,
+                                        shellPad         = s,
+                                        borderPad        = b,
+                                        arapEnabled      = arapIters > 0,
+                                        arapIterations   = arapIters,
+                                        stretchThreshold = stretchThr,
                                     });
                                     done++;
 
@@ -1057,12 +1040,12 @@ namespace SashaRX.UnityMeshLab
             finally
             {
                 EditorUtility.ClearProgressBar();
-                ctx.AtlasResolution         = origRes;
-                ctx.ShellPaddingPx          = origPad;
-                ctx.BorderPaddingPx         = origBdr;
-                ctx.PerShellAspectNormalize = origPerShellAsp;
-                ctx.ReparameterizeRibbons   = origArapOn;
-                ctx.RibbonArapIterations    = origArapIters;
+                ctx.AtlasResolution               = origRes;
+                ctx.ShellPaddingPx                = origPad;
+                ctx.BorderPaddingPx               = origBdr;
+                ctx.ReparameterizeStretchedShells = origArapOn;
+                ctx.ArapIterations                = origArapIters;
+                ctx.StretchThreshold              = origStretchThr;
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     $"Sweep complete: {done}/{total} cells{(cancelled ? " (cancelled)" : "")}");
 
@@ -1124,7 +1107,7 @@ namespace SashaRX.UnityMeshLab
             {
                 EditorUtility.DisplayDialog("Rebuild Sweep Report",
                     "No matching CSVs were found in:\n" + picked +
-                    "\n\nLook for files named *_sweep_resR_padS_bdrB_psaP_arapA_*.csv.",
+                    "\n\nLook for files named *_sweep_resR_padS_bdrB_arapA_stretchT_*.csv.",
                     "OK");
                 return;
             }
@@ -1350,11 +1333,9 @@ namespace SashaRX.UnityMeshLab
             opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
             opts.normalizeTexelDensity = ctx.NormalizeTexelDensity;
             opts.normalizeShellAspect = ctx.NormalizeShellAspect;
-            opts.perShellAspectNormalize = ctx.PerShellAspectNormalize;
-            opts.maxShellAspect = ctx.MaxShellAspect;
-            opts.perShellAspectThreshold = ctx.PerShellAspectThreshold;
-            opts.reparameterizeRibbons = ctx.ReparameterizeRibbons;
-            opts.ribbonArapIterations = ctx.RibbonArapIterations;
+            opts.reparameterizeStretchedShells = ctx.ReparameterizeStretchedShells;
+            opts.stretchThreshold = ctx.StretchThreshold;
+            opts.arapIterations = ctx.ArapIterations;
             opts.clampLightmapToUnit = ctx.ClampLightmapToUnit;
             opts.targetUvCoverage = ctx.TargetUvCoverage;
             opts.maxChartSize = ctx.XatlasMaxChartSize;
