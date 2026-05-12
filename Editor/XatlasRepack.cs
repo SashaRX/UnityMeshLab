@@ -327,6 +327,86 @@ namespace SashaRX.UnityMeshLab
             return sum;
         }
 
+        /// <summary>
+        /// Per-shell post-xatlas UV2 density diagnostic. Groups output UV2 by
+        /// original UV0 shell (via shells[].faceIndices) and logs au2/a3
+        /// distribution. If TexelDensityNormalizer made input shell densities
+        /// uniform but post-pack densities still vary, xatlas internally
+        /// rescaled charts — which means the upstream density correction was
+        /// thrown away by the pack step.
+        /// </summary>
+        static void LogPostPackDensity(
+            Vector2[] uv2, int[] tris, Vector3[] positions,
+            List<UvShell> shells, string meshLabel)
+        {
+            if (uv2 == null || tris == null || positions == null || shells == null) return;
+            int uvLen = uv2.Length;
+            int posLen = positions.Length;
+            int n = shells.Count;
+            if (n == 0) return;
+
+            double dMin = double.MaxValue, dMax = 0.0, dSum = 0.0;
+            int dCount = 0;
+            double minRatio = double.MaxValue, maxRatio = 0.0;
+            int shellIdMin = -1, shellIdMax = -1;
+            for (int si = 0; si < n; si++)
+            {
+                var shell = shells[si];
+                if (shell?.faceIndices == null) continue;
+                double a3 = 0.0, au = 0.0;
+                foreach (int f in shell.faceIndices)
+                {
+                    int t = f * 3;
+                    if ((uint)(t + 2) >= (uint)tris.Length) continue;
+                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
+                    if ((uint)i0 >= (uint)posLen || (uint)i1 >= (uint)posLen || (uint)i2 >= (uint)posLen) continue;
+                    if ((uint)i0 >= (uint)uvLen || (uint)i1 >= (uint)uvLen || (uint)i2 >= (uint)uvLen) continue;
+                    Vector3 p0 = positions[i0], p1 = positions[i1], p2 = positions[i2];
+                    a3 += Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5;
+                    Vector2 a = uv2[i0], b = uv2[i1], c = uv2[i2];
+                    au += Math.Abs((double)(b.x - a.x) * (c.y - a.y) - (double)(c.x - a.x) * (b.y - a.y)) * 0.5;
+                }
+                if (a3 < 1e-12 || au < 1e-12) continue;
+                double d = au / a3;
+                if (d < dMin) { dMin = d; shellIdMin = si; }
+                if (d > dMax) { dMax = d; shellIdMax = si; }
+                dSum += d;
+                dCount++;
+            }
+
+            if (dCount == 0) return;
+            double dMean = dSum / dCount;
+            double ratio = (dMin > 1e-30) ? dMax / dMin : 0.0;
+
+            // Spread density across shells around the mean — a few outliers
+            // can swamp maxRatio, so also report how the bulk behaves.
+            int withinTenPct = 0;
+            for (int si = 0; si < n; si++)
+            {
+                var shell = shells[si];
+                if (shell?.faceIndices == null) continue;
+                double a3 = 0.0, au = 0.0;
+                foreach (int f in shell.faceIndices)
+                {
+                    int t = f * 3;
+                    if ((uint)(t + 2) >= (uint)tris.Length) continue;
+                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
+                    if ((uint)i0 >= (uint)posLen || (uint)i1 >= (uint)posLen || (uint)i2 >= (uint)posLen) continue;
+                    if ((uint)i0 >= (uint)uvLen || (uint)i1 >= (uint)uvLen || (uint)i2 >= (uint)uvLen) continue;
+                    Vector3 p0 = positions[i0], p1 = positions[i1], p2 = positions[i2];
+                    a3 += Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5;
+                    Vector2 a = uv2[i0], b = uv2[i1], c = uv2[i2];
+                    au += Math.Abs((double)(b.x - a.x) * (c.y - a.y) - (double)(c.x - a.x) * (b.y - a.y)) * 0.5;
+                }
+                if (a3 < 1e-12 || au < 1e-12) continue;
+                double d = au / a3;
+                if (Math.Abs(d - dMean) <= 0.10 * dMean) withinTenPct++;
+            }
+
+            UvtLog.Info(UvtLog.Category.Repack,
+                $"[Density:postUV2] '{meshLabel}' shells={dCount} | au2/a3: min={dMin:G3}(shell#{shellIdMin}) max={dMax:G3}(shell#{shellIdMax}) mean={dMean:G3} maxRatio={ratio:F2}x | within±10%: {withinTenPct}/{dCount}");
+        }
+
 
         /// <summary>
         /// Convenience wrapper: repack UV0 shells into UV2, return packed UV2 array.
@@ -579,6 +659,8 @@ namespace SashaRX.UnityMeshLab
                 double coverage = ComputeUv2CoverageFraction(uv2, tris);
                 UvtLog.Info(UvtLog.Category.Repack,
                     $"Atlas utilization: {coverage * 100.0:F1}% of [0,1]² covered ({shells.Count} shells)");
+
+                LogPostPackDensity(uv2, tris, positions, shells, mesh.name);
 
                 // ── Stats ──
                 int nonZero = 0;
@@ -847,6 +929,8 @@ namespace SashaRX.UnityMeshLab
                         clampedTotal += ClampUvsToUnit(allUv2[m]);
 
                     meshes[m].SetUVs(1, allUv2[m]);
+
+                    LogPostPackDensity(allUv2[m], allTris[m], allPositions[m], allShells[m], meshes[m].name);
                 }
                 if (clampedTotal > 0)
                     UvtLog.Verbose(UvtLog.Category.Repack,
