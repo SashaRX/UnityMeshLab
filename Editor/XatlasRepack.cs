@@ -831,17 +831,17 @@ namespace SashaRX.UnityMeshLab
             opts.resolution = (uint)resolution;
             opts.padding = (uint)padding;
             // Work on a temporary copy so original mesh is untouched
-            var tmp = Object.Instantiate(mesh);
+            var tmp = UnityEngine.Object.Instantiate(mesh);
             tmp.name = mesh.name + "_repack_tmp";
             var result = RepackSingle(tmp, opts);
             if (!result.ok)
             {
-                Object.DestroyImmediate(tmp);
+                UnityEngine.Object.DestroyImmediate(tmp);
                 return null;
             }
             var uvOut = new List<Vector2>();
             tmp.GetUVs(1, uvOut);
-            Object.DestroyImmediate(tmp);
+            UnityEngine.Object.DestroyImmediate(tmp);
             return uvOut.ToArray();
         }
 
