@@ -100,6 +100,11 @@ EXPORT void xatlasPackCharts(
     opts.rotateChartsToAxis  = (rotateChartsToAxis != 0);
 
     xatlas::SetPreserveChartScale(preserveChartScale != 0);
+    // SashaRX.UnityMeshLab fork build marker — prints to Unity console
+    // so we can verify the patched DLL is actually loaded (vs cached
+    // stock xatlas-unity.dll). Remove after density issue is solved.
+    fprintf(stdout, "[xatlas-bridge] PATCHED build, preserveChartScale=%d\n", preserveChartScale);
+    fflush(stdout);
     xatlas::PackCharts(s_atlas, opts);
     xatlas::SetPreserveChartScale(false); // restore default for subsequent stock callers
 }
