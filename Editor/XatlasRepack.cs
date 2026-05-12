@@ -148,7 +148,7 @@ namespace SashaRX.UnityMeshLab
             arapIterations = 50,
             clampLightmapToUnit = true,
             postPackDensityCorrection = false,
-            internalOversample = 8,
+            internalOversample = 4,
         };
     }
 
@@ -796,11 +796,23 @@ namespace SashaRX.UnityMeshLab
                 uint internalRes = opts.resolution * (uint)oversample;
                 uint internalPad = opts.padding    * (uint)oversample;
 
+                // Brute force pack is O(N × W × H). At 8× oversample on a
+                // 256-px user resolution that's 149 × 2048 × 2048 = 600M ops
+                // per atlas, multiplied by 3 auto-tune configs = minutes-to-
+                // hours wall time. Disable brute force when oversample makes
+                // the search space too large; the random heuristic is fine at
+                // these atlas sizes anyway (the win from brute force was on
+                // tiny atlases where mis-placement leaves visible gaps).
+                bool effectiveBruteForce = opts.bruteForce && oversample <= 4;
+                if (opts.bruteForce && !effectiveBruteForce)
+                    UvtLog.Info(UvtLog.Category.Repack,
+                        $"[xatlas] Brute force pack disabled (oversample {oversample}× would push search space past minutes-per-atlas budget)");
+
                 XatlasNative.xatlasPackCharts(
                     opts.maxChartSize, internalPad, opts.texelsPerUnit, internalRes,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
-                    opts.bruteForce ? 1 : 0,
+                    effectiveBruteForce ? 1 : 0,
                     opts.rotateCharts ? 1 : 0,
                     opts.rotateChartsToAxis ? 1 : 0);
 
@@ -1072,16 +1084,20 @@ namespace SashaRX.UnityMeshLab
                 // Pack all charts together into one atlas
                 XatlasNative.xatlasComputeCharts();
 
-                // See RepackSingle for oversample rationale (ceil-stretch fix).
+                // See RepackSingle for oversample rationale + brute-force guard.
                 int oversampleM = opts.internalOversample > 0 ? opts.internalOversample : 1;
                 uint internalResM = opts.resolution * (uint)oversampleM;
                 uint internalPadM = opts.padding    * (uint)oversampleM;
+                bool effectiveBruteForceM = opts.bruteForce && oversampleM <= 4;
+                if (opts.bruteForce && !effectiveBruteForceM)
+                    UvtLog.Info(UvtLog.Category.Repack,
+                        $"[xatlas] Brute force pack disabled (oversample {oversampleM}× would push search space past minutes-per-atlas budget)");
 
                 XatlasNative.xatlasPackCharts(
                     opts.maxChartSize, internalPadM, opts.texelsPerUnit, internalResM,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
-                    opts.bruteForce ? 1 : 0,
+                    effectiveBruteForceM ? 1 : 0,
                     opts.rotateCharts ? 1 : 0,
                     opts.rotateChartsToAxis ? 1 : 0);
 

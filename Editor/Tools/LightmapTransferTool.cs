@@ -570,21 +570,22 @@ namespace SashaRX.UnityMeshLab
                             + "shrunk shells used to be — trades coverage for density uniformity."),
                         ctx.PostPackDensityCorrection);
                     int[] osValues = { 1, 2, 4, 8, 16 };
-                    string[] osLabels = { "1× (off)", "2×", "4×", "8× (default)", "16×" };
+                    string[] osLabels = { "1× (off)", "2×", "4× (default)", "8×", "16×" };
                     int currentOs = Mathf.Max(1, ctx.InternalOversample);
-                    int osIdx = 3;
+                    int osIdx = 2;
                     for (int i = 0; i < osValues.Length; i++)
                         if (osValues[i] == currentOs) { osIdx = i; break; }
                     int newOsIdx = EditorGUILayout.Popup(
                         new GUIContent("Internal pack oversample",
                             "Internal xatlas atlas size = user resolution × this factor. "
-                            + "xatlas's unconditional per-chart ceil(extents) stretch "
-                            + "(xatlas.cpp:8345) breaks uniform density when shells have "
-                            + "sub-pixel extents. Oversampling makes ceil rounding "
-                            + "fractional. UV2 still normalized to [0,1]; Unity bakes at "
-                            + "its own resolution.\n\nHigher = better density uniformity, "
-                            + "more pack time. Default 8× brings density spread from ~14× "
-                            + "down to ~1.1×."),
+                            + "xatlas's per-chart ceil(extents) stretch (xatlas.cpp:8345) "
+                            + "breaks uniform density when shells have sub-pixel extents. "
+                            + "Oversampling makes ceil rounding fractional. UV2 still "
+                            + "normalized to [0,1]; Unity bakes at its own resolution.\n\n"
+                            + "Default 4× brings density spread from ~14× down to ~2×.\n"
+                            + "8-16× brings spread to ~1.1× but DISABLES brute force pack "
+                            + "automatically (search space becomes minutes-per-atlas).\n"
+                            + "1× = off, original xatlas behaviour."),
                         osIdx, osLabels);
                     ctx.InternalOversample = osValues[Mathf.Clamp(newOsIdx, 0, osValues.Length - 1)];
                 }
