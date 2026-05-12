@@ -152,6 +152,18 @@ namespace SashaRX.UnityMeshLab
         public bool PostPackDensityCorrection = false;
 
         /// <summary>
+        /// Internal xatlas atlas oversampling factor (1, 2, 4, 8, 16). Default 8.
+        /// xatlas internally applies per-chart ceil(extents) stretch that
+        /// breaks uniform density when shells have sub-pixel extents. Running
+        /// the pack at oversample× the user resolution makes per-shell ceil
+        /// rounding a fraction of a percent instead of multiples. Output UV2
+        /// is still normalized to [0,1] so user resolution still controls
+        /// UV layout precision and Unity bakes at its own lightmap resolution.
+        /// Higher = better density uniformity, more pack time. 1 disables.
+        /// </summary>
+        public int InternalOversample = 8;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas the normalized UVs should sum to.
         /// Leaves slack for bin-packing inefficiency so the atlas doesn't
         /// grow past the requested resolution. Default 0.75 (= 25% safety

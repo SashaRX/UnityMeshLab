@@ -99,6 +99,23 @@ namespace SashaRX.UnityMeshLab
         public bool postPackDensityCorrection;
 
         /// <summary>
+        /// Internal xatlas atlas oversampling factor. xatlas applies an
+        /// unconditional per-chart ceil(extents.x/y) stretch (xatlas.cpp:8345-
+        /// 8362) that amplifies thin shells (extent &lt; 1 atlas-pixel) by up to
+        /// 20×. Running the internal pack at a higher resolution makes every
+        /// chart's pixel extents N× larger, so ceil() rounding becomes a
+        /// fraction of a percent instead of multiples. Output UV2 is
+        /// normalized to [0,1] regardless of internal atlas size so the user-
+        /// facing resolution parameter still controls UV layout precision and
+        /// the final lightmap baked by Unity is unaffected. Padding (both
+        /// shell and border) is scaled by the same factor so the gap fraction
+        /// in UV space stays constant. Default 8 — at 256×256 user-facing
+        /// resolution the internal pack runs at 2048×2048 which brings
+        /// per-shell density spread from ~14× down to ~1.1×.
+        /// </summary>
+        public int internalOversample;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas that normalized UVs should sum to AFTER
         /// per-shell density equalisation. Bin-packing leaves slack, so
         /// total chart area below 1.0 keeps xatlas from overflowing the
@@ -131,6 +148,7 @@ namespace SashaRX.UnityMeshLab
             arapIterations = 50,
             clampLightmapToUnit = true,
             postPackDensityCorrection = false,
+            internalOversample = 8,
         };
     }
 
@@ -767,8 +785,19 @@ namespace SashaRX.UnityMeshLab
 
                 XatlasNative.xatlasComputeCharts();
 
+                // Oversample the internal xatlas atlas. xatlas's unconditional
+                // per-chart ceil(extents) stretch (xatlas.cpp:8345-8362) breaks
+                // uniform density when shells have sub-pixel extents in atlas
+                // space. Running the pack at oversample× the user-facing
+                // resolution makes every chart's extent oversample× larger, so
+                // ceil rounding becomes fractional. Padding scales by the same
+                // factor to keep the gap fraction in UV space constant.
+                int oversample = opts.internalOversample > 0 ? opts.internalOversample : 1;
+                uint internalRes = opts.resolution * (uint)oversample;
+                uint internalPad = opts.padding    * (uint)oversample;
+
                 XatlasNative.xatlasPackCharts(
-                    opts.maxChartSize, opts.padding, opts.texelsPerUnit, opts.resolution,
+                    opts.maxChartSize, internalPad, opts.texelsPerUnit, internalRes,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
@@ -842,7 +871,12 @@ namespace SashaRX.UnityMeshLab
                 // ── Border padding inset ──
                 if (opts.borderPadding > 0 && result.atlasWidth > 0)
                 {
-                    ApplyBorderInset(uv2, opts.borderPadding, result.atlasWidth, result.atlasHeight);
+                    // Inset is computed against user-facing resolution, not the
+                    // oversampled internal atlas dims — otherwise border pixels
+                    // become sub-pixel in the final lightmap.
+                    uint refAtlasW = opts.resolution > 0 ? opts.resolution : result.atlasWidth;
+                    uint refAtlasH = opts.resolution > 0 ? opts.resolution : result.atlasHeight;
+                    ApplyBorderInset(uv2, opts.borderPadding, refAtlasW, refAtlasH);
                     LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postBorder]");
                 }
 
@@ -1037,8 +1071,14 @@ namespace SashaRX.UnityMeshLab
 
                 // Pack all charts together into one atlas
                 XatlasNative.xatlasComputeCharts();
+
+                // See RepackSingle for oversample rationale (ceil-stretch fix).
+                int oversampleM = opts.internalOversample > 0 ? opts.internalOversample : 1;
+                uint internalResM = opts.resolution * (uint)oversampleM;
+                uint internalPadM = opts.padding    * (uint)oversampleM;
+
                 XatlasNative.xatlasPackCharts(
-                    opts.maxChartSize, opts.padding, opts.texelsPerUnit, opts.resolution,
+                    opts.maxChartSize, internalPadM, opts.texelsPerUnit, internalResM,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
@@ -1135,7 +1175,10 @@ namespace SashaRX.UnityMeshLab
 
                     if (opts.borderPadding > 0 && atlasW > 0)
                     {
-                        ApplyBorderInset(allUv2[m], opts.borderPadding, atlasW, atlasH);
+                        // Inset against user-facing resolution, not oversampled atlas.
+                        uint refAtlasW = opts.resolution > 0 ? opts.resolution : atlasW;
+                        uint refAtlasH = opts.resolution > 0 ? opts.resolution : atlasH;
+                        ApplyBorderInset(allUv2[m], opts.borderPadding, refAtlasW, refAtlasH);
                         LogPostPackDensity(allUv2[m], allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postBorder]");
                     }
 
