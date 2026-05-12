@@ -149,22 +149,29 @@ namespace SashaRX.UnityMeshLab
         /// expands) so shells can't collide with neighbours. Default OFF —
         /// experimental, may leave gaps in the atlas where shrunk shells were.
         /// </summary>
-        public bool PostPackDensityCorrection = false;
+        /// <summary>
+        /// Post-pack density correction. xatlas internally applies per-chart
+        /// scaling (sub-pixel anisotropic ceil + per-chart normalization for
+        /// extreme aspect ratios) that breaks uniform density. This pass
+        /// measures per-shell au2/a3 after xatlas and shrinks over-dense
+        /// shells uniformly around their UV2 centroid to match the median.
+        /// Shrink-only (never expands) so neighbours can't collide. Brings
+        /// density spread on the Carousel test from ~14× down to ~3×.
+        /// Default ON — needed to compensate xatlas's per-chart bias.
+        /// </summary>
+        public bool PostPackDensityCorrection = true;
 
         /// <summary>
-        /// Internal xatlas atlas oversampling factor (1, 2, 4, 8, 16). Default 4.
-        /// xatlas internally applies per-chart ceil(extents) stretch that
-        /// breaks uniform density when shells have sub-pixel extents. Running
-        /// the pack at oversample× the user resolution makes per-shell ceil
-        /// rounding a fraction of a percent instead of multiples. Output UV2
-        /// is still normalized to [0,1] so user resolution still controls
-        /// UV layout precision and Unity bakes at its own lightmap resolution.
-        ///
-        /// WARNING: brute force pack is O(N × W × H) — at 8× oversample with
-        /// brute force on, packing can take many minutes per atlas. Use 4×
-        /// with brute force OR 8-16× without brute force. 1 disables.
+        /// Internal xatlas atlas oversampling factor (1, 2, 4, 8, 16). Default 1.
+        /// In theory oversampling reduces xatlas's ceil(extents) per-chart
+        /// rounding bias by making every extent N× larger in pixel space.
+        /// In practice it doesn't help much on real models because thin shells
+        /// (aspect 100:1 or higher) still have sub-pixel short-dimension extent
+        /// even at 8× oversample, and the longer dimension easily blows the
+        /// brute-force pack cost budget. Use post-pack correction instead;
+        /// this knob stays for advanced manual experiments.
         /// </summary>
-        public int InternalOversample = 4;
+        public int InternalOversample = 1;
 
         /// <summary>
         /// Fraction of [0,1]² atlas the normalized UVs should sum to.

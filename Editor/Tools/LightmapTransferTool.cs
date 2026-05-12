@@ -570,9 +570,9 @@ namespace SashaRX.UnityMeshLab
                             + "shrunk shells used to be — trades coverage for density uniformity."),
                         ctx.PostPackDensityCorrection);
                     int[] osValues = { 1, 2, 4, 8, 16 };
-                    string[] osLabels = { "1× (off)", "2×", "4× (default)", "8×", "16×" };
+                    string[] osLabels = { "1× (default — off)", "2×", "4×", "8×", "16×" };
                     int currentOs = Mathf.Max(1, ctx.InternalOversample);
-                    int osIdx = 2;
+                    int osIdx = 0;
                     for (int i = 0; i < osValues.Length; i++)
                         if (osValues[i] == currentOs) { osIdx = i; break; }
                     int newOsIdx = EditorGUILayout.Popup(

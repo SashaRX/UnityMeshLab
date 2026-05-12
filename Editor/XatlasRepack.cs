@@ -149,8 +149,8 @@ namespace SashaRX.UnityMeshLab
             stretchThreshold = 1.5f,
             arapIterations = 50,
             clampLightmapToUnit = true,
-            postPackDensityCorrection = false,
-            internalOversample = 4,
+            postPackDensityCorrection = true,
+            internalOversample = 1,
         };
     }
 
