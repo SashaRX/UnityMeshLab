@@ -14,6 +14,54 @@ to:
 2. Collect machine-readable metrics (CSV + JSON).
 3. Inspect remaining defects visually, filtered by category.
 
+## Pipeline state (2026-05)
+
+Repack stage (single mesh OR multi-mesh joint atlas):
+
+1. **Extract shells** + per-face shell IDs (`UvShellExtractor`).
+2. **Perturb UV0** of overlap-grouped shells (`PerturbOverlapShellsUv0`) so
+   xatlas's chart-dedup heuristic gives every tile-instance a distinct atlas
+   slot. Strength is adaptive from atlas resolution + padding by default,
+   manual override via `RepackOptions.perturbStrength`.
+3. **Pre-pack normalisation** (`TexelDensityNormalizer.Normalize`, two passes):
+   - *Pass 1 — aspect.* Per-shell PCA on UV0 vertices and on 3D vertices
+     projected onto the shell's mean tangent plane. Apply non-uniform scale
+     along the UV principal axes so σ1_UV/σ2_UV matches σ1_3D/σ2_3D, capped
+     by `maxShellAspect` (default 2). Area-preserving: scale_a1 × scale_a2 = 1.
+   - *Pass 2 — density.* Re-measure UV area on the now aspect-correct shells,
+     compute area-weighted (or median) target density, apply uniform per-shell
+     scale, then a global shrink to `targetUvCoverage` (default 0.75) leaves
+     packer slack so xatlas doesn't overflow the requested atlas resolution.
+4. **xatlas pack** with `bruteForce + rotateCharts` on by default.
+5. **UV2 write-back** + orphan-vertex fix.
+6. **Atlas utilization log line** for visibility.
+
+Transfer stage (per target LOD): `GroupedShellTransfer.Transfer` — unchanged
+from earlier docs. Matches target shells to source by UV0 bbox + world
+centroid + world normal, then applies similarity transform / interpolation /
+strip-parameterization.
+
+### Removed modes
+
+- **`mergeOverlappingTiles`** (and its helpers: `IsEquivalentShellForTileMerge`,
+  `BuildNonDuplicate*`, post-process `FixOverlappingUv2Shells`,
+  `FixNearDuplicateUv2Shells`, `RelocateToFreeSpace`, `RescaleUv2ToUnit`).
+  This mode collapsed tile-instance shells into one xatlas chart and copied
+  UV2 from the rep to every duplicate. Wrong for lightmap UV2 — every plank
+  needs its own lightmap region for correct baked lighting. The fix passes
+  were band-aids for false overlaps the merge path produced; with merge gone
+  they were unreachable. Deleted entirely.
+
+### Open / next
+
+- Aspect normalisation is approximate for curved surfaces (cylinder unrolled
+  parameterization isn't AABB-extent-shaped). Acceptable for typical
+  lightmap meshes (planks, walls, panels).
+- Cross-LOD aspect consistency: pass 1 currently re-derives per-mesh; for
+  multi-LOD groups it may be worth deriving on LOD0 then propagating.
+- Iterative shrink-to-fit (auto-tune `targetUvCoverage` to land at exactly
+  the requested resolution) — proposed, not implemented.
+
 ## Tooling
 
 | Piece | Location | What it does |
@@ -31,10 +79,11 @@ Session-level (same across rows of one run):
 
 - `timestamp`, `runLabel`, `lodGroup`, `symSplitMode`, `repackPerMesh`, `splitTargets`
 - `atlasRes`, `shellPad`, `borderPad`, `sourceLod`
-- `preRepackOverlaps`, `postRepackOverlaps` — UV shell AABB overlap counts
-  (pre = UV0, post = UV2); set externally via
-  `BenchmarkRecorder.Current.SetPre/PostRepackOverlaps`.
 - `pipelineMs`, `repackMs`, `transferMs`, `validateMs` — accumulated stage timers.
+
+Pre/post repack overlap pair counts used to ride here as scalar fields, but
+they were sentinel-only (never populated) and were removed. Pre-pack overlap
+counts are still visible in the verbose `[xatlas] Pre-repack mesh N: K shells, G overlap groups, P pairs` log line per mesh.
 
 Per-row (snapshot of `TransferResult` / `ValidationReport` / static counters):
 
