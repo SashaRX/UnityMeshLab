@@ -67,22 +67,44 @@ namespace SashaRX.UnityMeshLab
         /// No-op when fewer than two cells are supplied.
         /// </summary>
         internal static void WriteAggregateReport(List<string> csvPaths, List<CellConfig> configs)
+            => WriteAggregateReport(csvPaths, configs, sweepDir: null);
+
+        /// <summary>
+        /// Same as the two-argument overload, but accepts a pre-created
+        /// <paramref name="sweepDir"/> so a long sweep can keep rewriting the
+        /// same summary.csv / winner.json / index.html after every successful
+        /// cell. When <paramref name="sweepDir"/> is null or empty, a new
+        /// sweep_&lt;timestamp&gt;/ folder is created under BenchmarkReports/
+        /// (legacy behavior). The minimum-2-cells gate is bypassed when an
+        /// explicit sweepDir is provided so incremental writes work from the
+        /// very first completed cell.
+        /// </summary>
+        internal static void WriteAggregateReport(List<string> csvPaths, List<CellConfig> configs, string sweepDir)
         {
             if (csvPaths == null || configs == null) return;
             int n = Math.Min(csvPaths.Count, configs.Count);
-            if (n < 2)
+            bool explicitDir = !string.IsNullOrEmpty(sweepDir);
+            if (n < 2 && !explicitDir)
             {
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     "[Sweep] Skipping aggregate report — fewer than 2 cells completed.");
                 return;
             }
+            if (n < 1) return;
 
             string projectRoot = Directory.GetParent(Application.dataPath)?.FullName ?? Application.dataPath;
-            string reportsDir  = Path.Combine(projectRoot, "BenchmarkReports");
-            Directory.CreateDirectory(reportsDir);
-            string sweepStamp  = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
-            string sweepDir    = Path.Combine(reportsDir, $"sweep_{sweepStamp}");
+            string defaultReportsDir = Path.Combine(projectRoot, "BenchmarkReports");
+            if (!explicitDir)
+            {
+                Directory.CreateDirectory(defaultReportsDir);
+                string sweepStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+                sweepDir = Path.Combine(defaultReportsDir, $"sweep_{sweepStamp}");
+            }
             Directory.CreateDirectory(sweepDir);
+            // Use sweepDir's actual parent (not the hard-coded BenchmarkReports/
+            // path) so recovery against a user-picked folder still resolves
+            // sibling _png thumbnail directories correctly.
+            string reportsDir = Directory.GetParent(sweepDir)?.FullName ?? defaultReportsDir;
 
             var summaries = new List<RunSummary>(n);
             for (int i = 0; i < n; i++)
@@ -610,6 +632,149 @@ namespace SashaRX.UnityMeshLab
             }
             return null;
         }
+
+        /// <summary>
+        /// Recovery utility: reconstructs a sweep_recovered_&lt;timestamp&gt;/
+        /// report from the per-cell CSVs already present in a
+        /// <c>BenchmarkReports/</c> directory after a mid-sweep Unity crash
+        /// destroyed the in-memory aligned lists. The method:
+        /// <list type="number">
+        /// <item>scans non-recursively for <c>*.csv</c> files at the root,</item>
+        /// <item>parses <c>res{R}_pad{S}_bdr{B}_psa{P}_arap{A}</c> tokens from
+        ///   each filename and skips any CSV that doesn't match (so existing
+        ///   sweep_*/summary.csv files are ignored),</item>
+        /// <item>clusters the matched CSVs by file mtime — each cluster has
+        ///   gaps no larger than <c>kRecoveryGapSeconds</c> between adjacent
+        ///   files when sorted by time,</item>
+        /// <item>picks the largest cluster as the crashed sweep,</item>
+        /// <item>writes summary.csv / winner.json / index.html into a new
+        ///   <c>sweep_recovered_&lt;UTCstamp&gt;/</c> sibling folder.</item>
+        /// </list>
+        /// Returns the absolute path of the created sweep folder, or null on
+        /// failure (no matching CSVs, I/O error, etc.).
+        /// </summary>
+        internal static string RebuildFromExistingCsvs(string benchmarkReportsRoot)
+        {
+            if (string.IsNullOrEmpty(benchmarkReportsRoot) || !Directory.Exists(benchmarkReportsRoot))
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[Sweep] Recovery: directory not found: {benchmarkReportsRoot}");
+                return null;
+            }
+
+            string[] csvFiles;
+            try { csvFiles = Directory.GetFiles(benchmarkReportsRoot, "*.csv", SearchOption.TopDirectoryOnly); }
+            catch (Exception ex)
+            {
+                UvtLog.Error(UvtLog.Category.Benchmark,
+                    $"[Sweep] Recovery: failed to enumerate CSVs: {ex.Message}");
+                return null;
+            }
+            if (csvFiles == null || csvFiles.Length == 0)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[Sweep] Recovery: no CSVs found in {benchmarkReportsRoot}");
+                return null;
+            }
+
+            var rx = new System.Text.RegularExpressions.Regex(
+                @"_sweep_res(\d+)_pad(\d+)_bdr(\d+)_psa([01])_arap(\d+)_",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+            var matched = new List<(string path, CellConfig cfg, DateTime mtime)>();
+            foreach (string csv in csvFiles)
+            {
+                string name = Path.GetFileName(csv);
+                var m = rx.Match(name);
+                if (!m.Success) continue;
+                if (!int.TryParse(m.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int res)) continue;
+                if (!int.TryParse(m.Groups[2].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int pad)) continue;
+                if (!int.TryParse(m.Groups[3].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int bdr)) continue;
+                bool psa = m.Groups[4].Value == "1";
+                if (!int.TryParse(m.Groups[5].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int arapIters)) continue;
+
+                DateTime mtime;
+                try { mtime = File.GetLastWriteTimeUtc(csv); }
+                catch { mtime = DateTime.UtcNow; }
+
+                matched.Add((csv, new CellConfig
+                {
+                    atlasRes       = res,
+                    shellPad       = pad,
+                    borderPad      = bdr,
+                    perShellAspect = psa,
+                    arapEnabled    = arapIters > 0,
+                    arapIterations = arapIters,
+                }, mtime));
+            }
+
+            if (matched.Count == 0)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[Sweep] Recovery: no CSV matched the sweep_resR_padS_bdrB_psaP_arapA pattern in {benchmarkReportsRoot}");
+                return null;
+            }
+
+            // Cluster by mtime gaps. Files belonging to a single sweep are
+            // written back-to-back; a gap larger than kRecoveryGapSeconds is
+            // treated as a sweep boundary.
+            matched.Sort((a, b) => a.mtime.CompareTo(b.mtime));
+            var clusters = new List<List<(string path, CellConfig cfg, DateTime mtime)>>();
+            var current  = new List<(string path, CellConfig cfg, DateTime mtime)> { matched[0] };
+            for (int i = 1; i < matched.Count; i++)
+            {
+                double gap = (matched[i].mtime - matched[i - 1].mtime).TotalSeconds;
+                if (gap > kRecoveryGapSeconds)
+                {
+                    clusters.Add(current);
+                    current = new List<(string path, CellConfig cfg, DateTime mtime)>();
+                }
+                current.Add(matched[i]);
+            }
+            clusters.Add(current);
+
+            // Largest cluster = the sweep the user wants to recover.
+            int bestC = 0;
+            for (int i = 1; i < clusters.Count; i++)
+                if (clusters[i].Count > clusters[bestC].Count) bestC = i;
+            var chosen = clusters[bestC];
+
+            var csvPaths = new List<string>(chosen.Count);
+            var configs  = new List<CellConfig>(chosen.Count);
+            foreach (var t in chosen) { csvPaths.Add(t.path); configs.Add(t.cfg); }
+
+            string recoveryStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+            string sweepDir = Path.Combine(benchmarkReportsRoot, $"sweep_recovered_{recoveryStamp}");
+            try { Directory.CreateDirectory(sweepDir); }
+            catch (Exception ex)
+            {
+                UvtLog.Error(UvtLog.Category.Benchmark,
+                    $"[Sweep] Recovery: failed to create {sweepDir}: {ex.Message}");
+                return null;
+            }
+
+            UvtLog.Info(UvtLog.Category.Benchmark,
+                $"[Sweep] Recovery: rebuilding {chosen.Count} cells (from {clusters.Count} cluster(s), " +
+                $"largest selected) into {sweepDir}");
+
+            try
+            {
+                WriteAggregateReport(csvPaths, configs, sweepDir);
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Error(UvtLog.Category.Benchmark,
+                    $"[Sweep] Recovery: aggregate write failed: {ex.Message}");
+                return null;
+            }
+            return sweepDir;
+        }
+
+        // Files belonging to a single sweep are written back-to-back by the
+        // pipeline. 5 minutes is generous: even a slow cell finishes well under
+        // that, but it's large enough to absorb GC pauses, AssetDatabase
+        // refreshes, or progress-bar idle gaps between cells.
+        const double kRecoveryGapSeconds = 300.0;
 
         // ── Helpers ──
         static string Csv(string s)

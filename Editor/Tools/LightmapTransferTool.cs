@@ -385,6 +385,13 @@ namespace SashaRX.UnityMeshLab
                     if (GUILayout.Button($"Run Sweep ({cells})", GUILayout.Width(130), GUILayout.Height(22)))
                         ExecSweep(sweepSuite.sweep);
                 }
+                if (GUILayout.Button(new GUIContent("Rebuild Sweep Report",
+                        "Pick a BenchmarkReports/ folder and rebuild summary.csv / winner.json / index.html " +
+                        "from the per-cell CSVs already on disk. Use this after a mid-sweep Unity crash."),
+                        GUILayout.Width(150), GUILayout.Height(22)))
+                {
+                    ExecRebuildSweepReport();
+                }
             }
 
             EditorGUILayout.Space(6);
@@ -921,6 +928,24 @@ namespace SashaRX.UnityMeshLab
             var writtenCsvPaths = new List<string>(total);
             var cellConfigs     = new List<BenchmarkSweep.CellConfig>(total);
 
+            // Pre-create the sweep_<timestamp>/ directory so the incremental
+            // aggregate after every successful cell can rewrite summary.csv /
+            // winner.json / index.html into a stable path. The final aggregate
+            // in the finally block uses the same directory.
+            string sweepStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss",
+                System.Globalization.CultureInfo.InvariantCulture);
+            string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
+                                 ?? Application.dataPath;
+            string sweepDir = System.IO.Path.Combine(projectRoot, "BenchmarkReports",
+                $"sweep_{sweepStamp}");
+            try { System.IO.Directory.CreateDirectory(sweepDir); }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[Sweep] Could not pre-create sweep dir '{sweepDir}': {ex.Message}");
+                sweepDir = null;
+            }
+
             int done = 0;
             bool cancelled = false;
             try
@@ -947,6 +972,10 @@ namespace SashaRX.UnityMeshLab
                                         cancelled = true;
                                         break;
                                     }
+
+                                    UvtLog.Verbose(UvtLog.Category.Benchmark,
+                                        $"[Sweep] cell {done + 1}/{total}: GC heap " +
+                                        $"{GC.GetTotalMemory(false) / (1024 * 1024)} MB");
 
                                     ctx.AtlasResolution         = r;
                                     ctx.ShellPaddingPx          = s;
@@ -986,6 +1015,39 @@ namespace SashaRX.UnityMeshLab
                                         arapIterations = arapIters,
                                     });
                                     done++;
+
+                                    // Incremental aggregate: rewrite summary/winner/html after
+                                    // every successful cell so a mid-sweep Unity crash leaves
+                                    // usable reports. WriteAggregateReport accepts the same
+                                    // pre-created sweepDir each call and overwrites in place.
+                                    if (!string.IsNullOrEmpty(sweepDir))
+                                    {
+                                        try
+                                        {
+                                            BenchmarkSweep.WriteAggregateReport(
+                                                writtenCsvPaths, cellConfigs, sweepDir);
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            UvtLog.Warn(UvtLog.Category.Benchmark,
+                                                $"[Sweep] Incremental aggregate failed: {ex.Message}");
+                                        }
+                                    }
+
+                                    // Release temporary meshes accumulated by the pipeline so
+                                    // the native atlas allocator and the managed GC heap don't
+                                    // balloon across 48+ cells (the original 30-cell crash was
+                                    // most likely OOM or fragmentation in this code path).
+                                    try
+                                    {
+                                        System.GC.Collect();
+                                        UnityEngine.Resources.UnloadUnusedAssets();
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        UvtLog.Verbose(UvtLog.Category.Benchmark,
+                                            $"[Sweep] Between-cell cleanup hiccup: {ex.Message}");
+                                    }
                                 }
                             }
                         }
@@ -1005,14 +1067,17 @@ namespace SashaRX.UnityMeshLab
                     $"Sweep complete: {done}/{total} cells{(cancelled ? " (cancelled)" : "")}");
 
                 // Aggregate per-cell CSVs into a sweep_<timestamp>/summary.csv +
-                // winner.json. No-op when fewer than two cells completed; safe
-                // to call even if individual cells produced no CSV (they are
-                // recorded as failed entries in the summary).
-                if (writtenCsvPaths.Count >= 2)
+                // winner.json. The incremental writer in the foreach above
+                // already keeps these in sync after every successful cell —
+                // this final call refreshes the same sweepDir to cover the
+                // edge case where the last cell threw before the incremental
+                // write executed. Safe to call even if individual cells
+                // produced no CSV (they are recorded as failed entries).
+                if (writtenCsvPaths.Count >= 1)
                 {
                     try
                     {
-                        BenchmarkSweep.WriteAggregateReport(writtenCsvPaths, cellConfigs);
+                        BenchmarkSweep.WriteAggregateReport(writtenCsvPaths, cellConfigs, sweepDir);
                     }
                     catch (Exception ex)
                     {
@@ -1021,6 +1086,53 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Prompts the user for a BenchmarkReports/ folder and asks
+        /// <see cref="BenchmarkSweep.RebuildFromExistingCsvs"/> to reconstruct
+        /// summary.csv / winner.json / index.html from whatever per-cell CSVs
+        /// are still on disk after a mid-sweep Unity crash. Surfaces the result
+        /// (or a "no CSVs found" message) via <see cref="EditorUtility.DisplayDialog"/>.
+        /// </summary>
+        void ExecRebuildSweepReport()
+        {
+            string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
+                                 ?? Application.dataPath;
+            string defaultDir = System.IO.Path.Combine(projectRoot, "BenchmarkReports");
+            if (!System.IO.Directory.Exists(defaultDir)) defaultDir = projectRoot;
+
+            string picked = EditorUtility.OpenFolderPanel(
+                "Pick BenchmarkReports/ folder to rebuild", defaultDir, "");
+            if (string.IsNullOrEmpty(picked)) return;
+
+            string outDir;
+            try
+            {
+                outDir = BenchmarkSweep.RebuildFromExistingCsvs(picked);
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Error(UvtLog.Category.Benchmark,
+                    $"[Sweep] Rebuild threw: {ex.Message}");
+                EditorUtility.DisplayDialog("Rebuild Sweep Report",
+                    $"Rebuild failed: {ex.Message}", "OK");
+                return;
+            }
+
+            if (string.IsNullOrEmpty(outDir))
+            {
+                EditorUtility.DisplayDialog("Rebuild Sweep Report",
+                    "No matching CSVs were found in:\n" + picked +
+                    "\n\nLook for files named *_sweep_resR_padS_bdrB_psaP_arapA_*.csv.",
+                    "OK");
+                return;
+            }
+
+            EditorUtility.DisplayDialog("Rebuild Sweep Report",
+                "Recovery report written to:\n" + outDir +
+                "\n\nOpen index.html in a browser for the per-run gallery.",
+                "OK");
         }
 
         void ExecFullPipelineCore()
