@@ -1050,7 +1050,16 @@ namespace SashaRX.UnityMeshLab
                 splitTargetsInSymmetryStep, symSplitThresholdMode);
             BenchmarkRecorder.Current?.StageBegin("repack");
             try { ExecRepackCore(entries); }
-            finally { BenchmarkRecorder.Current?.StageEnd("repack"); }
+            finally
+            {
+                BenchmarkRecorder.Current?.StageEnd("repack");
+                // RecordMesh per entry so WriteArtefacts has rows to emit.
+                // Without this the Repack-only benchmark path produces zero
+                // CSV/JSON output (records.Count stays 0).
+                if (BenchmarkRecorder.Current != null)
+                    foreach (var e in entries)
+                        BenchmarkRecorder.Current.RecordMesh(e);
+            }
         }
 
         void ExecRepackCore(List<MeshEntry> entries)

@@ -32,8 +32,12 @@ import argparse, csv, glob, html, json, os, re, sys
 from collections import defaultdict
 
 
+# Timestamp prefix is yyyyMMdd_HHmmss; BenchmarkRecorder optionally appends
+# _fff (milliseconds) since the collision-resistance fix, so accept either
+# form. Without the optional ms group the _fff segment would otherwise be
+# captured into lodGroup and split sweep cells across pseudo-models.
 CELL_PATTERN = re.compile(
-    r"^(?P<ts>\d{8}_\d{6})_(?P<lodGroup>.+?)_sweep_res(?P<res>\d+)_pad(?P<pad>\d+)_bdr(?P<bdr>\d+)_.*?\.csv$"
+    r"^(?P<ts>\d{8}_\d{6}(?:_\d{3})?)_(?P<lodGroup>.+?)_sweep_res(?P<res>\d+)_pad(?P<pad>\d+)_bdr(?P<bdr>\d+)_.*?\.csv$"
 )
 
 

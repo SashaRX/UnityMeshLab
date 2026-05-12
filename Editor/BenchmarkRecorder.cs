@@ -35,8 +35,6 @@ namespace SashaRX.UnityMeshLab
         readonly Dictionary<string, long> stageAccum = new Dictionary<string, long>();
 
         // Pipeline-wide metrics
-        int preRepackOverlaps   = -1;
-        int postRepackOverlaps  = -1;
         int symSplitFallbackAt0 = -1;
         int symSplitTotalAt0    = -1;
 
@@ -107,10 +105,6 @@ namespace SashaRX.UnityMeshLab
                 stageAccum[stage] = accum + sw.ElapsedMilliseconds;
             }
         }
-
-        // ── Coarse metrics ──
-        public void SetPreRepackOverlaps(int count)  => preRepackOverlaps = count;
-        public void SetPostRepackOverlaps(int count) => postRepackOverlaps = count;
 
         /// <summary>
         /// Capture per-mesh record: TransferResult, ValidationReport, and a snapshot
@@ -286,7 +280,6 @@ namespace SashaRX.UnityMeshLab
                 "texelDensityBadCount,texelDensityMedian," +
                 "symSplitFallbackCount,symSplitTotalCount," +
                 "topologyIterations,topologyFixed,topologyCapHit,atlasUtilization," +
-                "preRepackOverlaps,postRepackOverlaps," +
                 "pipelineMs,repackMs,transferMs,validateMs");
 
             long pipelineMs = stageAccum.TryGetValue("pipeline",  out var pm) ? pm : 0;
@@ -339,8 +332,6 @@ namespace SashaRX.UnityMeshLab
                 sb.Append(r.topologyFixed.ToString(inv)).Append(',');
                 sb.Append(r.topologyCapHit ? '1' : '0').Append(',');
                 sb.Append(r.atlasUtilization.ToString("R", inv)).Append(',');
-                sb.Append(preRepackOverlaps.ToString(inv)).Append(',');
-                sb.Append(postRepackOverlaps.ToString(inv)).Append(',');
                 sb.Append(pipelineMs.ToString(inv)).Append(',');
                 sb.Append(repackMs.ToString(inv)).Append(',');
                 sb.Append(transferMs.ToString(inv)).Append(',');
@@ -369,8 +360,6 @@ namespace SashaRX.UnityMeshLab
             AppendJsonKv(sb, "shellPad",  shellPad);  sb.Append(",\n");
             AppendJsonKv(sb, "borderPad", borderPad); sb.Append(",\n");
             AppendJsonKv(sb, "sourceLodIndex", sourceLodIndex); sb.Append(",\n");
-            AppendJsonKv(sb, "preRepackOverlaps",  preRepackOverlaps);  sb.Append(",\n");
-            AppendJsonKv(sb, "postRepackOverlaps", postRepackOverlaps); sb.Append(",\n");
             AppendJsonKv(sb, "pipelineMs", pipelineMs); sb.Append(",\n");
             AppendJsonKv(sb, "repackMs",   repackMs);   sb.Append(",\n");
             AppendJsonKv(sb, "transferMs", transferMs); sb.Append(",\n");
