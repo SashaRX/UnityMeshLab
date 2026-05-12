@@ -1364,7 +1364,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     int clamped = XatlasRepack.ClampUvsToUnit(tr.uv2);
                     if (clamped > 0)
-                        UvtLog.Verbose(UvtLog.Category.Transfer,
+                        UvtLog.Verbose(UvtLog.Category.Match,
                             $"Clamped {clamped} UV2 vert(s) into [0,1] on '{tgt.renderer.name}'");
                 }
                 om.SetUVs(1, new List<Vector2>(tr.uv2));
