@@ -125,6 +125,36 @@ namespace SashaRX.UnityMeshLab
             if (targetCoverage > 0f && targetCoverage < 1f && sumArea3D > 1e-12)
                 densityTarget = targetCoverage / sumArea3D;
 
+            // ── Diagnostics: pre-normalize density distribution ──
+            // Density (au/a3) ratio across shells before normalisation. A
+            // wide spread means the artist UV0 had uneven density and the
+            // density pass has meaningful work to do; a narrow spread means
+            // the input was already near-uniform and the pass will look
+            // visually like "only a global scale was applied".
+            double preMin = double.MaxValue, preMax = 0.0, preSum = 0.0;
+            int preCount = 0;
+            for (int si = 0; si < n; si++)
+            {
+                double a3 = area3DPerShell[si];
+                double au = areaUVPerShell[si];
+                if (a3 < 1e-12 || au < 1e-12) continue;
+                double d = au / a3;
+                if (d < preMin) preMin = d;
+                if (d > preMax) preMax = d;
+                preSum += d;
+                preCount++;
+            }
+            double preMean = preCount > 0 ? preSum / preCount : 0.0;
+            double preRatio = (preMin > 1e-30 && preMax > 0.0) ? preMax / preMin : 0.0;
+
+            // Scale-distribution + post-normalize density tracking. We log a
+            // summary so the user can verify the pass actually did per-shell
+            // work and didn't collapse into a single global scale.
+            double scaleMinSeen = double.MaxValue;
+            double scaleMaxSeen = 0.0;
+            double postMin = double.MaxValue, postMax = 0.0, postSum = 0.0;
+            int postCount = 0;
+
             for (int si = 0; si < n; si++)
             {
                 double a3 = area3DPerShell[si];
@@ -137,6 +167,21 @@ namespace SashaRX.UnityMeshLab
                 float scale = (float)Math.Sqrt(scaleSq);
                 if (float.IsNaN(scale) || float.IsInfinity(scale)) continue;
                 scale = Mathf.Clamp(scale, scaleMin, scaleMax);
+
+                // Track distribution before the early-skip (so a uniform-input
+                // run reports scale≈1 spread, proving it was a no-op rather
+                // than silently skipping with no signal).
+                if (scale < scaleMinSeen) scaleMinSeen = scale;
+                if (scale > scaleMaxSeen) scaleMaxSeen = scale;
+
+                // Post-normalize density = (au * scale²) / a3 = desired / a3 = densityTarget.
+                // We re-derive from scale to detect clamp distortion.
+                double postDensity = (au * (double)scale * (double)scale) / a3;
+                if (postDensity < postMin) postMin = postDensity;
+                if (postDensity > postMax) postMax = postDensity;
+                postSum += postDensity;
+                postCount++;
+
                 if (Mathf.Abs(scale - 1f) < 1e-4f) continue;
 
                 var shell = shells[si];
@@ -169,6 +214,17 @@ namespace SashaRX.UnityMeshLab
                 }
                 modifiedDensity++;
             }
+
+            double postMean = postCount > 0 ? postSum / postCount : 0.0;
+            double postRatio = (postMin > 1e-30 && postMax > 0.0) ? postMax / postMin : 0.0;
+            double scaleSpread = (scaleMinSeen < double.MaxValue && scaleMinSeen > 1e-30)
+                ? scaleMaxSeen / scaleMinSeen : 1.0;
+
+            UvtLog.Info(UvtLog.Category.Repack,
+                $"[Density] {modifiedDensity}/{n} shells rescaled, target={densityTarget:G3} | " +
+                $"pre au/a3: min={preMin:G3} max={preMax:G3} mean={preMean:G3} maxRatio={preRatio:F2}x | " +
+                $"post au/a3: min={postMin:G3} max={postMax:G3} mean={postMean:G3} maxRatio={postRatio:F2}x | " +
+                $"scale: min={scaleMinSeen:F3} max={scaleMaxSeen:F3} spread={scaleSpread:F2}x");
 
             return modifiedDensity;
         }

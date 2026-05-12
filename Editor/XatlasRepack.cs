@@ -446,11 +446,11 @@ namespace SashaRX.UnityMeshLab
 
             if (opts.normalizeTexelDensity)
             {
-                int rescaled = TexelDensityNormalizer.Normalize(
+                // Normalize logs its own [Density] summary at Info level
+                // (pre/post au/a3 distribution + scale spread).
+                TexelDensityNormalizer.Normalize(
                     uvFlat, shells, tris, positions,
                     targetCoverage: opts.targetUvCoverage);
-                UvtLog.Verbose(UvtLog.Category.Repack,
-                    $"Texel density: rescaled {rescaled}/{shells.Count} shells to uniform UV/3D area ratio");
             }
 
             // ── Perturb UV0 of overlap-grouped shells ──
@@ -714,11 +714,10 @@ namespace SashaRX.UnityMeshLab
 
                     if (opts.normalizeTexelDensity)
                     {
-                        int rescaledM = TexelDensityNormalizer.Normalize(
+                        // Normalize logs its own [Density] summary at Info level.
+                        TexelDensityNormalizer.Normalize(
                             uvFlat, allShells[m], allTris[m], allPositions[m],
                             targetCoverage: opts.targetUvCoverage);
-                        UvtLog.Verbose(UvtLog.Category.Repack,
-                            $"Texel density mesh {m}: rescaled {rescaledM}/{allShells[m].Count} shells");
                     }
 
                     // Perturb UV0 of overlap-grouped shells so xatlas treats
