@@ -518,6 +518,15 @@ namespace SashaRX.UnityMeshLab
                             ctx.RibbonArapIterations, 5, 30);
                         EditorGUI.indentLevel--;
                     }
+                    ctx.ClampLightmapToUnit = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Clamp lightmap UV2 to [0,1]",
+                            "Clamp every output UV2 coord into the unit square on both source "
+                            + "(post-xatlas) and target (post-transfer) meshes. Cheap safety "
+                            + "net against verts pushed a fraction of a texel outside by border "
+                            + "padding, perturb fixups, or the topology enforcer — out-of-range "
+                            + "UVs sample neighbouring atlas regions and bleed wrong light. "
+                            + "Default ON."),
+                        ctx.ClampLightmapToUnit);
                     ctx.TargetUvCoverage = EditorGUILayout.Slider(
                         new GUIContent("UV coverage budget",
                             "Fraction of [0,1]² atlas that normalized UVs sum to. "
@@ -1147,6 +1156,7 @@ namespace SashaRX.UnityMeshLab
             opts.perShellAspectThreshold = ctx.PerShellAspectThreshold;
             opts.reparameterizeRibbons = ctx.ReparameterizeRibbons;
             opts.ribbonArapIterations = ctx.RibbonArapIterations;
+            opts.clampLightmapToUnit = ctx.ClampLightmapToUnit;
             opts.targetUvCoverage = ctx.TargetUvCoverage;
             opts.maxChartSize = ctx.XatlasMaxChartSize;
             opts.bilinear = ctx.XatlasBilinear;
@@ -1263,6 +1273,13 @@ namespace SashaRX.UnityMeshLab
                 // Build output mesh with UV2 applied
                 var om = UnityEngine.Object.Instantiate(tgtMesh);
                 om.name = tgtMesh.name + "_uvTransfer";
+                if (ctx.ClampLightmapToUnit)
+                {
+                    int clamped = XatlasRepack.ClampUvsToUnit(tr.uv2);
+                    if (clamped > 0)
+                        UvtLog.Verbose(UvtLog.Category.Transfer,
+                            $"Clamped {clamped} UV2 vert(s) into [0,1] on '{tgt.renderer.name}'");
+                }
                 om.SetUVs(1, new List<Vector2>(tr.uv2));
                 tgt.transferredMesh = om;
                 tgt.shellTransferResult = tr;

@@ -115,6 +115,14 @@ namespace SashaRX.UnityMeshLab
         public int ribbonArapIterations;
 
         /// <summary>
+        /// Clamp the source mesh's UV2 channel into [0,1] right after xatlas
+        /// writes the atlas. Cheap safety net against verts pushed slightly
+        /// outside the unit square by border padding or perturb fixups.
+        /// Default true.
+        /// </summary>
+        public bool clampLightmapToUnit;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas that normalized UVs should sum to AFTER
         /// per-shell density equalisation. Bin-packing leaves slack, so
         /// total chart area below 1.0 keeps xatlas from overflowing the
@@ -148,6 +156,7 @@ namespace SashaRX.UnityMeshLab
             targetUvCoverage = 0.75f,
             reparameterizeRibbons = false,
             ribbonArapIterations = 10,
+            clampLightmapToUnit = true,
         };
     }
 
@@ -602,7 +611,13 @@ namespace SashaRX.UnityMeshLab
                     ApplyBorderInset(uv2, opts.borderPadding, result.atlasWidth, result.atlasHeight);
 
                 // ── Apply UV2 (channel 1 — Unity lightmap channel, mesh.uv2) ──
+                int clampedOutOfUnit = 0;
+                if (opts.clampLightmapToUnit)
+                    clampedOutOfUnit = ClampUvsToUnit(uv2);
                 mesh.SetUVs(1, uv2);
+                if (clampedOutOfUnit > 0)
+                    UvtLog.Verbose(UvtLog.Category.Repack,
+                        $"Clamped {clampedOutOfUnit} UV2 vert(s) into [0,1]");
                 result.ok = true;
 
                 double coverage = ComputeUv2CoverageFraction(uv2, tris);
@@ -885,6 +900,7 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 // Apply UV2, border padding, and atlas-fill normalization
+                int clampedTotal = 0;
                 for (int m = 0; m < meshCount; m++)
                 {
                     if (allUv2[m] == null || !results[m].ok) continue;
@@ -892,8 +908,14 @@ namespace SashaRX.UnityMeshLab
                     if (opts.borderPadding > 0 && atlasW > 0)
                         ApplyBorderInset(allUv2[m], opts.borderPadding, atlasW, atlasH);
 
+                    if (opts.clampLightmapToUnit)
+                        clampedTotal += ClampUvsToUnit(allUv2[m]);
+
                     meshes[m].SetUVs(1, allUv2[m]);
                 }
+                if (clampedTotal > 0)
+                    UvtLog.Verbose(UvtLog.Category.Repack,
+                        $"Clamped {clampedTotal} UV2 vert(s) into [0,1] across {meshCount} mesh(es)");
             }
             finally
             {
@@ -1137,6 +1159,28 @@ namespace SashaRX.UnityMeshLab
         // Border padding inset: shrink UV layout away from atlas edges
         // uv = uv * (1 - 2*inset) + inset  where inset = borderPx / atlasSize
         // ─────────────────────────────────────────────────────────────────
+        /// <summary>
+        /// Clamps every UV2 coord into [0,1] in place. Returns the number of
+        /// vertices that had at least one axis outside the unit square (only
+        /// counts vertices, not axes, so a vert with both axes out is still 1).
+        /// </summary>
+        internal static int ClampUvsToUnit(Vector2[] uv2)
+        {
+            if (uv2 == null) return 0;
+            int n = 0;
+            for (int i = 0; i < uv2.Length; i++)
+            {
+                Vector2 v = uv2[i];
+                bool outside = v.x < 0f || v.x > 1f || v.y < 0f || v.y > 1f;
+                if (outside)
+                {
+                    uv2[i] = new Vector2(Mathf.Clamp01(v.x), Mathf.Clamp01(v.y));
+                    n++;
+                }
+            }
+            return n;
+        }
+
         static void ApplyBorderInset(Vector2[] uv2, uint borderPx, uint atlasW, uint atlasH)
         {
             float insetX = (float)borderPx / atlasW;

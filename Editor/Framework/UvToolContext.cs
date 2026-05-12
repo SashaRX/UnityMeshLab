@@ -145,6 +145,17 @@ namespace SashaRX.UnityMeshLab
         public int RibbonArapIterations = 10;
 
         /// <summary>
+        /// Clamp final lightmap UV2 coordinates into [0,1] on both source
+        /// (post-xatlas) and target (post-transfer) meshes. Stray UVs outside
+        /// the unit square sample neighbouring atlas regions and bleed wrong
+        /// light onto the surface. xatlas + transfer normally stay in-range
+        /// but border padding, perturb fixups, and the topology enforcer can
+        /// push a few verts a fraction of a texel over. Cheap safety net,
+        /// default ON.
+        /// </summary>
+        public bool ClampLightmapToUnit = true;
+
+        /// <summary>
         /// Fraction of [0,1]² atlas the normalized UVs should sum to.
         /// Leaves slack for bin-packing inefficiency so the atlas doesn't
         /// grow past the requested resolution. Default 0.75 (= 25% safety
