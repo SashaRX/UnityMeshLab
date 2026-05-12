@@ -47,6 +47,10 @@ namespace SashaRX.UnityMeshLab
             public bool  arapEnabled;
             public int   arapIterations;
             public float stretchThreshold;
+            // Global unwrap-aspect normalize (whole UV0 bbox → 1:1) — first
+            // pre-pack pass, runs before ARAP. Recorded so sweep cells can
+            // A/B-test whether it helps or hurts on a given asset.
+            public bool  globalAspect;
         }
 
         internal struct RunSummary
@@ -290,7 +294,7 @@ namespace SashaRX.UnityMeshLab
         {
             var inv = CultureInfo.InvariantCulture;
             var sb = new StringBuilder();
-            sb.AppendLine("atlasRes,shellPad,borderPad,arapEnabled,arapIterations,stretchThreshold," +
+            sb.AppendLine("atlasRes,shellPad,borderPad,globalAspect,arapEnabled,arapIterations,stretchThreshold," +
                           "totalSlivers,overlapShellPairs,meanAtlasUtilization,totalMs,score,csvPath");
             foreach (var r in runs)
             {
@@ -307,6 +311,7 @@ namespace SashaRX.UnityMeshLab
                 sb.Append(r.config.atlasRes.ToString(inv)).Append(',');
                 sb.Append(r.config.shellPad.ToString(inv)).Append(',');
                 sb.Append(r.config.borderPad.ToString(inv)).Append(',');
+                sb.Append(r.config.globalAspect ? '1' : '0').Append(',');
                 sb.Append(r.config.arapEnabled ? '1' : '0').Append(',');
                 sb.Append(r.config.arapIterations.ToString(inv)).Append(',');
                 sb.Append(r.config.stretchThreshold.ToString("R", inv)).Append(',');
@@ -333,6 +338,7 @@ namespace SashaRX.UnityMeshLab
             sb.Append("    \"atlasRes\": ").Append(w.config.atlasRes.ToString(inv)).Append(",\n");
             sb.Append("    \"shellPad\": ").Append(w.config.shellPad.ToString(inv)).Append(",\n");
             sb.Append("    \"borderPad\": ").Append(w.config.borderPad.ToString(inv)).Append(",\n");
+            sb.Append("    \"globalAspect\": ").Append(w.config.globalAspect ? "true" : "false").Append(",\n");
             sb.Append("    \"arapEnabled\": ").Append(w.config.arapEnabled ? "true" : "false").Append(",\n");
             sb.Append("    \"arapIterations\": ").Append(w.config.arapIterations.ToString(inv)).Append(",\n");
             sb.Append("    \"stretchThreshold\": ").Append(w.config.stretchThreshold.ToString("R", inv)).Append(",\n");
@@ -362,6 +368,7 @@ namespace SashaRX.UnityMeshLab
                 sb.Append("\"atlasRes\": ").Append(r.config.atlasRes.ToString(inv)).Append(", ");
                 sb.Append("\"shellPad\": ").Append(r.config.shellPad.ToString(inv)).Append(", ");
                 sb.Append("\"borderPad\": ").Append(r.config.borderPad.ToString(inv)).Append(", ");
+                sb.Append("\"globalAspect\": ").Append(r.config.globalAspect ? "true" : "false").Append(", ");
                 sb.Append("\"arapEnabled\": ").Append(r.config.arapEnabled ? "true" : "false").Append(", ");
                 sb.Append("\"arapIterations\": ").Append(r.config.arapIterations.ToString(inv)).Append(", ");
                 sb.Append("\"stretchThreshold\": ").Append(r.config.stretchThreshold.ToString("R", inv)).Append(", ");
@@ -446,14 +453,15 @@ namespace SashaRX.UnityMeshLab
             sb.Append("        <th onclick=\"sortBy(1)\">atlasRes</th>\n");
             sb.Append("        <th onclick=\"sortBy(2)\">shellPad</th>\n");
             sb.Append("        <th onclick=\"sortBy(3)\">borderPad</th>\n");
-            sb.Append("        <th onclick=\"sortBy(4)\">arapEnabled</th>\n");
-            sb.Append("        <th onclick=\"sortBy(5)\">arapIters</th>\n");
-            sb.Append("        <th onclick=\"sortBy(6)\">stretchThr</th>\n");
-            sb.Append("        <th onclick=\"sortBy(7)\">slivers</th>\n");
-            sb.Append("        <th onclick=\"sortBy(8)\">overlap</th>\n");
-            sb.Append("        <th onclick=\"sortBy(9)\">atlas%</th>\n");
-            sb.Append("        <th onclick=\"sortBy(10)\">ms</th>\n");
-            sb.Append("        <th onclick=\"sortBy(11)\">score</th>\n");
+            sb.Append("        <th onclick=\"sortBy(4)\">globalAspect</th>\n");
+            sb.Append("        <th onclick=\"sortBy(5)\">arapEnabled</th>\n");
+            sb.Append("        <th onclick=\"sortBy(6)\">arapIters</th>\n");
+            sb.Append("        <th onclick=\"sortBy(7)\">stretchThr</th>\n");
+            sb.Append("        <th onclick=\"sortBy(8)\">slivers</th>\n");
+            sb.Append("        <th onclick=\"sortBy(9)\">overlap</th>\n");
+            sb.Append("        <th onclick=\"sortBy(10)\">atlas%</th>\n");
+            sb.Append("        <th onclick=\"sortBy(11)\">ms</th>\n");
+            sb.Append("        <th onclick=\"sortBy(12)\">score</th>\n");
             sb.Append("        <th>UV2 thumbs</th>\n");
             sb.Append("      </tr>\n");
             sb.Append("    </thead>\n");
@@ -468,6 +476,7 @@ namespace SashaRX.UnityMeshLab
                 sb.Append("        <td>").Append(r.config.atlasRes.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.config.shellPad.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.config.borderPad.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.config.globalAspect   ? "1" : "0").Append("</td>\n");
                 sb.Append("        <td>").Append(r.config.arapEnabled    ? "1" : "0").Append("</td>\n");
                 sb.Append("        <td>").Append(r.config.arapIterations.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.config.stretchThreshold.ToString("F2", inv)).Append("</td>\n");

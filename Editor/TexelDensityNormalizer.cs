@@ -46,7 +46,8 @@ namespace SashaRX.UnityMeshLab
             float scaleMax = 10f,
             bool medianDensity = false,
             float targetCoverage = 0.75f,
-            bool normalizeAspect = true)
+            bool normalizeAspect = true,
+            bool normalizeDensity = true)
         {
             if (uvFlat == null || shells == null || shells.Count == 0) return 0;
             if (tris == null || positions == null) return 0;
@@ -129,6 +130,10 @@ namespace SashaRX.UnityMeshLab
             // Re-measure UV area on the (possibly aspect-corrected) layout, then
             // apply per-shell uniform scale so UV-area / 3D-area is constant
             // across all shells, modulated by the coverage budget.
+            // Skipped when normalizeDensity is false (caller wants only the
+            // global-aspect pass — e.g. so ARAP can run between the two).
+            if (!normalizeDensity)
+                return aspectModified ? 1 : 0;
             var area3DPerShell = new double[n];
             var areaUVPerShell = new double[n];
             double sumArea3D = 0.0;

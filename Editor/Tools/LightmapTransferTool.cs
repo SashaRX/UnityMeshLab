@@ -370,13 +370,14 @@ namespace SashaRX.UnityMeshLab
             if (sweepSuite != null && sweepSuite.sweep != null)
             {
                 var sm = sweepSuite.sweep;
-                int rL  = sm.atlasResolutions?.Length            ?? 0;
-                int pL  = sm.shellPaddingPxVariants?.Length      ?? 0;
-                int bL  = sm.borderPaddingPxVariants?.Length     ?? 0;
-                int arL = sm.arapIterationsVariants?.Length    ?? 0;
-                int stL = sm.stretchThresholdVariants?.Length   ?? 0;
+                int rL  = sm.atlasResolutions?.Length              ?? 0;
+                int pL  = sm.shellPaddingPxVariants?.Length        ?? 0;
+                int bL  = sm.borderPaddingPxVariants?.Length       ?? 0;
+                int arL = sm.arapIterationsVariants?.Length        ?? 0;
+                int stL = sm.stretchThresholdVariants?.Length      ?? 0;
+                int aspL = sm.normalizeShellAspectVariants?.Length ?? 0;
                 cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL)
-                      * Mathf.Max(1, arL) * Mathf.Max(1, stL);
+                      * Mathf.Max(1, arL) * Mathf.Max(1, stL) * Mathf.Max(1, aspL);
             }
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -890,9 +891,11 @@ namespace SashaRX.UnityMeshLab
                 : new[] { ctx.ReparameterizeStretchedShells ? ctx.ArapIterations : 0 };
             var stretchArr = (sm.stretchThresholdVariants != null && sm.stretchThresholdVariants.Length > 0)
                 ? sm.stretchThresholdVariants : new[] { ctx.StretchThreshold };
+            var aspArr = (sm.normalizeShellAspectVariants != null && sm.normalizeShellAspectVariants.Length > 0)
+                ? sm.normalizeShellAspectVariants : new[] { ctx.NormalizeShellAspect };
 
             int total = resArr.Length * padArr.Length * bdrArr.Length
-                      * arapItersArr.Length * stretchArr.Length;
+                      * arapItersArr.Length * stretchArr.Length * aspArr.Length;
 
             // Snapshot ctx fields we mutate — restored unconditionally below.
             int   origRes         = ctx.AtlasResolution;
@@ -901,6 +904,7 @@ namespace SashaRX.UnityMeshLab
             bool  origArapOn      = ctx.ReparameterizeStretchedShells;
             int   origArapIters   = ctx.ArapIterations;
             float origStretchThr  = ctx.StretchThreshold;
+            bool  origAspect      = ctx.NormalizeShellAspect;
 
             // Aligned lists: writtenCsvPaths[i] is the CSV path produced by
             // cellConfigs[i]. Passed to BenchmarkSweep after the loop completes.
@@ -943,9 +947,12 @@ namespace SashaRX.UnityMeshLab
                                 if (cancelled) break;
                                 foreach (float stretchThr in stretchArr)
                                 {
+                                    if (cancelled) break;
+                                    foreach (bool gAsp in aspArr)
+                                    {
                                     if (EditorUtility.DisplayCancelableProgressBar("Pipeline Sweep",
                                             $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}, " +
-                                            $"arap={arapIters}, stretch={stretchThr:F2}",
+                                            $"arap={arapIters}, stretch={stretchThr:F2}, asp={(gAsp ? 1 : 0)}",
                                             (float)done / Mathf.Max(1, total)))
                                     {
                                         cancelled = true;
@@ -962,6 +969,7 @@ namespace SashaRX.UnityMeshLab
                                     ctx.ReparameterizeStretchedShells = arapIters > 0;
                                     if (arapIters > 0) ctx.ArapIterations = arapIters;
                                     ctx.StretchThreshold              = stretchThr;
+                                    ctx.NormalizeShellAspect          = gAsp;
 
                                     if (sm.resetBetweenRuns) ResetWorkingCopies();
 
@@ -969,7 +977,7 @@ namespace SashaRX.UnityMeshLab
                                     // and that would break the recovery regex's _stretch(\d+p\d+)_ token.
                                     int stretchHundredths = Mathf.RoundToInt(stretchThr * 100f);
                                     string stretchTag = $"{stretchHundredths / 100}p{(stretchHundredths % 100):D2}";
-                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_arap{arapIters}_stretch{stretchTag}";
+                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_arap{arapIters}_stretch{stretchTag}_asp{(gAsp ? 1 : 0)}";
                                     string csvBefore = BenchmarkRecorder.LastWrittenCsvPath;
                                     try
                                     {
@@ -996,6 +1004,7 @@ namespace SashaRX.UnityMeshLab
                                         arapEnabled      = arapIters > 0,
                                         arapIterations   = arapIters,
                                         stretchThreshold = stretchThr,
+                                        globalAspect     = gAsp,
                                     });
                                     done++;
 
@@ -1031,6 +1040,7 @@ namespace SashaRX.UnityMeshLab
                                         UvtLog.Verbose(UvtLog.Category.Benchmark,
                                             $"[Sweep] Between-cell cleanup hiccup: {ex.Message}");
                                     }
+                                    }  // close foreach gAsp
                                 }
                             }
                         }
@@ -1046,6 +1056,7 @@ namespace SashaRX.UnityMeshLab
                 ctx.ReparameterizeStretchedShells = origArapOn;
                 ctx.ArapIterations                = origArapIters;
                 ctx.StretchThreshold              = origStretchThr;
+                ctx.NormalizeShellAspect          = origAspect;
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     $"Sweep complete: {done}/{total} cells{(cancelled ? " (cancelled)" : "")}");
 
