@@ -304,3 +304,32 @@
 **Что МОЖЕТ помочь (не пробовали):**
 - Передавать xatlas **готовый layout** через `xatlasAddMesh` с явными chart definitions, обходя его pack-stage rescale целиком.
 - Свой 2D rect-packer на C# поверх Normalize-выровненных шеллов.
+
+## Эксперимент 2026-05-13 — Density spread 14× → 1.17× без форка (commit a218a2b)
+
+**Контекст:** после отката pre-pack snap'а (~5 коммитов) вернулись к чистому `Normalize + xatlas + PostPackCorrection`. Density spread держался на ~3× postCorrection, ~14× pre-correction. Цель — закрыть его не форком.
+
+**Что сработало (в комбинации):**
+1. **`UvToolContext.InternalOversample = 1 → 4`** (плюс `RepackOptions.Default.internalOversample = 4`). xatlas pack runs at 1024×1024 internal для пользовательских 256. Sub-pixel шеллы исчезают: shell с UV-extent 0.001 при tpu=909 даёт ≈0.91 px = amp 1.1×, не 4×.
+2. **`rotateChartsToAxis = false`** в `RepackOptions.Default`. PCA-rotation перед extents сжимала тонкие шеллы и усиливала `ceil()` amp. Для repack existing UVs (UvMesh путь) она бесполезна. `rotateCharts = true` (90° placement) остаётся.
+3. **Удаление `PerturbOverlapShellsUv0`** из обоих pack путей. Это был **главный** убийца: для AddUvMesh xatlas НЕ дедупит charts по UV-сходству — он сегментирует faces по `faceMaterial` (= `shellID`) плюс colocal-UV walk через `vertexToChartMap` (xatlas.cpp:6228-6275). Distinct shellID всегда → distinct charts. Perturb scale `1 + g × strength` cumulative по индексу в группе раздувал sumUV в **~97×** на overlap-группе из 92 шеллов (Carousel), что обрушивало xatlas auto-tpu со 256 до ~104 и кидало все шеллы в sub-pixel regime.
+4. **Диагностика `[DensityRisk:prePack]`** в `XatlasRepack.LogStageBRisk` — предсказывает per-shell Stage B amplification (`ceil(extent_px)/extent_px` per axis × per axis) до xatlas. Использует тот же `tpu = sqrt(internalRes² × 0.75 / sumUv)` что xatlas считает внутри. Логирует `subPixel count`, `boost>1.5× count`, `boost>3× count`, top-5 worst шеллов. Точная корреляция: predicted `areaBoost=1.34×` ↔ фактический `postAssign maxRatio=1.27×`.
+
+**Результат на Carousel (149 шеллов, 5 overlap групп, max group 92):**
+
+| Метрика | До | После |
+|---|---|---|
+| Sub-pixel шеллы | 38/149 | 0/149 |
+| `[postAssign] maxRatio` | 20-23× | **1.27×** |
+| `[postCorrection] maxRatio` | 3-4× | **1.17×** |
+| Шеллов внутри ±10% mean | 10/149 | **149/149** |
+| Atlas utilization | 28-34% | **55%** |
+
+**Не пробовать снова:**
+- `PerturbOverlapShellsUv0` для UvMesh пути — xatlas не дедупит, perturb только ломает sumUV.
+- Per-shell pre-pack snap — xatlas пересчитает per-chart scale от изменённой parametricArea и отменит snap (см. предыдущий эксперимент).
+- `rotateChartsToAxis = true` для repack existing UVs — мутирует extents.
+
+**Известные регрессии после a218a2b (требуют отдельной сессии):**
+- Пакинг при `internalOversample = 4` сильно дольше: brute-force pack cost ~ O(N × W × H), при 1024² и bruteForce=true может быть 16× медленнее vs 256². Возможно нужен soft fallback на heuristic pack для `internalRes ≥ N`.
+- Transfer стал кривее на некоторых тестовых моделях — вероятно из-за роста atlas size (1389×1360 вместо 256×256), что влияет на ε-параметры в `GroupedShellTransfer` (overlap detection thresholds в pixel space). Нужно прогнать transfer-чекер по test suite и поправить ε или нормализовать early.
