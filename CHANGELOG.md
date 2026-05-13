@@ -3,6 +3,22 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **`UvProgress` service** (`Editor/Framework/UvProgress.cs`) — central non-modal progress reporting. Routes status to `UnityEditor.Progress` (Background Tasks panel) plus an inline strip drawn beneath the hub toolbar. Supports nested scopes, phase labels, indeterminate/determinate fractions, and cooperative cancellation via `UvProgress.CancelRequested`.
+- **Inline progress strip in `UvToolHub`** — shows current operation title, phase, detail, elapsed time, and a Cancel button. Marquee animation for indeterminate work; the strip is hidden while no operation is active.
+- **Phase markers in `GroupedShellTransfer.Transfer`** — Phase 1 / 1b / 2a / 2b / 3 each call `UvProgress.Report`, surfacing where time is spent during transfer.
+- **Cancel button plumbing** — Repack, Transfer, Sweep, Auto-tune, Generate LODs, Vertex AO (CPU), and FBX Metrics Export all wrap their work in `UvProgress.Begin(..., cancelable: true)` and poll `UvProgress.CancelRequested` at safe abort points.
+
+### Changed
+- **Default `RepackResolutionMode` is now `AutoFromTexelDensity`** (was `Manual`). Uniform real-world texels-per-meter is the desired outcome for lightmaps; the previous fixed-resolution default produced wildly different texel density per asset depending on world size.
+- **xatlas pack no longer raises a modal progress dialog** (`EditorUtility.DisplayCancelableProgressBar`). The dialog forced a full editor repaint on every poll and blocked input; progress now flows through `UvProgress` to the Background Tasks panel and the inline strip. Cancellation is honoured via `UvProgress.CancelRequested`.
+- **Hoisted late `sourceMesh.normals` and `targetMesh.triangles` reads** in `GroupedShellTransfer.Transfer` up to the initial Mesh-data extraction block. Keeps the algorithm body free of Unity-API calls so a future async refactor can wrap it in `Task.Run` without touching the inner code.
+
+### Removed
+- All `EditorUtility.DisplayProgressBar` / `DisplayCancelableProgressBar` / `ClearProgressBar` calls. Replaced with `UvProgress` everywhere (XatlasRepack, LightmapTransferTool, VertexAOBaker.Cpu, FbxMetricsExporter, LodGenerationTool).
+
 ## [1.0.5] - 2026-05-13
 
 ### Added

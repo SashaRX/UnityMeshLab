@@ -119,6 +119,17 @@ namespace SashaRX.UnityMeshLab
             SceneView.duringSceneGui += OnSceneGUI;
             Undo.undoRedoPerformed -= OnUndoRedo;
             Undo.undoRedoPerformed += OnUndoRedo;
+
+            UvProgress.OnChanged -= OnProgressChanged;
+            UvProgress.OnChanged += OnProgressChanged;
+        }
+
+        void OnProgressChanged()
+        {
+            // Snapshot updates arrive from the main thread (xatlas pack
+            // polling, transfer phase reports). Just queue a repaint — when
+            // the editor next pumps OnGUI it picks up UvProgress.Current.
+            Repaint();
         }
 
         void SelectToolById(string toolId)
@@ -141,6 +152,7 @@ namespace SashaRX.UnityMeshLab
 
             SceneView.duringSceneGui -= OnSceneGUI;
             Undo.undoRedoPerformed -= OnUndoRedo;
+            UvProgress.OnChanged -= OnProgressChanged;
 
             ActiveTool?.OnDeactivate();
 
@@ -310,6 +322,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             DrawHubToolbar();
+            DrawProgressStrip();
 
             EditorGUILayout.BeginHorizontal();
 
@@ -386,6 +399,78 @@ namespace SashaRX.UnityMeshLab
             if (lvl != UvtLog.Current) UvtLog.Current = lvl;
 
             EditorGUILayout.EndHorizontal();
+        }
+
+        // ════════════════════════════════════════════════════════════
+        //  Inline progress strip — shows UvProgress.Current beneath the
+        //  hub toolbar so users can see status without opening Unity's
+        //  Background Tasks panel. Cancel button is shown when the
+        //  current operation registered itself as cancelable.
+        // ════════════════════════════════════════════════════════════
+        void DrawProgressStrip()
+        {
+            var snap = UvProgress.Current;
+            if (!snap.active) return;
+
+            const float stripHeight = 20f;
+            var rect = GUILayoutUtility.GetRect(0, stripHeight, GUILayout.ExpandWidth(true));
+
+            // Background.
+            EditorGUI.DrawRect(rect, new Color(0.12f, 0.12f, 0.12f));
+
+            // Filled portion.
+            float frac = snap.fraction;
+            if (frac >= 0f)
+            {
+                var fill = rect;
+                fill.width *= Mathf.Clamp01(frac);
+                EditorGUI.DrawRect(fill, new Color(0.30f, 0.55f, 0.95f, 0.55f));
+            }
+            else
+            {
+                // Indeterminate: animated marquee.
+                float t = (float)((EditorApplication.timeSinceStartup * 0.6) % 1.0);
+                var fill = new Rect(rect.x + rect.width * (t - 0.15f), rect.y, rect.width * 0.15f, rect.height);
+                EditorGUI.DrawRect(fill, new Color(0.30f, 0.55f, 0.95f, 0.40f));
+                Repaint(); // keep the marquee moving.
+            }
+
+            // Label.
+            string label = snap.title ?? string.Empty;
+            if (!string.IsNullOrEmpty(snap.phase)) label += " — " + snap.phase;
+            string detail = snap.detail;
+            string elapsed = $" ({snap.Elapsed:F1}s)";
+            string text = string.IsNullOrEmpty(detail)
+                ? label + elapsed
+                : $"{label}: {detail}{elapsed}";
+
+            var style = new GUIStyle(EditorStyles.miniBoldLabel)
+            {
+                normal = { textColor = Color.white },
+                alignment = TextAnchor.MiddleLeft
+            };
+            var labelRect = rect;
+            labelRect.x += 6f;
+            labelRect.width -= snap.cancelable ? 80f : 12f;
+            GUI.Label(labelRect, text, style);
+
+            // Cancel button (right-aligned, only when cancelable + not already requested).
+            if (snap.cancelable && !snap.cancelRequested)
+            {
+                var btnRect = new Rect(rect.xMax - 70f, rect.y + 2f, 64f, rect.height - 4f);
+                if (GUI.Button(btnRect, "Cancel", EditorStyles.miniButton))
+                    UvProgress.RequestCancel();
+            }
+            else if (snap.cancelRequested)
+            {
+                var btnRect = new Rect(rect.xMax - 90f, rect.y, 84f, rect.height);
+                var cancelStyle = new GUIStyle(EditorStyles.miniLabel)
+                {
+                    normal = { textColor = new Color(1f, 0.7f, 0.2f) },
+                    alignment = TextAnchor.MiddleCenter
+                };
+                GUI.Label(btnRect, "cancelling…", cancelStyle);
+            }
         }
 
         string BuildWindowBrandText()

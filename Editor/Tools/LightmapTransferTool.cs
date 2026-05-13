@@ -1044,6 +1044,7 @@ namespace SashaRX.UnityMeshLab
 
             int done = 0;
             bool cancelled = false;
+            UvProgress.Begin($"Pipeline Sweep ({total} cells)", cancelable: true);
             try
             {
                 foreach (int r in resArr)
@@ -1061,10 +1062,11 @@ namespace SashaRX.UnityMeshLab
                                 foreach (float stretchThr in stretchArr)
                                 {
                                     if (cancelled) break;
-                                    if (EditorUtility.DisplayCancelableProgressBar("Pipeline Sweep",
-                                            $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}, " +
-                                            $"arap={arapIters}, stretch={stretchThr:F2}",
-                                            (float)done / Mathf.Max(1, total)))
+                                    UvProgress.Report(
+                                        (float)done / Mathf.Max(1, total),
+                                        $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}, " +
+                                        $"arap={arapIters}, stretch={stretchThr:F2}");
+                                    if (UvProgress.CancelRequested)
                                     {
                                         cancelled = true;
                                         break;
@@ -1157,7 +1159,7 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                EditorUtility.ClearProgressBar();
+                if (cancelled) UvProgress.Cancel(); else UvProgress.End();
                 ctx.AtlasResolution               = origRes;
                 ctx.ShellPaddingPx                = origPad;
                 ctx.BorderPaddingPx               = origBdr;
@@ -1275,16 +1277,17 @@ namespace SashaRX.UnityMeshLab
             var bestTransfers = new Dictionary<MeshEntry, (Mesh transferred, GroupedShellTransfer.TransferResult tr)>();
 
             bool cancelled = false;
+            UvProgress.Begin("Auto-tune Pipeline", cancelable: true);
             try
             {
                 for (int ci = 0; ci < separationConfigs.Length; ci++)
                 {
                     float sepThresh = separationConfigs[ci];
 
-                    if (EditorUtility.DisplayCancelableProgressBar(
-                        "Auto-tune Pipeline",
-                        $"Config {ci + 1}/{separationConfigs.Length} (separation={sepThresh:P0})",
-                        (float)ci / separationConfigs.Length))
+                    UvProgress.Report(
+                        (float)ci / separationConfigs.Length,
+                        $"Config {ci + 1}/{separationConfigs.Length} (separation={sepThresh:P0})");
+                    if (UvProgress.CancelRequested)
                     {
                         UvtLog.Warn("[Pipeline] Auto-tune cancelled by user.");
                         cancelled = true;
@@ -1385,7 +1388,7 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                EditorUtility.ClearProgressBar();
+                if (cancelled) UvProgress.Cancel(); else UvProgress.End();
             }
 
             // Restore best config if not the last one tested
@@ -1433,6 +1436,14 @@ namespace SashaRX.UnityMeshLab
             // its own end), inflating CSV/JSON aggregates and breaking
             // sweep comparisons.
             bool ownsSession = _bench is BenchmarkRecorder;
+            // Only wrap a UvProgress scope when this Repack runs on its own
+            // (button click). Nested calls (sweep / auto-tune) are already
+            // covered by their outer Begin/End so we'd otherwise stack two
+            // progress entries and overwrite the parent snapshot.
+            bool ownsProgress = !UvProgress.IsActive;
+            if (ownsProgress)
+                UvProgress.Begin($"Repack ({entries.Count} mesh{(entries.Count == 1 ? "" : "es")})",
+                                 cancelable: true);
             BenchmarkRecorder.Current?.StageBegin("repack");
             try { ExecRepackCore(entries); }
             finally
@@ -1441,6 +1452,7 @@ namespace SashaRX.UnityMeshLab
                 if (ownsSession && BenchmarkRecorder.Current != null)
                     foreach (var e in entries)
                         BenchmarkRecorder.Current.RecordMesh(e);
+                if (ownsProgress) UvProgress.End();
             }
         }
 
@@ -1537,6 +1549,13 @@ namespace SashaRX.UnityMeshLab
             using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
                 splitTargetsInSymmetryStep, symSplitThresholdMode);
             bool ownsSession = _bench is BenchmarkRecorder;
+            bool ownsProgress = !UvProgress.IsActive;
+            int targetLodCount = 0;
+            for (int li = 0; li < ctx.LodCount; li++)
+                if (li != ctx.SourceLodIndex) targetLodCount++;
+            if (ownsProgress)
+                UvProgress.Begin($"UV2 Transfer ({targetLodCount} target LOD{(targetLodCount == 1 ? "" : "s")})",
+                                 cancelable: true);
             BenchmarkRecorder.Current?.StageBegin("transfer");
             try
             {
@@ -1550,12 +1569,22 @@ namespace SashaRX.UnityMeshLab
 
                 accumulatedOverlapHints.Clear();
                 accumulatedMatchHints.Clear();
+                int processed = 0;
                 for (int li = 0; li < ctx.LodCount; li++)
                 {
                     if (li == ctx.SourceLodIndex) continue;
+                    if (UvProgress.CancelRequested)
+                    {
+                        UvtLog.Warn("[Transfer] Cancelled by user — stopping after LOD" + li);
+                        break;
+                    }
+                    UvProgress.SetPhase($"Transfer → LOD{li}",
+                                        fraction: targetLodCount > 0 ? (float)processed / targetLodCount : 0f,
+                                        detail: $"LOD{li}");
                     ExecTransferLod(li);
+                    processed++;
                 }
-                ctx.HasTransfer = true;
+                ctx.HasTransfer = !UvProgress.CancelRequested;
                 requestRepaint?.Invoke();
             }
             finally
@@ -1567,6 +1596,11 @@ namespace SashaRX.UnityMeshLab
                         if (!e.include) continue;
                         BenchmarkRecorder.Current.RecordMesh(e);
                     }
+                if (ownsProgress)
+                {
+                    if (UvProgress.CancelRequested) UvProgress.Cancel();
+                    else UvProgress.End();
+                }
             }
         }
 
@@ -3524,10 +3558,12 @@ namespace SashaRX.UnityMeshLab
             var lods = ctx.LodGroup.GetLODs();
             var newLods = new List<LOD>(lods);
 
+            UvProgress.Begin("Generate LODs", cancelable: true);
             try
             {
                 for (int lodIdx = 0; lodIdx < generateLodCount; lodIdx++)
                 {
+                    if (UvProgress.CancelRequested) break;
                     float ratio = generateLodRatios[lodIdx];
                     var settings = new MeshSimplifier.SimplifySettings
                     {
@@ -3540,8 +3576,8 @@ namespace SashaRX.UnityMeshLab
                     };
 
                     float progress = (float)lodIdx / generateLodCount;
-                    EditorUtility.DisplayProgressBar("Generate LODs",
-                        $"LOD {lodIdx + 1}/{generateLodCount} (ratio {ratio:P0})", progress);
+                    UvProgress.Report(progress,
+                        $"LOD {lodIdx + 1}/{generateLodCount} (ratio {ratio:P0})");
 
                     var lodRenderers = new List<Renderer>();
                     foreach (var (entry, srcMesh) in sourceMeshes)
@@ -3592,7 +3628,7 @@ namespace SashaRX.UnityMeshLab
                 AssetDatabase.SaveAssets();
                 AssetDatabase.Refresh();
             }
-            finally { EditorUtility.ClearProgressBar(); }
+            finally { UvProgress.End(); }
 
             // Add new LOD entries without destroying pipeline state
             var currentLods2 = ctx.LodGroup.GetLODs();

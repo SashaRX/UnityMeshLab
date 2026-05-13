@@ -759,28 +759,37 @@ namespace SashaRX.UnityMeshLab
 
             double startTime = EditorApplication.timeSinceStartup;
             bool cancelled = false;
-            try
+            UvProgress.SetPhase(
+                $"xatlas pack — atlas {internalRes}×{internalRes}, {shellCount} shells",
+                fraction: -1f);
+            // Poll the background pack task without putting up a modal
+            // EditorUtility progress dialog — the modal forced a full editor
+            // repaint cycle on every Report and blocked input. UvProgress
+            // routes progress to the non-modal Background Tasks panel and to
+            // the hub's inline status strip; cancellation flows back through
+            // UvProgress.CancelRequested (either from the hub's Cancel button
+            // or from the Background Tasks panel's cancel icon).
+            while (!packTask.IsCompleted)
             {
-                while (!packTask.IsCompleted)
+                double elapsed = EditorApplication.timeSinceStartup - startTime;
+                string msg = $"{label}: {shellCount} shells @ {internalRes}², {elapsed:F0}s";
+                UvProgress.Report(-1f, msg);
+                if (UvProgress.CancelRequested)
                 {
-                    double elapsed = EditorApplication.timeSinceStartup - startTime;
-                    string msg = $"{label} — atlas {internalRes}×{internalRes}, {shellCount} shells, {elapsed:F0}s elapsed";
-                    if (EditorUtility.DisplayCancelableProgressBar("xatlas pack", msg, -1f))
-                    {
-                        cancelled = true;
-                        break;
-                    }
-                    System.Threading.Thread.Sleep(50);
+                    cancelled = true;
+                    break;
                 }
-
-                // xatlas has no native cancel — wait for the task to actually
-                // finish before returning, otherwise the singleton state is
-                // mid-mutation and the next xatlasCreate would race against it.
-                packTask.Wait();
+                System.Threading.Thread.Sleep(80);
             }
-            finally
+
+            // xatlas has no native cancel — wait for the task to actually
+            // finish before returning, otherwise the singleton state is
+            // mid-mutation and the next xatlasCreate would race against it.
+            try { packTask.Wait(); }
+            catch (Exception ex)
             {
-                EditorUtility.ClearProgressBar();
+                UvtLog.Error(UvtLog.Category.Repack, $"[xatlas] Pack task failed: {ex.Message}");
+                return false;
             }
 
             if (cancelled)

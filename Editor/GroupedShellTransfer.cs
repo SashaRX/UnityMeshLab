@@ -785,12 +785,19 @@ namespace SashaRX.UnityMeshLab
             }
 
             // Source data
+            // All Mesh API access (vertices/normals/triangles/uv) is hoisted
+            // up-front here. Anything deeper in this method must read only the
+            // plain arrays — that keeps the algorithm body thread-safe so a
+            // future async refactor can wrap the body in Task.Run without
+            // touching the inner code.
             var srcVerts = sourceMesh.vertices;
             var srcTris = sourceMesh.triangles;
             var srcUv0List = new List<Vector2>(); sourceMesh.GetUVs(0, srcUv0List);
             var srcUv2List = new List<Vector2>(); sourceMesh.GetUVs(1, srcUv2List);
             var srcUv0 = srcUv0List.ToArray();
             var srcUv2 = srcUv2List.ToArray();
+            var srcNormals = sourceMesh.normals;
+            var sourceMeshName = sourceMesh.name;
 
             if (srcUv0.Length == 0 || srcUv2.Length == 0)
             { UvtLog.Error("[GroupedTransfer] Source missing UV0/UV2"); return result; }
@@ -801,6 +808,9 @@ namespace SashaRX.UnityMeshLab
             var tUv0List = new List<Vector2>(); targetMesh.GetUVs(0, tUv0List);
             var tUv0 = tUv0List.ToArray();
             int vertCount = targetMesh.vertexCount;
+            var tgtTris = targetMesh.triangles;
+            var targetMeshName = targetMesh.name;
+            UvProgress.Report(-1f, $"Transfer '{targetMeshName}' ← '{sourceMeshName}'");
 
             if (tUv0.Length == 0)
             { UvtLog.Error("[GroupedTransfer] Target missing UV0"); return result; }
@@ -838,8 +848,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Phase 1: Extract shells ──
+            UvProgress.Report(-1f, $"'{targetMeshName}': Phase 1 — extract UV0 shells");
             var srcShells = UvShellExtractor.Extract(srcUv0, srcTris);
-            var tgtTris = targetMesh.triangles;
             var tgtShells = UvShellExtractor.Extract(tUv0, tgtTris);
 
             // ── Phase 1a: Merge fragment shells ──
@@ -945,6 +955,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Phase 1b: Precompute similarity transform per source shell ──
+            UvProgress.Report(-1f, $"'{targetMeshName}': Phase 1b — similarity transforms ({srcShells.Count} src shells)");
             var srcTransforms = new SimilarityTransform[srcShells.Count];
             for (int si = 0; si < srcShells.Count; si++)
             {
@@ -1123,6 +1134,7 @@ namespace SashaRX.UnityMeshLab
                 $"overlapGroups={overlapGroups.Count}(maxSize={maxOverlapGroupSize})");
 
             // ── Phase 2a: Match each target shell → best source shell ──
+            UvProgress.Report(-1f, $"'{targetMeshName}': Phase 2a — match {tgtShells.Count} target shells");
             result.targetShellToSourceShell = new int[tgtShells.Count];
             result.targetShellMethod = new int[tgtShells.Count]; // 0=interp, 1=xform, 2=merged
             result.targetShellCentroids = new Vector3[tgtShells.Count];
@@ -1292,7 +1304,6 @@ namespace SashaRX.UnityMeshLab
             // positions and causes visible UV2 jumps between LODs.
             // Keeping the computation for diagnostics only.
             {
-                var srcNormals = sourceMesh.normals;
                 float coverageMaxDist = Mathf.Max(meshDiagonal * 0.05f, 0.01f);
                 float coverageMinDot = 0.5f; // ~60°
 
@@ -1328,6 +1339,7 @@ namespace SashaRX.UnityMeshLab
                 tgtIsFragmentMerged);
 
             // ── Phase 2b: Deduplicate — resolve same-source conflicts ──
+            UvProgress.Report(-1f, $"'{targetMeshName}': Phase 2b — dedup same-source conflicts");
             // When multiple non-merged target shells claim the same source shell
             // (common with overlapping/tiling UV0), keep the best match and
             // reassign others to different source shells at the same 3D location.
@@ -1838,6 +1850,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Phase 3: Transfer UV2 using final source assignments ──
+            UvProgress.Report(-1f, $"'{targetMeshName}': Phase 3 — transfer {vertCount} verts");
             // Verbose: dump per-shell matching for diagnostics
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
             {

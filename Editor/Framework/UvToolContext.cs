@@ -179,8 +179,12 @@ namespace SashaRX.UnityMeshLab
         /// Strategy for choosing the repack atlas resolution. Manual uses the
         /// explicit <see cref="AtlasResolution"/> field; AutoFromTexelDensity
         /// derives it from total 3D surface area and <see cref="LightmapDensity"/>.
+        /// Defaults to AutoFromTexelDensity — uniform real-world texel density
+        /// is the desired outcome for lightmaps in practically every case, and
+        /// the fixed-resolution default produces dramatically different texel
+        /// density per asset depending on world size.
         /// </summary>
-        public ResolutionMode RepackResolutionMode = ResolutionMode.Manual;
+        public ResolutionMode RepackResolutionMode = ResolutionMode.AutoFromTexelDensity;
 
         /// <summary>
         /// Target lightmap density in texels per meter. Used only when
