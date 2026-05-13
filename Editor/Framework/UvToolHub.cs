@@ -440,7 +440,42 @@ namespace SashaRX.UnityMeshLab
             var sep = new Rect(rect.x, rect.y, rect.width, 1);
             EditorGUI.DrawRect(sep, new Color(0, 0, 0, EditorGUIUtility.isProSkin ? 0.45f : 0.25f));
 
-            if (!snap.active) return;
+            if (!snap.active)
+            {
+                // Idle — show last operation outcome if we have one.
+                var last = UvProgress.Last;
+                if (!last.valid) return;
+                string symbol;
+                Color symbolColor;
+                switch (last.status)
+                {
+                    case UnityEditor.Progress.Status.Succeeded:
+                        symbol = "✓"; symbolColor = new Color(0.5f, 0.95f, 0.55f); break;
+                    case UnityEditor.Progress.Status.Canceled:
+                        symbol = "✗"; symbolColor = new Color(1f, 0.75f, 0.30f); break;
+                    case UnityEditor.Progress.Status.Failed:
+                        symbol = "✗"; symbolColor = new Color(0.95f, 0.45f, 0.45f); break;
+                    default:
+                        symbol = "·"; symbolColor = new Color(0.75f, 0.75f, 0.75f); break;
+                }
+                var symRect = new Rect(rect.x + 8f, rect.y, 14f, rect.height);
+                var symStyle = new GUIStyle(EditorStyles.miniBoldLabel)
+                {
+                    alignment = TextAnchor.MiddleLeft,
+                    normal = { textColor = symbolColor },
+                };
+                GUI.Label(symRect, symbol, symStyle);
+                var idleStyle = new GUIStyle(EditorStyles.miniLabel)
+                {
+                    alignment = TextAnchor.MiddleLeft,
+                    normal = { textColor = new Color(0.75f, 0.75f, 0.75f) },
+                };
+                var idleTextRect = new Rect(rect.x + 26f, rect.y,
+                                            rect.width - 32f, rect.height);
+                string idleText = $"{last.title}  ·  {last.duration:0.0}s";
+                GUI.Label(idleTextRect, idleText, idleStyle);
+                return;
+            }
 
             // Fill — determinate fraction or animated marquee for indeterminate.
             var innerRect = new Rect(rect.x, rect.y + 1, rect.width, rect.height - 1);

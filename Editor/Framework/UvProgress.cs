@@ -55,6 +55,21 @@ namespace SashaRX.UnityMeshLab
         public static bool IsActive => _snapshot.active;
 
         /// <summary>
+        /// Outcome of the most recently finished operation. Drawn in the
+        /// inline strip while idle so the user has a passive record of what
+        /// just happened ("✓ Run Full Pipeline · 12.3s" or "✘ Repack cancelled").
+        /// Cleared on the next Begin.
+        /// </summary>
+        public struct LastResult
+        {
+            public bool   valid;
+            public string title;
+            public double duration;
+            public Progress.Status status;
+        }
+        public static LastResult Last { get; private set; }
+
+        /// <summary>
         /// True if the user clicked Cancel in the Background Tasks panel or
         /// in the inline status strip. Long loops should poll this between
         /// safe abort points.
@@ -92,6 +107,9 @@ namespace SashaRX.UnityMeshLab
             _stack.Push(id);
             if (_stack.Count == 1)
             {
+                // Clear the idle "last operation" line — a fresh run replaces
+                // the previous outcome.
+                Last = default;
                 _snapshot = new Snapshot
                 {
                     active          = true,
@@ -197,6 +215,15 @@ namespace SashaRX.UnityMeshLab
             }
             if (_stack.Count == 0)
             {
+                // Record outcome for the idle-state "last operation" line in
+                // the inline strip before clearing the active flag.
+                Last = new LastResult
+                {
+                    valid    = true,
+                    title    = _snapshot.title,
+                    duration = _snapshot.Elapsed,
+                    status   = status,
+                };
                 _snapshot.active = false;
                 Notify(force: true);
             }
@@ -216,5 +243,59 @@ namespace SashaRX.UnityMeshLab
         /// before yielding to give the inline UI a chance to repaint.
         /// </summary>
         public static void Flush() => Notify(force: true);
+
+        // ────────────────────────────────────────────────────────────
+        //  Background-thread progress drain
+        // ────────────────────────────────────────────────────────────
+        // Direct Report() calls from a non-main thread (e.g. inside
+        // GroupedShellTransfer.TransferCore running under Task.Run) silently
+        // no-op: Progress.Report and EditorWindow.Repaint both require the
+        // main thread, so they get swallowed by the try/catch wrapper.
+        //
+        // The drain pattern: background threads write to a volatile slot via
+        // ReportFromBackground; a main-thread EditorApplication.update tick
+        // reads the slot and replays it through the regular Report path so
+        // the strip + Background Tasks panel both update correctly.
+        static volatile string _bgPhase;
+        static volatile string _bgDetail;
+        static int _bgPumpHooked; // 0=no, 1=yes (Interlocked guard)
+
+        /// <summary>
+        /// Thread-safe version of Report for background callers. Stores the
+        /// payload in a volatile slot drained by an EditorApplication.update
+        /// pump on the main thread. Safe to call from Task.Run / ThreadPool.
+        /// </summary>
+        public static void ReportFromBackground(string phase, string detail = null)
+        {
+            _bgPhase = phase;
+            _bgDetail = detail;
+            EnsureBgPump();
+        }
+
+        static void EnsureBgPump()
+        {
+            // Idempotent: hook the pump once per editor session. Interlocked
+            // so two background callers can't race the registration.
+            if (System.Threading.Interlocked.Exchange(ref _bgPumpHooked, 1) != 0) return;
+            EditorApplication.update += BgPump;
+        }
+
+        static void BgPump()
+        {
+            // Snapshot then clear so subsequent ticks don't re-replay the
+            // same payload (Report is cheap but the throttled OnChanged
+            // event would still fire each tick).
+            string phase = _bgPhase;
+            string detail = _bgDetail;
+            if (phase == null && detail == null) return;
+            _bgPhase = null;
+            _bgDetail = null;
+
+            // Update the snapshot via the normal SetPhase / Report path so
+            // both the inline strip and the Background Tasks panel reflect
+            // the same state.
+            if (phase != null) SetPhase(phase, fraction: -1f, detail: detail);
+            else               Report(-1f, detail);
+        }
     }
 }

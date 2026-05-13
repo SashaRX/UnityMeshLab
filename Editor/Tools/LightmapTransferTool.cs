@@ -74,6 +74,12 @@ namespace SashaRX.UnityMeshLab
         bool stageRunWeldUv0    = true;
         bool stageRunRepack     = true;
         bool stageRunTransfer   = true;
+
+        // Per-stage outcome from the most recent ExecFullPipeline run.
+        // Drawn as a small status icon at the right of each stage row.
+        enum StageStatus { Idle, Running, Success, Failed, Skipped }
+        const int kStageCount = 6; // 1..5 are used; index 0 unused for clarity
+        readonly StageStatus[] stageOutcome = new StageStatus[kStageCount];
         Vector2 reportScroll;
         TestSuiteAsset sweepSuite;
 
@@ -578,6 +584,34 @@ namespace SashaRX.UnityMeshLab
                         new GUIContent("Per-mesh repack (each group → [0,1])",
                             "Pack each mesh group into its own [0,1] atlas instead of sharing one."),
                         ctx.RepackPerMesh);
+
+                    // Texel density preview — live summary of the inputs that
+                    // drive Repack so the user sees what xatlas will actually
+                    // pack into without having to switch to the Repack tab.
+                    double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
+                        ctx.ForLod(ctx.SourceLodIndex)
+                            .Where(e => e.originalMesh != null)
+                            .Select(e => e.originalMesh));
+                    string previewLine;
+                    if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
+                    {
+                        uint autoRes = MeshAreaHelper.ComputeAutoResolution(
+                            total3DArea, ctx.LightmapDensity, ctx.TargetUvCoverage);
+                        previewLine =
+                            $"area {total3DArea:F2} m² · density {ctx.LightmapDensity:F1} tex/m " +
+                            $"→ atlas {autoRes}px (auto)";
+                    }
+                    else
+                    {
+                        int resForDisplay = Mathf.Max(1, ctx.AtlasResolution);
+                        double effDensity = total3DArea > 0.0
+                            ? resForDisplay / System.Math.Sqrt(total3DArea / Mathf.Max(0.0001f, ctx.TargetUvCoverage))
+                            : 0.0;
+                        previewLine =
+                            $"area {total3DArea:F2} m² · atlas {resForDisplay}px " +
+                            $"→ effective ≈ {effDensity:F1} tex/m";
+                    }
+                    EditorGUILayout.LabelField(previewLine, EditorStyles.miniLabel);
                 });
 
             // 5. Transfer.
@@ -621,8 +655,38 @@ namespace SashaRX.UnityMeshLab
             };
             GUI.Label(ordRect, ordinal.ToString(), ordStyle);
 
+            // Status icon (right side) — outcome of the most recent run.
+            const float iconW = 18f;
+            var status = ordinal >= 0 && ordinal < stageOutcome.Length
+                ? stageOutcome[ordinal] : StageStatus.Idle;
+            string icon = null;
+            Color iconColor = default;
+            switch (status)
+            {
+                case StageStatus.Running:
+                    icon = "…"; iconColor = new Color(0.45f, 0.75f, 1f); break;
+                case StageStatus.Success:
+                    icon = "✓"; iconColor = new Color(0.45f, 0.90f, 0.55f); break;
+                case StageStatus.Failed:
+                    icon = "✗"; iconColor = new Color(0.95f, 0.45f, 0.45f); break;
+                case StageStatus.Skipped:
+                    icon = "⏭"; iconColor = new Color(0.65f, 0.65f, 0.65f); break;
+            }
+            if (icon != null)
+            {
+                var iconRect = new Rect(rowRect.xMax - iconW - 4f, rowRect.y, iconW, rowRect.height);
+                var iconStyle = new GUIStyle(EditorStyles.miniBoldLabel)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    normal = { textColor = iconColor },
+                };
+                GUI.Label(iconRect, icon, iconStyle);
+            }
+
             // Toggle + bold label.
-            var toggleRect = new Rect(rowRect.x + 26f, rowRect.y, rowRect.width - 30f, rowRect.height);
+            float toggleRightInset = (icon != null ? iconW + 8f : 4f);
+            var toggleRect = new Rect(rowRect.x + 26f, rowRect.y,
+                                      rowRect.width - 30f - toggleRightInset, rowRect.height);
             var oldColor = GUI.contentColor;
             if (dimmed) GUI.contentColor = new Color(1f, 1f, 1f, 0.6f);
             enabled = EditorGUI.ToggleLeft(toggleRect, new GUIContent(title, tooltip), enabled, EditorStyles.boldLabel);
@@ -1430,13 +1494,34 @@ namespace SashaRX.UnityMeshLab
                 .FindForAssembly(typeof(LightmapTransferTool).Assembly)?.version ?? "0.0.0";
             UvtLog.Info($"[Pipeline] Starting full pipeline... (v{version})");
 
+            // Reset per-stage outcome state — fresh run, fresh icons.
+            for (int i = 0; i < stageOutcome.Length; i++) stageOutcome[i] = StageStatus.Idle;
+
             // 1. Analyze (skipped via Setup stage toggle)
-            if (stageRunAnalyzeUv0) ExecAnalyzeUv0();
-            else UvtLog.Info("[Pipeline] Analyze UV0 stage SKIPPED by user toggle");
+            if (stageRunAnalyzeUv0)
+            {
+                stageOutcome[1] = StageStatus.Running;
+                try { ExecAnalyzeUv0(); stageOutcome[1] = StageStatus.Success; }
+                catch { stageOutcome[1] = StageStatus.Failed; throw; }
+            }
+            else
+            {
+                stageOutcome[1] = StageStatus.Skipped;
+                UvtLog.Info("[Pipeline] Analyze UV0 stage SKIPPED by user toggle");
+            }
 
             // 2. Weld (skipped via Setup stage toggle)
-            if (stageRunWeldUv0) ExecWeldUv0();
-            else UvtLog.Info("[Pipeline] Weld UV0 stage SKIPPED by user toggle");
+            if (stageRunWeldUv0)
+            {
+                stageOutcome[2] = StageStatus.Running;
+                try { ExecWeldUv0(); stageOutcome[2] = StageStatus.Success; }
+                catch { stageOutcome[2] = StageStatus.Failed; throw; }
+            }
+            else
+            {
+                stageOutcome[2] = StageStatus.Skipped;
+                UvtLog.Info("[Pipeline] Weld UV0 stage SKIPPED by user toggle");
+            }
 
             // ── Auto-tune: try multiple SymSplit configs, pick best ──
             // Save working copies so we can restore between attempts.
@@ -1498,30 +1583,57 @@ namespace SashaRX.UnityMeshLab
 
                     // 3. SymSplit (skipped via diagnostic toggle to isolate xatlas packing)
                     if (!skipSymmetrySplitStep)
-                        ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh);
+                    {
+                        stageOutcome[3] = StageStatus.Running;
+                        try { ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh); stageOutcome[3] = StageStatus.Success; }
+                        catch { stageOutcome[3] = StageStatus.Failed; throw; }
+                    }
                     else
+                    {
+                        stageOutcome[3] = StageStatus.Skipped;
                         UvtLog.Info(UvtLog.Category.SymSplit, "[Pipeline] SymSplit step SKIPPED by user toggle");
+                    }
 
                     // 4. Repack (skipped via Setup stage toggle)
                     if (stageRunRepack)
                     {
-                        var src = ctx.ForLod(ctx.SourceLodIndex);
-                        if (ctx.RepackPerMesh) await ExecRepackPerMeshImpl(src, useAsync);
-                        else                   await ExecRepackImpl(src, useAsync);
+                        stageOutcome[4] = StageStatus.Running;
+                        try
+                        {
+                            var src = ctx.ForLod(ctx.SourceLodIndex);
+                            if (ctx.RepackPerMesh) await ExecRepackPerMeshImpl(src, useAsync);
+                            else                   await ExecRepackImpl(src, useAsync);
+                            stageOutcome[4] = ctx.HasRepack ? StageStatus.Success : StageStatus.Failed;
+                        }
+                        catch { stageOutcome[4] = StageStatus.Failed; throw; }
                     }
                     else
                     {
+                        stageOutcome[4] = StageStatus.Skipped;
                         UvtLog.Info("[Pipeline] Repack stage SKIPPED by user toggle");
                     }
 
                     // 5. Transfer (skipped via Setup stage toggle)
                     if (stageRunTransfer && ctx.HasRepack && hasTransferTargets)
-                        await ExecTransferAllImpl(useAsync);
+                    {
+                        stageOutcome[5] = StageStatus.Running;
+                        try
+                        {
+                            await ExecTransferAllImpl(useAsync);
+                            stageOutcome[5] = ctx.HasTransfer ? StageStatus.Success : StageStatus.Failed;
+                        }
+                        catch { stageOutcome[5] = StageStatus.Failed; throw; }
+                    }
                     else if (ctx.HasRepack)
                     {
                         ctx.HasTransfer = false;
+                        stageOutcome[5] = stageRunTransfer ? StageStatus.Skipped : StageStatus.Skipped;
                         if (!stageRunTransfer)
                             UvtLog.Info("[Pipeline] Transfer stage SKIPPED by user toggle");
+                    }
+                    else
+                    {
+                        stageOutcome[5] = StageStatus.Skipped;
                     }
 
                     if (!hasTransferTargets)
