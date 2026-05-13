@@ -790,9 +790,10 @@ namespace SashaRX.UnityMeshLab
             });
 
             double startTime = EditorApplication.timeSinceStartup;
-            UvProgress.SetPhase(
-                $"xatlas pack — atlas {internalRes}×{internalRes}, {shellCount} shells",
-                fraction: -1f);
+            // Keep the phase string compact — the strip already shows the
+            // outer operation title ("Repack" / "Run Full Pipeline"). Detail
+            // carries the live metrics (shells, elapsed).
+            UvProgress.SetPhase("xatlas pack", fraction: -1f);
 
             if (!pumpEditor)
             {
@@ -803,7 +804,7 @@ namespace SashaRX.UnityMeshLab
                 while (!packTask.IsCompleted)
                 {
                     double elapsed = EditorApplication.timeSinceStartup - startTime;
-                    UvProgress.Report(-1f, $"{label}: {shellCount} shells @ {internalRes}², {elapsed:F0}s");
+                    UvProgress.Report(-1f, $"{shellCount} shells @ {internalRes}²");
                     if (UvProgress.CancelRequested) { cancelled = true; break; }
                     System.Threading.Thread.Sleep(80);
                 }
@@ -831,7 +832,7 @@ namespace SashaRX.UnityMeshLab
                 try
                 {
                     double elapsed = EditorApplication.timeSinceStartup - startTime;
-                    UvProgress.Report(-1f, $"{label}: {shellCount} shells @ {internalRes}², {elapsed:F0}s");
+                    UvProgress.Report(-1f, $"{shellCount} shells @ {internalRes}²");
 
                     if (!cancelledFlag && UvProgress.CancelRequested)
                         cancelledFlag = true;
