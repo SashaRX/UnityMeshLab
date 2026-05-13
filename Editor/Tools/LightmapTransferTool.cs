@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEditor;
@@ -379,7 +380,7 @@ namespace SashaRX.UnityMeshLab
             symSplitThresholdMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
                 "SymSplit thresholds", symSplitThresholdMode);
             SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
-            ColorBtn(new Color(.2f,.75f,.95f), "Run Full Pipeline", 30, ExecFullPipeline);
+            ColorBtn(new Color(.2f,.75f,.95f), "Run Full Pipeline", 30, () => _ = ExecFullPipelineAsync());
             splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft("SymSplit target LODs (advanced)", splitTargetsInSymmetryStep);
             skipSymmetrySplitStep      = EditorGUILayout.ToggleLeft("Skip SymSplit step (diagnostic)", skipSymmetrySplitStep);
 
@@ -682,8 +683,10 @@ namespace SashaRX.UnityMeshLab
                 "SymSplit thresholds", symSplitThresholdMode);
             SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
             ColorBtn(new Color(.3f,.8f,.4f), "Repack All", 26, () => {
-                if (ctx.RepackPerMesh) ExecRepackPerMesh(src);
-                else ExecRepack(src);
+                // Fire-and-forget the async variant: editor main thread stays
+                // free while xatlas packs, so the inline progress strip
+                // animates and Unity never shows the "Hold on" busy dialog.
+                _ = ctx.RepackPerMesh ? ExecRepackPerMeshAsync(src) : ExecRepackAsync(src);
             });
             if (ctx.HasRepack) EditorGUILayout.HelpBox("Repack done. Preview UV1, then Transfer.", MessageType.Info);
         }
@@ -719,7 +722,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             EditorGUILayout.Space(6);
-            ColorBtn(new Color(.3f,.6f,1f), "Transfer All Targets", 26, ExecTransferAll);
+            ColorBtn(new Color(.3f,.6f,1f), "Transfer All Targets", 26, () => _ = ExecTransferAllAsync());
 
             if (ctx.HasTransfer)
             {
@@ -937,9 +940,15 @@ namespace SashaRX.UnityMeshLab
             requestRepaint?.Invoke();
         }
 
-        void ExecFullPipeline() => ExecFullPipeline("FullPipeline");
+        // Sync entry — used by sweep loops where each cell runs end-to-end
+        // before the loop moves on. Editor blocks for the cell duration.
+        void ExecFullPipeline() => ExecFullPipelineImpl("FullPipeline", useAsync: false).GetAwaiter().GetResult();
+        void ExecFullPipeline(string runLabel) => ExecFullPipelineImpl(runLabel, useAsync: false).GetAwaiter().GetResult();
 
-        void ExecFullPipeline(string runLabel)
+        // Async entry — button-click path; editor main thread stays responsive.
+        Task ExecFullPipelineAsync() => ExecFullPipelineImpl("FullPipeline", useAsync: true);
+
+        async Task ExecFullPipelineImpl(string runLabel, bool useAsync)
         {
             if (ctx.LodGroup == null) return;
             using var _bench = BenchmarkRecorder.NewRun(ctx, runLabel,
@@ -948,7 +957,7 @@ namespace SashaRX.UnityMeshLab
             bool completedSuccessfully = false;
             try
             {
-                completedSuccessfully = ExecFullPipelineCore();
+                completedSuccessfully = await ExecFullPipelineCoreImpl(useAsync);
             }
             finally
             {
@@ -1246,7 +1255,9 @@ namespace SashaRX.UnityMeshLab
         /// cancelled mid-flight so the caller can skip artefact recording
         /// (stale state from a prior run would otherwise be written).
         /// </summary>
-        bool ExecFullPipelineCore()
+        bool ExecFullPipelineCore() => ExecFullPipelineCoreImpl(useAsync: false).GetAwaiter().GetResult();
+
+        async Task<bool> ExecFullPipelineCoreImpl(bool useAsync)
         {
             string version = UnityEditor.PackageManager.PackageInfo
                 .FindForAssembly(typeof(LightmapTransferTool).Assembly)?.version ?? "0.0.0";
@@ -1324,11 +1335,11 @@ namespace SashaRX.UnityMeshLab
 
                     // 4. Repack
                     var src = ctx.ForLod(ctx.SourceLodIndex);
-                    if (ctx.RepackPerMesh) ExecRepackPerMesh(src);
-                    else ExecRepack(src);
+                    if (ctx.RepackPerMesh) await ExecRepackPerMeshImpl(src, useAsync);
+                    else                   await ExecRepackImpl(src, useAsync);
 
                     // 5. Transfer
-                    if (ctx.HasRepack && hasTransferTargets) ExecTransferAll();
+                    if (ctx.HasRepack && hasTransferTargets) await ExecTransferAllImpl(useAsync);
                     else if (ctx.HasRepack) ctx.HasTransfer = false;
 
                     if (!hasTransferTargets)
@@ -1424,28 +1435,28 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
-        void ExecRepack(List<MeshEntry> entries)
+        // Sync entry — used by sweep / auto-tune internal loops which are
+        // already on the main thread and have their own outer progress scope.
+        // Editor freezes for the pack duration (acceptable for dev tools).
+        void ExecRepack(List<MeshEntry> entries) => ExecRepackImpl(entries, useAsync: false).GetAwaiter().GetResult();
+
+        // Async entry — button-click path. Editor main thread is free during
+        // xatlas pack so the inline progress strip keeps repainting and Unity
+        // never shows the "Hold on / Waiting for Unity's code…" busy dialog.
+        Task ExecRepackAsync(List<MeshEntry> entries) => ExecRepackImpl(entries, useAsync: true);
+
+        async Task ExecRepackImpl(List<MeshEntry> entries, bool useAsync)
         {
             if (entries.Count == 0) return;
             using var _bench = BenchmarkRecorder.NewRun(ctx, "Repack",
                 splitTargetsInSymmetryStep, symSplitThresholdMode);
-            // Mirror the ownership guard ExecTransferAll uses: only the
-            // outermost benchmark session writes per-mesh rows. A nested
-            // ExecRepack inside ExecFullPipeline / sweep would otherwise
-            // double-record (the outer run already records all meshes at
-            // its own end), inflating CSV/JSON aggregates and breaking
-            // sweep comparisons.
             bool ownsSession = _bench is BenchmarkRecorder;
-            // Only wrap a UvProgress scope when this Repack runs on its own
-            // (button click). Nested calls (sweep / auto-tune) are already
-            // covered by their outer Begin/End so we'd otherwise stack two
-            // progress entries and overwrite the parent snapshot.
             bool ownsProgress = !UvProgress.IsActive;
             if (ownsProgress)
                 UvProgress.Begin($"Repack ({entries.Count} mesh{(entries.Count == 1 ? "" : "es")})",
                                  cancelable: true);
             BenchmarkRecorder.Current?.StageBegin("repack");
-            try { ExecRepackCore(entries); }
+            try { await ExecRepackCoreImpl(entries, useAsync); }
             finally
             {
                 BenchmarkRecorder.Current?.StageEnd("repack");
@@ -1456,7 +1467,9 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        void ExecRepackCore(List<MeshEntry> entries)
+        void ExecRepackCore(List<MeshEntry> entries) => ExecRepackCoreImpl(entries, useAsync: false).GetAwaiter().GetResult();
+
+        async Task ExecRepackCoreImpl(List<MeshEntry> entries, bool useAsync)
         {
             uint resolvedResolution = (uint)ctx.AtlasResolution;
             if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
@@ -1510,7 +1523,9 @@ namespace SashaRX.UnityMeshLab
             opts.blockSize = ctx.XatlasBlockSize;
             opts.texelsPerUnit = ctx.XatlasTexelsPerUnit;
 
-            var results = XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);
+            var results = useAsync
+                ? await XatlasRepack.RepackMultiAsync(meshCopies.ToArray(), opts)
+                : XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);
             for (int i = 0; i < validEntries.Count; i++)
             {
                 if (!results[i].ok)
@@ -1531,7 +1546,10 @@ namespace SashaRX.UnityMeshLab
             requestRepaint?.Invoke();
         }
 
-        void ExecRepackPerMesh(List<MeshEntry> entries)
+        void ExecRepackPerMesh(List<MeshEntry> entries) => ExecRepackPerMeshImpl(entries, useAsync: false).GetAwaiter().GetResult();
+        Task ExecRepackPerMeshAsync(List<MeshEntry> entries) => ExecRepackPerMeshImpl(entries, useAsync: true);
+
+        async Task ExecRepackPerMeshImpl(List<MeshEntry> entries, bool useAsync)
         {
             var groups = new Dictionary<string, List<MeshEntry>>();
             foreach (var e in entries)
@@ -1541,10 +1559,13 @@ namespace SashaRX.UnityMeshLab
                 groups[key].Add(e);
             }
             foreach (var kv in groups)
-                ExecRepack(kv.Value);
+                await ExecRepackImpl(kv.Value, useAsync);
         }
 
-        void ExecTransferAll()
+        void ExecTransferAll() => ExecTransferAllImpl(useAsync: false).GetAwaiter().GetResult();
+        Task ExecTransferAllAsync() => ExecTransferAllImpl(useAsync: true);
+
+        async Task ExecTransferAllImpl(bool useAsync)
         {
             using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
                 splitTargetsInSymmetryStep, symSplitThresholdMode);
@@ -1581,7 +1602,7 @@ namespace SashaRX.UnityMeshLab
                     UvProgress.SetPhase($"Transfer → LOD{li}",
                                         fraction: targetLodCount > 0 ? (float)processed / targetLodCount : 0f,
                                         detail: $"LOD{li}");
-                    ExecTransferLod(li);
+                    await ExecTransferLodImpl(li, useAsync);
                     processed++;
                 }
                 ctx.HasTransfer = !UvProgress.CancelRequested;
@@ -1604,7 +1625,10 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        void ExecTransferLod(int tLod)
+        void ExecTransferLod(int tLod) => ExecTransferLodImpl(tLod, useAsync: false).GetAwaiter().GetResult();
+        Task ExecTransferLodAsync(int tLod) => ExecTransferLodImpl(tLod, useAsync: true);
+
+        async Task ExecTransferLodImpl(int tLod, bool useAsync)
         {
             var targets = ctx.ForLod(tLod);
             if (targets.Count == 0) return;
@@ -1613,6 +1637,7 @@ namespace SashaRX.UnityMeshLab
 
             foreach (var tgt in targets)
             {
+                if (UvProgress.CancelRequested) break;
                 if (tgt.originalMesh == tgt.fbxMesh)
                 {
                     tgt.originalMesh = UvCanvasView.MakeReadableCopy(tgt.fbxMesh);
@@ -1638,11 +1663,18 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (srcInfos == null) continue;
 
-                var tr = GroupedShellTransfer.Transfer(tgtMesh, srcMesh,
-                    accumulatedOverlapHints.Count > 0 ? accumulatedOverlapHints : null,
-                    accumulatedMatchHints.Count > 0 ? accumulatedMatchHints : null,
-                    srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
-                    srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0);
+                UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
+                var tr = useAsync
+                    ? await GroupedShellTransfer.TransferAsync(tgtMesh, srcMesh,
+                        accumulatedOverlapHints.Count > 0 ? accumulatedOverlapHints : null,
+                        accumulatedMatchHints.Count > 0 ? accumulatedMatchHints : null,
+                        srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
+                        srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0)
+                    : GroupedShellTransfer.Transfer(tgtMesh, srcMesh,
+                        accumulatedOverlapHints.Count > 0 ? accumulatedOverlapHints : null,
+                        accumulatedMatchHints.Count > 0 ? accumulatedMatchHints : null,
+                        srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
+                        srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0);
                 if (tr.uv2 == null) { UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); continue; }
 
                 // Accumulate overlap hints for subsequent LODs
