@@ -10,6 +10,18 @@ using UnityEditor;
 namespace SashaRX.UnityMeshLab
 {
     /// <summary>
+    /// Repack atlas resolution selection strategy.
+    /// <see cref="Manual"/> uses <see cref="UvToolContext.AtlasResolution"/> directly;
+    /// <see cref="AutoFromTexelDensity"/> derives the resolution from total 3D
+    /// surface area and <see cref="UvToolContext.LightmapDensity"/>.
+    /// </summary>
+    public enum ResolutionMode
+    {
+        Manual,
+        AutoFromTexelDensity,
+    }
+
+    /// <summary>
     /// Shared state container — one instance per <see cref="UvToolHub"/> window.
     /// Created in <c>OnEnable</c>, populated by <see cref="Refresh"/>.
     /// All tools receive a reference via <see cref="IUvTool.OnActivate"/>.
@@ -27,6 +39,156 @@ namespace SashaRX.UnityMeshLab
         public int ShellPaddingPx;
         public int BorderPaddingPx;
         public bool RepackPerMesh;
+
+        /// <summary>
+        /// xatlas maxChartSize in pixels. 0 = unbounded — a single huge chart
+        /// can force the atlas to grow past the requested resolution and
+        /// trigger downscale. Setting this to AtlasResolution (or smaller)
+        /// keeps every chart inside the atlas budget.
+        /// </summary>
+        public int XatlasMaxChartSize = 0;
+
+        /// <summary>
+        /// xatlas bilinear — pads charts by 1 extra texel to keep bilinear
+        /// sampling from leaking neighbor charts at runtime. Default ON for
+        /// lightmap use (Unity samples lightmaps bilinearly).
+        /// </summary>
+        public bool XatlasBilinear = true;
+
+        /// <summary>
+        /// xatlas blockAlign — snap chart placement to 4×4 texel blocks.
+        /// Required for compressed (BC1/DXT) lightmaps to avoid color bleed
+        /// across block boundaries. Costs some packing efficiency (typically
+        /// 3-8%). Default OFF since Unity progressive lightmaps usually run
+        /// uncompressed; flip to ON when shipping BC-compressed lightmaps.
+        /// </summary>
+        public bool XatlasBlockAlign = false;
+
+        /// <summary>
+        /// Compression block size in texels. xatlas's blockAlign snaps to 4×4
+        /// (BC1/BC3/BC5/BC7/ETC2/DXT*). Set to 5/6/8/10/12 for ASTC variants
+        /// — surfaces the intent but the actual post-pack snap to non-4 grids
+        /// is a follow-up; at 4 behaviour matches xatlas exactly.
+        /// </summary>
+        public int XatlasBlockSize = 4;
+
+        /// <summary>
+        /// xatlas texelsPerUnit override in texels/UV-unit. 0 = let xatlas
+        /// auto-derive from atlas resolution. Manual values are useful when
+        /// a project enforces a fixed real-world texel density across all
+        /// lightmaps (e.g. 10 texels/m).
+        /// </summary>
+        public float XatlasTexelsPerUnit = 0f;
+        /// <summary>
+        /// xatlas brute-force packer — exhaustively searches placements for
+        /// each chart instead of using the fast heuristic. Default ON because
+        /// the heuristic leaves visible holes when chart sizes vary widely
+        /// (which happens whenever NormalizeTexelDensity is on). Cost is
+        /// ~1–3 seconds of extra wall-time per repack for typical models;
+        /// disable only if iteration speed beats atlas quality on a given
+        /// asset.
+        /// </summary>
+        public bool XatlasBruteForce = true;
+        /// <summary>xatlas rotate charts during pack (rotateCharts native option). Default true.</summary>
+        public bool XatlasRotateCharts = true;
+        /// <summary>xatlas align rotation to axis (rotateChartsToAxis native option). Default true.</summary>
+        public bool XatlasRotateChartsToAxis = true;
+
+        /// <summary>
+        /// Pre-pack rescale of each shell's UV0 so UV-area is proportional
+        /// to 3D surface area. Produces uniform texels-per-world-unit in
+        /// the baked lightmap. Default ON for lightmap use; disable only
+        /// when preserving a baked-texture UV layout with intentional
+        /// non-uniform density.
+        /// </summary>
+        public bool NormalizeTexelDensity = true;
+
+        /// <summary>
+        /// Auto-reparameterize shells whose UV0 stretch (Sander L² metric) exceeds
+        /// <see cref="StretchThreshold"/>. Replaces the previous IsRibbon-based
+        /// trigger — now driven by an actual UV quality metric. ARAP local-global
+        /// solver redistributes vertices to minimize per-triangle isometric
+        /// distortion. Off by default (opt-in safety), but recommended ON for most
+        /// assets — stretched ribbons, twisted strips, and any high-distortion
+        /// shells get cleaned up at the parameterization level instead of via
+        /// downstream affine hacks.
+        /// </summary>
+        public bool ReparameterizeStretchedShells = true;  // DEFAULT ON
+
+        /// <summary>
+        /// Sander L² stretch above which a shell triggers ARAP re-parameterization.
+        /// 1.0 = isometric (perfect); 1.5 = mild stretch (typical artist unwrap);
+        /// 2.0 = noticeably stretched; 3.0+ = severely distorted. Default 1.5 fires
+        /// ARAP only on shells with measurable distortion.
+        /// </summary>
+        public float StretchThreshold = 1.5f;
+
+        /// <summary>
+        /// ARAP iteration count for stretched-shell re-parameterization. Default 50,
+        /// matching 3ds Max's Relax-by-polygon-angles convergence behaviour.
+        /// </summary>
+        public int ArapIterations = 50;
+
+        /// <summary>
+        /// Clamp final lightmap UV2 coordinates into [0,1] on both source
+        /// (post-xatlas) and target (post-transfer) meshes. Stray UVs outside
+        /// the unit square sample neighbouring atlas regions and bleed wrong
+        /// light onto the surface. xatlas + transfer normally stay in-range
+        /// but border padding, perturb fixups, and the topology enforcer can
+        /// push a few verts a fraction of a texel over. Cheap safety net,
+        /// default ON.
+        /// </summary>
+        public bool ClampLightmapToUnit = true;
+
+        /// <summary>
+        /// Post-pack density correction. xatlas internally applies per-chart
+        /// scaling (sub-pixel anisotropic ceil + per-chart normalization for
+        /// extreme aspect ratios) that breaks uniform density. This pass
+        /// measures per-shell au2/a3 after xatlas and shrinks over-dense
+        /// shells uniformly around their UV2 centroid to match the median.
+        /// Shrink-only (never expands) so neighbours can't collide. Brings
+        /// density spread on the Carousel test from ~14× down to ~3×.
+        /// Default ON — needed to compensate xatlas's per-chart bias.
+        /// </summary>
+        public bool PostPackDensityCorrection = true;
+
+        /// <summary>
+        /// Internal xatlas atlas oversampling factor (1, 2, 4, 8, 16). Default 4.
+        /// xatlas's Stage B does ceil(extents)/extents per axis per chart;
+        /// running the pack at N× the user resolution makes every shell
+        /// N× larger in pixel space, so most non-degenerate shells move
+        /// out of the sub-pixel regime where Stage B amplifies them.
+        /// Output UVs are normalised to [0,1] via /atlasW, so the
+        /// effective user atlas stays at <see cref="AtlasResolution"/>.
+        /// Higher values reduce density spread further but raise the
+        /// brute-force pack cost (O(N × W × H)). 4× is a good default;
+        /// 8-16× for high-resolution lightmaps with many thin shells.
+        /// </summary>
+        public int InternalOversample = 4;
+
+        /// <summary>
+        /// Fraction of [0,1]² atlas the normalized UVs should sum to.
+        /// Leaves slack for bin-packing inefficiency so the atlas doesn't
+        /// grow past the requested resolution. Default 0.75 (= 25% safety
+        /// margin). Lower → safer fit, smaller charts; higher → tighter
+        /// pack but risk of atlas overflow + downscale.
+        /// </summary>
+        public float TargetUvCoverage = 0.75f;
+
+        /// <summary>
+        /// Strategy for choosing the repack atlas resolution. Manual uses the
+        /// explicit <see cref="AtlasResolution"/> field; AutoFromTexelDensity
+        /// derives it from total 3D surface area and <see cref="LightmapDensity"/>.
+        /// </summary>
+        public ResolutionMode RepackResolutionMode = ResolutionMode.Manual;
+
+        /// <summary>
+        /// Target lightmap density in texels per meter. Used only when
+        /// <see cref="RepackResolutionMode"/> is <see cref="ResolutionMode.AutoFromTexelDensity"/>.
+        /// Default 10 texels/m matches a typical Unity progressive lightmap baseline.
+        /// </summary>
+        public float LightmapDensity = 10f;
+
         public int IsolatedMeshGroup = -1;
 
         public UvToolContext()

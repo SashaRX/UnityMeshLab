@@ -37,10 +37,27 @@ namespace SashaRX.UnityMeshLab
         Dictionary<int, bool> reportLodFoldouts = new Dictionary<int, bool>();
         bool foldOutput = true;
         bool foldUv0Analysis, foldRepackSettings = true;
+        bool foldLogFilters;
+        bool foldValidationOverlay;
         bool splitTargetsInSymmetryStep;
+        bool skipSymmetrySplitStep;
         SymmetrySplitShells.ThresholdMode symSplitThresholdMode = SymmetrySplitShells.ThresholdMode.LegacyFixed;
         HashSet<int> lastSymmetrySplitLods = new HashSet<int>();
         Vector2 reportScroll;
+        TestSuiteAsset sweepSuite;
+
+        // Cache of the filterable UvtLog categories — enumerated once on type init
+        // to avoid per-repaint Enum.GetValues allocations inside the Log filters UI.
+        // Composite flag UvtLog.Category.All is filtered out; only single bits remain.
+        static readonly UvtLog.Category[] s_logCategories = BuildLogCategoryList();
+        static UvtLog.Category[] BuildLogCategoryList()
+        {
+            var all = (UvtLog.Category[])Enum.GetValues(typeof(UvtLog.Category));
+            var list = new List<UvtLog.Category>(all.Length);
+            foreach (var c in all)
+                if (c != UvtLog.Category.All) list.Add(c);
+            return list.ToArray();
+        }
 
         // ── LOD generation ──
         int generateLodCount = 2;
@@ -344,6 +361,38 @@ namespace SashaRX.UnityMeshLab
             SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
             ColorBtn(new Color(.2f,.75f,.95f), "Run Full Pipeline", 30, ExecFullPipeline);
             splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft("SymSplit target LODs (advanced)", splitTargetsInSymmetryStep);
+            skipSymmetrySplitStep      = EditorGUILayout.ToggleLeft("Skip SymSplit step (diagnostic)", skipSymmetrySplitStep);
+
+            // Parameter sweep: atlasRes × shellPad × borderPad from a TestSuiteAsset.
+            sweepSuite = (TestSuiteAsset)EditorGUILayout.ObjectField(
+                "Sweep suite", sweepSuite, typeof(TestSuiteAsset), false);
+            int cells = 0;
+            if (sweepSuite != null && sweepSuite.sweep != null)
+            {
+                var sm = sweepSuite.sweep;
+                int rL  = sm.atlasResolutions?.Length              ?? 0;
+                int pL  = sm.shellPaddingPxVariants?.Length        ?? 0;
+                int bL  = sm.borderPaddingPxVariants?.Length       ?? 0;
+                int arL = sm.arapIterationsVariants?.Length        ?? 0;
+                int stL = sm.stretchThresholdVariants?.Length      ?? 0;
+                cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL)
+                      * Mathf.Max(1, arL) * Mathf.Max(1, stL);
+            }
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0))
+                {
+                    if (GUILayout.Button($"Run Sweep ({cells})", GUILayout.Height(22)))
+                        ExecSweep(sweepSuite.sweep);
+                }
+                if (GUILayout.Button(new GUIContent("Rebuild Report",
+                        "Pick a BenchmarkReports/ folder and rebuild summary.csv / winner.json / index.html " +
+                        "from the per-cell CSVs already on disk. Use this after a mid-sweep Unity crash."),
+                        GUILayout.Height(22)))
+                {
+                    ExecRebuildSweepReport();
+                }
+            }
 
             EditorGUILayout.Space(6);
             H("Pipeline Settings");
@@ -355,6 +404,23 @@ namespace SashaRX.UnityMeshLab
                 ctx.PipeSettings.saveNewMeshAssets = EditorGUILayout.Toggle("Save Assets", ctx.PipeSettings.saveNewMeshAssets);
                 if (ctx.PipeSettings.saveNewMeshAssets)
                     ctx.PipeSettings.savePath = EditorGUILayout.TextField("Path", ctx.PipeSettings.savePath);
+                EditorGUI.indentLevel--;
+            }
+
+            EditorGUILayout.Space(4);
+            foldLogFilters = EditorGUILayout.Foldout(foldLogFilters, "Log filters", true);
+            if (foldLogFilters)
+            {
+                EditorGUI.indentLevel++;
+                UvtLog.Current = (UvtLog.Level)EditorGUILayout.EnumPopup("Level", UvtLog.Current);
+                var enabled = UvtLog.EnabledCategories;
+                for (int i = 0; i < s_logCategories.Length; i++)
+                {
+                    var cat = s_logCategories[i];
+                    bool on = (enabled & cat) != 0;
+                    bool newOn = EditorGUILayout.ToggleLeft(cat.ToString(), on);
+                    if (newOn != on) UvtLog.SetCategoryEnabled(cat, newOn);
+                }
                 EditorGUI.indentLevel--;
             }
 
@@ -394,9 +460,193 @@ namespace SashaRX.UnityMeshLab
             if (foldRepackSettings)
             {
                 EditorGUI.indentLevel++;
-                ctx.AtlasResolution = EditorGUILayout.IntField("Resolution", ctx.AtlasResolution);
+                ctx.RepackResolutionMode = (ResolutionMode)EditorGUILayout.EnumPopup(
+                    new GUIContent("Resolution mode",
+                        "Manual: you pick the atlas resolution (power of two) and "
+                        + "the tool shows the effective texel density.\n"
+                        + "Auto from texel density: you pick a target texels/meter "
+                        + "and the tool sizes the atlas from total 3D surface area, "
+                        + "rounded up to the next power of two and clamped to "
+                        + "[64, 4096]. Padding stays in pixels in both modes."),
+                    ctx.RepackResolutionMode);
+
+                double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
+                    ctx.ForLod(ctx.SourceLodIndex)
+                        .Where(e => e.originalMesh != null)
+                        .Select(e => e.originalMesh));
+
+                if (ctx.RepackResolutionMode == ResolutionMode.Manual)
+                {
+                    ctx.AtlasResolution = EditorGUILayout.IntField(
+                        new GUIContent("Resolution",
+                            "Atlas resolution in pixels. Power-of-two values are "
+                            + "recommended (64, 128, 256, 512, 1024, 2048, 4096)."),
+                        ctx.AtlasResolution);
+                    int resForDisplay = Mathf.Max(1, ctx.AtlasResolution);
+                    double effDensity = total3DArea > 0.0
+                        ? resForDisplay / System.Math.Sqrt(total3DArea / Mathf.Max(0.0001f, ctx.TargetUvCoverage))
+                        : 0.0;
+                    EditorGUILayout.LabelField(
+                        " ",
+                        $"3D area: {total3DArea:F2} m² · effective ≈ {effDensity:F1} texels/m",
+                        EditorStyles.miniLabel);
+                }
+                else
+                {
+                    ctx.LightmapDensity = EditorGUILayout.Slider(
+                        new GUIContent("Texels per meter",
+                            "Target lightmap density. Tool computes the atlas "
+                            + "resolution as ceil_pow2(sqrt(area × density² / coverage)), "
+                            + "clamped to [64, 4096]. Typical values: 5-20 for props, "
+                            + "1-5 for large environment pieces."),
+                        ctx.LightmapDensity, 0.5f, 100f);
+                    uint autoRes = MeshAreaHelper.ComputeAutoResolution(
+                        total3DArea, ctx.LightmapDensity, ctx.TargetUvCoverage);
+                    EditorGUILayout.LabelField(
+                        " ",
+                        $"3D area: {total3DArea:F2} m² · computed resolution: {autoRes} px",
+                        EditorStyles.miniLabel);
+                }
                 ctx.ShellPaddingPx = EditorGUILayout.IntSlider("Shell Padding", ctx.ShellPaddingPx, 0, 16);
                 ctx.BorderPaddingPx = EditorGUILayout.IntSlider("Border Padding", ctx.BorderPaddingPx, 0, 16);
+                EditorGUILayout.Space(4);
+                EditorGUILayout.LabelField("Pre-pack", EditorStyles.miniBoldLabel);
+                ctx.NormalizeTexelDensity = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Normalize texel density",
+                        "Per-shell UV0 rescale so UV-area is proportional to 3D surface area. "
+                        + "Produces uniform texels-per-world-unit in the baked lightmap. "
+                        + "Disable to preserve an existing baked-texture UV layout."),
+                    ctx.NormalizeTexelDensity);
+                using (new EditorGUI.DisabledScope(!ctx.NormalizeTexelDensity))
+                {
+                    ctx.ReparameterizeStretchedShells = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Auto-fix stretched shells (ARAP)",
+                            "Measure each shell's Sander L² stretch (UV vs 3D isometric distortion) and "
+                            + "re-parameterize shells above the threshold via ARAP local-global. "
+                            + "Replaces the previous per-shell-aspect affine hack — this works at the "
+                            + "parameterization level, redistributing vertices rather than scaling the "
+                            + "whole shell. Default ON; turn off only when preserving artist's exact UV0."),
+                        ctx.ReparameterizeStretchedShells);
+                    using (new EditorGUI.DisabledScope(!ctx.ReparameterizeStretchedShells))
+                    {
+                        EditorGUI.indentLevel++;
+                        ctx.StretchThreshold = EditorGUILayout.Slider(
+                            new GUIContent("  L² stretch threshold",
+                                "Shells with Sander L² stretch above this value are sent to ARAP. "
+                                + "1.0 = isometric (perfect); 1.5 = typical artist unwrap (default); "
+                                + "2.0 = noticeable stretch; 3.0+ = severely distorted. Lower fires "
+                                + "ARAP on more shells; higher reserves it for clearly broken cases."),
+                            ctx.StretchThreshold, 1.0f, 3.0f);
+                        ctx.ArapIterations = EditorGUILayout.IntSlider(
+                            new GUIContent("  ARAP iterations",
+                                "Local-global iteration count. 50 is the default and matches 3ds Max's "
+                                + "Relax-by-polygon-angles. 100-200 for highly curved/twisted strips."),
+                            ctx.ArapIterations, 10, 200);
+                        EditorGUI.indentLevel--;
+                    }
+                    ctx.ClampLightmapToUnit = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Clamp lightmap UV2 to [0,1]",
+                            "Clamp every output UV2 coord into the unit square on both source "
+                            + "(post-xatlas) and target (post-transfer) meshes. Cheap safety "
+                            + "net against verts pushed a fraction of a texel outside by border "
+                            + "padding, perturb fixups, or the topology enforcer — out-of-range "
+                            + "UVs sample neighbouring atlas regions and bleed wrong light. "
+                            + "Default ON."),
+                        ctx.ClampLightmapToUnit);
+                    ctx.TargetUvCoverage = EditorGUILayout.Slider(
+                        new GUIContent("UV coverage budget",
+                            "Fraction of [0,1]² atlas that normalized UVs sum to. "
+                            + "Leaves slack for bin-packing inefficiency so the atlas doesn't "
+                            + "grow past the requested resolution. Lower → safer fit, smaller "
+                            + "charts; higher → tighter pack but risk of overflow + downscale."),
+                        ctx.TargetUvCoverage, 0.3f, 0.95f);
+                    ctx.PostPackDensityCorrection = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Post-pack density correction (experimental)",
+                            "After xatlas pack, measure per-shell au2/a3 and shrink over-dense "
+                            + "shells toward the median around their UV2 centroid. Compensates "
+                            + "xatlas's per-chart ceil(extents) stretch which breaks uniform "
+                            + "density for thin/anisotropic shells. Shrink-only (never expands) "
+                            + "so neighbours can't collide. Leaves gaps in the atlas where "
+                            + "shrunk shells used to be — trades coverage for density uniformity."),
+                        ctx.PostPackDensityCorrection);
+                    int[] osValues = { 1, 2, 4, 8, 16 };
+                    string[] osLabels = { "1× (default — off)", "2×", "4×", "8×", "16×" };
+                    int currentOs = Mathf.Max(1, ctx.InternalOversample);
+                    int osIdx = 0;
+                    for (int i = 0; i < osValues.Length; i++)
+                        if (osValues[i] == currentOs) { osIdx = i; break; }
+                    int newOsIdx = EditorGUILayout.Popup(
+                        new GUIContent("Internal pack oversample",
+                            "Internal xatlas atlas size = user resolution × this factor. "
+                            + "xatlas's per-chart ceil(extents) stretch (xatlas.cpp:8345) "
+                            + "breaks uniform density when shells have sub-pixel extents. "
+                            + "Oversampling makes ceil rounding fractional. UV2 still "
+                            + "normalized to [0,1]; Unity bakes at its own resolution.\n\n"
+                            + "Default 4× brings density spread from ~14× down to ~2×.\n"
+                            + "8-16× brings spread to ~1.1× but DISABLES brute force pack "
+                            + "automatically (search space becomes minutes-per-atlas).\n"
+                            + "1× = off, original xatlas behaviour."),
+                        osIdx, osLabels);
+                    ctx.InternalOversample = osValues[Mathf.Clamp(newOsIdx, 0, osValues.Length - 1)];
+                }
+                EditorGUILayout.Space(4);
+                EditorGUILayout.LabelField("xatlas options", EditorStyles.miniBoldLabel);
+                ctx.XatlasBruteForce = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Brute force pack",
+                        "Run xatlas's exhaustive packer (slower, tighter atlas). Off by default."),
+                    ctx.XatlasBruteForce);
+                ctx.XatlasRotateCharts = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Rotate charts",
+                        "xatlas may rotate charts to fit better (recommended)."),
+                    ctx.XatlasRotateCharts);
+                using (new EditorGUI.DisabledScope(!ctx.XatlasRotateCharts))
+                {
+                    ctx.XatlasRotateChartsToAxis = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Snap rotation to axis",
+                            "Constrain chart rotation to 0/90/180/270° (preserves texel alignment)."),
+                        ctx.XatlasRotateChartsToAxis);
+                }
+                ctx.XatlasBilinear = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Bilinear-safe padding",
+                        "Pad each chart by 1 extra texel so bilinear sampling at runtime "
+                        + "doesn't leak neighbor charts. Default ON for lightmap use."),
+                    ctx.XatlasBilinear);
+                ctx.XatlasBlockAlign = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Block-align (BC/DXT)",
+                        "Snap chart placement to 4×4 texel blocks. Required for compressed "
+                        + "lightmaps (BC1/DXT) to avoid color bleed across block boundaries. "
+                        + "Costs ~3-8% packing efficiency. Enable when shipping BC-compressed "
+                        + "lightmaps; leave OFF for uncompressed progressive bakes."),
+                    ctx.XatlasBlockAlign);
+                using (new EditorGUI.DisabledScope(!ctx.XatlasBlockAlign))
+                {
+                    int[] blockSizes = { 4, 5, 6, 8, 10, 12 };
+                    string[] blockLabels = { "4×4 (BC/ETC/DXT)", "5×5 (ASTC)", "6×6 (ASTC)", "8×8 (ASTC)", "10×10 (ASTC)", "12×12 (ASTC)" };
+                    int currentIdx = System.Array.IndexOf(blockSizes, ctx.XatlasBlockSize);
+                    if (currentIdx < 0) currentIdx = 0;
+                    int newIdx = EditorGUILayout.Popup(
+                        new GUIContent("Block size",
+                            "Compression block size. 4×4 covers BC1/BC3/BC5/BC7/ETC2/DXT*. "
+                            + "ASTC variants (5..12) surface the intent — actual snap to >4 grids "
+                            + "is a follow-up; at 4 behaviour matches xatlas exactly."),
+                        currentIdx, blockLabels);
+                    ctx.XatlasBlockSize = blockSizes[newIdx];
+                }
+                ctx.XatlasMaxChartSize = EditorGUILayout.IntField(
+                    new GUIContent("Max chart size (px)",
+                        "Hard cap on individual chart dimension in atlas pixels. 0 = unbounded. "
+                        + "A single oversized chart can force the atlas to grow past the "
+                        + "requested resolution and trigger downscale; capping prevents that. "
+                        + "Set to atlas resolution (or smaller) for a safe ceiling."),
+                    ctx.XatlasMaxChartSize);
+                if (ctx.XatlasMaxChartSize < 0) ctx.XatlasMaxChartSize = 0;
+                ctx.XatlasTexelsPerUnit = EditorGUILayout.FloatField(
+                    new GUIContent("Texels per UV unit",
+                        "Override xatlas's auto-derived texel density (default 0 = auto-derive "
+                        + "from atlas resolution). Manual value pins a fixed texels-per-UV-unit "
+                        + "for projects that need consistent texel density across lightmaps."),
+                    ctx.XatlasTexelsPerUnit);
+                if (ctx.XatlasTexelsPerUnit < 0f) ctx.XatlasTexelsPerUnit = 0f;
                 EditorGUI.indentLevel--;
             }
             var src = ctx.ForLod(ctx.SourceLodIndex);
@@ -480,6 +730,30 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
                 EditorGUILayout.EndScrollView();
+
+                EditorGUILayout.Space(4);
+                foldValidationOverlay = EditorGUILayout.Foldout(foldValidationOverlay, "Validation Overlay", true);
+                if (foldValidationOverlay)
+                {
+                    EditorGUI.indentLevel++;
+                    var mask = canvas != null ? canvas.ValidationFilterMask : TransferValidator.TriIssue.None;
+                    bool changed = false;
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Inverted,    "Inverted");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Stretched,   "Stretched");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.ZeroArea,    "ZeroArea");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.OutOfBounds, "OutOfBounds");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Overlap,     "Overlap");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.TexelDensity,"TexelDensity");
+                    if (changed && canvas != null)
+                    {
+                        canvas.ValidationFilterMask = mask;
+                        requestRepaint?.Invoke();
+                    }
+                    EditorGUILayout.LabelField(
+                        mask == TransferValidator.TriIssue.None ? "(all triangles drawn)" : $"mask: {mask}",
+                        EditorStyles.miniLabel);
+                    EditorGUI.indentLevel--;
+                }
 
                 EditorGUILayout.Space(6);
                 H("Apply UV2");
@@ -637,9 +911,315 @@ namespace SashaRX.UnityMeshLab
             requestRepaint?.Invoke();
         }
 
-        void ExecFullPipeline()
+        void ExecFullPipeline() => ExecFullPipeline("FullPipeline");
+
+        void ExecFullPipeline(string runLabel)
         {
             if (ctx.LodGroup == null) return;
+            using var _bench = BenchmarkRecorder.NewRun(ctx, runLabel,
+                splitTargetsInSymmetryStep, symSplitThresholdMode);
+            BenchmarkRecorder.Current?.StageBegin("pipeline");
+            bool completedSuccessfully = false;
+            try
+            {
+                completedSuccessfully = ExecFullPipelineCore();
+            }
+            finally
+            {
+                BenchmarkRecorder.Current?.StageEnd("pipeline");
+                // When the pipeline aborts early (user-cancel or exception)
+                // the per-mesh shellTransferResult / validation state is stale
+                // from a previous run — recording it would emit misleading
+                // metrics that taint sweep winners. Skip RecordMesh entirely
+                // in that case; the sweep aggregator already treats cells
+                // with no CSV row as failed.
+                if (completedSuccessfully && BenchmarkRecorder.Current != null)
+                    foreach (var e in ctx.MeshEntries)
+                    {
+                        // Skip excluded entries: a user-deselected mesh has
+                        // stale TransferResult/ValidationReport from a prior
+                        // run and would surface as a failed row in sweep
+                        // aggregates even though the pipeline never touched it.
+                        if (!e.include) continue;
+                        BenchmarkRecorder.Current.RecordMesh(e);
+                    }
+            }
+        }
+
+        /// <summary>
+        /// Run the full pipeline once per cell of a sweep matrix (cartesian product of
+        /// atlasResolutions × shellPaddingPxVariants × borderPaddingPxVariants ×
+        /// arapIterationsVariants × stretchThresholdVariants). Each cell writes
+        /// its own CSV/JSON with runLabel "sweep_res{R}_pad{S}_bdr{B}_arap{N}_stretch{T}".
+        /// After the loop, if at least two cells completed, BenchmarkSweep.WriteAggregateReport
+        /// is invoked to score the cells and write a sweep_<timestamp>/summary.csv +
+        /// winner.json under BenchmarkReports/. Original ctx values are restored on exit.
+        /// </summary>
+        void ExecSweep(TestSuiteAsset.SweepMatrix sm)
+        {
+            if (ctx.LodGroup == null || sm == null) return;
+            var resArr = (sm.atlasResolutions != null && sm.atlasResolutions.Length > 0)
+                ? sm.atlasResolutions : new[] { ctx.AtlasResolution };
+            var padArr = (sm.shellPaddingPxVariants != null && sm.shellPaddingPxVariants.Length > 0)
+                ? sm.shellPaddingPxVariants : new[] { ctx.ShellPaddingPx };
+            var bdrArr = (sm.borderPaddingPxVariants != null && sm.borderPaddingPxVariants.Length > 0)
+                ? sm.borderPaddingPxVariants : new[] { ctx.BorderPaddingPx };
+            var arapItersArr = (sm.arapIterationsVariants != null && sm.arapIterationsVariants.Length > 0)
+                ? sm.arapIterationsVariants
+                : new[] { ctx.ReparameterizeStretchedShells ? ctx.ArapIterations : 0 };
+            var stretchArr = (sm.stretchThresholdVariants != null && sm.stretchThresholdVariants.Length > 0)
+                ? sm.stretchThresholdVariants : new[] { ctx.StretchThreshold };
+
+            int total = resArr.Length * padArr.Length * bdrArr.Length
+                      * arapItersArr.Length * stretchArr.Length;
+
+            // Snapshot ctx fields we mutate — restored unconditionally below.
+            int   origRes         = ctx.AtlasResolution;
+            int   origPad         = ctx.ShellPaddingPx;
+            int   origBdr         = ctx.BorderPaddingPx;
+            bool  origArapOn      = ctx.ReparameterizeStretchedShells;
+            int   origArapIters   = ctx.ArapIterations;
+            float origStretchThr  = ctx.StretchThreshold;
+            // The sweep iterates an explicit atlasResolutions array. If the
+            // user left AutoFromTexelDensity selected, ExecRepackCore would
+            // overwrite ctx.AtlasResolution every cell and every row would
+            // record the auto value — collapsing the resolution dimension of
+            // the sweep. Force Manual for the duration of the sweep so each
+            // cell's `r` is the resolution xatlas actually packs at.
+            ResolutionMode origResMode = ctx.RepackResolutionMode;
+            ctx.RepackResolutionMode = ResolutionMode.Manual;
+
+            // Aligned lists: writtenCsvPaths[i] is the CSV path produced by
+            // cellConfigs[i]. Passed to BenchmarkSweep after the loop completes.
+            var writtenCsvPaths = new List<string>(total);
+            var cellConfigs     = new List<BenchmarkSweep.CellConfig>(total);
+
+            // Pre-create the sweep_<timestamp>/ directory so the incremental
+            // aggregate after every successful cell can rewrite summary.csv /
+            // winner.json / index.html into a stable path. The final aggregate
+            // in the finally block uses the same directory.
+            // Millisecond precision — second-level stamps collided when an
+            // operator kicked off two sweeps in the same second (scripted
+            // runs, quick UI re-clicks). Without ms the second sweep would
+            // overwrite the first one's summary.csv / winner.json.
+            string sweepStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff",
+                System.Globalization.CultureInfo.InvariantCulture);
+            string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
+                                 ?? Application.dataPath;
+            string sweepDir = System.IO.Path.Combine(projectRoot, "BenchmarkReports",
+                $"sweep_{sweepStamp}");
+            try { System.IO.Directory.CreateDirectory(sweepDir); }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[Sweep] Could not pre-create sweep dir '{sweepDir}': {ex.Message}");
+                sweepDir = null;
+            }
+
+            int done = 0;
+            bool cancelled = false;
+            try
+            {
+                foreach (int r in resArr)
+                {
+                    if (cancelled) break;
+                    foreach (int s in padArr)
+                    {
+                        if (cancelled) break;
+                        foreach (int b in bdrArr)
+                        {
+                            if (cancelled) break;
+                            foreach (int arapIters in arapItersArr)
+                            {
+                                if (cancelled) break;
+                                foreach (float stretchThr in stretchArr)
+                                {
+                                    if (cancelled) break;
+                                    if (EditorUtility.DisplayCancelableProgressBar("Pipeline Sweep",
+                                            $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}, " +
+                                            $"arap={arapIters}, stretch={stretchThr:F2}",
+                                            (float)done / Mathf.Max(1, total)))
+                                    {
+                                        cancelled = true;
+                                        break;
+                                    }
+
+                                    UvtLog.Verbose(UvtLog.Category.Benchmark,
+                                        $"[Sweep] cell {done + 1}/{total}: GC heap " +
+                                        $"{GC.GetTotalMemory(false) / (1024 * 1024)} MB");
+
+                                    ctx.AtlasResolution               = r;
+                                    ctx.ShellPaddingPx                = s;
+                                    ctx.BorderPaddingPx               = b;
+                                    ctx.ReparameterizeStretchedShells = arapIters > 0;
+                                    if (arapIters > 0) ctx.ArapIterations = arapIters;
+                                    ctx.StretchThreshold              = stretchThr;
+
+                                    if (sm.resetBetweenRuns) ResetWorkingCopies();
+
+                                    // Encode stretch threshold as e.g. "1p50" — Sanitize() collapses '.' to '_'
+                                    // and that would break the recovery regex's _stretch(\d+p\d+)_ token.
+                                    int stretchHundredths = Mathf.RoundToInt(stretchThr * 100f);
+                                    string stretchTag = $"{stretchHundredths / 100}p{(stretchHundredths % 100):D2}";
+                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_arap{arapIters}_stretch{stretchTag}";
+                                    string csvBefore = BenchmarkRecorder.LastWrittenCsvPath;
+                                    try
+                                    {
+                                        ExecFullPipeline(label);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        UvtLog.Error(UvtLog.Category.Benchmark,
+                                            $"[Sweep] Cell {done + 1}/{total} threw: {ex.Message}");
+                                    }
+
+                                    // Capture the CSV the recorder just wrote (null if
+                                    // the pipeline aborted before WriteArtefacts ran).
+                                    string csvAfter = BenchmarkRecorder.LastWrittenCsvPath;
+                                    string csvPath = (csvAfter != null && csvAfter != csvBefore)
+                                        ? csvAfter : null;
+
+                                    writtenCsvPaths.Add(csvPath);
+                                    cellConfigs.Add(new BenchmarkSweep.CellConfig
+                                    {
+                                        atlasRes         = r,
+                                        shellPad         = s,
+                                        borderPad        = b,
+                                        arapEnabled      = arapIters > 0,
+                                        arapIterations   = arapIters,
+                                        stretchThreshold = stretchThr,
+                                    });
+                                    done++;
+
+                                    // Incremental aggregate: rewrite summary/winner/html after
+                                    // every successful cell so a mid-sweep Unity crash leaves
+                                    // usable reports. WriteAggregateReport accepts the same
+                                    // pre-created sweepDir each call and overwrites in place.
+                                    if (!string.IsNullOrEmpty(sweepDir))
+                                    {
+                                        try
+                                        {
+                                            BenchmarkSweep.WriteAggregateReport(
+                                                writtenCsvPaths, cellConfigs, sweepDir);
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            UvtLog.Warn(UvtLog.Category.Benchmark,
+                                                $"[Sweep] Incremental aggregate failed: {ex.Message}");
+                                        }
+                                    }
+
+                                    // Release temporary meshes accumulated by the pipeline so
+                                    // the native atlas allocator and the managed GC heap don't
+                                    // balloon across 48+ cells (the original 30-cell crash was
+                                    // most likely OOM or fragmentation in this code path).
+                                    try
+                                    {
+                                        System.GC.Collect();
+                                        UnityEngine.Resources.UnloadUnusedAssets();
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        UvtLog.Verbose(UvtLog.Category.Benchmark,
+                                            $"[Sweep] Between-cell cleanup hiccup: {ex.Message}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                EditorUtility.ClearProgressBar();
+                ctx.AtlasResolution               = origRes;
+                ctx.ShellPaddingPx                = origPad;
+                ctx.BorderPaddingPx               = origBdr;
+                ctx.ReparameterizeStretchedShells = origArapOn;
+                ctx.ArapIterations                = origArapIters;
+                ctx.StretchThreshold              = origStretchThr;
+                ctx.RepackResolutionMode          = origResMode;
+                UvtLog.Info(UvtLog.Category.Benchmark,
+                    $"Sweep complete: {done}/{total} cells{(cancelled ? " (cancelled)" : "")}");
+
+                // Aggregate per-cell CSVs into a sweep_<timestamp>/summary.csv +
+                // winner.json. The incremental writer in the foreach above
+                // already keeps these in sync after every successful cell —
+                // this final call refreshes the same sweepDir to cover the
+                // edge case where the last cell threw before the incremental
+                // write executed. Safe to call even if individual cells
+                // produced no CSV (they are recorded as failed entries).
+                if (writtenCsvPaths.Count >= 1)
+                {
+                    try
+                    {
+                        BenchmarkSweep.WriteAggregateReport(writtenCsvPaths, cellConfigs, sweepDir);
+                    }
+                    catch (Exception ex)
+                    {
+                        UvtLog.Error(UvtLog.Category.Benchmark,
+                            $"[Sweep] Aggregate report failed: {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Prompts the user for a BenchmarkReports/ folder and asks
+        /// <see cref="BenchmarkSweep.RebuildFromExistingCsvs"/> to reconstruct
+        /// summary.csv / winner.json / index.html from whatever per-cell CSVs
+        /// are still on disk after a mid-sweep Unity crash. Surfaces the result
+        /// (or a "no CSVs found" message) via <see cref="EditorUtility.DisplayDialog"/>.
+        /// </summary>
+        void ExecRebuildSweepReport()
+        {
+            string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
+                                 ?? Application.dataPath;
+            string defaultDir = System.IO.Path.Combine(projectRoot, "BenchmarkReports");
+            if (!System.IO.Directory.Exists(defaultDir)) defaultDir = projectRoot;
+
+            string picked = EditorUtility.OpenFolderPanel(
+                "Pick BenchmarkReports/ folder to rebuild", defaultDir, "");
+            if (string.IsNullOrEmpty(picked)) return;
+
+            string outDir;
+            try
+            {
+                outDir = BenchmarkSweep.RebuildFromExistingCsvs(picked);
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Error(UvtLog.Category.Benchmark,
+                    $"[Sweep] Rebuild threw: {ex.Message}");
+                EditorUtility.DisplayDialog("Rebuild Sweep Report",
+                    $"Rebuild failed: {ex.Message}", "OK");
+                return;
+            }
+
+            if (string.IsNullOrEmpty(outDir))
+            {
+                EditorUtility.DisplayDialog("Rebuild Sweep Report",
+                    "No matching CSVs were found in:\n" + picked +
+                    "\n\nLook for files named *_sweep_resR_padS_bdrB_arapA_stretchT_*.csv.",
+                    "OK");
+                return;
+            }
+
+            EditorUtility.DisplayDialog("Rebuild Sweep Report",
+                "Recovery report written to:\n" + outDir +
+                "\n\nOpen index.html in a browser for the per-run gallery.",
+                "OK");
+        }
+
+        /// <summary>
+        /// Run the auto-tune full pipeline. Returns <c>true</c> when the
+        /// pipeline ran end-to-end and the in-memory per-mesh state reflects
+        /// the just-completed run; returns <c>false</c> when the user
+        /// cancelled mid-flight so the caller can skip artefact recording
+        /// (stale state from a prior run would otherwise be written).
+        /// </summary>
+        bool ExecFullPipelineCore()
+        {
             string version = UnityEditor.PackageManager.PackageInfo
                 .FindForAssembly(typeof(LightmapTransferTool).Assembly)?.version ?? "0.0.0";
             UvtLog.Info($"[Pipeline] Starting full pipeline... (v{version})");
@@ -701,8 +1281,11 @@ namespace SashaRX.UnityMeshLab
                         ctx.HasTransfer = false;
                     }
 
-                    // 3. SymSplit
-                    ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh);
+                    // 3. SymSplit (skipped via diagnostic toggle to isolate xatlas packing)
+                    if (!skipSymmetrySplitStep)
+                        ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh);
+                    else
+                        UvtLog.Info(UvtLog.Category.SymSplit, "[Pipeline] SymSplit step SKIPPED by user toggle");
 
                     // 4. Repack
                     var src = ctx.ForLod(ctx.SourceLodIndex);
@@ -791,7 +1374,7 @@ namespace SashaRX.UnityMeshLab
             if (cancelled)
             {
                 requestRepaint?.Invoke();
-                return;
+                return false;
             }
             if (separationConfigs.Length > 1 && bestConfigIdx > 0)
                 UvtLog.Info($"[Pipeline] Auto-tune: selected config #{bestConfigIdx} " +
@@ -799,12 +1382,51 @@ namespace SashaRX.UnityMeshLab
 
             UvtLog.Info("[Pipeline] Complete.");
             requestRepaint?.Invoke();
+            return true;
         }
 
         void ExecRepack(List<MeshEntry> entries)
         {
             if (entries.Count == 0) return;
-            UvtLog.Info($"[Repack] {entries.Count} meshes, res={ctx.AtlasResolution}, pad={ctx.ShellPaddingPx}, bdr={ctx.BorderPaddingPx}");
+            using var _bench = BenchmarkRecorder.NewRun(ctx, "Repack",
+                splitTargetsInSymmetryStep, symSplitThresholdMode);
+            // Mirror the ownership guard ExecTransferAll uses: only the
+            // outermost benchmark session writes per-mesh rows. A nested
+            // ExecRepack inside ExecFullPipeline / sweep would otherwise
+            // double-record (the outer run already records all meshes at
+            // its own end), inflating CSV/JSON aggregates and breaking
+            // sweep comparisons.
+            bool ownsSession = _bench is BenchmarkRecorder;
+            BenchmarkRecorder.Current?.StageBegin("repack");
+            try { ExecRepackCore(entries); }
+            finally
+            {
+                BenchmarkRecorder.Current?.StageEnd("repack");
+                if (ownsSession && BenchmarkRecorder.Current != null)
+                    foreach (var e in entries)
+                        BenchmarkRecorder.Current.RecordMesh(e);
+            }
+        }
+
+        void ExecRepackCore(List<MeshEntry> entries)
+        {
+            uint resolvedResolution = (uint)ctx.AtlasResolution;
+            if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
+            {
+                double area = MeshAreaHelper.ComputeTotal3DAreaMeters(
+                    entries.Where(e => e.originalMesh != null).Select(e => e.originalMesh));
+                resolvedResolution = MeshAreaHelper.ComputeAutoResolution(
+                    area, ctx.LightmapDensity, ctx.TargetUvCoverage);
+                UvtLog.Info(
+                    $"[Repack] Auto-resolution: area={area:F2} m², density={ctx.LightmapDensity:F2} tex/m, " +
+                    $"coverage={ctx.TargetUvCoverage:F2} → {resolvedResolution} px");
+            }
+            // Stamp the recorder with the resolution xatlas will actually use,
+            // not the raw UI value — relevant for AutoFromTexelDensity mode
+            // where the resolved value can differ by an octave from the user
+            // setting.
+            BenchmarkRecorder.Current?.SetResolvedAtlasResolution((int)resolvedResolution);
+            UvtLog.Info($"[Repack] {entries.Count} meshes, res={resolvedResolution}, pad={ctx.ShellPaddingPx}, bdr={ctx.BorderPaddingPx}");
             var validEntries = new List<MeshEntry>();
             var meshCopies = new List<Mesh>();
             foreach (var e in entries)
@@ -820,9 +1442,25 @@ namespace SashaRX.UnityMeshLab
             if (meshCopies.Count == 0) return;
 
             var opts = RepackOptions.Default;
-            opts.resolution = (uint)ctx.AtlasResolution;
+            opts.resolution = resolvedResolution;
             opts.padding = (uint)ctx.ShellPaddingPx;
             opts.borderPadding = (uint)ctx.BorderPaddingPx;
+            opts.bruteForce = ctx.XatlasBruteForce;
+            opts.rotateCharts = ctx.XatlasRotateCharts;
+            opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
+            opts.normalizeTexelDensity = ctx.NormalizeTexelDensity;
+            opts.reparameterizeStretchedShells = ctx.ReparameterizeStretchedShells;
+            opts.stretchThreshold = ctx.StretchThreshold;
+            opts.arapIterations = ctx.ArapIterations;
+            opts.clampLightmapToUnit = ctx.ClampLightmapToUnit;
+            opts.targetUvCoverage = ctx.TargetUvCoverage;
+            opts.postPackDensityCorrection = ctx.PostPackDensityCorrection;
+            opts.internalOversample = ctx.InternalOversample > 0 ? ctx.InternalOversample : 1;
+            opts.maxChartSize = ctx.XatlasMaxChartSize;
+            opts.bilinear = ctx.XatlasBilinear;
+            opts.blockAlign = ctx.XatlasBlockAlign;
+            opts.blockSize = ctx.XatlasBlockSize;
+            opts.texelsPerUnit = ctx.XatlasTexelsPerUnit;
 
             var results = XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);
             for (int i = 0; i < validEntries.Count; i++)
@@ -856,15 +1494,32 @@ namespace SashaRX.UnityMeshLab
 
         void ExecTransferAll()
         {
-            accumulatedOverlapHints.Clear();
-            accumulatedMatchHints.Clear();
-            for (int li = 0; li < ctx.LodCount; li++)
+            using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
+                splitTargetsInSymmetryStep, symSplitThresholdMode);
+            bool ownsSession = _bench is BenchmarkRecorder;
+            BenchmarkRecorder.Current?.StageBegin("transfer");
+            try
             {
-                if (li == ctx.SourceLodIndex) continue;
-                ExecTransferLod(li);
+                accumulatedOverlapHints.Clear();
+                accumulatedMatchHints.Clear();
+                for (int li = 0; li < ctx.LodCount; li++)
+                {
+                    if (li == ctx.SourceLodIndex) continue;
+                    ExecTransferLod(li);
+                }
+                ctx.HasTransfer = true;
+                requestRepaint?.Invoke();
             }
-            ctx.HasTransfer = true;
-            requestRepaint?.Invoke();
+            finally
+            {
+                BenchmarkRecorder.Current?.StageEnd("transfer");
+                if (ownsSession && BenchmarkRecorder.Current != null)
+                    foreach (var e in ctx.MeshEntries)
+                    {
+                        if (!e.include) continue;
+                        BenchmarkRecorder.Current.RecordMesh(e);
+                    }
+            }
         }
 
         void ExecTransferLod(int tLod)
@@ -919,12 +1574,21 @@ namespace SashaRX.UnityMeshLab
                 // Build output mesh with UV2 applied
                 var om = UnityEngine.Object.Instantiate(tgtMesh);
                 om.name = tgtMesh.name + "_uvTransfer";
+                if (ctx.ClampLightmapToUnit)
+                {
+                    int clamped = XatlasRepack.ClampUvsToUnit(tr.uv2);
+                    if (clamped > 0)
+                        UvtLog.Verbose(UvtLog.Category.Match,
+                            $"Clamped {clamped} UV2 vert(s) into [0,1] on '{tgt.renderer.name}'");
+                }
                 om.SetUVs(1, new List<Vector2>(tr.uv2));
                 tgt.transferredMesh = om;
                 tgt.shellTransferResult = tr;
 
                 // Validation
+                BenchmarkRecorder.Current?.StageBegin("validate");
                 tgt.validationReport = TransferValidator.Validate(tgtMesh, tr.uv2, tr);
+                BenchmarkRecorder.Current?.StageEnd("validate");
 
                 float pct = tr.verticesTotal > 0 ? tr.verticesTransferred * 100f / tr.verticesTotal : 0;
                 UvtLog.Info($"[Transfer] '{tgt.renderer.name}' LOD{tLod}: {tr.shellsMatched} shells, {pct:F0}% coverage");
@@ -3585,6 +4249,16 @@ namespace SashaRX.UnityMeshLab
 
         static void H(string t) { EditorGUILayout.Space(2); EditorGUILayout.LabelField(t, EditorStyles.boldLabel); }
         static void Warn(string t) { EditorGUILayout.HelpBox(t, MessageType.Warning); }
+
+        static bool ToggleIssueBit(ref TransferValidator.TriIssue mask, TransferValidator.TriIssue bit, string label)
+        {
+            bool on = (mask & bit) != 0;
+            bool newOn = EditorGUILayout.ToggleLeft(label, on);
+            if (newOn == on) return false;
+            if (newOn) mask |= bit;
+            else       mask &= ~bit;
+            return true;
+        }
 
         void ColorBtn(Color col, string l, int h, Action a)
         {
