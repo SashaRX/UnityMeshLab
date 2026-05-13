@@ -3,14 +3,46 @@
 // a fixed set of LODGroups + expected metric ranges. See TRANSFER_BENCHMARK.md.
 
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
-    [CreateAssetMenu(menuName = "Lightmap UV Tool/Test Suite", fileName = "UvTransferTestSuite")]
+    // No [CreateAssetMenu] here — the asset is a developer/benchmarking
+    // artefact and shouldn't pollute the Assets ▸ Create menu for production
+    // users. The custom MenuItem below gates the entry behind
+    // MeshLabProjectSettings.showDebugUI so it only appears when the user
+    // has explicitly opted into the debug UI.
     public class TestSuiteAsset : ScriptableObject
     {
+        const string CreateMenuPath = "Assets/Create/Mesh Lab/Sweep Test Suite";
+
+        [MenuItem(CreateMenuPath, true)]
+        static bool CreateAsset_Validate() => MeshLabProjectSettings.Instance.showDebugUI;
+
+        [MenuItem(CreateMenuPath, priority = 600)]
+        static void CreateAsset()
+        {
+            var asset = CreateInstance<TestSuiteAsset>();
+            // Resolve target folder: selected Project-window folder, or the
+            // selected asset's parent folder, or Assets/.
+            string folder = "Assets";
+            var sel = Selection.activeObject;
+            if (sel != null)
+            {
+                string p = AssetDatabase.GetAssetPath(sel);
+                if (!string.IsNullOrEmpty(p))
+                    folder = AssetDatabase.IsValidFolder(p) ? p : Path.GetDirectoryName(p);
+            }
+            string path = AssetDatabase.GenerateUniqueAssetPath(folder + "/UvTransferTestSuite.asset");
+            AssetDatabase.CreateAsset(asset, path);
+            AssetDatabase.SaveAssets();
+            EditorUtility.FocusProjectWindow();
+            Selection.activeObject = asset;
+        }
+
+
         [System.Serializable]
         public class ExpectedRange
         {
