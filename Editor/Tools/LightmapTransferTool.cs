@@ -80,6 +80,69 @@ namespace SashaRX.UnityMeshLab
         enum StageStatus { Idle, Running, Success, Failed, Skipped }
         const int kStageCount = 6; // 1..5 are used; index 0 unused for clarity
         readonly StageStatus[] stageOutcome = new StageStatus[kStageCount];
+
+        // In-flight gate for fire-and-forget async pipeline operations.
+        // The "Run Full Pipeline", "Run Repack only", "Run Transfer only",
+        // "Repack All" (Repack tab), and "Transfer All Targets" (Transfer
+        // tab) buttons all schedule async work that yields during native
+        // pack / shell transfer. Without a gate, a second click while the
+        // first run is in flight launches an interleaving second run that
+        // mutates shared state (stageOutcome, MeshEntries, caches,
+        // ctx.HasRepack/HasTransfer) and corrupts results. The buttons
+        // wrap themselves in EditorGUI.DisabledScope on this flag AND the
+        // FireAndForget helper short-circuits if it's already set, so even
+        // a stale event reaching the click path can't double-trigger.
+        bool _pipelineInFlight;
+
+        /// <summary>
+        /// Schedule a fire-and-forget async pipeline action with: (a) an
+        /// in-flight gate that suppresses double-clicks, (b) Task fault
+        /// observation that logs unhandled exceptions through UvtLog so the
+        /// editor never silently aborts mid-pipeline, and (c) automatic UI
+        /// state reset (UvProgress.Fail + Repaint) on failure.
+        /// </summary>
+        void FireAndForget(System.Func<Task> action, string label)
+        {
+            if (_pipelineInFlight)
+            {
+                UvtLog.Warn($"[Pipeline] '{label}' ignored — another pipeline operation is already running.");
+                return;
+            }
+            _pipelineInFlight = true;
+            try
+            {
+                var task = action();
+                // Continuation runs on the editor main thread courtesy of
+                // UnitySynchronizationContext, so it's safe to touch the
+                // flag, UvProgress, and Repaint directly. The fall-back to
+                // ExecuteSynchronously covers the case where the Task is
+                // already complete at attachment time (sync path through
+                // useAsync=false would land here).
+                task.ContinueWith(t =>
+                {
+                    _pipelineInFlight = false;
+                    if (t.IsFaulted)
+                    {
+                        var ex = t.Exception?.GetBaseException();
+                        UvtLog.Error($"[Pipeline] '{label}' failed: {ex?.Message}");
+                        if (ex != null) UvtLog.Error(ex.StackTrace);
+                        // If the inner code didn't already close its
+                        // UvProgress scope, fail it so the strip stops
+                        // showing a stale "running…" state.
+                        if (UvProgress.IsActive) UvProgress.Fail(ex?.Message ?? "error");
+                    }
+                    requestRepaint?.Invoke();
+                }, TaskScheduler.FromCurrentSynchronizationContext());
+            }
+            catch (System.Exception ex)
+            {
+                // Synchronous throw before the Task even starts.
+                _pipelineInFlight = false;
+                UvtLog.Error($"[Pipeline] '{label}' failed to start: {ex.Message}");
+                if (UvProgress.IsActive) UvProgress.Fail(ex.Message);
+                requestRepaint?.Invoke();
+            }
+        }
         Vector2 reportScroll;
         TestSuiteAsset sweepSuite;
 
@@ -650,35 +713,43 @@ namespace SashaRX.UnityMeshLab
                     : "No target LODs included — Transfer will skip even when enabled.",
                 ref stageRunTransfer, hasSettings: false, drawSettings: null, dimmed: !hasTargets);
 
-            // Primary action.
+            // Primary action — wrapped in EditorGUI.DisabledScope on the
+            // in-flight gate so the button visibly greys out while a run is
+            // active. FireAndForget catches Task faults so an exception
+            // mid-pipeline can't leave the strip stuck on a stale phase.
             EditorGUILayout.Space(6);
-            ColorBtn(new Color(.2f, .75f, .95f), "▶ Run Full Pipeline", 30,
-                () => _ = ExecFullPipelineAsync());
-
-            // Step shortcuts for iterative work — bypasses the full pipeline
-            // and runs only the named stage so the user can poke at Repack
-            // (resolution / padding tweaks) or Transfer (LOD inclusion
-            // tweaks) in a tight loop without re-running Analyze / Weld /
-            // SymSplit every time.
-            using (new EditorGUILayout.HorizontalScope())
+            using (new EditorGUI.DisabledScope(_pipelineInFlight))
             {
-                using (new EditorGUI.DisabledScope(ctx.LodGroup == null))
+                ColorBtn(new Color(.2f, .75f, .95f), "▶ Run Full Pipeline", 30,
+                    () => FireAndForget(ExecFullPipelineAsync, "Run Full Pipeline"));
+
+                // Step shortcuts for iterative work — bypasses the full
+                // pipeline and runs only the named stage so the user can poke
+                // at Repack (resolution / padding tweaks) or Transfer (LOD
+                // inclusion tweaks) in a tight loop without re-running
+                // Analyze / Weld / SymSplit every time.
+                using (new EditorGUILayout.HorizontalScope())
                 {
-                    if (GUILayout.Button(new GUIContent("Run Repack only",
-                            "Skip Analyze / Weld / SymSplit and run only Repack on the source LOD."),
-                            GUILayout.Height(22)))
+                    using (new EditorGUI.DisabledScope(ctx.LodGroup == null))
                     {
-                        var src = ctx.ForLod(ctx.SourceLodIndex);
-                        _ = ctx.RepackPerMesh ? ExecRepackPerMeshAsync(src) : ExecRepackAsync(src);
+                        if (GUILayout.Button(new GUIContent("Run Repack only",
+                                "Skip Analyze / Weld / SymSplit and run only Repack on the source LOD."),
+                                GUILayout.Height(22)))
+                        {
+                            var src = ctx.ForLod(ctx.SourceLodIndex);
+                            FireAndForget(
+                                () => ctx.RepackPerMesh ? ExecRepackPerMeshAsync(src) : ExecRepackAsync(src),
+                                "Run Repack only");
+                        }
                     }
-                }
-                using (new EditorGUI.DisabledScope(!ctx.HasRepack || !hasTargets))
-                {
-                    if (GUILayout.Button(new GUIContent("Run Transfer only",
-                            "Re-run Transfer against the existing source UV2 (requires a prior Repack)."),
-                            GUILayout.Height(22)))
+                    using (new EditorGUI.DisabledScope(!ctx.HasRepack || !hasTargets))
                     {
-                        _ = ExecTransferAllAsync();
+                        if (GUILayout.Button(new GUIContent("Run Transfer only",
+                                "Re-run Transfer against the existing source UV2 (requires a prior Repack)."),
+                                GUILayout.Height(22)))
+                        {
+                            FireAndForget(ExecTransferAllAsync, "Run Transfer only");
+                        }
                     }
                 }
             }
@@ -844,10 +915,15 @@ namespace SashaRX.UnityMeshLab
                 new GUIContent("Per-mesh repack",
                     "Pack each mesh group into its own [0,1] atlas instead of sharing one."),
                 ctx.RepackPerMesh);
-            ColorBtn(new Color(.3f,.8f,.4f), "Repack All", 26, () =>
+            using (new EditorGUI.DisabledScope(_pipelineInFlight))
             {
-                _ = ctx.RepackPerMesh ? ExecRepackPerMeshAsync(src) : ExecRepackAsync(src);
-            });
+                ColorBtn(new Color(.3f,.8f,.4f), "Repack All", 26, () =>
+                {
+                    FireAndForget(
+                        () => ctx.RepackPerMesh ? ExecRepackPerMeshAsync(src) : ExecRepackAsync(src),
+                        "Repack All");
+                });
+            }
             if (ctx.HasRepack)
                 EditorGUILayout.HelpBox("Repack done. Preview UV1, then Transfer.", MessageType.Info);
         }
@@ -1118,7 +1194,11 @@ namespace SashaRX.UnityMeshLab
             }
 
             EditorGUILayout.Space(6);
-            ColorBtn(new Color(.3f,.6f,1f), "Transfer All Targets", 26, () => _ = ExecTransferAllAsync());
+            using (new EditorGUI.DisabledScope(_pipelineInFlight))
+            {
+                ColorBtn(new Color(.3f,.6f,1f), "Transfer All Targets", 26,
+                    () => FireAndForget(ExecTransferAllAsync, "Transfer All Targets"));
+            }
 
             if (ctx.HasTransfer)
             {
@@ -2037,6 +2117,13 @@ namespace SashaRX.UnityMeshLab
                 UvProgress.Begin($"UV2 Transfer ({targetLodCount} target LOD{(targetLodCount == 1 ? "" : "s")})",
                                  cancelable: true);
             BenchmarkRecorder.Current?.StageBegin("transfer");
+            // Mirrors the completedSuccessfully guard in ExecFullPipelineImpl:
+            // when the transfer loop is cancelled or aborts early, LODs we
+            // didn't actually process keep their stale shellTransferResult /
+            // validation data from a prior run. RecordMesh on those entries
+            // would emit benchmark rows that misrepresent this run. Set the
+            // flag only after the loop reaches its natural end.
+            bool completedSuccessfully = false;
             try
             {
                 if (!HasIncludedTransferTargets(ctx.MeshEntries, ctx.SourceLodIndex))
@@ -2065,12 +2152,15 @@ namespace SashaRX.UnityMeshLab
                     processed++;
                 }
                 ctx.HasTransfer = !UvProgress.CancelRequested;
+                completedSuccessfully = !UvProgress.CancelRequested;
                 requestRepaint?.Invoke();
             }
             finally
             {
                 BenchmarkRecorder.Current?.StageEnd("transfer");
-                if (ownsSession && BenchmarkRecorder.Current != null)
+                // Skip RecordMesh entirely on user-cancel / early abort so
+                // we don't taint sweep aggregates with prior-run state.
+                if (completedSuccessfully && ownsSession && BenchmarkRecorder.Current != null)
                     foreach (var e in ctx.MeshEntries)
                     {
                         if (!e.include) continue;

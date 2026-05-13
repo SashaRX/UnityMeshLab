@@ -73,8 +73,22 @@ namespace SashaRX.UnityMeshLab
         /// True if the user clicked Cancel in the Background Tasks panel or
         /// in the inline status strip. Long loops should poll this between
         /// safe abort points.
+        ///
+        /// Backed by a separate <see cref="System.Threading.Volatile"/>-read
+        /// flag (not <c>_snapshot.cancelRequested</c> directly) because the
+        /// snapshot is mutated from the main thread but read from
+        /// <c>Task.Run</c> background threads inside
+        /// <see cref="GroupedShellTransfer.TransferCore"/>. Without the
+        /// barrier, the JIT can hoist the snapshot read out of the loop and
+        /// background phases never observe a user-cancel.
         /// </summary>
-        public static bool CancelRequested => _snapshot.cancelRequested;
+        public static bool CancelRequested =>
+            System.Threading.Volatile.Read(ref _cancelFlag) != 0;
+
+        // 0 = no cancel, 1 = cancel requested. Mirror of
+        // _snapshot.cancelRequested but written / read with explicit memory
+        // barriers so cross-thread cancel polling is reliable.
+        static int _cancelFlag;
 
         /// <summary>
         /// Start a new operation. Returns a progress id (or -1 if the API is
@@ -93,6 +107,7 @@ namespace SashaRX.UnityMeshLab
                     int capturedId = id;
                     Progress.RegisterCancelCallback(capturedId, () =>
                     {
+                        System.Threading.Volatile.Write(ref _cancelFlag, 1);
                         _snapshot.cancelRequested = true;
                         Notify(force: true);
                         return true;
@@ -110,6 +125,9 @@ namespace SashaRX.UnityMeshLab
                 // Clear the idle "last operation" line — a fresh run replaces
                 // the previous outcome.
                 Last = default;
+                // Reset cross-thread cancel flag first so background phases
+                // racing the strict-after-Begin path don't see a stale '1'.
+                System.Threading.Volatile.Write(ref _cancelFlag, 0);
                 _snapshot = new Snapshot
                 {
                     active          = true,
@@ -186,6 +204,7 @@ namespace SashaRX.UnityMeshLab
         public static void RequestCancel()
         {
             if (!_snapshot.active) return;
+            System.Threading.Volatile.Write(ref _cancelFlag, 1);
             _snapshot.cancelRequested = true;
             Notify(force: true);
         }
