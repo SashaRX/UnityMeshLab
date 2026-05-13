@@ -1261,36 +1261,23 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 EditorGUILayout.Space(6);
+                // Post-transfer actions — what you do immediately after a
+                // successful UV2 transfer (apply to FBX / reset).
+                //
+                // FBX export ("Overwrite FBX" / "Export New FBX" /
+                // "Backup from main") and "Save Mesh Assets" live in the
+                // sidebar footer for any tab; duplicating them here was
+                // confusing redundancy.
+                //
+                // "Generate LODs" was rendered here too, but LOD generation
+                // is the job of the dedicated LOD Gen tab — keeping it on
+                // Transfer made the tab feel scope-creepy.
                 H("Apply UV2");
                 ColorBtn(new Color(.3f,.85f,.4f), "Apply UV2 to FBX", 26, ApplyUv2ToFbx);
                 EditorGUILayout.Space(2);
                 ColorBtn(new Color(.9f,.3f,.3f), "Reset UV2 (delete sidecar)", 20, ResetUv2FromFbx);
                 EditorGUILayout.Space(2);
                 ColorBtn(new Color(.5f,.15f,.15f), "Reset Pipeline State", 20, ResetPipelineState);
-                EditorGUILayout.Space(2);
-                ColorBtn(new Color(.6f,.5f,.8f), "Save FBX from main (_main)", 20, RestoreFbxFromGitMain);
-
-                EditorGUILayout.Space(4);
-                H("FBX Export");
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-                ColorBtn(new Color(.4f,.7f,.95f), "Export as New FBX", 24, () => ExportFbx(false));
-                EditorGUILayout.Space(2);
-                ColorBtn(new Color(.95f,.6f,.2f), "Overwrite Source FBX", 24, () => ExportFbx(true));
-#else
-                EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.Info);
-#endif
-
-                EditorGUILayout.Space(4);
-                H("Generate LODs");
-                generateLodCount = EditorGUILayout.IntSlider("LOD Count", generateLodCount, 1, 4);
-                for (int i = 0; i < generateLodCount && i < generateLodRatios.Length; i++)
-                    generateLodRatios[i] = EditorGUILayout.Slider("  LOD" + (i+1) + " ratio", generateLodRatios[i], 0.01f, 0.99f);
-                generateTargetError = EditorGUILayout.Slider("Target Error", generateTargetError, 0.001f, 0.5f);
-                generateUv2Weight = EditorGUILayout.Slider("UV2 Weight", generateUv2Weight, 0f, 500f);
-                generateNormalWeight = EditorGUILayout.Slider("Normal Weight", generateNormalWeight, 0f, 10f);
-                generateLockBorder = EditorGUILayout.Toggle("Lock Border", generateLockBorder);
-                generateAddToLodGroup = EditorGUILayout.Toggle("Add to LODGroup", generateAddToLodGroup);
-                ColorBtn(new Color(.7f,.4f,.95f), "Generate LODs", 26, GenerateLods);
             }
         }
 
