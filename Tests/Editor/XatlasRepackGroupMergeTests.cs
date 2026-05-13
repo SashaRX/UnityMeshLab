@@ -143,5 +143,40 @@ namespace SashaRX.UnityMeshLab.Tests
                 Object.DestroyImmediate(mesh);
             }
         }
+
+        [Test]
+        public void PackPreflight_DisablesBruteForce_WhenInternalOversampleIsAboveOne()
+        {
+            var method = typeof(XatlasRepack).GetMethod(
+                "ResolvePackBruteForce",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "XatlasRepack should expose pack preflight as a testable helper");
+
+            object[] args = { 1, 4, 149, (uint)1024, null };
+            int resolved = (int)method.Invoke(null, args);
+
+            Assert.AreEqual(0, resolved,
+                "Oversampled packs should use the xatlas heuristic packer even when the UI brute-force toggle is enabled.");
+            StringAssert.Contains("oversample", (string)args[4]);
+        }
+    }
+
+    public class GroupedShellTransferTests
+    {
+        [Test]
+        public void Uv2PixelMargin_ScalesFromResolvedAtlasSize()
+        {
+            var method = typeof(GroupedShellTransfer).GetMethod(
+                "ComputeUv2PixelMargin",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "GroupedShellTransfer should scale UV2 pixel margins from the resolved atlas size");
+
+            object[] args = { 1389, 1360, 1.25f, 0.005f };
+            float margin = (float)method.Invoke(null, args);
+
+            Assert.AreEqual(1.25f / 1360f, margin, 1e-6f);
+            Assert.Less(margin, 0.005f,
+                "A margin tuned for a 256px atlas must shrink when the resolved atlas grows past 1k.");
+        }
     }
 }

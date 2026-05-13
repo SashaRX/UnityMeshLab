@@ -45,7 +45,7 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             // Two quads in entirely separate UV regions
             var q1 = BuildQuad(0.0f, 0.0f, 0.3f, 0.3f, 0);
-            var q2 = BuildQuad(0.6f, 0.6f, 0.9f, 0.9f, q1._);
+            var q2 = BuildQuad(0.6f, 0.6f, 0.9f, 0.9f, q1.vertOffset);
             var (uv, tris) = Combine(q1, q2);
 
             var shells = UvShellExtractor.Extract(uv, tris);
@@ -60,9 +60,9 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             // 4 quads stacked in the same UV region — the canonical tile pattern
             var q1 = BuildQuad(0.1f, 0.1f, 0.4f, 0.4f, 0);
-            var q2 = BuildQuad(0.1f, 0.1f, 0.4f, 0.4f, q1._);
-            var q3 = BuildQuad(0.1f, 0.1f, 0.4f, 0.4f, q2._);
-            var q4 = BuildQuad(0.1f, 0.1f, 0.4f, 0.4f, q3._);
+            var q2 = BuildQuad(0.1f, 0.1f, 0.4f, 0.4f, q1.vertOffset);
+            var q3 = BuildQuad(0.1f, 0.1f, 0.4f, 0.4f, q2.vertOffset);
+            var q4 = BuildQuad(0.1f, 0.1f, 0.4f, 0.4f, q3.vertOffset);
             var (uv, tris) = Combine(q1, q2, q3, q4);
 
             var shells = UvShellExtractor.Extract(uv, tris);
@@ -78,9 +78,9 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             // 3 stacked tiles + 1 isolated patch
             var t1 = BuildQuad(0.1f, 0.1f, 0.4f, 0.4f, 0);
-            var t2 = BuildQuad(0.1f, 0.1f, 0.4f, 0.4f, t1._);
-            var t3 = BuildQuad(0.1f, 0.1f, 0.4f, 0.4f, t2._);
-            var iso = BuildQuad(0.7f, 0.7f, 0.95f, 0.95f, t3._);
+            var t2 = BuildQuad(0.1f, 0.1f, 0.4f, 0.4f, t1.vertOffset);
+            var t3 = BuildQuad(0.1f, 0.1f, 0.4f, 0.4f, t2.vertOffset);
+            var iso = BuildQuad(0.7f, 0.7f, 0.95f, 0.95f, t3.vertOffset);
             var (uv, tris) = Combine(t1, t2, t3, iso);
 
             var shells = UvShellExtractor.Extract(uv, tris);
@@ -102,7 +102,7 @@ namespace SashaRX.UnityMeshLab.Tests
             {
                 var q = BuildQuad(0.2f, 0.2f, 0.5f, 0.5f, baseV);
                 quads.Add(q);
-                baseV = q._;
+                baseV = q.vertOffset;
             }
             var (uv, tris) = Combine(quads.ToArray());
             var shells = UvShellExtractor.Extract(uv, tris);
@@ -115,7 +115,7 @@ namespace SashaRX.UnityMeshLab.Tests
         public void BuildPerFaceShellIds_AssignsConsistentIdsPerShell()
         {
             var q1 = BuildQuad(0.0f, 0.0f, 0.3f, 0.3f, 0);
-            var q2 = BuildQuad(0.5f, 0.5f, 0.8f, 0.8f, q1._);
+            var q2 = BuildQuad(0.5f, 0.5f, 0.8f, 0.8f, q1.vertOffset);
             var (uv, tris) = Combine(q1, q2);
 
             List<UvShell> shells;

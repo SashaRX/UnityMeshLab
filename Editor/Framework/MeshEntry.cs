@@ -45,6 +45,12 @@ namespace SashaRX.UnityMeshLab
         /// Destroyed on pipeline reset or window close.
         /// </summary>
         public Mesh repackedMesh;
+        /// <summary>
+        /// Resolved xatlas dimensions used to produce <see cref="repackedMesh"/>.
+        /// Zero when UV2 came from an existing asset rather than this repack run.
+        /// </summary>
+        public uint repackedAtlasWidth;
+        public uint repackedAtlasHeight;
 
         /// <summary>
         /// UV2-transferred mesh for target LODs. Null until the Transfer step runs.

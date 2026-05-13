@@ -583,7 +583,7 @@ namespace SashaRX.UnityMeshLab
                             + "Oversampling makes ceil rounding fractional. UV2 still "
                             + "normalized to [0,1]; Unity bakes at its own resolution.\n\n"
                             + "Default 4× brings density spread from ~14× down to ~2×.\n"
-                            + "8-16× brings spread to ~1.1× but DISABLES brute force pack "
+                            + "2× and above disable brute force pack "
                             + "automatically (search space becomes minutes-per-atlas).\n"
                             + "1× = off, original xatlas behaviour."),
                         osIdx, osLabels);
@@ -593,7 +593,7 @@ namespace SashaRX.UnityMeshLab
                 EditorGUILayout.LabelField("xatlas options", EditorStyles.miniBoldLabel);
                 ctx.XatlasBruteForce = EditorGUILayout.ToggleLeft(
                     new GUIContent("Brute force pack",
-                        "Run xatlas's exhaustive packer (slower, tighter atlas). Off by default."),
+                        "Run xatlas's exhaustive packer (slower, tighter atlas). Automatically bypassed when internal oversample is above 1×."),
                     ctx.XatlasBruteForce);
                 ctx.XatlasRotateCharts = EditorGUILayout.ToggleLeft(
                     new GUIContent("Rotate charts",
@@ -1271,6 +1271,8 @@ namespace SashaRX.UnityMeshLab
                             kv.Key.originalMesh.name = kv.Value.name;
                             kv.Key.wasSymmetrySplit = false;
                             kv.Key.repackedMesh = null;
+                            kv.Key.repackedAtlasWidth = 0;
+                            kv.Key.repackedAtlasHeight = 0;
                             kv.Key.transferredMesh = null;
                             kv.Key.shellTransferResult = null;
                         }
@@ -1469,9 +1471,13 @@ namespace SashaRX.UnityMeshLab
                 {
                     UvtLog.Error("[Repack] " + validEntries[i].renderer.name + ": " + results[i].error);
                     UnityEngine.Object.DestroyImmediate(meshCopies[i]);
+                    validEntries[i].repackedAtlasWidth = 0;
+                    validEntries[i].repackedAtlasHeight = 0;
                     continue;
                 }
                 validEntries[i].repackedMesh = meshCopies[i];
+                validEntries[i].repackedAtlasWidth = results[i].atlasWidth;
+                validEntries[i].repackedAtlasHeight = results[i].atlasHeight;
             }
 
             ctx.HasRepack = true;
@@ -1558,7 +1564,9 @@ namespace SashaRX.UnityMeshLab
 
                 var tr = GroupedShellTransfer.Transfer(tgtMesh, srcMesh,
                     accumulatedOverlapHints.Count > 0 ? accumulatedOverlapHints : null,
-                    accumulatedMatchHints.Count > 0 ? accumulatedMatchHints : null);
+                    accumulatedMatchHints.Count > 0 ? accumulatedMatchHints : null,
+                    srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
+                    srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0);
                 if (tr.uv2 == null) { UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); continue; }
 
                 // Accumulate overlap hints for subsequent LODs
@@ -3620,6 +3628,8 @@ namespace SashaRX.UnityMeshLab
                     e.meshFilter.sharedMesh = e.fbxMesh;
                 if (e.transferredMesh != null) { UnityEngine.Object.DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
                 if (e.repackedMesh != null) { UnityEngine.Object.DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
+                e.repackedAtlasWidth = 0;
+                e.repackedAtlasHeight = 0;
                 if (e.originalMesh != null && e.originalMesh != e.fbxMesh) UnityEngine.Object.DestroyImmediate(e.originalMesh);
                 if (e.fbxMesh != null) e.originalMesh = e.fbxMesh;
                 e.shellTransferResult = null;

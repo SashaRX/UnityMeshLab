@@ -176,6 +176,8 @@ namespace SashaRX.UnityMeshLab
                     e.meshFilter.sharedMesh = e.fbxMesh;
                 if (e.transferredMesh != null) { DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
                 if (e.repackedMesh != null) { DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
+                e.repackedAtlasWidth = 0;
+                e.repackedAtlasHeight = 0;
                 if (e.originalMesh != null && e.originalMesh != e.fbxMesh) { DestroyImmediate(e.originalMesh); e.originalMesh = null; }
             }
         }

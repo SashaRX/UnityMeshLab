@@ -330,6 +330,21 @@
 - Per-shell pre-pack snap — xatlas пересчитает per-chart scale от изменённой parametricArea и отменит snap (см. предыдущий эксперимент).
 - `rotateChartsToAxis = true` для repack existing UVs — мутирует extents.
 
-**Известные регрессии после a218a2b (требуют отдельной сессии):**
-- Пакинг при `internalOversample = 4` сильно дольше: brute-force pack cost ~ O(N × W × H), при 1024² и bruteForce=true может быть 16× медленнее vs 256². Возможно нужен soft fallback на heuristic pack для `internalRes ≥ N`.
-- Transfer стал кривее на некоторых тестовых моделях — вероятно из-за роста atlas size (1389×1360 вместо 256×256), что влияет на ε-параметры в `GroupedShellTransfer` (overlap detection thresholds в pixel space). Нужно прогнать transfer-чекер по test suite и поправить ε или нормализовать early.
+## Эксперимент 2026-05-13 — Oversample heuristic pack + atlas-scaled UV2 tolerances
+
+**Контекст:** после `a218a2b` default `internalOversample = 4` сохранил density spread, но поднял внутренний xatlas pack с 256² до 1024². Старый preflight отключал brute force только по `shellCount × internalRes² > 500M`; Carousel-кейс 149 × 1024² ≈ 156M оставался ниже budget, хотя wall-time стал ощутимо хуже. В transfer path часть UV2 tolerances оставалась в normalized-space константах (`0.005`, `0.01`), что при resolved atlas 1389×1360 превращало ~1.3px старого допуска в ~6.8px.
+
+**Изменение 1 (repack):**
+- `XatlasRepack.ResolvePackBruteForce()` теперь отключает native `bruteForce` при `internalOversample > 1`, даже если UI toggle включён.
+- Старый safety budget остаётся для `internalOversample = 1`; heuristic safety budget по-прежнему запрещает огромные packs.
+- UI tooltip уточняет, что brute force автоматически bypassed при oversample выше 1×.
+
+**Изменение 2 (transfer):**
+- `RepackResult.atlasWidth/atlasHeight` сохраняются в `MeshEntry.repackedAtlasWidth/repackedAtlasHeight`.
+- `GroupedShellTransfer.Transfer()` принимает resolved source atlas size и переводит UV2 pixel margins через `pixels / min(atlasW, atlasH)`.
+- Legacy fallback остаётся прежним (`0.005`, `0.01`) для source meshes с existing UV2 или неизвестным atlas size.
+
+**Проверка:**
+- EditMode red/green: `PackPreflight_DisablesBruteForce_WhenInternalOversampleIsAboveOne`.
+- EditMode red/green: `Uv2PixelMargin_ScalesFromResolvedAtlasSize`.
+- Full model benchmark (Carousel/Playground/WateringCan) в этом checkout не прогнан: тестовые FBX/`BenchmarkReports/` отсутствуют в репозитории. Нужен ручной Unity прогон на suite для финального сравнения `repackMs`, `density spread`, `overlapShellPairs`, `invertedCount`, `texelDensityBadCount`.
