@@ -664,40 +664,6 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Compute the actual per-vertex multiplier xatlas applies to chart
-        /// UVs before Stage B's ceil() rescale (xatlas.cpp:8318):
-        ///   scale = sqrt(surfaceArea3D / parametricAreaUV) × texelsPerUnit
-        /// For uniform-density input (post <see cref="TexelDensityNormalizer"/>)
-        /// this is the same constant for every chart. Snapping to <c>tpu</c>
-        /// alone is not enough — the snap grid must include the
-        /// <c>sqrt(s/p)</c> factor, otherwise the snapped UV extents land
-        /// at fractional positions in xatlas's pack space and Stage B
-        /// ceil() amplifies sub-pixel ribbons again.
-        /// </summary>
-        static float ComputeXatlasSnapTpu(
-            float[] uvFlat, int[] tris, Vector3[] positions, float effectiveTpu)
-        {
-            if (uvFlat == null || tris == null || positions == null) return effectiveTpu;
-            int vertCount = uvFlat.Length / 2;
-            int posLen = positions.Length;
-            double sumUv = 0.0, sum3D = 0.0;
-            for (int t = 0; t + 2 < tris.Length; t += 3)
-            {
-                int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                if ((uint)i0 >= (uint)vertCount || (uint)i1 >= (uint)vertCount || (uint)i2 >= (uint)vertCount) continue;
-                if ((uint)i0 >= (uint)posLen || (uint)i1 >= (uint)posLen || (uint)i2 >= (uint)posLen) continue;
-                double ax = uvFlat[i0 * 2], ay = uvFlat[i0 * 2 + 1];
-                double bx = uvFlat[i1 * 2], by = uvFlat[i1 * 2 + 1];
-                double cx = uvFlat[i2 * 2], cy = uvFlat[i2 * 2 + 1];
-                sumUv += Math.Abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) * 0.5;
-                Vector3 p0 = positions[i0], p1 = positions[i1], p2 = positions[i2];
-                sum3D += Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5;
-            }
-            if (sumUv < 1e-12 || sum3D < 1e-12) return effectiveTpu;
-            return (float)Math.Sqrt(sum3D / sumUv) * effectiveTpu;
-        }
-
-        /// <summary>
         /// Run xatlas ComputeCharts + PackCharts on a background thread while
         /// the main thread polls a cancellable progress bar. xatlas itself
         /// can't be interrupted mid-pack (no native cancel API), so a "cancel"
@@ -975,10 +941,10 @@ namespace SashaRX.UnityMeshLab
 
             if (opts.snapShellsToIntegerPixels && effectiveTpu > 0f)
             {
-                // xatlas multiplies chart UVs by sqrt(s/p)*tpu before Stage B,
-                // not by tpu directly. Snap must target that combined grid.
-                float snapTpu = ComputeXatlasSnapTpu(uvFlat, tris, positions, effectiveTpu);
-                SnapShellsToIntegerPixels(uvFlat, shells, snapTpu, mesh.name);
+                // For UvMesh input xatlas sets surfaceArea = parametricArea
+                // (xatlas.cpp:8255), so the per-chart scale collapses to
+                // plain effectiveTpu — no sqrt(s/p) factor required.
+                SnapShellsToIntegerPixels(uvFlat, shells, effectiveTpu, mesh.name);
             }
 
             // ── Perturb UV0 of overlap-grouped shells ──
@@ -1028,26 +994,28 @@ namespace SashaRX.UnityMeshLab
                     return result;
                 }
 
-                // internalRes / internalPad / effectiveTpu were computed
-                // above the snap step so the snap grid matches the pack
-                // grid. Passing effectiveTpu (not opts.texelsPerUnit, which
-                // is 0 by default) keeps xatlas from auto-computing its own
-                // tpu and growing the atlas — that would invalidate the
-                // integer-pixel grid the snap aligned to.
+                // When snap is on we pass resolution=0 to xatlas so it does
+                // NOT force-shrink any chart whose extent exceeds
+                // resolution - 2*padding (xatlas.cpp:8363-8385). That clamp
+                // rescales individual charts per-chart, which breaks the
+                // uniform density we just established and is the source of
+                // the postUV2 maxRatio≫1 we were chasing. With resolution=0
+                // xatlas just packs the charts and lets the atlas grow to
+                // whatever size they need; the user-facing resolution is
+                // only a downstream normalisation target.
                 //
-                // rotateCharts must be forced off when snapping: xatlas
-                // rotates each chart to minimise its axis-aligned bbox
-                // before computing extents, so a snap done on the input
-                // UVs no longer matches the post-rotation bbox xatlas
-                // actually feeds into ceil(). Without rotation the
-                // post-pack extents equal the snapped input extents and
-                // Stage B becomes a true no-op.
-                int packRotate = opts.snapShellsToIntegerPixels ? 0 : (opts.rotateCharts ? 1 : 0);
-                int packRotateAxis = opts.snapShellsToIntegerPixels ? 0 : (opts.rotateChartsToAxis ? 1 : 0);
+                // rotateCharts must also be forced off when snapping:
+                // xatlas rotates each chart to minimise its axis-aligned
+                // bbox before computing extents, so a snap done on the
+                // input UVs no longer matches the post-rotation bbox.
+                bool snapOn = opts.snapShellsToIntegerPixels;
+                uint packResolution = snapOn ? 0u : internalRes;
+                int packRotate = snapOn ? 0 : (opts.rotateCharts ? 1 : 0);
+                int packRotateAxis = snapOn ? 0 : (opts.rotateChartsToAxis ? 1 : 0);
 
                 bool packed = RunPackCancelable(
                     mesh.name, shells.Count, internalRes,
-                    opts.maxChartSize, internalPad, effectiveTpu, internalRes,
+                    opts.maxChartSize, internalPad, effectiveTpu, packResolution,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
@@ -1293,18 +1261,15 @@ namespace SashaRX.UnityMeshLab
 
                     // Snap each shell extent to integer atlas-pixel grid so
                     // xatlas's per-chart ceil(extents * tpu) becomes a no-op.
-                    // Snap target includes xatlas's sqrt(s/p) per-chart
-                    // multiplier — see ComputeXatlasSnapTpu.
+                    // UvMesh input has surfaceArea = parametricArea, so the
+                    // per-chart scale = effectiveTpu uniformly.
                     if (opts.snapShellsToIntegerPixels)
                     {
                         int oversamplePreM = opts.internalOversample > 0 ? opts.internalOversample : 1;
                         uint internalResMSnap = opts.resolution * (uint)oversamplePreM;
                         float tpuMSnap = ComputeEffectiveTpu(opts, internalResMSnap);
                         if (tpuMSnap > 0f)
-                        {
-                            float snapTpuM = ComputeXatlasSnapTpu(uvFlat, allTris[m], allPositions[m], tpuMSnap);
-                            SnapShellsToIntegerPixels(uvFlat, allShells[m], snapTpuM, meshes[m]?.name ?? $"mesh#{m}");
-                        }
+                            SnapShellsToIntegerPixels(uvFlat, allShells[m], tpuMSnap, meshes[m]?.name ?? $"mesh#{m}");
                     }
 
                     // Perturb UV0 of overlap-grouped shells so xatlas treats
@@ -1353,14 +1318,18 @@ namespace SashaRX.UnityMeshLab
                 for (int m = 0; m < meshCount; m++)
                     if (allShells[m] != null) totalShellsM += allShells[m].Count;
 
-                // rotateCharts forced off when snapping — see RepackSingle
-                // for the rationale (rotation invalidates the snap grid).
-                int packRotateM = opts.snapShellsToIntegerPixels ? 0 : (opts.rotateCharts ? 1 : 0);
-                int packRotateAxisM = opts.snapShellsToIntegerPixels ? 0 : (opts.rotateChartsToAxis ? 1 : 0);
+                // When snap is on: resolution=0 disables xatlas's per-chart
+                // size clamp (xatlas.cpp:8363) and rotation is forced off
+                // so the snap grid survives the pack. See RepackSingle for
+                // the full rationale.
+                bool snapOnM = opts.snapShellsToIntegerPixels;
+                uint packResolutionM = snapOnM ? 0u : internalResM;
+                int packRotateM = snapOnM ? 0 : (opts.rotateCharts ? 1 : 0);
+                int packRotateAxisM = snapOnM ? 0 : (opts.rotateChartsToAxis ? 1 : 0);
 
                 bool packedM = RunPackCancelable(
                     "MultiMesh", totalShellsM, internalResM,
-                    opts.maxChartSize, internalPadM, effectiveTpuM, internalResM,
+                    opts.maxChartSize, internalPadM, effectiveTpuM, packResolutionM,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
