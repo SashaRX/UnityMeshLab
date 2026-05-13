@@ -143,6 +143,20 @@ namespace SashaRX.UnityMeshLab
                     if (!peek) modelImporter.globalScale = 1f;
                     changed = true;
                 }
+                // Force MikkTSpace tangent recompute on every (re-)import. Unity's
+                // FBX Exporter doesn't preserve the Vector4-tangent W (handedness)
+                // bit reliably across roundtrips: FBX stores Tangent + Bitangent
+                // separately, and importTangents=Import would derive W from that
+                // pair, which can flip on mirrored UVs. CalculateMikk recomputes
+                // tangents+W from positions+normals+UV0 each time, deterministic
+                // across export/import cycles regardless of what the FBX layer
+                // chose to save.
+                if (modelImporter.importTangents != ModelImporterTangents.CalculateMikk)
+                {
+                    if (!peek) UvtLog.Info($"[UV2 Preprocess] Set importTangents=CalculateMikk (was {modelImporter.importTangents}) on '{assetPath}'");
+                    if (!peek) modelImporter.importTangents = ModelImporterTangents.CalculateMikk;
+                    changed = true;
+                }
             }
             if (modelImporter.meshCompression != ModelImporterMeshCompression.Off)
             {

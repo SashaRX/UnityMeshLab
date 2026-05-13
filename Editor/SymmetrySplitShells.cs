@@ -31,6 +31,16 @@ namespace SashaRX.UnityMeshLab
         static ThresholdMode s_thresholdMode = ThresholdMode.LegacyFixed;
         static bool s_adaptiveModeLogged;
 
+        // ── Benchmark counters (reset by the caller, read after Split/SplitWithParams) ──
+        /// <summary>
+        /// Number of shells matched via the descriptor-distance fallback during the most
+        /// recent <see cref="SplitWithParams"/> call. Read after Split completes; reset
+        /// by the caller (e.g. BenchmarkRecorder) before each pipeline run.
+        /// </summary>
+        public static int LastFallbackCount;
+        /// <summary>Total number of shells split across all Split*/SplitWithParams calls since the counter was reset.</summary>
+        public static int LastTotalSplitCount;
+
         /// <summary>
         /// Controls threshold strategy for symmetry split detection.
         /// Default is LegacyFixed for backward compatibility.
@@ -112,6 +122,7 @@ namespace SashaRX.UnityMeshLab
             foreach (var sp in splits)
                 totalSplit += ApplyBinarySplit(mesh, shells, sp.shellIndex, sp.axis, sp.splitThreshold, separationThreshold);
 
+            LastTotalSplitCount += totalSplit;
             return totalSplit;
         }
 
@@ -257,7 +268,8 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            UvtLog.Info($"[SymSplit] Split params: total={outParams.Count}, N-fold={nFoldParamsCount}, binary={binaryParamsCount}; applied splits total={totalSplit}");
+            UvtLog.Info(UvtLog.Category.SymSplit, $"Split params: total={outParams.Count}, N-fold={nFoldParamsCount}, binary={binaryParamsCount}; applied splits total={totalSplit}");
+            LastTotalSplitCount += totalSplit;
             return totalSplit;
         }
 
@@ -346,13 +358,14 @@ namespace SashaRX.UnityMeshLab
                     if (bestShell >= 0)
                     {
                         usedFallback = true;
-                        string fallbackTag = p.foldCount == 2 ? "[SymSplit][PrescribedBinary]" : "[SymSplit]";
-                        UvtLog.Warn($"{fallbackTag} SplitWithParams: fallback descriptor match for sourceShellId={p.sourceShellId}, " +
+                        LastFallbackCount++;
+                        string fallbackTag = p.foldCount == 2 ? "PrescribedBinary " : "";
+                        UvtLog.Warn(UvtLog.Category.SymSplit, $"{fallbackTag}SplitWithParams: fallback descriptor match for sourceShellId={p.sourceShellId}, " +
                             $"groupId={p.sourceGroupId}, signature={p.sourceShellSignature}, targetShell={bestShell}, distance={bestDistance:F4}");
                     }
                     else
                     {
-                        UvtLog.Verbose($"[SymSplit] SplitWithParams: no matching target shell for sourceShellId={p.sourceShellId}, N={p.foldCount}");
+                        UvtLog.Verbose(UvtLog.Category.SymSplit, $"SplitWithParams: no matching target shell for sourceShellId={p.sourceShellId}, N={p.foldCount}");
                         continue;
                     }
                 }
@@ -408,11 +421,12 @@ namespace SashaRX.UnityMeshLab
                     }
                     else
                     {
-                        UvtLog.Verbose($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} was not split (axis={AxisName(p.axis)}, threshold={p.splitThreshold:F4})");
+                        UvtLog.Verbose(UvtLog.Category.SymSplit, $"PrescribedBinary SplitWithParams: shell {bestShell} was not split (axis={AxisName(p.axis)}, threshold={p.splitThreshold:F4})");
                     }
                 }
             }
 
+            LastTotalSplitCount += totalSplit;
             return totalSplit;
         }
 
