@@ -557,36 +557,64 @@ namespace SashaRX.UnityMeshLab
             // at the same place as the stage toggle.
             DrawStageRow(4, "Repack (xatlas)",
                 "Pack source LOD UVs into a clean UV2 atlas using xatlas. "
-                + "Auto-resolution from texel density is the default; pad/bdr "
-                + "extend padding between shells and at the atlas border.",
+                + "Auto-resolution from texel density is the default; the "
+                + "Mode picker below switches to manual resolution.",
                 ref stageRunRepack, hasSettings: true, drawSettings: () =>
                 {
-                    using (new EditorGUILayout.HorizontalScope())
+                    // Vertical layout — sidebar is narrow and the previous
+                    // three-column row truncated labels ("Resolutior", "Pa",
+                    // "B "). One control per line, default labelWidth handles
+                    // alignment correctly even under indentLevel.
+
+                    // Mode picker — using friendly labels so the enum value
+                    // "AutoFromTexelDensity" doesn't show up as a run-on.
+                    int modeIdx = ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity ? 1 : 0;
+                    int newModeIdx = EditorGUILayout.Popup(
+                        new GUIContent("Mode",
+                            "Manual: pick atlas resolution (px) — the tool reports effective texel density.\n"
+                            + "Auto from texel density: pick target tex/m — the tool derives atlas size from "
+                            + "total 3D area."),
+                        modeIdx,
+                        new[] { "Manual", "Auto from texel density" });
+                    ctx.RepackResolutionMode = newModeIdx == 1
+                        ? ResolutionMode.AutoFromTexelDensity
+                        : ResolutionMode.Manual;
+
+                    // Show only the active driver — opposite mode's field
+                    // would confuse the user (Manual Resolution staying on
+                    // screen while Auto-mode preview says "atlas 64 px" was
+                    // exactly the contradiction we just had).
+                    if (ctx.RepackResolutionMode == ResolutionMode.Manual)
                     {
-                        EditorGUILayout.LabelField(
-                            new GUIContent("Resolution",
-                                "Atlas resolution in pixels (auto-derived from texel density "
-                                + "by default; switch RepackResolutionMode in Repack tab for manual)."),
-                            GUILayout.Width(72));
-                        ctx.AtlasResolution = EditorGUILayout.IntField(ctx.AtlasResolution, GUILayout.Width(60));
-                        GUILayout.Space(6);
-                        EditorGUILayout.LabelField(
-                            new GUIContent("Pad", "Inter-shell padding in pixels."),
-                            GUILayout.Width(26));
-                        ctx.ShellPaddingPx = EditorGUILayout.IntField(ctx.ShellPaddingPx, GUILayout.Width(30));
-                        GUILayout.Space(6);
-                        EditorGUILayout.LabelField(
-                            new GUIContent("Bdr", "Atlas-edge padding in pixels."),
-                            GUILayout.Width(26));
-                        ctx.BorderPaddingPx = EditorGUILayout.IntField(ctx.BorderPaddingPx, GUILayout.Width(30));
+                        ctx.AtlasResolution = EditorGUILayout.IntField(
+                            new GUIContent("Resolution (px)",
+                                "Atlas resolution in pixels. Power-of-two values recommended (64..4096)."),
+                            ctx.AtlasResolution);
                     }
+                    else
+                    {
+                        ctx.LightmapDensity = EditorGUILayout.Slider(
+                            new GUIContent("Texels per meter",
+                                "Target lightmap density. Atlas size = ceil_pow2(sqrt(area × density² / coverage))."),
+                            ctx.LightmapDensity, 0.5f, 100f);
+                    }
+
+                    ctx.ShellPaddingPx = EditorGUILayout.IntSlider(
+                        new GUIContent("Shell padding (px)",
+                            "Inter-shell padding in atlas pixels. Prevents bleed between neighbours."),
+                        ctx.ShellPaddingPx, 0, 16);
+                    ctx.BorderPaddingPx = EditorGUILayout.IntSlider(
+                        new GUIContent("Border padding (px)",
+                            "Atlas-edge padding in pixels."),
+                        ctx.BorderPaddingPx, 0, 16);
+
                     ctx.RepackPerMesh = EditorGUILayout.ToggleLeft(
                         new GUIContent("Per-mesh repack (each group → [0,1])",
                             "Pack each mesh group into its own [0,1] atlas instead of sharing one."),
                         ctx.RepackPerMesh);
 
-                    // Texel density preview — live summary of the inputs that
-                    // drive Repack so the user sees what xatlas will actually
+                    // Texel density preview — live summary of the resolved
+                    // atlas size so the user sees what xatlas will actually
                     // pack into without having to switch to the Repack tab.
                     double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
                         ctx.ForLod(ctx.SourceLodIndex)
@@ -598,8 +626,8 @@ namespace SashaRX.UnityMeshLab
                         uint autoRes = MeshAreaHelper.ComputeAutoResolution(
                             total3DArea, ctx.LightmapDensity, ctx.TargetUvCoverage);
                         previewLine =
-                            $"area {total3DArea:F2} m² · density {ctx.LightmapDensity:F1} tex/m " +
-                            $"→ atlas {autoRes}px (auto)";
+                            $"area {total3DArea:F2} m²  ·  density {ctx.LightmapDensity:F1} tex/m  " +
+                            $"→  atlas {autoRes} px";
                     }
                     else
                     {
@@ -608,8 +636,8 @@ namespace SashaRX.UnityMeshLab
                             ? resForDisplay / System.Math.Sqrt(total3DArea / Mathf.Max(0.0001f, ctx.TargetUvCoverage))
                             : 0.0;
                         previewLine =
-                            $"area {total3DArea:F2} m² · atlas {resForDisplay}px " +
-                            $"→ effective ≈ {effDensity:F1} tex/m";
+                            $"area {total3DArea:F2} m²  ·  atlas {resForDisplay} px  " +
+                            $"→  effective ≈ {effDensity:F1} tex/m";
                     }
                     EditorGUILayout.LabelField(previewLine, EditorStyles.miniLabel);
                 });
