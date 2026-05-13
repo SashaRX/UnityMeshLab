@@ -141,7 +141,13 @@ namespace SashaRX.UnityMeshLab
             blockSize  = 4,                   // BC/ETC/DXT default; ASTC: 4/5/6/8/10/12
             bruteForce = true,
             rotateCharts = true,
-            rotateChartsToAxis = true,
+            // PCA-align per chart rotates the bbox before extents are
+            // measured. For repack of existing UVs (UvMesh input) it's
+            // an extra mutation that shrinks pixel extents and worsens
+            // Stage B ceil() amplification on thin shells. Keep off by
+            // default; rotateCharts (90° placement rotation in the
+            // packer) stays on for pack efficiency.
+            rotateChartsToAxis = false,
             perturbStrength = 0f,             // adaptive
             normalizeTexelDensity = true,
             targetUvCoverage = 0.75f,
@@ -150,7 +156,13 @@ namespace SashaRX.UnityMeshLab
             arapIterations = 50,
             clampLightmapToUnit = true,
             postPackDensityCorrection = false,
-            internalOversample = 1,
+            // Pack at 4× user-facing resolution internally. xatlas's
+            // per-chart ceil(extents) Stage B amplifies sub-pixel
+            // shells; running the pack at 4× resolution turns a shell
+            // that was 0.25 px wide (4× amp) into 1.0 px wide (1×
+            // amp). Output UVs are normalised to [0,1] via /atlasW so
+            // the effective user atlas stays at opts.resolution.
+            internalOversample = 4,
         };
     }
 
@@ -554,6 +566,117 @@ namespace SashaRX.UnityMeshLab
         static bool IsFiniteD(double x) => !(double.IsNaN(x) || double.IsInfinity(x));
 
         /// <summary>
+        /// Estimate per-shell density amplification that xatlas will apply
+        /// in Stage B (xatlas.cpp:8345-8362), BEFORE handing UVs to xatlas.
+        /// Stage B does <c>texcoord *= ceil(extent)/extent</c> per axis per
+        /// chart, so a shell with sub-pixel extent gets a multiplicative
+        /// boost = <c>ceil(ext_x)/ext_x × ceil(ext_y)/ext_y</c> on its UV
+        /// area (and therefore on its lightmap density).
+        ///
+        /// For UvMesh input the per-chart scale collapses to <c>tpu</c>
+        /// (since <c>surfaceArea == parametricArea</c>). xatlas estimates
+        /// <c>tpu = sqrt(internalRes² / (meshArea/0.75))</c> when
+        /// <c>texelsPerUnit == 0</c>. We compute the same estimate here so
+        /// the prediction matches what xatlas will see internally.
+        ///
+        /// Logs the worst-offender shells (boost > 1.5×) at Info level so
+        /// the user can see whether a problematic spread is coming from
+        /// Stage B or from elsewhere in the pipeline.
+        /// </summary>
+        static void LogStageBRisk(
+            float[] uvFlat, List<UvShell> shells, int[] tris,
+            uint internalRes, float texelsPerUnit, string meshLabel, string stageLabel)
+        {
+            if (uvFlat == null || shells == null || tris == null) return;
+            int vertCount = uvFlat.Length / 2;
+
+            // Estimate tpu the way xatlas does (xatlas.cpp:8295-8306) when
+            // texelsPerUnit == 0: from total parametric area and 0.75 target.
+            float tpu = texelsPerUnit;
+            if (!(tpu > 0f))
+            {
+                double sumUv = 0.0;
+                for (int t = 0; t + 2 < tris.Length; t += 3)
+                {
+                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
+                    if ((uint)i0 >= (uint)vertCount || (uint)i1 >= (uint)vertCount || (uint)i2 >= (uint)vertCount) continue;
+                    double ax = uvFlat[i0 * 2], ay = uvFlat[i0 * 2 + 1];
+                    double bx = uvFlat[i1 * 2], by = uvFlat[i1 * 2 + 1];
+                    double cx = uvFlat[i2 * 2], cy = uvFlat[i2 * 2 + 1];
+                    sumUv += Math.Abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) * 0.5;
+                }
+                if (sumUv < 1e-12 || internalRes == 0) return;
+                double texelCount = Math.Max(1.0, sumUv / 0.75);
+                tpu = (float)Math.Sqrt((double)internalRes * internalRes / texelCount);
+            }
+
+            int n = shells.Count;
+            int subPixelShells = 0;
+            int badShells = 0;       // boostArea > 1.5
+            int severeShells = 0;    // boostArea > 3.0
+            double maxBoostArea = 1.0;
+            int worstIdx = -1;
+            float worstExtX = 0f, worstExtY = 0f, worstBoostX = 1f, worstBoostY = 1f;
+
+            // Track top 5 worst for the log
+            var top = new (int idx, double area, float ex, float ey, float bx, float by)[5];
+            int topCount = 0;
+
+            for (int si = 0; si < n; si++)
+            {
+                var shell = shells[si];
+                if (shell?.vertexIndices == null || shell.vertexIndices.Count == 0) continue;
+                float minX = float.PositiveInfinity, minY = float.PositiveInfinity;
+                float maxX = float.NegativeInfinity, maxY = float.NegativeInfinity;
+                foreach (int vi in shell.vertexIndices)
+                {
+                    if ((uint)vi >= (uint)vertCount) continue;
+                    float u = uvFlat[vi * 2], v = uvFlat[vi * 2 + 1];
+                    if (u < minX) minX = u; if (u > maxX) maxX = u;
+                    if (v < minY) minY = v; if (v > maxY) maxY = v;
+                }
+                if (!(maxX > minX) || !(maxY > minY)) continue;
+                float extX = (maxX - minX) * tpu;
+                float extY = (maxY - minY) * tpu;
+                if (extX <= 0f || extY <= 0f) continue;
+                float boostX = Mathf.Ceil(extX) / extX;
+                float boostY = Mathf.Ceil(extY) / extY;
+                double boostArea = boostX * boostY;
+
+                if (extX < 1f || extY < 1f) subPixelShells++;
+                if (boostArea > 1.5) badShells++;
+                if (boostArea > 3.0) severeShells++;
+                if (boostArea > maxBoostArea)
+                {
+                    maxBoostArea = boostArea;
+                    worstIdx = si;
+                    worstExtX = extX; worstExtY = extY;
+                    worstBoostX = boostX; worstBoostY = boostY;
+                }
+
+                // Insertion sort top-5
+                if (topCount < 5 || boostArea > top[topCount - 1].area)
+                {
+                    int insertAt = topCount;
+                    while (insertAt > 0 && top[insertAt - 1].area < boostArea) insertAt--;
+                    if (topCount < 5) topCount++;
+                    for (int j = topCount - 1; j > insertAt; j--) top[j] = top[j - 1];
+                    if (insertAt < 5) top[insertAt] = (si, boostArea, extX, extY, boostX, boostY);
+                }
+            }
+
+            UvtLog.Info(UvtLog.Category.Repack,
+                $"[DensityRisk:{stageLabel}] '{meshLabel}' tpu≈{tpu:F1} | shells={n} subPixel={subPixelShells} boost>1.5×={badShells} boost>3×={severeShells} | worst: shell#{worstIdx} extent={worstExtX:F2}×{worstExtY:F2}px boost={worstBoostX:F2}×{worstBoostY:F2} areaBoost={maxBoostArea:F2}×");
+
+            for (int i = 0; i < topCount && i < 5; i++)
+            {
+                if (top[i].area <= 1.5) break;
+                UvtLog.Verbose(UvtLog.Category.Repack,
+                    $"[DensityRisk:{stageLabel}]   #{top[i].idx} extent={top[i].ex:F2}×{top[i].ey:F2}px boost={top[i].bx:F2}×{top[i].by:F2} areaBoost={top[i].area:F2}×");
+            }
+        }
+
+        /// <summary>
         /// Run xatlas ComputeCharts + PackCharts on a background thread while
         /// the main thread polls a cancellable progress bar. xatlas itself
         /// can't be interrupted mid-pack (no native cancel API), so a "cancel"
@@ -828,7 +951,23 @@ namespace SashaRX.UnityMeshLab
             float perturbStrength = opts.perturbStrength > 0f
                 ? opts.perturbStrength
                 : ComputeAdaptivePerturbStrength(opts.resolution, opts.padding);
+
+            // Predict xatlas Stage B amplification BEFORE perturb, then
+            // again after — surfaces which step (Normalize, Perturb, or
+            // xatlas Stage B itself) is actually wrecking density.
+            {
+                int oversamplePre = opts.internalOversample > 0 ? opts.internalOversample : 1;
+                uint internalResPre = opts.resolution * (uint)oversamplePre;
+                LogStageBRisk(uvFlat, shells, tris, internalResPre, opts.texelsPerUnit, mesh.name, "postNormalize");
+            }
+
             PerturbOverlapShellsUv0(uvFlat, shells, overlapGroups, perturbStrength);
+
+            {
+                int oversamplePre = opts.internalOversample > 0 ? opts.internalOversample : 1;
+                uint internalResPre = opts.resolution * (uint)oversamplePre;
+                LogStageBRisk(uvFlat, shells, tris, internalResPre, opts.texelsPerUnit, mesh.name, "postPerturb");
+            }
 
             // ── Group-aware merge of overlapping shells ──
             // Tiled-UV0 models (Wooden_Box_Long etc.) carry N>>K shells where
@@ -1130,7 +1269,20 @@ namespace SashaRX.UnityMeshLab
                     float perturbStrengthM = opts.perturbStrength > 0f
                         ? opts.perturbStrength
                         : ComputeAdaptivePerturbStrength(opts.resolution, opts.padding);
+
+                    {
+                        int oversamplePreM = opts.internalOversample > 0 ? opts.internalOversample : 1;
+                        uint internalResPreM = opts.resolution * (uint)oversamplePreM;
+                        LogStageBRisk(uvFlat, allShells[m], allTris[m], internalResPreM, opts.texelsPerUnit, meshes[m]?.name ?? $"mesh#{m}", "postNormalize");
+                    }
+
                     PerturbOverlapShellsUv0(uvFlat, allShells[m], allOverlap[m], perturbStrengthM);
+
+                    {
+                        int oversamplePreM = opts.internalOversample > 0 ? opts.internalOversample : 1;
+                        uint internalResPreM = opts.resolution * (uint)oversamplePreM;
+                        LogStageBRisk(uvFlat, allShells[m], allTris[m], internalResPreM, opts.texelsPerUnit, meshes[m]?.name ?? $"mesh#{m}", "postPerturb");
+                    }
 
                     // Every shell is fed to xatlas as its own chart (UV2 is
                     // a unique-per-shell channel; the deleted "merge overlap
