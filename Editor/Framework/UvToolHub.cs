@@ -322,7 +322,6 @@ namespace SashaRX.UnityMeshLab
             }
 
             DrawHubToolbar();
-            DrawProgressStrip();
 
             EditorGUILayout.BeginHorizontal();
 
@@ -359,6 +358,12 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.EndVertical();
 
             EditorGUILayout.EndHorizontal();
+
+            // Progress strip sits at the very bottom of the window — it is a
+            // status-bar-style row that doesn't displace the toolbar / sub-tabs
+            // layout when the active state toggles. The reserved height is
+            // unconditional so appearing / disappearing also doesn't shift.
+            DrawProgressStrip();
         }
 
         void OnSceneGUI(SceneView sv)
@@ -402,16 +407,16 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ════════════════════════════════════════════════════════════
-        //  Inline progress strip — shows UvProgress.Current beneath the
-        //  hub toolbar so users can see status without opening Unity's
-        //  Background Tasks panel. Cancel button is shown when the
-        //  current operation registered itself as cancelable.
-        //
-        //  The strip's height is reserved unconditionally so toggling the
-        //  active state does not shift the rest of the layout. When idle,
-        //  the strip blends into the toolbar visually with no text/animation.
+        //  Inline progress strip — sits at the very bottom of the window
+        //  (status-bar pattern). The full row width is reserved
+        //  unconditionally so toggling the active state doesn't displace
+        //  any layout above. When idle the strip blends into the chrome
+        //  with no text or animation. When active it shows: bold primary
+        //  (title · phase) on the left, optional detail right-aligned next
+        //  to it, elapsed in its own column, and a properly sized Cancel
+        //  button flush with the right edge.
         // ════════════════════════════════════════════════════════════
-        const float kProgressStripHeight = 18f;
+        const float kProgressStripHeight = 22f;
 
         void DrawProgressStrip()
         {
@@ -420,8 +425,8 @@ namespace SashaRX.UnityMeshLab
 
             var snap = UvProgress.Current;
 
-            // Background — matches the toolbar so the strip visually extends
-            // it. When active the bar darkens slightly to draw attention.
+            // Background — matches the toolbar so the bottom strip visually
+            // mirrors the top one. Active state darkens to draw attention.
             Color toolbarTint = EditorGUIUtility.isProSkin
                 ? new Color(0.235f, 0.235f, 0.235f)
                 : new Color(0.78f, 0.78f, 0.78f);
@@ -430,19 +435,19 @@ namespace SashaRX.UnityMeshLab
                 : new Color(0.70f, 0.70f, 0.70f);
             EditorGUI.DrawRect(rect, snap.active ? activeTint : toolbarTint);
 
-            // Hairline bottom separator (always present so the boundary
-            // between the strip and the panel below is consistent).
-            var sep = new Rect(rect.x, rect.yMax - 1, rect.width, 1);
+            // Top hairline — separates the strip from the content above.
+            // (Bottom is the window edge so no separator needed there.)
+            var sep = new Rect(rect.x, rect.y, rect.width, 1);
             EditorGUI.DrawRect(sep, new Color(0, 0, 0, EditorGUIUtility.isProSkin ? 0.45f : 0.25f));
 
             if (!snap.active) return;
 
             // Fill — determinate fraction or animated marquee for indeterminate.
-            var innerRect = new Rect(rect.x, rect.y, rect.width, rect.height - 1);
+            var innerRect = new Rect(rect.x, rect.y + 1, rect.width, rect.height - 1);
             float frac = snap.fraction;
             Color fillColor = snap.cancelRequested
-                ? new Color(0.95f, 0.55f, 0.20f, 0.55f)
-                : new Color(0.30f, 0.60f, 0.95f, 0.55f);
+                ? new Color(0.95f, 0.55f, 0.20f, 0.50f)
+                : new Color(0.30f, 0.60f, 0.95f, 0.50f);
             if (frac >= 0f)
             {
                 var fill = innerRect;
@@ -451,20 +456,20 @@ namespace SashaRX.UnityMeshLab
             }
             else
             {
-                // Marquee — symmetric easing, smoother than a linear sweep.
+                // Marquee — band sweeps left→right, eased so the edges of
+                // the band slide off-screen rather than snapping at the rim.
                 double cycle = (EditorApplication.timeSinceStartup * 0.55) % 1.0;
                 float t = (float)cycle;
                 float bandW = innerRect.width * 0.22f;
                 float x = innerRect.x + (innerRect.width + bandW) * t - bandW;
                 var fill = new Rect(x, innerRect.y, bandW, innerRect.height);
-                fillColor.a = 0.40f;
+                fillColor.a = 0.38f;
                 EditorGUI.DrawRect(fill, fillColor);
                 Repaint(); // keep the marquee moving.
             }
 
-            // Compose the label text concisely. Title + phase form the bold
-            // primary line; detail is shown only when non-empty and distinct
-            // from the phase. Elapsed time sits at the far right.
+            // Compose primary (title · phase) and optional detail. Drop
+            // detail when it duplicates the phase verbatim.
             string primary = snap.title ?? string.Empty;
             if (!string.IsNullOrEmpty(snap.phase))
             {
@@ -472,19 +477,26 @@ namespace SashaRX.UnityMeshLab
                 primary += snap.phase;
             }
             string detail = snap.detail;
-            // Suppress detail when it duplicates the phase verbatim — avoids
-            // the "phase — phase" run-on the previous renderer produced.
             if (!string.IsNullOrEmpty(detail) && !string.IsNullOrEmpty(snap.phase)
                 && detail.StartsWith(snap.phase, System.StringComparison.Ordinal))
                 detail = null;
             string elapsed = $"{snap.Elapsed:0.0}s";
 
-            float rightReserve = (snap.cancelable || snap.cancelRequested) ? 78f : 12f;
-            float elapsedW = 48f;
+            // Column geometry. Cancel button gets its own slot pinned to the
+            // right edge; elapsed sits to its left; primary/detail share the
+            // remaining width with detail right-aligned.
+            const float kBtnW = 60f;
+            const float kBtnPad = 6f;
+            const float kElapsedW = 44f;
+            const float kColGap = 8f;
+            bool showCancel = snap.cancelable || snap.cancelRequested;
+            float rightReserve = showCancel ? (kBtnW + kBtnPad) : kBtnPad;
+
+            var elapsedRect = new Rect(rect.xMax - rightReserve - kElapsedW, rect.y,
+                                       kElapsedW, rect.height);
+            float primaryRight = elapsedRect.x - kColGap;
             var primaryRect = new Rect(rect.x + 8f, rect.y,
-                rect.width - rightReserve - elapsedW - 16f, rect.height);
-            var detailRect = primaryRect;
-            var elapsedRect = new Rect(rect.xMax - rightReserve - elapsedW, rect.y, elapsedW, rect.height);
+                                       primaryRight - (rect.x + 8f), rect.height);
 
             var primaryStyle = new GUIStyle(EditorStyles.miniBoldLabel)
             {
@@ -502,22 +514,27 @@ namespace SashaRX.UnityMeshLab
                 normal = { textColor = new Color(0.75f, 0.85f, 1f) },
             };
 
-            // Primary on left; detail (if any) right-aligned in the same row.
             if (!string.IsNullOrEmpty(detail))
-                GUI.Label(detailRect, detail, detailStyle);
+                GUI.Label(primaryRect, detail, detailStyle);
             GUI.Label(primaryRect, primary, primaryStyle);
             GUI.Label(elapsedRect, elapsed, elapsedStyle);
 
-            // Cancel control on the far right.
+            // Cancel control — vertically centred against the strip and
+            // sized to the strip's height (minus 4px breathing room) so it
+            // sits cleanly inside the row instead of overflowing.
             if (snap.cancelable && !snap.cancelRequested)
             {
-                var btnRect = new Rect(rect.xMax - 70f, rect.y + 2f, 64f, rect.height - 4f);
+                float btnH = rect.height - 4f;
+                var btnRect = new Rect(rect.xMax - kBtnW - kBtnPad,
+                                       rect.y + (rect.height - btnH) * 0.5f,
+                                       kBtnW, btnH);
                 if (GUI.Button(btnRect, "Cancel", EditorStyles.miniButton))
                     UvProgress.RequestCancel();
             }
             else if (snap.cancelRequested)
             {
-                var labelRect2 = new Rect(rect.xMax - 76f, rect.y, 70f, rect.height);
+                var labelRect2 = new Rect(rect.xMax - kBtnW - kBtnPad, rect.y,
+                                          kBtnW, rect.height);
                 var cancelStyle = new GUIStyle(EditorStyles.miniLabel)
                 {
                     normal = { textColor = new Color(1f, 0.7f, 0.2f) },

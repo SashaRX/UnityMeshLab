@@ -64,6 +64,16 @@ namespace SashaRX.UnityMeshLab
         bool skipSymmetrySplitStep;
         SymmetrySplitShells.ThresholdMode symSplitThresholdMode = SymmetrySplitShells.ThresholdMode.LegacyFixed;
         HashSet<int> lastSymmetrySplitLods = new HashSet<int>();
+
+        // ── Pipeline stage toggles (Setup tab) ──
+        // Each toggle controls whether the corresponding stage runs as part
+        // of the Full Pipeline. They default ON; the user can deselect a
+        // stage to skip it (useful for "transfer only" or "repack only"
+        // runs without invoking Weld every time).
+        bool stageRunAnalyzeUv0 = true;
+        bool stageRunWeldUv0    = true;
+        bool stageRunRepack     = true;
+        bool stageRunTransfer   = true;
         Vector2 reportScroll;
         TestSuiteAsset sweepSuite;
 
@@ -362,28 +372,11 @@ namespace SashaRX.UnityMeshLab
                 ColorBtn(new Color(.9f,.35f,.35f), "Reset All Working Copies", 20, ResetWorkingCopies);
             }
 
-            EditorGUILayout.Space(4);
-            H("Repack");
-            EditorGUILayout.BeginHorizontal();
-            EditorGUILayout.LabelField("Resolution", GUILayout.Width(66));
-            ctx.AtlasResolution = EditorGUILayout.IntField(ctx.AtlasResolution, GUILayout.Width(60));
-            GUILayout.Space(8);
-            EditorGUILayout.LabelField("Pad", GUILayout.Width(26));
-            ctx.ShellPaddingPx = EditorGUILayout.IntField(ctx.ShellPaddingPx, GUILayout.Width(30));
-            GUILayout.Space(8);
-            EditorGUILayout.LabelField("Bdr", GUILayout.Width(24));
-            ctx.BorderPaddingPx = EditorGUILayout.IntField(ctx.BorderPaddingPx, GUILayout.Width(30));
-            EditorGUILayout.EndHorizontal();
-
             EditorGUILayout.Space(6);
-            ctx.RepackPerMesh = EditorGUILayout.ToggleLeft("Per-mesh repack (each group -> [0,1])", ctx.RepackPerMesh);
-            symSplitThresholdMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
-                "SymSplit thresholds", symSplitThresholdMode);
-            SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
-            ColorBtn(new Color(.2f,.75f,.95f), "Run Full Pipeline", 30, () => _ = ExecFullPipelineAsync());
-            splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft("SymSplit target LODs (advanced)", splitTargetsInSymmetryStep);
-            skipSymmetrySplitStep      = EditorGUILayout.ToggleLeft("Skip SymSplit step (diagnostic)", skipSymmetrySplitStep);
+            DrawPipelineSection();
 
+            EditorGUILayout.Space(8);
+            H("Parameter Sweep");
             // Parameter sweep: atlasRes × shellPad × borderPad from a TestSuiteAsset.
             sweepSuite = (TestSuiteAsset)EditorGUILayout.ObjectField(
                 "Sweep suite", sweepSuite, typeof(TestSuiteAsset), false);
@@ -468,6 +461,148 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 // Save/Export buttons are at the top of Setup tab
+            }
+        }
+
+        // ──────────────── Pipeline section (Setup tab) ────────────────
+        //
+        // Replaces the old freestanding "Repack" header + scattered SymSplit
+        // toggles with a single stage-oriented panel. Each stage:
+        //   • can be toggled on/off (skipped from the Full Pipeline run);
+        //   • has its specific settings nested directly underneath when on;
+        //   • shows a coloured stripe on the left for at-a-glance state.
+        // The big "Run Full Pipeline" button at the bottom drives every
+        // enabled stage in order: Analyze → Weld → SymSplit → Repack → Transfer.
+        void DrawPipelineSection()
+        {
+            EditorGUILayout.LabelField("Pipeline", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(
+                "Toggle stages to include in Run Full Pipeline. Stage-specific settings appear when enabled.",
+                EditorStyles.miniLabel);
+            EditorGUILayout.Space(2);
+
+            // 1. Analyze UV0 — diagnostic only, cheap.
+            DrawStageRow(1, "Analyze UV0",
+                "Diagnose UV0 seams and count shells. Cheap; recommended to leave on.",
+                ref stageRunAnalyzeUv0, hasSettings: false, drawSettings: null);
+
+            // 2. Weld UV0 — merges false-seam vertices using source-guided weld.
+            DrawStageRow(2, "Weld UV0",
+                "Merge false-seam vertices (UV0 verts that share position but were split). "
+                + "Required for clean shell extraction in Repack and Transfer.",
+                ref stageRunWeldUv0, hasSettings: false, drawSettings: null);
+
+            // 3. Symmetry split — uses inverted skipSymmetrySplitStep field
+            // so existing diagnostic flag continues to work elsewhere.
+            bool runSym = !skipSymmetrySplitStep;
+            DrawStageRow(3, "Symmetry Split",
+                "Split mirrored / overlapping UV0 shells in the source so each "
+                + "physical surface gets its own atlas tile. Auto-tunes the "
+                + "separation threshold across a few values and picks the best.",
+                ref runSym, hasSettings: true, drawSettings: () =>
+                {
+                    symSplitThresholdMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
+                        new GUIContent("Threshold mode",
+                            "Strategy for picking the SymSplit separation threshold. "
+                            + "Legacy Fixed uses 0.10; Adaptive picks per-shell from area."),
+                        symSplitThresholdMode);
+                    SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
+                    splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Apply to target LODs (advanced)",
+                            "Run SymSplit on every included LOD instead of only the source. "
+                            + "Coordinated across LODs so each surface keeps its identity."),
+                        splitTargetsInSymmetryStep);
+                });
+            skipSymmetrySplitStep = !runSym;
+
+            // 4. Repack — main settings live here so users see resolution etc.
+            // at the same place as the stage toggle.
+            DrawStageRow(4, "Repack (xatlas)",
+                "Pack source LOD UVs into a clean UV2 atlas using xatlas. "
+                + "Auto-resolution from texel density is the default; pad/bdr "
+                + "extend padding between shells and at the atlas border.",
+                ref stageRunRepack, hasSettings: true, drawSettings: () =>
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        EditorGUILayout.LabelField(
+                            new GUIContent("Resolution",
+                                "Atlas resolution in pixels (auto-derived from texel density "
+                                + "by default; switch RepackResolutionMode in Repack tab for manual)."),
+                            GUILayout.Width(72));
+                        ctx.AtlasResolution = EditorGUILayout.IntField(ctx.AtlasResolution, GUILayout.Width(60));
+                        GUILayout.Space(6);
+                        EditorGUILayout.LabelField(
+                            new GUIContent("Pad", "Inter-shell padding in pixels."),
+                            GUILayout.Width(26));
+                        ctx.ShellPaddingPx = EditorGUILayout.IntField(ctx.ShellPaddingPx, GUILayout.Width(30));
+                        GUILayout.Space(6);
+                        EditorGUILayout.LabelField(
+                            new GUIContent("Bdr", "Atlas-edge padding in pixels."),
+                            GUILayout.Width(26));
+                        ctx.BorderPaddingPx = EditorGUILayout.IntField(ctx.BorderPaddingPx, GUILayout.Width(30));
+                    }
+                    ctx.RepackPerMesh = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Per-mesh repack (each group → [0,1])",
+                            "Pack each mesh group into its own [0,1] atlas instead of sharing one."),
+                        ctx.RepackPerMesh);
+                });
+
+            // 5. Transfer.
+            bool hasTargets = ctx.LodGroup != null && HasIncludedTransferTargets(ctx.MeshEntries, ctx.SourceLodIndex);
+            DrawStageRow(5, "Transfer to LODs",
+                hasTargets
+                    ? "Project source UV2 onto every included target LOD."
+                    : "No target LODs included — Transfer will skip even when enabled.",
+                ref stageRunTransfer, hasSettings: false, drawSettings: null, dimmed: !hasTargets);
+
+            // Primary action.
+            EditorGUILayout.Space(6);
+            ColorBtn(new Color(.2f, .75f, .95f), "▶ Run Full Pipeline", 30,
+                () => _ = ExecFullPipelineAsync());
+        }
+
+        // Single pipeline stage row: ordinal badge + coloured state stripe +
+        // toggle label + optional nested settings (drawn when enabled).
+        void DrawStageRow(int ordinal, string title, string tooltip,
+                          ref bool enabled, bool hasSettings, Action drawSettings,
+                          bool dimmed = false)
+        {
+            // Reserve the row rect so we can paint a left stripe before the
+            // controls. Default control height is the IMGUI single-line height.
+            float lineH = EditorGUIUtility.singleLineHeight + 2f;
+            var rowRect = GUILayoutUtility.GetRect(0, lineH, GUILayout.ExpandWidth(true));
+
+            // Left stripe: green when enabled, grey when disabled.
+            var stripeRect = new Rect(rowRect.x, rowRect.y + 1, 3f, rowRect.height - 2);
+            Color stripeColor = enabled
+                ? (dimmed ? new Color(0.45f, 0.55f, 0.45f) : new Color(0.35f, 0.78f, 0.45f))
+                : new Color(0.40f, 0.40f, 0.40f);
+            EditorGUI.DrawRect(stripeRect, stripeColor);
+
+            // Ordinal badge — small numbered chip on the left.
+            var ordRect = new Rect(rowRect.x + 8f, rowRect.y, 18f, rowRect.height);
+            var ordStyle = new GUIStyle(EditorStyles.miniBoldLabel)
+            {
+                alignment = TextAnchor.MiddleLeft,
+                normal = { textColor = enabled ? new Color(0.85f, 0.85f, 0.85f) : new Color(0.55f, 0.55f, 0.55f) },
+            };
+            GUI.Label(ordRect, ordinal.ToString(), ordStyle);
+
+            // Toggle + bold label.
+            var toggleRect = new Rect(rowRect.x + 26f, rowRect.y, rowRect.width - 30f, rowRect.height);
+            var oldColor = GUI.contentColor;
+            if (dimmed) GUI.contentColor = new Color(1f, 1f, 1f, 0.6f);
+            enabled = EditorGUI.ToggleLeft(toggleRect, new GUIContent(title, tooltip), enabled, EditorStyles.boldLabel);
+            GUI.contentColor = oldColor;
+
+            // Nested per-stage settings.
+            if (hasSettings && enabled && drawSettings != null)
+            {
+                EditorGUI.indentLevel++;
+                drawSettings();
+                EditorGUI.indentLevel--;
+                EditorGUILayout.Space(2);
             }
         }
 
@@ -1263,11 +1398,13 @@ namespace SashaRX.UnityMeshLab
                 .FindForAssembly(typeof(LightmapTransferTool).Assembly)?.version ?? "0.0.0";
             UvtLog.Info($"[Pipeline] Starting full pipeline... (v{version})");
 
-            // 1. Analyze
-            ExecAnalyzeUv0();
+            // 1. Analyze (skipped via Setup stage toggle)
+            if (stageRunAnalyzeUv0) ExecAnalyzeUv0();
+            else UvtLog.Info("[Pipeline] Analyze UV0 stage SKIPPED by user toggle");
 
-            // 2. Weld
-            ExecWeldUv0();
+            // 2. Weld (skipped via Setup stage toggle)
+            if (stageRunWeldUv0) ExecWeldUv0();
+            else UvtLog.Info("[Pipeline] Weld UV0 stage SKIPPED by user toggle");
 
             // ── Auto-tune: try multiple SymSplit configs, pick best ──
             // Save working copies so we can restore between attempts.
@@ -1333,14 +1470,27 @@ namespace SashaRX.UnityMeshLab
                     else
                         UvtLog.Info(UvtLog.Category.SymSplit, "[Pipeline] SymSplit step SKIPPED by user toggle");
 
-                    // 4. Repack
-                    var src = ctx.ForLod(ctx.SourceLodIndex);
-                    if (ctx.RepackPerMesh) await ExecRepackPerMeshImpl(src, useAsync);
-                    else                   await ExecRepackImpl(src, useAsync);
+                    // 4. Repack (skipped via Setup stage toggle)
+                    if (stageRunRepack)
+                    {
+                        var src = ctx.ForLod(ctx.SourceLodIndex);
+                        if (ctx.RepackPerMesh) await ExecRepackPerMeshImpl(src, useAsync);
+                        else                   await ExecRepackImpl(src, useAsync);
+                    }
+                    else
+                    {
+                        UvtLog.Info("[Pipeline] Repack stage SKIPPED by user toggle");
+                    }
 
-                    // 5. Transfer
-                    if (ctx.HasRepack && hasTransferTargets) await ExecTransferAllImpl(useAsync);
-                    else if (ctx.HasRepack) ctx.HasTransfer = false;
+                    // 5. Transfer (skipped via Setup stage toggle)
+                    if (stageRunTransfer && ctx.HasRepack && hasTransferTargets)
+                        await ExecTransferAllImpl(useAsync);
+                    else if (ctx.HasRepack)
+                    {
+                        ctx.HasTransfer = false;
+                        if (!stageRunTransfer)
+                            UvtLog.Info("[Pipeline] Transfer stage SKIPPED by user toggle");
+                    }
 
                     if (!hasTransferTargets)
                         break;
