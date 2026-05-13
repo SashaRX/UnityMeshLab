@@ -63,7 +63,7 @@ namespace SashaRX.UnityMeshLab
                     if (r == null) continue;
                     var mf = r.GetComponent<MeshFilter>();
                     if (mf == null || mf.sharedMesh == null) continue;
-                    var row = AnalyzeMesh(lod.name, lodIdx, r.name, mf.sharedMesh);
+                    var row = AnalyzeMesh(lod.name, lod.name, lodIdx, r.name, mf.sharedMesh);
                     rows.Add(row);
                     UvPngWriter.Render(Path.Combine(outDir, "png",
                         $"{Sanitize(lod.name)}_LOD{lodIdx}_{Sanitize(r.name)}_uv0.png"),

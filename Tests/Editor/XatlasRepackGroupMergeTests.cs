@@ -143,5 +143,86 @@ namespace SashaRX.UnityMeshLab.Tests
                 Object.DestroyImmediate(mesh);
             }
         }
+
+        [Test]
+        public void PackPreflight_DisablesBruteForce_WhenInternalOversampleIsAboveOne()
+        {
+            var method = typeof(XatlasRepack).GetMethod(
+                "ResolvePackBruteForce",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "XatlasRepack should expose pack preflight as a testable helper");
+
+            object[] args = { 1, 4, 149, (uint)1024, null };
+            int resolved = (int)method.Invoke(null, args);
+
+            Assert.AreEqual(0, resolved,
+                "Oversampled packs should use the xatlas heuristic packer even when the UI brute-force toggle is enabled.");
+            StringAssert.Contains("oversample", (string)args[4]);
+        }
+    }
+
+    public class GroupedShellTransferTests
+    {
+        [Test]
+        public void Uv2PixelMargin_ScalesFromResolvedAtlasSize()
+        {
+            var method = typeof(GroupedShellTransfer).GetMethod(
+                "ComputeUv2PixelMargin",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "GroupedShellTransfer should scale UV2 pixel margins from the resolved atlas size");
+
+            object[] args = { 1389, 1360, 1.25f, 0.005f };
+            float margin = (float)method.Invoke(null, args);
+
+            Assert.AreEqual(1.25f / 1360f, margin, 1e-6f);
+            Assert.Less(margin, 0.005f,
+                "A margin tuned for a 256px atlas must shrink when the resolved atlas grows past 1k.");
+        }
+    }
+
+    public class LightmapTransferToolUiTests
+    {
+        [Test]
+        public void BruteForceOption_IsUnavailable_WhenInternalOversampleIsAboveOne()
+        {
+            var method = typeof(LightmapTransferTool).GetMethod(
+                "IsBruteForcePackAvailable",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "LightmapTransferTool should expose the brute-force UI availability rule as a testable helper");
+
+            Assert.IsTrue((bool)method.Invoke(null, new object[] { 1 }));
+            Assert.IsTrue((bool)method.Invoke(null, new object[] { 0 }));
+            Assert.IsFalse((bool)method.Invoke(null, new object[] { 2 }));
+            Assert.IsFalse((bool)method.Invoke(null, new object[] { 4 }));
+        }
+
+        [Test]
+        public void TransferTargetDetection_IgnoresSourceOnlySelection()
+        {
+            var method = typeof(LightmapTransferTool).GetMethod(
+                "HasIncludedTransferTargets",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "LightmapTransferTool should expose target detection as a testable helper");
+
+            var sourceOnly = new List<MeshEntry>
+            {
+                new MeshEntry { lodIndex = 0, include = true, originalMesh = new Mesh() }
+            };
+            try
+            {
+                Assert.IsFalse((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
+
+                sourceOnly.Add(new MeshEntry { lodIndex = 1, include = false, originalMesh = new Mesh() });
+                Assert.IsFalse((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
+
+                sourceOnly[1].include = true;
+                Assert.IsTrue((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
+            }
+            finally
+            {
+                foreach (var e in sourceOnly)
+                    Object.DestroyImmediate(e.originalMesh);
+            }
+        }
     }
 }

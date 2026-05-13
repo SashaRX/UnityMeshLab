@@ -111,8 +111,8 @@ namespace SashaRX.UnityMeshLab
         /// facing resolution parameter still controls UV layout precision and
         /// the final lightmap baked by Unity is unaffected. Padding (both
         /// shell and border) is scaled by the same factor so the gap fraction
-        /// in UV space stays constant. Default 8 — at 256×256 user-facing
-        /// resolution the internal pack runs at 2048×2048 which brings
+        /// in UV space stays constant. Default 4 — at 256×256 user-facing
+        /// resolution the internal pack runs at 1024×1024 which brings
         /// per-shell density spread from ~14× down to ~1.1×.
         /// </summary>
         public int internalOversample;
@@ -185,6 +185,8 @@ namespace SashaRX.UnityMeshLab
     public static class XatlasRepack
     {
         const uint ORPHAN_CHART = uint.MaxValue;
+        const long kBruteCostBudget = 500_000_000L;        // ~5-10s wall
+        const long kHeuristicCostBudget = 20_000_000_000L; // ~30-60s wall
 
         /// <summary>
         /// Flip UV0 shells with negative signed area (mirrored) so all charts
@@ -688,8 +690,41 @@ namespace SashaRX.UnityMeshLab
         /// Returns true if pack completed normally, false if user cancelled
         /// (caller should clean up via xatlasDestroy and skip output read).
         /// </summary>
+        static long ComputePackCost(int shellCount, uint internalRes)
+        {
+            long res = internalRes;
+            return (long)Math.Max(0, shellCount) * res * res;
+        }
+
+        static int ResolvePackBruteForce(
+            int bruteForce, int internalOversample, int shellCount, uint internalRes,
+            out string disabledReason)
+        {
+            disabledReason = null;
+            if (bruteForce == 0) return 0;
+
+            int oversample = internalOversample > 0 ? internalOversample : 1;
+            long packCost = ComputePackCost(shellCount, internalRes);
+
+            if (oversample > 1)
+            {
+                disabledReason =
+                    $"internal oversample {oversample}× uses heuristic pack — cost {packCost / 1_000_000L}M ops ({shellCount} shells × {internalRes}² atlas)";
+                return 0;
+            }
+
+            if (packCost > kBruteCostBudget)
+            {
+                disabledReason =
+                    $"cost {packCost / 1_000_000L}M ops ({shellCount} shells × {internalRes}² atlas) would exceed {kBruteCostBudget / 1_000_000L}M budget";
+                return 0;
+            }
+
+            return bruteForce;
+        }
+
         static bool RunPackCancelable(
-            string label, int shellCount, uint internalRes,
+            string label, int shellCount, uint internalRes, int internalOversample,
             int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
             int bilinear, int blockAlign, int bruteForce,
             int rotateCharts, int rotateChartsToAxis)
@@ -697,15 +732,14 @@ namespace SashaRX.UnityMeshLab
             // Cost preflight — refuse impossibly large packs up front instead
             // of hanging for hours. Brute force is O(shells × W × H); the
             // random heuristic is much cheaper but still scales with area.
-            long packCost = (long)shellCount * (long)internalRes * (long)internalRes;
-            const long kBruteCostBudget = 500_000_000L;     // ~5-10s wall
-            const long kHeuristicCostBudget = 20_000_000_000L; // ~30-60s wall
-
-            if (bruteForce != 0 && packCost > kBruteCostBudget)
+            long packCost = ComputePackCost(shellCount, internalRes);
+            bruteForce = ResolvePackBruteForce(
+                bruteForce, internalOversample, shellCount, internalRes,
+                out string bruteDisabledReason);
+            if (!string.IsNullOrEmpty(bruteDisabledReason))
             {
                 UvtLog.Info(UvtLog.Category.Repack,
-                    $"[xatlas] Brute force pack disabled — cost {packCost / 1_000_000L}M ops × {shellCount} shells × {internalRes}² atlas would exceed {kBruteCostBudget / 1_000_000L}M budget");
-                bruteForce = 0;
+                    $"[xatlas] Brute force pack disabled — {bruteDisabledReason}");
             }
             if (packCost > kHeuristicCostBudget)
             {
@@ -1009,7 +1043,7 @@ namespace SashaRX.UnityMeshLab
                 uint internalPad = opts.padding    * (uint)oversample;
 
                 bool packed = RunPackCancelable(
-                    mesh.name, shells.Count, internalRes,
+                    mesh.name, shells.Count, internalRes, oversample,
                     opts.maxChartSize, internalPad, opts.texelsPerUnit, internalRes,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
@@ -1297,7 +1331,7 @@ namespace SashaRX.UnityMeshLab
                     if (allShells[m] != null) totalShellsM += allShells[m].Count;
 
                 bool packedM = RunPackCancelable(
-                    "MultiMesh", totalShellsM, internalResM,
+                    "MultiMesh", totalShellsM, internalResM, oversampleM,
                     opts.maxChartSize, internalPadM, opts.texelsPerUnit, internalResM,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,

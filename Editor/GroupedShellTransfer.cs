@@ -760,11 +760,29 @@ namespace SashaRX.UnityMeshLab
         //            fewer inverted/zero-area triangles.
         // ═══════════════════════════════════════════════════════════
 
+        static float ComputeUv2PixelMargin(int atlasWidth, int atlasHeight, float pixels, float fallback)
+        {
+            int w = Mathf.Max(0, atlasWidth);
+            int h = Mathf.Max(0, atlasHeight);
+            int dim = (w > 0 && h > 0) ? Mathf.Min(w, h) : Mathf.Max(w, h);
+            return dim > 0 ? pixels / dim : fallback;
+        }
+
         public static TransferResult Transfer(Mesh targetMesh, Mesh sourceMesh,
             List<OverlapSourceHint> previousLodHints = null,
-            List<CrossLodMatchHint> previousLodMatchHints = null)
+            List<CrossLodMatchHint> previousLodMatchHints = null,
+            int sourceAtlasWidth = 0,
+            int sourceAtlasHeight = 0)
         {
             var result = new TransferResult();
+            float uv2OobMargin = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 1.25f, 0.005f);
+            float uv2BoundsTolerance = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 2.5f, 0.01f);
+            if (sourceAtlasWidth > 0 || sourceAtlasHeight > 0)
+            {
+                UvtLog.Verbose(UvtLog.Category.Match,
+                    $"[GroupedTransfer] UV2 tolerances from atlas {sourceAtlasWidth}x{sourceAtlasHeight}: " +
+                    $"oobMargin={uv2OobMargin:F6}, boundsTol={uv2BoundsTolerance:F6}");
+            }
 
             // Source data
             var srcVerts = sourceMesh.vertices;
@@ -2028,7 +2046,7 @@ namespace SashaRX.UnityMeshLab
                             srcTransforms[si],
                             srcIsRibbon[si], srcRibbonAxis[si], srcRibbonAxis2[si], srcRibbonCentroid[si],
                             srcUv2Min, srcUv2Max, groupMembers,
-                            kRayMaxDist);
+                            kRayMaxDist, uv2BoundsTolerance);
 
                         var best = SelectBestCandidate(allCandidates, tShell.faceIndices, tgtTris, tUv0);
                         if (best.HasValue)
@@ -2753,7 +2771,7 @@ namespace SashaRX.UnityMeshLab
                             srcIsRibbon[chosenSrc], srcRibbonAxis[chosenSrc],
                             srcRibbonAxis2[chosenSrc], srcRibbonCentroid[chosenSrc],
                             srcUv2Min, srcUv2Max, null,
-                            kRayMaxDist);
+                            kRayMaxDist, uv2BoundsTolerance);
 
                         var bestOverlap = SelectBestCandidate(
                             overlapCandidates, tShell.faceIndices, tgtTris, tUv0);
@@ -2848,7 +2866,7 @@ namespace SashaRX.UnityMeshLab
                     // the outliers using the matched source's constrained UV0 lookup.
                     if (bestMergedUv2 != null && bestMergedUv2.Count > 1 && chosenSrc >= 0)
                     {
-                        const float kUv2Margin = 0.005f;
+                        float kUv2Margin = uv2OobMargin;
                         Vector2 sMin = srcUv2Min[chosenSrc];
                         Vector2 sMax = srcUv2Max[chosenSrc];
 
@@ -3084,7 +3102,7 @@ namespace SashaRX.UnityMeshLab
                         // Penalize xform if it extrapolates beyond source shell's UV2 bounds.
                         // Extrapolation is the primary cause of cross-source UV2 overlaps,
                         // since interp stays within source UV2 convex hull by construction.
-                        const float kOobMargin = 0.005f;
+                        float kOobMargin = uv2OobMargin;
                         Vector2 srcBMin2 = srcUv2Min[chosenSrc];
                         Vector2 srcBMax2 = srcUv2Max[chosenSrc];
                         Vector2 xfBMin = new Vector2(float.MaxValue, float.MaxValue);
@@ -3494,7 +3512,8 @@ namespace SashaRX.UnityMeshLab
             {
                 var uv = result.uv2[i];
                 uvMin = Vector2.Min(uvMin, uv); uvMax = Vector2.Max(uvMax, uv);
-                if (uv.x < -0.01f || uv.x > 1.01f || uv.y < -0.01f || uv.y > 1.01f) oob++;
+                if (uv.x < -uv2BoundsTolerance || uv.x > 1f + uv2BoundsTolerance ||
+                    uv.y < -uv2BoundsTolerance || uv.y > 1f + uv2BoundsTolerance) oob++;
             }
             if (oob > 0)
                 UvtLog.Warn($"[GroupedTransfer] '{targetMesh.name}': {oob} verts outside 0-1! " +
@@ -4099,7 +4118,7 @@ namespace SashaRX.UnityMeshLab
             // Cross-source UV2 guard data
             Vector2[] srcUv2Min, Vector2[] srcUv2Max, List<int> overlapGroupMembers,
             // Thresholds
-            float kRayMaxDist)
+            float kRayMaxDist, float uv2BoundsTolerance)
         {
             var candidates = new List<OverlapCandidate>();
             int[] tgtTris = null; // not needed — issues counted by caller
@@ -4280,7 +4299,8 @@ namespace SashaRX.UnityMeshLab
                     foreach (var kv in uv2Map)
                     {
                         Vector2 uv = kv.Value;
-                        if (uv.x < -0.01f || uv.x > 1.01f || uv.y < -0.01f || uv.y > 1.01f)
+                        if (uv.x < -uv2BoundsTolerance || uv.x > 1f + uv2BoundsTolerance ||
+                            uv.y < -uv2BoundsTolerance || uv.y > 1f + uv2BoundsTolerance)
                         {
                             partXfRejected = true;
                             break;
@@ -4368,8 +4388,8 @@ namespace SashaRX.UnityMeshLab
                     }
 
                     // Reject if result goes outside 0-1 range (catches wild extrapolation)
-                    if (xfMin.x < -0.01f || xfMax.x > 1.01f ||
-                        xfMin.y < -0.01f || xfMax.y > 1.01f)
+                    if (xfMin.x < -uv2BoundsTolerance || xfMax.x > 1f + uv2BoundsTolerance ||
+                        xfMin.y < -uv2BoundsTolerance || xfMax.y > 1f + uv2BoundsTolerance)
                         rejected = true;
 
                     // Reject if result extends too far beyond source's UV2 AABB
