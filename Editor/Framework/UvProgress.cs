@@ -252,44 +252,51 @@ namespace SashaRX.UnityMeshLab
         // no-op: Progress.Report and EditorWindow.Repaint both require the
         // main thread, so they get swallowed by the try/catch wrapper.
         //
-        // The drain pattern: background threads write to a volatile slot via
+        // The drain pattern: background threads write to a slot via
         // ReportFromBackground; a main-thread EditorApplication.update tick
         // reads the slot and replays it through the regular Report path so
         // the strip + Background Tasks panel both update correctly.
-        static volatile string _bgPhase;
-        static volatile string _bgDetail;
-        static int _bgPumpHooked; // 0=no, 1=yes (Interlocked guard)
+        //
+        // Slot reads / writes are atomic-swapped through Interlocked.Exchange
+        // so the snapshot+clear sequence in BgPump can't race a concurrent
+        // writer and lose an update.
+        //
+        // The update hook is registered ONCE on assembly load from the main
+        // thread (InitializeOnLoadMethod) — registering EditorApplication.update
+        // from a background ReportFromBackground caller would touch a Unity
+        // API from the wrong thread.
+        static string _bgPhase;
+        static string _bgDetail;
+
+        [InitializeOnLoadMethod]
+        static void HookBgPump()
+        {
+            EditorApplication.update -= BgPump;
+            EditorApplication.update += BgPump;
+        }
 
         /// <summary>
         /// Thread-safe version of Report for background callers. Stores the
-        /// payload in a volatile slot drained by an EditorApplication.update
-        /// pump on the main thread. Safe to call from Task.Run / ThreadPool.
+        /// payload in a slot drained by the main-thread EditorApplication
+        /// .update pump. Safe to call from Task.Run / ThreadPool.
         /// </summary>
         public static void ReportFromBackground(string phase, string detail = null)
         {
-            _bgPhase = phase;
-            _bgDetail = detail;
-            EnsureBgPump();
-        }
-
-        static void EnsureBgPump()
-        {
-            // Idempotent: hook the pump once per editor session. Interlocked
-            // so two background callers can't race the registration.
-            if (System.Threading.Interlocked.Exchange(ref _bgPumpHooked, 1) != 0) return;
-            EditorApplication.update += BgPump;
+            // Interlocked.Exchange on object references is atomic — a
+            // concurrent BgPump that interleaves with this writer either
+            // sees the old value (and gets replayed next tick because we
+            // re-stamp) or the new value (and clears it normally).
+            System.Threading.Interlocked.Exchange(ref _bgPhase, phase);
+            System.Threading.Interlocked.Exchange(ref _bgDetail, detail);
         }
 
         static void BgPump()
         {
-            // Snapshot then clear so subsequent ticks don't re-replay the
-            // same payload (Report is cheap but the throttled OnChanged
-            // event would still fire each tick).
-            string phase = _bgPhase;
-            string detail = _bgDetail;
+            // Atomic snapshot+clear so a writer racing the read-then-null
+            // sequence can't have its update silently overwritten.
+            string phase  = System.Threading.Interlocked.Exchange(ref _bgPhase, null);
+            string detail = System.Threading.Interlocked.Exchange(ref _bgDetail, null);
             if (phase == null && detail == null) return;
-            _bgPhase = null;
-            _bgDetail = null;
 
             // Update the snapshot via the normal SetPhase / Report path so
             // both the inline strip and the Background Tasks panel reflect
