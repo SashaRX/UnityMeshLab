@@ -729,6 +729,38 @@ namespace SashaRX.UnityMeshLab
             int bilinear, int blockAlign, int bruteForce,
             int rotateCharts, int rotateChartsToAxis)
         {
+            // Synchronous wrapper used by headless callers (tests). The
+            // interactive UI path uses RunPackCancelableAsync via
+            // RepackMultiAsync so the editor main thread can repaint while
+            // xatlas's native pack runs in the background.
+            return RunPackCancelableAsync(
+                label, shellCount, internalRes, internalOversample,
+                maxChartSize, padding, texelsPerUnit, resolution,
+                bilinear, blockAlign, bruteForce,
+                rotateCharts, rotateChartsToAxis,
+                pumpEditor: false).GetAwaiter().GetResult();
+        }
+
+        /// <summary>
+        /// Async xatlas pack. The native compute+pack runs on a background
+        /// thread (Task.Run); main-thread progress reporting + cancel polling
+        /// is driven by EditorApplication.update so the editor keeps repainting
+        /// — no more "Hold on" busy-wait dialog. Completion is signalled via a
+        /// TaskCompletionSource so async callers can `await` without taking the
+        /// SynchronizationContext deadlock risk that <c>await Task.Delay</c>
+        /// has when a sync wrapper does <c>.GetAwaiter().GetResult()</c>.
+        /// </summary>
+        /// <param name="pumpEditor">When false (sync wrapper for tests), the
+        /// caller is already on a thread that cannot be re-entered by
+        /// EditorApplication.update, so we fall back to a tight Thread.Sleep
+        /// poll. When true (interactive path) the update callback drives polling.</param>
+        static Task<bool> RunPackCancelableAsync(
+            string label, int shellCount, uint internalRes, int internalOversample,
+            int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
+            int bilinear, int blockAlign, int bruteForce,
+            int rotateCharts, int rotateChartsToAxis,
+            bool pumpEditor = true)
+        {
             // Cost preflight — refuse impossibly large packs up front instead
             // of hanging for hours. Brute force is O(shells × W × H); the
             // random heuristic is much cheaper but still scales with area.
@@ -745,7 +777,7 @@ namespace SashaRX.UnityMeshLab
             {
                 UvtLog.Warn(UvtLog.Category.Repack,
                     $"[xatlas] Pack cost {packCost / 1_000_000_000L}B ops is past the {kHeuristicCostBudget / 1_000_000_000L}B safety budget — refusing to start pack. Lower internal oversample or atlas resolution.");
-                return false;
+                return Task.FromResult(false);
             }
 
             var packTask = Task.Run(() =>
@@ -758,35 +790,78 @@ namespace SashaRX.UnityMeshLab
             });
 
             double startTime = EditorApplication.timeSinceStartup;
-            bool cancelled = false;
-            try
+            // Keep the phase string compact — the strip already shows the
+            // outer operation title ("Repack" / "Run Full Pipeline"). Detail
+            // carries the live metrics (shells, elapsed).
+            UvProgress.SetPhase("xatlas pack", fraction: -1f);
+
+            if (!pumpEditor)
             {
+                // Headless / sync path — block on the calling thread. Used by
+                // tests and by sweep loops where the caller is already a sync
+                // method that cannot await without leaking async machinery.
+                bool cancelled = false;
                 while (!packTask.IsCompleted)
                 {
                     double elapsed = EditorApplication.timeSinceStartup - startTime;
-                    string msg = $"{label} — atlas {internalRes}×{internalRes}, {shellCount} shells, {elapsed:F0}s elapsed";
-                    if (EditorUtility.DisplayCancelableProgressBar("xatlas pack", msg, -1f))
-                    {
-                        cancelled = true;
-                        break;
-                    }
-                    System.Threading.Thread.Sleep(50);
+                    UvProgress.Report(-1f, $"{shellCount} shells @ {internalRes}²");
+                    if (UvProgress.CancelRequested) { cancelled = true; break; }
+                    System.Threading.Thread.Sleep(80);
                 }
-
-                // xatlas has no native cancel — wait for the task to actually
-                // finish before returning, otherwise the singleton state is
-                // mid-mutation and the next xatlasCreate would race against it.
-                packTask.Wait();
+                try { packTask.Wait(); }
+                catch (Exception ex)
+                {
+                    UvtLog.Error(UvtLog.Category.Repack, $"[xatlas] Pack task failed: {ex.Message}");
+                    return Task.FromResult(false);
+                }
+                if (cancelled)
+                    UvtLog.Warn(UvtLog.Category.Repack, "[xatlas] Pack cancelled by user (xatlas finished its in-flight operation; result discarded)");
+                return Task.FromResult(!cancelled);
             }
-            finally
+
+            // Interactive path — drive polling from EditorApplication.update so
+            // the editor main thread is never blocked while xatlas's native
+            // pack runs. The continuation that completes the TCS also runs on
+            // the main thread (Unity invokes update callbacks there), so
+            // awaiters resume on main thread without SyncContext hops.
+            var tcs = new TaskCompletionSource<bool>();
+            bool cancelledFlag = false;
+            EditorApplication.CallbackFunction tick = null;
+            tick = () =>
             {
-                EditorUtility.ClearProgressBar();
-            }
+                try
+                {
+                    double elapsed = EditorApplication.timeSinceStartup - startTime;
+                    UvProgress.Report(-1f, $"{shellCount} shells @ {internalRes}²");
 
-            if (cancelled)
-                UvtLog.Warn(UvtLog.Category.Repack, "[xatlas] Pack cancelled by user (xatlas finished its in-flight operation; result discarded)");
+                    if (!cancelledFlag && UvProgress.CancelRequested)
+                        cancelledFlag = true;
 
-            return !cancelled;
+                    if (packTask.IsCompleted)
+                    {
+                        EditorApplication.update -= tick;
+                        if (packTask.IsFaulted)
+                        {
+                            var ex = packTask.Exception?.GetBaseException();
+                            UvtLog.Error(UvtLog.Category.Repack, $"[xatlas] Pack task failed: {ex?.Message}");
+                            tcs.TrySetResult(false);
+                        }
+                        else
+                        {
+                            if (cancelledFlag)
+                                UvtLog.Warn(UvtLog.Category.Repack, "[xatlas] Pack cancelled by user (xatlas finished its in-flight operation; result discarded)");
+                            tcs.TrySetResult(!cancelledFlag);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    EditorApplication.update -= tick;
+                    tcs.TrySetException(ex);
+                }
+            };
+            EditorApplication.update += tick;
+            return tcs.Task;
         }
 
         /// <summary>
@@ -1175,12 +1250,57 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
+        // Delegate signature for the pack step — lets RepackMultiCore share
+        // its body between sync and async callers. Sync entry uses
+        // <see cref="RunPackCancelableSync"/> which wraps the blocking call in
+        // <c>Task.FromResult</c>; the async entry uses
+        // <see cref="RunPackCancelableAsync"/> which yields to
+        // EditorApplication.update so the editor keeps repainting.
+        delegate Task<bool> PackFn(
+            string label, int shellCount, uint internalRes, int internalOversample,
+            int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
+            int bilinear, int blockAlign, int bruteForce,
+            int rotateCharts, int rotateChartsToAxis);
+
+        static Task<bool> RunPackCancelableSync(
+            string label, int shellCount, uint internalRes, int internalOversample,
+            int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
+            int bilinear, int blockAlign, int bruteForce,
+            int rotateCharts, int rotateChartsToAxis)
+            => Task.FromResult(RunPackCancelable(
+                label, shellCount, internalRes, internalOversample,
+                maxChartSize, padding, texelsPerUnit, resolution,
+                bilinear, blockAlign, bruteForce,
+                rotateCharts, rotateChartsToAxis));
+
+        static Task<bool> RunPackCancelableAsyncDelegate(
+            string label, int shellCount, uint internalRes, int internalOversample,
+            int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
+            int bilinear, int blockAlign, int bruteForce,
+            int rotateCharts, int rotateChartsToAxis)
+            => RunPackCancelableAsync(
+                label, shellCount, internalRes, internalOversample,
+                maxChartSize, padding, texelsPerUnit, resolution,
+                bilinear, blockAlign, bruteForce,
+                rotateCharts, rotateChartsToAxis,
+                pumpEditor: true);
+
         // ─────────────────────────────────────────────────────────────────
         // Repack multiple meshes into a single shared atlas.
         // All meshes are added to one xatlas session so their UV2 islands
         // are packed together without overlapping.
+        // Sync entry — used by tests and any caller that cannot await.
+        // Interactive callers should use <see cref="RepackMultiAsync"/> so the
+        // editor main thread keeps repainting during xatlas's native pack.
         // ─────────────────────────────────────────────────────────────────
         public static RepackResult[] RepackMulti(Mesh[] meshes, RepackOptions opts)
+            => RepackMultiCore(meshes, opts, RunPackCancelableSync).GetAwaiter().GetResult();
+
+        /// <summary>Async variant — main thread free during xatlas native pack.</summary>
+        public static Task<RepackResult[]> RepackMultiAsync(Mesh[] meshes, RepackOptions opts)
+            => RepackMultiCore(meshes, opts, RunPackCancelableAsyncDelegate);
+
+        static async Task<RepackResult[]> RepackMultiCore(Mesh[] meshes, RepackOptions opts, PackFn packFn)
         {
             int meshCount = meshes.Length;
             var results = new RepackResult[meshCount];
@@ -1330,7 +1450,7 @@ namespace SashaRX.UnityMeshLab
                 for (int m = 0; m < meshCount; m++)
                     if (allShells[m] != null) totalShellsM += allShells[m].Count;
 
-                bool packedM = RunPackCancelable(
+                bool packedM = await packFn(
                     "MultiMesh", totalShellsM, internalResM, oversampleM,
                     opts.maxChartSize, internalPadM, opts.texelsPerUnit, internalResM,
                     opts.bilinear  ? 1 : 0,

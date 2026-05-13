@@ -15,6 +15,10 @@ namespace SashaRX.UnityMeshLab
 {
     public static class FbxMetricsExporter
     {
+        // Diagnostic / benchmarking menu — hidden unless the user opts into
+        // the debug UI via Project Settings ▸ Mesh Lab ▸ Show Debug UI.
+        [MenuItem("Mesh Lab/Export FBX Metrics (Selected Assets)", true)]
+        static bool ExportForSelection_Validate() => MeshLabProjectSettings.Instance.showDebugUI;
         [MenuItem("Mesh Lab/Export FBX Metrics (Selected Assets)")]
         public static void ExportForSelection()
         {
@@ -34,6 +38,8 @@ namespace SashaRX.UnityMeshLab
             Run(fbxPaths);
         }
 
+        [MenuItem("Mesh Lab/Export FBX Metrics (Scene LODGroup)", true)]
+        static bool ExportForSceneLodGroup_Validate() => MeshLabProjectSettings.Instance.showDebugUI;
         [MenuItem("Mesh Lab/Export FBX Metrics (Scene LODGroup)")]
         public static void ExportForSceneLodGroup()
         {
@@ -90,13 +96,15 @@ namespace SashaRX.UnityMeshLab
 
             var rows = new List<Row>();
             int total = fbxPaths.Count;
+            UvProgress.Begin($"Export FBX Metrics ({total} files)", cancelable: true);
+            try
+            {
             for (int i = 0; i < total; i++)
             {
                 string path = fbxPaths[i];
-                if (EditorUtility.DisplayCancelableProgressBar("Export FBX Metrics",
-                        $"{i + 1}/{total}: {Path.GetFileName(path)}",
-                        (float)i / Mathf.Max(1, total)))
-                    break;
+                UvProgress.Report((float)i / Mathf.Max(1, total),
+                    $"{i + 1}/{total}: {Path.GetFileName(path)}");
+                if (UvProgress.CancelRequested) break;
 
                 var root = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                 if (root == null) continue;
@@ -123,7 +131,8 @@ namespace SashaRX.UnityMeshLab
                         AnalyzeAndDump(r, modelName, root.name, 0, rows, pngDir);
                 }
             }
-            EditorUtility.ClearProgressBar();
+            }
+            finally { UvProgress.End(); }
 
             WriteCsv(outDir, stamp, rows);
             UvtLog.Info(UvtLog.Category.Benchmark,

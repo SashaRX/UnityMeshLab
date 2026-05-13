@@ -25,6 +25,24 @@ The UV2 pipeline preserves the existing UV0 shell structure and uses it as the b
 
 Best results are achieved when all LODs preserve a closely matching UV0 layout.
 
+### Setup-tab pipeline
+
+The **Setup** tab presents the pipeline as a numbered list of toggleable stages, each with its own settings nested directly underneath:
+
+1. **Analyze UV0** — diagnose seams and shell count (cheap diagnostic).
+2. **Weld UV0** — merge false-seam vertices via source-guided weld (recommended).
+3. **Symmetry Split** — split mirrored / overlapping UV0 shells in the source.
+4. **Repack (xatlas)** — pack source UVs into a clean UV2 atlas. Auto-resolution from texel density is the default — pick a target tex/m and the tool derives atlas size from total 3D area.
+5. **Transfer to LODs** — propagate UV2 onto every included target LOD.
+
+A single **▶ Run Full Pipeline** button executes every enabled stage in order. The async path keeps the editor responsive: progress streams to the bottom status bar (and Unity's Background Tasks panel) without ever raising the "Hold on" busy dialog. Cancel mid-flight via the strip's Cancel button — even during xatlas pack and shell transfer.
+
+After a run, each stage row shows the outcome with an icon: `…` running, `✓` success, `✗` failed, `⏭` skipped. While idle, the bottom strip shows the last operation summary (`✓ Run Full Pipeline · 12.3s`).
+
+### Debug surfaces
+
+Diagnostic and benchmarking blocks (Parameter Sweep, Log Filters, UV0 Analysis & Fix, FBX Metrics menus, Sweep Test Suite asset) are hidden by default. Enable them via **Edit → Project Settings → Mesh Lab → Developer → Show Debug UI** when iterating on the pipeline or debugging.
+
 ## LOD Generation
 
 * Generate LOD meshes from LOD0 using meshoptimizer simplification
@@ -117,14 +135,17 @@ git clone https://github.com/SashaRX/UnityLodUvLightmapTransfer.git com.sasharx.
 1. Open **Tools → Mesh Lab**
 2. Select a `LODGroup` in the scene (or select a GameObject with LOD children — LOD Gen tab can auto-create the group)
 3. Use the tabs for your workflow:
-   - **UV2 Transfer**: Analyze → Weld → Repack → Transfer → Apply UV2 / Export FBX
+   - **UV2 Transfer**:
+     - Setup tab: toggle the pipeline stages you want (Analyze / Weld / SymSplit / Repack / Transfer) → **▶ Run Full Pipeline** → Apply UV2 / Export FBX from the sidebar footer
+     - Repack tab: standalone Repack iteration — Resolution / Pack Quality / Density / Compression sections
+     - Transfer tab: per-LOD quality report after a transfer run
    - **LOD Gen**: Configure ratios → Generate LODs (or auto-create LODGroup from renderers)
    - **Collision**: Choose mode → Generate → Apply to Scene / Save to Sidecar
    - **Vertex AO**: Configure samples → Bake → Apply to vertex colors/UVs
 
 ## Requirements
 
-* Unity 2020.3+
+* Unity 6 (6000.0) or newer
 * Prebuilt native libraries included for Windows x64, Linux x64, and macOS (universal)
 
 ## Building the native library

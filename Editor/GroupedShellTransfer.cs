@@ -14,6 +14,7 @@
 // target UV0 differs from source UV0 (always the case on LOD meshes).
 
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
@@ -768,11 +769,96 @@ namespace SashaRX.UnityMeshLab
             return dim > 0 ? pixels / dim : fallback;
         }
 
+        /// <summary>
+        /// Sync entry point — reads mesh data on the calling thread (must be
+        /// the editor main thread) then runs the transfer algorithm inline.
+        /// Used by tests and any synchronous caller. Interactive UI paths
+        /// should call <see cref="TransferAsync"/> so the editor main thread
+        /// is free during the algorithm's heavy compute.
+        /// </summary>
         public static TransferResult Transfer(Mesh targetMesh, Mesh sourceMesh,
             List<OverlapSourceHint> previousLodHints = null,
             List<CrossLodMatchHint> previousLodMatchHints = null,
             int sourceAtlasWidth = 0,
             int sourceAtlasHeight = 0)
+        {
+            ExtractMeshData(targetMesh, sourceMesh,
+                out var srcVerts, out var srcTris, out var srcUv0, out var srcUv2, out var srcNormals, out var sourceMeshName,
+                out var tVerts, out var tNormals, out var tUv0, out var tgtTris, out var vertCount, out var targetMeshName);
+            return TransferCore(
+                srcVerts, srcTris, srcUv0, srcUv2, srcNormals, sourceMeshName,
+                tVerts, tNormals, tUv0, tgtTris, vertCount, targetMeshName,
+                previousLodHints, previousLodMatchHints,
+                sourceAtlasWidth, sourceAtlasHeight);
+        }
+
+        /// <summary>
+        /// Async entry point — Mesh data is read synchronously on the editor
+        /// main thread (Mesh.* accessors are not thread-safe), then the
+        /// pure-compute algorithm body runs on a background thread via
+        /// <see cref="Task.Run"/>. The editor main thread is free for the
+        /// entire compute, so the hub window keeps repainting and inline
+        /// progress updates. <see cref="UvProgress.Report"/> calls inside the
+        /// body forward to Unity's Progress API; the calls are wrapped in
+        /// try/catch so a non-main-thread Progress.Report no-op cleanly.
+        /// </summary>
+        public static Task<TransferResult> TransferAsync(Mesh targetMesh, Mesh sourceMesh,
+            List<OverlapSourceHint> previousLodHints = null,
+            List<CrossLodMatchHint> previousLodMatchHints = null,
+            int sourceAtlasWidth = 0,
+            int sourceAtlasHeight = 0)
+        {
+            ExtractMeshData(targetMesh, sourceMesh,
+                out var srcVerts, out var srcTris, out var srcUv0, out var srcUv2, out var srcNormals, out var sourceMeshName,
+                out var tVerts, out var tNormals, out var tUv0, out var tgtTris, out var vertCount, out var targetMeshName);
+            return Task.Run(() => TransferCore(
+                srcVerts, srcTris, srcUv0, srcUv2, srcNormals, sourceMeshName,
+                tVerts, tNormals, tUv0, tgtTris, vertCount, targetMeshName,
+                previousLodHints, previousLodMatchHints,
+                sourceAtlasWidth, sourceAtlasHeight));
+        }
+
+        // Main-thread mesh read — splits Mesh API access (Mesh.vertices etc.
+        // are not thread-safe) from the pure-compute body so the body can run
+        // in <see cref="Task.Run"/>.
+        static void ExtractMeshData(Mesh targetMesh, Mesh sourceMesh,
+            out Vector3[] srcVerts, out int[] srcTris,
+            out Vector2[] srcUv0, out Vector2[] srcUv2,
+            out Vector3[] srcNormals, out string sourceMeshName,
+            out Vector3[] tVerts, out Vector3[] tNormals,
+            out Vector2[] tUv0, out int[] tgtTris,
+            out int vertCount, out string targetMeshName)
+        {
+            srcVerts = sourceMesh.vertices;
+            srcTris = sourceMesh.triangles;
+            var srcUv0List = new List<Vector2>(); sourceMesh.GetUVs(0, srcUv0List);
+            var srcUv2List = new List<Vector2>(); sourceMesh.GetUVs(1, srcUv2List);
+            srcUv0 = srcUv0List.ToArray();
+            srcUv2 = srcUv2List.ToArray();
+            srcNormals = sourceMesh.normals;
+            sourceMeshName = sourceMesh.name;
+
+            tVerts = targetMesh.vertices;
+            tNormals = targetMesh.normals;
+            var tUv0List = new List<Vector2>(); targetMesh.GetUVs(0, tUv0List);
+            tUv0 = tUv0List.ToArray();
+            vertCount = targetMesh.vertexCount;
+            tgtTris = targetMesh.triangles;
+            targetMeshName = targetMesh.name;
+        }
+
+        // Pure-compute body — operates only on the plain arrays passed in;
+        // safe to invoke from a background thread via Task.Run.
+        static TransferResult TransferCore(
+            Vector3[] srcVerts, int[] srcTris,
+            Vector2[] srcUv0, Vector2[] srcUv2,
+            Vector3[] srcNormals, string sourceMeshName,
+            Vector3[] tVerts, Vector3[] tNormals,
+            Vector2[] tUv0, int[] tgtTris,
+            int vertCount, string targetMeshName,
+            List<OverlapSourceHint> previousLodHints,
+            List<CrossLodMatchHint> previousLodMatchHints,
+            int sourceAtlasWidth, int sourceAtlasHeight)
         {
             var result = new TransferResult();
             float uv2OobMargin = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 1.25f, 0.005f);
@@ -784,23 +870,10 @@ namespace SashaRX.UnityMeshLab
                     $"oobMargin={uv2OobMargin:F6}, boundsTol={uv2BoundsTolerance:F6}");
             }
 
-            // Source data
-            var srcVerts = sourceMesh.vertices;
-            var srcTris = sourceMesh.triangles;
-            var srcUv0List = new List<Vector2>(); sourceMesh.GetUVs(0, srcUv0List);
-            var srcUv2List = new List<Vector2>(); sourceMesh.GetUVs(1, srcUv2List);
-            var srcUv0 = srcUv0List.ToArray();
-            var srcUv2 = srcUv2List.ToArray();
-
             if (srcUv0.Length == 0 || srcUv2.Length == 0)
             { UvtLog.Error("[GroupedTransfer] Source missing UV0/UV2"); return result; }
 
-            // Target data
-            var tVerts = targetMesh.vertices;
-            var tNormals = targetMesh.normals;
-            var tUv0List = new List<Vector2>(); targetMesh.GetUVs(0, tUv0List);
-            var tUv0 = tUv0List.ToArray();
-            int vertCount = targetMesh.vertexCount;
+            UvProgress.ReportFromBackground($"'{targetMeshName}' ← '{sourceMeshName}'");
 
             if (tUv0.Length == 0)
             { UvtLog.Error("[GroupedTransfer] Target missing UV0"); return result; }
@@ -838,8 +911,9 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Phase 1: Extract shells ──
+            UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 1 — extract shells");
+            if (UvProgress.CancelRequested) return result;
             var srcShells = UvShellExtractor.Extract(srcUv0, srcTris);
-            var tgtTris = targetMesh.triangles;
             var tgtShells = UvShellExtractor.Extract(tUv0, tgtTris);
 
             // ── Phase 1a: Merge fragment shells ──
@@ -945,6 +1019,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Phase 1b: Precompute similarity transform per source shell ──
+            UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 1b — transforms ({srcShells.Count} src)");
+            if (UvProgress.CancelRequested) return result;
             var srcTransforms = new SimilarityTransform[srcShells.Count];
             for (int si = 0; si < srcShells.Count; si++)
             {
@@ -1123,6 +1199,8 @@ namespace SashaRX.UnityMeshLab
                 $"overlapGroups={overlapGroups.Count}(maxSize={maxOverlapGroupSize})");
 
             // ── Phase 2a: Match each target shell → best source shell ──
+            UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 2a — match {tgtShells.Count} targets");
+            if (UvProgress.CancelRequested) return result;
             result.targetShellToSourceShell = new int[tgtShells.Count];
             result.targetShellMethod = new int[tgtShells.Count]; // 0=interp, 1=xform, 2=merged
             result.targetShellCentroids = new Vector3[tgtShells.Count];
@@ -1292,7 +1370,6 @@ namespace SashaRX.UnityMeshLab
             // positions and causes visible UV2 jumps between LODs.
             // Keeping the computation for diagnostics only.
             {
-                var srcNormals = sourceMesh.normals;
                 float coverageMaxDist = Mathf.Max(meshDiagonal * 0.05f, 0.01f);
                 float coverageMinDot = 0.5f; // ~60°
 
@@ -1328,6 +1405,8 @@ namespace SashaRX.UnityMeshLab
                 tgtIsFragmentMerged);
 
             // ── Phase 2b: Deduplicate — resolve same-source conflicts ──
+            UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 2b — dedup");
+            if (UvProgress.CancelRequested) return result;
             // When multiple non-merged target shells claim the same source shell
             // (common with overlapping/tiling UV0), keep the best match and
             // reassign others to different source shells at the same 3D location.
@@ -1838,6 +1917,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Phase 3: Transfer UV2 using final source assignments ──
+            UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 3 — transfer {vertCount} verts");
+            if (UvProgress.CancelRequested) return result;
             // Verbose: dump per-shell matching for diagnostics
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
             {
@@ -3432,7 +3513,7 @@ namespace SashaRX.UnityMeshLab
             result.shellsInterpolation = shellsInterpolation;
             result.shellsMerged = shellsMerged;
 
-            UvtLog.Info($"[GroupedTransfer] '{targetMesh.name}': " +
+            UvtLog.Info($"[GroupedTransfer] '{targetMeshName}': " +
                 $"{tgtShells.Count} target → {shellsMatched} matched " +
                 $"(xform:{shellsTransform} interp:{shellsInterpolation} merged:{shellsMerged}), " +
                 $"{transferred}/{vertCount} verts" +
@@ -3461,7 +3542,7 @@ namespace SashaRX.UnityMeshLab
             // which specific shells produce different UV2.
             {
                 var fpSb = new System.Text.StringBuilder();
-                fpSb.Append($"[GroupedTransfer] UV2 fingerprint '{targetMesh.name}':");
+                fpSb.Append($"[GroupedTransfer] UV2 fingerprint '{targetMeshName}':");
                 for (int tsi2 = 0; tsi2 < tgtShells.Count; tsi2++)
                 {
                     var shell = tgtShells[tsi2];
@@ -3516,7 +3597,7 @@ namespace SashaRX.UnityMeshLab
                     uv.y < -uv2BoundsTolerance || uv.y > 1f + uv2BoundsTolerance) oob++;
             }
             if (oob > 0)
-                UvtLog.Warn($"[GroupedTransfer] '{targetMesh.name}': {oob} verts outside 0-1! " +
+                UvtLog.Warn($"[GroupedTransfer] '{targetMeshName}': {oob} verts outside 0-1! " +
                     $"UV2=[{uvMin.x:F3},{uvMin.y:F3}]-[{uvMax.x:F3},{uvMax.y:F3}]");
 
             // Populate cross-LOD overlap hints for subsequent LODs.

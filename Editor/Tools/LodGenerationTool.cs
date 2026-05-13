@@ -344,10 +344,12 @@ namespace SashaRX.UnityMeshLab
             var lods = ctx.LodGroup.GetLODs();
             var newLods = new List<LOD>(lods);
 
+            UvProgress.Begin($"Generate LODs ({generateLodCount} levels)", cancelable: true);
             try
             {
                 for (int lodIdx = 0; lodIdx < generateLodCount; lodIdx++)
                 {
+                    if (UvProgress.CancelRequested) break;
                     float ratio = generateLodRatios[lodIdx];
                     var settings = new MeshSimplifier.SimplifySettings
                     {
@@ -360,8 +362,8 @@ namespace SashaRX.UnityMeshLab
                     };
 
                     float progress = (float)lodIdx / generateLodCount;
-                    EditorUtility.DisplayProgressBar("Generate LODs",
-                        $"LOD{startLod + lodIdx} (ratio {ratio:P0})", progress);
+                    UvProgress.Report(progress,
+                        $"LOD{startLod + lodIdx} (ratio {ratio:P0})");
 
                     var lodRenderers = new List<Renderer>();
                     int lodLevel = startLod + lodIdx;
@@ -464,7 +466,7 @@ namespace SashaRX.UnityMeshLab
                 ctx.LodGroup.SetLODs(newLods.ToArray());
                 AssetDatabase.SaveAssets();
             }
-            finally { EditorUtility.ClearProgressBar(); }
+            finally { UvProgress.End(); }
 
             // Rename source LOD0 renderers to add _LOD0 suffix for cross-LOD matching
             foreach (var (entry, srcMesh) in sourceMeshes)
