@@ -998,7 +998,11 @@ namespace SashaRX.UnityMeshLab
             // aggregate after every successful cell can rewrite summary.csv /
             // winner.json / index.html into a stable path. The final aggregate
             // in the finally block uses the same directory.
-            string sweepStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss",
+            // Millisecond precision — second-level stamps collided when an
+            // operator kicked off two sweeps in the same second (scripted
+            // runs, quick UI re-clicks). Without ms the second sweep would
+            // overwrite the first one's summary.csv / winner.json.
+            string sweepStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff",
                 System.Globalization.CultureInfo.InvariantCulture);
             string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
                                  ?? Application.dataPath;

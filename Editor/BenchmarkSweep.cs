@@ -141,20 +141,51 @@ namespace SashaRX.UnityMeshLab
             }
 
             // Pick the winner by score (failed runs land at -∞ and never win).
+            // If every cell failed, there is no valid winner — `bestIdx` would
+            // otherwise just default to the first failed run and produce a
+            // misleading winner.json. Detect that case and emit summary.csv
+            // only, with no winner artefact.
             int bestIdx = 0;
             for (int i = 1; i < summaries.Count; i++)
                 if (summaries[i].score > summaries[bestIdx].score) bestIdx = i;
+            bool anyValid = summaries.Count > 0
+                         && !float.IsNegativeInfinity(summaries[bestIdx].score);
 
             try
             {
                 WriteSummaryCsv(Path.Combine(sweepDir, "summary.csv"), summaries, sweepDir);
-                WriteWinnerJson(Path.Combine(sweepDir, "winner.json"), summaries, bestIdx);
-                WriteGalleryHtml(Path.Combine(sweepDir, "index.html"), summaries, bestIdx,
-                    BuildRecommendation(summaries, bestIdx), reportsDir);
+                if (anyValid)
+                {
+                    WriteWinnerJson(Path.Combine(sweepDir, "winner.json"), summaries, bestIdx);
+                    WriteGalleryHtml(Path.Combine(sweepDir, "index.html"), summaries, bestIdx,
+                        BuildRecommendation(summaries, bestIdx), reportsDir);
+                }
+                else
+                {
+                    // Best-effort: delete stale winner/index from earlier
+                    // partial runs into the same sweepDir so downstream
+                    // tooling doesn't pick them up.
+                    try
+                    {
+                        string winnerPath = Path.Combine(sweepDir, "winner.json");
+                        if (File.Exists(winnerPath)) File.Delete(winnerPath);
+                        string idxPath = Path.Combine(sweepDir, "index.html");
+                        if (File.Exists(idxPath)) File.Delete(idxPath);
+                    }
+                    catch { /* non-fatal */ }
+                }
             }
             catch (Exception ex)
             {
                 UvtLog.Error(UvtLog.Category.Benchmark, $"[Sweep] Failed to write summary: {ex.Message}");
+                return;
+            }
+
+            if (!anyValid)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[Sweep] All {summaries.Count} cell(s) failed — no winner selected. " +
+                    $"See {Path.Combine(sweepDir, "summary.csv")} for per-cell details.");
                 return;
             }
 
@@ -239,6 +270,7 @@ namespace SashaRX.UnityMeshLab
             long totalMs = 0;
             bool stageRead = false;
             bool hadFailure = false;
+            int targetRowCount = 0;
 
             var inv = CultureInfo.InvariantCulture;
             for (int li = 1; li < lines.Length; li++)
@@ -255,6 +287,7 @@ namespace SashaRX.UnityMeshLab
                 // score otherwise.
                 if (!isSource)
                 {
+                    targetRowCount++;
                     slivers += SafeInt(c, iInverted)  + SafeInt(c, iStretched)
                              + SafeInt(c, iZero)     + SafeInt(c, iOob);
                     overlap += SafeInt(c, iOverlap);
@@ -272,9 +305,15 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
 
+                // atlasUtilization: count every successfully parsed numeric
+                // value, including 0. Dropping zeros (e.g. degenerate or
+                // failed target outputs) used to inflate the mean by
+                // omitting bad rows while keeping good ones — that promoted
+                // partially-broken cells to winner. Skip only missing or
+                // unparseable values.
                 if (iAtlasUtil >= 0 && iAtlasUtil < c.Count
                     && float.TryParse(c[iAtlasUtil],
-                        NumberStyles.Float, inv, out float util) && util > 0f)
+                        NumberStyles.Float, inv, out float util))
                 {
                     utilSum += util;
                     utilCount++;
@@ -303,6 +342,12 @@ namespace SashaRX.UnityMeshLab
             summary.overlapShellPairs    = overlap;
             summary.meanAtlasUtilization = utilCount > 0 ? utilSum / utilCount : 0f;
             summary.totalMs              = totalMs;
+            // No target-LOD rows means transfer never produced anything —
+            // either the model is single-LOD or all target rows were
+            // dropped. Either way the failure check inside the !isSource
+            // branch never fires, so the run would otherwise pass scoring
+            // with zeros across the board. Mark it failed explicitly.
+            if (targetRowCount == 0) hadFailure = true;
             summary.hadFailure           = hadFailure;
             return summary;
         }

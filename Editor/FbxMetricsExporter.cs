@@ -139,7 +139,7 @@ namespace SashaRX.UnityMeshLab
             if (mf == null || mf.sharedMesh == null) return;
 
             var mesh = mf.sharedMesh;
-            var row = AnalyzeMesh($"{modelName}:{lodGroupName}", lodIdx, r.name, mesh);
+            var row = AnalyzeMesh(modelName, lodGroupName, lodIdx, r.name, mesh);
             rows.Add(row);
 
             UvPngWriter.Render(Path.Combine(pngDir,
@@ -175,12 +175,12 @@ namespace SashaRX.UnityMeshLab
             public float shellAreaStdDev;
         }
 
-        static Row AnalyzeMesh(string modelAndGroup, int lodIdx, string rendererName, Mesh mesh)
+        static Row AnalyzeMesh(string modelName, string lodGroupName, int lodIdx, string rendererName, Mesh mesh)
         {
             var row = new Row
             {
-                modelName    = modelAndGroup,
-                lodGroupName = modelAndGroup.Contains(":") ? modelAndGroup.Split(':')[1] : modelAndGroup,
+                modelName    = modelName,
+                lodGroupName = lodGroupName,
                 rendererName = rendererName,
                 lodIndex     = lodIdx,
                 vertexCount  = mesh.vertexCount,
