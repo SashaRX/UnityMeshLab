@@ -208,16 +208,21 @@ namespace SashaRX.UnityMeshLab.Tests
             {
                 new MeshEntry { lodIndex = 0, include = true, originalMesh = new Mesh() }
             };
-            Assert.IsFalse((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
+            try
+            {
+                Assert.IsFalse((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
 
-            sourceOnly.Add(new MeshEntry { lodIndex = 1, include = false, originalMesh = new Mesh() });
-            Assert.IsFalse((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
+                sourceOnly.Add(new MeshEntry { lodIndex = 1, include = false, originalMesh = new Mesh() });
+                Assert.IsFalse((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
 
-            sourceOnly[1].include = true;
-            Assert.IsTrue((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
-
-            foreach (var e in sourceOnly)
-                Object.DestroyImmediate(e.originalMesh);
+                sourceOnly[1].include = true;
+                Assert.IsTrue((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
+            }
+            finally
+            {
+                foreach (var e in sourceOnly)
+                    Object.DestroyImmediate(e.originalMesh);
+            }
         }
     }
 }
