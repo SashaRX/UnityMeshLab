@@ -118,13 +118,14 @@ namespace SashaRX.UnityMeshLab
         public int internalOversample;
 
         /// <summary>
-        /// SashaRX.UnityMeshLab fork-only: skip xatlas's per-chart ceil(extents)
-        /// rescale during PackCharts. Preserves uniform per-shell texel density
-        /// at the cost of atlas utilization (sub-pixel-thin shells now occupy
-        /// a 1-texel slot with empty margin). Required for lightmap UV2 — for
-        /// regular texture atlases stock behaviour (false) packs tighter.
+        /// Snap each shell's pre-pack UV extents to integer atlas-pixel
+        /// values via per-axis scale around the shell centroid. After this,
+        /// xatlas's internal ceil(extents) rescale step (xatlas.cpp:8345-
+        /// 8362, "Scale charts to use the entire texel area") becomes a
+        /// no-op for every shell — uniform per-shell density survives the
+        /// pack instead of being amplified by sub-pixel rounding.
         /// </summary>
-        public bool preserveChartScale;
+        public bool snapShellsToIntegerPixels;
 
         /// <summary>
         /// Fraction of [0,1]² atlas that normalized UVs should sum to AFTER
@@ -160,7 +161,7 @@ namespace SashaRX.UnityMeshLab
             clampLightmapToUnit = true,
             postPackDensityCorrection = false,
             internalOversample = 1,
-            preserveChartScale = true,
+            snapShellsToIntegerPixels = true,
         };
     }
 
@@ -564,6 +565,83 @@ namespace SashaRX.UnityMeshLab
         static bool IsFiniteD(double x) => !(double.IsNaN(x) || double.IsInfinity(x));
 
         /// <summary>
+        /// Pre-snap each shell so its UV bbox extent is an integer number of
+        /// atlas texels. xatlas internally rescales every chart to ceil(extents)
+        /// (xatlas.cpp:8345-8362, upstream Issue #18 wontfix), which non-uniformly
+        /// amplifies sub-pixel shells and destroys uniform texel density.
+        /// By making input extents already integer-pixel-aligned we turn that
+        /// ceil() into a no-op and preserve the equalised density set up by
+        /// TexelDensityNormalizer.
+        ///
+        /// Per-axis scale around the shell centroid: scaleX = ceil(w_px)/w_px,
+        /// scaleY = ceil(h_px)/h_px. Both factors are ≥1, typically ≤ 1+1/w_px
+        /// (≪3% for normal shells, larger only for sub-pixel ribbons — which
+        /// already had broken density anyway). Centroid-anchored scale keeps
+        /// neighbouring shells from colliding in the pre-pack layout.
+        ///
+        /// Operates on the same flat UV buffer that's about to be handed to
+        /// xatlas. Returns the number of shells whose extents needed adjustment.
+        /// </summary>
+        static int SnapShellsToIntegerPixels(
+            float[] uvFlat, List<UvShell> shells, uint atlasRes, string meshLabel)
+        {
+            if (uvFlat == null || shells == null || atlasRes == 0) return 0;
+            int vertCount = uvFlat.Length / 2;
+            float tpu = (float)atlasRes;
+            int snapped = 0;
+            double maxScale = 1.0;
+            foreach (var shell in shells)
+            {
+                if (shell?.vertexIndices == null || shell.vertexIndices.Count == 0) continue;
+
+                float minX = float.PositiveInfinity, minY = float.PositiveInfinity;
+                float maxX = float.NegativeInfinity, maxY = float.NegativeInfinity;
+                foreach (int vi in shell.vertexIndices)
+                {
+                    if ((uint)vi >= (uint)vertCount) continue;
+                    float u = uvFlat[vi * 2];
+                    float v = uvFlat[vi * 2 + 1];
+                    if (u < minX) minX = u;
+                    if (u > maxX) maxX = u;
+                    if (v < minY) minY = v;
+                    if (v > maxY) maxY = v;
+                }
+                if (!(maxX > minX) || !(maxY > minY)) continue;
+
+                float wPx = (maxX - minX) * tpu;
+                float hPx = (maxY - minY) * tpu;
+                if (wPx <= 0f || hPx <= 0f) continue;
+
+                float targetW = Mathf.Ceil(wPx);
+                float targetH = Mathf.Ceil(hPx);
+                float scaleX = targetW / wPx;
+                float scaleY = targetH / hPx;
+
+                // Skip when both axes are already pixel-aligned within FP noise.
+                if (Mathf.Abs(scaleX - 1f) < 1e-6f && Mathf.Abs(scaleY - 1f) < 1e-6f)
+                    continue;
+
+                float cx = (minX + maxX) * 0.5f;
+                float cy = (minY + maxY) * 0.5f;
+                foreach (int vi in shell.vertexIndices)
+                {
+                    if ((uint)vi >= (uint)vertCount) continue;
+                    int idx = vi * 2;
+                    uvFlat[idx]     = cx + (uvFlat[idx]     - cx) * scaleX;
+                    uvFlat[idx + 1] = cy + (uvFlat[idx + 1] - cy) * scaleY;
+                }
+
+                double sMax = Math.Max(scaleX, scaleY);
+                if (sMax > maxScale) maxScale = sMax;
+                snapped++;
+            }
+            if (snapped > 0)
+                UvtLog.Info(UvtLog.Category.Repack,
+                    $"[Density:snap] '{meshLabel}' snapped {snapped}/{shells.Count} shells to integer atlas-pixel extents (atlasRes={atlasRes}, maxScale={maxScale:F4})");
+            return snapped;
+        }
+
+        /// <summary>
         /// Run xatlas ComputeCharts + PackCharts on a background thread while
         /// the main thread polls a cancellable progress bar. xatlas itself
         /// can't be interrupted mid-pack (no native cancel API), so a "cancel"
@@ -579,25 +657,8 @@ namespace SashaRX.UnityMeshLab
             string label, int shellCount, uint internalRes,
             int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
             int bilinear, int blockAlign, int bruteForce,
-            int rotateCharts, int rotateChartsToAxis,
-            int preserveChartScale)
+            int rotateCharts, int rotateChartsToAxis)
         {
-            // Verify the patched DLL is loaded (probe returns 0x5A5A5A5A on
-            // fork build, throws DllNotFoundException/MissingMethodException
-            // on stock build). Log once per pack so we can spot stale DLL
-            // load from a single line in the user's Unity console.
-            try
-            {
-                int probe = XatlasNative.xatlasIsPatchedBuild();
-                UvtLog.Info(UvtLog.Category.Repack,
-                    $"[xatlas-bridge] probe=0x{probe:X8} preserveChartScale={preserveChartScale} (expected 0x5A5A5A5A for patched build)");
-            }
-            catch (System.Exception ex)
-            {
-                UvtLog.Warn(UvtLog.Category.Repack,
-                    $"[xatlas-bridge] STOCK DLL loaded (patched probe failed: {ex.GetType().Name}) — PreserveChartScale will have no effect");
-            }
-
             // Cost preflight — refuse impossibly large packs up front instead
             // of hanging for hours. Brute force is O(shells × W × H); the
             // random heuristic is much cheaper but still scales with area.
@@ -624,8 +685,7 @@ namespace SashaRX.UnityMeshLab
                 XatlasNative.xatlasPackCharts(
                     maxChartSize, padding, texelsPerUnit, resolution,
                     bilinear, blockAlign, bruteForce,
-                    rotateCharts, rotateChartsToAxis,
-                    preserveChartScale);
+                    rotateCharts, rotateChartsToAxis);
             });
 
             double startTime = EditorApplication.timeSinceStartup;
@@ -656,18 +716,6 @@ namespace SashaRX.UnityMeshLab
 
             if (cancelled)
                 UvtLog.Warn(UvtLog.Category.Repack, "[xatlas] Pack cancelled by user (xatlas finished its in-flight operation; result discarded)");
-
-            // Diagnostic: read back patch counters to see whether the rescale
-            // loop was actually skipped at runtime.
-            try
-            {
-                int flagAfter = XatlasNative.xatlasGetPreserveChartScaleFlag();
-                int seen = XatlasNative.xatlasGetStageBSeenCount();
-                int rescaled = XatlasNative.xatlasGetStageBRescaledCount();
-                UvtLog.Info(UvtLog.Category.Repack,
-                    $"[xatlas-bridge] post-pack: flag={flagAfter} stageB-seen={seen} stageB-rescaled={rescaled} (expected rescaled=0 when flag=1)");
-            }
-            catch { /* probe may be missing on older DLL */ }
 
             return !cancelled;
         }
@@ -857,6 +905,21 @@ namespace SashaRX.UnityMeshLab
                     targetCoverage: opts.targetUvCoverage);
             }
 
+            // ── Snap each shell extent to integer atlas-pixel grid ──
+            // Compensates for xatlas's per-chart ceil(extents) rescale
+            // (xatlas.cpp:8345-8362) which otherwise amplifies sub-pixel
+            // shells and destroys the uniform density just set up above.
+            // Snap target is the *internal* pack resolution (after
+            // oversample), since that's what xatlas's ceil() actually
+            // operates on.
+            if (opts.snapShellsToIntegerPixels)
+            {
+                int oversamplePre = opts.internalOversample > 0 ? opts.internalOversample : 1;
+                uint snapRes = opts.resolution * (uint)oversamplePre;
+                if (snapRes > 0)
+                    SnapShellsToIntegerPixels(uvFlat, shells, snapRes, mesh.name);
+            }
+
             // ── Perturb UV0 of overlap-grouped shells ──
             // xatlas dedups charts whose input UVs look identical and lays
             // them at the same atlas slot — catastrophic for lightmap UV2,
@@ -922,8 +985,7 @@ namespace SashaRX.UnityMeshLab
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
                     opts.rotateCharts ? 1 : 0,
-                    opts.rotateChartsToAxis ? 1 : 0,
-                    opts.preserveChartScale ? 1 : 0);
+                    opts.rotateChartsToAxis ? 1 : 0);
                 if (!packed)
                 {
                     result.error = "cancelled";
@@ -1162,6 +1224,17 @@ namespace SashaRX.UnityMeshLab
                             targetCoverage: opts.targetUvCoverage);
                     }
 
+                    // Snap each shell extent to integer atlas-pixel grid so
+                    // xatlas's per-chart ceil(extents) becomes a no-op.
+                    // Target = internal pack resolution (after oversample).
+                    if (opts.snapShellsToIntegerPixels)
+                    {
+                        int oversamplePreM = opts.internalOversample > 0 ? opts.internalOversample : 1;
+                        uint snapResM = opts.resolution * (uint)oversamplePreM;
+                        if (snapResM > 0)
+                            SnapShellsToIntegerPixels(uvFlat, allShells[m], snapResM, meshes[m]?.name ?? $"mesh#{m}");
+                    }
+
                     // Perturb UV0 of overlap-grouped shells so xatlas treats
                     // every tile-instance as a unique chart (lightmap UV2 must
                     // be unique per shell; xatlas otherwise dedups identical
@@ -1213,8 +1286,7 @@ namespace SashaRX.UnityMeshLab
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
                     opts.rotateCharts ? 1 : 0,
-                    opts.rotateChartsToAxis ? 1 : 0,
-                    opts.preserveChartScale ? 1 : 0);
+                    opts.rotateChartsToAxis ? 1 : 0);
                 if (!packedM)
                 {
                     for (int m = 0; m < meshCount; m++)

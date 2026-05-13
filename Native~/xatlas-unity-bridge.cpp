@@ -5,35 +5,9 @@
 
 #include "xatlas.h"
 #include "meshoptimizer.h"
-#include <cstdio>
 #include <cstring>
 #include <cstdint>
 #include <vector>
-
-// SashaRX.UnityMeshLab fork: forward declarations for the patched scale-
-// preservation setter + diagnostic getters implemented in xatlas.cpp.
-namespace xatlas {
-    void SetPreserveChartScale(bool preserve);
-    bool GetPreserveChartScale();
-    int  GetStageBSeenCount();
-    int  GetStageBRescaledCount();
-    void ResetStageBCounters();
-}
-
-// Probe function that confirms this is the patched build. Lets C# log
-// whether the loaded DLL is the fork or the stock build. Returns a magic
-// value that wouldn't appear by accident if the symbol was missing.
-extern "C" {
-#ifdef _WIN32
-#define XA_EXPORT_C __declspec(dllexport)
-#else
-#define XA_EXPORT_C __attribute__((visibility("default")))
-#endif
-XA_EXPORT_C int xatlasIsPatchedBuild() { return 0x5A5A5A5A; }
-XA_EXPORT_C int xatlasGetPreserveChartScaleFlag() { return xatlas::GetPreserveChartScale() ? 1 : 0; }
-XA_EXPORT_C int xatlasGetStageBSeenCount()        { return xatlas::GetStageBSeenCount(); }
-XA_EXPORT_C int xatlasGetStageBRescaledCount()    { return xatlas::GetStageBRescaledCount(); }
-}
 
 #ifdef _WIN32
 #define EXPORT extern "C" __declspec(dllexport)
@@ -104,8 +78,7 @@ EXPORT void xatlasPackCharts(
     int      blockAlign,
     int      bruteForce,
     int      rotateCharts,
-    int      rotateChartsToAxis,
-    int      preserveChartScale)
+    int      rotateChartsToAxis)
 {
     if (!s_atlas) return;
 
@@ -120,11 +93,7 @@ EXPORT void xatlasPackCharts(
     opts.rotateCharts        = (rotateCharts       != 0);
     opts.rotateChartsToAxis  = (rotateChartsToAxis != 0);
 
-    xatlas::ResetStageBCounters();
-    xatlas::SetPreserveChartScale(preserveChartScale != 0);
     xatlas::PackCharts(s_atlas, opts);
-    // Note: don't reset s_preserveChartScale after pack — leave for diagnostic
-    // reads. Next pack call will re-set it anyway via SetPreserveChartScale.
 }
 
 // ── Queries ──

@@ -3,21 +3,26 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.0.5] - 2026-05-12
+## [1.0.5] - 2026-05-13
 
 ### Added
-- **xatlas fork** with `PreserveChartScale` option (default ON). Patches the per-chart `ceil(extents)` rescale in `PackCharts` (xatlas.cpp ~line 8345) that destroyed uniform per-shell lightmap texel density. Upstream Issue #18 (closed wontfix) tracks the same problem. The patched source lives in `Native~/third_party/xatlas/`; CMake builds it directly instead of FetchContent.
-- Auto-resolution mode for Repack (`ResolutionMode.AutoFromTexelDensity`) — pick a target texels-per-meter density and the tool computes the atlas resolution from total 3D area. Manual mode unchanged.
-- `[Density]` and `[Density:postUV2]` diagnostic logs at multiple pipeline checkpoints (postAssign / postOrphan / postBorder / postCorrection / final) so per-shell density drift is visible per stage.
+- **Pre-pack shell snap to integer atlas pixels** (`SnapShellsToIntegerPixels`, default ON). Before handing shells to xatlas, each shell is scaled per-axis around its UV centroid so its bbox extent is an integer number of atlas texels. Makes xatlas's own per-chart `ceil(extents)` rescale (xatlas.cpp ~line 8345, upstream Issue #18 wontfix) a no-op for every chart, so the uniform per-shell density set up by `TexelDensityNormalizer` survives the pack instead of being amplified by sub-pixel rounding. **No xatlas fork required** — the package builds stock xatlas master via `FetchContent`.
+- Auto-resolution mode for Repack (`ResolutionMode.AutoFromTexelDensity`) — pick a target texels-per-meter density and the tool computes the atlas resolution from total 3D area. Manual mode unchanged. Sweep automatically forces Manual so each cell's `atlasResolutions[i]` is the resolution xatlas actually packs at.
+- `[Density]` / `[Density:snap]` / `[Density:postUV2]` diagnostic logs at multiple pipeline checkpoints (snap / postAssign / postOrphan / postBorder / postCorrection / final) so per-shell density drift is visible per stage.
 - Cancellable xatlas pack — `xatlasPackCharts` now runs on a background `Task` while the main thread polls `DisplayCancelableProgressBar`. xatlas itself has no native cancel API, so cancel = wait for in-flight pack to finish, then discard result and stop pipeline.
 - Pack cost-budget preflight — refuses packs that would take many minutes (brute-force budget 500M ops, heuristic 20B). Auto-disables brute force above the budget instead of hanging the editor.
-- UI toggles in Pre-pack panel: `Preserve chart scale (forked xatlas)`, `Post-pack density correction (experimental)`, `Internal pack oversample` popup.
+- UI toggles in Pre-pack panel: `Snap shells to integer atlas pixels (pre-pack)`, `Post-pack density correction (experimental)`, `Internal pack oversample` popup.
 
 ### Fixed
-- Per-shell lightmap texel density variance on real artist UVs (target ~1× from ~14× spread with the patched DLL).
+- Per-shell lightmap texel density variance on real artist UVs (target ~1× from ~14× spread). Achieved purely via input preparation — no xatlas patch required.
+- Sweep `atlasResolutions` dimension was collapsed to a single value when `RepackResolutionMode == AutoFromTexelDensity` (every cell recomputed and overrode the swept value). Sweep now snapshots and forces Manual for the duration.
+- `BenchmarkRecorder` `atlasRes` column now reflects the resolution xatlas actually packed at (post auto-compute), not the raw `ctx.AtlasResolution` UI setting.
+- Benchmark per-mesh records now skip entries with `include == false` so user-deselected meshes carrying stale `TransferResult` / `ValidationReport` don't surface as failed rows in sweep aggregates.
+- `BenchmarkSweep` `totalMs` no longer double-counts inner stages — `pipelineMs` is the outermost wall clock and already contains repack + transfer + validate; summing all four triple-counted inner work. Standalone Repack/Transfer rows (no pipeline wrapper) fall back to the sum of inner stages.
 
 ### Changed
 - `TexelDensityNormalizer` now logs a rich `[Density] pre … post … scale …` summary at Info level instead of a terse "rescaled N/N shells" line.
+- `Native~/third_party/xatlas/` removed; `Native~/CMakeLists.txt` reverted to `FetchContent_Declare(xatlas)` against upstream master.
 
 ## [1.0.0] - 2026-04-20
 

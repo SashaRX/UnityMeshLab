@@ -281,11 +281,20 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 // Stage timings are session-level and repeat on every row;
-                // read them once from the first non-empty record.
+                // read them once from the first non-empty record. pipelineMs
+                // is the outermost wall-clock around ExecFullPipeline and
+                // already contains repackMs + transferMs + validateMs, so
+                // summing all four would triple-count inner work and
+                // penalise sweep cells against the time-weighted score. For
+                // standalone Repack/Transfer rows (no pipeline wrapper)
+                // pipelineMs is 0, so fall back to the sum of inner stages.
                 if (!stageRead)
                 {
-                    totalMs = SafeLong(c, iPipeline) + SafeLong(c, iRepack)
-                            + SafeLong(c, iTransfer) + SafeLong(c, iValidate);
+                    long pipe = SafeLong(c, iPipeline);
+                    long inner = SafeLong(c, iRepack)
+                               + SafeLong(c, iTransfer)
+                               + SafeLong(c, iValidate);
+                    totalMs = pipe > 0 ? pipe : inner;
                     stageRead = true;
                 }
             }

@@ -4,8 +4,14 @@ project(xatlas-unity-bridge LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ── meshoptimizer (still fetched — we don't patch it) ──
+# ── Fetch xatlas source ──
 include(FetchContent)
+FetchContent_Declare(
+    xatlas
+    GIT_REPOSITORY https://github.com/jpcy/xatlas.git
+    GIT_TAG        master
+    GIT_SHALLOW    TRUE
+)
 FetchContent_Declare(
     meshoptimizer
     GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
@@ -15,25 +21,17 @@ FetchContent_Declare(
 set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 # meshoptimizer static lib must be PIC when linked into our shared lib (Linux/GCC)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-FetchContent_MakeAvailable(meshoptimizer)
-
-# ── xatlas: vendored fork with PreserveChartScale patch ──
-# See Native~/third_party/xatlas/xatlas.cpp around the "Scale the charts to
-# use the entire texel area" comment for the patch. Required because stock
-# xatlas unconditionally rescales each chart to its ceil(extents) integer
-# bbox, which destroys uniform per-shell lightmap texel density. Upstream
-# Issue #18 (closed wontfix) tracks the same problem.
-set(XATLAS_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xatlas)
+FetchContent_MakeAvailable(xatlas meshoptimizer)
 
 # ── Build shared library ──
 add_library(xatlas-unity SHARED
     xatlas-unity-bridge.cpp
     src/collision.cpp
-    ${XATLAS_SOURCE_DIR}/xatlas.cpp
+    ${xatlas_SOURCE_DIR}/source/xatlas/xatlas.cpp
 )
 
 target_include_directories(xatlas-unity PRIVATE
-    ${XATLAS_SOURCE_DIR}
+    ${xatlas_SOURCE_DIR}/source/xatlas
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 

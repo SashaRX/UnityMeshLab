@@ -50,7 +50,12 @@ namespace SashaRX.UnityMeshLab
         readonly string symSplitMode;
         readonly bool   repackPerMesh;
         readonly bool   splitTargets;
-        readonly int    atlasResolution;
+        // Resolved (post auto-compute) atlas resolution. The constructor seeds
+        // it with ctx.AtlasResolution; ExecRepackCore overrides it via
+        // SetResolvedAtlasResolution after MeshAreaHelper.ComputeAutoResolution
+        // so AutoFromTexelDensity runs record the value xatlas actually packed
+        // at, not the user-facing setting.
+        int    atlasResolution;
         readonly int    shellPad;
         readonly int    borderPad;
         readonly int    sourceLodIndex;
@@ -104,6 +109,19 @@ namespace SashaRX.UnityMeshLab
             if (Current != null) return NoOpScope.Instance;
             Current = new BenchmarkRecorder(ctx, label, splitTargets, symMode);
             return Current;
+        }
+
+        /// <summary>
+        /// Update the recorded atlas resolution to the value the repack stage
+        /// actually used. Needed when <see cref="ResolutionMode.AutoFromTexelDensity"/>
+        /// computes a resolution at runtime that differs from
+        /// <c>ctx.AtlasResolution</c> — the CSV/JSON would otherwise report
+        /// the stale UI setting and break sweep aggregations that key off
+        /// <c>atlasRes</c>.
+        /// </summary>
+        public void SetResolvedAtlasResolution(int resolved)
+        {
+            if (resolved > 0) atlasResolution = resolved;
         }
 
         // ── Stage timing ──

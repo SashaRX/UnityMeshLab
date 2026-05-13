@@ -560,19 +560,20 @@ namespace SashaRX.UnityMeshLab
                             + "grow past the requested resolution. Lower → safer fit, smaller "
                             + "charts; higher → tighter pack but risk of overflow + downscale."),
                         ctx.TargetUvCoverage, 0.3f, 0.95f);
-                    ctx.PreserveChartScale = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Preserve chart scale (forked xatlas)",
-                            "Skip xatlas's per-chart ceil(extents) rescale in PackCharts "
-                            + "(xatlas.cpp ~line 8345). Stock xatlas non-uniformly stretches "
-                            + "every chart to its integer pixel bbox, which destroys uniform "
-                            + "per-shell lightmap texel density (Issue #18 upstream, closed "
-                            + "wontfix). The patched DLL gates that block under this flag.\n\n"
-                            + "ON: uniform per-shell density end-to-end. Sub-pixel-thin "
-                            + "shells take a 1×1-texel slot with empty margin (lower atlas "
-                            + "utilization). Required for lightmap UV2.\n"
-                            + "OFF: stock xatlas behaviour. Tight pack but per-chart density "
-                            + "variance up to ~14× on typical artist UVs."),
-                        ctx.PreserveChartScale);
+                    ctx.SnapShellsToIntegerPixels = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Snap shells to integer atlas pixels (pre-pack)",
+                            "Before handing shells to xatlas, scale each shell per-axis "
+                            + "around its UV centroid so its bbox extent is an integer "
+                            + "number of atlas texels. Makes xatlas's own per-chart "
+                            + "ceil(extents) rescale (xatlas.cpp ~line 8345, upstream "
+                            + "Issue #18 wontfix) a no-op, so uniform per-shell texel "
+                            + "density survives the pack without forking xatlas.\n\n"
+                            + "ON: uniform per-shell density end-to-end (au2/a3 ≈ const). "
+                            + "Tiny within-shell aspect adjustment (≤1 pixel, typically "
+                            + "<3% for normal shells). Required for lightmap UV2.\n"
+                            + "OFF: stock xatlas behaviour. Per-chart density variance "
+                            + "up to ~14× on typical artist UVs."),
+                        ctx.SnapShellsToIntegerPixels);
                     ctx.PostPackDensityCorrection = EditorGUILayout.ToggleLeft(
                         new GUIContent("Post-pack density correction (experimental)",
                             "After xatlas pack, measure per-shell au2/a3 and shrink over-dense "
@@ -948,7 +949,14 @@ namespace SashaRX.UnityMeshLab
                 // with no CSV row as failed.
                 if (completedSuccessfully && BenchmarkRecorder.Current != null)
                     foreach (var e in ctx.MeshEntries)
+                    {
+                        // Skip excluded entries: a user-deselected mesh has
+                        // stale TransferResult/ValidationReport from a prior
+                        // run and would surface as a failed row in sweep
+                        // aggregates even though the pipeline never touched it.
+                        if (!e.include) continue;
                         BenchmarkRecorder.Current.RecordMesh(e);
+                    }
             }
         }
 
@@ -986,6 +994,14 @@ namespace SashaRX.UnityMeshLab
             bool  origArapOn      = ctx.ReparameterizeStretchedShells;
             int   origArapIters   = ctx.ArapIterations;
             float origStretchThr  = ctx.StretchThreshold;
+            // The sweep iterates an explicit atlasResolutions array. If the
+            // user left AutoFromTexelDensity selected, ExecRepackCore would
+            // overwrite ctx.AtlasResolution every cell and every row would
+            // record the auto value — collapsing the resolution dimension of
+            // the sweep. Force Manual for the duration of the sweep so each
+            // cell's `r` is the resolution xatlas actually packs at.
+            ResolutionMode origResMode = ctx.RepackResolutionMode;
+            ctx.RepackResolutionMode = ResolutionMode.Manual;
 
             // Aligned lists: writtenCsvPaths[i] is the CSV path produced by
             // cellConfigs[i]. Passed to BenchmarkSweep after the loop completes.
@@ -1132,6 +1148,7 @@ namespace SashaRX.UnityMeshLab
                 ctx.ReparameterizeStretchedShells = origArapOn;
                 ctx.ArapIterations                = origArapIters;
                 ctx.StretchThreshold              = origStretchThr;
+                ctx.RepackResolutionMode          = origResMode;
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     $"Sweep complete: {done}/{total} cells{(cancelled ? " (cancelled)" : "")}");
 
@@ -1414,6 +1431,11 @@ namespace SashaRX.UnityMeshLab
                     $"[Repack] Auto-resolution: area={area:F2} m², density={ctx.LightmapDensity:F2} tex/m, " +
                     $"coverage={ctx.TargetUvCoverage:F2} → {resolvedResolution} px");
             }
+            // Stamp the recorder with the resolution xatlas will actually use,
+            // not the raw UI value — relevant for AutoFromTexelDensity mode
+            // where the resolved value can differ by an octave from the user
+            // setting.
+            BenchmarkRecorder.Current?.SetResolvedAtlasResolution((int)resolvedResolution);
             UvtLog.Info($"[Repack] {entries.Count} meshes, res={resolvedResolution}, pad={ctx.ShellPaddingPx}, bdr={ctx.BorderPaddingPx}");
             var validEntries = new List<MeshEntry>();
             var meshCopies = new List<Mesh>();
@@ -1444,7 +1466,7 @@ namespace SashaRX.UnityMeshLab
             opts.targetUvCoverage = ctx.TargetUvCoverage;
             opts.postPackDensityCorrection = ctx.PostPackDensityCorrection;
             opts.internalOversample = ctx.InternalOversample > 0 ? ctx.InternalOversample : 1;
-            opts.preserveChartScale = ctx.PreserveChartScale;
+            opts.snapShellsToIntegerPixels = ctx.SnapShellsToIntegerPixels;
             opts.maxChartSize = ctx.XatlasMaxChartSize;
             opts.bilinear = ctx.XatlasBilinear;
             opts.blockAlign = ctx.XatlasBlockAlign;
@@ -1504,7 +1526,10 @@ namespace SashaRX.UnityMeshLab
                 BenchmarkRecorder.Current?.StageEnd("transfer");
                 if (ownsSession && BenchmarkRecorder.Current != null)
                     foreach (var e in ctx.MeshEntries)
+                    {
+                        if (!e.include) continue;
                         BenchmarkRecorder.Current.RecordMesh(e);
+                    }
             }
         }
 
