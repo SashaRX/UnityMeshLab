@@ -179,4 +179,21 @@ namespace SashaRX.UnityMeshLab.Tests
                 "A margin tuned for a 256px atlas must shrink when the resolved atlas grows past 1k.");
         }
     }
+
+    public class LightmapTransferToolUiTests
+    {
+        [Test]
+        public void BruteForceOption_IsUnavailable_WhenInternalOversampleIsAboveOne()
+        {
+            var method = typeof(LightmapTransferTool).GetMethod(
+                "IsBruteForcePackAvailable",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "LightmapTransferTool should expose the brute-force UI availability rule as a testable helper");
+
+            Assert.IsTrue((bool)method.Invoke(null, new object[] { 1 }));
+            Assert.IsTrue((bool)method.Invoke(null, new object[] { 0 }));
+            Assert.IsFalse((bool)method.Invoke(null, new object[] { 2 }));
+            Assert.IsFalse((bool)method.Invoke(null, new object[] { 4 }));
+        }
+    }
 }

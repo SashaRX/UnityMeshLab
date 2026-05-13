@@ -709,14 +709,14 @@ namespace SashaRX.UnityMeshLab
             if (oversample > 1)
             {
                 disabledReason =
-                    $"internal oversample {oversample}× uses heuristic pack — cost {packCost / 1_000_000L}M ops × {shellCount} shells × {internalRes}² atlas";
+                    $"internal oversample {oversample}× uses heuristic pack — cost {packCost / 1_000_000L}M ops ({shellCount} shells × {internalRes}² atlas)";
                 return 0;
             }
 
             if (packCost > kBruteCostBudget)
             {
                 disabledReason =
-                    $"cost {packCost / 1_000_000L}M ops × {shellCount} shells × {internalRes}² atlas would exceed {kBruteCostBudget / 1_000_000L}M budget";
+                    $"cost {packCost / 1_000_000L}M ops ({shellCount} shells × {internalRes}² atlas) would exceed {kBruteCostBudget / 1_000_000L}M budget";
                 return 0;
             }
 

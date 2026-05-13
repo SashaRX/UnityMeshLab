@@ -23,6 +23,12 @@ namespace SashaRX.UnityMeshLab
         public int    ToolOrder => 0;
         public Action RequestRepaint { set => requestRepaint = value; }
 
+        static bool IsBruteForcePackAvailable(int internalOversample)
+        {
+            int oversample = internalOversample > 0 ? internalOversample : 1;
+            return oversample <= 1;
+        }
+
         // ── Internal tab ──
         enum Tab { Setup, Repack, Transfer }
         Tab tab = Tab.Setup;
@@ -591,10 +597,16 @@ namespace SashaRX.UnityMeshLab
                 }
                 EditorGUILayout.Space(4);
                 EditorGUILayout.LabelField("xatlas options", EditorStyles.miniBoldLabel);
-                ctx.XatlasBruteForce = EditorGUILayout.ToggleLeft(
-                    new GUIContent("Brute force pack",
-                        "Run xatlas's exhaustive packer (slower, tighter atlas). Automatically bypassed when internal oversample is above 1×."),
-                    ctx.XatlasBruteForce);
+                bool bruteForceAvailable = IsBruteForcePackAvailable(ctx.InternalOversample);
+                using (new EditorGUI.DisabledScope(!bruteForceAvailable))
+                {
+                    ctx.XatlasBruteForce = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Brute force pack (1× only)",
+                            "Run xatlas's exhaustive packer (slower, tighter atlas). Only active when Internal pack oversample is 1×; 2× and above use the heuristic packer automatically."),
+                        ctx.XatlasBruteForce);
+                }
+                if (!bruteForceAvailable)
+                    EditorGUILayout.LabelField("Effective packer", "Heuristic (oversample > 1)", EditorStyles.miniLabel);
                 ctx.XatlasRotateCharts = EditorGUILayout.ToggleLeft(
                     new GUIContent("Rotate charts",
                         "xatlas may rotate charts to fit better (recommended)."),
