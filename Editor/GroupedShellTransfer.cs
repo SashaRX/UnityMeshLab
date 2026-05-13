@@ -3667,6 +3667,79 @@ namespace SashaRX.UnityMeshLab
             }
             result.matchHints = matchHints;
 
+            // ── Per-target Transfer summary (TransferDiag category) ──
+            // Single concise line + histogram per target LOD so the user can
+            // run the identity sanity test and per-LOD ratio sweep from
+            // TRANSFER_LOD_QUALITY_PLAN.md without trawling verbose logs.
+            // Emitted at Info level under UvtLog.Category.TransferDiag so the
+            // existing Log filters toggle lets the user gate it independently
+            // of the noisy per-shell Match/Topology output.
+            if (UvtLog.Current >= UvtLog.Level.Info
+                && UvtLog.IsCategoryEnabled(UvtLog.Category.TransferDiag))
+            {
+                int accepted = 0, degraded = 0, poor = 0, rejected = 0, unmatched = 0;
+                if (result.targetShellStatus != null)
+                {
+                    for (int i = 0; i < result.targetShellStatus.Length; i++)
+                    {
+                        switch (result.targetShellStatus[i])
+                        {
+                            case ShellStatus.Accepted:  accepted++;  break;
+                            case ShellStatus.Degraded:  degraded++;  break;
+                            case ShellStatus.Poor:      poor++;      break;
+                            case ShellStatus.Rejected:  rejected++;  break;
+                            case ShellStatus.Unmatched: unmatched++; break;
+                        }
+                    }
+                }
+
+                // Mean / max 3D centroid match distance over matched shells
+                double sumDist = 0; float maxDist = 0; int matchedCount = 0;
+                if (result.targetShellMatchDistSqr != null
+                    && result.targetShellToSourceShell != null)
+                {
+                    for (int i = 0; i < result.targetShellMatchDistSqr.Length; i++)
+                    {
+                        if (result.targetShellToSourceShell[i] < 0) continue;
+                        float dsq = result.targetShellMatchDistSqr[i];
+                        if (float.IsInfinity(dsq) || dsq >= float.MaxValue) continue;
+                        float d = Mathf.Sqrt(Mathf.Max(dsq, 0f));
+                        sumDist += d;
+                        if (d > maxDist) maxDist = d;
+                        matchedCount++;
+                    }
+                }
+                float meanDist = matchedCount > 0 ? (float)(sumDist / matchedCount) : 0f;
+
+                int methodInterp = 0, methodXform = 0, methodMerged = 0;
+                if (result.targetShellMethod != null)
+                {
+                    for (int i = 0; i < result.targetShellMethod.Length; i++)
+                    {
+                        switch (result.targetShellMethod[i])
+                        {
+                            case 0: methodInterp++; break;
+                            case 1: methodXform++;  break;
+                            case 2: methodMerged++; break;
+                        }
+                    }
+                }
+
+                UvtLog.Info(UvtLog.Category.TransferDiag,
+                    $"'{targetMeshName}' ← '{sourceMeshName}': " +
+                    $"shells src={srcShells.Count} tgt={tgtShells.Count} | " +
+                    $"matched={result.shellsMatched} unmatched={unmatched} " +
+                    $"rejected={result.shellsRejected} | " +
+                    $"status A={accepted}/D={degraded}/P={poor}/R={rejected}/U={unmatched} | " +
+                    $"method interp={methodInterp} xform={methodXform} merged={methodMerged} | " +
+                    $"fragMerged={result.fragmentsMerged} dedupConf={result.dedupConflicts} " +
+                    $"overlapFixed={result.shellsOverlapFixed} consistFix={result.consistencyCorrected} | " +
+                    $"matchDist mean={meanDist:F4} max={maxDist:F4} | " +
+                    $"topo iters={result.topologyIterations} fixed={result.topologyFixed} " +
+                    $"capHit={(result.topologyCapHit ? 1 : 0)} | " +
+                    $"verts={result.verticesTransferred}/{result.verticesTotal}");
+            }
+
             return result;
         }
 
