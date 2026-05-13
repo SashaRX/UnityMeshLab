@@ -10,21 +10,29 @@
 #include <cstdint>
 #include <vector>
 
-// SashaRX.UnityMeshLab fork: forward declaration for the patched scale-
-// preservation setter implemented in xatlas.cpp. Lets us toggle the
-// per-chart ceil(extents) rescale on a per-pack basis from the C# side.
-namespace xatlas { void SetPreserveChartScale(bool preserve); }
+// SashaRX.UnityMeshLab fork: forward declarations for the patched scale-
+// preservation setter + diagnostic getters implemented in xatlas.cpp.
+namespace xatlas {
+    void SetPreserveChartScale(bool preserve);
+    bool GetPreserveChartScale();
+    int  GetStageBSeenCount();
+    int  GetStageBRescaledCount();
+    void ResetStageBCounters();
+}
 
 // Probe function that confirms this is the patched build. Lets C# log
 // whether the loaded DLL is the fork or the stock build. Returns a magic
 // value that wouldn't appear by accident if the symbol was missing.
 extern "C" {
 #ifdef _WIN32
-__declspec(dllexport)
+#define XA_EXPORT_C __declspec(dllexport)
 #else
-__attribute__((visibility("default")))
+#define XA_EXPORT_C __attribute__((visibility("default")))
 #endif
-int xatlasIsPatchedBuild() { return 0x5A5A5A5A; }
+XA_EXPORT_C int xatlasIsPatchedBuild() { return 0x5A5A5A5A; }
+XA_EXPORT_C int xatlasGetPreserveChartScaleFlag() { return xatlas::GetPreserveChartScale() ? 1 : 0; }
+XA_EXPORT_C int xatlasGetStageBSeenCount()        { return xatlas::GetStageBSeenCount(); }
+XA_EXPORT_C int xatlasGetStageBRescaledCount()    { return xatlas::GetStageBRescaledCount(); }
 }
 
 #ifdef _WIN32
@@ -112,9 +120,11 @@ EXPORT void xatlasPackCharts(
     opts.rotateCharts        = (rotateCharts       != 0);
     opts.rotateChartsToAxis  = (rotateChartsToAxis != 0);
 
+    xatlas::ResetStageBCounters();
     xatlas::SetPreserveChartScale(preserveChartScale != 0);
     xatlas::PackCharts(s_atlas, opts);
-    xatlas::SetPreserveChartScale(false); // restore default for subsequent stock callers
+    // Note: don't reset s_preserveChartScale after pack — leave for diagnostic
+    // reads. Next pack call will re-set it anyway via SetPreserveChartScale.
 }
 
 // ── Queries ──

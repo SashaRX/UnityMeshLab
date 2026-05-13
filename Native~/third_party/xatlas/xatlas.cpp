@@ -174,6 +174,12 @@ static bool s_printVerbose = false;
 // Controlled by xatlasSetPreserveChartScale() in xatlas-unity-bridge.cpp.
 static bool s_preserveChartScale = false;
 
+// SashaRX.UnityMeshLab fork: diagnostic counters. Bumped from inside the
+// patched Stage B so we can verify from C# whether the rescale loop is
+// actually being skipped at runtime.
+static int s_stageBSeenCount = 0;        // total times Stage B "if (extents>0)" entered
+static int s_stageBRescaledCount = 0;    // times the per-chart rescale loop actually ran
+
 #if XA_PROFILE
 typedef uint64_t Duration;
 
@@ -8359,6 +8365,7 @@ struct Atlas
 			// lightmap UV2 where physical texel-per-world-unit consistency
 			// matters more than packing density.
 			if (extents.x > 0.0f && extents.y > 0.0f) {
+				s_stageBSeenCount++;
 				// Block align: align all chart extents to 4x4 blocks, but taking padding and texel center offset into account.
 				const int blockAlignSizeOffset = options.padding * 2 + 1;
 				int width = ftoi_ceil(extents.x);
@@ -8368,6 +8375,7 @@ struct Atlas
 				if (options.blockAlign)
 					height = align(height + blockAlignSizeOffset, 4) - blockAlignSizeOffset;
 				if (!s_preserveChartScale) {
+					s_stageBRescaledCount++;
 					for (uint32_t v = 0; v < chart->uniqueVertexCount(); v++) {
 						Vector2 &texcoord = chart->uniqueVertexAt(v);
 						texcoord.x = texcoord.x / extents.x * (float)width;
@@ -9917,6 +9925,18 @@ void SetProgressCallback(Atlas *atlas, ProgressFunc progressFunc, void *progress
 void SetPreserveChartScale(bool preserve)
 {
 	internal::s_preserveChartScale = preserve;
+}
+
+// SashaRX.UnityMeshLab fork: read back the current flag value + diagnostic
+// counters so the C# side can verify the patch is actually taking the
+// intended branch at runtime.
+bool GetPreserveChartScale() { return internal::s_preserveChartScale; }
+int  GetStageBSeenCount()    { return internal::s_stageBSeenCount; }
+int  GetStageBRescaledCount(){ return internal::s_stageBRescaledCount; }
+void ResetStageBCounters()
+{
+	internal::s_stageBSeenCount = 0;
+	internal::s_stageBRescaledCount = 0;
 }
 
 void SetAlloc(ReallocFunc reallocFunc, FreeFunc freeFunc)

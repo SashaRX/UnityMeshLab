@@ -657,6 +657,18 @@ namespace SashaRX.UnityMeshLab
             if (cancelled)
                 UvtLog.Warn(UvtLog.Category.Repack, "[xatlas] Pack cancelled by user (xatlas finished its in-flight operation; result discarded)");
 
+            // Diagnostic: read back patch counters to see whether the rescale
+            // loop was actually skipped at runtime.
+            try
+            {
+                int flagAfter = XatlasNative.xatlasGetPreserveChartScaleFlag();
+                int seen = XatlasNative.xatlasGetStageBSeenCount();
+                int rescaled = XatlasNative.xatlasGetStageBRescaledCount();
+                UvtLog.Info(UvtLog.Category.Repack,
+                    $"[xatlas-bridge] post-pack: flag={flagAfter} stageB-seen={seen} stageB-rescaled={rescaled} (expected rescaled=0 when flag=1)");
+            }
+            catch { /* probe may be missing on older DLL */ }
+
             return !cancelled;
         }
 

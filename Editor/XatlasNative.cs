@@ -11,6 +11,10 @@ namespace SashaRX.UnityMeshLab
 
         // ── Fork probe — returns 0x5A5A5A5A on patched build, link error on stock ──
         [DllImport(DLL)] public static extern int xatlasIsPatchedBuild();
+        // ── Patch diagnostic counters (filled by Stage B inside xatlas.cpp) ──
+        [DllImport(DLL)] public static extern int xatlasGetPreserveChartScaleFlag();
+        [DllImport(DLL)] public static extern int xatlasGetStageBSeenCount();
+        [DllImport(DLL)] public static extern int xatlasGetStageBRescaledCount();
 
         // ── Lifecycle ──
         [DllImport(DLL)] public static extern void xatlasCreate();
