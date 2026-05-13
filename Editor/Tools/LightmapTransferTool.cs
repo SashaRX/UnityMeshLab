@@ -375,9 +375,50 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.Space(6);
             DrawPipelineSection();
 
+            // ── Output (always visible, production setting) ──
             EditorGUILayout.Space(8);
+            H("Output");
+            EditorGUI.indentLevel++;
+            ctx.PipeSettings.saveNewMeshAssets = EditorGUILayout.Toggle("Save Assets", ctx.PipeSettings.saveNewMeshAssets);
+            if (ctx.PipeSettings.saveNewMeshAssets)
+                ctx.PipeSettings.savePath = EditorGUILayout.TextField("Path", ctx.PipeSettings.savePath);
+            EditorGUI.indentLevel--;
+
+            // ── Debug / diagnostics ──
+            // Hidden by default — toggleable from Project Settings ▸ Mesh Lab
+            // ▸ Developer. Houses Parameter Sweep, Log Filters, and UV0
+            // Analysis & Fix; production users see a clean Setup tab without
+            // these benchmark / diagnostic blocks.
+            if (MeshLabProjectSettings.Instance.showDebugUI)
+                DrawSetupDebugSection();
+        }
+
+        // ──────────────── Setup tab debug section ──────────────────────
+        //
+        // Houses diagnostic and benchmarking blocks that are not part of
+        // day-to-day production use: Parameter Sweep, Log Filters, UV0
+        // Analysis & Fix. Gated by MeshLabProjectSettings.showDebugUI so
+        // shipping artists see a clean Setup tab; developers flip the
+        // toggle in Project Settings ▸ Mesh Lab ▸ Developer.
+        void DrawSetupDebugSection()
+        {
+            EditorGUILayout.Space(10);
+            // Banner so the debug block is unmistakably distinct from the
+            // production sections above it.
+            var bannerRect = GUILayoutUtility.GetRect(0, 20f, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(bannerRect, new Color(0.55f, 0.35f, 0.10f, 0.30f));
+            var bannerStyle = new GUIStyle(EditorStyles.miniBoldLabel)
+            {
+                alignment = TextAnchor.MiddleLeft,
+                normal = { textColor = new Color(1f, 0.85f, 0.55f) },
+            };
+            GUI.Label(new Rect(bannerRect.x + 6f, bannerRect.y, bannerRect.width - 12f, bannerRect.height),
+                "DEBUG  ·  hide via Project Settings ▸ Mesh Lab ▸ Show Debug UI",
+                bannerStyle);
+
+            // ── Parameter Sweep ──
+            EditorGUILayout.Space(6);
             H("Parameter Sweep");
-            // Parameter sweep: atlasRes × shellPad × borderPad from a TestSuiteAsset.
             sweepSuite = (TestSuiteAsset)EditorGUILayout.ObjectField(
                 "Sweep suite", sweepSuite, typeof(TestSuiteAsset), false);
             int cells = 0;
@@ -408,20 +449,8 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            // ── Log filters ──
             EditorGUILayout.Space(6);
-            H("Pipeline Settings");
-
-            foldOutput = EditorGUILayout.Foldout(foldOutput, "Output", true);
-            if (foldOutput)
-            {
-                EditorGUI.indentLevel++;
-                ctx.PipeSettings.saveNewMeshAssets = EditorGUILayout.Toggle("Save Assets", ctx.PipeSettings.saveNewMeshAssets);
-                if (ctx.PipeSettings.saveNewMeshAssets)
-                    ctx.PipeSettings.savePath = EditorGUILayout.TextField("Path", ctx.PipeSettings.savePath);
-                EditorGUI.indentLevel--;
-            }
-
-            EditorGUILayout.Space(4);
             foldLogFilters = EditorGUILayout.Foldout(foldLogFilters, "Log filters", true);
             if (foldLogFilters)
             {
@@ -438,6 +467,7 @@ namespace SashaRX.UnityMeshLab
                 EditorGUI.indentLevel--;
             }
 
+            // ── UV0 Analysis & Fix ──
             EditorGUILayout.Space(4);
             foldUv0Analysis = EditorGUILayout.Foldout(foldUv0Analysis, "UV0 Analysis & Fix", true);
             if (foldUv0Analysis)
@@ -459,8 +489,6 @@ namespace SashaRX.UnityMeshLab
                     else if (uv0Welded)
                         EditorGUILayout.LabelField("UV0 welded", EditorStyles.miniLabel);
                 }
-
-                // Save/Export buttons are at the top of Setup tab
             }
         }
 
@@ -507,11 +535,15 @@ namespace SashaRX.UnityMeshLab
                             + "Legacy Fixed uses 0.10; Adaptive picks per-shell from area."),
                         symSplitThresholdMode);
                     SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
-                    splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Apply to target LODs (advanced)",
-                            "Run SymSplit on every included LOD instead of only the source. "
-                            + "Coordinated across LODs so each surface keeps its identity."),
-                        splitTargetsInSymmetryStep);
+                    // Advanced / debug-only toggle — hidden from production UI.
+                    if (MeshLabProjectSettings.Instance.showDebugUI)
+                    {
+                        splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft(
+                            new GUIContent("Apply to target LODs (advanced)",
+                                "Run SymSplit on every included LOD instead of only the source. "
+                                + "Coordinated across LODs so each surface keeps its identity."),
+                            splitTargetsInSymmetryStep);
+                    }
                 });
             skipSymmetrySplitStep = !runSym;
 

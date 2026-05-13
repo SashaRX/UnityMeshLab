@@ -15,6 +15,10 @@ namespace SashaRX.UnityMeshLab
 {
     public static class FbxMetricsExporter
     {
+        // Diagnostic / benchmarking menu — hidden unless the user opts into
+        // the debug UI via Project Settings ▸ Mesh Lab ▸ Show Debug UI.
+        [MenuItem("Mesh Lab/Export FBX Metrics (Selected Assets)", true)]
+        static bool ExportForSelection_Validate() => MeshLabProjectSettings.Instance.showDebugUI;
         [MenuItem("Mesh Lab/Export FBX Metrics (Selected Assets)")]
         public static void ExportForSelection()
         {
@@ -34,6 +38,8 @@ namespace SashaRX.UnityMeshLab
             Run(fbxPaths);
         }
 
+        [MenuItem("Mesh Lab/Export FBX Metrics (Scene LODGroup)", true)]
+        static bool ExportForSceneLodGroup_Validate() => MeshLabProjectSettings.Instance.showDebugUI;
         [MenuItem("Mesh Lab/Export FBX Metrics (Scene LODGroup)")]
         public static void ExportForSceneLodGroup()
         {

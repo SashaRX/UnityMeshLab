@@ -24,6 +24,15 @@ namespace SashaRX.UnityMeshLab
         public int aoChannelType;   // 0=VertexColor, 1-5=UV0-UV4
         public int aoChannelComp;   // 0=R/X, 1=G/Y, 2=B, 3=A
 
+        // ── Developer UI ──
+        // When true, the UV2 Transfer tool exposes diagnostic / benchmarking
+        // sections (Parameter Sweep, Log Filters, UV0 Analysis & Fix, the
+        // SymSplit "Apply to target LODs (advanced)" toggle, Skip SymSplit
+        // diagnostic). Off by default — keeps the day-to-day UI minimal for
+        // production users. Toggleable per project from Project Settings ▸
+        // Mesh Lab ▸ Developer.
+        public bool showDebugUI;
+
         static MeshLabProjectSettings s_Instance;
 
         public static MeshLabProjectSettings Instance
@@ -104,6 +113,16 @@ namespace SashaRX.UnityMeshLab
             inst.aoChannelComp = EditorGUILayout.Popup("Component", inst.aoChannelComp, compNames);
             string label = channelTypeNames[inst.aoChannelType] + " " + compNames[inst.aoChannelComp];
             EditorGUILayout.LabelField("Default target:", label, EditorStyles.miniLabel);
+
+            EditorGUILayout.Space(12);
+            EditorGUILayout.LabelField("Developer", EditorStyles.boldLabel);
+            inst.showDebugUI = EditorGUILayout.Toggle(
+                new GUIContent("Show Debug UI",
+                    "When enabled, the UV2 Transfer tool shows diagnostic and "
+                    + "benchmarking sections (Parameter Sweep, Log Filters, UV0 "
+                    + "Analysis & Fix, advanced SymSplit toggles). Off by default "
+                    + "for a clean production UI."),
+                inst.showDebugUI);
 
             if (EditorGUI.EndChangeCheck())
                 Save();
