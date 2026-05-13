@@ -141,27 +141,6 @@ namespace SashaRX.UnityMeshLab
         public bool ClampLightmapToUnit = true;
 
         /// <summary>
-        /// Experimental post-pack density correction. xatlas internally applies
-        /// per-chart ceil(extents.x/y) stretch (xatlas.cpp:8345-8362) that breaks
-        /// uniform density for thin/anisotropic shells. This pass measures the
-        /// resulting per-shell au2/a3 and shrinks over-dense shells uniformly
-        /// around their UV2 centroid to match the median. Shrink-only (never
-        /// expands) so shells can't collide with neighbours. Default OFF —
-        /// experimental, may leave gaps in the atlas where shrunk shells were.
-        /// </summary>
-        /// <summary>
-        /// Pre-pack snap of each shell's UV extents to integer atlas-pixel
-        /// values (per-axis scale around the shell centroid). xatlas's
-        /// PackCharts has an unconditional per-chart rescale to ceil(extents)
-        /// at xatlas.cpp:8345-8362 — sub-pixel-thin shells get amplified by
-        /// the ceil rounding, which destroys uniform per-shell lightmap texel
-        /// density. Pre-snapping makes that step a no-op (extents already
-        /// integer). Trade-off: per-axis scale changes each shell's UV aspect
-        /// by 0-3% in the worst case (sub-pixel extents). Default ON.
-        /// </summary>
-        public bool SnapShellsToIntegerPixels = true;
-
-        /// <summary>
         /// Post-pack density correction. xatlas internally applies per-chart
         /// scaling (sub-pixel anisotropic ceil + per-chart normalization for
         /// extreme aspect ratios) that breaks uniform density. This pass

@@ -560,20 +560,6 @@ namespace SashaRX.UnityMeshLab
                             + "grow past the requested resolution. Lower → safer fit, smaller "
                             + "charts; higher → tighter pack but risk of overflow + downscale."),
                         ctx.TargetUvCoverage, 0.3f, 0.95f);
-                    ctx.SnapShellsToIntegerPixels = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Snap shells to integer atlas pixels (pre-pack)",
-                            "Before handing shells to xatlas, scale each shell per-axis "
-                            + "around its UV centroid so its bbox extent is an integer "
-                            + "number of atlas texels. Makes xatlas's own per-chart "
-                            + "ceil(extents) rescale (xatlas.cpp ~line 8345, upstream "
-                            + "Issue #18 wontfix) a no-op, so uniform per-shell texel "
-                            + "density survives the pack without forking xatlas.\n\n"
-                            + "ON: uniform per-shell density end-to-end (au2/a3 ≈ const). "
-                            + "Tiny within-shell aspect adjustment (≤1 pixel, typically "
-                            + "<3% for normal shells). Required for lightmap UV2.\n"
-                            + "OFF: stock xatlas behaviour. Per-chart density variance "
-                            + "up to ~14× on typical artist UVs."),
-                        ctx.SnapShellsToIntegerPixels);
                     ctx.PostPackDensityCorrection = EditorGUILayout.ToggleLeft(
                         new GUIContent("Post-pack density correction (experimental)",
                             "After xatlas pack, measure per-shell au2/a3 and shrink over-dense "
@@ -1466,7 +1452,6 @@ namespace SashaRX.UnityMeshLab
             opts.targetUvCoverage = ctx.TargetUvCoverage;
             opts.postPackDensityCorrection = ctx.PostPackDensityCorrection;
             opts.internalOversample = ctx.InternalOversample > 0 ? ctx.InternalOversample : 1;
-            opts.snapShellsToIntegerPixels = ctx.SnapShellsToIntegerPixels;
             opts.maxChartSize = ctx.XatlasMaxChartSize;
             opts.bilinear = ctx.XatlasBilinear;
             opts.blockAlign = ctx.XatlasBlockAlign;
