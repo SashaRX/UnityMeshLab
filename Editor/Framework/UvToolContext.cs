@@ -153,16 +153,18 @@ namespace SashaRX.UnityMeshLab
         public bool PostPackDensityCorrection = true;
 
         /// <summary>
-        /// Internal xatlas atlas oversampling factor (1, 2, 4, 8, 16). Default 1.
-        /// In theory oversampling reduces xatlas's ceil(extents) per-chart
-        /// rounding bias by making every extent N× larger in pixel space.
-        /// In practice it doesn't help much on real models because thin shells
-        /// (aspect 100:1 or higher) still have sub-pixel short-dimension extent
-        /// even at 8× oversample, and the longer dimension easily blows the
-        /// brute-force pack cost budget. Use post-pack correction instead;
-        /// this knob stays for advanced manual experiments.
+        /// Internal xatlas atlas oversampling factor (1, 2, 4, 8, 16). Default 4.
+        /// xatlas's Stage B does ceil(extents)/extents per axis per chart;
+        /// running the pack at N× the user resolution makes every shell
+        /// N× larger in pixel space, so most non-degenerate shells move
+        /// out of the sub-pixel regime where Stage B amplifies them.
+        /// Output UVs are normalised to [0,1] via /atlasW, so the
+        /// effective user atlas stays at <see cref="AtlasResolution"/>.
+        /// Higher values reduce density spread further but raise the
+        /// brute-force pack cost (O(N × W × H)). 4× is a good default;
+        /// 8-16× for high-resolution lightmaps with many thin shells.
         /// </summary>
-        public int InternalOversample = 1;
+        public int InternalOversample = 4;
 
         /// <summary>
         /// Fraction of [0,1]² atlas the normalized UVs should sum to.

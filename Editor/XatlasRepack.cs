@@ -940,34 +940,28 @@ namespace SashaRX.UnityMeshLab
                     targetCoverage: opts.targetUvCoverage);
             }
 
-            // ── Perturb UV0 of overlap-grouped shells ──
-            // xatlas dedups charts whose input UVs look identical and lays
-            // them at the same atlas slot — catastrophic for lightmap UV2,
-            // which must be unique per shell. A per-group-member pre-scale
-            // around the rep's centroid breaks the tie so xatlas gives
-            // every tile-instance its own atlas region. Strength is either
-            // user-supplied via opts.perturbStrength or computed adaptively
-            // from atlas resolution + padding.
-            float perturbStrength = opts.perturbStrength > 0f
-                ? opts.perturbStrength
-                : ComputeAdaptivePerturbStrength(opts.resolution, opts.padding);
-
-            // Predict xatlas Stage B amplification BEFORE perturb, then
-            // again after — surfaces which step (Normalize, Perturb, or
-            // xatlas Stage B itself) is actually wrecking density.
+            // Diagnostic: predict xatlas Stage B per-chart amplification
+            // (ceil(extent)/extent per axis) on the actual UVs we hand
+            // xatlas. Reveals which shells are sub-pixel risks BEFORE the
+            // pack — so we know whether the remaining density spread is
+            // legitimate (real sub-pixel ribbons) or our own doing.
             {
                 int oversamplePre = opts.internalOversample > 0 ? opts.internalOversample : 1;
                 uint internalResPre = opts.resolution * (uint)oversamplePre;
-                LogStageBRisk(uvFlat, shells, tris, internalResPre, opts.texelsPerUnit, mesh.name, "postNormalize");
+                LogStageBRisk(uvFlat, shells, tris, internalResPre, opts.texelsPerUnit, mesh.name, "prePack");
             }
 
-            PerturbOverlapShellsUv0(uvFlat, shells, overlapGroups, perturbStrength);
-
-            {
-                int oversamplePre = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                uint internalResPre = opts.resolution * (uint)oversamplePre;
-                LogStageBRisk(uvFlat, shells, tris, internalResPre, opts.texelsPerUnit, mesh.name, "postPerturb");
-            }
+            // NOTE: PerturbOverlapShellsUv0 was a no-op for AddUvMesh paths
+            // — xatlas does NOT dedup UvMesh charts by UV similarity. It
+            // segments faces into charts by faceMaterial (= our shellID,
+            // unique per shell) plus colocal-UV walk gated by
+            // vertexToChartMap (xatlas.cpp:6261-6279), so distinct
+            // shellIDs always land in distinct charts regardless of UV
+            // overlap. The perturb was multiplying sumUV by ~100× on
+            // models with large overlap groups, collapsing the auto-tpu
+            // and pushing every shell back into the sub-pixel regime.
+            // Removed; if a UV-dedup workaround is ever needed it should
+            // be an area-preserving shear, not a cumulative scale.
 
             // ── Group-aware merge of overlapping shells ──
             // Tiled-UV0 models (Wooden_Box_Long etc.) carry N>>K shells where
@@ -1260,28 +1254,13 @@ namespace SashaRX.UnityMeshLab
                             targetCoverage: opts.targetUvCoverage);
                     }
 
-                    // Perturb UV0 of overlap-grouped shells so xatlas treats
-                    // every tile-instance as a unique chart (lightmap UV2 must
-                    // be unique per shell; xatlas otherwise dedups identical
-                    // input UVs into the same atlas slot). Strength is either
-                    // user-supplied or computed adaptively from atlas
-                    // resolution + padding.
-                    float perturbStrengthM = opts.perturbStrength > 0f
-                        ? opts.perturbStrength
-                        : ComputeAdaptivePerturbStrength(opts.resolution, opts.padding);
-
+                    // Diagnostic: predict xatlas Stage B amplification on
+                    // the actual UVs we hand xatlas. See RepackSingle for
+                    // the rationale on removing the previous Perturb call.
                     {
                         int oversamplePreM = opts.internalOversample > 0 ? opts.internalOversample : 1;
                         uint internalResPreM = opts.resolution * (uint)oversamplePreM;
-                        LogStageBRisk(uvFlat, allShells[m], allTris[m], internalResPreM, opts.texelsPerUnit, meshes[m]?.name ?? $"mesh#{m}", "postNormalize");
-                    }
-
-                    PerturbOverlapShellsUv0(uvFlat, allShells[m], allOverlap[m], perturbStrengthM);
-
-                    {
-                        int oversamplePreM = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                        uint internalResPreM = opts.resolution * (uint)oversamplePreM;
-                        LogStageBRisk(uvFlat, allShells[m], allTris[m], internalResPreM, opts.texelsPerUnit, meshes[m]?.name ?? $"mesh#{m}", "postPerturb");
+                        LogStageBRisk(uvFlat, allShells[m], allTris[m], internalResPreM, opts.texelsPerUnit, meshes[m]?.name ?? $"mesh#{m}", "prePack");
                     }
 
                     // Every shell is fed to xatlas as its own chart (UV2 is
