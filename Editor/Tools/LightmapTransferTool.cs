@@ -57,7 +57,7 @@ namespace SashaRX.UnityMeshLab
         Dictionary<int, bool> transferLodFoldouts = new Dictionary<int, bool>();
         Dictionary<int, bool> reportLodFoldouts = new Dictionary<int, bool>();
         bool foldOutput = true;
-        bool foldUv0Analysis, foldRepackSettings = true;
+        bool foldUv0Analysis;
         bool foldLogFilters;
         bool foldValidationOverlay;
         bool splitTargetsInSymmetryStep;
@@ -626,6 +626,34 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.Space(6);
             ColorBtn(new Color(.2f, .75f, .95f), "▶ Run Full Pipeline", 30,
                 () => _ = ExecFullPipelineAsync());
+
+            // Step shortcuts for iterative work — bypasses the full pipeline
+            // and runs only the named stage so the user can poke at Repack
+            // (resolution / padding tweaks) or Transfer (LOD inclusion
+            // tweaks) in a tight loop without re-running Analyze / Weld /
+            // SymSplit every time.
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                using (new EditorGUI.DisabledScope(ctx.LodGroup == null))
+                {
+                    if (GUILayout.Button(new GUIContent("Run Repack only",
+                            "Skip Analyze / Weld / SymSplit and run only Repack on the source LOD."),
+                            GUILayout.Height(22)))
+                    {
+                        var src = ctx.ForLod(ctx.SourceLodIndex);
+                        _ = ctx.RepackPerMesh ? ExecRepackPerMeshAsync(src) : ExecRepackAsync(src);
+                    }
+                }
+                using (new EditorGUI.DisabledScope(!ctx.HasRepack || !hasTargets))
+                {
+                    if (GUILayout.Button(new GUIContent("Run Transfer only",
+                            "Re-run Transfer against the existing source UV2 (requires a prior Repack)."),
+                            GUILayout.Height(22)))
+                    {
+                        _ = ExecTransferAllAsync();
+                    }
+                }
+            }
         }
 
         // Single pipeline stage row: ordinal badge + coloured state stripe +
@@ -993,30 +1021,65 @@ namespace SashaRX.UnityMeshLab
 
         void DrawTransfer()
         {
-            H("UV Transfer (Source -> Targets)");
+            H("UV Transfer (Source → Targets)");
             if (ctx.LodGroup == null) { Warn("Set LODGroup first."); return; }
             if (!ctx.HasRepack) { Warn("Run Repack first."); return; }
 
+            // Per-LOD summary card. ✓ when every included entry in the LOD
+            // has a transferredMesh, dimmed dot otherwise. Header carries
+            // mesh count and aggregate vertex coverage so the user sees the
+            // shape of the result without expanding each row.
             for (int li = 0; li < ctx.LodCount; li++)
             {
                 if (li == ctx.SourceLodIndex) continue;
                 var ee = ctx.ForLod(li);
                 if (ee.Count == 0) continue;
-                bool done = ee.All(e => e.transferredMesh != null);
+                bool allDone = ee.All(e => e.transferredMesh != null);
+                bool noneDone = ee.All(e => e.transferredMesh == null);
+
+                int totalV = 0, transferredV = 0;
+                foreach (var e in ee)
+                {
+                    if (e.shellTransferResult == null) continue;
+                    totalV += e.shellTransferResult.verticesTotal;
+                    transferredV += e.shellTransferResult.verticesTransferred;
+                }
+                float coverage = totalV > 0 ? transferredV * 100f / totalV : 0f;
+
+                string headerIcon = allDone ? "✓" : (noneDone ? "•" : "◐");
+                string summary = totalV > 0
+                    ? $"   LOD{li}  ·  {ee.Count} mesh{(ee.Count == 1 ? "" : "es")}  ·  {coverage:F0}% verts"
+                    : $"   LOD{li}  ·  {ee.Count} mesh{(ee.Count == 1 ? "" : "es")}";
+
+                // Status colour on the icon glyph; the foldout label itself
+                // stays the default colour so it remains readable.
+                var oldContent = GUI.contentColor;
+                GUI.contentColor = allDone
+                    ? new Color(0.45f, 0.90f, 0.55f)
+                    : (noneDone ? new Color(0.65f, 0.65f, 0.65f) : new Color(0.95f, 0.78f, 0.35f));
                 if (!transferLodFoldouts.ContainsKey(li)) transferLodFoldouts[li] = false;
-                transferLodFoldouts[li] = EditorGUILayout.Foldout(transferLodFoldouts[li], (done ? "V" : "O") + " LOD" + li, true);
+                transferLodFoldouts[li] = EditorGUILayout.Foldout(transferLodFoldouts[li], headerIcon + summary, true);
+                GUI.contentColor = oldContent;
                 if (!transferLodFoldouts[li]) continue;
+
+                EditorGUI.indentLevel++;
                 foreach (var e in ee)
                 {
                     string extra = "";
                     if (e.shellTransferResult != null)
                     {
                         var r = e.shellTransferResult;
-                        float p = r.verticesTotal > 0 ? r.verticesTransferred * 100f / r.verticesTotal : 0;
-                        extra = $" ({r.shellsMatched}sh, {p:F0}%)";
+                        float p = r.verticesTotal > 0 ? r.verticesTransferred * 100f / r.verticesTotal : 0f;
+                        extra = $"  ·  {r.shellsMatched} sh  ·  {p:F0}%";
                     }
-                    EditorGUILayout.LabelField("  " + (e.transferredMesh != null ? "V" : "O") + " " + e.renderer.name + extra, EditorStyles.miniLabel);
+                    string rowIcon = e.transferredMesh != null ? "✓" : "•";
+                    GUI.contentColor = e.transferredMesh != null
+                        ? new Color(0.45f, 0.90f, 0.55f)
+                        : new Color(0.65f, 0.65f, 0.65f);
+                    EditorGUILayout.LabelField(rowIcon + "  " + e.renderer.name + extra, EditorStyles.miniLabel);
+                    GUI.contentColor = oldContent;
                 }
+                EditorGUI.indentLevel--;
             }
 
             EditorGUILayout.Space(6);
