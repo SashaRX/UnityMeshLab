@@ -566,12 +566,13 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Pre-snap each shell so its UV bbox extent is an integer number of
-        /// atlas texels. xatlas internally rescales every chart to ceil(extents)
-        /// (xatlas.cpp:8345-8362, upstream Issue #18 wontfix), which non-uniformly
-        /// amplifies sub-pixel shells and destroys uniform texel density.
-        /// By making input extents already integer-pixel-aligned we turn that
-        /// ceil() into a no-op and preserve the equalised density set up by
-        /// TexelDensityNormalizer.
+        /// atlas texels at the supplied <paramref name="tpu"/> (texels-per-unit)
+        /// scale. xatlas internally rescales every chart to ceil(extents *
+        /// tpu) (xatlas.cpp:8345-8362, upstream Issue #18 wontfix); by making
+        /// the extents already integer-pixel-aligned at the *same* tpu that
+        /// is then passed to xatlasPackCharts, that ceil() becomes a no-op
+        /// for every chart and the uniform density set up by
+        /// TexelDensityNormalizer survives the pack.
         ///
         /// Per-axis scale around the shell centroid: scaleX = ceil(w_px)/w_px,
         /// scaleY = ceil(h_px)/h_px. Both factors are ≥1, typically ≤ 1+1/w_px
@@ -583,11 +584,10 @@ namespace SashaRX.UnityMeshLab
         /// xatlas. Returns the number of shells whose extents needed adjustment.
         /// </summary>
         static int SnapShellsToIntegerPixels(
-            float[] uvFlat, List<UvShell> shells, uint atlasRes, string meshLabel)
+            float[] uvFlat, List<UvShell> shells, float tpu, string meshLabel)
         {
-            if (uvFlat == null || shells == null || atlasRes == 0) return 0;
+            if (uvFlat == null || shells == null || !(tpu > 0f)) return 0;
             int vertCount = uvFlat.Length / 2;
-            float tpu = (float)atlasRes;
             int snapped = 0;
             double maxScale = 1.0;
             foreach (var shell in shells)
@@ -637,8 +637,30 @@ namespace SashaRX.UnityMeshLab
             }
             if (snapped > 0)
                 UvtLog.Info(UvtLog.Category.Repack,
-                    $"[Density:snap] '{meshLabel}' snapped {snapped}/{shells.Count} shells to integer atlas-pixel extents (atlasRes={atlasRes}, maxScale={maxScale:F4})");
+                    $"[Density:snap] '{meshLabel}' snapped {snapped}/{shells.Count} shells to integer atlas-pixel extents (tpu={tpu:F2}, maxScale={maxScale:F4})");
             return snapped;
+        }
+
+        /// <summary>
+        /// Compute the effective texels-per-unit value that will be passed to
+        /// xatlasPackCharts when <see cref="RepackOptions.snapShellsToIntegerPixels"/>
+        /// is on. Must match the grid the snap step aligns to — otherwise
+        /// xatlas's internal ceil(extents * tpu) rescale (Stage B) will fire
+        /// again and undo the snap.
+        ///
+        /// After <see cref="TexelDensityNormalizer"/> the total UV chart area
+        /// equals <c>targetUvCoverage</c> (e.g. 0.75). We want the same total
+        /// area in texel space to occupy <c>internalRes² × targetCoverage</c>,
+        /// which gives <c>tpu = internalRes × sqrt(targetCoverage)</c>. With
+        /// this tpu xatlas does not need to expand the atlas to fit, so the
+        /// integer-pixel grid the snap aligned to is the grid xatlas packs at.
+        /// </summary>
+        static float ComputeEffectiveTpu(RepackOptions opts, uint internalRes)
+        {
+            if (opts.texelsPerUnit > 0f) return opts.texelsPerUnit;
+            if (internalRes == 0) return 0f;
+            float cov = opts.targetUvCoverage > 0f ? opts.targetUvCoverage : 0.75f;
+            return internalRes * Mathf.Sqrt(cov);
         }
 
         /// <summary>
@@ -905,20 +927,20 @@ namespace SashaRX.UnityMeshLab
                     targetCoverage: opts.targetUvCoverage);
             }
 
-            // ── Snap each shell extent to integer atlas-pixel grid ──
-            // Compensates for xatlas's per-chart ceil(extents) rescale
-            // (xatlas.cpp:8345-8362) which otherwise amplifies sub-pixel
-            // shells and destroys the uniform density just set up above.
-            // Snap target is the *internal* pack resolution (after
-            // oversample), since that's what xatlas's ceil() actually
-            // operates on.
-            if (opts.snapShellsToIntegerPixels)
-            {
-                int oversamplePre = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                uint snapRes = opts.resolution * (uint)oversamplePre;
-                if (snapRes > 0)
-                    SnapShellsToIntegerPixels(uvFlat, shells, snapRes, mesh.name);
-            }
+            // ── Compute internal pack dims + effective tpu ──
+            // Hoisted before snap so the snap step aligns to the *same*
+            // texels-per-unit grid that xatlasPackCharts will use. xatlas's
+            // per-chart ceil(extents * tpu) Stage B rescale only becomes a
+            // no-op when the two grids agree; if xatlas computes its own
+            // tpu (texelsPerUnit=0) and grows the atlas to fit, the snap
+            // grid is wrong and density gets amplified anyway.
+            int oversample = opts.internalOversample > 0 ? opts.internalOversample : 1;
+            uint internalRes = opts.resolution * (uint)oversample;
+            uint internalPad = opts.padding    * (uint)oversample;
+            float effectiveTpu = ComputeEffectiveTpu(opts, internalRes);
+
+            if (opts.snapShellsToIntegerPixels && effectiveTpu > 0f)
+                SnapShellsToIntegerPixels(uvFlat, shells, effectiveTpu, mesh.name);
 
             // ── Perturb UV0 of overlap-grouped shells ──
             // xatlas dedups charts whose input UVs look identical and lays
@@ -967,20 +989,15 @@ namespace SashaRX.UnityMeshLab
                     return result;
                 }
 
-                // Oversample the internal xatlas atlas. xatlas's unconditional
-                // per-chart ceil(extents) stretch (xatlas.cpp:8345-8362) breaks
-                // uniform density when shells have sub-pixel extents in atlas
-                // space. Running the pack at oversample× the user-facing
-                // resolution makes every chart's extent oversample× larger, so
-                // ceil rounding becomes fractional. Padding scales by the same
-                // factor to keep the gap fraction in UV space constant.
-                int oversample = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                uint internalRes = opts.resolution * (uint)oversample;
-                uint internalPad = opts.padding    * (uint)oversample;
-
+                // internalRes / internalPad / effectiveTpu were computed
+                // above the snap step so the snap grid matches the pack
+                // grid. Passing effectiveTpu (not opts.texelsPerUnit, which
+                // is 0 by default) keeps xatlas from auto-computing its own
+                // tpu and growing the atlas — that would invalidate the
+                // integer-pixel grid the snap aligned to.
                 bool packed = RunPackCancelable(
                     mesh.name, shells.Count, internalRes,
-                    opts.maxChartSize, internalPad, opts.texelsPerUnit, internalRes,
+                    opts.maxChartSize, internalPad, effectiveTpu, internalRes,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
@@ -1225,14 +1242,17 @@ namespace SashaRX.UnityMeshLab
                     }
 
                     // Snap each shell extent to integer atlas-pixel grid so
-                    // xatlas's per-chart ceil(extents) becomes a no-op.
-                    // Target = internal pack resolution (after oversample).
+                    // xatlas's per-chart ceil(extents * tpu) becomes a no-op.
+                    // Uses the same effectiveTpu the joint-pack call below
+                    // passes to xatlas — otherwise the snap grid wouldn't
+                    // line up with the actual pack grid.
                     if (opts.snapShellsToIntegerPixels)
                     {
                         int oversamplePreM = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                        uint snapResM = opts.resolution * (uint)oversamplePreM;
-                        if (snapResM > 0)
-                            SnapShellsToIntegerPixels(uvFlat, allShells[m], snapResM, meshes[m]?.name ?? $"mesh#{m}");
+                        uint internalResMSnap = opts.resolution * (uint)oversamplePreM;
+                        float tpuMSnap = ComputeEffectiveTpu(opts, internalResMSnap);
+                        if (tpuMSnap > 0f)
+                            SnapShellsToIntegerPixels(uvFlat, allShells[m], tpuMSnap, meshes[m]?.name ?? $"mesh#{m}");
                     }
 
                     // Perturb UV0 of overlap-grouped shells so xatlas treats
@@ -1269,11 +1289,13 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 // Pack all charts together into one atlas
-                // See RepackSingle for oversample rationale (ceil-stretch fix)
-                // and RunPackCancelable for cost-budget + cancel handling.
+                // See RepackSingle for oversample rationale and ComputeEffectiveTpu
+                // for why we pass an explicit tpu instead of letting xatlas
+                // compute its own (must match the snap grid above).
                 int oversampleM = opts.internalOversample > 0 ? opts.internalOversample : 1;
                 uint internalResM = opts.resolution * (uint)oversampleM;
                 uint internalPadM = opts.padding    * (uint)oversampleM;
+                float effectiveTpuM = ComputeEffectiveTpu(opts, internalResM);
 
                 int totalShellsM = 0;
                 for (int m = 0; m < meshCount; m++)
@@ -1281,7 +1303,7 @@ namespace SashaRX.UnityMeshLab
 
                 bool packedM = RunPackCancelable(
                     "MultiMesh", totalShellsM, internalResM,
-                    opts.maxChartSize, internalPadM, opts.texelsPerUnit, internalResM,
+                    opts.maxChartSize, internalPadM, effectiveTpuM, internalResM,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
