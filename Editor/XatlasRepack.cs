@@ -939,14 +939,6 @@ namespace SashaRX.UnityMeshLab
             uint internalPad = opts.padding    * (uint)oversample;
             float effectiveTpu = ComputeEffectiveTpu(opts, internalRes);
 
-            if (opts.snapShellsToIntegerPixels && effectiveTpu > 0f)
-            {
-                // For UvMesh input xatlas sets surfaceArea = parametricArea
-                // (xatlas.cpp:8255), so the per-chart scale collapses to
-                // plain effectiveTpu — no sqrt(s/p) factor required.
-                SnapShellsToIntegerPixels(uvFlat, shells, effectiveTpu, mesh.name);
-            }
-
             // ── Perturb UV0 of overlap-grouped shells ──
             // xatlas dedups charts whose input UVs look identical and lays
             // them at the same atlas slot — catastrophic for lightmap UV2,
@@ -959,6 +951,19 @@ namespace SashaRX.UnityMeshLab
                 ? opts.perturbStrength
                 : ComputeAdaptivePerturbStrength(opts.resolution, opts.padding);
             PerturbOverlapShellsUv0(uvFlat, shells, overlapGroups, perturbStrength);
+
+            // Snap MUST run after perturb — perturb rescales overlap-group
+            // members around the group rep's centroid, which changes their
+            // bbox extents. Snapping before perturb leaves fractional pixel
+            // extents going into xatlas; doing it after locks the final
+            // pre-xatlas extents onto the integer-texel grid.
+            if (opts.snapShellsToIntegerPixels && effectiveTpu > 0f)
+            {
+                // For UvMesh input xatlas sets surfaceArea = parametricArea
+                // (xatlas.cpp:8255), so the per-chart scale collapses to
+                // plain effectiveTpu — no sqrt(s/p) factor required.
+                SnapShellsToIntegerPixels(uvFlat, shells, effectiveTpu, mesh.name);
+            }
 
             // ── Group-aware merge of overlapping shells ──
             // Tiled-UV0 models (Wooden_Box_Long etc.) carry N>>K shells where
@@ -1259,19 +1264,6 @@ namespace SashaRX.UnityMeshLab
                             targetCoverage: opts.targetUvCoverage);
                     }
 
-                    // Snap each shell extent to integer atlas-pixel grid so
-                    // xatlas's per-chart ceil(extents * tpu) becomes a no-op.
-                    // UvMesh input has surfaceArea = parametricArea, so the
-                    // per-chart scale = effectiveTpu uniformly.
-                    if (opts.snapShellsToIntegerPixels)
-                    {
-                        int oversamplePreM = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                        uint internalResMSnap = opts.resolution * (uint)oversamplePreM;
-                        float tpuMSnap = ComputeEffectiveTpu(opts, internalResMSnap);
-                        if (tpuMSnap > 0f)
-                            SnapShellsToIntegerPixels(uvFlat, allShells[m], tpuMSnap, meshes[m]?.name ?? $"mesh#{m}");
-                    }
-
                     // Perturb UV0 of overlap-grouped shells so xatlas treats
                     // every tile-instance as a unique chart (lightmap UV2 must
                     // be unique per shell; xatlas otherwise dedups identical
@@ -1282,6 +1274,18 @@ namespace SashaRX.UnityMeshLab
                         ? opts.perturbStrength
                         : ComputeAdaptivePerturbStrength(opts.resolution, opts.padding);
                     PerturbOverlapShellsUv0(uvFlat, allShells[m], allOverlap[m], perturbStrengthM);
+
+                    // Snap MUST come after perturb — perturb rescales overlap-
+                    // group members and would otherwise undo the snap. See
+                    // RepackSingle for the full rationale.
+                    if (opts.snapShellsToIntegerPixels)
+                    {
+                        int oversamplePreM = opts.internalOversample > 0 ? opts.internalOversample : 1;
+                        uint internalResMSnap = opts.resolution * (uint)oversamplePreM;
+                        float tpuMSnap = ComputeEffectiveTpu(opts, internalResMSnap);
+                        if (tpuMSnap > 0f)
+                            SnapShellsToIntegerPixels(uvFlat, allShells[m], tpuMSnap, meshes[m]?.name ?? $"mesh#{m}");
+                    }
 
                     // Every shell is fed to xatlas as its own chart (UV2 is
                     // a unique-per-shell channel; the deleted "merge overlap
