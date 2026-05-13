@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
-- **`UvProgress` service** (`Editor/Framework/UvProgress.cs`) — central non-modal progress reporting. Routes status to `UnityEditor.Progress` (Background Tasks panel) plus an inline strip drawn at the bottom of the hub window. Supports nested scopes, phase labels, indeterminate/determinate fractions, cooperative cancellation via `UvProgress.CancelRequested`, a thread-safe `ReportFromBackground` for `Task.Run` callers (with `Interlocked.Exchange`-guarded snapshot/clear so a racing writer can't lose an update; the `EditorApplication.update` pump is hooked once on assembly load from the main thread via `[InitializeOnLoadMethod]`), and a `Last` outcome shown while idle.
+- **`UvProgress` service** (`Editor/Framework/UvProgress.cs`) — central non-modal progress reporting. Routes status to `UnityEditor.Progress` (Background Tasks panel) plus an inline strip drawn at the bottom of the hub window. Supports nested scopes, phase labels, indeterminate/determinate fractions, cooperative cancellation via `UvProgress.CancelRequested` (`Volatile.Read`-backed `_cancelFlag` so background `Task.Run` work observes user-cancel reliably across the memory barrier), a thread-safe `ReportFromBackground` for `Task.Run` callers (with `Interlocked.Exchange`-guarded snapshot/clear so a racing writer can't lose an update; the `EditorApplication.update` pump is hooked once on assembly load from the main thread via `[InitializeOnLoadMethod]`), and a `Last` outcome shown while idle.
 - **Inline progress strip in `UvToolHub`** — sits at the bottom of the window as a status bar. Reserves fixed height unconditionally so toggling active state doesn't displace any layout. Shows title · phase · detail · elapsed in distinct columns with a Cancel button pinned to the right; while idle displays `✓ / ✗ Last-operation · 12.3s`. Marquee animation for indeterminate fractions; orange tint while cancelling.
 - **Async pipeline (no main-thread freeze)**:
   - `XatlasRepack.RunPackCancelableAsync` polls the native pack via `EditorApplication.update` + `TaskCompletionSource`. Main thread stays free while xatlas runs in `Task.Run`; the "Hold on — Waiting for Unity's code" dialog no longer fires.
@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   - Repack tab: the `Advanced (debug)` section (manual texels-per-UV-unit, post-pack density correction, SymSplit threshold mode).
   - Unity top menu: `Mesh Lab ▸ Export FBX Metrics (Selected Assets)` and `(Scene LODGroup)`.
   - Assets ▸ Create context menu: `Mesh Lab ▸ Sweep Test Suite` (was always-visible `Lightmap UV Tool/Test Suite` via `[CreateAssetMenu]`).
+- **In-flight gate + `FireAndForget` helper** for fire-and-forget async UI actions. The "Run Full Pipeline" / "Run Repack only" / "Run Transfer only" / "Repack All" / "Transfer All Targets" buttons now sit inside an `EditorGUI.DisabledScope` on `_pipelineInFlight` so a second click can't launch an interleaving run; `FireAndForget` attaches `ContinueWith` on the Unity sync context to log Task faults through `UvtLog.Error`, release the gate, and call `UvProgress.Fail` so a thrown exception can't leave the strip stuck on a stale phase.
+- **Cancel-aware benchmark recording** in `ExecTransferAllImpl` — mirrors the `completedSuccessfully` guard `ExecFullPipelineImpl` already uses. Cancelled transfers no longer emit stale `shellTransferResult` / validation rows that taint sweep aggregates.
 
 ### Changed
 - **Default `RepackResolutionMode` is now `AutoFromTexelDensity`** (was `Manual`). Uniform real-world texels-per-meter is the desired outcome for lightmaps; the previous fixed-resolution default produced wildly different texel density per asset depending on world size.
@@ -33,6 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Removed
 - All `EditorUtility.DisplayProgressBar` / `DisplayCancelableProgressBar` / `ClearProgressBar` calls. Replaced with `UvProgress` everywhere (XatlasRepack, LightmapTransferTool, VertexAOBaker.Cpu, FbxMetricsExporter, LodGenerationTool).
 - `[CreateAssetMenu(menuName = "Lightmap UV Tool/Test Suite")]` from `TestSuiteAsset` — replaced with a gated `[MenuItem("Assets/Create/Mesh Lab/Sweep Test Suite")]`.
+- Transfer tab decluttered: removed the misplaced `Generate LODs` section (full LOD-Gen UI lives in the dedicated LOD Gen tab), the `FBX Export` block (Export as New / Overwrite Source — both duplicates of the sidebar footer's `Export New FBX` / `Overwrite FBX`), and the `Save FBX from main (_main)` button (duplicate of the footer's `Backup from main`). Transfer tab now reads: per-LOD status list → `Transfer All Targets` → `Quality Report` → `Validation Overlay` → `Apply UV2` actions.
 
 ## [1.0.5] - 2026-05-13
 
