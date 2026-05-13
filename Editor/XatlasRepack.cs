@@ -995,14 +995,25 @@ namespace SashaRX.UnityMeshLab
                 // is 0 by default) keeps xatlas from auto-computing its own
                 // tpu and growing the atlas — that would invalidate the
                 // integer-pixel grid the snap aligned to.
+                //
+                // rotateCharts must be forced off when snapping: xatlas
+                // rotates each chart to minimise its axis-aligned bbox
+                // before computing extents, so a snap done on the input
+                // UVs no longer matches the post-rotation bbox xatlas
+                // actually feeds into ceil(). Without rotation the
+                // post-pack extents equal the snapped input extents and
+                // Stage B becomes a true no-op.
+                int packRotate = opts.snapShellsToIntegerPixels ? 0 : (opts.rotateCharts ? 1 : 0);
+                int packRotateAxis = opts.snapShellsToIntegerPixels ? 0 : (opts.rotateChartsToAxis ? 1 : 0);
+
                 bool packed = RunPackCancelable(
                     mesh.name, shells.Count, internalRes,
                     opts.maxChartSize, internalPad, effectiveTpu, internalRes,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
-                    opts.rotateCharts ? 1 : 0,
-                    opts.rotateChartsToAxis ? 1 : 0);
+                    packRotate,
+                    packRotateAxis);
                 if (!packed)
                 {
                     result.error = "cancelled";
@@ -1301,14 +1312,19 @@ namespace SashaRX.UnityMeshLab
                 for (int m = 0; m < meshCount; m++)
                     if (allShells[m] != null) totalShellsM += allShells[m].Count;
 
+                // rotateCharts forced off when snapping — see RepackSingle
+                // for the rationale (rotation invalidates the snap grid).
+                int packRotateM = opts.snapShellsToIntegerPixels ? 0 : (opts.rotateCharts ? 1 : 0);
+                int packRotateAxisM = opts.snapShellsToIntegerPixels ? 0 : (opts.rotateChartsToAxis ? 1 : 0);
+
                 bool packedM = RunPackCancelable(
                     "MultiMesh", totalShellsM, internalResM,
                     opts.maxChartSize, internalPadM, effectiveTpuM, internalResM,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
-                    opts.rotateCharts ? 1 : 0,
-                    opts.rotateChartsToAxis ? 1 : 0);
+                    packRotateM,
+                    packRotateAxisM);
                 if (!packedM)
                 {
                     for (int m = 0; m < meshCount; m++)
