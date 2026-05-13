@@ -195,5 +195,29 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse((bool)method.Invoke(null, new object[] { 2 }));
             Assert.IsFalse((bool)method.Invoke(null, new object[] { 4 }));
         }
+
+        [Test]
+        public void TransferTargetDetection_IgnoresSourceOnlySelection()
+        {
+            var method = typeof(LightmapTransferTool).GetMethod(
+                "HasIncludedTransferTargets",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "LightmapTransferTool should expose target detection as a testable helper");
+
+            var sourceOnly = new List<MeshEntry>
+            {
+                new MeshEntry { lodIndex = 0, include = true, originalMesh = new Mesh() }
+            };
+            Assert.IsFalse((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
+
+            sourceOnly.Add(new MeshEntry { lodIndex = 1, include = false, originalMesh = new Mesh() });
+            Assert.IsFalse((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
+
+            sourceOnly[1].include = true;
+            Assert.IsTrue((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
+
+            foreach (var e in sourceOnly)
+                Object.DestroyImmediate(e.originalMesh);
+        }
     }
 }

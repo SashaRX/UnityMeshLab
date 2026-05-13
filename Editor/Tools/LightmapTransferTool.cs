@@ -29,6 +29,20 @@ namespace SashaRX.UnityMeshLab
             return oversample <= 1;
         }
 
+        static bool HasIncludedTransferTargets(IEnumerable<MeshEntry> entries, int sourceLodIndex)
+        {
+            if (entries == null) return false;
+            foreach (var e in entries)
+            {
+                if (e == null) continue;
+                if (!e.include) continue;
+                if (e.lodIndex == sourceLodIndex) continue;
+                if (e.originalMesh == null) continue;
+                return true;
+            }
+            return false;
+        }
+
         // ── Internal tab ──
         enum Tab { Setup, Repack, Transfer }
         Tab tab = Tab.Setup;
@@ -1250,6 +1264,10 @@ namespace SashaRX.UnityMeshLab
                     savedMeshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
 
             float[] separationConfigs = { 0.10f, 0.05f, 0.20f };
+            bool hasTransferTargets = HasIncludedTransferTargets(ctx.MeshEntries, ctx.SourceLodIndex);
+            if (!hasTransferTargets)
+                UvtLog.Warn("[Pipeline] No included target LOD meshes; running source repack only and skipping transfer/auto-tune.");
+
             int bestRejected = int.MaxValue;
             float bestCoverage = 0f;
             int bestConfigIdx = 0;
@@ -1307,7 +1325,11 @@ namespace SashaRX.UnityMeshLab
                     else ExecRepack(src);
 
                     // 5. Transfer
-                    if (ctx.HasRepack) ExecTransferAll();
+                    if (ctx.HasRepack && hasTransferTargets) ExecTransferAll();
+                    else if (ctx.HasRepack) ctx.HasTransfer = false;
+
+                    if (!hasTransferTargets)
+                        break;
 
                     // Evaluate quality
                     int totalRejected = 0;
@@ -1518,6 +1540,14 @@ namespace SashaRX.UnityMeshLab
             BenchmarkRecorder.Current?.StageBegin("transfer");
             try
             {
+                if (!HasIncludedTransferTargets(ctx.MeshEntries, ctx.SourceLodIndex))
+                {
+                    ctx.HasTransfer = false;
+                    UvtLog.Warn("[Transfer] No included target LOD meshes; transfer skipped.");
+                    requestRepaint?.Invoke();
+                    return;
+                }
+
                 accumulatedOverlapHints.Clear();
                 accumulatedMatchHints.Clear();
                 for (int li = 0; li < ctx.LodCount; li++)
