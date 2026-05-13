@@ -826,12 +826,19 @@ namespace SashaRX.UnityMeshLab
 
         void DrawRepackResolutionControls()
         {
-            ctx.RepackResolutionMode = (ResolutionMode)EditorGUILayout.EnumPopup(
+            // Friendly Popup instead of EnumPopup so "AutoFromTexelDensity"
+            // doesn't show up as a run-on label. Order matches the enum.
+            int modeIdx = ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity ? 1 : 0;
+            int newModeIdx = EditorGUILayout.Popup(
                 new GUIContent("Mode",
                     "Manual: pick atlas resolution (power of two), tool shows effective density.\n"
-                    + "AutoFromTexelDensity: pick target texels/m, tool sizes atlas from total 3D area "
+                    + "Auto from texel density: pick target texels/m, tool sizes atlas from total 3D area "
                     + "rounded up to next power of two, clamped to [64, 4096]."),
-                ctx.RepackResolutionMode);
+                modeIdx,
+                new[] { "Manual", "Auto from texel density" });
+            ctx.RepackResolutionMode = newModeIdx == 1
+                ? ResolutionMode.AutoFromTexelDensity
+                : ResolutionMode.Manual;
 
             double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
                 ctx.ForLod(ctx.SourceLodIndex)
