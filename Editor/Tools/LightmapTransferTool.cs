@@ -703,223 +703,290 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ──────────────── Repack ────────────────
+        //
+        // Standalone Repack tab — surfaces every xatlas setting for the user
+        // who wants to drive Repack on its own (e.g. iterating on resolution
+        // / brute force / oversample without running Analyze + Weld + Transfer).
+        // Settings are grouped into four collapsible sections so the panel
+        // is navigable instead of one 25-row flat list:
+        //   • Resolution      — atlas size, padding, density target
+        //   • Pack Quality    — packer choice, rotation, oversample, max chart
+        //   • Density         — per-shell normalisation, ARAP, coverage, clamp
+        //   • Compression     — bilinear safety, block alignment
+        //   • Advanced (debug)— manual texels-per-UV-unit, post-pack correction
+        //                       (gated by Project Settings ▸ Mesh Lab ▸ Show
+        //                       Debug UI — these are tuning knobs for the
+        //                       package author, not production users).
+
+        bool foldRepackResolution = true;
+        bool foldRepackQuality    = true;
+        bool foldRepackDensity    = true;
+        bool foldRepackCompression;
+        bool foldRepackAdvanced;
 
         void DrawRepack()
         {
-            H("xatlas Repack (LOD0 -> UV2)");
+            H("xatlas Repack");
             if (ctx.LodGroup == null) { Warn("Set LODGroup first."); return; }
-            foldRepackSettings = EditorGUILayout.Foldout(foldRepackSettings, "Settings", true);
-            if (foldRepackSettings)
+
+            // ── Resolution & padding ───────────────────────────────────
+            foldRepackResolution = EditorGUILayout.Foldout(foldRepackResolution, "Resolution", true);
+            if (foldRepackResolution)
             {
                 EditorGUI.indentLevel++;
-                ctx.RepackResolutionMode = (ResolutionMode)EditorGUILayout.EnumPopup(
-                    new GUIContent("Resolution mode",
-                        "Manual: you pick the atlas resolution (power of two) and "
-                        + "the tool shows the effective texel density.\n"
-                        + "Auto from texel density: you pick a target texels/meter "
-                        + "and the tool sizes the atlas from total 3D surface area, "
-                        + "rounded up to the next power of two and clamped to "
-                        + "[64, 4096]. Padding stays in pixels in both modes."),
-                    ctx.RepackResolutionMode);
-
-                double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
-                    ctx.ForLod(ctx.SourceLodIndex)
-                        .Where(e => e.originalMesh != null)
-                        .Select(e => e.originalMesh));
-
-                if (ctx.RepackResolutionMode == ResolutionMode.Manual)
-                {
-                    ctx.AtlasResolution = EditorGUILayout.IntField(
-                        new GUIContent("Resolution",
-                            "Atlas resolution in pixels. Power-of-two values are "
-                            + "recommended (64, 128, 256, 512, 1024, 2048, 4096)."),
-                        ctx.AtlasResolution);
-                    int resForDisplay = Mathf.Max(1, ctx.AtlasResolution);
-                    double effDensity = total3DArea > 0.0
-                        ? resForDisplay / System.Math.Sqrt(total3DArea / Mathf.Max(0.0001f, ctx.TargetUvCoverage))
-                        : 0.0;
-                    EditorGUILayout.LabelField(
-                        " ",
-                        $"3D area: {total3DArea:F2} m² · effective ≈ {effDensity:F1} texels/m",
-                        EditorStyles.miniLabel);
-                }
-                else
-                {
-                    ctx.LightmapDensity = EditorGUILayout.Slider(
-                        new GUIContent("Texels per meter",
-                            "Target lightmap density. Tool computes the atlas "
-                            + "resolution as ceil_pow2(sqrt(area × density² / coverage)), "
-                            + "clamped to [64, 4096]. Typical values: 5-20 for props, "
-                            + "1-5 for large environment pieces."),
-                        ctx.LightmapDensity, 0.5f, 100f);
-                    uint autoRes = MeshAreaHelper.ComputeAutoResolution(
-                        total3DArea, ctx.LightmapDensity, ctx.TargetUvCoverage);
-                    EditorGUILayout.LabelField(
-                        " ",
-                        $"3D area: {total3DArea:F2} m² · computed resolution: {autoRes} px",
-                        EditorStyles.miniLabel);
-                }
-                ctx.ShellPaddingPx = EditorGUILayout.IntSlider("Shell Padding", ctx.ShellPaddingPx, 0, 16);
-                ctx.BorderPaddingPx = EditorGUILayout.IntSlider("Border Padding", ctx.BorderPaddingPx, 0, 16);
-                EditorGUILayout.Space(4);
-                EditorGUILayout.LabelField("Pre-pack", EditorStyles.miniBoldLabel);
-                ctx.NormalizeTexelDensity = EditorGUILayout.ToggleLeft(
-                    new GUIContent("Normalize texel density",
-                        "Per-shell UV0 rescale so UV-area is proportional to 3D surface area. "
-                        + "Produces uniform texels-per-world-unit in the baked lightmap. "
-                        + "Disable to preserve an existing baked-texture UV layout."),
-                    ctx.NormalizeTexelDensity);
-                using (new EditorGUI.DisabledScope(!ctx.NormalizeTexelDensity))
-                {
-                    ctx.ReparameterizeStretchedShells = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Auto-fix stretched shells (ARAP)",
-                            "Measure each shell's Sander L² stretch (UV vs 3D isometric distortion) and "
-                            + "re-parameterize shells above the threshold via ARAP local-global. "
-                            + "Replaces the previous per-shell-aspect affine hack — this works at the "
-                            + "parameterization level, redistributing vertices rather than scaling the "
-                            + "whole shell. Default ON; turn off only when preserving artist's exact UV0."),
-                        ctx.ReparameterizeStretchedShells);
-                    using (new EditorGUI.DisabledScope(!ctx.ReparameterizeStretchedShells))
-                    {
-                        EditorGUI.indentLevel++;
-                        ctx.StretchThreshold = EditorGUILayout.Slider(
-                            new GUIContent("  L² stretch threshold",
-                                "Shells with Sander L² stretch above this value are sent to ARAP. "
-                                + "1.0 = isometric (perfect); 1.5 = typical artist unwrap (default); "
-                                + "2.0 = noticeable stretch; 3.0+ = severely distorted. Lower fires "
-                                + "ARAP on more shells; higher reserves it for clearly broken cases."),
-                            ctx.StretchThreshold, 1.0f, 3.0f);
-                        ctx.ArapIterations = EditorGUILayout.IntSlider(
-                            new GUIContent("  ARAP iterations",
-                                "Local-global iteration count. 50 is the default and matches 3ds Max's "
-                                + "Relax-by-polygon-angles. 100-200 for highly curved/twisted strips."),
-                            ctx.ArapIterations, 10, 200);
-                        EditorGUI.indentLevel--;
-                    }
-                    ctx.ClampLightmapToUnit = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Clamp lightmap UV2 to [0,1]",
-                            "Clamp every output UV2 coord into the unit square on both source "
-                            + "(post-xatlas) and target (post-transfer) meshes. Cheap safety "
-                            + "net against verts pushed a fraction of a texel outside by border "
-                            + "padding, perturb fixups, or the topology enforcer — out-of-range "
-                            + "UVs sample neighbouring atlas regions and bleed wrong light. "
-                            + "Default ON."),
-                        ctx.ClampLightmapToUnit);
-                    ctx.TargetUvCoverage = EditorGUILayout.Slider(
-                        new GUIContent("UV coverage budget",
-                            "Fraction of [0,1]² atlas that normalized UVs sum to. "
-                            + "Leaves slack for bin-packing inefficiency so the atlas doesn't "
-                            + "grow past the requested resolution. Lower → safer fit, smaller "
-                            + "charts; higher → tighter pack but risk of overflow + downscale."),
-                        ctx.TargetUvCoverage, 0.3f, 0.95f);
-                    ctx.PostPackDensityCorrection = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Post-pack density correction (experimental)",
-                            "After xatlas pack, measure per-shell au2/a3 and shrink over-dense "
-                            + "shells toward the median around their UV2 centroid. Compensates "
-                            + "xatlas's per-chart ceil(extents) stretch which breaks uniform "
-                            + "density for thin/anisotropic shells. Shrink-only (never expands) "
-                            + "so neighbours can't collide. Leaves gaps in the atlas where "
-                            + "shrunk shells used to be — trades coverage for density uniformity."),
-                        ctx.PostPackDensityCorrection);
-                    int[] osValues = { 1, 2, 4, 8, 16 };
-                    string[] osLabels = { "1× (default — off)", "2×", "4×", "8×", "16×" };
-                    int currentOs = Mathf.Max(1, ctx.InternalOversample);
-                    int osIdx = 0;
-                    for (int i = 0; i < osValues.Length; i++)
-                        if (osValues[i] == currentOs) { osIdx = i; break; }
-                    int newOsIdx = EditorGUILayout.Popup(
-                        new GUIContent("Internal pack oversample",
-                            "Internal xatlas atlas size = user resolution × this factor. "
-                            + "xatlas's per-chart ceil(extents) stretch (xatlas.cpp:8345) "
-                            + "breaks uniform density when shells have sub-pixel extents. "
-                            + "Oversampling makes ceil rounding fractional. UV2 still "
-                            + "normalized to [0,1]; Unity bakes at its own resolution.\n\n"
-                            + "Default 4× brings density spread from ~14× down to ~2×.\n"
-                            + "2× and above disable brute force pack "
-                            + "automatically (search space becomes minutes-per-atlas).\n"
-                            + "1× = off, original xatlas behaviour."),
-                        osIdx, osLabels);
-                    ctx.InternalOversample = osValues[Mathf.Clamp(newOsIdx, 0, osValues.Length - 1)];
-                }
-                EditorGUILayout.Space(4);
-                EditorGUILayout.LabelField("xatlas options", EditorStyles.miniBoldLabel);
-                bool bruteForceAvailable = IsBruteForcePackAvailable(ctx.InternalOversample);
-                using (new EditorGUI.DisabledScope(!bruteForceAvailable))
-                {
-                    ctx.XatlasBruteForce = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Brute force pack (1× only)",
-                            "Run xatlas's exhaustive packer (slower, tighter atlas). Only active when Internal pack oversample is 1×; 2× and above use the heuristic packer automatically."),
-                        ctx.XatlasBruteForce);
-                }
-                if (!bruteForceAvailable)
-                    EditorGUILayout.LabelField("Effective packer", "Heuristic (oversample > 1)", EditorStyles.miniLabel);
-                ctx.XatlasRotateCharts = EditorGUILayout.ToggleLeft(
-                    new GUIContent("Rotate charts",
-                        "xatlas may rotate charts to fit better (recommended)."),
-                    ctx.XatlasRotateCharts);
-                using (new EditorGUI.DisabledScope(!ctx.XatlasRotateCharts))
-                {
-                    ctx.XatlasRotateChartsToAxis = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Snap rotation to axis",
-                            "Constrain chart rotation to 0/90/180/270° (preserves texel alignment)."),
-                        ctx.XatlasRotateChartsToAxis);
-                }
-                ctx.XatlasBilinear = EditorGUILayout.ToggleLeft(
-                    new GUIContent("Bilinear-safe padding",
-                        "Pad each chart by 1 extra texel so bilinear sampling at runtime "
-                        + "doesn't leak neighbor charts. Default ON for lightmap use."),
-                    ctx.XatlasBilinear);
-                ctx.XatlasBlockAlign = EditorGUILayout.ToggleLeft(
-                    new GUIContent("Block-align (BC/DXT)",
-                        "Snap chart placement to 4×4 texel blocks. Required for compressed "
-                        + "lightmaps (BC1/DXT) to avoid color bleed across block boundaries. "
-                        + "Costs ~3-8% packing efficiency. Enable when shipping BC-compressed "
-                        + "lightmaps; leave OFF for uncompressed progressive bakes."),
-                    ctx.XatlasBlockAlign);
-                using (new EditorGUI.DisabledScope(!ctx.XatlasBlockAlign))
-                {
-                    int[] blockSizes = { 4, 5, 6, 8, 10, 12 };
-                    string[] blockLabels = { "4×4 (BC/ETC/DXT)", "5×5 (ASTC)", "6×6 (ASTC)", "8×8 (ASTC)", "10×10 (ASTC)", "12×12 (ASTC)" };
-                    int currentIdx = System.Array.IndexOf(blockSizes, ctx.XatlasBlockSize);
-                    if (currentIdx < 0) currentIdx = 0;
-                    int newIdx = EditorGUILayout.Popup(
-                        new GUIContent("Block size",
-                            "Compression block size. 4×4 covers BC1/BC3/BC5/BC7/ETC2/DXT*. "
-                            + "ASTC variants (5..12) surface the intent — actual snap to >4 grids "
-                            + "is a follow-up; at 4 behaviour matches xatlas exactly."),
-                        currentIdx, blockLabels);
-                    ctx.XatlasBlockSize = blockSizes[newIdx];
-                }
-                ctx.XatlasMaxChartSize = EditorGUILayout.IntField(
-                    new GUIContent("Max chart size (px)",
-                        "Hard cap on individual chart dimension in atlas pixels. 0 = unbounded. "
-                        + "A single oversized chart can force the atlas to grow past the "
-                        + "requested resolution and trigger downscale; capping prevents that. "
-                        + "Set to atlas resolution (or smaller) for a safe ceiling."),
-                    ctx.XatlasMaxChartSize);
-                if (ctx.XatlasMaxChartSize < 0) ctx.XatlasMaxChartSize = 0;
-                ctx.XatlasTexelsPerUnit = EditorGUILayout.FloatField(
-                    new GUIContent("Texels per UV unit",
-                        "Override xatlas's auto-derived texel density (default 0 = auto-derive "
-                        + "from atlas resolution). Manual value pins a fixed texels-per-UV-unit "
-                        + "for projects that need consistent texel density across lightmaps."),
-                    ctx.XatlasTexelsPerUnit);
-                if (ctx.XatlasTexelsPerUnit < 0f) ctx.XatlasTexelsPerUnit = 0f;
+                DrawRepackResolutionControls();
                 EditorGUI.indentLevel--;
             }
+
+            // ── Pack quality ───────────────────────────────────────────
+            EditorGUILayout.Space(2);
+            foldRepackQuality = EditorGUILayout.Foldout(foldRepackQuality, "Pack Quality", true);
+            if (foldRepackQuality)
+            {
+                EditorGUI.indentLevel++;
+                DrawRepackQualityControls();
+                EditorGUI.indentLevel--;
+            }
+
+            // ── Density ────────────────────────────────────────────────
+            EditorGUILayout.Space(2);
+            foldRepackDensity = EditorGUILayout.Foldout(foldRepackDensity, "Density", true);
+            if (foldRepackDensity)
+            {
+                EditorGUI.indentLevel++;
+                DrawRepackDensityControls();
+                EditorGUI.indentLevel--;
+            }
+
+            // ── Compression ────────────────────────────────────────────
+            EditorGUILayout.Space(2);
+            foldRepackCompression = EditorGUILayout.Foldout(foldRepackCompression, "Compression", true);
+            if (foldRepackCompression)
+            {
+                EditorGUI.indentLevel++;
+                DrawRepackCompressionControls();
+                EditorGUI.indentLevel--;
+            }
+
+            // ── Advanced (debug only) ──────────────────────────────────
+            if (MeshLabProjectSettings.Instance.showDebugUI)
+            {
+                EditorGUILayout.Space(2);
+                foldRepackAdvanced = EditorGUILayout.Foldout(foldRepackAdvanced, "Advanced (debug)", true);
+                if (foldRepackAdvanced)
+                {
+                    EditorGUI.indentLevel++;
+                    DrawRepackAdvancedControls();
+                    EditorGUI.indentLevel--;
+                }
+            }
+
+            // ── Action ─────────────────────────────────────────────────
+            EditorGUILayout.Space(6);
             var src = ctx.ForLod(ctx.SourceLodIndex);
-            EditorGUILayout.Space(4);
-            ctx.RepackPerMesh = EditorGUILayout.ToggleLeft("Per-mesh repack", ctx.RepackPerMesh);
-            symSplitThresholdMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
-                "SymSplit thresholds", symSplitThresholdMode);
-            SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
-            ColorBtn(new Color(.3f,.8f,.4f), "Repack All", 26, () => {
-                // Fire-and-forget the async variant: editor main thread stays
-                // free while xatlas packs, so the inline progress strip
-                // animates and Unity never shows the "Hold on" busy dialog.
+            ctx.RepackPerMesh = EditorGUILayout.ToggleLeft(
+                new GUIContent("Per-mesh repack",
+                    "Pack each mesh group into its own [0,1] atlas instead of sharing one."),
+                ctx.RepackPerMesh);
+            ColorBtn(new Color(.3f,.8f,.4f), "Repack All", 26, () =>
+            {
                 _ = ctx.RepackPerMesh ? ExecRepackPerMeshAsync(src) : ExecRepackAsync(src);
             });
-            if (ctx.HasRepack) EditorGUILayout.HelpBox("Repack done. Preview UV1, then Transfer.", MessageType.Info);
+            if (ctx.HasRepack)
+                EditorGUILayout.HelpBox("Repack done. Preview UV1, then Transfer.", MessageType.Info);
+        }
+
+        void DrawRepackResolutionControls()
+        {
+            ctx.RepackResolutionMode = (ResolutionMode)EditorGUILayout.EnumPopup(
+                new GUIContent("Mode",
+                    "Manual: pick atlas resolution (power of two), tool shows effective density.\n"
+                    + "AutoFromTexelDensity: pick target texels/m, tool sizes atlas from total 3D area "
+                    + "rounded up to next power of two, clamped to [64, 4096]."),
+                ctx.RepackResolutionMode);
+
+            double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
+                ctx.ForLod(ctx.SourceLodIndex)
+                    .Where(e => e.originalMesh != null)
+                    .Select(e => e.originalMesh));
+
+            if (ctx.RepackResolutionMode == ResolutionMode.Manual)
+            {
+                ctx.AtlasResolution = EditorGUILayout.IntField(
+                    new GUIContent("Resolution (px)",
+                        "Atlas resolution in pixels. Power-of-two values recommended (64..4096)."),
+                    ctx.AtlasResolution);
+                int resForDisplay = Mathf.Max(1, ctx.AtlasResolution);
+                double effDensity = total3DArea > 0.0
+                    ? resForDisplay / System.Math.Sqrt(total3DArea / Mathf.Max(0.0001f, ctx.TargetUvCoverage))
+                    : 0.0;
+                EditorGUILayout.LabelField(" ",
+                    $"area {total3DArea:F2} m² · effective ≈ {effDensity:F1} tex/m",
+                    EditorStyles.miniLabel);
+            }
+            else
+            {
+                ctx.LightmapDensity = EditorGUILayout.Slider(
+                    new GUIContent("Texels per meter",
+                        "Target density. Atlas size = ceil_pow2(sqrt(area × density² / coverage)). "
+                        + "Typical: 5–20 for props, 1–5 for large environment pieces."),
+                    ctx.LightmapDensity, 0.5f, 100f);
+                uint autoRes = MeshAreaHelper.ComputeAutoResolution(
+                    total3DArea, ctx.LightmapDensity, ctx.TargetUvCoverage);
+                EditorGUILayout.LabelField(" ",
+                    $"area {total3DArea:F2} m² · computed {autoRes} px",
+                    EditorStyles.miniLabel);
+            }
+
+            ctx.ShellPaddingPx = EditorGUILayout.IntSlider(
+                new GUIContent("Shell Padding (px)",
+                    "Inter-shell padding in atlas pixels. Prevents bleed between neighbours."),
+                ctx.ShellPaddingPx, 0, 16);
+            ctx.BorderPaddingPx = EditorGUILayout.IntSlider(
+                new GUIContent("Border Padding (px)",
+                    "Atlas-edge padding in pixels."),
+                ctx.BorderPaddingPx, 0, 16);
+        }
+
+        void DrawRepackQualityControls()
+        {
+            bool bruteForceAvailable = IsBruteForcePackAvailable(ctx.InternalOversample);
+            using (new EditorGUI.DisabledScope(!bruteForceAvailable))
+            {
+                ctx.XatlasBruteForce = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Brute force pack",
+                        "Run xatlas's exhaustive packer (slower, tighter atlas). Only active when "
+                        + "Internal pack oversample is 1×; 2×+ forces the heuristic packer."),
+                    ctx.XatlasBruteForce);
+            }
+            if (!bruteForceAvailable)
+                EditorGUILayout.LabelField(" ", "Heuristic packer forced by oversample > 1", EditorStyles.miniLabel);
+
+            ctx.XatlasRotateCharts = EditorGUILayout.ToggleLeft(
+                new GUIContent("Rotate charts",
+                    "xatlas may rotate charts to fit better (recommended)."),
+                ctx.XatlasRotateCharts);
+            using (new EditorGUI.DisabledScope(!ctx.XatlasRotateCharts))
+            {
+                EditorGUI.indentLevel++;
+                ctx.XatlasRotateChartsToAxis = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Snap rotation to axis",
+                        "Constrain rotation to 0/90/180/270° (preserves texel alignment)."),
+                    ctx.XatlasRotateChartsToAxis);
+                EditorGUI.indentLevel--;
+            }
+
+            int[] osValues = { 1, 2, 4, 8, 16 };
+            string[] osLabels = { "1× (off)", "2×", "4×", "8×", "16×" };
+            int currentOs = Mathf.Max(1, ctx.InternalOversample);
+            int osIdx = 0;
+            for (int i = 0; i < osValues.Length; i++)
+                if (osValues[i] == currentOs) { osIdx = i; break; }
+            int newOsIdx = EditorGUILayout.Popup(
+                new GUIContent("Internal oversample",
+                    "Internal atlas = user resolution × this factor. Mitigates xatlas's per-chart "
+                    + "ceil(extents) stretch that breaks uniform density for sub-pixel shells. "
+                    + "4× cuts density spread from ~14× down to ~2×. 2×+ forces heuristic packer."),
+                osIdx, osLabels);
+            ctx.InternalOversample = osValues[Mathf.Clamp(newOsIdx, 0, osValues.Length - 1)];
+
+            ctx.XatlasMaxChartSize = EditorGUILayout.IntField(
+                new GUIContent("Max chart size (px)",
+                    "Hard cap on individual chart dimension. 0 = unbounded — one huge chart could "
+                    + "force atlas growth past requested resolution. Cap to atlas resolution or smaller."),
+                ctx.XatlasMaxChartSize);
+            if (ctx.XatlasMaxChartSize < 0) ctx.XatlasMaxChartSize = 0;
+        }
+
+        void DrawRepackDensityControls()
+        {
+            ctx.NormalizeTexelDensity = EditorGUILayout.ToggleLeft(
+                new GUIContent("Normalize texel density",
+                    "Per-shell UV0 rescale so UV-area is proportional to 3D surface area. "
+                    + "Produces uniform texels-per-world-unit in the baked lightmap."),
+                ctx.NormalizeTexelDensity);
+            using (new EditorGUI.DisabledScope(!ctx.NormalizeTexelDensity))
+            {
+                EditorGUI.indentLevel++;
+                ctx.ReparameterizeStretchedShells = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Auto-fix stretched shells (ARAP)",
+                        "Measure Sander L² stretch per shell; re-parameterize via ARAP local-global "
+                        + "for shells above the threshold."),
+                    ctx.ReparameterizeStretchedShells);
+                using (new EditorGUI.DisabledScope(!ctx.ReparameterizeStretchedShells))
+                {
+                    EditorGUI.indentLevel++;
+                    ctx.StretchThreshold = EditorGUILayout.Slider(
+                        new GUIContent("L² stretch threshold",
+                            "1.0 = isometric, 1.5 = typical unwrap (default), 2.0 = noticeable, 3.0+ = severe."),
+                        ctx.StretchThreshold, 1.0f, 3.0f);
+                    ctx.ArapIterations = EditorGUILayout.IntSlider(
+                        new GUIContent("ARAP iterations",
+                            "Local-global iteration count. 50 default; 100–200 for highly twisted strips."),
+                        ctx.ArapIterations, 10, 200);
+                    EditorGUI.indentLevel--;
+                }
+                ctx.TargetUvCoverage = EditorGUILayout.Slider(
+                    new GUIContent("UV coverage budget",
+                        "Fraction of [0,1]² normalized UVs sum to. Lower → safer fit, smaller charts; "
+                        + "higher → tighter pack but risk of overflow + downscale."),
+                    ctx.TargetUvCoverage, 0.3f, 0.95f);
+                ctx.ClampLightmapToUnit = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Clamp UV2 to [0,1]",
+                        "Cheap safety net against verts pushed a fraction of a texel outside the unit square."),
+                    ctx.ClampLightmapToUnit);
+                EditorGUI.indentLevel--;
+            }
+        }
+
+        void DrawRepackCompressionControls()
+        {
+            ctx.XatlasBilinear = EditorGUILayout.ToggleLeft(
+                new GUIContent("Bilinear-safe padding",
+                    "Pad each chart by 1 extra texel so bilinear sampling doesn't leak neighbours. "
+                    + "Default ON for lightmap use."),
+                ctx.XatlasBilinear);
+            ctx.XatlasBlockAlign = EditorGUILayout.ToggleLeft(
+                new GUIContent("Block-align (BC/DXT)",
+                    "Snap chart placement to 4×4 texel blocks. Required for BC1/DXT compressed "
+                    + "lightmaps to avoid color bleed across block boundaries. Costs ~3-8% packing."),
+                ctx.XatlasBlockAlign);
+            using (new EditorGUI.DisabledScope(!ctx.XatlasBlockAlign))
+            {
+                int[] blockSizes = { 4, 5, 6, 8, 10, 12 };
+                string[] blockLabels = { "4×4 (BC/ETC/DXT)", "5×5 (ASTC)", "6×6 (ASTC)", "8×8 (ASTC)", "10×10 (ASTC)", "12×12 (ASTC)" };
+                int currentIdx = System.Array.IndexOf(blockSizes, ctx.XatlasBlockSize);
+                if (currentIdx < 0) currentIdx = 0;
+                EditorGUI.indentLevel++;
+                int newIdx = EditorGUILayout.Popup(
+                    new GUIContent("Block size",
+                        "Compression block size. 4×4 covers BC1/BC3/BC5/BC7/ETC2/DXT*."),
+                    currentIdx, blockLabels);
+                ctx.XatlasBlockSize = blockSizes[newIdx];
+                EditorGUI.indentLevel--;
+            }
+        }
+
+        void DrawRepackAdvancedControls()
+        {
+            ctx.PostPackDensityCorrection = EditorGUILayout.ToggleLeft(
+                new GUIContent("Post-pack density correction (experimental)",
+                    "After pack, shrink over-dense shells toward the median around their UV2 centroid. "
+                    + "Compensates xatlas's per-chart ceil(extents) stretch. Shrink-only; leaves gaps."),
+                ctx.PostPackDensityCorrection);
+            ctx.XatlasTexelsPerUnit = EditorGUILayout.FloatField(
+                new GUIContent("Texels per UV unit (manual)",
+                    "Override xatlas's auto-derived texel density. 0 = auto-derive from atlas resolution. "
+                    + "Manual value pins a fixed texels-per-UV-unit for cross-lightmap density parity."),
+                ctx.XatlasTexelsPerUnit);
+            if (ctx.XatlasTexelsPerUnit < 0f) ctx.XatlasTexelsPerUnit = 0f;
+            // SymSplit thresholds shared with Setup tab — duplicated here for
+            // convenience when iterating on Repack only.
+            symSplitThresholdMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
+                new GUIContent("SymSplit thresholds",
+                    "Shared with Setup tab. Strategy for picking the SymSplit separation threshold."),
+                symSplitThresholdMode);
+            SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
         }
 
         // ──────────────── Transfer ────────────────
