@@ -502,12 +502,26 @@ namespace SashaRX.UnityMeshLab
                 cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL)
                       * Mathf.Max(1, arL) * Mathf.Max(1, stL);
             }
+            int caseCount = (sweepSuite != null && sweepSuite.cases != null) ? sweepSuite.cases.Count : 0;
+            int multiTotal = caseCount * cells;
             using (new EditorGUILayout.HorizontalScope())
             {
                 using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0))
                 {
                     if (GUILayout.Button($"Run Sweep ({cells})", GUILayout.Height(22)))
                         ExecSweep(sweepSuite.sweep);
+                }
+                using (new EditorGUI.DisabledScope(sweepSuite == null || multiTotal == 0))
+                {
+                    if (GUILayout.Button(new GUIContent($"Run Multi-Case ({multiTotal})",
+                            "Spawn each TestSuiteAsset.cases[].fbxAsset into the scene, " +
+                            "wire its LODGroup into the tool, run the full sweep matrix, " +
+                            "then destroy the instance. Each model writes its own " +
+                            "sweep_<ts>_<model>/ subdirectory under BenchmarkReports/."),
+                        GUILayout.Height(22)))
+                    {
+                        ExecMultiCaseSweep(sweepSuite);
+                    }
                 }
                 if (GUILayout.Button(new GUIContent("Rebuild Report",
                         "Pick a BenchmarkReports/ folder and rebuild summary.csv / winner.json / index.html " +
@@ -1453,7 +1467,9 @@ namespace SashaRX.UnityMeshLab
         /// is invoked to score the cells and write a sweep_<timestamp>/summary.csv +
         /// winner.json under BenchmarkReports/. Original ctx values are restored on exit.
         /// </summary>
-        void ExecSweep(TestSuiteAsset.SweepMatrix sm)
+        void ExecSweep(TestSuiteAsset.SweepMatrix sm) => ExecSweep(sm, null);
+
+        void ExecSweep(TestSuiteAsset.SweepMatrix sm, string sweepDirOverride)
         {
             if (ctx.LodGroup == null || sm == null) return;
             var resArr = (sm.atlasResolutions != null && sm.atlasResolutions.Length > 0)
@@ -1500,12 +1516,20 @@ namespace SashaRX.UnityMeshLab
             // operator kicked off two sweeps in the same second (scripted
             // runs, quick UI re-clicks). Without ms the second sweep would
             // overwrite the first one's summary.csv / winner.json.
-            string sweepStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff",
-                System.Globalization.CultureInfo.InvariantCulture);
-            string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
-                                 ?? Application.dataPath;
-            string sweepDir = System.IO.Path.Combine(projectRoot, "BenchmarkReports",
-                $"sweep_{sweepStamp}");
+            string sweepDir;
+            if (!string.IsNullOrEmpty(sweepDirOverride))
+            {
+                sweepDir = sweepDirOverride;
+            }
+            else
+            {
+                string sweepStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff",
+                    System.Globalization.CultureInfo.InvariantCulture);
+                string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
+                                     ?? Application.dataPath;
+                sweepDir = System.IO.Path.Combine(projectRoot, "BenchmarkReports",
+                    $"sweep_{sweepStamp}");
+            }
             try { System.IO.Directory.CreateDirectory(sweepDir); }
             catch (Exception ex)
             {
@@ -1662,6 +1686,169 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Iterate every <see cref="TestSuiteAsset.TestCase"/> in the suite,
+        /// instantiate its <c>fbxAsset</c> into a temporary scene root, wire the
+        /// resolved LODGroup into the tool, run the full sweep matrix, then
+        /// destroy the instance. Each case writes its artefacts into a dedicated
+        /// <c>sweep_&lt;ts&gt;_&lt;model&gt;/</c> subdirectory under
+        /// <c>BenchmarkReports/</c>, so per-model summary/winner stay separated
+        /// and the run-level <c>lodGroup</c> column in each CSV identifies the
+        /// model for cross-model pandas joins.
+        ///
+        /// Existing scene state is preserved: the original <c>ctx.LodGroup</c>
+        /// is restored on exit, and every spawned root is destroyed in a
+        /// <c>finally</c> block so a thrown cell or a user cancel doesn't leak
+        /// GameObjects.
+        /// </summary>
+        void ExecMultiCaseSweep(TestSuiteAsset suite)
+        {
+            if (suite == null || suite.sweep == null) return;
+            if (suite.cases == null || suite.cases.Count == 0)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    "[MultiSweep] Suite has no cases — nothing to do.");
+                return;
+            }
+
+            // Snapshot the operator-bound LODGroup so the multi-case loop's
+            // ctx.Refresh calls don't leave the editor pointing at a destroyed
+            // temporary instance when the loop ends or is cancelled.
+            var origLodGroup = ctx.LodGroup;
+
+            string runStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff",
+                System.Globalization.CultureInfo.InvariantCulture);
+            string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
+                                 ?? Application.dataPath;
+            string baseDir = System.IO.Path.Combine(projectRoot, "BenchmarkReports");
+
+            int caseCount = suite.cases.Count;
+            int doneCases = 0;
+            bool overallCancelled = false;
+            UvProgress.Begin($"Multi-Case Sweep ({caseCount} models)", cancelable: true);
+            try
+            {
+                for (int ci = 0; ci < caseCount; ci++)
+                {
+                    if (UvProgress.CancelRequested) { overallCancelled = true; break; }
+                    var tc = suite.cases[ci];
+                    if (tc == null || tc.fbxAsset == null)
+                    {
+                        UvtLog.Warn(UvtLog.Category.Benchmark,
+                            $"[MultiSweep] Case {ci}: null FBX, skipping.");
+                        continue;
+                    }
+
+                    string fbxPath = AssetDatabase.GetAssetPath(tc.fbxAsset);
+                    if (string.IsNullOrEmpty(fbxPath))
+                    {
+                        UvtLog.Warn(UvtLog.Category.Benchmark,
+                            $"[MultiSweep] Case {ci} '{tc.label}': asset has no project path, skipping.");
+                        continue;
+                    }
+
+                    var prefabRoot = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
+                    if (prefabRoot == null)
+                    {
+                        UvtLog.Warn(UvtLog.Category.Benchmark,
+                            $"[MultiSweep] Case {ci} '{tc.label}': '{fbxPath}' is not a GameObject prefab, skipping.");
+                        continue;
+                    }
+
+                    UvProgress.Report((float)ci / caseCount,
+                        $"case {ci + 1}/{caseCount}: {tc.label} ({System.IO.Path.GetFileName(fbxPath)})");
+
+                    GameObject spawned = null;
+                    try
+                    {
+                        spawned = (GameObject)PrefabUtility.InstantiatePrefab(prefabRoot);
+                        if (spawned == null)
+                        {
+                            UvtLog.Error(UvtLog.Category.Benchmark,
+                                $"[MultiSweep] Case {ci} '{tc.label}': InstantiatePrefab returned null, skipping.");
+                            continue;
+                        }
+                        spawned.name = $"[MultiSweep] {tc.label}";
+                        // DontSave so the temporary spawn doesn't mark the scene
+                        // dirty and survive into Ctrl+S — the multi-case sweep is
+                        // a transient operation, not an authored edit.
+                        spawned.hideFlags = HideFlags.DontSave;
+
+                        // Resolve LODGroup: explicit path first, then first found.
+                        LODGroup lg = null;
+                        if (!string.IsNullOrEmpty(tc.lodGroupPath))
+                        {
+                            var t = spawned.transform.Find(tc.lodGroupPath);
+                            if (t != null) lg = t.GetComponent<LODGroup>();
+                        }
+                        if (lg == null) lg = spawned.GetComponentInChildren<LODGroup>(true);
+                        if (lg == null)
+                        {
+                            UvtLog.Warn(UvtLog.Category.Benchmark,
+                                $"[MultiSweep] Case {ci} '{tc.label}': no LODGroup found under '{fbxPath}', skipping.");
+                            continue;
+                        }
+
+                        ctx.Refresh(lg);
+                        OnRefresh();
+
+                        // Per-case subdirectory so summary/winner per model stay
+                        // separated. lodGroup name is also recorded in every CSV
+                        // row by BenchmarkRecorder, so pandas joins still work
+                        // if the operator chooses to merge across cases.
+                        string safeLabel = SanitizeForPath(string.IsNullOrEmpty(tc.label) ? lg.name : tc.label);
+                        string caseDir = System.IO.Path.Combine(baseDir,
+                            $"sweep_{runStamp}_{safeLabel}");
+
+                        ExecSweep(suite.sweep, caseDir);
+                        doneCases++;
+                    }
+                    catch (Exception ex)
+                    {
+                        UvtLog.Error(UvtLog.Category.Benchmark,
+                            $"[MultiSweep] Case {ci} '{tc.label}' threw: {ex.Message}");
+                    }
+                    finally
+                    {
+                        if (spawned != null)
+                        {
+                            // Clear ctx reference before destruction so any
+                            // straggling UI repaint or cache lookup doesn't
+                            // touch a half-destroyed LODGroup.
+                            if (ctx.LodGroup != null && ctx.LodGroup.gameObject == spawned)
+                                ctx.Refresh(null);
+                            UnityEngine.Object.DestroyImmediate(spawned);
+                        }
+                    }
+
+                    if (UvProgress.CancelRequested) { overallCancelled = true; break; }
+                }
+            }
+            finally
+            {
+                if (overallCancelled) UvProgress.Cancel(); else UvProgress.End();
+                // Restore the operator's original wiring.
+                ctx.Refresh(origLodGroup);
+                OnRefresh();
+                UvtLog.Info(UvtLog.Category.Benchmark,
+                    $"[MultiSweep] complete: {doneCases}/{caseCount} cases" +
+                    (overallCancelled ? " (cancelled)" : "") +
+                    $". Per-case reports in BenchmarkReports/sweep_{runStamp}_*/");
+            }
+        }
+
+        /// <summary>Filesystem-safe slug for a path component — letters, digits,
+        /// '-', '_' kept; everything else collapsed to '_'. Falls back to
+        /// "case" for null / empty input so the directory always has a name.</summary>
+        static string SanitizeForPath(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "case";
+            var sb = new System.Text.StringBuilder(s.Length);
+            foreach (char c in s)
+                sb.Append(char.IsLetterOrDigit(c) || c == '-' || c == '_' ? c : '_');
+            return sb.ToString();
         }
 
         /// <summary>

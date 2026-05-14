@@ -144,6 +144,47 @@ JSON output mirrors the CSV but nests `records[]` inside a run envelope.
    *Run Full Pipeline* again. Each run produces a separate CSV — diff with
    a spreadsheet / pandas.
 
+### Multi-case sweep (all `TestSuiteAsset.cases[]` in one click)
+
+For cross-model regression coverage — running the full sweep matrix on
+every case in the suite without manually switching FBXes — use **Run
+Multi-Case (N × M)**. Located in *Setup → Parameter Sweep*, right of the
+single-model **Run Sweep** button. `N` is the number of `cases`, `M` is
+the cell count.
+
+For each case the runner:
+
+1. Loads the case's `fbxAsset` via `AssetDatabase.LoadAssetAtPath` and
+   instantiates it into the scene with `PrefabUtility.InstantiatePrefab`,
+   marking the root `HideFlags.DontSave` (no scene-dirty leakage).
+2. Resolves the LODGroup: `lodGroupPath` first (if set), otherwise
+   `GetComponentInChildren<LODGroup>`. Skips the case with a warning if
+   none found.
+3. Calls `ctx.Refresh(lg) + OnRefresh()` to wire it into the tool.
+4. Runs `ExecSweep(sweep)` against a per-case subdirectory
+   `BenchmarkReports/sweep_<ts>_<caseLabel>/` so each model gets its own
+   `summary.csv` + `winner.json` + `index.html`.
+5. Destroys the spawned root in a `finally` block and continues to the
+   next case. Cancel via the progress strip stops between cases.
+
+When the loop ends the operator's original `ctx.LodGroup` wiring is
+restored.
+
+Cross-model analysis (pandas):
+
+```python
+import pandas as pd, glob, re
+rows = []
+for csv in glob.glob('BenchmarkReports/sweep_*_*/*.csv'):
+    df = pd.read_csv(csv)
+    df['model'] = re.search(r'sweep_\d+_\d+_\d+_(.+?)/', csv).group(1)
+    rows.append(df)
+all = pd.concat(rows)
+all.groupby(['model','atlasRes','shellPad'])[
+    ['uv2DuplicatePairs','severeMismatchCount','shellsOverlapFixed']
+].sum()
+```
+
 ### Parameter sweep (atlasRes × shellPad × borderPad)
 
 For automated sweeps across repack parameters, fill `TestSuiteAsset.sweep`:
