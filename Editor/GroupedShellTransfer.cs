@@ -1793,24 +1793,6 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            // Severe-mismatch count — target shells whose Phase 2 chose a source
-            // more than 10% of mesh diagonal away in 3D. On well-matched LODs this
-            // is 0; non-zero almost always means a wrong assignment (wedge swapped
-            // with sibling, or unrelated nearby shell stole the slot). Exposed as
-            // a sweep metric so refactors that drag matchDist up are caught.
-            {
-                float severeThresholdSq = (meshDiagonal * 0.1f) * (meshDiagonal * 0.1f);
-                int severe = 0;
-                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
-                {
-                    if (result.targetShellToSourceShell[tsi] < 0) continue;
-                    float dsq = result.targetShellMatchDistSqr[tsi];
-                    if (dsq >= float.MaxValue || float.IsInfinity(dsq)) continue;
-                    if (dsq > severeThresholdSq) severe++;
-                }
-                result.severeMismatchCount = severe;
-            }
-
             // Post-dedup diagnostic: check for remaining same-source duplicates.
             // Distinguish allowed shared-source fragments (non-overlapping UV0)
             // from true duplicates (overlapping UV0 — tiling/symmetric).
@@ -3572,17 +3554,17 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Info(sb.ToString());
             }
 
-            // Per-shell UV2 fingerprint: hash of UV2 values for cross-branch comparison.
-            // Logs centroid + hash so users can diff logs between branches to find
-            // which specific shells produce different UV2. Also counts duplicate
-            // hashes — two target shells with byte-identical UV2 layouts indicate
-            // two distinct 3D instances baking onto the same atlas region (e.g.
-            // symmetric copies that share UV2 — silent lightmap bleeding).
+            // Per-shell UV2 fingerprint: hash of UV2 values for cross-branch
+            // comparison. Logs centroid + hash so users can diff logs between
+            // branches to find which specific shells produce different UV2.
+            // Computed pre-topology so the values match the raw Phase 3 output;
+            // the post-topology pass below recomputes duplicate-pair counts on
+            // the FINAL UV2 (topology can shift a few verts and break the early
+            // hash, but it preserves the gross shell placement that this log
+            // line is useful for diffing).
             {
                 var fpSb = new System.Text.StringBuilder();
                 fpSb.Append($"[GroupedTransfer] UV2 fingerprint '{targetMeshName}':");
-                var hashFirstSeen = new Dictionary<uint, int>(tgtShells.Count);
-                int dupPairs = 0;
                 for (int tsi2 = 0; tsi2 < tgtShells.Count; tsi2++)
                 {
                     var shell = tgtShells[tsi2];
@@ -3604,20 +3586,8 @@ namespace SashaRX.UnityMeshLab
                         }
                     }
                     if (cnt > 0)
-                    {
                         fpSb.Append($" t{tsi2}={hash:X8}({sumX / cnt:F4},{sumY / cnt:F4})");
-                        // Skip Rejected/Unmatched — those legitimately share an "empty"
-                        // hash (vertices left at 0,0) and would inflate the duplicate
-                        // count without representing real bleeding.
-                        var status = result.targetShellStatus[tsi2];
-                        if (status != ShellStatus.Rejected && status != ShellStatus.Unmatched)
-                        {
-                            if (hashFirstSeen.ContainsKey(hash)) dupPairs++;
-                            else hashFirstSeen[hash] = tsi2;
-                        }
-                    }
                 }
-                result.uv2DuplicatePairs = dupPairs;
                 UvtLog.Info(fpSb.ToString());
             }
 
@@ -3629,6 +3599,72 @@ namespace SashaRX.UnityMeshLab
             result.topologyIterations = LastTopologyIterations;
             result.topologyFixed      = LastTopologyFixed;
             result.topologyCapHit     = LastTopologyCapHit;
+
+            // ── Visual-defect counters (computed on the FINAL UV2) ──
+            // Post-topology so duplicate-pair detection runs on the bytes that
+            // will actually be written to mesh.uv2 — topology can nudge verts
+            // and an early hash would be stale. Severe-mismatch also lives
+            // here so all sweep-scoring counters share one consistent snapshot
+            // taken after Phase 2 and Phase 3 are fully done.
+            {
+                // (A) UV2 duplicate-pair count — combinatorial per hash group.
+                //     For a group of k shells with identical hash, the number
+                //     of colliding pairs is k*(k-1)/2. Previously the code
+                //     counted "extras beyond first" (k-1), under-reporting
+                //     groups of 3+ shells. Rejected/Unmatched are excluded
+                //     so the "empty hash" at (0,0) doesn't inflate the count.
+                var hashGroupSize = new Dictionary<uint, int>(tgtShells.Count);
+                for (int tsi2 = 0; tsi2 < tgtShells.Count; tsi2++)
+                {
+                    if (tsi2 < result.targetShellStatus.Length)
+                    {
+                        var status = result.targetShellStatus[tsi2];
+                        if (status == ShellStatus.Rejected || status == ShellStatus.Unmatched)
+                            continue;
+                    }
+                    var shell = tgtShells[tsi2];
+                    uint hash = 2166136261u;
+                    int cnt = 0;
+                    foreach (int vi in shell.vertexIndices)
+                    {
+                        if (vi >= result.uv2.Length) continue;
+                        var uv = result.uv2[vi];
+                        cnt++;
+                        int qx = Mathf.RoundToInt(uv.x * 100000f);
+                        int qy = Mathf.RoundToInt(uv.y * 100000f);
+                        unchecked
+                        {
+                            hash = (hash ^ (uint)qx) * 16777619u;
+                            hash = (hash ^ (uint)qy) * 16777619u;
+                        }
+                    }
+                    if (cnt == 0) continue;
+                    hashGroupSize.TryGetValue(hash, out int k);
+                    hashGroupSize[hash] = k + 1;
+                }
+                int dupPairs = 0;
+                foreach (var kv in hashGroupSize)
+                {
+                    int k = kv.Value;
+                    if (k >= 2) dupPairs += k * (k - 1) / 2;
+                }
+                result.uv2DuplicatePairs = dupPairs;
+
+                // (B) Severe-mismatch count — target shells whose chosen source
+                //     is >10% of mesh diagonal away in 3D. Computed late so the
+                //     final post-dedup / post-rematch source assignments and
+                //     match distances are reflected, not a mid-Phase-2 snapshot.
+                float severeThresholdSq = (meshDiagonal * 0.1f) * (meshDiagonal * 0.1f);
+                int severe = 0;
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    if (result.targetShellToSourceShell[tsi] < 0) continue;
+                    float dsq = result.targetShellMatchDistSqr[tsi];
+                    if (dsq >= float.MaxValue || float.IsInfinity(dsq)) continue;
+                    if (dsq > severeThresholdSq) severe++;
+                }
+                result.severeMismatchCount = severe;
+            }
 
             // ── Collapse-to-line diagnostic ──
             // Detect target shells whose UV2 layout has collapsed to a line

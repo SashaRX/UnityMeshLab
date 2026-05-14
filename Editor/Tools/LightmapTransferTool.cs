@@ -1717,6 +1717,14 @@ namespace SashaRX.UnityMeshLab
             // ctx.Refresh calls don't leave the editor pointing at a destroyed
             // temporary instance when the loop ends or is cancelled.
             var origLodGroup = ctx.LodGroup;
+            // AGENTS.md LODGroup-lifecycle invariant: restore fbxMesh on every
+            // MeshFilter and destroy temporary working meshes BEFORE ctx.Refresh
+            // wipes MeshEntries. Without this, if the operator had repacked /
+            // transferred meshes live on origLodGroup, those temporary meshes
+            // stay assigned in-scene and the references needed to restore the
+            // FBX baseline are lost; reloading origLodGroup at the end would
+            // then treat the temp meshes as the new baseline.
+            if (origLodGroup != null) ResetWorkingCopies();
 
             string runStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff",
                 System.Globalization.CultureInfo.InvariantCulture);
@@ -1795,12 +1803,17 @@ namespace SashaRX.UnityMeshLab
                         OnRefresh();
 
                         // Per-case subdirectory so summary/winner per model stay
-                        // separated. lodGroup name is also recorded in every CSV
-                        // row by BenchmarkRecorder, so pandas joins still work
-                        // if the operator chooses to merge across cases.
+                        // separated. The case index is prefixed so two cases
+                        // that sanitise to the same slug (e.g. "Chair A" and
+                        // "Chair/A" both collapsing to "Chair_A") still land in
+                        // distinct directories instead of overwriting each
+                        // other's summary.csv / winner.json / index.html.
+                        // lodGroup name is also recorded in every CSV row by
+                        // BenchmarkRecorder, so pandas joins still work if the
+                        // operator chooses to merge across cases.
                         string safeLabel = SanitizeForPath(string.IsNullOrEmpty(tc.label) ? lg.name : tc.label);
                         string caseDir = System.IO.Path.Combine(baseDir,
-                            $"sweep_{runStamp}_{safeLabel}");
+                            $"sweep_{runStamp}_{ci:D2}_{safeLabel}");
 
                         ExecSweep(suite.sweep, caseDir);
                         doneCases++;
