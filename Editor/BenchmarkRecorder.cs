@@ -208,6 +208,9 @@ namespace SashaRX.UnityMeshLab
                 consistencyCorrected = tr?.consistencyCorrected ?? 0,
                 verticesTransferred = tr?.verticesTransferred ?? 0,
                 verticesTotal       = tr?.verticesTotal       ?? 0,
+                uv2DuplicatePairs   = tr?.uv2DuplicatePairs   ?? 0,
+                compositeBrokenCount = tr?.compositeBrokenCount ?? 0,
+                severeMismatchCount = tr?.severeMismatchCount ?? 0,
 
                 invertedCount       = v?.invertedCount       ?? 0,
                 stretchedCount      = v?.stretchedCount      ?? 0,
@@ -321,6 +324,7 @@ namespace SashaRX.UnityMeshLab
                 "shellsMatched,shellsUnmatched,shellsTransform,shellsInterpolation,shellsMerged," +
                 "shellsRejected,shellsOverlapFixed,dedupConflicts,fragmentsMerged,consistencyCorrected," +
                 "verticesTransferred,verticesTotal," +
+                "uv2DuplicatePairs,compositeBrokenCount,severeMismatchCount," +
                 "invertedCount,stretchedCount,zeroAreaCount,oobCount,cleanCount," +
                 "overlapShellPairs,overlapTriangleCount,overlapSameSrcPairs," +
                 "texelDensityBadCount,texelDensityMedian," +
@@ -365,6 +369,9 @@ namespace SashaRX.UnityMeshLab
                 sb.Append(r.consistencyCorrected.ToString(inv)).Append(',');
                 sb.Append(r.verticesTransferred.ToString(inv)).Append(',');
                 sb.Append(r.verticesTotal.ToString(inv)).Append(',');
+                sb.Append(r.uv2DuplicatePairs.ToString(inv)).Append(',');
+                sb.Append(r.compositeBrokenCount.ToString(inv)).Append(',');
+                sb.Append(r.severeMismatchCount.ToString(inv)).Append(',');
                 sb.Append(r.invertedCount.ToString(inv)).Append(',');
                 sb.Append(r.stretchedCount.ToString(inv)).Append(',');
                 sb.Append(r.zeroAreaCount.ToString(inv)).Append(',');
@@ -439,6 +446,9 @@ namespace SashaRX.UnityMeshLab
                 AppendJsonKv(sb, "consistencyCorrected", r.consistencyCorrected); sb.Append(", ");
                 AppendJsonKv(sb, "verticesTransferred",  r.verticesTransferred);  sb.Append(", ");
                 AppendJsonKv(sb, "verticesTotal",        r.verticesTotal);        sb.Append(", ");
+                AppendJsonKv(sb, "uv2DuplicatePairs",    r.uv2DuplicatePairs);    sb.Append(", ");
+                AppendJsonKv(sb, "compositeBrokenCount", r.compositeBrokenCount); sb.Append(", ");
+                AppendJsonKv(sb, "severeMismatchCount",  r.severeMismatchCount);  sb.Append(", ");
                 AppendJsonKv(sb, "invertedCount",        r.invertedCount);        sb.Append(", ");
                 AppendJsonKv(sb, "stretchedCount",       r.stretchedCount);       sb.Append(", ");
                 AppendJsonKv(sb, "zeroAreaCount",        r.zeroAreaCount);        sb.Append(", ");
@@ -523,6 +533,10 @@ namespace SashaRX.UnityMeshLab
             public int shellsMatched, shellsUnmatched, shellsTransform, shellsInterpolation, shellsMerged;
             public int shellsRejected, shellsOverlapFixed, dedupConflicts, fragmentsMerged, consistencyCorrected;
             public int verticesTransferred, verticesTotal;
+
+            // Visual-defect counters surfaced for sweep scoring. See
+            // GroupedShellTransfer.TransferResult for field semantics.
+            public int uv2DuplicatePairs, compositeBrokenCount, severeMismatchCount;
 
             public int invertedCount, stretchedCount, zeroAreaCount, oobCount, cleanCount;
             public int overlapShellPairs, overlapTriangleCount, overlapSameSrcPairs;

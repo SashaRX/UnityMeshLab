@@ -28,6 +28,16 @@ namespace SashaRX.UnityMeshLab
         const float kPenaltyOverlap    = -10f;
         const float kPenaltyMs         = -0.001f;
         const float kPenaltyResolution = -10f;
+        // Visual-defect weights. duplicate UV2 pairs are the silent killer —
+        // two distinct instances baking onto the same atlas region. Weighted
+        // as heavy as a sliver because the user-visible effect is comparable.
+        // force3D overlaps are explicit bleeding (already warned via
+        // shellsOverlapFixed). composite-broken and severe-mismatch are
+        // matching-quality signals — lighter penalty.
+        const float kPenaltyDupUv2     = -50f;
+        const float kPenaltyForce3DOL  = -30f;
+        const float kPenaltyCompBroken = -10f;
+        const float kPenaltySevere     = -20f;
 
         /// <summary>
         /// Snapshot of the ctx fields that distinguish one sweep cell from
@@ -60,6 +70,11 @@ namespace SashaRX.UnityMeshLab
             public long   totalMs;            // sum(pipeline+repack+transfer+validate)
             public float  score;
             public bool   hadFailure;
+            // Visual-defect counters, summed across target LODs.
+            public int    uv2DuplicatePairs;
+            public int    force3DOverlapCount;   // sum of shellsOverlapFixed
+            public int    compositeBrokenCount;
+            public int    severeMismatchCount;
         }
 
         /// <summary>
@@ -202,8 +217,12 @@ namespace SashaRX.UnityMeshLab
         ///   score =   100 * atlasUtilization (mean across LODs)
         ///           - 50  * totalSlivers
         ///           - 10  * overlapShellPairs
-        ///           - 0.001 * totalMs   (per-millisecond penalty)
-        ///           - 10  * log2(atlasRes / 256)   (prefer lower resolution if quality equal)
+        ///           - 50  * uv2DuplicatePairs       (silent symmetric-copy bleeding)
+        ///           - 30  * force3DOverlapCount     (explicit bleeding warned by Transfer)
+        ///           - 10  * compositeBrokenCount    (matching-quality signal)
+        ///           - 20  * severeMismatchCount     (Phase 2 picked wrong source)
+        ///           - 0.001 * totalMs               (per-millisecond penalty)
+        ///           - 10  * log2(atlasRes / 256)    (prefer lower resolution if quality equal)
         /// </code>
         /// Failed runs (hadFailure=true) get -∞ so they never win the sweep.
         /// </summary>
@@ -216,6 +235,10 @@ namespace SashaRX.UnityMeshLab
             return kWeightUtilization * r.meanAtlasUtilization
                  + kPenaltySliver     * r.totalSlivers
                  + kPenaltyOverlap    * r.overlapShellPairs
+                 + kPenaltyDupUv2     * r.uv2DuplicatePairs
+                 + kPenaltyForce3DOL  * r.force3DOverlapCount
+                 + kPenaltyCompBroken * r.compositeBrokenCount
+                 + kPenaltySevere     * r.severeMismatchCount
                  + kPenaltyMs         * r.totalMs
                  + resPenalty;
         }
@@ -263,8 +286,13 @@ namespace SashaRX.UnityMeshLab
             int iValidate    = idx("validateMs");
             int iShellsMatch = idx("shellsMatched");
             int iVertsXfer   = idx("verticesTransferred");
+            int iDupUv2      = idx("uv2DuplicatePairs");
+            int iForce3DOL   = idx("shellsOverlapFixed");
+            int iCompBroken  = idx("compositeBrokenCount");
+            int iSevere      = idx("severeMismatchCount");
 
             int slivers = 0, overlap = 0;
+            int dupUv2 = 0, force3DOL = 0, compBroken = 0, severe = 0;
             int utilCount = 0;
             float utilSum = 0f;
             long totalMs = 0;
@@ -291,6 +319,10 @@ namespace SashaRX.UnityMeshLab
                     slivers += SafeInt(c, iInverted)  + SafeInt(c, iStretched)
                              + SafeInt(c, iZero)     + SafeInt(c, iOob);
                     overlap += SafeInt(c, iOverlap);
+                    dupUv2     += SafeInt(c, iDupUv2);
+                    force3DOL  += SafeInt(c, iForce3DOL);
+                    compBroken += SafeInt(c, iCompBroken);
+                    severe     += SafeInt(c, iSevere);
 
                     // A target-LOD row with zero shells matched AND zero
                     // vertices transferred means the transfer never ran (or
@@ -340,6 +372,10 @@ namespace SashaRX.UnityMeshLab
 
             summary.totalSlivers         = slivers;
             summary.overlapShellPairs    = overlap;
+            summary.uv2DuplicatePairs    = dupUv2;
+            summary.force3DOverlapCount  = force3DOL;
+            summary.compositeBrokenCount = compBroken;
+            summary.severeMismatchCount  = severe;
             summary.meanAtlasUtilization = utilCount > 0 ? utilSum / utilCount : 0f;
             summary.totalMs              = totalMs;
             // No target-LOD rows means transfer never produced anything —
@@ -399,7 +435,9 @@ namespace SashaRX.UnityMeshLab
             var inv = CultureInfo.InvariantCulture;
             var sb = new StringBuilder();
             sb.AppendLine("atlasRes,shellPad,borderPad,arapEnabled,arapIterations,stretchThreshold," +
-                          "totalSlivers,overlapShellPairs,meanAtlasUtilization,totalMs,score,csvPath");
+                          "totalSlivers,overlapShellPairs," +
+                          "uv2DuplicatePairs,force3DOverlapCount,compositeBrokenCount,severeMismatchCount," +
+                          "meanAtlasUtilization,totalMs,score,csvPath");
             foreach (var r in runs)
             {
                 // Make csvPath relative to BenchmarkReports/ when possible —
@@ -420,6 +458,10 @@ namespace SashaRX.UnityMeshLab
                 sb.Append(r.config.stretchThreshold.ToString("R", inv)).Append(',');
                 sb.Append(r.totalSlivers.ToString(inv)).Append(',');
                 sb.Append(r.overlapShellPairs.ToString(inv)).Append(',');
+                sb.Append(r.uv2DuplicatePairs.ToString(inv)).Append(',');
+                sb.Append(r.force3DOverlapCount.ToString(inv)).Append(',');
+                sb.Append(r.compositeBrokenCount.ToString(inv)).Append(',');
+                sb.Append(r.severeMismatchCount.ToString(inv)).Append(',');
                 sb.Append(r.meanAtlasUtilization.ToString("R", inv)).Append(',');
                 sb.Append(r.totalMs.ToString(inv)).Append(',');
                 sb.Append(r.score.ToString("R", inv)).Append(',');
@@ -447,6 +489,10 @@ namespace SashaRX.UnityMeshLab
             sb.Append("    \"score\": ").Append(JsonFloat(w.score, inv)).Append(",\n");
             sb.Append("    \"totalSlivers\": ").Append(w.totalSlivers.ToString(inv)).Append(",\n");
             sb.Append("    \"overlapShellPairs\": ").Append(w.overlapShellPairs.ToString(inv)).Append(",\n");
+            sb.Append("    \"uv2DuplicatePairs\": ").Append(w.uv2DuplicatePairs.ToString(inv)).Append(",\n");
+            sb.Append("    \"force3DOverlapCount\": ").Append(w.force3DOverlapCount.ToString(inv)).Append(",\n");
+            sb.Append("    \"compositeBrokenCount\": ").Append(w.compositeBrokenCount.ToString(inv)).Append(",\n");
+            sb.Append("    \"severeMismatchCount\": ").Append(w.severeMismatchCount.ToString(inv)).Append(",\n");
             sb.Append("    \"meanAtlasUtilization\": ").Append(JsonFloat(w.meanAtlasUtilization, inv)).Append(",\n");
             sb.Append("    \"totalMs\": ").Append(w.totalMs.ToString(inv)).Append(",\n");
             sb.Append("    \"csvPath\": ").Append(JsonString(w.csvPath ?? "")).Append("\n");
@@ -458,6 +504,10 @@ namespace SashaRX.UnityMeshLab
             sb.Append("    \"atlasUtilizationWeight\": ").Append(kWeightUtilization.ToString("R", inv)).Append(",\n");
             sb.Append("    \"sliverPenalty\": ").Append(kPenaltySliver.ToString("R", inv)).Append(",\n");
             sb.Append("    \"overlapPenalty\": ").Append(kPenaltyOverlap.ToString("R", inv)).Append(",\n");
+            sb.Append("    \"dupUv2Penalty\": ").Append(kPenaltyDupUv2.ToString("R", inv)).Append(",\n");
+            sb.Append("    \"force3DOverlapPenalty\": ").Append(kPenaltyForce3DOL.ToString("R", inv)).Append(",\n");
+            sb.Append("    \"compositeBrokenPenalty\": ").Append(kPenaltyCompBroken.ToString("R", inv)).Append(",\n");
+            sb.Append("    \"severeMismatchPenalty\": ").Append(kPenaltySevere.ToString("R", inv)).Append(",\n");
             sb.Append("    \"msPenalty\": ").Append(kPenaltyMs.ToString("R", inv)).Append(",\n");
             sb.Append("    \"resolutionPenalty\": ").Append(kPenaltyResolution.ToString("R", inv)).Append("\n");
             sb.Append("  },\n");
@@ -475,6 +525,10 @@ namespace SashaRX.UnityMeshLab
                 sb.Append("\"stretchThreshold\": ").Append(r.config.stretchThreshold.ToString("R", inv)).Append(", ");
                 sb.Append("\"totalSlivers\": ").Append(r.totalSlivers.ToString(inv)).Append(", ");
                 sb.Append("\"overlapShellPairs\": ").Append(r.overlapShellPairs.ToString(inv)).Append(", ");
+                sb.Append("\"uv2DuplicatePairs\": ").Append(r.uv2DuplicatePairs.ToString(inv)).Append(", ");
+                sb.Append("\"force3DOverlapCount\": ").Append(r.force3DOverlapCount.ToString(inv)).Append(", ");
+                sb.Append("\"compositeBrokenCount\": ").Append(r.compositeBrokenCount.ToString(inv)).Append(", ");
+                sb.Append("\"severeMismatchCount\": ").Append(r.severeMismatchCount.ToString(inv)).Append(", ");
                 sb.Append("\"meanAtlasUtilization\": ").Append(JsonFloat(r.meanAtlasUtilization, inv)).Append(", ");
                 sb.Append("\"totalMs\": ").Append(r.totalMs.ToString(inv)).Append(", ");
                 sb.Append("\"score\": ").Append(JsonFloat(r.score, inv)).Append(", ");
@@ -559,9 +613,13 @@ namespace SashaRX.UnityMeshLab
             sb.Append("        <th onclick=\"sortBy(6)\">stretchThr</th>\n");
             sb.Append("        <th onclick=\"sortBy(7)\">slivers</th>\n");
             sb.Append("        <th onclick=\"sortBy(8)\">overlap</th>\n");
-            sb.Append("        <th onclick=\"sortBy(9)\">atlas%</th>\n");
-            sb.Append("        <th onclick=\"sortBy(10)\">ms</th>\n");
-            sb.Append("        <th onclick=\"sortBy(11)\">score</th>\n");
+            sb.Append("        <th onclick=\"sortBy(9)\" title=\"target shells with identical UV2 fingerprint\">dupUV2</th>\n");
+            sb.Append("        <th onclick=\"sortBy(10)\" title=\"force3D shells overlapping non-fallback (bleeding)\">f3DOL</th>\n");
+            sb.Append("        <th onclick=\"sortBy(11)\" title=\"composite spatially broken targets (Phase 3 fallback)\">compBr</th>\n");
+            sb.Append("        <th onclick=\"sortBy(12)\" title=\"target shells with matchDist > 10% mesh diagonal\">severe</th>\n");
+            sb.Append("        <th onclick=\"sortBy(13)\">atlas%</th>\n");
+            sb.Append("        <th onclick=\"sortBy(14)\">ms</th>\n");
+            sb.Append("        <th onclick=\"sortBy(15)\">score</th>\n");
             sb.Append("        <th>UV2 thumbs</th>\n");
             sb.Append("      </tr>\n");
             sb.Append("    </thead>\n");
@@ -581,6 +639,10 @@ namespace SashaRX.UnityMeshLab
                 sb.Append("        <td>").Append(r.config.stretchThreshold.ToString("F2", inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.totalSlivers.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.overlapShellPairs.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.uv2DuplicatePairs.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.force3DOverlapCount.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.compositeBrokenCount.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.severeMismatchCount.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append((r.meanAtlasUtilization * 100f).ToString("F2", inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.totalMs.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.score.ToString("F2", inv)).Append("</td>\n");

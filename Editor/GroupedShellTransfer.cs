@@ -101,6 +101,22 @@ namespace SashaRX.UnityMeshLab
             public int shellsRejected;       // shells where UV2 was not written (too many issues)
             public int shellsOverlapFixed;   // force3D shells relocated due to UV2 overlap
 
+            // ─── Visual-defect counters (added for sweep visibility) ───
+            // Captures failure modes that the existing solid-pipeline metrics
+            // (shellsRejected, overlapShellPairs, coverage) miss but the user
+            // sees on the rendered atlas. See TRANSFER_BENCHMARK.md.
+            /// <summary>Pairs of target shells whose quantised UV2 fingerprint hash matches.
+            /// Non-zero = two distinct 3D instances bake onto the same atlas region
+            /// (lightmap data shared between unrelated geometry).</summary>
+            public int uv2DuplicatePairs;
+            /// <summary>Target shells whose Phase 3 composite UV2 spilled out of the matched
+            /// source UV2 region (compArea &gt; 2× srcArea) and were forced back to a
+            /// single-source fallback. Signals a Phase 2 matching miss.</summary>
+            public int compositeBrokenCount;
+            /// <summary>Target shells whose chosen source is &gt;10% of mesh diagonal away
+            /// in 3D — almost always a wrong-source assignment by Phase 2.</summary>
+            public int severeMismatchCount;
+
             // ─── Topology enforcement snapshot (per-target, captured by Transfer) ───
             // Copied from LastTopology* immediately after EnforceShellTopologyOnUv2
             // so multi-mesh runs don't all read the final target's global values.
@@ -1777,6 +1793,24 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            // Severe-mismatch count — target shells whose Phase 2 chose a source
+            // more than 10% of mesh diagonal away in 3D. On well-matched LODs this
+            // is 0; non-zero almost always means a wrong assignment (wedge swapped
+            // with sibling, or unrelated nearby shell stole the slot). Exposed as
+            // a sweep metric so refactors that drag matchDist up are caught.
+            {
+                float severeThresholdSq = (meshDiagonal * 0.1f) * (meshDiagonal * 0.1f);
+                int severe = 0;
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    if (result.targetShellToSourceShell[tsi] < 0) continue;
+                    float dsq = result.targetShellMatchDistSqr[tsi];
+                    if (dsq >= float.MaxValue || float.IsInfinity(dsq)) continue;
+                    if (dsq > severeThresholdSq) severe++;
+                }
+                result.severeMismatchCount = severe;
+            }
+
             // Post-dedup diagnostic: check for remaining same-source duplicates.
             // Distinguish allowed shared-source fragments (non-overlapping UV0)
             // from true duplicates (overlapping UV0 — tiling/symmetric).
@@ -2366,6 +2400,7 @@ namespace SashaRX.UnityMeshLab
                             if (bestSrcUv2Area > 1e-8f && compArea > bestSrcUv2Area * 2.0f)
                             {
                                 compositeSpatiallyBroken = true;
+                                result.compositeBrokenCount++;
                                 UvtLog.Info($"[GroupedTransfer]   t{tsi}: composite spatially broken " +
                                     $"(compArea={compArea:F6} > 2×srcArea={bestSrcUv2Area:F6}), " +
                                     $"falling back to single-source");
@@ -3539,10 +3574,15 @@ namespace SashaRX.UnityMeshLab
 
             // Per-shell UV2 fingerprint: hash of UV2 values for cross-branch comparison.
             // Logs centroid + hash so users can diff logs between branches to find
-            // which specific shells produce different UV2.
+            // which specific shells produce different UV2. Also counts duplicate
+            // hashes — two target shells with byte-identical UV2 layouts indicate
+            // two distinct 3D instances baking onto the same atlas region (e.g.
+            // symmetric copies that share UV2 — silent lightmap bleeding).
             {
                 var fpSb = new System.Text.StringBuilder();
                 fpSb.Append($"[GroupedTransfer] UV2 fingerprint '{targetMeshName}':");
+                var hashFirstSeen = new Dictionary<uint, int>(tgtShells.Count);
+                int dupPairs = 0;
                 for (int tsi2 = 0; tsi2 < tgtShells.Count; tsi2++)
                 {
                     var shell = tgtShells[tsi2];
@@ -3564,8 +3604,20 @@ namespace SashaRX.UnityMeshLab
                         }
                     }
                     if (cnt > 0)
+                    {
                         fpSb.Append($" t{tsi2}={hash:X8}({sumX / cnt:F4},{sumY / cnt:F4})");
+                        // Skip Rejected/Unmatched — those legitimately share an "empty"
+                        // hash (vertices left at 0,0) and would inflate the duplicate
+                        // count without representing real bleeding.
+                        var status = result.targetShellStatus[tsi2];
+                        if (status != ShellStatus.Rejected && status != ShellStatus.Unmatched)
+                        {
+                            if (hashFirstSeen.ContainsKey(hash)) dupPairs++;
+                            else hashFirstSeen[hash] = tsi2;
+                        }
+                    }
                 }
+                result.uv2DuplicatePairs = dupPairs;
                 UvtLog.Info(fpSb.ToString());
             }
 
@@ -3734,6 +3786,7 @@ namespace SashaRX.UnityMeshLab
                     $"method interp={methodInterp} xform={methodXform} merged={methodMerged} | " +
                     $"fragMerged={result.fragmentsMerged} dedupConf={result.dedupConflicts} " +
                     $"overlapFixed={result.shellsOverlapFixed} consistFix={result.consistencyCorrected} | " +
+                    $"DUP={result.uv2DuplicatePairs} COMP={result.compositeBrokenCount} SEVERE={result.severeMismatchCount} | " +
                     $"matchDist mean={meanDist:F4} max={maxDist:F4} | " +
                     $"topo iters={result.topologyIterations} fixed={result.topologyFixed} " +
                     $"capHit={(result.topologyCapHit ? 1 : 0)} | " +

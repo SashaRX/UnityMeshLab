@@ -91,11 +91,30 @@ Per-row (snapshot of `TransferResult` / `ValidationReport` / static counters):
   `shellsMerged`, `shellsRejected`, `shellsOverlapFixed`
 - `dedupConflicts`, `fragmentsMerged`, `consistencyCorrected`
 - `verticesTransferred`, `verticesTotal`
+- `uv2DuplicatePairs`, `compositeBrokenCount`, `severeMismatchCount`
+  — see *Visual-defect counters* below
 - `invertedCount`, `stretchedCount`, `zeroAreaCount`, `oobCount`, `cleanCount`
 - `overlapShellPairs`, `overlapTriangleCount`, `overlapSameSrcPairs`
 - `texelDensityBadCount`, `texelDensityMedian`
 - `symSplitFallbackCount`, `symSplitTotalCount`
 - `topologyIterations`, `topologyFixed`, `topologyCapHit`
+
+### Visual-defect counters
+
+The original `defectScore = stretched + zeroArea + oob` flagged geometric
+defects, but missed the failure modes where the algorithm produces
+"technically valid" UV2 that bakes wrong:
+
+| Metric | What it catches |
+| --- | --- |
+| `uv2DuplicatePairs` | Pairs of target shells whose quantised UV2 fingerprint hash matches. Non-zero = two distinct 3D instances bake onto the same atlas region (silent lightmap bleeding between symmetric copies). Rejected/Unmatched shells excluded (they legitimately share the empty hash). |
+| `shellsOverlapFixed` (== force3D overlap count) | Force3D-fallback shells whose UV2 AABB overlaps a non-fallback shell's UV2 AABB. Already warned via `[GroupedTransfer] UV2 overlap: ... bleeding likely`; surfaced here as a counter. |
+| `compositeBrokenCount` | Target shells whose Phase 3 composite UV2 spilled out of the matched source UV2 region (`compArea > 2× srcArea`) and were forced back to single-source fallback. Signals a Phase 2 matching miss. |
+| `severeMismatchCount` | Target shells whose chosen source is &gt;10% of mesh diagonal away in 3D. Almost always a wrong-source assignment by Phase 2 — e.g. wedge swapped with a sibling. |
+
+These four feed into the sweep score (`BenchmarkSweep.Score`) with weights
+`-50 / -30 / -10 / -20` respectively, so refactors that drag any of them
+upward lose against the previous winner.
 
 JSON output mirrors the CSV but nests `records[]` inside a run envelope.
 
@@ -232,6 +251,15 @@ list.
 - **Topology cap hit:** false. If true, either increase
   `kMaxTopologyIterations` or accept residual displacement.
 - **Coverage** (`verticesTransferred / verticesTotal`): >= 0.99.
+- **uv2DuplicatePairs:** 0. Non-zero = silent lightmap bleeding; STOP.
+- **shellsOverlapFixed (force3D overlap):** 0 on source LOD. Up to 1
+  tolerable on target LODs (only on heavily-decimated geometry).
+- **compositeBrokenCount:** 0 on source LOD. Up to ~5% of target shell
+  count tolerable; higher = Phase 2 matching is misassigning to source
+  shells that don't cover the target UV0 region.
+- **severeMismatchCount:** 0 on source LOD. Non-zero on target LODs is a
+  strong signal that a wedge / sibling got swapped — investigate the
+  specific shells (`shellMatchDistSqr` column).
 
 ## Known models
 
