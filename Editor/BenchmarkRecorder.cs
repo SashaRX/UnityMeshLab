@@ -65,6 +65,7 @@ namespace SashaRX.UnityMeshLab
         readonly bool   arapEnabled;
         readonly int    arapIterations;
         readonly float  stretchThreshold;
+        readonly int    internalOversample;
         // TODO: capture actualAtlasWidth/actualAtlasHeight from RepackResult.
         // Currently RepackResult is consumed inside ExecRepackCore and not
         // surfaced on MeshEntry. Threading it through would require a new
@@ -85,9 +86,10 @@ namespace SashaRX.UnityMeshLab
             shellPad        = ctx?.ShellPaddingPx ?? 0;
             borderPad       = ctx?.BorderPaddingPx ?? 0;
             sourceLodIndex  = ctx?.SourceLodIndex ?? 0;
-            arapEnabled      = ctx?.ReparameterizeStretchedShells ?? false;
-            arapIterations   = ctx?.ArapIterations ?? 0;
-            stretchThreshold = ctx?.StretchThreshold ?? 0f;
+            arapEnabled        = ctx?.ReparameterizeStretchedShells ?? false;
+            arapIterations     = ctx?.ArapIterations ?? 0;
+            stretchThreshold   = ctx?.StretchThreshold ?? 0f;
+            internalOversample = ctx?.InternalOversample ?? 1;
             modeTag         = $"{symSplitMode}{(repackPerMesh ? "-perMesh" : "")}{(splitTargets ? "-splitTgt" : "")}";
             startedAtUtc    = DateTime.UtcNow;
 
@@ -318,7 +320,7 @@ namespace SashaRX.UnityMeshLab
             var sb = new StringBuilder();
             sb.AppendLine("timestamp,runLabel,lodGroup,symSplitMode,repackPerMesh,splitTargets," +
                 "atlasRes,shellPad,borderPad," +
-                "arapEnabled,arapIterations,stretchThreshold," +
+                "arapEnabled,arapIterations,stretchThreshold,internalOversample," +
                 "sourceLod," +
                 "rendererName,meshGroupKey,lodIndex,isSourceLod," +
                 "shellsMatched,shellsUnmatched,shellsTransform,shellsInterpolation,shellsMerged," +
@@ -352,6 +354,7 @@ namespace SashaRX.UnityMeshLab
                 sb.Append(arapEnabled ? '1' : '0').Append(',');
                 sb.Append(arapIterations.ToString(inv)).Append(',');
                 sb.Append(stretchThreshold.ToString("R", inv)).Append(',');
+                sb.Append(internalOversample.ToString(inv)).Append(',');
                 sb.Append(sourceLodIndex.ToString(inv)).Append(',');
                 sb.Append(Csv(r.rendererName)).Append(',');
                 sb.Append(Csv(r.meshGroupKey)).Append(',');
@@ -415,9 +418,10 @@ namespace SashaRX.UnityMeshLab
             AppendJsonKv(sb, "atlasResolution", atlasResolution); sb.Append(",\n");
             AppendJsonKv(sb, "shellPad",  shellPad);  sb.Append(",\n");
             AppendJsonKv(sb, "borderPad", borderPad); sb.Append(",\n");
-            AppendJsonKv(sb, "arapEnabled",      arapEnabled);      sb.Append(",\n");
-            AppendJsonKv(sb, "arapIterations",   arapIterations);   sb.Append(",\n");
-            AppendJsonKv(sb, "stretchThreshold", stretchThreshold); sb.Append(",\n");
+            AppendJsonKv(sb, "arapEnabled",        arapEnabled);        sb.Append(",\n");
+            AppendJsonKv(sb, "arapIterations",     arapIterations);     sb.Append(",\n");
+            AppendJsonKv(sb, "stretchThreshold",   stretchThreshold);   sb.Append(",\n");
+            AppendJsonKv(sb, "internalOversample", internalOversample); sb.Append(",\n");
             AppendJsonKv(sb, "sourceLodIndex", sourceLodIndex); sb.Append(",\n");
             AppendJsonKv(sb, "pipelineMs", pipelineMs); sb.Append(",\n");
             AppendJsonKv(sb, "repackMs",   repackMs);   sb.Append(",\n");

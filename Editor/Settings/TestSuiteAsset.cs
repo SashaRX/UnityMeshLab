@@ -113,6 +113,18 @@ namespace SashaRX.UnityMeshLab
                      "grid size.")]
             public float[] stretchThresholdVariants = { 1.5f };
 
+            [Tooltip("xatlas internal-oversample multiplier. Pack runs at internalRes = resolution × oversample, " +
+                     "then UV2 is scaled back. Higher = fewer sub-pixel shells (less Stage B density amplification, " +
+                     "see EXPERIMENTS.md a218a2b) at the cost of pack time. Defaults match RepackOptions.Default " +
+                     "(4×). Use {1} to disable, {1,2,4} to compare. Each entry multiplies the grid size.")]
+            public int[] internalOversampleVariants = { 4 };
+
+            [Tooltip("SymSplit threshold mode variants. LegacyFixed = compiled constants for UV_NEAR / POS_FAR; " +
+                     "Adaptive = thresholds derived per-shell from mesh / UV scale (proposal in EXPERIMENTS.md " +
+                     "2026-04-15). Keep both entries to A/B them, or use one to pin a baseline.")]
+            public SymmetrySplitShells.ThresholdMode[] symSplitThresholdModeVariants =
+                { SymmetrySplitShells.ThresholdMode.LegacyFixed };
+
             [Tooltip("Call ResetPipelineState between sweep cells so each cell starts from the " +
                      "unmodified FBX meshes. Disable only for debugging a single cell.")]
             public bool resetBetweenRuns = true;

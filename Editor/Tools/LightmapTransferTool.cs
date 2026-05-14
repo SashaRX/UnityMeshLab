@@ -1483,9 +1483,15 @@ namespace SashaRX.UnityMeshLab
                 : new[] { ctx.ReparameterizeStretchedShells ? ctx.ArapIterations : 0 };
             var stretchArr = (sm.stretchThresholdVariants != null && sm.stretchThresholdVariants.Length > 0)
                 ? sm.stretchThresholdVariants : new[] { ctx.StretchThreshold };
+            var osArr = (sm.internalOversampleVariants != null && sm.internalOversampleVariants.Length > 0)
+                ? sm.internalOversampleVariants : new[] { ctx.InternalOversample };
+            var symModeArr = (sm.symSplitThresholdModeVariants != null && sm.symSplitThresholdModeVariants.Length > 0)
+                ? sm.symSplitThresholdModeVariants
+                : new[] { symSplitThresholdMode };
 
             int total = resArr.Length * padArr.Length * bdrArr.Length
-                      * arapItersArr.Length * stretchArr.Length;
+                      * arapItersArr.Length * stretchArr.Length
+                      * osArr.Length * symModeArr.Length;
 
             // Snapshot ctx fields we mutate — restored unconditionally below.
             int   origRes         = ctx.AtlasResolution;
@@ -1494,6 +1500,8 @@ namespace SashaRX.UnityMeshLab
             bool  origArapOn      = ctx.ReparameterizeStretchedShells;
             int   origArapIters   = ctx.ArapIterations;
             float origStretchThr  = ctx.StretchThreshold;
+            int   origOversample  = ctx.InternalOversample;
+            var   origSymMode     = symSplitThresholdMode;
             // The sweep iterates an explicit atlasResolutions array. If the
             // user left AutoFromTexelDensity selected, ExecRepackCore would
             // overwrite ctx.AtlasResolution every cell and every row would
@@ -1558,10 +1566,17 @@ namespace SashaRX.UnityMeshLab
                                 foreach (float stretchThr in stretchArr)
                                 {
                                     if (cancelled) break;
+                                    foreach (int oversample in osArr)
+                                    {
+                                        if (cancelled) break;
+                                        foreach (var symMode in symModeArr)
+                                        {
+                                            if (cancelled) break;
                                     UvProgress.Report(
                                         (float)done / Mathf.Max(1, total),
                                         $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}, " +
-                                        $"arap={arapIters}, stretch={stretchThr:F2}");
+                                        $"arap={arapIters}, stretch={stretchThr:F2}, " +
+                                        $"oversample={oversample}, symMode={symMode}");
                                     if (UvProgress.CancelRequested)
                                     {
                                         cancelled = true;
@@ -1578,6 +1593,9 @@ namespace SashaRX.UnityMeshLab
                                     ctx.ReparameterizeStretchedShells = arapIters > 0;
                                     if (arapIters > 0) ctx.ArapIterations = arapIters;
                                     ctx.StretchThreshold              = stretchThr;
+                                    ctx.InternalOversample            = oversample > 0 ? oversample : 1;
+                                    symSplitThresholdMode             = symMode;
+                                    SymmetrySplitShells.CurrentThresholdMode = symMode;
 
                                     if (sm.resetBetweenRuns) ResetWorkingCopies();
 
@@ -1585,7 +1603,10 @@ namespace SashaRX.UnityMeshLab
                                     // and that would break the recovery regex's _stretch(\d+p\d+)_ token.
                                     int stretchHundredths = Mathf.RoundToInt(stretchThr * 100f);
                                     string stretchTag = $"{stretchHundredths / 100}p{(stretchHundredths % 100):D2}";
-                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_arap{arapIters}_stretch{stretchTag}";
+                                    string symTag = symMode == SymmetrySplitShells.ThresholdMode.LegacyFixed
+                                        ? "legacy" : "adaptive";
+                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_arap{arapIters}_" +
+                                                   $"stretch{stretchTag}_os{oversample}_sym{symTag}";
                                     string csvBefore = BenchmarkRecorder.LastWrittenCsvPath;
                                     try
                                     {
@@ -1606,12 +1627,14 @@ namespace SashaRX.UnityMeshLab
                                     writtenCsvPaths.Add(csvPath);
                                     cellConfigs.Add(new BenchmarkSweep.CellConfig
                                     {
-                                        atlasRes         = r,
-                                        shellPad         = s,
-                                        borderPad        = b,
-                                        arapEnabled      = arapIters > 0,
-                                        arapIterations   = arapIters,
-                                        stretchThreshold = stretchThr,
+                                        atlasRes           = r,
+                                        shellPad           = s,
+                                        borderPad          = b,
+                                        arapEnabled        = arapIters > 0,
+                                        arapIterations     = arapIters,
+                                        stretchThreshold   = stretchThr,
+                                        internalOversample = oversample,
+                                        symSplitMode       = symMode,
                                     });
                                     done++;
 
@@ -1647,6 +1670,8 @@ namespace SashaRX.UnityMeshLab
                                         UvtLog.Verbose(UvtLog.Category.Benchmark,
                                             $"[Sweep] Between-cell cleanup hiccup: {ex.Message}");
                                     }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1662,7 +1687,10 @@ namespace SashaRX.UnityMeshLab
                 ctx.ReparameterizeStretchedShells = origArapOn;
                 ctx.ArapIterations                = origArapIters;
                 ctx.StretchThreshold              = origStretchThr;
+                ctx.InternalOversample            = origOversample;
                 ctx.RepackResolutionMode          = origResMode;
+                symSplitThresholdMode             = origSymMode;
+                SymmetrySplitShells.CurrentThresholdMode = origSymMode;
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     $"Sweep complete: {done}/{total} cells{(cancelled ? " (cancelled)" : "")}");
 
@@ -1683,6 +1711,47 @@ namespace SashaRX.UnityMeshLab
                     {
                         UvtLog.Error(UvtLog.Category.Benchmark,
                             $"[Sweep] Aggregate report failed: {ex.Message}");
+                    }
+                }
+
+                // Provenance manifest + auto-archive. Failure of either is
+                // logged but never propagates — losing reproducibility metadata
+                // is bad, but it shouldn't take down a completed sweep.
+                if (!string.IsNullOrEmpty(sweepDir) && System.IO.Directory.Exists(sweepDir))
+                {
+                    try
+                    {
+                        var prov = BenchmarkSweep.ResolvePackageProvenance();
+                        string stamp = System.IO.Path.GetFileName(sweepDir);
+                        if (stamp != null && stamp.StartsWith("sweep_", StringComparison.Ordinal))
+                            stamp = stamp.Substring("sweep_".Length);
+                        BenchmarkSweep.WriteManifest(sweepDir, new BenchmarkSweep.SweepManifest
+                        {
+                            sweepDir       = sweepDir,
+                            sweepStamp     = stamp ?? "",
+                            sweepLabel     = ctx.LodGroup != null ? ctx.LodGroup.name : "standalone",
+                            packageName    = prov.pkgName,
+                            packageVersion = prov.pkgVersion,
+                            gitSha         = prov.gitSha,
+                            gitBranch      = prov.gitBranch,
+                            gitDirty       = prov.gitDirty,
+                            unityVersion   = Application.unityVersion,
+                            platform       = Application.platform.ToString(),
+                            hostUser       = System.Environment.UserName,
+                            hostMachine    = System.Environment.MachineName,
+                            hostOs         = System.Environment.OSVersion.VersionString,
+                            processor      = SystemInfo.processorType,
+                            cellCount      = writtenCsvPaths.Count,
+                            caseCount      = 1,
+                            matrix         = sm,
+                            caseLabels     = null,
+                        });
+                        BenchmarkSweep.ArchiveSweep(sweepDir);
+                    }
+                    catch (Exception ex)
+                    {
+                        UvtLog.Warn(UvtLog.Category.Benchmark,
+                            $"[Sweep] manifest/archive step failed: {ex.Message}");
                     }
                 }
             }

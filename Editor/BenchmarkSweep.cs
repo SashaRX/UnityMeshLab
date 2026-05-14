@@ -9,8 +9,11 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
 using System.Text;
 using UnityEngine;
+using UnityEditor;
+using UnityEditor.PackageManager;
 
 namespace SashaRX.UnityMeshLab
 {
@@ -57,6 +60,14 @@ namespace SashaRX.UnityMeshLab
             public bool  arapEnabled;
             public int   arapIterations;
             public float stretchThreshold;
+            // xatlas internal-oversample. internalRes = resolution × oversample.
+            // 1 = native resolution, 4 = current default. See EXPERIMENTS.md
+            // a218a2b — affects Stage B density amplification.
+            public int   internalOversample;
+            // SymSplit threshold mode (LegacyFixed vs Adaptive). Serialised
+            // separately from arapEnabled because it gates a different
+            // pre-pack stage.
+            public SymmetrySplitShells.ThresholdMode symSplitMode;
         }
 
         internal struct RunSummary
@@ -208,7 +219,8 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Info(UvtLog.Category.Benchmark,
                 $"[Sweep] Winner: res={w.config.atlasRes}, pad={w.config.shellPad}, bdr={w.config.borderPad}, " +
                 $"arap={(w.config.arapEnabled ? w.config.arapIterations : 0)}, " +
-                $"stretchThr={w.config.stretchThreshold:F2} (score={w.score:F2})");
+                $"stretchThr={w.config.stretchThreshold:F2}, os={w.config.internalOversample}, " +
+                $"sym={w.config.symSplitMode} (score={w.score:F2})");
         }
 
         /// <summary>
@@ -435,6 +447,7 @@ namespace SashaRX.UnityMeshLab
             var inv = CultureInfo.InvariantCulture;
             var sb = new StringBuilder();
             sb.AppendLine("atlasRes,shellPad,borderPad,arapEnabled,arapIterations,stretchThreshold," +
+                          "internalOversample,symSplitMode," +
                           "totalSlivers,overlapShellPairs," +
                           "uv2DuplicatePairs,force3DOverlapCount,compositeBrokenCount,severeMismatchCount," +
                           "meanAtlasUtilization,totalMs,score,csvPath");
@@ -456,6 +469,8 @@ namespace SashaRX.UnityMeshLab
                 sb.Append(r.config.arapEnabled ? '1' : '0').Append(',');
                 sb.Append(r.config.arapIterations.ToString(inv)).Append(',');
                 sb.Append(r.config.stretchThreshold.ToString("R", inv)).Append(',');
+                sb.Append(r.config.internalOversample.ToString(inv)).Append(',');
+                sb.Append(r.config.symSplitMode.ToString()).Append(',');
                 sb.Append(r.totalSlivers.ToString(inv)).Append(',');
                 sb.Append(r.overlapShellPairs.ToString(inv)).Append(',');
                 sb.Append(r.uv2DuplicatePairs.ToString(inv)).Append(',');
@@ -486,6 +501,8 @@ namespace SashaRX.UnityMeshLab
             sb.Append("    \"arapEnabled\": ").Append(w.config.arapEnabled ? "true" : "false").Append(",\n");
             sb.Append("    \"arapIterations\": ").Append(w.config.arapIterations.ToString(inv)).Append(",\n");
             sb.Append("    \"stretchThreshold\": ").Append(w.config.stretchThreshold.ToString("R", inv)).Append(",\n");
+            sb.Append("    \"internalOversample\": ").Append(w.config.internalOversample.ToString(inv)).Append(",\n");
+            sb.Append("    \"symSplitMode\": ").Append(JsonString(w.config.symSplitMode.ToString())).Append(",\n");
             sb.Append("    \"score\": ").Append(JsonFloat(w.score, inv)).Append(",\n");
             sb.Append("    \"totalSlivers\": ").Append(w.totalSlivers.ToString(inv)).Append(",\n");
             sb.Append("    \"overlapShellPairs\": ").Append(w.overlapShellPairs.ToString(inv)).Append(",\n");
@@ -523,6 +540,8 @@ namespace SashaRX.UnityMeshLab
                 sb.Append("\"arapEnabled\": ").Append(r.config.arapEnabled ? "true" : "false").Append(", ");
                 sb.Append("\"arapIterations\": ").Append(r.config.arapIterations.ToString(inv)).Append(", ");
                 sb.Append("\"stretchThreshold\": ").Append(r.config.stretchThreshold.ToString("R", inv)).Append(", ");
+                sb.Append("\"internalOversample\": ").Append(r.config.internalOversample.ToString(inv)).Append(", ");
+                sb.Append("\"symSplitMode\": ").Append(JsonString(r.config.symSplitMode.ToString())).Append(", ");
                 sb.Append("\"totalSlivers\": ").Append(r.totalSlivers.ToString(inv)).Append(", ");
                 sb.Append("\"overlapShellPairs\": ").Append(r.overlapShellPairs.ToString(inv)).Append(", ");
                 sb.Append("\"uv2DuplicatePairs\": ").Append(r.uv2DuplicatePairs.ToString(inv)).Append(", ");
@@ -566,7 +585,8 @@ namespace SashaRX.UnityMeshLab
                 var w = runs[bestIdx];
                 winnerLabel = $"res={w.config.atlasRes}, pad={w.config.shellPad}, bdr={w.config.borderPad}, " +
                               $"arap={(w.config.arapEnabled ? w.config.arapIterations : 0)}, " +
-                              $"stretchThr={w.config.stretchThreshold.ToString("F2", inv)}";
+                              $"stretchThr={w.config.stretchThreshold.ToString("F2", inv)}, " +
+                              $"os={w.config.internalOversample}, sym={w.config.symSplitMode}";
                 winnerScore = w.score.ToString("F2", inv);
             }
 
@@ -611,15 +631,17 @@ namespace SashaRX.UnityMeshLab
             sb.Append("        <th onclick=\"sortBy(4)\">arapEnabled</th>\n");
             sb.Append("        <th onclick=\"sortBy(5)\">arapIters</th>\n");
             sb.Append("        <th onclick=\"sortBy(6)\">stretchThr</th>\n");
-            sb.Append("        <th onclick=\"sortBy(7)\">slivers</th>\n");
-            sb.Append("        <th onclick=\"sortBy(8)\">overlap</th>\n");
-            sb.Append("        <th onclick=\"sortBy(9)\" title=\"target shells with identical UV2 fingerprint\">dupUV2</th>\n");
-            sb.Append("        <th onclick=\"sortBy(10)\" title=\"force3D shells overlapping non-fallback (bleeding)\">f3DOL</th>\n");
-            sb.Append("        <th onclick=\"sortBy(11)\" title=\"composite spatially broken targets (Phase 3 fallback)\">compBr</th>\n");
-            sb.Append("        <th onclick=\"sortBy(12)\" title=\"target shells with matchDist > 10% mesh diagonal\">severe</th>\n");
-            sb.Append("        <th onclick=\"sortBy(13)\">atlas%</th>\n");
-            sb.Append("        <th onclick=\"sortBy(14)\">ms</th>\n");
-            sb.Append("        <th onclick=\"sortBy(15)\">score</th>\n");
+            sb.Append("        <th onclick=\"sortBy(7)\" title=\"xatlas internal-oversample (1/2/4)\">os</th>\n");
+            sb.Append("        <th onclick=\"sortBy(8)\" title=\"SymSplit threshold mode (LegacyFixed/Adaptive)\">symMode</th>\n");
+            sb.Append("        <th onclick=\"sortBy(9)\">slivers</th>\n");
+            sb.Append("        <th onclick=\"sortBy(10)\">overlap</th>\n");
+            sb.Append("        <th onclick=\"sortBy(11)\" title=\"target shells with identical UV2 fingerprint\">dupUV2</th>\n");
+            sb.Append("        <th onclick=\"sortBy(12)\" title=\"force3D shells overlapping non-fallback (bleeding)\">f3DOL</th>\n");
+            sb.Append("        <th onclick=\"sortBy(13)\" title=\"composite spatially broken targets (Phase 3 fallback)\">compBr</th>\n");
+            sb.Append("        <th onclick=\"sortBy(14)\" title=\"target shells with matchDist > 10% mesh diagonal\">severe</th>\n");
+            sb.Append("        <th onclick=\"sortBy(15)\">atlas%</th>\n");
+            sb.Append("        <th onclick=\"sortBy(16)\">ms</th>\n");
+            sb.Append("        <th onclick=\"sortBy(17)\">score</th>\n");
             sb.Append("        <th>UV2 thumbs</th>\n");
             sb.Append("      </tr>\n");
             sb.Append("    </thead>\n");
@@ -637,6 +659,8 @@ namespace SashaRX.UnityMeshLab
                 sb.Append("        <td>").Append(r.config.arapEnabled    ? "1" : "0").Append("</td>\n");
                 sb.Append("        <td>").Append(r.config.arapIterations.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.config.stretchThreshold.ToString("F2", inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(r.config.internalOversample.ToString(inv)).Append("</td>\n");
+                sb.Append("        <td>").Append(HtmlEscape(r.config.symSplitMode.ToString())).Append("</td>\n");
                 sb.Append("        <td>").Append(r.totalSlivers.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.overlapShellPairs.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.uv2DuplicatePairs.ToString(inv)).Append("</td>\n");
@@ -842,9 +866,14 @@ namespace SashaRX.UnityMeshLab
             // label (e.g. 1.50 → "1p50") because Sanitize() collapses '.' to
             // '_'. We split it back into a float here. The optional
             // `(?:_asp[01])?` tail keeps old per-cell CSVs from the era of the
-            // removed global-aspect normalize pass parseable.
+            // removed global-aspect normalize pass parseable. The optional
+            // `_os(\d+)_sym(legacy|adaptive)` tail is the new axis pair added
+            // alongside arapIterations / stretchThreshold; pre-existing CSVs
+            // without these tokens default to oversample=4 (current default)
+            // and symMode=LegacyFixed (current default).
             var rx = new System.Text.RegularExpressions.Regex(
-                @"_sweep_res(\d+)_pad(\d+)_bdr(\d+)_arap(\d+)_stretch(\d+)p(\d+)(?:_asp[01])?_",
+                @"_sweep_res(\d+)_pad(\d+)_bdr(\d+)_arap(\d+)_stretch(\d+)p(\d+)" +
+                @"(?:_asp[01])?(?:_os(\d+))?(?:_sym(legacy|adaptive))?_",
                 System.Text.RegularExpressions.RegexOptions.Compiled);
 
             var matched = new List<(string path, CellConfig cfg, DateTime mtime)>();
@@ -861,6 +890,16 @@ namespace SashaRX.UnityMeshLab
                 string stretchStr = m.Groups[5].Value + "." + m.Groups[6].Value;
                 if (!float.TryParse(stretchStr, NumberStyles.Float, CultureInfo.InvariantCulture, out float stretchThr))
                     stretchThr = 1.5f;
+                int oversample = 4;
+                if (m.Groups[7].Success
+                    && int.TryParse(m.Groups[7].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedOs)
+                    && parsedOs > 0)
+                {
+                    oversample = parsedOs;
+                }
+                var symMode = SymmetrySplitShells.ThresholdMode.LegacyFixed;
+                if (m.Groups[8].Success && m.Groups[8].Value == "adaptive")
+                    symMode = SymmetrySplitShells.ThresholdMode.Adaptive;
 
                 DateTime mtime;
                 try { mtime = File.GetLastWriteTimeUtc(csv); }
@@ -868,12 +907,14 @@ namespace SashaRX.UnityMeshLab
 
                 matched.Add((csv, new CellConfig
                 {
-                    atlasRes         = res,
-                    shellPad         = pad,
-                    borderPad        = bdr,
-                    arapEnabled      = arapIters > 0,
-                    arapIterations   = arapIters,
-                    stretchThreshold = stretchThr,
+                    atlasRes           = res,
+                    shellPad           = pad,
+                    borderPad          = bdr,
+                    arapEnabled        = arapIters > 0,
+                    arapIterations     = arapIters,
+                    stretchThreshold   = stretchThr,
+                    internalOversample = oversample,
+                    symSplitMode       = symMode,
                 }, mtime));
             }
 
@@ -1009,6 +1050,267 @@ namespace SashaRX.UnityMeshLab
             }
             sb.Append('"');
             return sb.ToString();
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        //  Provenance manifest + ZIP archive
+        // ─────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Identifying metadata recorded alongside a sweep so a CSV looked at
+        /// six months from now is still traceable: which package version, which
+        /// commit, which Unity, which host, which matrix produced it.
+        /// </summary>
+        internal struct SweepManifest
+        {
+            public string sweepDir;          // absolute path
+            public string sweepStamp;        // 20260514_113158_083 — matches dir name
+            public string packageName;
+            public string packageVersion;
+            public string gitSha;
+            public string gitBranch;
+            public bool   gitDirty;
+            public string unityVersion;
+            public string platform;
+            public string hostUser;
+            public string hostMachine;
+            public string hostOs;
+            public string processor;
+            public int    cellCount;
+            public int    caseCount;
+            public string sweepLabel;        // single-model lodGroup name OR multi-case suite name
+            public TestSuiteAsset.SweepMatrix matrix;
+            public List<string> caseLabels;  // null for single-model run
+        }
+
+        /// <summary>
+        /// Write <c>manifest.json</c> into the sweep directory with package /
+        /// Unity / host metadata so old sweep archives can be diff'd against
+        /// new ones without ambiguity about what produced them.
+        /// </summary>
+        internal static void WriteManifest(string sweepDir, SweepManifest m)
+        {
+            if (string.IsNullOrEmpty(sweepDir) || !Directory.Exists(sweepDir)) return;
+            var inv = CultureInfo.InvariantCulture;
+            var sb = new StringBuilder();
+            sb.Append("{\n");
+            sb.Append("  \"sweepStamp\": ").Append(JsonString(m.sweepStamp ?? "")).Append(",\n");
+            sb.Append("  \"sweepLabel\": ").Append(JsonString(m.sweepLabel ?? "")).Append(",\n");
+            sb.Append("  \"createdUtc\": ").Append(JsonString(DateTime.UtcNow.ToString("o", inv))).Append(",\n");
+
+            sb.Append("  \"package\": {\n");
+            sb.Append("    \"name\": ").Append(JsonString(m.packageName ?? "")).Append(",\n");
+            sb.Append("    \"version\": ").Append(JsonString(m.packageVersion ?? "")).Append(",\n");
+            sb.Append("    \"gitSha\": ").Append(JsonString(m.gitSha ?? "")).Append(",\n");
+            sb.Append("    \"gitBranch\": ").Append(JsonString(m.gitBranch ?? "")).Append(",\n");
+            sb.Append("    \"gitDirty\": ").Append(m.gitDirty ? "true" : "false").Append("\n");
+            sb.Append("  },\n");
+
+            sb.Append("  \"unity\": {\n");
+            sb.Append("    \"version\": ").Append(JsonString(m.unityVersion ?? "")).Append(",\n");
+            sb.Append("    \"platform\": ").Append(JsonString(m.platform ?? "")).Append("\n");
+            sb.Append("  },\n");
+
+            sb.Append("  \"host\": {\n");
+            sb.Append("    \"user\": ").Append(JsonString(m.hostUser ?? "")).Append(",\n");
+            sb.Append("    \"machine\": ").Append(JsonString(m.hostMachine ?? "")).Append(",\n");
+            sb.Append("    \"os\": ").Append(JsonString(m.hostOs ?? "")).Append(",\n");
+            sb.Append("    \"processor\": ").Append(JsonString(m.processor ?? "")).Append("\n");
+            sb.Append("  },\n");
+
+            sb.Append("  \"sweep\": {\n");
+            sb.Append("    \"cellCount\": ").Append(m.cellCount.ToString(inv)).Append(",\n");
+            sb.Append("    \"caseCount\": ").Append(m.caseCount.ToString(inv));
+            if (m.caseLabels != null && m.caseLabels.Count > 0)
+            {
+                sb.Append(",\n    \"caseLabels\": [");
+                for (int i = 0; i < m.caseLabels.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    sb.Append(JsonString(m.caseLabels[i] ?? ""));
+                }
+                sb.Append("]");
+            }
+            if (m.matrix != null)
+            {
+                sb.Append(",\n    \"matrix\": {\n");
+                AppendIntArray(sb, "      ", "atlasResolutions",          m.matrix.atlasResolutions);          sb.Append(",\n");
+                AppendIntArray(sb, "      ", "shellPaddingPxVariants",    m.matrix.shellPaddingPxVariants);    sb.Append(",\n");
+                AppendIntArray(sb, "      ", "borderPaddingPxVariants",   m.matrix.borderPaddingPxVariants);   sb.Append(",\n");
+                AppendIntArray(sb, "      ", "arapIterationsVariants",    m.matrix.arapIterationsVariants);    sb.Append(",\n");
+                AppendFloatArray(sb, "      ", "stretchThresholdVariants",m.matrix.stretchThresholdVariants);  sb.Append(",\n");
+                AppendIntArray(sb, "      ", "internalOversampleVariants",m.matrix.internalOversampleVariants);sb.Append(",\n");
+                sb.Append("      \"symSplitThresholdModeVariants\": [");
+                if (m.matrix.symSplitThresholdModeVariants != null)
+                {
+                    for (int i = 0; i < m.matrix.symSplitThresholdModeVariants.Length; i++)
+                    {
+                        if (i > 0) sb.Append(", ");
+                        sb.Append(JsonString(m.matrix.symSplitThresholdModeVariants[i].ToString()));
+                    }
+                }
+                sb.Append("]\n    }");
+            }
+            sb.Append(",\n    \"scoringWeights\": {\n");
+            sb.Append("      \"atlasUtilization\": ").Append(kWeightUtilization.ToString("R", inv)).Append(",\n");
+            sb.Append("      \"sliver\": ").Append(kPenaltySliver.ToString("R", inv)).Append(",\n");
+            sb.Append("      \"overlap\": ").Append(kPenaltyOverlap.ToString("R", inv)).Append(",\n");
+            sb.Append("      \"dupUv2\": ").Append(kPenaltyDupUv2.ToString("R", inv)).Append(",\n");
+            sb.Append("      \"force3DOverlap\": ").Append(kPenaltyForce3DOL.ToString("R", inv)).Append(",\n");
+            sb.Append("      \"compositeBroken\": ").Append(kPenaltyCompBroken.ToString("R", inv)).Append(",\n");
+            sb.Append("      \"severeMismatch\": ").Append(kPenaltySevere.ToString("R", inv)).Append(",\n");
+            sb.Append("      \"ms\": ").Append(kPenaltyMs.ToString("R", inv)).Append(",\n");
+            sb.Append("      \"resolution\": ").Append(kPenaltyResolution.ToString("R", inv)).Append("\n");
+            sb.Append("    }\n");
+            sb.Append("  }\n");
+            sb.Append("}\n");
+
+            string path = Path.Combine(sweepDir, "manifest.json");
+            try
+            {
+                File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
+                UvtLog.Info(UvtLog.Category.Benchmark, $"[Sweep] manifest → {path}");
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark, $"[Sweep] manifest write failed: {ex.Message}");
+            }
+        }
+
+        static void AppendIntArray(StringBuilder sb, string indent, string key, int[] arr)
+        {
+            sb.Append(indent).Append('"').Append(key).Append("\": [");
+            if (arr != null)
+            {
+                var inv = CultureInfo.InvariantCulture;
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    sb.Append(arr[i].ToString(inv));
+                }
+            }
+            sb.Append("]");
+        }
+        static void AppendFloatArray(StringBuilder sb, string indent, string key, float[] arr)
+        {
+            sb.Append(indent).Append('"').Append(key).Append("\": [");
+            if (arr != null)
+            {
+                var inv = CultureInfo.InvariantCulture;
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    sb.Append(arr[i].ToString("R", inv));
+                }
+            }
+            sb.Append("]");
+        }
+
+        /// <summary>
+        /// Resolve UPM package + git provenance for the current build. Falls
+        /// back gracefully when git is unavailable (e.g. asset-store install or
+        /// CI runner without .git) so sweep continues to write a manifest with
+        /// whatever fields could be determined.
+        /// </summary>
+        internal static (string pkgName, string pkgVersion, string gitSha, string gitBranch, bool gitDirty)
+            ResolvePackageProvenance()
+        {
+            string pkgName = "", pkgVersion = "";
+            try
+            {
+                var info = PackageInfo.FindForAssembly(typeof(BenchmarkSweep).Assembly);
+                if (info != null) { pkgName = info.name ?? ""; pkgVersion = info.version ?? ""; }
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Verbose(UvtLog.Category.Benchmark, $"[Sweep] PackageInfo failed: {ex.Message}");
+            }
+
+            // Best-effort git provenance. Runs `git rev-parse HEAD` etc. via
+            // System.Diagnostics.Process. Anything that throws → blank field;
+            // we never want manifest writing to take down a sweep.
+            string sha = TryRunGit("rev-parse HEAD");
+            string branch = TryRunGit("rev-parse --abbrev-ref HEAD");
+            string status = TryRunGit("status --porcelain");
+            bool dirty = !string.IsNullOrEmpty(status);
+
+            return (pkgName, pkgVersion, sha, branch, dirty);
+        }
+
+        static string TryRunGit(string args)
+        {
+            try
+            {
+                string repoRoot = Directory.GetParent(Application.dataPath)?.FullName ?? Application.dataPath;
+                // Resolve the package's actual source dir — manifests should
+                // reflect the package commit, not the consuming project. For
+                // local file: installs this is the package folder; for git URL
+                // installs Library/PackageCache/<name>@<hash> doesn't have .git
+                // so commands return blank, which is fine.
+                string pkgDir = null;
+                try
+                {
+                    var info = PackageInfo.FindForAssembly(typeof(BenchmarkSweep).Assembly);
+                    if (info != null && !string.IsNullOrEmpty(info.resolvedPath))
+                        pkgDir = info.resolvedPath;
+                }
+                catch { /* fall through */ }
+                string workDir = !string.IsNullOrEmpty(pkgDir) ? pkgDir : repoRoot;
+
+                var psi = new System.Diagnostics.ProcessStartInfo("git", args)
+                {
+                    WorkingDirectory  = workDir,
+                    UseShellExecute   = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError  = true,
+                    CreateNoWindow    = true,
+                };
+                using var p = System.Diagnostics.Process.Start(psi);
+                if (p == null) return "";
+                string stdout = p.StandardOutput.ReadToEnd();
+                p.WaitForExit(2000);
+                return (stdout ?? "").Trim();
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        /// <summary>
+        /// Snapshot the just-written sweep directory into a single .zip under
+        /// <c>BenchmarkReports/Archive/&lt;sweepDirName&gt;.zip</c> so old runs
+        /// stay organised even after dozens of new sweeps accumulate. The zip
+        /// is non-destructive — the source directory is left in place so the
+        /// operator can keep iterating; an external sync target (Drive, Dropbox)
+        /// can mirror the Archive/ folder. Returns the zip path or null on
+        /// failure. Failures only warn, never throw — losing the archive is
+        /// strictly worse than losing the manifest only.
+        /// </summary>
+        internal static string ArchiveSweep(string sweepDir)
+        {
+            if (string.IsNullOrEmpty(sweepDir) || !Directory.Exists(sweepDir)) return null;
+            try
+            {
+                string benchRoot = Directory.GetParent(sweepDir)?.FullName;
+                if (string.IsNullOrEmpty(benchRoot)) return null;
+                string archiveDir = Path.Combine(benchRoot, "Archive");
+                Directory.CreateDirectory(archiveDir);
+                string zipName = Path.GetFileName(sweepDir) + ".zip";
+                string zipPath = Path.Combine(archiveDir, zipName);
+                // Overwrite any prior zip for this stamp (sweep dir may have
+                // been re-aggregated incrementally during a long run).
+                if (File.Exists(zipPath)) File.Delete(zipPath);
+                ZipFile.CreateFromDirectory(sweepDir, zipPath, CompressionLevel.Optimal,
+                    includeBaseDirectory: true);
+                UvtLog.Info(UvtLog.Category.Benchmark, $"[Sweep] archived → {zipPath}");
+                return zipPath;
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark, $"[Sweep] archive failed: {ex.Message}");
+                return null;
+            }
         }
     }
 }

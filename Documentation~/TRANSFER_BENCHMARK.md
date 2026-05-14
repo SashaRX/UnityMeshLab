@@ -144,6 +144,37 @@ JSON output mirrors the CSV but nests `records[]` inside a run envelope.
    *Run Full Pipeline* again. Each run produces a separate CSV — diff with
    a spreadsheet / pandas.
 
+### Provenance manifest + auto-archive
+
+Every sweep run writes a `manifest.json` into `sweep_<ts>/` alongside the
+`summary.csv` / `winner.json` / `index.html`, and copies the whole
+directory into `BenchmarkReports/Archive/<sweepDirName>.zip` so old runs
+stay organised even after many new sweeps. The source directory is left
+in place; the zip is non-destructive.
+
+`manifest.json` records:
+
+- `package.{name, version, gitSha, gitBranch, gitDirty}` — UPM
+  PackageInfo + `git rev-parse` (best-effort; blank when the package was
+  installed via Library/PackageCache without `.git`)
+- `unity.{version, platform}` — `Application.unityVersion` /
+  `Application.platform`
+- `host.{user, machine, os, processor}` — `Environment.*` +
+  `SystemInfo.processorType`
+- `sweep.{cellCount, caseCount, sweepLabel, matrix, scoringWeights}`
+  — a literal mirror of the `SweepMatrix` that drove the run plus a
+  snapshot of the `BenchmarkSweep.Score` weights at the time
+
+Use case: when comparing a sweep run today against one from six months
+ago, the manifest tells you whether the algorithm constants, package
+version, Unity version, or scoring weights changed — so a metric delta
+isn't silently caused by something unrelated to the actual change.
+
+Cross-time tracking: point an external sync target (Google Drive,
+Dropbox, OneDrive) at `BenchmarkReports/Archive/` and every sweep auto-
+mirrors. The zip filename includes the sweep timestamp so chronological
+sort is free.
+
 ### Multi-case sweep (all `TestSuiteAsset.cases[]` in one click)
 
 For cross-model regression coverage — running the full sweep matrix on
@@ -185,16 +216,24 @@ all.groupby(['model','atlasRes','shellPad'])[
 ].sum()
 ```
 
-### Parameter sweep (atlasRes × shellPad × borderPad)
+### Parameter sweep (cartesian product of 7 axes)
 
-For automated sweeps across repack parameters, fill `TestSuiteAsset.sweep`:
+For automated sweeps, fill `TestSuiteAsset.sweep`. Cells = product of all
+array lengths.
 
 ```
-atlasResolutions      = [256, 512, 2048]
-shellPaddingPxVariants = [2, 4, 8, 32]
-borderPaddingPxVariants = [0]
-resetBetweenRuns      = true
+atlasResolutions              = [256, 512, 2048]      # ctx.AtlasResolution
+shellPaddingPxVariants        = [2, 4, 8, 32]         # ctx.ShellPaddingPx
+borderPaddingPxVariants       = [0]                    # ctx.BorderPaddingPx
+arapIterationsVariants        = [0, 50]                # 0 = ARAP off; >0 = on with N iters
+stretchThresholdVariants      = [1.5]                  # Sander L² gate (only relevant when arap > 0)
+internalOversampleVariants    = [4]                    # xatlas internal pack resolution multiplier
+symSplitThresholdModeVariants = [LegacyFixed]          # LegacyFixed | Adaptive
+resetBetweenRuns              = true
 ```
+
+Per-cell label encodes every axis so the recovery regex can reconstruct
+CellConfigs from filenames: `sweep_res{R}_pad{S}_bdr{B}_arap{A}_stretch{T}_os{O}_sym{legacy|adaptive}`.
 
 In *LightmapTransferTool → Setup tab*, assign the asset to the **Sweep suite**
 field; the neighbouring **Run Sweep (N)** button iterates the cartesian
