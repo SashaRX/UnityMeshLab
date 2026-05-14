@@ -13,7 +13,11 @@ using System.IO.Compression;
 using System.Text;
 using UnityEngine;
 using UnityEditor;
-using UnityEditor.PackageManager;
+// Disambiguate types both namespaces expose so the file compiles cleanly:
+//   UnityEditor.PackageInfo (legacy Asset Store metadata) vs UnityEditor.PackageManager.PackageInfo (UPM)
+//   UnityEngine.CompressionLevel (texture compression) vs System.IO.Compression.CompressionLevel (zip)
+using PackageInfo = UnityEditor.PackageManager.PackageInfo;
+using CompressionLevel = System.IO.Compression.CompressionLevel;
 
 namespace SashaRX.UnityMeshLab
 {
