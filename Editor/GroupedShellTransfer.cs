@@ -1508,21 +1508,17 @@ namespace SashaRX.UnityMeshLab
                         continue;
                     }
 
-                    // Cross-LOD hint protection: if multiple claimants were all
-                    // matched via cross-LOD hints, the previous LOD told us they
-                    // should all use this source (likely symmetric copies of the
-                    // same feature). Allow shared source — interp per-shell from
-                    // the same source produces valid UV2 for each copy.
-                    int hintMatchedCount = 0;
-                    foreach (var c in claimants)
-                        if (tgtHintMatched[c.tsi]) hintMatchedCount++;
-
-                    if (hintMatchedCount >= 2 && hintMatchedCount == claimants.Count)
-                    {
-                        UvtLog.Info($"[GroupedTransfer] Dedup: src{srcKey} shared by " +
-                            $"{claimants.Count} cross-LOD hint-matched targets — allowed");
-                        continue;
-                    }
+                    // No hint-matched bypass here for the overlapping-UV0 branch:
+                    // two hint-matched targets covering the same UV0 sub-region
+                    // of the same source produce identical UV2 under standard
+                    // UV0→UV2 interp (same source triangles sampled twice). The
+                    // eviction sort below keeps the strongest hint-matched
+                    // non-merged claimant; the rest rematch via FindBestSourceShell
+                    // with `claimed` excluded so tiled / symmetric LOD targets
+                    // land on unused source siblings instead of duplicating UV2.
+                    //
+                    // See EXPERIMENTS.md 2026-05-14 for the data that motivated
+                    // removing the previous bypass.
 
                     // Truly overlapping UV0 (tiling/symmetric) — evict as before.
                     // Non-merged shells get priority (they need the specific UV0→UV2
