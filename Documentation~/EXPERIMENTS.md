@@ -369,5 +369,28 @@ LOG-доказательство порядка событий на LOD2: 5× `D
 
 **Не пробовать ещё раз:** возвращать bypass без per-target UV0 sub-region restriction — это и был исходный баг.
 
-**Status:** committed in branch `claude/fix-transfer-bugs-KYVQD`, нужен прогон полного pipeline на Carousel + Playground + WateringCan для подтверждения.
+**Status:** committed in branch `claude/fix-transfer-bugs-KYVQD`, верифицирован прогоном Full Pipeline на Carousel.
+
+### Verification (Carousel, sep=10%, internalOversample=4, atlas 1360×1492)
+
+| Метрика | До | После | Δ |
+|---|---|---|---|
+| **LOD2 duplicate UV2 pairs** | 5 (t1≡t14, t61≡t66, t62≡t63, t64≡t65, t67≡t77) | **0** | ✅ |
+| LOD2 `dedupConf` | 1 (фейково) | 6 | честный счёт |
+| LOD2 `matchDist mean` | 0.0741 | **0.0451** | −39% |
+| LOD2 `matchDist max` | 0.7421 | **0.4445** | −40% |
+| LOD2 `method merged` | 1 | 5 | eviction направил часть в forced-merged |
+| LOD3 duplicate UV2 pairs | 5 | **0** | ✅ |
+| LOD3 `dedupConf` | 0 | 2 | |
+| LOD3 `overlapFixed` | 0 | 1 | новая force3D-overlap пара t66↔t40 |
+| LOD3 `topo fixed` | 31 | 33 | +2 (vertex 410, 359, 191, 196, 11 — cap-hit) |
+| LOD1 все метрики | unchanged | unchanged | LOD1 не использовал bypass (нет cross-LOD hints) |
+| Status A/D/P (все LOD) | 198/16/23 | 198/16/23 | без изменений |
+
+**Net:** 10 пар дубликатов UV2 на LOD2+LOD3 → 0 пар (главная цель). Регресс — 1 новая force3D UV2-overlap на LOD3 (`t66 ↔ t40`) при назначении src72 после eviction, плюс 1 topo cap-hit на LOD2. Acceptable: дубликаты были видимым багом, force3D-overlap — известный fallback с warning, не тихая порча. Status A/D/P не изменился (issue counts per-shell определяются обычными tri-check'ами, не dedup'ом).
+
+**Что осталось вне этой PR (для следующих экспериментов):**
+- 5 force3D UV2 overlaps total (4 на LOD1 t0/t6/t8/t84, 1 новая на LOD3 t66) — все на ARAP-reparameterized шеллах src130-148 с composite spatially broken fallback. H3 кандидат.
+- Topology `capHit=1` на LOD1 (vertex 778, displacement disp/scale=5.10 на iter=4) и LOD3 (vertex 359/191/196 цикличны). H4 кандидат (Laplacian не сходится на этих шеллах).
+- LOD1 sliver/degenerate report: 43 шелла, LOD2: 31, LOD3: 25 — это `DiagnoseCollapsedTargetShells` отлавливает результат transfer, основная причина = source LOD0 после SymSplit имеет ribbons (10 `[SpatialPartitioner] ribbon detected`); xform fallback на ribbons даёт sliver UV2. H1/H3.
 
