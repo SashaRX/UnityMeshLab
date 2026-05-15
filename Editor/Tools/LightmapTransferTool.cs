@@ -499,8 +499,11 @@ namespace SashaRX.UnityMeshLab
                 int bL  = sm.borderPaddingPxVariants?.Length       ?? 0;
                 int arL = sm.arapIterationsVariants?.Length        ?? 0;
                 int stL = sm.stretchThresholdVariants?.Length      ?? 0;
+                int osL = sm.internalOversampleVariants?.Length    ?? 0;
+                int smL = sm.symSplitThresholdModeVariants?.Length ?? 0;
                 cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL)
-                      * Mathf.Max(1, arL) * Mathf.Max(1, stL);
+                      * Mathf.Max(1, arL) * Mathf.Max(1, stL)
+                      * Mathf.Max(1, osL) * Mathf.Max(1, smL);
             }
             int caseCount = (sweepSuite != null && sweepSuite.cases != null) ? sweepSuite.cases.Count : 0;
             int multiTotal = caseCount * cells;
@@ -1896,11 +1899,19 @@ namespace SashaRX.UnityMeshLab
                     {
                         if (spawned != null)
                         {
-                            // Clear ctx reference before destruction so any
-                            // straggling UI repaint or cache lookup doesn't
-                            // touch a half-destroyed LODGroup.
+                            // AGENTS.md LODGroup-lifecycle invariant: ResetWorkingCopies
+                            // BEFORE ctx.Refresh(null). The just-finished ExecSweep
+                            // leaves the last cell's repackedMesh/transferredMesh
+                            // refs on MeshEntries; clearing ctx without resetting
+                            // first drops those refs without DestroyImmediate, and
+                            // the temp meshes (Object.Instantiate clones, not
+                            // children of `spawned`) leak — repeated multi-case
+                            // runs accumulate them and eventually hit editor OOM.
                             if (ctx.LodGroup != null && ctx.LodGroup.gameObject == spawned)
+                            {
+                                ResetWorkingCopies();
                                 ctx.Refresh(null);
+                            }
                             UnityEngine.Object.DestroyImmediate(spawned);
                         }
                     }

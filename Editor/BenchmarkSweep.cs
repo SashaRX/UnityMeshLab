@@ -807,6 +807,13 @@ namespace SashaRX.UnityMeshLab
                 if (r.config.atlasRes  != w.config.atlasRes)  continue;
                 if (r.config.shellPad  != w.config.shellPad)  continue;
                 if (r.config.borderPad != w.config.borderPad) continue;
+                // All non-ARAP axes must match exactly so the score delta
+                // isolates the ARAP toggle. Without this guard the "ARAP
+                // improved / did not improve" sentence in winner.json can be
+                // computed against a run that also differs in oversample or
+                // symSplit mode — a confounded comparison.
+                if (r.config.internalOversample != w.config.internalOversample) continue;
+                if (r.config.symSplitMode       != w.config.symSplitMode)       continue;
                 // Stretch threshold is irrelevant when ARAP is off — match the
                 // winner's threshold on the ON side and ignore it on the OFF
                 // side. Either way, the pair is "this config with ARAP toggled".
