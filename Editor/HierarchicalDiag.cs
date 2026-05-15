@@ -136,6 +136,12 @@ namespace SashaRX.UnityMeshLab
 
                 var deepFaces  = BuildFaceData(deepMesh, arr[deepestIdx].transform);
                 var deepShells = ExtractShells(deepFaces, deepMesh.triangles, deepMesh.vertexCount);
+                // World-space mesh diagonal of the deepest LOD — used to
+                // normalize perpendicular distances so the threshold is
+                // scale-invariant (5 cm means very different things on a
+                // 0.5 m prop vs a 20 m building).
+                float meshDiag = ComputeMeshDiagonal(deepMesh, arr[deepestIdx].transform);
+                if (meshDiag < 1e-6f) meshDiag = 1f; // safety: avoid div-by-zero
                 bool any = false;
                 for (int li = 0; li < deepestIdx; li++)
                 {
@@ -143,7 +149,7 @@ namespace SashaRX.UnityMeshLab
                     var fineMesh = arr[li].GetComponent<MeshFilter>()?.sharedMesh;
                     if (fineMesh == null) continue;
                     var fineFaces = BuildFaceData(fineMesh, arr[li].transform);
-                    ProbeFineAgainstDeep(kv.Key, li, fineFaces, deepFaces, deepShells, allRecords);
+                    ProbeFineAgainstDeep(kv.Key, li, fineFaces, deepFaces, deepShells, meshDiag, allRecords);
                     any = true;
                 }
                 if (any) groupsProbed++;
@@ -184,7 +190,34 @@ namespace SashaRX.UnityMeshLab
             public float  shellCentroidDistance;
             public float  shellAngleDeg;
             public float  shellAreaRatio;
+            // Shell-level (v3): perpendicular distance from fine centroid to
+            // parent shell's plane, normalized by the deepest-LOD mesh diagonal.
+            // Distinguishes "fine face is geometrically on top of parent shell"
+            // (small d_perp, projects cleanly) from "fine face is floating above
+            // the parent shell" (large d_perp — promotion candidate even if
+            // angle and ratio both look OK, e.g. a bolt sticking out of a wall
+            // with normal parallel to the wall but offset 30cm into space).
+            public float  shellPerpDistanceNorm;
             public float  fineArea;
+        }
+
+        /// <summary>
+        /// World-space AABB diagonal of <paramref name="mesh"/>. Used as the
+        /// scale reference for normalizing perpendicular fine→shell distances.
+        /// </summary>
+        static float ComputeMeshDiagonal(Mesh mesh, Transform xform)
+        {
+            var verts = mesh.vertices;
+            if (verts == null || verts.Length == 0) return 0f;
+            var p0 = xform.TransformPoint(verts[0]);
+            Vector3 lo = p0, hi = p0;
+            for (int i = 1; i < verts.Length; i++)
+            {
+                var p = xform.TransformPoint(verts[i]);
+                lo = Vector3.Min(lo, p);
+                hi = Vector3.Max(hi, p);
+            }
+            return (hi - lo).magnitude;
         }
 
         /// <summary>
@@ -330,7 +363,7 @@ namespace SashaRX.UnityMeshLab
         /// &lt;30k face meshes.
         /// </summary>
         static void ProbeFineAgainstDeep(string groupKey, int lodIndex,
-            FaceData[] fine, FaceData[] deep, ShellData[] shells,
+            FaceData[] fine, FaceData[] deep, ShellData[] shells, float meshDiagonal,
             List<FaceProbeRecord> sink)
         {
             if (deep.Length == 0) return;
@@ -405,6 +438,20 @@ namespace SashaRX.UnityMeshLab
                     ? fine[f].area / shells[bestShell].totalArea
                     : float.PositiveInfinity;
 
+                // Perpendicular distance from fine-face centroid to the parent
+                // shell's mean plane. Normalized by the deepest-LOD mesh
+                // diagonal so the threshold is scale-invariant. abs(dot(...))
+                // — orientation of the shell normal vs the fine face is
+                // already captured by the angle metric; what we want here is
+                // how far ALONG the shell's normal the fine face sits.
+                float perpNorm = 0f;
+                if (bestShell >= 0)
+                {
+                    var s = shells[bestShell];
+                    float perp = Mathf.Abs(Vector3.Dot(fine[f].centroid - s.centroid, s.dominantNormal));
+                    perpNorm = perp / meshDiagonal;
+                }
+
                 sink.Add(new FaceProbeRecord
                 {
                     groupKey               = groupKey,
@@ -418,6 +465,7 @@ namespace SashaRX.UnityMeshLab
                     shellCentroidDistance  = Mathf.Sqrt(bestShellDistSq),
                     shellAngleDeg          = bestShellAngle == float.MaxValue ? 0f : bestShellAngle,
                     shellAreaRatio         = shellRatio,
+                    shellPerpDistanceNorm  = perpNorm,
                     fineArea               = fine[f].area,
                 });
             }
@@ -438,7 +486,7 @@ namespace SashaRX.UnityMeshLab
             sb.AppendLine("groupKey,lodIndex,faceIndex," +
                           "parentFaceIndex,faceCentroidDistance,faceAngleDeg,faceAreaRatio," +
                           "parentShellIndex,shellCentroidDistance,shellAngleDeg,shellAreaRatio," +
-                          "fineArea");
+                          "shellPerpDistanceNorm,fineArea");
             var inv = CultureInfo.InvariantCulture;
             foreach (var r in records)
             {
@@ -453,6 +501,7 @@ namespace SashaRX.UnityMeshLab
                 sb.Append(r.shellCentroidDistance.ToString("R", inv)).Append(',');
                 sb.Append(r.shellAngleDeg.ToString("R", inv)).Append(',');
                 sb.Append(r.shellAreaRatio.ToString("R", inv)).Append(',');
+                sb.Append(r.shellPerpDistanceNorm.ToString("R", inv)).Append(',');
                 sb.Append(r.fineArea.ToString("R", inv));
                 sb.AppendLine();
             }
@@ -487,6 +536,27 @@ namespace SashaRX.UnityMeshLab
             EmitCoverage(sb, records, r => r.shellAngleDeg);
             EmitRatioStats(sb, records, r => r.shellAreaRatio, "    ");
 
+            // Mode C: shell-level perpendicular offset (v3 — distinguishes
+            // "fine face is glued to parent shell" from "floating in space
+            // above the parent shell"). Threshold buckets correspond to the
+            // promotion-criterion proposal in the conversation: <1% = tight,
+            // <5% = within typical thickness, <15% = clearly attached, >=15%
+            // = promotion candidate (floating detail without geometric parent).
+            sb.AppendLine("  SHELL-PERP (v3: |dot(fine.c - shell.c, shell.n)| / meshDiagonal):");
+            EmitPerpStats(sb, records, "    ");
+
+            // Combined promotion verdict using the proposed default thresholds:
+            //   θ > 60°  OR  ratio > 1.5  OR  perpNorm > 0.05
+            // → promote (face gets its own atlas slot rather than projecting
+            // into a parent shell).
+            int promote = 0;
+            foreach (var r in records)
+                if (r.shellAngleDeg > 60f || r.shellAreaRatio > 1.5f || r.shellPerpDistanceNorm > 0.05f)
+                    promote++;
+            float promPct = 100f * promote / records.Count;
+            sb.AppendLine($"  PROMOTION (default thresholds θ>60° | ratio>1.5 | perp>5%): " +
+                $"{promote}/{records.Count} ({promPct:F1}%) faces would be promoted to their own atlas slot");
+
             // Per-LOD shell-level breakdown
             var byLod = records.GroupBy(r => r.lodIndex).OrderBy(g => g.Key);
             foreach (var g in byLod)
@@ -495,11 +565,44 @@ namespace SashaRX.UnityMeshLab
                 float mAng = g.Average(r => r.shellAngleDeg);
                 int s30 = g.Count(r => r.shellAngleDeg < 30f);
                 int s60 = g.Count(r => r.shellAngleDeg < 60f);
+                float mPerp = g.Average(r => r.shellPerpDistanceNorm);
+                int p1 = g.Count(r => r.shellPerpDistanceNorm < 0.01f);
+                int p5 = g.Count(r => r.shellPerpDistanceNorm < 0.05f);
                 sb.AppendLine($"  LOD{g.Key}: {n,6} faces  shell-θ mean={mAng,5:F1}°  " +
-                    $"θ<30°: {100f * s30 / n:F1}%  θ<60°: {100f * s60 / n:F1}%");
+                    $"θ<30°: {100f * s30 / n:F1}%  θ<60°: {100f * s60 / n:F1}%  " +
+                    $"perp mean={mPerp,6:F3}  <1%: {100f * p1 / n:F1}%  <5%: {100f * p5 / n:F1}%");
             }
 
             UvtLog.Info(UvtLog.Category.Benchmark, sb.ToString());
+        }
+
+        static void EmitPerpStats(StringBuilder sb, List<FaceProbeRecord> records, string indent)
+        {
+            var vals = new List<float>(records.Count);
+            foreach (var r in records)
+            {
+                float v = r.shellPerpDistanceNorm;
+                if (!float.IsInfinity(v) && !float.IsNaN(v)) vals.Add(v);
+            }
+            if (vals.Count == 0) return;
+            vals.Sort();
+            float Pct(double p)
+            {
+                int i = (int)System.Math.Round(p * (vals.Count - 1));
+                if (i < 0) i = 0;
+                if (i >= vals.Count) i = vals.Count - 1;
+                return vals[i];
+            }
+            int total = vals.Count;
+            int under1pct  = 0; foreach (var x in vals) if (x < 0.01f) under1pct++;
+            int under5pct  = 0; foreach (var x in vals) if (x < 0.05f) under5pct++;
+            int under15pct = 0; foreach (var x in vals) if (x < 0.15f) under15pct++;
+            sb.AppendLine($"{indent}distribution: p50={Pct(0.50):F4}  p90={Pct(0.90):F4}  " +
+                $"p99={Pct(0.99):F4}  max={vals[vals.Count - 1]:F4}");
+            sb.AppendLine($"{indent}  <1% mesh diag (glued):   {under1pct,7} / {total} ({100f * under1pct / total:F1}%)");
+            sb.AppendLine($"{indent}  <5% mesh diag (attached):{under5pct,7} / {total} ({100f * under5pct / total:F1}%)");
+            sb.AppendLine($"{indent}  <15% mesh diag (close):  {under15pct,7} / {total} ({100f * under15pct / total:F1}%)");
+            sb.AppendLine($"{indent}  >=15% (floating):        {total - under15pct,7} / {total} ({100f * (total - under15pct) / total:F1}%)");
         }
 
         static void EmitCoverage(StringBuilder sb, List<FaceProbeRecord> records,
