@@ -2,14 +2,27 @@
 // UV2 transfer concept. Read-only — does NOT modify any mesh, asset, or sidecar.
 //
 // For every face on every non-deepest LOD of the active LODGroup it finds the
-// nearest face on the deepest LOD by 3D centroid distance, then records the
-// angle between normals and the area ratio. The summary reports coverage at a
-// fixed set of θ thresholds plus area-ratio percentiles so the operator can
-// decide — before writing HierarchicalRepack.cs / InverseTransfer.cs — whether
-// the simple `containment + normal-sign` correspondence is enough on this
-// asset, or whether the design needs to escalate to multi-layer SDF lookup.
+// best-matching parent on the deepest LOD. v2 reports two correspondence
+// modes for the same input so the operator can compare:
 //
-// See Documentation~/EXPERIMENTS.md for the architectural discussion.
+//   1. face-level (naive, v1 baseline): nearest deepest-LOD triangle by 3D
+//      centroid → angle between face normals + area-ratio against THAT
+//      triangle. Suffers from tessellation mismatch — a single front-face
+//      of LOD0 vs a 2-tri box-face of LOD3 trivially gives ratio>1 and
+//      arbitrary angle picks.
+//
+//   2. shell-level (v2 main signal): extract 3D shells on the deepest LOD
+//      via face-adjacency + normal threshold (≤30°), then for every fine
+//      face pick the K=10 nearest shells by centroid and choose the one
+//      with the smallest normal angle. Reported angle is to the shell's
+//      area-weighted dominant normal; reported area-ratio is against
+//      TOTAL shell area (not a single triangle). This matches what the
+//      real HierarchicalRepack would do (LOD3 packs at shell granularity,
+//      not at triangle granularity).
+//
+// CSV gets both columns side-by-side. Console summary reports both. The
+// shell-level numbers are the ones that map to the GO/STOP decision in
+// the plan; face-level is kept as a sanity reference.
 
 using System.Collections.Generic;
 using System.Globalization;
@@ -29,6 +42,18 @@ namespace SashaRX.UnityMeshLab
         // projection at θ=45°, ~50% at θ=60°. Below 30° projection is near
         // isometric — that band is the "safe" containment zone.
         static readonly float[] kThetaSamples = { 15f, 30f, 45f, 60f, 90f };
+
+        // Adjacency-based shell extraction on the deepest LOD: two adjacent
+        // faces belong to the same shell if their normals differ by less
+        // than this. Matches xatlas hard-edge analysis convention.
+        const float kShellNormalThresholdDeg = 30f;
+
+        // K-nearest shells to consider when picking the best parent for a
+        // fine face. The 1st-nearest by centroid often isn't the best by
+        // angle on tessellated / curved deepest LODs — searching K=10
+        // gives near-optimal results in our prior debugging without
+        // performance impact (sub-millisecond per fine face).
+        const int kShellSearchK = 10;
 
         [MenuItem(MenuPath, true)]
         static bool Validate()
@@ -109,7 +134,8 @@ namespace SashaRX.UnityMeshLab
                 var deepMesh = arr[deepestIdx].GetComponent<MeshFilter>()?.sharedMesh;
                 if (deepMesh == null) { groupsSkipped++; continue; }
 
-                var deepFaces = BuildFaceData(deepMesh, arr[deepestIdx].transform);
+                var deepFaces  = BuildFaceData(deepMesh, arr[deepestIdx].transform);
+                var deepShells = ExtractShells(deepFaces, deepMesh.triangles, deepMesh.vertexCount);
                 bool any = false;
                 for (int li = 0; li < deepestIdx; li++)
                 {
@@ -117,7 +143,7 @@ namespace SashaRX.UnityMeshLab
                     var fineMesh = arr[li].GetComponent<MeshFilter>()?.sharedMesh;
                     if (fineMesh == null) continue;
                     var fineFaces = BuildFaceData(fineMesh, arr[li].transform);
-                    ProbeFineAgainstDeep(kv.Key, li, fineFaces, deepFaces, allRecords);
+                    ProbeFineAgainstDeep(kv.Key, li, fineFaces, deepFaces, deepShells, allRecords);
                     any = true;
                 }
                 if (any) groupsProbed++;
@@ -135,17 +161,30 @@ namespace SashaRX.UnityMeshLab
             public float   area;       // world-space triangle area
         }
 
+        struct ShellData
+        {
+            public Vector3 centroid;       // area-weighted world-space
+            public Vector3 dominantNormal; // area-weighted world-space, unit length
+            public float   totalArea;
+            public int     faceCount;
+        }
+
         struct FaceProbeRecord
         {
             public string groupKey;
-            public int    lodIndex;        // fine LOD level (0 = LOD0)
-            public int    faceIndex;       // index inside fine LOD's tris[]
-            public int    parentFaceIndex; // index inside deepest LOD's tris[]
-            public float  centroidDistance;
-            public float  angleDeg;        // angle(fine.normal, parent.normal)
-            public float  areaRatio;       // fine.area / parent.area
+            public int    lodIndex;             // fine LOD level (0 = LOD0)
+            public int    faceIndex;            // index inside fine LOD's tris[]
+            // Face-level (v1): nearest deepest-LOD triangle
+            public int    parentFaceIndex;
+            public float  faceCentroidDistance;
+            public float  faceAngleDeg;
+            public float  faceAreaRatio;
+            // Shell-level (v2): best-angle match among K-nearest deepest-LOD shells
+            public int    parentShellIndex;
+            public float  shellCentroidDistance;
+            public float  shellAngleDeg;
+            public float  shellAreaRatio;
             public float  fineArea;
-            public float  parentArea;
         }
 
         /// <summary>
@@ -176,47 +215,210 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// O(N×M) nearest-face match by 3D centroid. Acceptable for diag — typical
-        /// LODGroup meshes have &lt; 10k faces so this is sub-second. Replace
-        /// with a BVH if profile shows otherwise.
+        /// Extract "3D shells" from the deepest LOD: connected groups of faces
+        /// whose adjacent-pair normal angle is below
+        /// <see cref="kShellNormalThresholdDeg"/>. Adjacency = shared edge
+        /// (two vertex indices in common). For each shell, compute area-weighted
+        /// dominant normal and centroid + total area. The shell index for each
+        /// face is returned in <paramref name="faceToShell"/>.
+        /// </summary>
+        static ShellData[] ExtractShells(FaceData[] faces, int[] tris, int vertexCount)
+        {
+            int n = faces.Length;
+            if (n == 0) return new ShellData[0];
+
+            // Build edge → list-of-faces map for adjacency.
+            // Key = (minVi, maxVi) packed as long.
+            var edgeFaces = new Dictionary<long, List<int>>(n * 3);
+            void AddEdge(int va, int vb, int face)
+            {
+                long key = va < vb
+                    ? ((long)va << 32) | (uint)vb
+                    : ((long)vb << 32) | (uint)va;
+                if (!edgeFaces.TryGetValue(key, out var list))
+                {
+                    list = new List<int>(2);
+                    edgeFaces[key] = list;
+                }
+                list.Add(face);
+            }
+            for (int f = 0; f < n; f++)
+            {
+                int v0 = tris[f * 3], v1 = tris[f * 3 + 1], v2 = tris[f * 3 + 2];
+                AddEdge(v0, v1, f); AddEdge(v1, v2, f); AddEdge(v2, v0, f);
+            }
+
+            float thresholdCos = Mathf.Cos(kShellNormalThresholdDeg * Mathf.Deg2Rad);
+
+            // Union-find over faces by adjacency + normal compatibility.
+            var parent = new int[n];
+            for (int i = 0; i < n; i++) parent[i] = i;
+            int Find(int x)
+            {
+                while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+                return x;
+            }
+            void Union(int a, int b)
+            {
+                int ra = Find(a), rb = Find(b);
+                if (ra != rb) parent[ra] = rb;
+            }
+
+            foreach (var kv in edgeFaces)
+            {
+                var list = kv.Value;
+                if (list.Count < 2) continue;
+                for (int i = 0; i < list.Count; i++)
+                    for (int j = i + 1; j < list.Count; j++)
+                    {
+                        float d = Vector3.Dot(faces[list[i]].normal, faces[list[j]].normal);
+                        if (d >= thresholdCos) Union(list[i], list[j]);
+                    }
+            }
+
+            // Materialise shells.
+            var shellOf = new int[n];
+            var rootToShell = new Dictionary<int, int>();
+            var accumNormal = new List<Vector3>();
+            var accumCentroid = new List<Vector3>();
+            var accumArea = new List<float>();
+            var accumCount = new List<int>();
+            for (int f = 0; f < n; f++)
+            {
+                int r = Find(f);
+                if (!rootToShell.TryGetValue(r, out int si))
+                {
+                    si = accumNormal.Count;
+                    rootToShell[r] = si;
+                    accumNormal.Add(Vector3.zero);
+                    accumCentroid.Add(Vector3.zero);
+                    accumArea.Add(0f);
+                    accumCount.Add(0);
+                }
+                shellOf[f] = si;
+                float a = faces[f].area;
+                accumNormal[si]  = accumNormal[si]  + faces[f].normal * a;
+                accumCentroid[si] = accumCentroid[si] + faces[f].centroid * a;
+                accumArea[si]    = accumArea[si]    + a;
+                accumCount[si]   = accumCount[si]   + 1;
+            }
+            var shells = new ShellData[accumNormal.Count];
+            for (int si = 0; si < shells.Length; si++)
+            {
+                float ta = accumArea[si];
+                shells[si].totalArea = ta;
+                shells[si].faceCount = accumCount[si];
+                if (ta > 1e-12f)
+                {
+                    shells[si].centroid = accumCentroid[si] / ta;
+                    var n2 = accumNormal[si] / ta;
+                    float m = n2.magnitude;
+                    shells[si].dominantNormal = m > 1e-12f ? n2 / m : Vector3.up;
+                }
+                else
+                {
+                    shells[si].dominantNormal = Vector3.up;
+                }
+            }
+            return shells;
+        }
+
+        /// <summary>
+        /// For each fine face: brute-force nearest deepest-LOD triangle (face-level
+        /// reference), plus K-nearest deepest-LOD shells + best-angle pick
+        /// (shell-level main signal). O(N×M) per LOD pair — fine for diag on
+        /// &lt;30k face meshes.
         /// </summary>
         static void ProbeFineAgainstDeep(string groupKey, int lodIndex,
-            FaceData[] fine, FaceData[] deep, List<FaceProbeRecord> sink)
+            FaceData[] fine, FaceData[] deep, ShellData[] shells,
+            List<FaceProbeRecord> sink)
         {
             if (deep.Length == 0) return;
+            // Reusable K-nearest buffer for shell search: (distSq, shellIndex).
+            int K = Mathf.Min(kShellSearchK, shells.Length);
+            var topShells = new (float dsq, int si)[K];
+
             for (int f = 0; f < fine.Length; f++)
             {
-                int   best = -1;
-                float bestDistSq = float.MaxValue;
                 Vector3 fc = fine[f].centroid;
+
+                // (A) face-level: nearest single deepest-LOD triangle by centroid.
+                int   bestFace = -1;
+                float bestFaceDistSq = float.MaxValue;
                 for (int g = 0; g < deep.Length; g++)
                 {
                     float dsq = (fc - deep[g].centroid).sqrMagnitude;
-                    if (dsq < bestDistSq)
+                    if (dsq < bestFaceDistSq) { bestFaceDistSq = dsq; bestFace = g; }
+                }
+
+                // (B) shell-level: K nearest shells by centroid, then pick the
+                //     one with the smallest angle to the fine face's normal.
+                //     Initialize buffer with +∞.
+                for (int k = 0; k < K; k++) topShells[k] = (float.MaxValue, -1);
+                for (int si = 0; si < shells.Length; si++)
+                {
+                    float dsq = (fc - shells[si].centroid).sqrMagnitude;
+                    // Insertion into sorted top-K (smallest distSq first).
+                    if (dsq >= topShells[K - 1].dsq) continue;
+                    int pos = K - 1;
+                    while (pos > 0 && topShells[pos - 1].dsq > dsq)
                     {
-                        bestDistSq = dsq;
-                        best = g;
+                        topShells[pos] = topShells[pos - 1];
+                        pos--;
+                    }
+                    topShells[pos] = (dsq, si);
+                }
+                int   bestShell = -1;
+                float bestShellAngle = float.MaxValue;
+                float bestShellDistSq = float.MaxValue;
+                for (int k = 0; k < K; k++)
+                {
+                    int si = topShells[k].si;
+                    if (si < 0) break;
+                    float dot = Vector3.Dot(fine[f].normal, shells[si].dominantNormal);
+                    if (dot >  1f) dot =  1f;
+                    if (dot < -1f) dot = -1f;
+                    float ang = Mathf.Acos(dot) * Mathf.Rad2Deg;
+                    if (ang < bestShellAngle)
+                    {
+                        bestShellAngle  = ang;
+                        bestShell       = si;
+                        bestShellDistSq = topShells[k].dsq;
                     }
                 }
-                if (best < 0) continue;
-                float dot = Vector3.Dot(fine[f].normal, deep[best].normal);
-                if (dot >  1f) dot =  1f;
-                if (dot < -1f) dot = -1f;
-                float angle = Mathf.Acos(dot) * Mathf.Rad2Deg;
-                float ratio = deep[best].area > 1e-12f
-                    ? fine[f].area / deep[best].area
+
+                // Record both modes.
+                float faceAngle, faceRatio;
+                if (bestFace >= 0)
+                {
+                    float dot = Vector3.Dot(fine[f].normal, deep[bestFace].normal);
+                    if (dot >  1f) dot =  1f;
+                    if (dot < -1f) dot = -1f;
+                    faceAngle = Mathf.Acos(dot) * Mathf.Rad2Deg;
+                    faceRatio = deep[bestFace].area > 1e-12f
+                        ? fine[f].area / deep[bestFace].area
+                        : float.PositiveInfinity;
+                }
+                else { faceAngle = 0f; faceRatio = 0f; }
+
+                float shellRatio = (bestShell >= 0 && shells[bestShell].totalArea > 1e-12f)
+                    ? fine[f].area / shells[bestShell].totalArea
                     : float.PositiveInfinity;
+
                 sink.Add(new FaceProbeRecord
                 {
-                    groupKey         = groupKey,
-                    lodIndex         = lodIndex,
-                    faceIndex        = f,
-                    parentFaceIndex  = best,
-                    centroidDistance = Mathf.Sqrt(bestDistSq),
-                    angleDeg         = angle,
-                    areaRatio        = ratio,
-                    fineArea         = fine[f].area,
-                    parentArea       = deep[best].area,
+                    groupKey               = groupKey,
+                    lodIndex               = lodIndex,
+                    faceIndex              = f,
+                    parentFaceIndex        = bestFace,
+                    faceCentroidDistance   = Mathf.Sqrt(bestFaceDistSq),
+                    faceAngleDeg           = faceAngle,
+                    faceAreaRatio          = faceRatio,
+                    parentShellIndex       = bestShell,
+                    shellCentroidDistance  = Mathf.Sqrt(bestShellDistSq),
+                    shellAngleDeg          = bestShellAngle == float.MaxValue ? 0f : bestShellAngle,
+                    shellAreaRatio         = shellRatio,
+                    fineArea               = fine[f].area,
                 });
             }
         }
@@ -233,8 +435,10 @@ namespace SashaRX.UnityMeshLab
                 $"hierdiag_{stamp}_{Sanitize(lgName)}.csv");
 
             var sb = new StringBuilder();
-            sb.AppendLine("groupKey,lodIndex,faceIndex,parentFaceIndex," +
-                          "centroidDistance,angleDeg,areaRatio,fineArea,parentArea");
+            sb.AppendLine("groupKey,lodIndex,faceIndex," +
+                          "parentFaceIndex,faceCentroidDistance,faceAngleDeg,faceAreaRatio," +
+                          "parentShellIndex,shellCentroidDistance,shellAngleDeg,shellAreaRatio," +
+                          "fineArea");
             var inv = CultureInfo.InvariantCulture;
             foreach (var r in records)
             {
@@ -242,11 +446,14 @@ namespace SashaRX.UnityMeshLab
                 sb.Append(r.lodIndex.ToString(inv)).Append(',');
                 sb.Append(r.faceIndex.ToString(inv)).Append(',');
                 sb.Append(r.parentFaceIndex.ToString(inv)).Append(',');
-                sb.Append(r.centroidDistance.ToString("R", inv)).Append(',');
-                sb.Append(r.angleDeg.ToString("R", inv)).Append(',');
-                sb.Append(r.areaRatio.ToString("R", inv)).Append(',');
-                sb.Append(r.fineArea.ToString("R", inv)).Append(',');
-                sb.Append(r.parentArea.ToString("R", inv));
+                sb.Append(r.faceCentroidDistance.ToString("R", inv)).Append(',');
+                sb.Append(r.faceAngleDeg.ToString("R", inv)).Append(',');
+                sb.Append(r.faceAreaRatio.ToString("R", inv)).Append(',');
+                sb.Append(r.parentShellIndex.ToString(inv)).Append(',');
+                sb.Append(r.shellCentroidDistance.ToString("R", inv)).Append(',');
+                sb.Append(r.shellAngleDeg.ToString("R", inv)).Append(',');
+                sb.Append(r.shellAreaRatio.ToString("R", inv)).Append(',');
+                sb.Append(r.fineArea.ToString("R", inv));
                 sb.AppendLine();
             }
             File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
@@ -270,60 +477,69 @@ namespace SashaRX.UnityMeshLab
                 $"probed against deepest LOD (idx={deepestIdx}). " +
                 $"groups: {groupsProbed} probed, {groupsSkipped} skipped.");
 
-            // Coverage at each θ — orthographic projection retains ~cos(θ)
-            // of the original area, so this is the "fraction of fine faces
-            // that project onto their nearest deepest face without severe
-            // foreshortening".
-            sb.AppendLine("  Containment coverage by θ (fine.normal vs parent.normal):");
-            foreach (var theta in kThetaSamples)
-            {
-                int within = 0;
-                foreach (var r in records) if (r.angleDeg < theta) within++;
-                float pct = 100f * within / records.Count;
-                sb.AppendLine($"    θ <{theta,5:F1}°: {within,7} / {records.Count} " +
-                              $"({pct,5:F1}%)  retained-area ≥ {Mathf.Cos(theta * Mathf.Deg2Rad) * 100f:F0}%");
-            }
+            // Mode A: face-level (naive v1 baseline)
+            sb.AppendLine("  FACE-LEVEL (v1: nearest deepest triangle):");
+            EmitCoverage(sb, records, r => r.faceAngleDeg);
+            EmitRatioStats(sb, records, r => r.faceAreaRatio, "    ");
 
-            // Area-ratio percentiles. fine/parent — a value < 1 means the
-            // fine face is a subset of its parent (good). > 1 means the
-            // fine face is LARGER than its parent — projection will stretch
-            // or wrap; that face is a candidate for promotion to a top-level
-            // atlas slot in the real pipeline.
-            var ratios = new List<float>(records.Count);
-            foreach (var r in records)
-                if (!float.IsInfinity(r.areaRatio)) ratios.Add(r.areaRatio);
-            ratios.Sort();
-            if (ratios.Count > 0)
-            {
-                float Pct(double p)
-                {
-                    int i = (int)System.Math.Round(p * (ratios.Count - 1));
-                    if (i < 0) i = 0;
-                    if (i >= ratios.Count) i = ratios.Count - 1;
-                    return ratios[i];
-                }
-                int over = 0; foreach (var x in ratios) if (x > 1.0f) over++;
-                sb.AppendLine($"  Area ratio (fine/parent): " +
-                    $"p50={Pct(0.50):F3}  p90={Pct(0.90):F3}  p99={Pct(0.99):F3}  " +
-                    $"max={ratios[ratios.Count - 1]:F3}");
-                sb.AppendLine($"    fine LARGER than parent (ratio>1): {over}/{ratios.Count} " +
-                    $"({100f * over / ratios.Count:F1}%) → promotion candidates");
-            }
+            // Mode B: shell-level (v2 main signal — matches what HierarchicalRepack would do)
+            sb.AppendLine("  SHELL-LEVEL (v2: K=10 nearest shells, best angle):");
+            EmitCoverage(sb, records, r => r.shellAngleDeg);
+            EmitRatioStats(sb, records, r => r.shellAreaRatio, "    ");
 
-            // Per-LOD breakdown — angle distribution may differ between LOD1
-            // (almost-LOD0) and the deepest non-base LOD.
+            // Per-LOD shell-level breakdown
             var byLod = records.GroupBy(r => r.lodIndex).OrderBy(g => g.Key);
             foreach (var g in byLod)
             {
                 int n = g.Count();
-                float meanAngle = g.Average(r => r.angleDeg);
-                int strict = g.Count(r => r.angleDeg < 30f);
-                int loose  = g.Count(r => r.angleDeg < 60f);
-                sb.AppendLine($"  LOD{g.Key}: {n,6} faces  mean θ={meanAngle,5:F1}°  " +
-                    $"θ<30°: {100f * strict / n:F1}%  θ<60°: {100f * loose / n:F1}%");
+                float mAng = g.Average(r => r.shellAngleDeg);
+                int s30 = g.Count(r => r.shellAngleDeg < 30f);
+                int s60 = g.Count(r => r.shellAngleDeg < 60f);
+                sb.AppendLine($"  LOD{g.Key}: {n,6} faces  shell-θ mean={mAng,5:F1}°  " +
+                    $"θ<30°: {100f * s30 / n:F1}%  θ<60°: {100f * s60 / n:F1}%");
             }
 
             UvtLog.Info(UvtLog.Category.Benchmark, sb.ToString());
+        }
+
+        static void EmitCoverage(StringBuilder sb, List<FaceProbeRecord> records,
+            System.Func<FaceProbeRecord, float> getAngle)
+        {
+            int total = records.Count;
+            foreach (var theta in kThetaSamples)
+            {
+                int within = 0;
+                foreach (var r in records) if (getAngle(r) < theta) within++;
+                float pct = 100f * within / total;
+                sb.AppendLine($"    θ <{theta,5:F1}°: {within,7} / {total} " +
+                              $"({pct,5:F1}%)  retained-area ≥ {Mathf.Cos(theta * Mathf.Deg2Rad) * 100f:F0}%");
+            }
+        }
+
+        static void EmitRatioStats(StringBuilder sb, List<FaceProbeRecord> records,
+            System.Func<FaceProbeRecord, float> getRatio, string indent)
+        {
+            var ratios = new List<float>(records.Count);
+            foreach (var r in records)
+            {
+                float v = getRatio(r);
+                if (!float.IsInfinity(v) && !float.IsNaN(v)) ratios.Add(v);
+            }
+            if (ratios.Count == 0) return;
+            ratios.Sort();
+            float Pct(double p)
+            {
+                int i = (int)System.Math.Round(p * (ratios.Count - 1));
+                if (i < 0) i = 0;
+                if (i >= ratios.Count) i = ratios.Count - 1;
+                return ratios[i];
+            }
+            int over = 0; foreach (var x in ratios) if (x > 1.0f) over++;
+            sb.AppendLine($"{indent}area ratio (fine/parent): " +
+                $"p50={Pct(0.50):F3}  p90={Pct(0.90):F3}  p99={Pct(0.99):F3}  " +
+                $"max={ratios[ratios.Count - 1]:F3}");
+            sb.AppendLine($"{indent}  fine LARGER than parent (ratio>1): " +
+                $"{over}/{ratios.Count} ({100f * over / ratios.Count:F1}%) → promotion candidates");
         }
 
         static string CsvField(string s)
