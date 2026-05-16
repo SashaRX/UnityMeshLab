@@ -1032,7 +1032,6 @@ namespace SashaRX.UnityMeshLab
             }
             return result;
         }
-        }
 
         static void LogDryRunSummary(string lgName, Result r)
         {
