@@ -471,7 +471,10 @@ namespace SashaRX.UnityMeshLab
 
             float cell = Mathf.Max(meshDiag, 1f) * 1e-5f;
             float invCell = 1f / cell;
-            var grid = new Dictionary<long, int>(vn);
+            // Use a ValueTuple key so coords aren't bit-packed (21-bit packing
+            // wraps for meshes far from world origin — a 1m-diag mesh at world
+            // position 50m generates kx ≈ 5e6, well past 2²¹ ≈ 2M).
+            var grid = new Dictionary<(long, long, long), int>(vn);
             int next = 0;
             // Only canonicalize vertices actually used by triangles — unused
             // mesh.vertices entries (common in stripped meshes) would
@@ -481,13 +484,9 @@ namespace SashaRX.UnityMeshLab
                 int vi = tris[t];
                 if (canonical[vi] >= 0) continue;
                 var p = worldVerts[vi];
-                long kx = (long)Mathf.Floor(p.x * invCell);
-                long ky = (long)Mathf.Floor(p.y * invCell);
-                long kz = (long)Mathf.Floor(p.z * invCell);
-                // Pack (kx, ky, kz) into 64 bits — 21 bits each, signed-shifted.
-                long key = ((kx & 0x1FFFFFL) << 42)
-                         | ((ky & 0x1FFFFFL) << 21)
-                         |  (kz & 0x1FFFFFL);
+                var key = ((long)Mathf.Floor(p.x * invCell),
+                           (long)Mathf.Floor(p.y * invCell),
+                           (long)Mathf.Floor(p.z * invCell));
                 if (!grid.TryGetValue(key, out int id))
                 {
                     id = next++;
