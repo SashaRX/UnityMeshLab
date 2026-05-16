@@ -667,75 +667,83 @@ namespace SashaRX.UnityMeshLab
             if (baseShells.Length == 0)
                 return new ShellDecision { kind = ShellDecisionKind.Promote, parentBaseShellIdx = -1 };
 
-            // Full scan for the best-angle base shell across ALL base shells.
+            // Combined search: scan ALL base shells, but instead of picking the
+            // globally-best-angle parent (which on curved/repeated geometry will
+            // be some perfectly aligned shell on the FAR side of the mesh —
+            // angle=0 but distance huge → extent-fit fail → promote regression),
+            // we filter to angularly-eligible parents AND keep only those that
+            // also pass perpendicular-distance + extent-fit. Among those, prefer
+            // the one with the smallest angle. If none pass, promote based on
+            // the overall best-angle shell so the domain still has a sensible
+            // dominant-normal record for downstream packing.
             //
-            // The previous K-nearest-by-centroid filter was inherited from probe v3's
-            // per-FACE classifier, where it made sense — a fine triangle near a
-            // particular point should pick its parent from local candidates. But
-            // shell-level matching has a pathological failure mode: a small detail
-            // on the EDGE of a large flat surface (e.g. a roof border ornament on
-            // a 2m gazebo roof) has the roof's centroid 2m away, while a dozen
-            // tiny neighbouring shells sit 0.1m away. K-nearest=10 then never
-            // even SEES the roof — bestAngle is computed only among the close
-            // clutter shells whose normals are unaligned, so overlay never fires
-            // and the detail gets promoted. Full-scan is O(N base × M fine) and
-            // for our sizes (~300 × ~600 on the worst test model) is negligible
-            // (~200k float dots, microseconds).
-            int bestShell = -1;
-            float bestAngle = float.MaxValue;
-            for (int si = 0; si < baseShells.Length; si++)
-            {
-                float dot = Vector3.Dot(fine.dominantNormal, baseShells[si].dominantNormal);
-                if (dot >  1f) dot =  1f;
-                if (dot < -1f) dot = -1f;
-                float ang = Mathf.Acos(dot) * Mathf.Rad2Deg;
-                if (ang < bestAngle) { bestAngle = ang; bestShell = si; }
-            }
-
-            // Skip-criteria — applied BEFORE promote so genuinely tiny noise
-            // disappears even when no parent fits. A handle's normals are
-            // chaotic enough that no base shell will be within overlayAngleDeg.
+            // For Skip-detection we use the cheapest pass: tiny area + low face
+            // count. That's independent of parent search.
+            //
+            // Cost is O(N base × M fine) — ~270 × ~600 = 160k shell tests on
+            // the worst test model; each test is a few float ops, microseconds.
             float areaFrac = fine.totalArea / totalDeepArea;
             bool tinyArea  = areaFrac < opts.skipAreaFrac;
             bool fewFaces  = fine.faceCount <= opts.skipMaxFaceCount;
             if (tinyArea && fewFaces)
                 return new ShellDecision { kind = ShellDecisionKind.Skip, parentBaseShellIdx = -1 };
 
-            if (bestShell < 0)
-                return new ShellDecision { kind = ShellDecisionKind.Promote, parentBaseShellIdx = -1 };
+            int bestOverlayShell = -1;
+            float bestOverlayAngle = float.MaxValue;
+            int bestPromoteShell = -1;
+            float bestPromoteAngle = float.MaxValue;
 
-            // Overlay test — alignment + planar inclusion + extent fit.
-            if (bestAngle <= opts.overlayAngleDeg)
+            for (int si = 0; si < baseShells.Length; si++)
             {
-                var parent = baseShells[bestShell];
+                var parent = baseShells[si];
+
+                float dot = Vector3.Dot(fine.dominantNormal, parent.dominantNormal);
+                if (dot >  1f) dot =  1f;
+                if (dot < -1f) dot = -1f;
+                float angle = Mathf.Acos(dot) * Mathf.Rad2Deg;
+
+                // Track overall best-angle for the promote fallback.
+                if (angle < bestPromoteAngle) { bestPromoteAngle = angle; bestPromoteShell = si; }
+
+                if (angle > opts.overlayAngleDeg) continue;
+
+                // Perpendicular-distance test in parent's plane.
                 float perpAbs = Mathf.Abs(Vector3.Dot(fine.centroid - parent.centroid,
                     parent.dominantNormal));
                 float perpNorm = perpAbs / meshDiag;
-                if (perpNorm <= opts.overlayPerpNorm)
+                if (perpNorm > opts.overlayPerpNorm) continue;
+
+                // Planar extent fit in parent's basis (with slack).
+                Vector3 d = fine.centroid - parent.centroid;
+                float du = Mathf.Abs(Vector3.Dot(d, parent.basisU));
+                float dv = Mathf.Abs(Vector3.Dot(d, parent.basisV));
+                float boundU = parent.extentU * (1f + opts.overlayExtentSlack);
+                float boundV = parent.extentV * (1f + opts.overlayExtentSlack);
+                float fitU = du + fine.extentU;
+                float fitV = dv + fine.extentV;
+                if (fitU > boundU || fitV > boundV) continue;
+
+                // This parent passes all three tests. Keep the smallest-angle
+                // candidate among the eligible set (ties broken by first-seen).
+                if (angle < bestOverlayAngle)
                 {
-                    // Project fine shell's centroid onto parent basis to verify
-                    // it sits inside parent's planar rectangle (with slack).
-                    Vector3 d = fine.centroid - parent.centroid;
-                    float du = Mathf.Abs(Vector3.Dot(d, parent.basisU));
-                    float dv = Mathf.Abs(Vector3.Dot(d, parent.basisV));
-                    float boundU = parent.extentU * (1f + opts.overlayExtentSlack);
-                    float boundV = parent.extentV * (1f + opts.overlayExtentSlack);
-                    // Also account for fine shell's own extent — if even the
-                    // closest corner of fine sticks past parent's bounds, abort.
-                    float fitU = du + fine.extentU;
-                    float fitV = dv + fine.extentV;
-                    if (fitU <= boundU && fitV <= boundV)
-                    {
-                        return new ShellDecision
-                        {
-                            kind = ShellDecisionKind.Overlay,
-                            parentBaseShellIdx = bestShell,
-                        };
-                    }
+                    bestOverlayAngle = angle;
+                    bestOverlayShell = si;
                 }
             }
 
-            return new ShellDecision { kind = ShellDecisionKind.Promote, parentBaseShellIdx = bestShell };
+            if (bestOverlayShell >= 0)
+                return new ShellDecision
+                {
+                    kind = ShellDecisionKind.Overlay,
+                    parentBaseShellIdx = bestOverlayShell,
+                };
+
+            return new ShellDecision
+            {
+                kind = ShellDecisionKind.Promote,
+                parentBaseShellIdx = bestPromoteShell,
+            };
         }
 
         /// <summary>Wrap a fine-LOD shell into a <see cref="PromotedCluster"/>
