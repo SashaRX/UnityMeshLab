@@ -532,7 +532,7 @@ namespace SashaRX.UnityMeshLab
         /// name — one probe per case). Otherwise falls back to the legacy
         /// BenchmarkReports/hierdiag_&lt;stamp&gt;_&lt;name&gt;.csv layout for
         /// standalone runs.</summary>
-        internal static string WriteReport(string lgName, List<FaceProbeRecord> records,
+        static string WriteReport(string lgName, List<FaceProbeRecord> records,
             string outputDir)
         {
             string dir;
