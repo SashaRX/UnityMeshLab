@@ -1797,8 +1797,8 @@ namespace SashaRX.UnityMeshLab
                     "[Bench] Suite has no cases — nothing to do.");
                 return;
             }
-            var t = suite.techniques ?? new TestSuiteAsset.BenchTechniques();
-            if (!t.legacyXatlasSweep && !t.hierarchicalProbe && !t.hierarchicalRepack)
+            var tech = suite.techniques ?? new TestSuiteAsset.BenchTechniques();
+            if (!tech.legacyXatlasSweep && !tech.hierarchicalProbe && !tech.hierarchicalRepack)
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     "[Bench] All techniques disabled in suite.techniques — nothing to do.");
@@ -1916,14 +1916,14 @@ namespace SashaRX.UnityMeshLab
 
                         // Legacy xatlas parameter sweep — drops its own
                         // summary.csv / winner.json / cell_*.csv into caseDir.
-                        if (t.legacyXatlasSweep)
+                        if (tech.legacyXatlasSweep)
                         {
                             ExecSweep(suite.sweep, caseDir);
                             didAnything = true;
                         }
 
                         // Hierarchical probe v3 — single hier_probe.csv per case.
-                        if (t.hierarchicalProbe)
+                        if (tech.hierarchicalProbe)
                         {
                             try
                             {
@@ -1938,7 +1938,7 @@ namespace SashaRX.UnityMeshLab
                         }
 
                         // Hierarchical repack dry-run — single hier_repack.csv per case.
-                        if (t.hierarchicalRepack)
+                        if (tech.hierarchicalRepack)
                         {
                             try
                             {
@@ -2005,9 +2005,9 @@ namespace SashaRX.UnityMeshLab
                 string techList = string.Join("+",
                     new[]
                     {
-                        t.legacyXatlasSweep   ? "legacy" : null,
-                        t.hierarchicalProbe   ? "probe"  : null,
-                        t.hierarchicalRepack  ? "repack" : null,
+                        tech.legacyXatlasSweep   ? "legacy" : null,
+                        tech.hierarchicalProbe   ? "probe"  : null,
+                        tech.hierarchicalRepack  ? "repack" : null,
                     }
                     .Where(s => s != null));
                 UvtLog.Info(UvtLog.Category.Benchmark,
