@@ -127,9 +127,9 @@ namespace SashaRX.UnityMeshLab
                 shellSearchK            = 10,
                 atlasResolutionPx       = 1024,
                 interDomainPaddingPx    = 4,
-                overlayAngleDeg         = 25f,
+                overlayAngleDeg         = 35f,
                 overlayPerpNorm         = 0.02f,
-                overlayExtentSlack      = 0.10f,
+                overlayExtentSlack      = 0.30f,
                 skipAreaFrac            = 0.001f,
                 skipMaxFaceCount        = 4,
             };
