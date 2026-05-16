@@ -74,9 +74,10 @@ namespace SashaRX.UnityMeshLab
             /// detail. Scale-invariant.</summary>
             public float promotePerpNorm;
 
-            /// <summary>Number of nearest shells to consider per fine face when picking
-            /// best-angle parent. K=10 from probe v2 — 1st-nearest by centroid is
-            /// unreliable on curved deepest LODs.</summary>
+            /// <summary>Legacy K-nearest filter from probe v3's per-face classifier.
+            /// PR-2.5 shell-level matching uses a full scan instead — see notes
+            /// in <c>ClassifyFineShell</c>. Kept in Options for forward compat
+            /// with any per-face diagnostics that still rely on it.</summary>
             public int shellSearchK;
 
             /// <summary>Target atlas resolution (pixels). Final atlas may be slightly
@@ -666,30 +667,24 @@ namespace SashaRX.UnityMeshLab
             if (baseShells.Length == 0)
                 return new ShellDecision { kind = ShellDecisionKind.Promote, parentBaseShellIdx = -1 };
 
-            // K nearest base shells by centroid distance.
-            int K = Mathf.Min(opts.shellSearchK, baseShells.Length);
-            var top = new (float dsq, int si)[K];
-            for (int k = 0; k < K; k++) top[k] = (float.MaxValue, -1);
-            for (int si = 0; si < baseShells.Length; si++)
-            {
-                float dsq = (fine.centroid - baseShells[si].centroid).sqrMagnitude;
-                if (dsq >= top[K - 1].dsq) continue;
-                int pos = K - 1;
-                while (pos > 0 && top[pos - 1].dsq > dsq)
-                {
-                    top[pos] = top[pos - 1];
-                    pos--;
-                }
-                top[pos] = (dsq, si);
-            }
-
-            // Among K-nearest, pick the one with smallest angle to fine.dominantNormal.
+            // Full scan for the best-angle base shell across ALL base shells.
+            //
+            // The previous K-nearest-by-centroid filter was inherited from probe v3's
+            // per-FACE classifier, where it made sense — a fine triangle near a
+            // particular point should pick its parent from local candidates. But
+            // shell-level matching has a pathological failure mode: a small detail
+            // on the EDGE of a large flat surface (e.g. a roof border ornament on
+            // a 2m gazebo roof) has the roof's centroid 2m away, while a dozen
+            // tiny neighbouring shells sit 0.1m away. K-nearest=10 then never
+            // even SEES the roof — bestAngle is computed only among the close
+            // clutter shells whose normals are unaligned, so overlay never fires
+            // and the detail gets promoted. Full-scan is O(N base × M fine) and
+            // for our sizes (~300 × ~600 on the worst test model) is negligible
+            // (~200k float dots, microseconds).
             int bestShell = -1;
             float bestAngle = float.MaxValue;
-            for (int k = 0; k < K; k++)
+            for (int si = 0; si < baseShells.Length; si++)
             {
-                int si = top[k].si;
-                if (si < 0) break;
                 float dot = Vector3.Dot(fine.dominantNormal, baseShells[si].dominantNormal);
                 if (dot >  1f) dot =  1f;
                 if (dot < -1f) dot = -1f;
