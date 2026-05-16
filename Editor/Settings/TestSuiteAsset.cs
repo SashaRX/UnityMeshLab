@@ -132,6 +132,27 @@ namespace SashaRX.UnityMeshLab
 
         [Tooltip("Parameter sweep driven by LightmapTransferTool.ExecSweep (Run Sweep button).")]
         public SweepMatrix sweep = new SweepMatrix();
+
+        /// <summary>
+        /// Which analysis techniques to run per case during the unified
+        /// benchmark. Each enabled technique writes its own artefact(s)
+        /// into the per-case directory <c>bench_&lt;ts&gt;/&lt;idx&gt;_&lt;label&gt;/</c>.
+        /// </summary>
+        [System.Serializable]
+        public class BenchTechniques
+        {
+            [Tooltip("Legacy xatlas parameter sweep (atlas res × shell pad × border pad × ARAP × stretch × oversample × symSplit). Output: legacy_sweep/* CSVs + winner/summary aggregate.")]
+            public bool legacyXatlasSweep = true;
+
+            [Tooltip("Probe v3 — per-face stay/promote classification on every fine-LOD face vs the deepest LOD. Output: hier_probe.csv.")]
+            public bool hierarchicalProbe = true;
+
+            [Tooltip("Hierarchical Repack dry-run — per-vertex projection classifier, atlas layout. Output: hier_repack.csv (+ atlas PNG when available).")]
+            public bool hierarchicalRepack = true;
+        }
+
+        [Tooltip("Techniques to run per case during 'Run Benchmark'. All artefacts land under one bench_<stamp>/<case>/ directory so a single button gives a complete pipeline snapshot.")]
+        public BenchTechniques techniques = new BenchTechniques();
     }
 
 #if UNITY_EDITOR

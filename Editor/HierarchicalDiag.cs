@@ -92,7 +92,14 @@ namespace SashaRX.UnityMeshLab
         /// <c>BenchmarkReports/hierdiag_&lt;ts&gt;_&lt;lgName&gt;.csv</c> and
         /// logs a summary block to the console. Returns the CSV path.
         /// </summary>
-        public static string ProbeLodGroup(LODGroup lg)
+        // Standalone-menu entry — writes to BenchmarkReports/hierdiag_*.csv.
+        public static string ProbeLodGroup(LODGroup lg) => ProbeLodGroup(lg, null);
+
+        /// <summary>Run the probe and write its CSV. If <paramref name="outputDir"/>
+        /// is non-null the report lands as <c>{outputDir}/hier_probe.csv</c>
+        /// (used by the unified benchmark orchestrator). Null falls back to the
+        /// timestamped BenchmarkReports/ layout for standalone runs.</summary>
+        public static string ProbeLodGroup(LODGroup lg, string outputDir)
         {
             var lods = lg.GetLODs();
             if (lods.Length < 2)
@@ -156,7 +163,7 @@ namespace SashaRX.UnityMeshLab
                 if (any) groupsProbed++;
             }
 
-            string outPath = WriteReport(lg.name, allRecords);
+            string outPath = WriteReport(lg.name, allRecords, outputDir);
             LogSummary(lg.name, allRecords, groupsProbed, groupsSkipped, deepestIdx);
             return outPath;
         }
@@ -515,16 +522,37 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // Default write — used when the probe is invoked standalone (no
+        // unified benchmark output directory). Writes to BenchmarkReports/.
         static string WriteReport(string lgName, List<FaceProbeRecord> records)
+            => WriteReport(lgName, records, null);
+
+        /// <summary>Write the probe report. If <paramref name="outputDir"/> is
+        /// non-null the CSV lands under it as <c>hier_probe.csv</c> (fixed
+        /// name — one probe per case). Otherwise falls back to the legacy
+        /// BenchmarkReports/hierdiag_&lt;stamp&gt;_&lt;name&gt;.csv layout for
+        /// standalone runs.</summary>
+        internal static string WriteReport(string lgName, List<FaceProbeRecord> records,
+            string outputDir)
         {
-            string projectRoot = Directory.GetParent(Application.dataPath)?.FullName
-                                 ?? Application.dataPath;
-            string dir = Path.Combine(projectRoot, "BenchmarkReports");
-            Directory.CreateDirectory(dir);
-            string stamp = System.DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff",
-                CultureInfo.InvariantCulture);
-            string path = Path.Combine(dir,
-                $"hierdiag_{stamp}_{Sanitize(lgName)}.csv");
+            string dir;
+            string path;
+            if (!string.IsNullOrEmpty(outputDir))
+            {
+                dir = outputDir;
+                Directory.CreateDirectory(dir);
+                path = Path.Combine(dir, "hier_probe.csv");
+            }
+            else
+            {
+                string projectRoot = Directory.GetParent(Application.dataPath)?.FullName
+                                     ?? Application.dataPath;
+                dir = Path.Combine(projectRoot, "BenchmarkReports");
+                Directory.CreateDirectory(dir);
+                string stamp = System.DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff",
+                    CultureInfo.InvariantCulture);
+                path = Path.Combine(dir, $"hierdiag_{stamp}_{Sanitize(lgName)}.csv");
+            }
 
             var sb = new StringBuilder();
             sb.AppendLine("groupKey,lodIndex,faceIndex," +

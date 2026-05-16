@@ -506,7 +506,6 @@ namespace SashaRX.UnityMeshLab
                       * Mathf.Max(1, osL) * Mathf.Max(1, smL);
             }
             int caseCount = (sweepSuite != null && sweepSuite.cases != null) ? sweepSuite.cases.Count : 0;
-            int multiTotal = caseCount * cells;
             using (new EditorGUILayout.HorizontalScope())
             {
                 using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0))
@@ -514,16 +513,17 @@ namespace SashaRX.UnityMeshLab
                     if (GUILayout.Button($"Run Sweep ({cells})", GUILayout.Height(22)))
                         ExecSweep(sweepSuite.sweep);
                 }
-                using (new EditorGUI.DisabledScope(sweepSuite == null || multiTotal == 0))
+                using (new EditorGUI.DisabledScope(sweepSuite == null || caseCount == 0))
                 {
-                    if (GUILayout.Button(new GUIContent($"Run Multi-Case ({multiTotal})",
-                            "Spawn each TestSuiteAsset.cases[].fbxAsset into the scene, " +
-                            "wire its LODGroup into the tool, run the full sweep matrix, " +
-                            "then destroy the instance. Each model writes its own " +
-                            "sweep_<ts>_<model>/ subdirectory under BenchmarkReports/."),
+                    if (GUILayout.Button(new GUIContent($"Run Benchmark ({caseCount} cases)",
+                            "Iterate every TestSuiteAsset.cases[]; for each model, " +
+                            "spawn its FBX, then run every technique enabled in " +
+                            "suite.techniques (legacyXatlasSweep, hierarchicalProbe, " +
+                            "hierarchicalRepack). All artefacts land under one directory " +
+                            "BenchmarkReports/bench_<ts>/<idx>_<label>/."),
                         GUILayout.Height(22)))
                     {
-                        ExecMultiCaseSweep(sweepSuite);
+                        ExecBenchmark(sweepSuite);
                     }
                 }
                 if (GUILayout.Button(new GUIContent("Rebuild Report",
@@ -1768,27 +1768,40 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Iterate every <see cref="TestSuiteAsset.TestCase"/> in the suite,
-        /// instantiate its <c>fbxAsset</c> into a temporary scene root, wire the
-        /// resolved LODGroup into the tool, run the full sweep matrix, then
-        /// destroy the instance. Each case writes its artefacts into a dedicated
-        /// <c>sweep_&lt;ts&gt;_&lt;model&gt;/</c> subdirectory under
-        /// <c>BenchmarkReports/</c>, so per-model summary/winner stay separated
-        /// and the run-level <c>lodGroup</c> column in each CSV identifies the
-        /// model for cross-model pandas joins.
+        /// Unified benchmark — iterates every <see cref="TestSuiteAsset.TestCase"/>
+        /// in the suite, instantiates its <c>fbxAsset</c> into a temporary scene
+        /// root, then runs every technique enabled in
+        /// <see cref="TestSuiteAsset.techniques"/>:
+        ///   • legacyXatlasSweep  → existing parameter grid (atlas res × pad ×
+        ///                          ARAP × stretch × oversample × symSplit),
+        ///                          aggregated into summary/winner artefacts.
+        ///   • hierarchicalProbe  → probe v3 per-face stay/promote diagnostic.
+        ///   • hierarchicalRepack → per-vertex projection classifier + atlas
+        ///                          layout (PR-2.7).
+        /// All artefacts for a single case land under one directory
+        /// <c>BenchmarkReports/bench_&lt;ts&gt;/&lt;idx&gt;_&lt;label&gt;/</c>
+        /// so comparing techniques across the same model is a directory listing
+        /// and cross-model joins still work via the <c>lodGroup</c> column.
         ///
         /// Existing scene state is preserved: the original <c>ctx.LodGroup</c>
         /// is restored on exit, and every spawned root is destroyed in a
-        /// <c>finally</c> block so a thrown cell or a user cancel doesn't leak
-        /// GameObjects.
+        /// <c>finally</c> block so a thrown technique or a user cancel doesn't
+        /// leak GameObjects.
         /// </summary>
-        void ExecMultiCaseSweep(TestSuiteAsset suite)
+        void ExecBenchmark(TestSuiteAsset suite)
         {
             if (suite == null || suite.sweep == null) return;
             if (suite.cases == null || suite.cases.Count == 0)
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
-                    "[MultiSweep] Suite has no cases — nothing to do.");
+                    "[Bench] Suite has no cases — nothing to do.");
+                return;
+            }
+            var t = suite.techniques ?? new TestSuiteAsset.BenchTechniques();
+            if (!t.legacyXatlasSweep && !t.hierarchicalProbe && !t.hierarchicalRepack)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    "[Bench] All techniques disabled in suite.techniques — nothing to do.");
                 return;
             }
 
@@ -1814,7 +1827,9 @@ namespace SashaRX.UnityMeshLab
             int caseCount = suite.cases.Count;
             int doneCases = 0;
             bool overallCancelled = false;
-            UvProgress.Begin($"Multi-Case Sweep ({caseCount} models)", cancelable: true);
+            string benchRunDir = System.IO.Path.Combine(baseDir, $"bench_{runStamp}");
+            System.IO.Directory.CreateDirectory(benchRunDir);
+            UvProgress.Begin($"Benchmark ({caseCount} models)", cancelable: true);
             try
             {
                 for (int ci = 0; ci < caseCount; ci++)
@@ -1824,7 +1839,7 @@ namespace SashaRX.UnityMeshLab
                     if (tc == null || tc.fbxAsset == null)
                     {
                         UvtLog.Warn(UvtLog.Category.Benchmark,
-                            $"[MultiSweep] Case {ci}: null FBX, skipping.");
+                            $"[Bench] Case {ci}: null FBX, skipping.");
                         continue;
                     }
 
@@ -1832,7 +1847,7 @@ namespace SashaRX.UnityMeshLab
                     if (string.IsNullOrEmpty(fbxPath))
                     {
                         UvtLog.Warn(UvtLog.Category.Benchmark,
-                            $"[MultiSweep] Case {ci} '{tc.label}': asset has no project path, skipping.");
+                            $"[Bench] Case {ci} '{tc.label}': asset has no project path, skipping.");
                         continue;
                     }
 
@@ -1840,7 +1855,7 @@ namespace SashaRX.UnityMeshLab
                     if (prefabRoot == null)
                     {
                         UvtLog.Warn(UvtLog.Category.Benchmark,
-                            $"[MultiSweep] Case {ci} '{tc.label}': '{fbxPath}' is not a GameObject prefab, skipping.");
+                            $"[Bench] Case {ci} '{tc.label}': '{fbxPath}' is not a GameObject prefab, skipping.");
                         continue;
                     }
 
@@ -1854,10 +1869,10 @@ namespace SashaRX.UnityMeshLab
                         if (spawned == null)
                         {
                             UvtLog.Error(UvtLog.Category.Benchmark,
-                                $"[MultiSweep] Case {ci} '{tc.label}': InstantiatePrefab returned null, skipping.");
+                                $"[Bench] Case {ci} '{tc.label}': InstantiatePrefab returned null, skipping.");
                             continue;
                         }
-                        spawned.name = $"[MultiSweep] {tc.label}";
+                        spawned.name = $"[Bench] {tc.label}";
                         // DontSave so the temporary spawn doesn't mark the scene
                         // dirty and survive into Ctrl+S — the multi-case sweep is
                         // a transient operation, not an authored edit.
@@ -1874,33 +1889,80 @@ namespace SashaRX.UnityMeshLab
                         if (lg == null)
                         {
                             UvtLog.Warn(UvtLog.Category.Benchmark,
-                                $"[MultiSweep] Case {ci} '{tc.label}': no LODGroup found under '{fbxPath}', skipping.");
+                                $"[Bench] Case {ci} '{tc.label}': no LODGroup found under '{fbxPath}', skipping.");
                             continue;
                         }
 
                         ctx.Refresh(lg);
                         OnRefresh();
 
-                        // Per-case subdirectory so summary/winner per model stay
-                        // separated. The case index is prefixed so two cases
-                        // that sanitise to the same slug (e.g. "Chair A" and
-                        // "Chair/A" both collapsing to "Chair_A") still land in
-                        // distinct directories instead of overwriting each
-                        // other's summary.csv / winner.json / index.html.
-                        // lodGroup name is also recorded in every CSV row by
-                        // BenchmarkRecorder, so pandas joins still work if the
-                        // operator chooses to merge across cases.
+                        // Per-case subdirectory groups every technique's
+                        // artefacts for this model: legacy_sweep/*.csv +
+                        // hier_probe.csv + hier_repack.csv all live alongside
+                        // each other so an operator comparing techniques for
+                        // one model just lists the directory. The case index
+                        // is prefixed so two cases that sanitise to the same
+                        // slug (e.g. "Chair A" and "Chair/A" both collapsing
+                        // to "Chair_A") still land in distinct directories
+                        // instead of overwriting each other. lodGroup name is
+                        // also recorded in every CSV row by BenchmarkRecorder,
+                        // so pandas joins still work across cases.
                         string safeLabel = SanitizeForPath(string.IsNullOrEmpty(tc.label) ? lg.name : tc.label);
-                        string caseDir = System.IO.Path.Combine(baseDir,
-                            $"sweep_{runStamp}_{ci:D2}_{safeLabel}");
+                        string caseDir = System.IO.Path.Combine(benchRunDir,
+                            $"{ci:D2}_{safeLabel}");
+                        System.IO.Directory.CreateDirectory(caseDir);
 
-                        ExecSweep(suite.sweep, caseDir);
-                        doneCases++;
+                        bool didAnything = false;
+
+                        // Legacy xatlas parameter sweep — drops its own
+                        // summary.csv / winner.json / cell_*.csv into caseDir.
+                        if (t.legacyXatlasSweep)
+                        {
+                            ExecSweep(suite.sweep, caseDir);
+                            didAnything = true;
+                        }
+
+                        // Hierarchical probe v3 — single hier_probe.csv per case.
+                        if (t.hierarchicalProbe)
+                        {
+                            try
+                            {
+                                HierarchicalDiag.ProbeLodGroup(lg, caseDir);
+                                didAnything = true;
+                            }
+                            catch (Exception ex)
+                            {
+                                UvtLog.Error(UvtLog.Category.Benchmark,
+                                    $"[Bench] Case {ci} '{tc.label}' probe threw: {ex.Message}");
+                            }
+                        }
+
+                        // Hierarchical repack dry-run — single hier_repack.csv per case.
+                        if (t.hierarchicalRepack)
+                        {
+                            try
+                            {
+                                var hrOpts = HierarchicalRepack.Options.Default;
+                                var hrResult = HierarchicalRepack.BuildAndWriteForCase(lg, hrOpts, caseDir);
+                                if (!string.IsNullOrEmpty(hrResult.error))
+                                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                                        $"[Bench] Case {ci} '{tc.label}' repack: {hrResult.error}");
+                                else
+                                    didAnything = true;
+                            }
+                            catch (Exception ex)
+                            {
+                                UvtLog.Error(UvtLog.Category.Benchmark,
+                                    $"[Bench] Case {ci} '{tc.label}' repack threw: {ex.Message}");
+                            }
+                        }
+
+                        if (didAnything) doneCases++;
                     }
                     catch (Exception ex)
                     {
                         UvtLog.Error(UvtLog.Category.Benchmark,
-                            $"[MultiSweep] Case {ci} '{tc.label}' threw: {ex.Message}");
+                            $"[Bench] Case {ci} '{tc.label}' threw: {ex.Message}");
                     }
                     finally
                     {
@@ -1940,10 +2002,18 @@ namespace SashaRX.UnityMeshLab
                 // Restore the operator's original wiring.
                 ctx.Refresh(origLodGroup);
                 OnRefresh();
+                string techList = string.Join("+",
+                    new[]
+                    {
+                        t.legacyXatlasSweep   ? "legacy" : null,
+                        t.hierarchicalProbe   ? "probe"  : null,
+                        t.hierarchicalRepack  ? "repack" : null,
+                    }
+                    .Where(s => s != null));
                 UvtLog.Info(UvtLog.Category.Benchmark,
-                    $"[MultiSweep] complete: {doneCases}/{caseCount} cases" +
+                    $"[Bench] complete: {doneCases}/{caseCount} cases [{techList}]" +
                     (overallCancelled ? " (cancelled)" : "") +
-                    $". Per-case reports in BenchmarkReports/sweep_{runStamp}_*/");
+                    $". Per-case dirs: BenchmarkReports/bench_{runStamp}/<idx>_<label>/");
             }
         }
 

@@ -59,7 +59,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
-using UnityEditor;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
@@ -957,131 +956,21 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        // ─── Editor entry: dry-run menu item ─────────────────────────
+        // ─── Public callable for the unified benchmark orchestrator ──
 
-        const string DryRunMenuPath = "Mesh Lab/Diag/Hierarchical Atlas Dry-Run";
-
-        [MenuItem(DryRunMenuPath, true)]
-        static bool ValidateDryRun() => CollectSelectedLodGroups().Count > 0;
-
-        [MenuItem(DryRunMenuPath)]
-        static void DryRun()
+        /// <summary>Build the hierarchical atlas for a single LODGroup and write
+        /// the dry-run CSV into <paramref name="outputDir"/> as
+        /// <c>hier_repack.csv</c>. Returns the build <see cref="Result"/>; the
+        /// caller can inspect counters or surface a per-case summary. This is
+        /// the entry point used by <c>LightmapTransferTool.ExecBenchmark</c>;
+        /// stand-alone single-model dry-runs are no longer wired to a
+        /// dedicated menu — the unified benchmark covers that workflow.</summary>
+        public static Result BuildAndWriteForCase(LODGroup lg, Options opts, string outputDir)
         {
-            var lgs = CollectSelectedLodGroups();
-            if (lgs.Count == 0)
-            {
-                EditorUtility.DisplayDialog("Hierarchical Atlas Dry-Run",
-                    "Select one or more GameObjects under a LODGroup first.\n" +
-                    "Prefab assets in the Project window also work.", "OK");
-                return;
-            }
-
-            var opts = Options.Default;
-            var failures = new List<string>();
-            int ok = 0;
-            string lastReport = null;
-            Result lastResult = null;
-            string lastName = null;
-            for (int i = 0; i < lgs.Count; i++)
-            {
-                var lg = lgs[i];
-                if (lgs.Count > 1)
-                {
-                    if (EditorUtility.DisplayCancelableProgressBar(
-                            "Hierarchical Atlas Dry-Run",
-                            $"[{i + 1}/{lgs.Count}] {lg.name}",
-                            (float)i / lgs.Count))
-                    {
-                        UvtLog.Warn(UvtLog.Category.Benchmark,
-                            $"[HierRepack] Batch dry-run cancelled at {i}/{lgs.Count}.");
-                        break;
-                    }
-                }
-                try
-                {
-                    var result = Build(lg, opts);
-                    if (!string.IsNullOrEmpty(result.error))
-                    {
-                        failures.Add($"{lg.name}: {result.error}");
-                        continue;
-                    }
-                    string reportPath = WriteDryRunReport(lg.name, result);
-                    LogDryRunSummary(lg.name, result);
-                    lastReport = reportPath;
-                    lastResult = result;
-                    lastName   = lg.name;
-                    ok++;
-                }
-                catch (Exception ex)
-                {
-                    failures.Add($"{lg.name}: {ex.Message}");
-                    UvtLog.Error(UvtLog.Category.Benchmark,
-                        $"[HierRepack] Dry-run threw on '{lg.name}': {ex}");
-                }
-            }
-            EditorUtility.ClearProgressBar();
-
-            // Single-LODGroup: detailed dialog like before. Batch: terse summary
-            // pointing the operator at the per-model CSVs in BenchmarkReports/.
-            if (lgs.Count == 1 && lastResult != null)
-            {
-                int denom = Mathf.Max(1, lastResult.totalFineFaces);
-                EditorUtility.DisplayDialog("Hierarchical Atlas Dry-Run",
-                    $"Build complete on '{lastName}'.\n\n" +
-                    $"Domains: {lastResult.domains.Length} " +
-                    $"({lastResult.baseShellCount} base + {lastResult.promotedClusterCount} promoted)\n" +
-                    $"Atlas: {lastResult.atlasPixelWidth}×{lastResult.atlasPixelHeight}px\n" +
-                    $"Fine faces: {lastResult.totalFineFaces}\n" +
-                    $"  promoted: {lastResult.promotedFineFaces} ({100f * lastResult.promotedFineFaces / denom:F1}%)\n" +
-                    $"  overlaid: {lastResult.overlaidFineFaces} ({100f * lastResult.overlaidFineFaces / denom:F1}%)\n" +
-                    $"  skipped:  {lastResult.skippedFineFaces} ({100f * lastResult.skippedFineFaces / denom:F1}%)\n" +
-                    $"  degenerate: {lastResult.degenerateFineFaces}\n\n" +
-                    $"Report: {lastReport}\n\nSee console for details.", "OK");
-            }
-            else
-            {
-                string failBlock = failures.Count == 0
-                    ? ""
-                    : "\n\nFailures:\n  " + string.Join("\n  ", failures);
-                EditorUtility.DisplayDialog("Hierarchical Atlas Dry-Run",
-                    $"Batch complete: {ok}/{lgs.Count} models succeeded.\n\n" +
-                    $"Per-model CSVs in BenchmarkReports/ (one file per LODGroup).\n" +
-                    $"See console for per-model summaries." + failBlock,
-                    "OK");
-            }
-        }
-
-        /// <summary>Resolve every LODGroup reachable from the current Selection:
-        /// scene GameObjects walk up via GetComponentInParent; Project-window
-        /// prefab assets are loaded and searched via GetComponentInChildren.
-        /// Deduplicated by LODGroup instance so selecting multiple children of
-        /// the same LODGroup doesn't process it twice.</summary>
-        static List<LODGroup> CollectSelectedLodGroups()
-        {
-            var result = new List<LODGroup>();
-            var seen = new HashSet<LODGroup>();
-            var sel = Selection.gameObjects;
-            if (sel == null || sel.Length == 0) return result;
-            foreach (var go in sel)
-            {
-                if (go == null) continue;
-                // Scene object — climb to the nearest LODGroup ancestor.
-                var lg = go.GetComponentInParent<LODGroup>();
-                if (lg == null)
-                {
-                    // Project-window asset path: load the prefab and search
-                    // its hierarchy (GetComponentInParent on a root prefab
-                    // asset still returns null, but GetComponentInChildren
-                    // walks descendants).
-                    string assetPath = AssetDatabase.GetAssetPath(go);
-                    if (!string.IsNullOrEmpty(assetPath))
-                    {
-                        var loaded = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
-                        if (loaded != null) lg = loaded.GetComponentInChildren<LODGroup>(true);
-                    }
-                }
-                if (lg != null && seen.Add(lg)) result.Add(lg);
-            }
+            var result = Build(lg, opts);
+            if (!string.IsNullOrEmpty(result.error)) return result;
+            WriteDryRunReport(lg.name, result, outputDir);
+            LogDryRunSummary(lg.name, result);
             return result;
         }
 
@@ -1144,14 +1033,34 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Info(UvtLog.Category.Benchmark, sb.ToString());
         }
 
+        // Default path used by stand-alone callers (none remain in this PR,
+        // kept for future ad-hoc invocations).
         static string WriteDryRunReport(string lgName, Result r)
+            => WriteDryRunReport(lgName, r, null);
+
+        /// <summary>Write the per-case dry-run CSV. If <paramref name="outputDir"/>
+        /// is non-null the file lands as <c>{outputDir}/hier_repack.csv</c>;
+        /// otherwise falls back to the timestamped BenchmarkReports/ layout
+        /// used by stand-alone callers.</summary>
+        static string WriteDryRunReport(string lgName, Result r, string outputDir)
         {
-            string projectRoot = Directory.GetParent(Application.dataPath)?.FullName
-                                 ?? Application.dataPath;
-            string dir = Path.Combine(projectRoot, "BenchmarkReports");
-            Directory.CreateDirectory(dir);
-            string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
-            string path = Path.Combine(dir, $"hierrepack_{stamp}_{Sanitize(lgName)}.csv");
+            string dir;
+            string path;
+            if (!string.IsNullOrEmpty(outputDir))
+            {
+                dir = outputDir;
+                Directory.CreateDirectory(dir);
+                path = Path.Combine(dir, "hier_repack.csv");
+            }
+            else
+            {
+                string projectRoot = Directory.GetParent(Application.dataPath)?.FullName
+                                     ?? Application.dataPath;
+                dir = Path.Combine(projectRoot, "BenchmarkReports");
+                Directory.CreateDirectory(dir);
+                string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
+                path = Path.Combine(dir, $"hierrepack_{stamp}_{Sanitize(lgName)}.csv");
+            }
             var inv = CultureInfo.InvariantCulture;
             var sb = new StringBuilder();
             sb.AppendLine("domainIdx,isPromoted,sourceLod,faceCount,totalArea3D," +
