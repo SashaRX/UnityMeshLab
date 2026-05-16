@@ -134,14 +134,15 @@ namespace SashaRX.UnityMeshLab
                 var deepMesh = arr[deepestIdx].GetComponent<MeshFilter>()?.sharedMesh;
                 if (deepMesh == null) { groupsSkipped++; continue; }
 
-                var deepFaces  = BuildFaceData(deepMesh, arr[deepestIdx].transform);
-                var deepShells = ExtractShells(deepFaces, deepMesh.triangles, deepMesh.vertexCount);
-                // World-space mesh diagonal of the deepest LOD — used to
-                // normalize perpendicular distances so the threshold is
-                // scale-invariant (5 cm means very different things on a
-                // 0.5 m prop vs a 20 m building).
+                // World-space mesh diagonal first so canonicalization (used
+                // by ExtractShells to dedup seam-split verts) and per-fine
+                // probing share the same scale reference.
                 float meshDiag = ComputeMeshDiagonal(deepMesh, arr[deepestIdx].transform);
                 if (meshDiag < 1e-6f) meshDiag = 1f; // safety: avoid div-by-zero
+
+                var deepFaces  = BuildFaceData(deepMesh, arr[deepestIdx].transform);
+                var deepCanonical = BuildCanonicalTris(deepMesh, arr[deepestIdx].transform, meshDiag);
+                var deepShells = ExtractShells(deepFaces, deepCanonical, deepMesh.vertexCount);
                 bool any = false;
                 for (int li = 0; li < deepestIdx; li++)
                 {
@@ -220,6 +221,46 @@ namespace SashaRX.UnityMeshLab
             return (hi - lo).magnitude;
         }
 
+        /// <summary>Quantize world-space vertex positions onto a grid
+        /// (cell = meshDiag × 1e-5) and rewrite the mesh's triangle index
+        /// array so each corner references its canonical (grid-cell) ID.
+        /// Mirrors <c>HierarchicalRepack.BuildCanonicalIndices</c> so the
+        /// probe's shell counts agree with the repack pipeline's — without
+        /// dedup, Unity UV/normal seam splits fragment continuous surfaces
+        /// into many single-tri shells and distort the GO/STOP signal.</summary>
+        static int[] BuildCanonicalTris(Mesh mesh, Transform xform, float meshDiag)
+        {
+            var localVerts = mesh.vertices;
+            var tris = mesh.triangles;
+            int vn = localVerts.Length;
+            var canonical = new int[vn];
+            for (int i = 0; i < vn; i++) canonical[i] = -1;
+
+            float cell = Mathf.Max(meshDiag, 1f) * 1e-5f;
+            float invCell = 1f / cell;
+            var grid = new Dictionary<(long, long, long), int>(vn);
+            int next = 0;
+            for (int t = 0; t < tris.Length; t++)
+            {
+                int vi = tris[t];
+                if (canonical[vi] >= 0) continue;
+                var p = xform.TransformPoint(localVerts[vi]);
+                var key = ((long)Mathf.Floor(p.x * invCell),
+                           (long)Mathf.Floor(p.y * invCell),
+                           (long)Mathf.Floor(p.z * invCell));
+                if (!grid.TryGetValue(key, out int id))
+                {
+                    id = next++;
+                    grid[key] = id;
+                }
+                canonical[vi] = id;
+            }
+            var rewritten = new int[tris.Length];
+            for (int t = 0; t < tris.Length; t++)
+                rewritten[t] = canonical[tris[t]];
+            return rewritten;
+        }
+
         /// <summary>
         /// Read mesh.vertices once, transform to world space, derive per-tri
         /// centroid/normal/area. Returns a flat array indexed by tri index.
@@ -254,8 +295,11 @@ namespace SashaRX.UnityMeshLab
         /// (two vertex indices in common). For each shell, compute area-weighted
         /// dominant normal and centroid + total area. The shell index for each
         /// face is returned in <paramref name="faceToShell"/>.
+        /// <paramref name="canonicalTris"/> must reference position-deduplicated
+        /// vertex IDs (see <see cref="BuildCanonicalTris"/>) so seam-split
+        /// vertices in Unity meshes don't fragment a single physical surface.
         /// </summary>
-        static ShellData[] ExtractShells(FaceData[] faces, int[] tris, int vertexCount)
+        static ShellData[] ExtractShells(FaceData[] faces, int[] canonicalTris, int vertexCount)
         {
             int n = faces.Length;
             if (n == 0) return new ShellData[0];
@@ -277,7 +321,7 @@ namespace SashaRX.UnityMeshLab
             }
             for (int f = 0; f < n; f++)
             {
-                int v0 = tris[f * 3], v1 = tris[f * 3 + 1], v2 = tris[f * 3 + 2];
+                int v0 = canonicalTris[f * 3], v1 = canonicalTris[f * 3 + 1], v2 = canonicalTris[f * 3 + 2];
                 AddEdge(v0, v1, f); AddEdge(v1, v2, f); AddEdge(v2, v0, f);
             }
 

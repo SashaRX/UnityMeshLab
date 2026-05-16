@@ -1628,6 +1628,13 @@ namespace SashaRX.UnityMeshLab
                                         ? csvAfter : null;
 
                                     writtenCsvPaths.Add(csvPath);
+                                    // Record the SAME clamped oversample value
+                                    // used at ctx.InternalOversample for the run
+                                    // (see ≈40 lines above). Storing the raw
+                                    // suite value here would make summary/winner
+                                    // metadata disagree with the actual run
+                                    // configuration whenever a suite contains
+                                    // 0 or negative entries.
                                     cellConfigs.Add(new BenchmarkSweep.CellConfig
                                     {
                                         atlasRes           = r,
@@ -1636,7 +1643,7 @@ namespace SashaRX.UnityMeshLab
                                         arapEnabled        = arapIters > 0,
                                         arapIterations     = arapIters,
                                         stretchThreshold   = stretchThr,
-                                        internalOversample = oversample,
+                                        internalOversample = oversample > 0 ? oversample : 1,
                                         symSplitMode       = symMode,
                                     });
                                     done++;
@@ -1907,7 +1914,15 @@ namespace SashaRX.UnityMeshLab
                             // the temp meshes (Object.Instantiate clones, not
                             // children of `spawned`) leak — repeated multi-case
                             // runs accumulate them and eventually hit editor OOM.
-                            if (ctx.LodGroup != null && ctx.LodGroup.gameObject == spawned)
+                            // Use IsChildOf instead of an equality check so the
+                            // guard still triggers when the LODGroup sits on a
+                            // descendant of `spawned` (common prefab layout —
+                            // prefab root holds rendering bounds, LODGroup on
+                            // a child geometry container). Transform.IsChildOf
+                            // returns true for itself, so the root case is
+                            // still covered.
+                            if (ctx.LodGroup != null
+                                && ctx.LodGroup.transform.IsChildOf(spawned.transform))
                             {
                                 ResetWorkingCopies();
                                 ctx.Refresh(null);

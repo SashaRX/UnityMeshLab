@@ -3623,22 +3623,31 @@ namespace SashaRX.UnityMeshLab
                             continue;
                     }
                     var shell = tgtShells[tsi2];
-                    uint hash = 2166136261u;
-                    int cnt = 0;
+                    // Hash the SET of quantized UV2 positions, not the order
+                    // we happen to visit verts in. vertexIndices was populated
+                    // from a HashSet<int> upstream, so two shells with the
+                    // same UV2 layout but different HashSet iteration order
+                    // would otherwise hash differently and miss the duplicate.
+                    var quantized = new List<(int qx, int qy)>(shell.vertexIndices.Length);
                     foreach (int vi in shell.vertexIndices)
                     {
                         if (vi >= result.uv2.Length) continue;
                         var uv = result.uv2[vi];
-                        cnt++;
-                        int qx = Mathf.RoundToInt(uv.x * 100000f);
-                        int qy = Mathf.RoundToInt(uv.y * 100000f);
+                        quantized.Add((Mathf.RoundToInt(uv.x * 100000f),
+                                       Mathf.RoundToInt(uv.y * 100000f)));
+                    }
+                    if (quantized.Count == 0) continue;
+                    quantized.Sort((a, b) => a.qx != b.qx ? a.qx.CompareTo(b.qx)
+                                                          : a.qy.CompareTo(b.qy));
+                    uint hash = 2166136261u;
+                    foreach (var p in quantized)
+                    {
                         unchecked
                         {
-                            hash = (hash ^ (uint)qx) * 16777619u;
-                            hash = (hash ^ (uint)qy) * 16777619u;
+                            hash = (hash ^ (uint)p.qx) * 16777619u;
+                            hash = (hash ^ (uint)p.qy) * 16777619u;
                         }
                     }
-                    if (cnt == 0) continue;
                     hashGroupSize.TryGetValue(hash, out int k);
                     hashGroupSize[hash] = k + 1;
                 }
