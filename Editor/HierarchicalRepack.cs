@@ -457,24 +457,24 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>Quantize world-space vertex positions onto a grid of cell
-        /// size (meshDiag × 1e-5) and return per-vertex canonical indices
-        /// (one ID per occupied cell). Adjacent triangles that share a 3D
-        /// edge but reference different mesh.vertices entries (UV/normal
-        /// seam duplicates) collapse onto the same canonical edge.</summary>
+        /// size (meshDiag × 1e-5) and return a rewritten triangle-index array
+        /// where each corner references the canonical ID of its grid cell.
+        /// Adjacent triangles that share a 3D edge but reference different
+        /// mesh.vertices entries (UV/normal seam duplicates) collapse onto
+        /// the same canonical edge. Output length == tris.Length.</summary>
         static int[] BuildCanonicalIndices(Vector3[] worldVerts, int[] tris, float meshDiag)
         {
             int vn = worldVerts.Length;
+            // Per-vertex canonical ID; -1 until assigned.
             var canonical = new int[vn];
-            // Dead-vert default: -1 (won't be referenced by any tri).
             for (int i = 0; i < vn; i++) canonical[i] = -1;
 
             float cell = Mathf.Max(meshDiag, 1f) * 1e-5f;
             float invCell = 1f / cell;
-            // Grid → first canonical ID assigned to that cell.
             var grid = new Dictionary<long, int>(vn);
             int next = 0;
-            // Only canonicalize vertices that are actually used by triangles —
-            // unused mesh.vertices entries (common in stripped meshes) would
+            // Only canonicalize vertices actually used by triangles — unused
+            // mesh.vertices entries (common in stripped meshes) would
             // otherwise pollute the grid.
             for (int t = 0; t < tris.Length; t++)
             {
@@ -495,7 +495,12 @@ namespace SashaRX.UnityMeshLab
                 }
                 canonical[vi] = id;
             }
-            return canonical;
+            // Rewrite tris through the canonical map so the caller can index
+            // it directly as canonicalTris[f*3 + k].
+            var rewritten = new int[tris.Length];
+            for (int t = 0; t < tris.Length; t++)
+                rewritten[t] = canonical[tris[t]];
+            return rewritten;
         }
 
         static float ComputeMeshDiagonal(Mesh mesh, Transform xform)
