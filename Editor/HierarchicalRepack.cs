@@ -74,6 +74,16 @@ namespace SashaRX.UnityMeshLab
             /// less than this. Matches xatlas hard-edge convention.</summary>
             public float shellNormalThresholdDeg;
 
+            /// <summary>Post-extraction merge pass: two adjacent SHELLS (sharing
+            /// at least one canonical edge) get merged if their area-weighted
+            /// dominant normals differ by less than this many degrees. Compensates
+            /// for the per-face threshold being too strict at shell boundaries —
+            /// a single noisy triangle on a planked surface can otherwise split
+            /// what's physically one wall into two base shells, which then
+            /// breaks face-consensus for any fine-LOD face that straddles the
+            /// split. 0 = disabled (keep raw union-find output).</summary>
+            public float shellMergeAngleDeg;
+
             /// <summary>Target atlas resolution (pixels). Final atlas may be slightly
             /// larger if shells don't fit; naive packer in PR-2 grows the height.</summary>
             public int atlasResolutionPx;
@@ -107,6 +117,7 @@ namespace SashaRX.UnityMeshLab
             public static Options Default => new Options
             {
                 shellNormalThresholdDeg = 30f,
+                shellMergeAngleDeg      = 15f,
                 atlasResolutionPx       = 1024,
                 interDomainPaddingPx    = 4,
                 overlayDistNorm         = 0.01f,
@@ -228,7 +239,8 @@ namespace SashaRX.UnityMeshLab
                 out int[] deepCanonicalTris, out deepDegen);
             var deepFaceToShell = new int[deepFaces.Length];
             var deepShells = ExtractShells(deepFaces, deepWorldVerts, deepRawTris,
-                deepCanonicalTris, opts.shellNormalThresholdDeg, deepFaceToShell, null);
+                deepCanonicalTris, opts.shellNormalThresholdDeg, opts.shellMergeAngleDeg,
+                deepFaceToShell, null);
             float totalDeepArea = 0f;
             for (int si = 0; si < deepShells.Length; si++) totalDeepArea += deepShells[si].totalArea;
             if (totalDeepArea < 1e-12f) totalDeepArea = 1e-12f;
@@ -330,8 +342,11 @@ namespace SashaRX.UnityMeshLab
                 // Cluster the marked faces into shells using existing
                 // adjacency logic (mask-filtered).
                 var fineFaceToShell = new int[fineFaces.Length];
+                // Skip the shell-merge pass for the promote-mask subset: those
+                // shells are independent atlas domains (no parent overlay),
+                // merging them would conflate unrelated promoted clusters.
                 var fineShells = ExtractShells(fineFaces, fineWorldVerts, fineRawTris,
-                    fineCanonicalTris, opts.shellNormalThresholdDeg,
+                    fineCanonicalTris, opts.shellNormalThresholdDeg, 0f,
                     fineFaceToShell, promoteMask);
 
                 // Per-cluster decision: tiny → Skip, else → Promote.
@@ -543,11 +558,11 @@ namespace SashaRX.UnityMeshLab
         // ─── Shell extraction (union-find on face adjacency) ─────────
 
         static Shell3D[] ExtractShells(Face3D[] faces, Vector3[] worldVerts, int[] rawTris,
-            int[] canonicalTris, float thresholdDeg)
+            int[] canonicalTris, float thresholdDeg, float shellMergeAngleDeg)
         {
             var faceToShell = new int[faces.Length];
             return ExtractShells(faces, worldVerts, rawTris, canonicalTris, thresholdDeg,
-                faceToShell, null);
+                shellMergeAngleDeg, faceToShell, null);
         }
 
         /// <summary>Variant that also fills <paramref name="faceToShellOut"/> with the
@@ -558,10 +573,13 @@ namespace SashaRX.UnityMeshLab
         /// <paramref name="participateMask"/> (optional, may be null): only faces
         /// with mask[f] == true participate in shell formation; the rest get
         /// faceToShellOut[f] = -1. Used to cluster the subset of fine-LOD faces
-        /// flagged for promotion by the projective classifier.</summary>
+        /// flagged for promotion by the projective classifier.
+        /// <paramref name="shellMergeAngleDeg"/> (≤0 disables) controls the
+        /// second-pass merge of adjacent shells whose dominant normals agree
+        /// within this many degrees — see <see cref="MergeAdjacentShells"/>.</summary>
         static Shell3D[] ExtractShells(Face3D[] faces, Vector3[] worldVerts, int[] rawTris,
-            int[] canonicalTris, float thresholdDeg, int[] faceToShellOut,
-            bool[] participateMask)
+            int[] canonicalTris, float thresholdDeg, float shellMergeAngleDeg,
+            int[] faceToShellOut, bool[] participateMask)
         {
             int n = faces.Length;
             if (n == 0) return new Shell3D[0];
@@ -673,7 +691,149 @@ namespace SashaRX.UnityMeshLab
                     shells[si].basisU, shells[si].basisV,
                     out shells[si].extentU, out shells[si].extentV);
             }
+
+            // Optional Step 2 merge: collapse adjacent shells whose dominant
+            // normals are within shellMergeAngleDeg. The caller passes a
+            // negative or zero threshold (or omits the overload) to disable.
+            if (shellMergeAngleDeg > 0f && shells.Length > 1)
+                shells = MergeAdjacentShells(shells, faces, worldVerts, rawTris,
+                    canonicalTris, faceToShellOut, shellMergeAngleDeg);
+
             return shells;
+        }
+
+        /// <summary>Second-pass shell merge: union-find over shell indices, with
+        /// adjacency = "shells share at least one canonical edge" and the
+        /// merge predicate = "shells' dominant normals are within
+        /// <paramref name="mergeAngleDeg"/>". Compensates for the per-face
+        /// extraction being too strict at shell boundaries — a single noisy
+        /// triangle on a planked wall can otherwise split it into two base
+        /// shells, breaking face-consensus for any fine-LOD face that
+        /// straddles the split. Adjacency requirement is critical: it prevents
+        /// merging two physically separate shells that happen to face the
+        /// same direction (floor and table top both normal=+Y, but never
+        /// share an edge).</summary>
+        static Shell3D[] MergeAdjacentShells(Shell3D[] shells, Face3D[] faces,
+            Vector3[] worldVerts, int[] rawTris, int[] canonicalTris,
+            int[] faceToShellOut, float mergeAngleDeg)
+        {
+            // Build shell-adjacency set via canonical edges. An edge belongs
+            // to a shell if any of its incident faces does; two shells are
+            // adjacent if they both claim the same canonical edge.
+            int n = faces.Length;
+            var edgeShell = new Dictionary<long, int>(n * 3);
+            var adjPairs = new HashSet<long>();
+            for (int f = 0; f < n; f++)
+            {
+                int s = faceToShellOut[f];
+                if (s < 0) continue;
+                for (int k = 0; k < 3; k++)
+                {
+                    int va = canonicalTris[f * 3 + k];
+                    int vb = canonicalTris[f * 3 + (k + 1) % 3];
+                    long ekey = va < vb
+                        ? ((long)va << 32) | (uint)vb
+                        : ((long)vb << 32) | (uint)va;
+                    if (edgeShell.TryGetValue(ekey, out int other))
+                    {
+                        if (other != s)
+                        {
+                            long pair = s < other
+                                ? ((long)s     << 32) | (uint)other
+                                : ((long)other << 32) | (uint)s;
+                            adjPairs.Add(pair);
+                        }
+                    }
+                    else edgeShell[ekey] = s;
+                }
+            }
+            if (adjPairs.Count == 0) return shells;
+
+            // Union-find over shells with angular threshold.
+            var parent = new int[shells.Length];
+            for (int i = 0; i < shells.Length; i++) parent[i] = i;
+            int Find(int x)
+            {
+                while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+                return x;
+            }
+            float cosThr = Mathf.Cos(mergeAngleDeg * Mathf.Deg2Rad);
+            foreach (long pair in adjPairs)
+            {
+                int s1 = (int)(pair >> 32);
+                int s2 = (int)(pair & 0xFFFFFFFFL);
+                float dot = Vector3.Dot(shells[s1].dominantNormal,
+                                         shells[s2].dominantNormal);
+                if (dot >= cosThr)
+                {
+                    int r1 = Find(s1), r2 = Find(s2);
+                    if (r1 != r2) parent[r1] = r2;
+                }
+            }
+
+            // Compact: build new shell list, one entry per unique root.
+            var rootToNew = new Dictionary<int, int>();
+            var newFaceLists = new List<List<int>>();
+            int[] oldToNew = new int[shells.Length];
+            for (int i = 0; i < shells.Length; i++)
+            {
+                int r = Find(i);
+                if (!rootToNew.TryGetValue(r, out int ni))
+                {
+                    ni = newFaceLists.Count;
+                    rootToNew[r] = ni;
+                    newFaceLists.Add(new List<int>());
+                }
+                oldToNew[i] = ni;
+            }
+            if (newFaceLists.Count == shells.Length) return shells; // no merges
+
+            // Re-thread faces into new shells + update faceToShellOut.
+            for (int f = 0; f < faceToShellOut.Length; f++)
+            {
+                int s = faceToShellOut[f];
+                if (s < 0) continue;
+                int ns = oldToNew[s];
+                faceToShellOut[f] = ns;
+                newFaceLists[ns].Add(f);
+            }
+
+            // Re-aggregate centroid / normal / extent for each merged shell.
+            var merged = new Shell3D[newFaceLists.Count];
+            for (int ni = 0; ni < merged.Length; ni++)
+            {
+                var faceIdx = newFaceLists[ni];
+                Vector3 nAccum = Vector3.zero, cAccum = Vector3.zero;
+                float aAccum = 0f;
+                foreach (int f in faceIdx)
+                {
+                    float a = faces[f].area;
+                    nAccum += faces[f].normal   * a;
+                    cAccum += faces[f].centroid * a;
+                    aAccum += a;
+                }
+                merged[ni].faceIndices = faceIdx;
+                merged[ni].faceCount   = faceIdx.Count;
+                merged[ni].totalArea   = aAccum;
+                if (aAccum > 1e-12f)
+                {
+                    merged[ni].centroid = cAccum / aAccum;
+                    var nn = nAccum / aAccum;
+                    float m = nn.magnitude;
+                    merged[ni].dominantNormal = m > 1e-12f ? nn / m : Vector3.up;
+                }
+                else
+                {
+                    merged[ni].dominantNormal = Vector3.up;
+                    merged[ni].centroid       = Vector3.zero;
+                }
+                ComputePlaneBasis(merged[ni].dominantNormal,
+                    out merged[ni].basisU, out merged[ni].basisV);
+                ComputeExtents(worldVerts, rawTris, faceIdx, merged[ni].centroid,
+                    merged[ni].basisU, merged[ni].basisV,
+                    out merged[ni].extentU, out merged[ni].extentV);
+            }
+            return merged;
         }
 
         // ─── Per-vertex projection (PR-2.7 — Frostbite-style) ────────
