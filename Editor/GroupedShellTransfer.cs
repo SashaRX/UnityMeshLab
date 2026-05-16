@@ -3628,7 +3628,7 @@ namespace SashaRX.UnityMeshLab
                     // from a HashSet<int> upstream, so two shells with the
                     // same UV2 layout but different HashSet iteration order
                     // would otherwise hash differently and miss the duplicate.
-                    var quantized = new List<(int qx, int qy)>(shell.vertexIndices.Length);
+                    var quantized = new List<(int qx, int qy)>(shell.vertexIndices.Count);
                     foreach (int vi in shell.vertexIndices)
                     {
                         if (vi >= result.uv2.Length) continue;
