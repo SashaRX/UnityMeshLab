@@ -5,8 +5,8 @@
 // → LightingDomain assignment + the atlas layout that InverseTransfer
 // will project into.
 //
-// Pipeline (PR-2.5 — shell-level classification):
-//   1. Pick the deepest LOD from the LODGroup as the "base" — its shells
+// Pipeline (PR-2.7 — Frostbite-style per-vertex projection):
+//   1. Pick the deepest LOD from the LODGroup as the "proxy" — its shells
 //      define the lighting domains that finer LODs will share.
 //   2. Extract 3D shells on the deepest LOD via union-find on face
 //      adjacency + normal threshold (≤30° — matches probe v2/v3 + xatlas
@@ -15,22 +15,39 @@
 //      in Unity's mesh.vertices don't fragment a single physical surface
 //      into many single-tri shells. Degenerate (area<1e-12) tris are
 //      skipped entirely (faceToDomain = -1).
-//   3. For each finer LOD: extract its OWN shells (same dedup + threshold),
-//      then classify each fine SHELL (not face) vs the base shells:
-//        Overlay  — fine shell aligned with parent (angle ≤ overlayAngleDeg)
-//                   AND lies in parent's plane (perpNorm ≤ overlayPerpNorm)
-//                   AND fits within parent's planar extent → reuse parent's
-//                   atlas rect, no new domain. Wall+sign, box+decal.
-//        Skip     — tiny shell (area below skipAreaFrac AND face count low)
-//                   that's not overlay-eligible → faceToDomain = -1.
-//                   Handles, knobs, geometric noise. No atlas slot.
-//        Promote  — everything else: own direction, significant area →
-//                   becomes its own atlas domain.
-//   4. Build LightingDomain[]: one per base shell + one per promoted
-//      fine shell. Overlaid/skipped faces don't create domains.
-//   5. Pack atlas rects. PR-2 used a naive horizontal-strip packer; PR-2.5
-//      keeps it (still a placeholder) but with dramatically fewer + better
-//      shells. PR-2.6 swaps xatlas via XatlasNative wrapper.
+//   3. For each finer LOD: project every vertex onto the closest deepest-
+//      LOD triangle (brute-force scan + per-tri AABB rejection). Per fine
+//      face:
+//        Overlay  — all three corners are within overlayDistNorm × meshDiag
+//                   of the proxy AND collapse to the same proxy shell:
+//                   the face inherits that shell's atlas rect. No new
+//                   domain — wall+sign, box+decal, roof+ornament.
+//        Marked   — anything else (any corner detached from proxy, OR
+//                   corners straddle shell boundaries → face has no
+//                   single parent and would interpolate across atlas
+//                   regions). Goes into the "needs own domain" pile.
+//   4. Cluster Marked faces by adjacency (union-find again) per fine LOD.
+//      Each cluster classifies as:
+//        Skip     — tiny + few faces (skipAreaFrac × deep area AND
+//                   ≤ skipMaxFaceCount). Handles, fasteners, noise.
+//        Promote  — gets its own atlas domain.
+//   5. Build LightingDomain[]: one per base shell + one per promoted
+//      cluster. Overlaid/skipped faces don't create domains.
+//   6. Pack atlas rects. PR-2 used a naive horizontal-strip packer; this
+//      stage keeps it as a placeholder until PR-2.8 swaps xatlas via
+//      XatlasNative.
+//
+// Why per-vertex projection vs the PR-2.5 per-shell angle/extent test:
+//   • Robust to fragmented base shells (Carousel cylinder: 270 small
+//     shells stop being a problem because a fine vertex finds the
+//     closest one regardless of how many parents exist).
+//   • Robust to lost angled panels after dedup (Gazebo octagonal roof:
+//     fine vertex projects onto the merged Y-axis roof at a finite
+//     distance, overlays cleanly).
+//   • A single physically-meaningful threshold (distance) replaces three
+//     correlated geometric tests (angle, perp distance, planar fit).
+//   • Same complexity O(fine verts × deep faces) with AABB prefilter —
+//     well under a second on our worst test case.
 //
 // Public types are documented for cross-PR clarity. Internal helpers
 // duplicate small bits of HierarchicalDiag (shell extraction, face
@@ -58,28 +75,6 @@ namespace SashaRX.UnityMeshLab
             /// less than this. Matches xatlas hard-edge convention.</summary>
             public float shellNormalThresholdDeg;
 
-            /// <summary>Promote face if angle to parent shell's dominant normal exceeds
-            /// this (degrees). Default 60 ≈ 50% area retained under orthographic
-            /// projection — the "marginal acceptable" boundary.</summary>
-            public float promoteAngleDeg;
-
-            /// <summary>Promote face if its 3D area is more than this fraction of the
-            /// parent shell's total 3D area. Indicates misidentified parent (probe v2
-            /// data showed Wooden_Box_Long has 8.1% of faces in this bucket).</summary>
-            public float promoteRatio;
-
-            /// <summary>Promote face if its centroid sits further than this fraction of
-            /// the deepest-LOD mesh diagonal from the parent shell's plane (along the
-            /// shell's normal). Catches "floating geometry" — bolts, free-standing
-            /// detail. Scale-invariant.</summary>
-            public float promotePerpNorm;
-
-            /// <summary>Legacy K-nearest filter from probe v3's per-face classifier.
-            /// PR-2.5 shell-level matching uses a full scan instead — see notes
-            /// in <c>ClassifyFineShell</c>. Kept in Options for forward compat
-            /// with any per-face diagnostics that still rely on it.</summary>
-            public int shellSearchK;
-
             /// <summary>Target atlas resolution (pixels). Final atlas may be slightly
             /// larger if shells don't fit; naive packer in PR-2 grows the height.</summary>
             public int atlasResolutionPx;
@@ -89,31 +84,23 @@ namespace SashaRX.UnityMeshLab
             /// padding only applies BETWEEN domains, not within.</summary>
             public int interDomainPaddingPx;
 
-            /// <summary>Overlay if fine shell's dominant normal is within this many
-            /// degrees of the parent base shell's normal. Stricter than
-            /// promoteAngleDeg so that faces NOT promoted but with non-trivial
-            /// angular drift still get their own (promoted) domain.</summary>
-            public float overlayAngleDeg;
+            /// <summary>Per-vertex closest-surface-distance threshold (as a fraction
+            /// of the deepest-LOD world-space mesh diagonal). A fine-LOD vertex
+            /// whose distance to the deepest-LOD surface is ≤ this × meshDiag is
+            /// considered "on the proxy" and inherits the proxy's UV via overlay.
+            /// Replaces the PR-2.5 trio (overlayAngleDeg/PerpNorm/ExtentSlack) —
+            /// per-vertex projection captures angle + offset + extent fit in one
+            /// scalar, the way Frostbite's lightmap-proxy pipeline does.</summary>
+            public float overlayDistNorm;
 
-            /// <summary>Overlay if fine shell's centroid lies within this fraction of
-            /// the deepest-LOD mesh diagonal of the parent base shell's plane.
-            /// Tighter than promotePerpNorm — overlay requires the detail to actually
-            /// lie ON the parent surface, not just be near it.</summary>
-            public float overlayPerpNorm;
-
-            /// <summary>Overlay tolerance: fine shell's planar extent (in parent's
-            /// basis) must be within (1 + overlayExtentSlack) × parent extent.
-            /// 0.10 = a 10% overhang is still allowed.</summary>
-            public float overlayExtentSlack;
-
-            /// <summary>Skip a fine shell if BOTH (a) its 3D area is below this
-            /// fraction of the total deepest-LOD area AND (b) its face count
-            /// is at or below <see cref="skipMaxFaceCount"/>. Handles,
-            /// fasteners, and other small geometric noise where allocating
-            /// any atlas space is wasteful.</summary>
+            /// <summary>Skip a fine-LOD promoted cluster if BOTH (a) its 3D area
+            /// is below this fraction of the total deepest-LOD area AND (b) its
+            /// face count is at or below <see cref="skipMaxFaceCount"/>. Handles,
+            /// fasteners, and other small geometric noise where allocating any
+            /// atlas space is wasteful.</summary>
             public float skipAreaFrac;
 
-            /// <summary>Companion to <see cref="skipAreaFrac"/> — a shell with
+            /// <summary>Companion to <see cref="skipAreaFrac"/> — a cluster with
             /// many faces always promotes even if its total area is small,
             /// because face count alone implies someone will see it.</summary>
             public int skipMaxFaceCount;
@@ -121,15 +108,9 @@ namespace SashaRX.UnityMeshLab
             public static Options Default => new Options
             {
                 shellNormalThresholdDeg = 30f,
-                promoteAngleDeg         = 60f,
-                promoteRatio            = 1.5f,
-                promotePerpNorm         = 0.05f,
-                shellSearchK            = 10,
                 atlasResolutionPx       = 1024,
                 interDomainPaddingPx    = 4,
-                overlayAngleDeg         = 35f,
-                overlayPerpNorm         = 0.02f,
-                overlayExtentSlack      = 0.30f,
+                overlayDistNorm         = 0.01f,
                 skipAreaFrac            = 0.001f,
                 skipMaxFaceCount        = 4,
             };
@@ -244,15 +225,22 @@ namespace SashaRX.UnityMeshLab
             if (meshDiag < 1e-6f) meshDiag = 1f;
             int deepDegen;
             var deepFaces  = BuildFaceData(meshes[deepest], xforms[deepest], meshDiag,
+                out Vector3[] deepWorldVerts, out int[] deepRawTris,
                 out int[] deepCanonicalTris, out deepDegen);
             var deepFaceToShell = new int[deepFaces.Length];
-            var deepShells = ExtractShells(deepFaces, deepCanonicalTris,
-                opts.shellNormalThresholdDeg, deepFaceToShell);
+            var deepShells = ExtractShells(deepFaces, deepWorldVerts, deepRawTris,
+                deepCanonicalTris, opts.shellNormalThresholdDeg, deepFaceToShell, null);
             float totalDeepArea = 0f;
             for (int si = 0; si < deepShells.Length; si++) totalDeepArea += deepShells[si].totalArea;
             if (totalDeepArea < 1e-12f) totalDeepArea = 1e-12f;
 
-            // ── Step 3: per-LOD shell-level classification ──
+            // Precompute deepest-LOD per-tri AABBs for the projector's
+            // early-out filter (built once, used by every fine-LOD vertex
+            // query across all fine LODs).
+            BuildDeepAabbs(deepWorldVerts, deepRawTris, out var deepMin, out var deepMax);
+            float overlayDistAbs = opts.overlayDistNorm * meshDiag;
+
+            // ── Step 3: domain table init ──
             // Domain numbering:
             //   [0 .. baseN-1]              → base shells (deepest LOD)
             //   [baseN .. baseN+P-1]        → promoted fine shells (P grows)
@@ -272,59 +260,102 @@ namespace SashaRX.UnityMeshLab
             for (int f = 0; f < deepFaces.Length; f++)
                 result.faceToDomain[deepest][f] = deepFaceToShell[f];
 
-            // Fine LODs: extract shells on each LOD, classify per shell.
+            // ── Step 4: per-vertex projection on each fine LOD ──
+            // Project every fine-LOD vertex onto the deep mesh; then decide
+            // each fine face based on its 3 corners' projection state:
+            //   • All 3 verts within overlayDistAbs of the proxy AND all
+            //     fall onto the SAME deep shell → Overlay(that shell).
+            //   • Anything else → flagged for promote/skip clustering.
+            // The mismatch case (corners straddle shell boundaries) goes to
+            // promote because interpolating a fine face's UV across two
+            // disjoint atlas rects would bleed lightmap data across
+            // unrelated surfaces.
             var promotedClusters = new List<PromotedCluster>();
             int totalFineFaces = 0, promotedFineFaces = 0,
                 overlaidFineFaces = 0, skippedFineFaces = 0, degenFineFaces = deepDegen;
-            // Note: degenFineFaces is a slight misnomer — it includes the deepest
-            // LOD's degenerates too, so the report can show "all degenerate tris
-            // dropped from atlas" in one number.
+            // degenFineFaces is a slight misnomer — it includes the deepest
+            // LOD's degenerates too, so the report can show "all degenerate
+            // tris dropped from atlas" in one number.
 
             for (int li = 0; li < deepest; li++)
             {
                 if (meshes[li] == null) continue;
                 int fineDegen;
                 var fineFaces = BuildFaceData(meshes[li], xforms[li], meshDiag,
+                    out Vector3[] fineWorldVerts, out int[] fineRawTris,
                     out int[] fineCanonicalTris, out fineDegen);
                 degenFineFaces += fineDegen;
                 totalFineFaces += fineFaces.Length;
 
-                var fineFaceToShell = new int[fineFaces.Length];
-                var fineShells = ExtractShells(fineFaces, fineCanonicalTris,
-                    opts.shellNormalThresholdDeg, fineFaceToShell);
-
-                // Per-shell decision. All faces in a shell get the same fate.
-                var shellDomain = new int[fineShells.Length];   // -1 = skip; ≥0 = domain index
-                for (int s = 0; s < fineShells.Length; s++) shellDomain[s] = -1;
-
-                for (int s = 0; s < fineShells.Length; s++)
+                // Per-fine-vertex overlay shell: index into deepShells, or -1
+                // if the vertex is too far from the proxy surface to overlay.
+                int vertCount = fineWorldVerts.Length;
+                var vertOverlayShell = new int[vertCount];
+                for (int v = 0; v < vertCount; v++)
                 {
-                    var decision = ClassifyFineShell(fineShells[s], deepShells, opts,
-                        meshDiag, totalDeepArea);
-                    switch (decision.kind)
+                    int closestFace = ProjectVertexToDeepMesh(fineWorldVerts[v],
+                        deepFaces, deepWorldVerts, deepRawTris, deepMin, deepMax,
+                        out float dist);
+                    if (closestFace >= 0 && dist <= overlayDistAbs)
+                        vertOverlayShell[v] = deepFaceToShell[closestFace];
+                    else
+                        vertOverlayShell[v] = -1;
+                }
+
+                // Per-fine-face decision: overlay if 3-corner consensus, else
+                // mark for promote/skip clustering.
+                var promoteMask = new bool[fineFaces.Length];
+                var faceOverlayShell = new int[fineFaces.Length];
+                for (int f = 0; f < fineFaces.Length; f++)
+                {
+                    faceOverlayShell[f] = -1;
+                    if (fineFaces[f].area <= 0f) continue; // degenerate
+                    int v0 = fineRawTris[f * 3];
+                    int v1 = fineRawTris[f * 3 + 1];
+                    int v2 = fineRawTris[f * 3 + 2];
+                    int s0 = vertOverlayShell[v0];
+                    int s1 = vertOverlayShell[v1];
+                    int s2 = vertOverlayShell[v2];
+                    if (s0 >= 0 && s0 == s1 && s1 == s2)
                     {
-                        case ShellDecisionKind.Overlay:
-                            shellDomain[s] = decision.parentBaseShellIdx;
-                            overlaidFineFaces += fineShells[s].faceCount;
-                            break;
-                        case ShellDecisionKind.Promote:
-                            int domainIdx = baseN + promotedClusters.Count;
-                            shellDomain[s] = domainIdx;
-                            promotedClusters.Add(MakeClusterFromShell(fineShells[s], li));
-                            promotedFineFaces += fineShells[s].faceCount;
-                            break;
-                        case ShellDecisionKind.Skip:
-                        default:
-                            skippedFineFaces += fineShells[s].faceCount;
-                            break;
+                        faceOverlayShell[f] = s0;
+                        result.faceToDomain[li][f] = s0;
+                        overlaidFineFaces++;
+                    }
+                    else
+                    {
+                        promoteMask[f] = true;
                     }
                 }
 
-                for (int f = 0; f < fineFaces.Length; f++)
+                // Cluster the marked faces into shells using existing
+                // adjacency logic (mask-filtered).
+                var fineFaceToShell = new int[fineFaces.Length];
+                var fineShells = ExtractShells(fineFaces, fineWorldVerts, fineRawTris,
+                    fineCanonicalTris, opts.shellNormalThresholdDeg,
+                    fineFaceToShell, promoteMask);
+
+                // Per-cluster decision: tiny → Skip, else → Promote.
+                for (int s = 0; s < fineShells.Length; s++)
                 {
-                    int s = fineFaceToShell[f];
-                    if (s < 0) continue; // degenerate face — leave -1
-                    result.faceToDomain[li][f] = shellDomain[s];
+                    var shell = fineShells[s];
+                    float areaFrac = shell.totalArea / totalDeepArea;
+                    bool tinyArea  = areaFrac < opts.skipAreaFrac;
+                    bool fewFaces  = shell.faceCount <= opts.skipMaxFaceCount;
+                    int domainIdx;
+                    if (tinyArea && fewFaces)
+                    {
+                        domainIdx = -1;
+                        skippedFineFaces += shell.faceCount;
+                    }
+                    else
+                    {
+                        domainIdx = baseN + promotedClusters.Count;
+                        promotedClusters.Add(MakePromotedClusterFromShell(shell, li));
+                        promotedFineFaces += shell.faceCount;
+                    }
+                    foreach (int f in shell.faceIndices)
+                        result.faceToDomain[li][f] = domainIdx;
                 }
             }
             result.totalFineFaces      = totalFineFaces;
@@ -349,7 +380,7 @@ namespace SashaRX.UnityMeshLab
             // Stack rectangles into a fixed-width atlas (opts.atlasResolutionPx),
             // wrapping to a new row when full. Each rect's pixel size derives
             // from its world-space planar extent normalized to a "texels per
-            // world unit" target. PR-2.6 will replace this with xatlas via the
+            // world unit" target. PR-2.8 will replace this with xatlas via the
             // existing XatlasNative wrapper — at which point this method just
             // hands xatlas a virtual mesh with shellIDs and reads the rect
             // assignment back out.
@@ -397,47 +428,39 @@ namespace SashaRX.UnityMeshLab
             public int       sourceLodIndex;
         }
 
-        enum ShellDecisionKind
-        {
-            Skip = 0,     // tiny / noisy geometric detail — no atlas slot
-            Overlay = 1,  // aligned with parent base shell — reuse parent's rect
-            Promote = 2,  // own direction / area — gets its own atlas domain
-        }
-
-        struct ShellDecision
-        {
-            public ShellDecisionKind kind;
-            public int parentBaseShellIdx; // only meaningful when kind == Overlay
-        }
-
         // ─── Face data + diagonal ────────────────────────────────────
 
         /// <summary>Build per-face data for one mesh. Out-params:
-        /// <paramref name="canonicalTris"/> rewrites mesh.triangles using
-        /// position-deduplicated vertex indices (epsilon = meshDiag × 1e-5)
-        /// so adjacent triangles split by Unity UV/normal seams still share
-        /// edges — without this, ExtractShells sees ~3× too many shells on
-        /// curved geometry. <paramref name="degenerateCount"/> reports tris
-        /// dropped (their Face3D.area is set to 0 so callers can skip them
-        /// via faceToDomain = -1 instead of producing zero-area shells).</summary>
+        /// <paramref name="worldVerts"/> = world-space copy of mesh.vertices
+        /// (needed for vertex-based extent computation and per-vertex
+        /// projection in the new classifier). <paramref name="rawTris"/> =
+        /// mesh.triangles as-is (indexes worldVerts). <paramref name="canonicalTris"/>
+        /// rewrites mesh.triangles using position-deduplicated vertex indices
+        /// (epsilon = meshDiag × 1e-5) so adjacent triangles split by Unity
+        /// UV/normal seams still share edges — without this, ExtractShells sees
+        /// ~3× too many shells on curved geometry. <paramref name="degenerateCount"/>
+        /// reports tris dropped (their Face3D.area is set to 0 so callers can
+        /// skip them via faceToDomain = -1 instead of producing zero-area
+        /// shells).</summary>
         static Face3D[] BuildFaceData(Mesh mesh, Transform xform, float meshDiag,
-            out int[] canonicalTris, out int degenerateCount)
+            out Vector3[] worldVerts, out int[] rawTris, out int[] canonicalTris,
+            out int degenerateCount)
         {
             var localVerts = mesh.vertices;
-            var verts = new Vector3[localVerts.Length];
+            worldVerts = new Vector3[localVerts.Length];
             for (int i = 0; i < localVerts.Length; i++)
-                verts[i] = xform.TransformPoint(localVerts[i]);
-            var tris = mesh.triangles;
-            canonicalTris = BuildCanonicalIndices(verts, tris, meshDiag);
+                worldVerts[i] = xform.TransformPoint(localVerts[i]);
+            rawTris = mesh.triangles;
+            canonicalTris = BuildCanonicalIndices(worldVerts, rawTris, meshDiag);
 
-            int n = tris.Length / 3;
+            int n = rawTris.Length / 3;
             var data = new Face3D[n];
             int degenerate = 0;
             for (int f = 0; f < n; f++)
             {
-                var a = verts[tris[f * 3]];
-                var b = verts[tris[f * 3 + 1]];
-                var c = verts[tris[f * 3 + 2]];
+                var a = worldVerts[rawTris[f * 3]];
+                var b = worldVerts[rawTris[f * 3 + 1]];
+                var c = worldVerts[rawTris[f * 3 + 2]];
                 data[f].centroid = (a + b + c) / 3f;
                 var cross = Vector3.Cross(b - a, c - a);
                 float mag = cross.magnitude;
@@ -520,18 +543,26 @@ namespace SashaRX.UnityMeshLab
 
         // ─── Shell extraction (union-find on face adjacency) ─────────
 
-        static Shell3D[] ExtractShells(Face3D[] faces, int[] canonicalTris, float thresholdDeg)
+        static Shell3D[] ExtractShells(Face3D[] faces, Vector3[] worldVerts, int[] rawTris,
+            int[] canonicalTris, float thresholdDeg)
         {
             var faceToShell = new int[faces.Length];
-            return ExtractShells(faces, canonicalTris, thresholdDeg, faceToShell);
+            return ExtractShells(faces, worldVerts, rawTris, canonicalTris, thresholdDeg,
+                faceToShell, null);
         }
 
         /// <summary>Variant that also fills <paramref name="faceToShellOut"/> with the
-        /// shell index per face (or -1 for degenerate faces, which are excluded
-        /// from shell formation). The array must be pre-allocated to faces.Length.
-        /// <paramref name="canonicalTris"/> must contain position-deduplicated
-        /// vertex indices (see <see cref="BuildCanonicalIndices"/>).</summary>
-        static Shell3D[] ExtractShells(Face3D[] faces, int[] canonicalTris, float thresholdDeg, int[] faceToShellOut)
+        /// shell index per face (or -1 for degenerate faces / faces excluded by
+        /// <paramref name="participateMask"/>). The array must be pre-allocated
+        /// to faces.Length. <paramref name="canonicalTris"/> must contain
+        /// position-deduplicated vertex indices (see <see cref="BuildCanonicalIndices"/>).
+        /// <paramref name="participateMask"/> (optional, may be null): only faces
+        /// with mask[f] == true participate in shell formation; the rest get
+        /// faceToShellOut[f] = -1. Used to cluster the subset of fine-LOD faces
+        /// flagged for promotion by the projective classifier.</summary>
+        static Shell3D[] ExtractShells(Face3D[] faces, Vector3[] worldVerts, int[] rawTris,
+            int[] canonicalTris, float thresholdDeg, int[] faceToShellOut,
+            bool[] participateMask)
         {
             int n = faces.Length;
             if (n == 0) return new Shell3D[0];
@@ -554,6 +585,7 @@ namespace SashaRX.UnityMeshLab
             for (int f = 0; f < n; f++)
             {
                 if (faces[f].area <= 0f) continue;
+                if (participateMask != null && !participateMask[f]) continue;
                 int v0 = canonicalTris[f * 3], v1 = canonicalTris[f * 3 + 1], v2 = canonicalTris[f * 3 + 2];
                 AddEdge(v0, v1, f); AddEdge(v1, v2, f); AddEdge(v2, v0, f);
             }
@@ -594,7 +626,8 @@ namespace SashaRX.UnityMeshLab
 
             for (int f = 0; f < n; f++)
             {
-                if (faces[f].area <= 0f)
+                if (faces[f].area <= 0f ||
+                    (participateMask != null && !participateMask[f]))
                 {
                     faceToShellOut[f] = -1;
                     continue;
@@ -637,119 +670,127 @@ namespace SashaRX.UnityMeshLab
                     shells[si].centroid       = Vector3.zero;
                 }
                 ComputePlaneBasis(shells[si].dominantNormal, out shells[si].basisU, out shells[si].basisV);
-                ComputeExtents(faces, faces_[si], shells[si].centroid, shells[si].basisU, shells[si].basisV,
+                ComputeExtents(worldVerts, rawTris, faces_[si], shells[si].centroid,
+                    shells[si].basisU, shells[si].basisV,
                     out shells[si].extentU, out shells[si].extentV);
             }
             return shells;
         }
 
-        // ─── Shell-level classification (PR-2.5) ─────────────────────
+        // ─── Per-vertex projection (PR-2.7 — Frostbite-style) ────────
 
-        /// <summary>
-        /// Decide what to do with a fine-LOD shell: overlay onto a parent base
-        /// shell, promote it as its own atlas domain, or skip (no atlas slot).
-        ///
-        /// Selection rules (in order):
-        ///   1. Find best parent (K-nearest by centroid, then min angle).
-        ///   2. If shell is angularly aligned (≤ overlayAngleDeg) AND lies in
-        ///      parent's plane (perpNorm ≤ overlayPerpNorm) AND fits within
-        ///      parent's planar extent (with overlayExtentSlack tolerance) →
-        ///      Overlay. The fine shell's faces will read the parent's atlas
-        ///      texels, so a wall-mounted sign inherits the wall's lightmap.
-        ///   3. If shell is small (area &lt; skipAreaFrac × totalDeepArea AND
-        ///      face count ≤ skipMaxFaceCount) → Skip. Handles, fasteners,
-        ///      geometric noise — wasting atlas space on them is pointless.
-        ///   4. Otherwise → Promote. The shell becomes its own domain.
-        /// </summary>
-        static ShellDecision ClassifyFineShell(Shell3D fine, Shell3D[] baseShells,
-            Options opts, float meshDiag, float totalDeepArea)
+        /// <summary>Closest point on triangle ABC to query point P. Standard
+        /// Voronoi-region algorithm (Ericson, Real-Time Collision Detection
+        /// ch. 5). No allocations, ~30 ops, branch-heavy.</summary>
+        static Vector3 ClosestPointOnTriangle(Vector3 p, Vector3 a, Vector3 b, Vector3 c)
         {
-            if (baseShells.Length == 0)
-                return new ShellDecision { kind = ShellDecisionKind.Promote, parentBaseShellIdx = -1 };
+            Vector3 ab = b - a, ac = c - a, ap = p - a;
+            float d1 = Vector3.Dot(ab, ap);
+            float d2 = Vector3.Dot(ac, ap);
+            if (d1 <= 0f && d2 <= 0f) return a;
 
-            // Combined search: scan ALL base shells, but instead of picking the
-            // globally-best-angle parent (which on curved/repeated geometry will
-            // be some perfectly aligned shell on the FAR side of the mesh —
-            // angle=0 but distance huge → extent-fit fail → promote regression),
-            // we filter to angularly-eligible parents AND keep only those that
-            // also pass perpendicular-distance + extent-fit. Among those, prefer
-            // the one with the smallest angle. If none pass, promote based on
-            // the overall best-angle shell so the domain still has a sensible
-            // dominant-normal record for downstream packing.
-            //
-            // For Skip-detection we use the cheapest pass: tiny area + low face
-            // count. That's independent of parent search.
-            //
-            // Cost is O(N base × M fine) — ~270 × ~600 = 160k shell tests on
-            // the worst test model; each test is a few float ops, microseconds.
-            float areaFrac = fine.totalArea / totalDeepArea;
-            bool tinyArea  = areaFrac < opts.skipAreaFrac;
-            bool fewFaces  = fine.faceCount <= opts.skipMaxFaceCount;
-            if (tinyArea && fewFaces)
-                return new ShellDecision { kind = ShellDecisionKind.Skip, parentBaseShellIdx = -1 };
+            Vector3 bp = p - b;
+            float d3 = Vector3.Dot(ab, bp);
+            float d4 = Vector3.Dot(ac, bp);
+            if (d3 >= 0f && d4 <= d3) return b;
 
-            int bestOverlayShell = -1;
-            float bestOverlayAngle = float.MaxValue;
-            int bestPromoteShell = -1;
-            float bestPromoteAngle = float.MaxValue;
-
-            for (int si = 0; si < baseShells.Length; si++)
+            float vc = d1 * d4 - d3 * d2;
+            if (vc <= 0f && d1 >= 0f && d3 <= 0f)
             {
-                var parent = baseShells[si];
-
-                float dot = Vector3.Dot(fine.dominantNormal, parent.dominantNormal);
-                if (dot >  1f) dot =  1f;
-                if (dot < -1f) dot = -1f;
-                float angle = Mathf.Acos(dot) * Mathf.Rad2Deg;
-
-                // Track overall best-angle for the promote fallback.
-                if (angle < bestPromoteAngle) { bestPromoteAngle = angle; bestPromoteShell = si; }
-
-                if (angle > opts.overlayAngleDeg) continue;
-
-                // Perpendicular-distance test in parent's plane.
-                float perpAbs = Mathf.Abs(Vector3.Dot(fine.centroid - parent.centroid,
-                    parent.dominantNormal));
-                float perpNorm = perpAbs / meshDiag;
-                if (perpNorm > opts.overlayPerpNorm) continue;
-
-                // Planar extent fit in parent's basis (with slack).
-                Vector3 d = fine.centroid - parent.centroid;
-                float du = Mathf.Abs(Vector3.Dot(d, parent.basisU));
-                float dv = Mathf.Abs(Vector3.Dot(d, parent.basisV));
-                float boundU = parent.extentU * (1f + opts.overlayExtentSlack);
-                float boundV = parent.extentV * (1f + opts.overlayExtentSlack);
-                float fitU = du + fine.extentU;
-                float fitV = dv + fine.extentV;
-                if (fitU > boundU || fitV > boundV) continue;
-
-                // This parent passes all three tests. Keep the smallest-angle
-                // candidate among the eligible set (ties broken by first-seen).
-                if (angle < bestOverlayAngle)
-                {
-                    bestOverlayAngle = angle;
-                    bestOverlayShell = si;
-                }
+                float v = d1 / (d1 - d3);
+                return a + v * ab;
             }
 
-            if (bestOverlayShell >= 0)
-                return new ShellDecision
-                {
-                    kind = ShellDecisionKind.Overlay,
-                    parentBaseShellIdx = bestOverlayShell,
-                };
+            Vector3 cp = p - c;
+            float d5 = Vector3.Dot(ab, cp);
+            float d6 = Vector3.Dot(ac, cp);
+            if (d6 >= 0f && d5 <= d6) return c;
 
-            return new ShellDecision
+            float vb = d5 * d2 - d1 * d6;
+            if (vb <= 0f && d2 >= 0f && d6 <= 0f)
             {
-                kind = ShellDecisionKind.Promote,
-                parentBaseShellIdx = bestPromoteShell,
-            };
+                float w = d2 / (d2 - d6);
+                return a + w * ac;
+            }
+
+            float va = d3 * d6 - d5 * d4;
+            if (va <= 0f && (d4 - d3) >= 0f && (d5 - d6) >= 0f)
+            {
+                float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+                return b + w * (c - b);
+            }
+
+            float denom = 1f / (va + vb + vc);
+            float vv = vb * denom;
+            float ww = vc * denom;
+            return a + ab * vv + ac * ww;
         }
 
-        /// <summary>Wrap a fine-LOD shell into a <see cref="PromotedCluster"/>
-        /// for the unified domain table. The shell already has area-weighted
-        /// plane data + extents — just copy fields and tag the source LOD.</summary>
-        static PromotedCluster MakeClusterFromShell(Shell3D shell, int sourceLodIndex)
+        /// <summary>Squared distance from point q to AABB [mn, mx]; 0 if inside.
+        /// Used as an early-out filter before the expensive triangle test.</summary>
+        static float SqDistToAabb(Vector3 q, Vector3 mn, Vector3 mx)
+        {
+            float dx = q.x < mn.x ? mn.x - q.x : (q.x > mx.x ? q.x - mx.x : 0f);
+            float dy = q.y < mn.y ? mn.y - q.y : (q.y > mx.y ? q.y - mx.y : 0f);
+            float dz = q.z < mn.z ? mn.z - q.z : (q.z > mx.z ? q.z - mx.z : 0f);
+            return dx * dx + dy * dy + dz * dz;
+        }
+
+        /// <summary>Precomputed per-triangle AABBs for the deepest-LOD mesh —
+        /// pays for itself after ~3 vertex queries vs computing on the fly.</summary>
+        static void BuildDeepAabbs(Vector3[] worldVerts, int[] rawTris,
+            out Vector3[] mins, out Vector3[] maxs)
+        {
+            int n = rawTris.Length / 3;
+            mins = new Vector3[n];
+            maxs = new Vector3[n];
+            for (int f = 0; f < n; f++)
+            {
+                var a = worldVerts[rawTris[f * 3]];
+                var b = worldVerts[rawTris[f * 3 + 1]];
+                var c = worldVerts[rawTris[f * 3 + 2]];
+                mins[f] = Vector3.Min(Vector3.Min(a, b), c);
+                maxs[f] = Vector3.Max(Vector3.Max(a, b), c);
+            }
+        }
+
+        /// <summary>Find the deepest-LOD triangle whose surface is closest to
+        /// world-space query point <paramref name="q"/>. Brute-force scan with
+        /// AABB rejection — O(N) tris per query, but on our worst test models
+        /// (~4k deep tris × ~12k fine verts) totals well under a second. A BVH
+        /// is a follow-up if profiling justifies it. Returns -1 if the deep
+        /// mesh is empty.</summary>
+        static int ProjectVertexToDeepMesh(Vector3 q,
+            Face3D[] deepFaces, Vector3[] deepWorldVerts, int[] deepRawTris,
+            Vector3[] aabbMin, Vector3[] aabbMax, out float bestDist)
+        {
+            int closest = -1;
+            float bestSq = float.MaxValue;
+            int n = deepFaces.Length;
+            for (int f = 0; f < n; f++)
+            {
+                if (deepFaces[f].area <= 0f) continue;
+                if (SqDistToAabb(q, aabbMin[f], aabbMax[f]) >= bestSq) continue;
+                var a = deepWorldVerts[deepRawTris[f * 3]];
+                var b = deepWorldVerts[deepRawTris[f * 3 + 1]];
+                var c = deepWorldVerts[deepRawTris[f * 3 + 2]];
+                Vector3 pt = ClosestPointOnTriangle(q, a, b, c);
+                float dsq = (pt - q).sqrMagnitude;
+                if (dsq < bestSq)
+                {
+                    bestSq = dsq;
+                    closest = f;
+                }
+            }
+            bestDist = closest >= 0 ? Mathf.Sqrt(bestSq) : float.PositiveInfinity;
+            return closest;
+        }
+
+        /// <summary>Materialise a fine-LOD shell (collected from the promote-
+        /// pile after projective classification) as a <see cref="PromotedCluster"/>.
+        /// The shell already has area-weighted plane data + vertex-based
+        /// extents — just copy fields and tag the source LOD.</summary>
+        static PromotedCluster MakePromotedClusterFromShell(Shell3D shell, int sourceLodIndex)
         {
             return new PromotedCluster
             {
@@ -776,20 +817,28 @@ namespace SashaRX.UnityMeshLab
             v = Vector3.Cross(n, u).normalized;
         }
 
-        /// <summary>Project each face centroid onto (u,v) basis centred at <paramref name="origin"/>;
-        /// max abs value along each axis becomes the half-extent. Defines the domain's
-        /// "rectangle in plane space" that we'll later squeeze into its atlas rect.</summary>
-        static void ComputeExtents(Face3D[] faces, List<int> faceIndices, Vector3 origin,
+        /// <summary>Project every CORNER VERTEX of every face in the shell onto
+        /// (u,v) basis centred at <paramref name="origin"/>; max abs value along
+        /// each axis becomes the half-extent. Vertex-based (not centroid-based)
+        /// because InverseTransfer will project the SAME vertices into the
+        /// atlas rect; a centroid-based extent under-shoots long thin triangles
+        /// (corner verts spill outside the rect → wrap-around bleeding in the
+        /// baked lightmap).</summary>
+        static void ComputeExtents(Vector3[] worldVerts, int[] rawTris,
+            List<int> faceIndices, Vector3 origin,
             Vector3 u, Vector3 v, out float extU, out float extV)
         {
             float maxU = 0f, maxV = 0f;
             foreach (int f in faceIndices)
             {
-                Vector3 d = faces[f].centroid - origin;
-                float pu = Mathf.Abs(Vector3.Dot(d, u));
-                float pv = Mathf.Abs(Vector3.Dot(d, v));
-                if (pu > maxU) maxU = pu;
-                if (pv > maxV) maxV = pv;
+                for (int k = 0; k < 3; k++)
+                {
+                    Vector3 d = worldVerts[rawTris[f * 3 + k]] - origin;
+                    float pu = Mathf.Abs(Vector3.Dot(d, u));
+                    float pv = Mathf.Abs(Vector3.Dot(d, v));
+                    if (pu > maxU) maxU = pu;
+                    if (pv > maxV) maxV = pv;
+                }
             }
             // Small floor — degenerate shells (1-2 tiny triangles) would otherwise
             // have zero extent and divide-by-zero in InverseTransfer's mapping.
@@ -842,7 +891,7 @@ namespace SashaRX.UnityMeshLab
         /// uniform texels-per-world-unit derived from the max domain. The rect is
         /// then normalized to [0,1]² and stored in <see cref="LightingDomain.uv2Rect"/>.
         ///
-        /// PR-2.6 swaps this for xatlas via XatlasNative. The contract is the same:
+        /// PR-2.8 swaps this for xatlas via XatlasNative. The contract is the same:
         /// after the call, every domain has a valid uv2Rect and atlasW/H are the
         /// final dimensions.
         /// </summary>
@@ -1044,7 +1093,7 @@ namespace SashaRX.UnityMeshLab
             sb.AppendLine($"  domains:        {r.domains.Length} total " +
                 $"({r.baseShellCount} base / {r.promotedClusterCount} promoted shells)");
             sb.AppendLine($"  atlas:          {r.atlasPixelWidth} × {r.atlasPixelHeight} px " +
-                $"(naive strip packer — PR-2.6 will swap in xatlas)");
+                $"(naive strip packer — PR-2.8 will swap in xatlas)");
             int denom = Mathf.Max(1, r.totalFineFaces);
             sb.AppendLine($"  fine faces:     {r.totalFineFaces} total");
             sb.AppendLine($"    promoted:     {r.promotedFineFaces,6} ({100f * r.promotedFineFaces / denom,5:F1}%)");
