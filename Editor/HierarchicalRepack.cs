@@ -910,39 +910,128 @@ namespace SashaRX.UnityMeshLab
         const string DryRunMenuPath = "Mesh Lab/Diag/Hierarchical Atlas Dry-Run";
 
         [MenuItem(DryRunMenuPath, true)]
-        static bool ValidateDryRun()
-            => Selection.activeGameObject?.GetComponentInParent<LODGroup>() != null;
+        static bool ValidateDryRun() => CollectSelectedLodGroups().Count > 0;
 
         [MenuItem(DryRunMenuPath)]
         static void DryRun()
         {
-            var lg = Selection.activeGameObject?.GetComponentInParent<LODGroup>();
-            if (lg == null)
+            var lgs = CollectSelectedLodGroups();
+            if (lgs.Count == 0)
             {
                 EditorUtility.DisplayDialog("Hierarchical Atlas Dry-Run",
-                    "Select a GameObject under a LODGroup first.", "OK");
+                    "Select one or more GameObjects under a LODGroup first.\n" +
+                    "Prefab assets in the Project window also work.", "OK");
                 return;
             }
-            var result = Build(lg, Options.Default);
-            if (!string.IsNullOrEmpty(result.error))
+
+            var opts = Options.Default;
+            var failures = new List<string>();
+            int ok = 0;
+            string lastReport = null;
+            Result lastResult = null;
+            string lastName = null;
+            for (int i = 0; i < lgs.Count; i++)
             {
-                EditorUtility.DisplayDialog("Hierarchical Atlas Dry-Run",
-                    $"Build failed: {result.error}", "OK");
-                return;
+                var lg = lgs[i];
+                if (lgs.Count > 1)
+                {
+                    if (EditorUtility.DisplayCancelableProgressBar(
+                            "Hierarchical Atlas Dry-Run",
+                            $"[{i + 1}/{lgs.Count}] {lg.name}",
+                            (float)i / lgs.Count))
+                    {
+                        UvtLog.Warn(UvtLog.Category.Benchmark,
+                            $"[HierRepack] Batch dry-run cancelled at {i}/{lgs.Count}.");
+                        break;
+                    }
+                }
+                try
+                {
+                    var result = Build(lg, opts);
+                    if (!string.IsNullOrEmpty(result.error))
+                    {
+                        failures.Add($"{lg.name}: {result.error}");
+                        continue;
+                    }
+                    string reportPath = WriteDryRunReport(lg.name, result);
+                    LogDryRunSummary(lg.name, result);
+                    lastReport = reportPath;
+                    lastResult = result;
+                    lastName   = lg.name;
+                    ok++;
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{lg.name}: {ex.Message}");
+                    UvtLog.Error(UvtLog.Category.Benchmark,
+                        $"[HierRepack] Dry-run threw on '{lg.name}': {ex}");
+                }
             }
-            string reportPath = WriteDryRunReport(lg.name, result);
-            LogDryRunSummary(lg.name, result);
-            int denom = Mathf.Max(1, result.totalFineFaces);
-            EditorUtility.DisplayDialog("Hierarchical Atlas Dry-Run",
-                $"Build complete.\n\nDomains: {result.domains.Length} " +
-                $"({result.baseShellCount} base + {result.promotedClusterCount} promoted)\n" +
-                $"Atlas: {result.atlasPixelWidth}×{result.atlasPixelHeight}px\n" +
-                $"Fine faces: {result.totalFineFaces}\n" +
-                $"  promoted: {result.promotedFineFaces} ({100f * result.promotedFineFaces / denom:F1}%)\n" +
-                $"  overlaid: {result.overlaidFineFaces} ({100f * result.overlaidFineFaces / denom:F1}%)\n" +
-                $"  skipped:  {result.skippedFineFaces} ({100f * result.skippedFineFaces / denom:F1}%)\n" +
-                $"  degenerate: {result.degenerateFineFaces}\n\n" +
-                $"Report: {reportPath}\n\nSee console for details.", "OK");
+            EditorUtility.ClearProgressBar();
+
+            // Single-LODGroup: detailed dialog like before. Batch: terse summary
+            // pointing the operator at the per-model CSVs in BenchmarkReports/.
+            if (lgs.Count == 1 && lastResult != null)
+            {
+                int denom = Mathf.Max(1, lastResult.totalFineFaces);
+                EditorUtility.DisplayDialog("Hierarchical Atlas Dry-Run",
+                    $"Build complete on '{lastName}'.\n\n" +
+                    $"Domains: {lastResult.domains.Length} " +
+                    $"({lastResult.baseShellCount} base + {lastResult.promotedClusterCount} promoted)\n" +
+                    $"Atlas: {lastResult.atlasPixelWidth}×{lastResult.atlasPixelHeight}px\n" +
+                    $"Fine faces: {lastResult.totalFineFaces}\n" +
+                    $"  promoted: {lastResult.promotedFineFaces} ({100f * lastResult.promotedFineFaces / denom:F1}%)\n" +
+                    $"  overlaid: {lastResult.overlaidFineFaces} ({100f * lastResult.overlaidFineFaces / denom:F1}%)\n" +
+                    $"  skipped:  {lastResult.skippedFineFaces} ({100f * lastResult.skippedFineFaces / denom:F1}%)\n" +
+                    $"  degenerate: {lastResult.degenerateFineFaces}\n\n" +
+                    $"Report: {lastReport}\n\nSee console for details.", "OK");
+            }
+            else
+            {
+                string failBlock = failures.Count == 0
+                    ? ""
+                    : "\n\nFailures:\n  " + string.Join("\n  ", failures);
+                EditorUtility.DisplayDialog("Hierarchical Atlas Dry-Run",
+                    $"Batch complete: {ok}/{lgs.Count} models succeeded.\n\n" +
+                    $"Per-model CSVs in BenchmarkReports/ (one file per LODGroup).\n" +
+                    $"See console for per-model summaries." + failBlock,
+                    "OK");
+            }
+        }
+
+        /// <summary>Resolve every LODGroup reachable from the current Selection:
+        /// scene GameObjects walk up via GetComponentInParent; Project-window
+        /// prefab assets are loaded and searched via GetComponentInChildren.
+        /// Deduplicated by LODGroup instance so selecting multiple children of
+        /// the same LODGroup doesn't process it twice.</summary>
+        static List<LODGroup> CollectSelectedLodGroups()
+        {
+            var result = new List<LODGroup>();
+            var seen = new HashSet<LODGroup>();
+            var sel = Selection.gameObjects;
+            if (sel == null || sel.Length == 0) return result;
+            foreach (var go in sel)
+            {
+                if (go == null) continue;
+                // Scene object — climb to the nearest LODGroup ancestor.
+                var lg = go.GetComponentInParent<LODGroup>();
+                if (lg == null)
+                {
+                    // Project-window asset path: load the prefab and search
+                    // its hierarchy (GetComponentInParent on a root prefab
+                    // asset still returns null, but GetComponentInChildren
+                    // walks descendants).
+                    string assetPath = AssetDatabase.GetAssetPath(go);
+                    if (!string.IsNullOrEmpty(assetPath))
+                    {
+                        var loaded = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
+                        if (loaded != null) lg = loaded.GetComponentInChildren<LODGroup>(true);
+                    }
+                }
+                if (lg != null && seen.Add(lg)) result.Add(lg);
+            }
+            return result;
+        }
         }
 
         static void LogDryRunSummary(string lgName, Result r)
