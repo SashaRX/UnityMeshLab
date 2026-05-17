@@ -28,6 +28,14 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public static string LastWrittenCsvPath { get; private set; }
 
+        /// <summary>When non-null, every BenchmarkRecorder session's
+        /// <see cref="WriteArtefacts"/> writes its CSV/JSON/PNG output into
+        /// this directory instead of the default <c>BenchmarkReports/</c>
+        /// top level. ExecBenchmark sets this to the per-case directory so
+        /// every cell's artefacts land alongside hier_repack.csv etc.
+        /// Outside-of-bench callers leave it null.</summary>
+        public static string OutputDirectoryOverride;
+
         // Sentinel for nested calls — caller treats it as a scope that does nothing on Dispose.
         sealed class NoOpScope : IDisposable { public static readonly NoOpScope Instance = new NoOpScope(); public void Dispose() { } }
 
@@ -280,8 +288,16 @@ namespace SashaRX.UnityMeshLab
             // Bare repack/transfer runs without RecordMesh calls aren't worth a file.
             if (records.Count == 0) return;
 
-            string projectRoot = Directory.GetParent(Application.dataPath)?.FullName ?? Application.dataPath;
-            string dir = Path.Combine(projectRoot, "BenchmarkReports");
+            string dir;
+            if (!string.IsNullOrEmpty(OutputDirectoryOverride))
+            {
+                dir = OutputDirectoryOverride;
+            }
+            else
+            {
+                string projectRoot = Directory.GetParent(Application.dataPath)?.FullName ?? Application.dataPath;
+                dir = Path.Combine(projectRoot, "BenchmarkReports");
+            }
             Directory.CreateDirectory(dir);
 
             // Millisecond-precision timestamp — second-level collided when an

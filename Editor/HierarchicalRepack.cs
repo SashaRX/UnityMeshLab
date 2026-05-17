@@ -1171,13 +1171,20 @@ namespace SashaRX.UnityMeshLab
             EncodePng(pixels, size, size, path);
         }
 
-        /// <summary>Render every fine-LOD mesh's triangles in UV0 space,
-        /// colored by their faceToDomain assignment. Lets the operator SEE
-        /// where overlay vs promote vs skip lands on the actual surface —
-        /// red blobs in the middle of a wall mean a topology divergence
-        /// the per-vertex classifier flagged; red strips only along chart
-        /// borders mean only boundary faces flunked consensus. Output:
-        /// <c>{outputDir}/hier_repack_lod{N}.png</c> per fine LOD.</summary>
+        /// <summary>Render every fine-LOD mesh's triangles, projected onto
+        /// the world-space plane that shows the largest surface (axis with
+        /// the smallest AABB extent → normal to the "best view" plane).
+        /// Colored by faceToDomain assignment. Lets the operator SEE
+        /// where overlay vs promote vs skip lands on the actual physical
+        /// surface — red blobs in the middle of an obvious wall mean a
+        /// topology divergence the per-vertex classifier flagged; red
+        /// strips only along chart borders mean only boundary faces flunk
+        /// face-consensus. Output: <c>{outputDir}/hier_repack_lod{N}.png</c>
+        /// per fine LOD. Background is light so face colors pop; skip /
+        /// degenerate faces render bright magenta so they're impossible
+        /// to mistake for backdrop. Atlas-projection (UV0) is intentionally
+        /// NOT used here — assets often pack UV0 into a corner sub-region,
+        /// leaving the diagnostic 95% empty.</summary>
         static void WriteFineLodDomainPngs(string outputDir, LODGroup lg, Result r)
         {
             if (r.faceToDomain == null) return;
@@ -1196,15 +1203,33 @@ namespace SashaRX.UnityMeshLab
                 var mf = rs[0].GetComponent<MeshFilter>();
                 var mesh = mf != null ? mf.sharedMesh : null;
                 if (mesh == null) continue;
-                var uv0 = mesh.uv;
-                if (uv0 == null || uv0.Length == 0) continue;
+                var xform = rs[0].transform;
+                var localVerts = mesh.vertices;
+                if (localVerts == null || localVerts.Length == 0) continue;
                 var tris = mesh.triangles;
                 var f2d = r.faceToDomain[li];
                 if (f2d == null || f2d.Length * 3 != tris.Length) continue;
 
+                // World-space verts + AABB.
+                var worldVerts = new Vector3[localVerts.Length];
+                Vector3 mn = xform.TransformPoint(localVerts[0]);
+                Vector3 mx = mn;
+                worldVerts[0] = mn;
+                for (int i = 1; i < localVerts.Length; i++)
+                {
+                    var p = xform.TransformPoint(localVerts[i]);
+                    worldVerts[i] = p;
+                    mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p);
+                }
+                Vector3 ext = mx - mn;
+                // Pick axis with smallest extent as the projection normal.
+                int normalAxis = 0;
+                if (ext.y <= ext.x && ext.y <= ext.z) normalAxis = 1;
+                else if (ext.z < ext.x && ext.z < ext.y) normalAxis = 2;
+
                 int size = 1024;
                 var pixels = new Color32[size * size];
-                var bg = new Color32(28, 28, 32, 255);
+                var bg = new Color32(244, 244, 248, 255); // light backdrop
                 for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
 
                 int faceCount = tris.Length / 3;
@@ -1212,15 +1237,39 @@ namespace SashaRX.UnityMeshLab
                 {
                     int domain = f2d[f];
                     Color32 col = DomainColor(domain, r.baseShellCount);
-                    Vector2 a = uv0[tris[f * 3]];
-                    Vector2 b = uv0[tris[f * 3 + 1]];
-                    Vector2 c = uv0[tris[f * 3 + 2]];
-                    RasterizeTriangle(pixels, size, a, b, c, col);
+                    Vector2 a = ProjectToView(worldVerts[tris[f * 3]],     normalAxis, mn, mx, size);
+                    Vector2 b = ProjectToView(worldVerts[tris[f * 3 + 1]], normalAxis, mn, mx, size);
+                    Vector2 c = ProjectToView(worldVerts[tris[f * 3 + 2]], normalAxis, mn, mx, size);
+                    RasterizeTrianglePx(pixels, size, a, b, c, col);
                 }
 
                 string path = Path.Combine(outputDir, $"hier_repack_lod{li}.png");
                 EncodePng(pixels, size, size, path);
             }
+        }
+
+        /// <summary>Project a world-space point onto the 2D plane normal to
+        /// <paramref name="normalAxis"/> (0=YZ, 1=XZ, 2=XY) and map into
+        /// pixel coords for a <paramref name="size"/>×<paramref name="size"/>
+        /// image with 4% margin. Centres the projected AABB and keeps aspect
+        /// ratio by using the larger of the two in-plane extents as the
+        /// scale denominator.</summary>
+        static Vector2 ProjectToView(Vector3 p, int normalAxis, Vector3 mn, Vector3 mx, int size)
+        {
+            float u, v, umin, umax, vmin, vmax;
+            switch (normalAxis)
+            {
+                case 0:  u = p.z; v = p.y; umin = mn.z; umax = mx.z; vmin = mn.y; vmax = mx.y; break;
+                case 1:  u = p.x; v = p.z; umin = mn.x; umax = mx.x; vmin = mn.z; vmax = mx.z; break;
+                default: u = p.x; v = p.y; umin = mn.x; umax = mx.x; vmin = mn.y; vmax = mx.y; break;
+            }
+            float du = umax - umin, dv = vmax - vmin;
+            float scale = (size * 0.92f) / Mathf.Max(Mathf.Max(du, dv), 1e-6f);
+            float midU = (umin + umax) * 0.5f, midV = (vmin + vmax) * 0.5f;
+            float half = size * 0.5f;
+            float x = half + (u - midU) * scale;
+            float y = half - (v - midV) * scale; // flip Y so +V points up visually
+            return new Vector2(x, y);
         }
 
         /// <summary>Color palette for diagnostic PNGs. Skip / degenerate
@@ -1230,7 +1279,9 @@ namespace SashaRX.UnityMeshLab
         /// domain index hash so adjacent shells are distinguishable.</summary>
         static Color32 DomainColor(int domainIdx, int baseShellCount)
         {
-            if (domainIdx < 0) return new Color32(50, 50, 50, 255);
+            // -1 = no atlas slot (skip OR degenerate). Bright magenta so it
+            // pops against the light backdrop — "this face has no UV2".
+            if (domainIdx < 0) return new Color32(255, 40, 200, 255);
             // 32-bit Knuth hash → 0..59 hue offset within the family.
             uint h = unchecked((uint)domainIdx * 2654435761u);
             int hueOffset = (int)(h % 60u);
@@ -1241,15 +1292,15 @@ namespace SashaRX.UnityMeshLab
             {
                 // Green family — hue 90-150°.
                 hue = (90f + hueOffset) / 360f;
-                sat = 0.55f;
-                val = 0.65f + valOffset / 200f;
+                sat = 0.60f;
+                val = 0.70f + valOffset / 200f;
             }
             else
             {
                 // Warm family — hue 0-30° (red-orange).
                 hue = (hueOffset * 0.5f) / 360f;
-                sat = 0.80f;
-                val = 0.80f + valOffset / 250f;
+                sat = 0.85f;
+                val = 0.85f + valOffset / 300f;
             }
             Color c = Color.HSVToRGB(hue, sat, val);
             return new Color32(
@@ -1258,24 +1309,19 @@ namespace SashaRX.UnityMeshLab
                 (byte)Mathf.Clamp(c.b * 255f, 0f, 255f), 255);
         }
 
-        /// <summary>Software-rasterize a single UV0-space triangle with a
-        /// solid color. Edge-function barycentrics with a positive-only
+        /// <summary>Software-rasterize a triangle given in pixel coordinates
+        /// with a solid color. Edge-function barycentrics with positive-only
         /// inside test (top-left rule not enforced — diagnostic doesn't
         /// need pixel-perfect seam handling).</summary>
-        static void RasterizeTriangle(Color32[] pix, int size,
+        static void RasterizeTrianglePx(Color32[] pix, int size,
             Vector2 a, Vector2 b, Vector2 c, Color32 col)
         {
-            // UV (0..1) → pixel; Y flipped so (0,0) is bottom-left visually.
-            float ax = a.x * size, ay = (1f - a.y) * size;
-            float bx = b.x * size, by = (1f - b.y) * size;
-            float cx = c.x * size, cy = (1f - c.y) * size;
+            int x0 = Mathf.Max(0, Mathf.FloorToInt(Mathf.Min(a.x, Mathf.Min(b.x, c.x))));
+            int x1 = Mathf.Min(size - 1, Mathf.CeilToInt(Mathf.Max(a.x, Mathf.Max(b.x, c.x))));
+            int y0 = Mathf.Max(0, Mathf.FloorToInt(Mathf.Min(a.y, Mathf.Min(b.y, c.y))));
+            int y1 = Mathf.Min(size - 1, Mathf.CeilToInt(Mathf.Max(a.y, Mathf.Max(b.y, c.y))));
 
-            int x0 = Mathf.Max(0, Mathf.FloorToInt(Mathf.Min(ax, Mathf.Min(bx, cx))));
-            int x1 = Mathf.Min(size - 1, Mathf.CeilToInt(Mathf.Max(ax, Mathf.Max(bx, cx))));
-            int y0 = Mathf.Max(0, Mathf.FloorToInt(Mathf.Min(ay, Mathf.Min(by, cy))));
-            int y1 = Mathf.Min(size - 1, Mathf.CeilToInt(Mathf.Max(ay, Mathf.Max(by, cy))));
-
-            float denom = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+            float denom = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
             if (Mathf.Abs(denom) < 1e-6f) return;
             float invDenom = 1f / denom;
 
@@ -1284,8 +1330,8 @@ namespace SashaRX.UnityMeshLab
                 int row = y * size;
                 for (int x = x0; x <= x1; x++)
                 {
-                    float w1 = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) * invDenom;
-                    float w2 = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) * invDenom;
+                    float w1 = ((b.y - c.y) * (x - c.x) + (c.x - b.x) * (y - c.y)) * invDenom;
+                    float w2 = ((c.y - a.y) * (x - c.x) + (a.x - c.x) * (y - c.y)) * invDenom;
                     float w3 = 1f - w1 - w2;
                     if (w1 < 0f || w2 < 0f || w3 < 0f) continue;
                     pix[row + x] = col;

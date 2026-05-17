@@ -1916,9 +1916,18 @@ namespace SashaRX.UnityMeshLab
 
                         // Legacy xatlas parameter sweep — drops its own
                         // summary.csv / winner.json / cell_*.csv into caseDir.
+                        // BenchmarkRecorder.WriteArtefacts hardcodes the
+                        // top-level BenchmarkReports/ dir for its per-cell
+                        // CSV/JSON/PNGs; the override redirects them into
+                        // caseDir alongside summary.csv. Restored in finally
+                        // so a thrown ExecSweep doesn't leak the redirect
+                        // into unrelated tool invocations.
                         if (tech.legacyXatlasSweep)
                         {
-                            ExecSweep(suite.sweep, caseDir);
+                            string prevOverride = BenchmarkRecorder.OutputDirectoryOverride;
+                            BenchmarkRecorder.OutputDirectoryOverride = caseDir;
+                            try { ExecSweep(suite.sweep, caseDir); }
+                            finally { BenchmarkRecorder.OutputDirectoryOverride = prevOverride; }
                             didAnything = true;
                         }
 
