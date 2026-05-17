@@ -244,7 +244,40 @@ namespace SashaRX.UnityMeshLab
             /// proxy UV2 it lands on. Drives Stage 3+ projection onto fine
             /// LOD shells. Null until Stage 2 runs.</summary>
             public ProxySample[] proxySamples;
+
+            /// <summary>PR-3 Stage 3: per-fine-LOD projection of proxy
+            /// samples onto the LOD's 3D surface. Indexed by LOD; entries
+            /// for the deepest LOD or for LODs that don't have a renderer
+            /// are null. Lets Stage 4 ask "which proxy shell dominates
+            /// this fine face" and "how many samples hit this region" in
+            /// O(1) per query.</summary>
+            public FineLodProjection[] lodProjections;
             public string error;
+        }
+
+        /// <summary>PR-3 Stage 3 output: for one fine LOD, how the proxy
+        /// samples landed on its surface. Per-face aggregates feed Stage 4
+        /// (per-shell affine fit, residual cluster) and the diagnostic
+        /// heat-map (lod{N}_proxy_hits.png).</summary>
+        public struct FineLodProjection
+        {
+            /// <summary>For each face: number of proxy samples whose
+            /// closest-point-on-fine-mesh landed within the overlay
+            /// distance threshold on this face.</summary>
+            public int[]   perFaceHitCount;
+            /// <summary>For each face: proxy shell that contributed the
+            /// most hits, or -1 if no hits.</summary>
+            public int[]   perFaceDominantProxyShell;
+            /// <summary>For each face: mean closest-point distance across
+            /// the samples that hit it (world units). 0 if no hits.</summary>
+            public float[] perFaceAvgDist;
+            /// <summary>Total samples that hit any face on this LOD.</summary>
+            public int     totalHits;
+            /// <summary>Samples whose closest-point distance exceeded the
+            /// overlay threshold for this LOD — i.e. proxy regions with no
+            /// counterpart on this fine LOD (rare; usually means proxy has
+            /// extra geometry the fine LOD doesn't, or vice versa).</summary>
+            public int     missedSamples;
         }
 
         /// <summary>A Poisson-distributed point on the proxy surface paired
@@ -380,6 +413,13 @@ namespace SashaRX.UnityMeshLab
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     $"[HierRepack] proxy sampling stage 2 failed on '{lg.name}': {ex.Message}");
+            }
+            // PR-3 Stage 3: project samples onto each fine LOD.
+            try { ProjectProxySamplesOntoFineLods(lg, opts, meshDiag, result); }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] proxy projection stage 3 failed on '{lg.name}': {ex.Message}");
             }
 
             // ── Step 3: domain table init ──
@@ -1285,6 +1325,7 @@ namespace SashaRX.UnityMeshLab
             WriteAtlasPng(outputDir, result);
             WriteProxyUv2Png(outputDir, result);
             WriteProxySamplesPng(outputDir, result);
+            WriteProxyHitsPngs(outputDir, lg, result);
             WriteFineLodDomainPngs(outputDir, lg, result);
             LogDryRunSummary(lg.name, result);
             return result;
@@ -1597,6 +1638,207 @@ namespace SashaRX.UnityMeshLab
 
             string path = Path.Combine(outputDir, "proxy_samples.png");
             EncodePng(pixels, size, size, path);
+        }
+
+        // ─── PR-3 Stage 3: project proxy samples onto each fine LOD ───
+
+        /// <summary>For every fine LOD: closest-point each proxy sample
+        /// onto its mesh surface, bin hits per face. Stage 4 will read
+        /// the per-face dominant proxy shell + hit count to fit a
+        /// per-fine-shell affine (overlay candidate) or fall through to
+        /// promote when coverage is sparse. Skipped for the deepest LOD
+        /// (proxy ≡ deepest, no projection needed) and for LODs without
+        /// a renderer.</summary>
+        static void ProjectProxySamplesOntoFineLods(LODGroup lg, Options opts,
+            float meshDiag, Result r)
+        {
+            if (r.proxySamples == null || r.proxySamples.Length == 0) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            int deepest = lodCount - 1;
+            while (deepest > 0 && (lods[deepest].renderers == null
+                || lods[deepest].renderers.Length == 0
+                || lods[deepest].renderers[0] == null)) deepest--;
+
+            r.lodProjections = new FineLodProjection[lodCount];
+            float distAbsThreshold = opts.overlayDistNorm * meshDiag;
+
+            for (int li = 0; li < lodCount; li++)
+            {
+                if (li == deepest) continue;
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) continue;
+                var xform = rs[0].transform;
+
+                var fineFaces = BuildFaceData(mesh, xform, meshDiag,
+                    out Vector3[] fineWorldVerts, out int[] fineRawTris,
+                    out _, out _);
+                int faceCount = fineFaces.Length;
+                if (faceCount == 0) continue;
+                BuildDeepAabbs(fineWorldVerts, fineRawTris,
+                    out var fineMin, out var fineMax);
+
+                var proj = new FineLodProjection
+                {
+                    perFaceHitCount           = new int[faceCount],
+                    perFaceDominantProxyShell = new int[faceCount],
+                    perFaceAvgDist            = new float[faceCount],
+                };
+                for (int f = 0; f < faceCount; f++)
+                    proj.perFaceDominantProxyShell[f] = -1;
+
+                // Per-face tally of which proxy shell sent the most hits.
+                // Use a flat (face → dict<proxyShell, count>) — but for
+                // speed and zero-allocation per face, defer the tally to
+                // a single pass over hits at the end. Keep an aggregate
+                // list of hits and compute dominants in the post-pass.
+                var hitsByFace = new List<int>[faceCount]; // proxyShellIds
+
+                for (int sIdx = 0; sIdx < r.proxySamples.Length; sIdx++)
+                {
+                    var sm = r.proxySamples[sIdx];
+                    int closestFace = ProjectVertexToDeepMesh(sm.worldPos,
+                        fineFaces, fineWorldVerts, fineRawTris,
+                        fineMin, fineMax, out float dist);
+                    if (closestFace < 0 || dist > distAbsThreshold)
+                    {
+                        proj.missedSamples++;
+                        continue;
+                    }
+                    proj.perFaceHitCount[closestFace]++;
+                    proj.perFaceAvgDist[closestFace] += dist;
+                    if (hitsByFace[closestFace] == null)
+                        hitsByFace[closestFace] = new List<int>(4);
+                    hitsByFace[closestFace].Add(sm.proxyShellId);
+                    proj.totalHits++;
+                }
+
+                // Resolve dominant proxy shell per face + finalize avg dist.
+                var shellTally = new Dictionary<int, int>();
+                for (int f = 0; f < faceCount; f++)
+                {
+                    if (proj.perFaceHitCount[f] == 0) continue;
+                    proj.perFaceAvgDist[f] /= proj.perFaceHitCount[f];
+                    var list = hitsByFace[f];
+                    shellTally.Clear();
+                    foreach (int sh in list)
+                    {
+                        shellTally.TryGetValue(sh, out int v);
+                        shellTally[sh] = v + 1;
+                    }
+                    int bestShell = -1, bestCount = 0;
+                    foreach (var kv in shellTally)
+                        if (kv.Value > bestCount) { bestCount = kv.Value; bestShell = kv.Key; }
+                    proj.perFaceDominantProxyShell[f] = bestShell;
+                }
+                r.lodProjections[li] = proj;
+            }
+        }
+
+        /// <summary>Render each fine LOD as a 3D isometric view with faces
+        /// shaded by proxy-sample hit density. Heat ramp: pink (zero hits =
+        /// fine has no proxy support → promote candidate) → light green
+        /// (some hits) → saturated green (many hits = overlay candidate
+        /// with strong proxy backing). The eye picks out promote zones
+        /// (pink blobs) vs overlay zones (green) without staring at CSV
+        /// numbers.</summary>
+        static void WriteProxyHitsPngs(string outputDir, LODGroup lg, Result r)
+        {
+            if (r.lodProjections == null) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            for (int li = 0; li < lodCount; li++)
+            {
+                var proj = r.lodProjections[li];
+                if (proj.perFaceHitCount == null) continue;
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) continue;
+
+                var localVerts = mesh.vertices;
+                var tris = mesh.triangles;
+                int faceCount = tris.Length / 3;
+                if (faceCount == 0 || faceCount != proj.perFaceHitCount.Length) continue;
+                var xform = rs[0].transform;
+
+                var worldVerts = new Vector3[localVerts.Length];
+                Vector3 mn = xform.TransformPoint(localVerts[0]);
+                Vector3 mx = mn;
+                worldVerts[0] = mn;
+                for (int i = 1; i < localVerts.Length; i++)
+                {
+                    var p = xform.TransformPoint(localVerts[i]);
+                    worldVerts[i] = p;
+                    mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p);
+                }
+
+                // Saturate the ramp at the per-LOD 95th-percentile hit
+                // count so a single hotspot doesn't wash out the rest.
+                int maxHits = 0;
+                for (int f = 0; f < faceCount; f++)
+                    if (proj.perFaceHitCount[f] > maxHits) maxHits = proj.perFaceHitCount[f];
+                int ramp = Mathf.Max(1, maxHits);
+
+                Vector3 isoR = new Vector3( 0.7071f, 0f, -0.7071f);
+                Vector3 isoU = new Vector3(-0.4082f, 0.8165f, -0.4082f);
+                float umin = float.MaxValue, umax = float.MinValue;
+                float vmin = float.MaxValue, vmax = float.MinValue;
+                for (int cx = 0; cx < 2; cx++)
+                for (int cy = 0; cy < 2; cy++)
+                for (int cz = 0; cz < 2; cz++)
+                {
+                    Vector3 corner = new Vector3(
+                        cx == 0 ? mn.x : mx.x,
+                        cy == 0 ? mn.y : mx.y,
+                        cz == 0 ? mn.z : mx.z);
+                    float cu = Vector3.Dot(corner, isoR);
+                    float cv = Vector3.Dot(corner, isoU);
+                    if (cu < umin) umin = cu; if (cu > umax) umax = cu;
+                    if (cv < vmin) vmin = cv; if (cv > vmax) vmax = cv;
+                }
+                int size = 1024;
+                float du = umax - umin, dv = vmax - vmin;
+                float scale = (size * 0.92f) / Mathf.Max(Mathf.Max(du, dv), 1e-6f);
+                float midU = (umin + umax) * 0.5f, midV = (vmin + vmax) * 0.5f;
+                float half = size * 0.5f;
+
+                var pixels = new Color32[size * size];
+                var bg = new Color32(244, 244, 248, 255);
+                for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
+
+                for (int f = 0; f < faceCount; f++)
+                {
+                    Color32 col = HitColor(proj.perFaceHitCount[f], ramp);
+                    Vector2 a = IsoProject(worldVerts[tris[f * 3]],     isoR, isoU, midU, midV, scale, half);
+                    Vector2 b = IsoProject(worldVerts[tris[f * 3 + 1]], isoR, isoU, midU, midV, scale, half);
+                    Vector2 c = IsoProject(worldVerts[tris[f * 3 + 2]], isoR, isoU, midU, midV, scale, half);
+                    RasterizeTrianglePx(pixels, size, a, b, c, col);
+                }
+
+                string path = Path.Combine(outputDir, $"lod{li}_proxy_hits.png");
+                EncodePng(pixels, size, size, path);
+            }
+        }
+
+        /// <summary>Heatmap ramp: 0 hits → pink (no proxy support), then
+        /// pale-green at low counts ramping to saturated green at <c>ramp</c>
+        /// hits. Diverging palette so the operator sees overlay-friendly
+        /// regions (green) vs detail-not-on-proxy regions (pink) at a
+        /// glance, even on grayscale-blind monitors.</summary>
+        static Color32 HitColor(int hits, int ramp)
+        {
+            if (hits <= 0) return new Color32(255, 120, 200, 255); // promote candidate
+            float t = Mathf.Clamp01((float)hits / ramp);
+            // Pale → saturated green.
+            byte r = (byte)Mathf.Lerp(200f,  60f, t);
+            byte g = (byte)Mathf.Lerp(240f, 170f, t);
+            byte b = (byte)Mathf.Lerp(200f,  80f, t);
+            return new Color32(r, g, b, 255);
         }
 
         /// <summary>Drive xatlasAddMesh + ComputeCharts + PackCharts on a
