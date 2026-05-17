@@ -114,6 +114,12 @@ namespace SashaRX.UnityMeshLab
             /// because face count alone implies someone will see it.</summary>
             public int skipMaxFaceCount;
 
+            /// <summary>Which proxy UV2 variant drives the downstream
+            /// per-shell projection. All three variants are still emitted
+            /// as diagnostic PNGs (proxy_uv2_clean/raw/auto.png) regardless
+            /// — this only picks which one Stage 2+ actually consumes.</summary>
+            public ProxyMode proxyMode;
+
             public static Options Default => new Options
             {
                 shellNormalThresholdDeg = 30f,
@@ -123,7 +129,29 @@ namespace SashaRX.UnityMeshLab
                 overlayDistNorm         = 0.03f,
                 skipAreaFrac            = 0.001f,
                 skipMaxFaceCount        = 4,
+                proxyMode               = ProxyMode.Clean,
             };
+        }
+
+        /// <summary>Which UV2 layout drives Stage 2+ per-shell projection.</summary>
+        public enum ProxyMode
+        {
+            /// <summary>UV0 → sym-split → ARAP → xatlas pack. Preserves
+            /// artist UV chart partition (right answer for curved surfaces
+            /// where each strip preserves uniform texel density along the
+            /// arc); fixes mirrored overlaps and stretched islands.
+            /// Production default.</summary>
+            Clean = 0,
+            /// <summary>UV0 → xatlas pack only. No sym-split, no ARAP.
+            /// Diagnostic — shows what the cleanup steps contribute.</summary>
+            Raw = 1,
+            /// <summary>True auto-unwrap from positions + normals, no UV0
+            /// input. xatlas builds charts from hard-edge detection — tends
+            /// to pie-slice curved surfaces into single charts, which gives
+            /// uneven texel density across the arc. Useful for assets with
+            /// missing or unusable UV0; not recommended for production on
+            /// curved geometry.</summary>
+            Auto = 2,
         }
 
         /// <summary>
@@ -176,6 +204,11 @@ namespace SashaRX.UnityMeshLab
             /// triangle indices (mesh.triangles) so the UV2 array can be
             /// rendered as a UV layout PNG.</summary>
             public int[]     proxyTris;
+            /// <summary>Stage 1 diagnostic: clean variant (sym-split + ARAP
+            /// + xatlas pack), always populated regardless of which mode
+            /// <see cref="Options.proxyMode"/> picks for downstream use.</summary>
+            public Vector2[] proxyUv2Clean;
+            public int[]     proxyTrisClean;
             /// <summary>Stage 1 comparison: raw repack of the deepest LOD's
             /// UV0 through xatlas (no sym-split, no ARAP). Shows what those
             /// steps contribute against the "clean" pipeline.</summary>
@@ -1209,9 +1242,9 @@ namespace SashaRX.UnityMeshLab
         /// Each PNG is skipped if its variant failed to produce data.</summary>
         static void WriteProxyUv2Png(string outputDir, Result r)
         {
-            if (r.proxyUv2 != null && r.proxyTris != null)
+            if (r.proxyUv2Clean != null && r.proxyTrisClean != null)
                 UvPngWriter.Render(Path.Combine(outputDir, "proxy_uv2_clean.png"),
-                    r.proxyUv2, r.proxyTris);
+                    r.proxyUv2Clean, r.proxyTrisClean);
             if (r.proxyUv2Raw != null && r.proxyTrisRaw != null)
                 UvPngWriter.Render(Path.Combine(outputDir, "proxy_uv2_raw.png"),
                     r.proxyUv2Raw, r.proxyTrisRaw);
@@ -1251,8 +1284,8 @@ namespace SashaRX.UnityMeshLab
                         rotate: true);
                     if (packed != null && packed.Length > 0)
                     {
-                        result.proxyUv2  = packed;
-                        result.proxyTris = clone.triangles;
+                        result.proxyUv2Clean  = packed;
+                        result.proxyTrisClean = clone.triangles;
                     }
                 }
                 catch (Exception ex)
@@ -1311,6 +1344,35 @@ namespace SashaRX.UnityMeshLab
                 // available", don't spam an Error.
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     $"[HierRepack] proxy auto-unwrap unavailable on '{lgName}': {ex.GetType().Name} ({ex.Message})");
+            }
+
+            // ── Select the active proxy that Stage 2+ will consume ──
+            // All three variants are still emitted as diagnostic PNGs;
+            // this just decides which pair the downstream sampler reads.
+            // Fall back to Clean if the selected variant didn't produce
+            // data (e.g. Auto failed before the DLL rebuild propagated).
+            switch (opts.proxyMode)
+            {
+                case ProxyMode.Raw:
+                    if (result.proxyUv2Raw != null)
+                    {
+                        result.proxyUv2  = result.proxyUv2Raw;
+                        result.proxyTris = result.proxyTrisRaw;
+                    }
+                    break;
+                case ProxyMode.Auto:
+                    if (result.proxyUv2Auto != null)
+                    {
+                        result.proxyUv2  = result.proxyUv2Auto;
+                        result.proxyTris = result.proxyTrisAuto;
+                    }
+                    break;
+            }
+            // Default + fallback: Clean.
+            if (result.proxyUv2 == null && result.proxyUv2Clean != null)
+            {
+                result.proxyUv2  = result.proxyUv2Clean;
+                result.proxyTris = result.proxyTrisClean;
             }
         }
 
