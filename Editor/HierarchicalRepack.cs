@@ -1268,7 +1268,7 @@ namespace SashaRX.UnityMeshLab
             {
                 try
                 {
-                    var rawOpts = XatlasRepack.RepackOptions.Default;
+                    var rawOpts = RepackOptions.Default;
                     rawOpts.resolution                   = (uint)opts.atlasResolutionPx;
                     rawOpts.padding                      = (uint)opts.interDomainPaddingPx;
                     rawOpts.reparameterizeStretchedShells = false; // disable ARAP
