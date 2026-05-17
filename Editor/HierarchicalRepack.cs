@@ -1306,7 +1306,7 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                Object.DestroyImmediate(tex);
+                UnityEngine.Object.DestroyImmediate(tex);
             }
         }
 
