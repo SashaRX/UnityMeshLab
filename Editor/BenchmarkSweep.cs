@@ -679,7 +679,9 @@ namespace SashaRX.UnityMeshLab
                 sb.Append("        <td>").Append((r.meanAtlasUtilization * 100f).ToString("F2", inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.totalMs.ToString(inv)).Append("</td>\n");
                 sb.Append("        <td>").Append(r.score.ToString("F2", inv)).Append("</td>\n");
-                sb.Append("        <td class=\"label\">").Append(BuildThumbsCell(r.csvPath, benchmarkReportsRoot)).Append("</td>\n");
+                // PNG sibling-of-CSV; link path is relative to index.html.
+                string indexDir = Path.GetDirectoryName(path) ?? benchmarkReportsRoot;
+                sb.Append("        <td class=\"label\">").Append(BuildThumbsCell(r.csvPath, indexDir)).Append("</td>\n");
                 sb.Append("      </tr>\n");
             }
 
@@ -715,16 +717,22 @@ namespace SashaRX.UnityMeshLab
         /// one anchored thumbnail per PNG, sorted by file name so LOD0 lands
         /// before LOD1, LOD2, … Returns <c>&lt;em&gt;(no PNG)&lt;/em&gt;</c>
         /// when the directory is missing or empty.
+        /// PNG dir is always sibling-of-CSV (named <c>&lt;csvBase&gt;_png</c>);
+        /// the link is computed relative to <paramref name="indexDir"/> so the
+        /// gallery works both during a forward sweep (index.html lives next
+        /// to PNG dirs) and during rebuild (index.html lives in a separate
+        /// sweep_recovered_* folder, PNGs stay beside the original CSVs).
         /// </summary>
-        static string BuildThumbsCell(string csvPath, string benchmarkReportsRoot)
+        static string BuildThumbsCell(string csvPath, string indexDir)
         {
             if (string.IsNullOrEmpty(csvPath)) return "<em>(no PNG)</em>";
             string csvBase = Path.GetFileNameWithoutExtension(csvPath);
-            if (string.IsNullOrEmpty(csvBase) || string.IsNullOrEmpty(benchmarkReportsRoot))
+            string csvDir  = Path.GetDirectoryName(csvPath);
+            if (string.IsNullOrEmpty(csvBase) || string.IsNullOrEmpty(csvDir)
+                || string.IsNullOrEmpty(indexDir))
                 return "<em>(no PNG)</em>";
 
-            string pngDirName = csvBase + "_png";
-            string pngDirAbs  = Path.Combine(benchmarkReportsRoot, pngDirName);
+            string pngDirAbs = Path.Combine(csvDir, csvBase + "_png");
             if (!Directory.Exists(pngDirAbs)) return "<em>(no PNG)</em>";
 
             string[] pngs;
@@ -739,10 +747,7 @@ namespace SashaRX.UnityMeshLab
             foreach (string pngAbs in pngs)
             {
                 string fileName = Path.GetFileName(pngAbs);
-                // PNG dirs now live inside sweepDir alongside index.html,
-                // so the relative link is just "<base>_png/<file>" with no
-                // "../" prefix (see WriteAggregateReport comment).
-                string rel = pngDirName + "/" + fileName;
+                string rel = MakeRelativePath(indexDir, pngAbs);
                 string label = ExtractLodLabel(fileName);
                 sb.Append("<div class=\"thumb\">");
                 sb.Append("<a href=\"").Append(HtmlEscape(rel)).Append("\" target=\"_blank\">");
@@ -754,6 +759,35 @@ namespace SashaRX.UnityMeshLab
             }
             sb.Append("</div>");
             return sb.ToString();
+        }
+
+        /// <summary>POSIX-style relative path from <paramref name="fromDir"/>
+        /// to <paramref name="toPath"/>. Works for any layout (nested,
+        /// sibling, ancestor) without depending on .NET 5+'s
+        /// Path.GetRelativePath. Used so the gallery HTML's thumbnail
+        /// links resolve no matter how the index file is positioned
+        /// relative to the PNG dirs (forward sweep: side-by-side; rebuild:
+        /// recovered dir + original sweep dir).</summary>
+        static string MakeRelativePath(string fromDir, string toPath)
+        {
+            try
+            {
+                string fromFull = Path.GetFullPath(fromDir);
+                if (!fromFull.EndsWith(Path.DirectorySeparatorChar.ToString(),
+                        StringComparison.Ordinal))
+                    fromFull += Path.DirectorySeparatorChar;
+                var fromUri = new Uri(fromFull);
+                var toUri   = new Uri(Path.GetFullPath(toPath));
+                string rel = Uri.UnescapeDataString(
+                    fromUri.MakeRelativeUri(toUri).ToString());
+                return rel.Replace('\\', '/');
+            }
+            catch
+            {
+                // Fall back to absolute path; not great but the gallery
+                // won't open on a different machine — acceptable degrade.
+                return toPath.Replace('\\', '/');
+            }
         }
 
         /// <summary>
@@ -864,8 +898,14 @@ namespace SashaRX.UnityMeshLab
                 return null;
             }
 
+            // Per-cell CSVs used to live at BenchmarkReports/ top level,
+            // but after the OutputDirectoryOverride redirect they're
+            // emitted inside sweep_<stamp>/ (or bench_<stamp>/<case>/legacy/
+            // for the unified benchmark). Walk recursively so recovery
+            // works whether the operator points at the top-level reports
+            // root, a specific sweep run, or a unified bench case.
             string[] csvFiles;
-            try { csvFiles = Directory.GetFiles(benchmarkReportsRoot, "*.csv", SearchOption.TopDirectoryOnly); }
+            try { csvFiles = Directory.GetFiles(benchmarkReportsRoot, "*.csv", SearchOption.AllDirectories); }
             catch (Exception ex)
             {
                 UvtLog.Error(UvtLog.Category.Benchmark,
@@ -1284,9 +1324,24 @@ namespace SashaRX.UnityMeshLab
                 };
                 using var p = System.Diagnostics.Process.Start(psi);
                 if (p == null) return "";
-                string stdout = p.StandardOutput.ReadToEnd();
-                p.WaitForExit(2000);
-                return (stdout ?? "").Trim();
+                // Drain stdout/stderr asynchronously into builders BEFORE
+                // WaitForExit — synchronous ReadToEnd() blocks until the
+                // pipe is closed, so a stalled git would deadlock the
+                // 2-second timeout we install below. With BeginOutputReadLine
+                // the timeout actually protects this path: if the process
+                // doesn't exit in 2s we kill it and return whatever we got.
+                var stdout = new StringBuilder();
+                var stderr = new StringBuilder();
+                p.OutputDataReceived += (_, e) => { if (e.Data != null) stdout.AppendLine(e.Data); };
+                p.ErrorDataReceived  += (_, e) => { if (e.Data != null) stderr.AppendLine(e.Data); };
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
+                if (!p.WaitForExit(2000))
+                {
+                    try { p.Kill(); } catch { /* best-effort */ }
+                    return "";
+                }
+                return stdout.ToString().Trim();
             }
             catch
             {
