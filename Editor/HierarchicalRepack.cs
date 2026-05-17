@@ -120,7 +120,7 @@ namespace SashaRX.UnityMeshLab
                 shellMergeAngleDeg      = 15f,
                 atlasResolutionPx       = 1024,
                 interDomainPaddingPx    = 4,
-                overlayDistNorm         = 0.01f,
+                overlayDistNorm         = 0.03f,
                 skipAreaFrac            = 0.001f,
                 skipMaxFaceCount        = 4,
             };
@@ -298,8 +298,14 @@ namespace SashaRX.UnityMeshLab
                 degenFineFaces += fineDegen;
                 totalFineFaces += fineFaces.Length;
 
-                // Per-fine-vertex overlay shell: index into deepShells, or -1
-                // if the vertex is too far from the proxy surface to overlay.
+                // Per-shell classification: extract fine shells first, then
+                // vote each shell as a unit. A single outlier vertex no
+                // longer drags a whole physical surface into promote — the
+                // shell wins by majority of its vertices' nearest-base-shell
+                // projections.
+                //
+                // Per-fine-vertex projection result: index into deepShells,
+                // or -1 if the vertex is too far from the proxy surface.
                 int vertCount = fineWorldVerts.Length;
                 var vertOverlayShell = new int[vertCount];
                 for (int v = 0; v < vertCount; v++)
@@ -313,51 +319,65 @@ namespace SashaRX.UnityMeshLab
                         vertOverlayShell[v] = -1;
                 }
 
-                // Per-fine-face decision: overlay if 3-corner consensus, else
-                // mark for promote/skip clustering.
-                var promoteMask = new bool[fineFaces.Length];
-                var faceOverlayShell = new int[fineFaces.Length];
-                for (int f = 0; f < fineFaces.Length; f++)
-                {
-                    faceOverlayShell[f] = -1;
-                    if (fineFaces[f].area <= 0f) continue; // degenerate
-                    int v0 = fineRawTris[f * 3];
-                    int v1 = fineRawTris[f * 3 + 1];
-                    int v2 = fineRawTris[f * 3 + 2];
-                    int s0 = vertOverlayShell[v0];
-                    int s1 = vertOverlayShell[v1];
-                    int s2 = vertOverlayShell[v2];
-                    if (s0 >= 0 && s0 == s1 && s1 == s2)
-                    {
-                        faceOverlayShell[f] = s0;
-                        result.faceToDomain[li][f] = s0;
-                        overlaidFineFaces++;
-                    }
-                    else
-                    {
-                        promoteMask[f] = true;
-                    }
-                }
-
-                // Cluster the marked faces into shells using existing
-                // adjacency logic (mask-filtered).
+                // Extract fine shells (full mesh, no mask — every shell will
+                // be classified). shellMergeAngleDeg = 0 here: fine shells
+                // shouldn't merge across panel boundaries.
                 var fineFaceToShell = new int[fineFaces.Length];
-                // Skip the shell-merge pass for the promote-mask subset: those
-                // shells are independent atlas domains (no parent overlay),
-                // merging them would conflate unrelated promoted clusters.
                 var fineShells = ExtractShells(fineFaces, fineWorldVerts, fineRawTris,
                     fineCanonicalTris, opts.shellNormalThresholdDeg, 0f,
-                    fineFaceToShell, promoteMask);
+                    fineFaceToShell, null);
 
-                // Per-cluster decision: tiny → Skip, else → Promote.
+                // For each fine shell: vote on parent base shell across its
+                // vertices. Winner = base shell with the most votes; if
+                // winner gets ≥ overlayVoteFrac of total votes AND the shell
+                // is not "tiny noise", overlay. Else skip (tiny) or promote.
+                //
+                // Vote counts are per-vertex (not per-face) so the shell
+                // size dominates over face topology. A wall plank with 50
+                // verts on LOD3 wall #5 and 2 verts straddling onto wall #6
+                // overlays cleanly onto #5 instead of promoting.
+                var shellVotes = new Dictionary<int, int>();
+                var shellVertSet = new HashSet<int>();
                 for (int s = 0; s < fineShells.Length; s++)
                 {
                     var shell = fineShells[s];
+                    shellVotes.Clear();
+                    shellVertSet.Clear();
+                    foreach (int f in shell.faceIndices)
+                    {
+                        for (int k = 0; k < 3; k++)
+                        {
+                            int vi = fineRawTris[f * 3 + k];
+                            if (!shellVertSet.Add(vi)) continue;
+                            int ps = vertOverlayShell[vi];
+                            if (ps < 0) continue;
+                            shellVotes.TryGetValue(ps, out int prev);
+                            shellVotes[ps] = prev + 1;
+                        }
+                    }
+                    int totalVotes = shellVertSet.Count;
+                    int winnerShell = -1, winnerVotes = 0;
+                    foreach (var kv in shellVotes)
+                        if (kv.Value > winnerVotes) { winnerVotes = kv.Value; winnerShell = kv.Key; }
+
+                    // Overlay threshold: winner takes a majority of the
+                    // shell's vertices (≥ 50% by default — 1 outlier per
+                    // 2 inliers is fine; a half-promoted shell is honest).
+                    bool overlayPasses = winnerShell >= 0
+                                      && totalVotes > 0
+                                      && winnerVotes * 2 >= totalVotes;
+
                     float areaFrac = shell.totalArea / totalDeepArea;
                     bool tinyArea  = areaFrac < opts.skipAreaFrac;
                     bool fewFaces  = shell.faceCount <= opts.skipMaxFaceCount;
+
                     int domainIdx;
-                    if (tinyArea && fewFaces)
+                    if (overlayPasses)
+                    {
+                        domainIdx = winnerShell;
+                        overlaidFineFaces += shell.faceCount;
+                    }
+                    else if (tinyArea && fewFaces)
                     {
                         domainIdx = -1;
                         skippedFineFaces += shell.faceCount;
