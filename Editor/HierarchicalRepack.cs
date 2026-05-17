@@ -248,15 +248,30 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>A Poisson-distributed point on the proxy surface paired
-        /// with the proxy UV2 it inherits. Stage 3 will project worldPos
-        /// onto each fine LOD to decide shell membership.</summary>
+        /// with the metadata Stage 3+ needs to make per-shell decisions.
+        /// Storing direction + chart + ID upfront avoids re-derivation in
+        /// later stages and lets the projection trace carry richer signal
+        /// (e.g. orientation-filtered shell vote, per-chart residual fit).</summary>
         public struct ProxySample
         {
             public Vector3 worldPos;
+            /// <summary>Outward face normal of the proxy triangle this sample
+            /// sits on, in world space. Stage 4 can reject candidate fine
+            /// shells whose normal disagrees by &gt; threshold.</summary>
+            public Vector3 worldNormal;
             public Vector2 uv2;
             /// <summary>Index of the proxy triangle this sample sits inside —
             /// lets Stage 3 group samples by proxy face / chart when needed.</summary>
             public int     proxyFaceIdx;
+            /// <summary>Index of the proxy UV chart (shell) this sample's
+            /// face belongs to. Two faces share a chart iff their UV2 is
+            /// continuous across the shared edge — extracted via
+            /// UvShellExtractor on the active proxy (proxyUv2 + proxyTris).</summary>
+            public int     proxyShellId;
+            /// <summary>Sequential ID assigned at sampling time. Stable
+            /// because the LCG seed is fixed; lets later stages refer to
+            /// specific samples (e.g. for debug picking).</summary>
+            public int     sampleId;
         }
 
         // ─── Public entry ────────────────────────────────────────────
@@ -1457,10 +1472,26 @@ namespace SashaRX.UnityMeshLab
                 return;
             if (r.proxyTris.Length < 3) return;
 
+            // Per-face proxy-shell membership via UV2-edge connectivity.
+            // UvShellExtractor was written for UV0 input, but the partition
+            // rule (two faces share a shell iff their shared canonical edge
+            // has matching UV on both sides) is the same on UV2.
+            var uvShells = UvShellExtractor.Extract(r.proxyUv2, r.proxyTris);
+            int faceCount = r.proxyTris.Length / 3;
+            var faceToShell = new int[faceCount];
+            for (int i = 0; i < faceCount; i++) faceToShell[i] = -1;
+            if (uvShells != null)
+            {
+                for (int si = 0; si < uvShells.Count; si++)
+                    foreach (int f in uvShells[si].faceIndices)
+                        if (f >= 0 && f < faceCount)
+                            faceToShell[f] = si;
+            }
+
             float diagSq = Mathf.Max(meshDiag * meshDiag, 1e-6f);
             float densityPerSqMeshDiag = Mathf.Max(opts.proxySampleDensity, 1);
-            int faceCount = r.proxyTris.Length / 3;
             var samples = new List<ProxySample>(faceCount * 6);
+            int nextSampleId = 0;
             // Use a deterministic LCG so re-runs on the same mesh produce
             // identical sample sets — keeps the visual diagnostic stable.
             uint rng = 0x9E3779B9u;
@@ -1476,9 +1507,12 @@ namespace SashaRX.UnityMeshLab
                 Vector2 uvA = r.proxyUv2[ia];
                 Vector2 uvB = r.proxyUv2[ib];
                 Vector2 uvC = r.proxyUv2[ic];
-                // Triangle area in world space.
-                float triArea = 0.5f * Vector3.Cross(B - A, C - A).magnitude;
+                Vector3 cross = Vector3.Cross(B - A, C - A);
+                float crossMag = cross.magnitude;
+                float triArea = 0.5f * crossMag;
                 if (triArea <= 0f) continue;
+                Vector3 faceNormal = cross / crossMag;
+                int shellId = faceToShell[f];
 
                 int n = Mathf.Max(3, Mathf.CeilToInt(densityPerSqMeshDiag * triArea / diagSq));
 
@@ -1495,8 +1529,11 @@ namespace SashaRX.UnityMeshLab
                     samples.Add(new ProxySample
                     {
                         worldPos     = A * w + B * u + C * v,
+                        worldNormal  = faceNormal,
                         uv2          = uvA * w + uvB * u + uvC * v,
                         proxyFaceIdx = f,
+                        proxyShellId = shellId,
+                        sampleId     = nextSampleId++,
                     });
                 }
             }
