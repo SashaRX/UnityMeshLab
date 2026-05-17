@@ -1538,13 +1538,21 @@ namespace SashaRX.UnityMeshLab
             }
             finally { UnityEngine.Object.DestroyImmediate(baseTex); }
 
-            // Draw each sample as a 3-pixel disk in bright magenta. Y is
-            // flipped to match UvPngWriter's convention.
+            // Draw each sample as a 3-pixel disk in bright magenta. The
+            // UV→pixel mapping MUST match UvPngWriter — it renders the
+            // [-0.1, 1.1] UV range (to show out-of-bounds verts around
+            // the unit box), not [0,1] linearly. If we map dots [0,1] →
+            // [0, size] the points land outside the chart region rendered
+            // by the backdrop. Mirror the helper's UvLo / UvHi constants.
+            const float kUvLo = -0.1f, kUvHi = 1.1f;
+            float uvRange = kUvHi - kUvLo;
             Color32 dot = new Color32(220, 30, 180, 255);
             foreach (var sm in r.proxySamples)
             {
-                int px = Mathf.Clamp(Mathf.FloorToInt(sm.uv2.x * size), 1, size - 2);
-                int py = Mathf.Clamp(Mathf.FloorToInt((1f - sm.uv2.y) * size), 1, size - 2);
+                float nx = (sm.uv2.x - kUvLo) / uvRange;
+                float ny = (sm.uv2.y - kUvLo) / uvRange;
+                int px = Mathf.Clamp(Mathf.FloorToInt(nx * size), 1, size - 2);
+                int py = Mathf.Clamp(Mathf.FloorToInt((1f - ny) * size), 1, size - 2);
                 for (int dy = -1; dy <= 1; dy++)
                 for (int dx = -1; dx <= 1; dx++)
                     pixels[(py + dy) * size + (px + dx)] = dot;
