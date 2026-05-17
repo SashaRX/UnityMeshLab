@@ -1242,13 +1242,35 @@ namespace SashaRX.UnityMeshLab
                     worldVerts[i] = p;
                     mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p);
                 }
-                Vector3 ext = mx - mn;
-                // Pick axis with smallest extent as the projection normal.
-                int normalAxis = 0;
-                if (ext.y <= ext.x && ext.y <= ext.z) normalAxis = 1;
-                else if (ext.z < ext.x && ext.z < ext.y) normalAxis = 2;
 
+                // Isometric projection — axonometric basis on the (1,1,1)
+                // normal so three orthogonal box faces are visible. Beats
+                // a single-axis planar projection for boxes (top-down shows
+                // only 2 walls), gives an immediate 3D read of the mesh.
+                Vector3 isoR = new Vector3( 0.7071f, 0f, -0.7071f);            // right axis
+                Vector3 isoU = new Vector3(-0.4082f, 0.8165f, -0.4082f);       // up axis
+                // Project the 8 AABB corners to size the viewport.
+                float umin = float.MaxValue, umax = float.MinValue;
+                float vmin = float.MaxValue, vmax = float.MinValue;
+                for (int cx = 0; cx < 2; cx++)
+                for (int cy = 0; cy < 2; cy++)
+                for (int cz = 0; cz < 2; cz++)
+                {
+                    Vector3 corner = new Vector3(
+                        cx == 0 ? mn.x : mx.x,
+                        cy == 0 ? mn.y : mx.y,
+                        cz == 0 ? mn.z : mx.z);
+                    float cu = Vector3.Dot(corner, isoR);
+                    float cv = Vector3.Dot(corner, isoU);
+                    if (cu < umin) umin = cu; if (cu > umax) umax = cu;
+                    if (cv < vmin) vmin = cv; if (cv > vmax) vmax = cv;
+                }
                 int size = 1024;
+                float du = umax - umin, dv = vmax - vmin;
+                float scale = (size * 0.92f) / Mathf.Max(Mathf.Max(du, dv), 1e-6f);
+                float midU = (umin + umax) * 0.5f, midV = (vmin + vmax) * 0.5f;
+                float half = size * 0.5f;
+
                 var pixels = new Color32[size * size];
                 var bg = new Color32(244, 244, 248, 255); // light backdrop
                 for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
@@ -1257,10 +1279,10 @@ namespace SashaRX.UnityMeshLab
                 for (int f = 0; f < faceCount; f++)
                 {
                     int domain = f2d[f];
-                    Color32 col = DomainColor(domain, r.baseShellCount);
-                    Vector2 a = ProjectToView(worldVerts[tris[f * 3]],     normalAxis, mn, mx, size);
-                    Vector2 b = ProjectToView(worldVerts[tris[f * 3 + 1]], normalAxis, mn, mx, size);
-                    Vector2 c = ProjectToView(worldVerts[tris[f * 3 + 2]], normalAxis, mn, mx, size);
+                    Color32 col = CategoryColor(domain, r.baseShellCount);
+                    Vector2 a = IsoProject(worldVerts[tris[f * 3]],     isoR, isoU, midU, midV, scale, half);
+                    Vector2 b = IsoProject(worldVerts[tris[f * 3 + 1]], isoR, isoU, midU, midV, scale, half);
+                    Vector2 c = IsoProject(worldVerts[tris[f * 3 + 2]], isoR, isoU, midU, midV, scale, half);
                     RasterizeTrianglePx(pixels, size, a, b, c, col);
                 }
 
@@ -1269,28 +1291,13 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        /// <summary>Project a world-space point onto the 2D plane normal to
-        /// <paramref name="normalAxis"/> (0=YZ, 1=XZ, 2=XY) and map into
-        /// pixel coords for a <paramref name="size"/>×<paramref name="size"/>
-        /// image with 4% margin. Centres the projected AABB and keeps aspect
-        /// ratio by using the larger of the two in-plane extents as the
-        /// scale denominator.</summary>
-        static Vector2 ProjectToView(Vector3 p, int normalAxis, Vector3 mn, Vector3 mx, int size)
+        static Vector2 IsoProject(Vector3 p, Vector3 isoR, Vector3 isoU,
+            float midU, float midV, float scale, float half)
         {
-            float u, v, umin, umax, vmin, vmax;
-            switch (normalAxis)
-            {
-                case 0:  u = p.z; v = p.y; umin = mn.z; umax = mx.z; vmin = mn.y; vmax = mx.y; break;
-                case 1:  u = p.x; v = p.z; umin = mn.x; umax = mx.x; vmin = mn.z; vmax = mx.z; break;
-                default: u = p.x; v = p.y; umin = mn.x; umax = mx.x; vmin = mn.y; vmax = mx.y; break;
-            }
-            float du = umax - umin, dv = vmax - vmin;
-            float scale = (size * 0.92f) / Mathf.Max(Mathf.Max(du, dv), 1e-6f);
-            float midU = (umin + umax) * 0.5f, midV = (vmin + vmax) * 0.5f;
-            float half = size * 0.5f;
-            float x = half + (u - midU) * scale;
-            float y = half - (v - midV) * scale; // flip Y so +V points up visually
-            return new Vector2(x, y);
+            float pu = Vector3.Dot(p, isoR);
+            float pv = Vector3.Dot(p, isoU);
+            return new Vector2(half + (pu - midU) * scale,
+                               half - (pv - midV) * scale);
         }
 
         /// <summary>Color palette for diagnostic PNGs. Skip / degenerate
@@ -1298,12 +1305,26 @@ namespace SashaRX.UnityMeshLab
         /// family. Promoted clusters (idx ≥ baseShellCount) → warm
         /// (orange-red) family. Within each family the hue varies by
         /// domain index hash so adjacent shells are distinguishable.</summary>
+        // Solid category palette for per-LOD diagnostic PNGs — the question
+        // there is "is this face overlay / promote / skip?" Per-domain hue
+        // variation would create false visual differences between LODs that
+        // actually classify the same.
+        static readonly Color32 kColorOverlay   = new Color32( 80, 190,  90, 255);
+        static readonly Color32 kColorPromote   = new Color32(220,  90,  70, 255);
+        static readonly Color32 kColorSkipDegen = new Color32(255,  40, 200, 255);
+
+        static Color32 CategoryColor(int domainIdx, int baseShellCount)
+        {
+            if (domainIdx < 0) return kColorSkipDegen;
+            return domainIdx < baseShellCount ? kColorOverlay : kColorPromote;
+        }
+
+        // Per-domain palette for atlas-layout PNG — there each rect must be
+        // visually distinct from its neighbours, so we keep the hash-based
+        // hue variation but only within the green / warm families.
         static Color32 DomainColor(int domainIdx, int baseShellCount)
         {
-            // -1 = no atlas slot (skip OR degenerate). Bright magenta so it
-            // pops against the light backdrop — "this face has no UV2".
-            if (domainIdx < 0) return new Color32(255, 40, 200, 255);
-            // 32-bit Knuth hash → 0..59 hue offset within the family.
+            if (domainIdx < 0) return kColorSkipDegen;
             uint h = unchecked((uint)domainIdx * 2654435761u);
             int hueOffset = (int)(h % 60u);
             int valOffset = (int)((h >> 8) % 30u);
@@ -1311,14 +1332,12 @@ namespace SashaRX.UnityMeshLab
             float hue, sat, val;
             if (isBase)
             {
-                // Green family — hue 90-150°.
                 hue = (90f + hueOffset) / 360f;
                 sat = 0.60f;
                 val = 0.70f + valOffset / 200f;
             }
             else
             {
-                // Warm family — hue 0-30° (red-orange).
                 hue = (hueOffset * 0.5f) / 360f;
                 sat = 0.85f;
                 val = 0.85f + valOffset / 300f;
