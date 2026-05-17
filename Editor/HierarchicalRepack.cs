@@ -1120,7 +1120,8 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Build the hierarchical atlas for a single LODGroup and write
         /// the dry-run CSV into <paramref name="outputDir"/> as
-        /// <c>hier_repack.csv</c>. Returns the build <see cref="Result"/>; the
+        /// <c>repack.csv</c> plus diagnostic PNGs. Returns the build
+        /// <see cref="Result"/>; the
         /// caller can inspect counters or surface a per-case summary. This is
         /// the entry point used by <c>LightmapTransferTool.ExecBenchmark</c>;
         /// stand-alone single-model dry-runs are no longer wired to a
@@ -1142,7 +1143,7 @@ namespace SashaRX.UnityMeshLab
         /// drawn as a filled rectangle, colored by base vs promoted (blue
         /// vs warm), with per-domain hue variation so adjacent rects can be
         /// distinguished. Black 1px border separates rects. Output:
-        /// <c>{outputDir}/hier_repack_atlas.png</c>.</summary>
+        /// <c>{outputDir}/atlas.png</c>.</summary>
         static void WriteAtlasPng(string outputDir, Result r)
         {
             if (r.domains == null || r.domains.Length == 0) return;
@@ -1167,7 +1168,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            string path = Path.Combine(outputDir, "hier_repack_atlas.png");
+            string path = Path.Combine(outputDir, "atlas.png");
             EncodePng(pixels, size, size, path);
         }
 
@@ -1179,7 +1180,7 @@ namespace SashaRX.UnityMeshLab
         /// surface — red blobs in the middle of an obvious wall mean a
         /// topology divergence the per-vertex classifier flagged; red
         /// strips only along chart borders mean only boundary faces flunk
-        /// face-consensus. Output: <c>{outputDir}/hier_repack_lod{N}.png</c>
+        /// face-consensus. Output: <c>{outputDir}/lod{N}.png</c>
         /// per fine LOD. Background is light so face colors pop; skip /
         /// degenerate faces render bright magenta so they're impossible
         /// to mistake for backdrop. Atlas-projection (UV0) is intentionally
@@ -1243,7 +1244,7 @@ namespace SashaRX.UnityMeshLab
                     RasterizeTrianglePx(pixels, size, a, b, c, col);
                 }
 
-                string path = Path.Combine(outputDir, $"hier_repack_lod{li}.png");
+                string path = Path.Combine(outputDir, $"lod{li}.png");
                 EncodePng(pixels, size, size, path);
             }
         }
@@ -1421,9 +1422,9 @@ namespace SashaRX.UnityMeshLab
             => WriteDryRunReport(lgName, r, null);
 
         /// <summary>Write the per-case dry-run CSV. If <paramref name="outputDir"/>
-        /// is non-null the file lands as <c>{outputDir}/hier_repack.csv</c>;
-        /// otherwise falls back to the timestamped BenchmarkReports/ layout
-        /// used by stand-alone callers.</summary>
+        /// is non-null the file lands as <c>{outputDir}/repack.csv</c>
+        /// (subfolder identifies the technique); otherwise falls back to the
+        /// timestamped BenchmarkReports/ layout used by stand-alone callers.</summary>
         static string WriteDryRunReport(string lgName, Result r, string outputDir)
         {
             string dir;
@@ -1432,7 +1433,7 @@ namespace SashaRX.UnityMeshLab
             {
                 dir = outputDir;
                 Directory.CreateDirectory(dir);
-                path = Path.Combine(dir, "hier_repack.csv");
+                path = Path.Combine(dir, "repack.csv");
             }
             else
             {

@@ -1901,10 +1901,11 @@ namespace SashaRX.UnityMeshLab
                         OnRefresh();
 
                         // Per-case subdirectory groups every technique's
-                        // artefacts for this model: legacy_sweep/*.csv +
-                        // hier_probe.csv + hier_repack.csv all live alongside
-                        // each other so an operator comparing techniques for
-                        // one model just lists the directory. The case index
+                        // artefacts for this model. Each technique lives in
+                        // its own subfolder (hier/, legacy/) so an operator
+                        // comparing techniques for one model just opens the
+                        // matching folder — no mixed naming conventions,
+                        // no top-level clutter. The case index
                         // is prefixed so two cases that sanitise to the same
                         // slug (e.g. "Chair A" and "Chair/A" both collapsing
                         // to "Chair_A") still land in distinct directories
@@ -1918,29 +1919,40 @@ namespace SashaRX.UnityMeshLab
 
                         bool didAnything = false;
 
-                        // Legacy xatlas parameter sweep — drops its own
-                        // summary.csv / winner.json / cell_*.csv into caseDir.
-                        // BenchmarkRecorder.WriteArtefacts hardcodes the
-                        // top-level BenchmarkReports/ dir for its per-cell
-                        // CSV/JSON/PNGs; the override redirects them into
-                        // caseDir alongside summary.csv. Restored in finally
-                        // so a thrown ExecSweep doesn't leak the redirect
-                        // into unrelated tool invocations.
+                        // Split per-technique into subdirectories so the case
+                        // root only contains technique-named folders — no
+                        // mixed naming conventions, no clash between probe's
+                        // probe.csv and legacy's summary.csv.
+                        //   caseDir/hier/    — probe.csv + repack.csv + PNGs
+                        //   caseDir/legacy/  — summary/winner/manifest/index
+                        //                      + per-cell CSV/JSON/PNG/
+                        string hierDir   = System.IO.Path.Combine(caseDir, "hier");
+                        string legacyDir = System.IO.Path.Combine(caseDir, "legacy");
+
+                        // Legacy xatlas parameter sweep — drops its
+                        // summary.csv / winner.json / per-cell artefacts into
+                        // legacyDir. BenchmarkRecorder.WriteArtefacts hardcodes
+                        // top-level BenchmarkReports/ for its per-cell output;
+                        // the override redirects them into legacyDir alongside
+                        // the aggregate. Restored in finally so a throw doesn't
+                        // leak the redirect into unrelated tool invocations.
                         if (tech.legacyXatlasSweep)
                         {
+                            System.IO.Directory.CreateDirectory(legacyDir);
                             string prevOverride = BenchmarkRecorder.OutputDirectoryOverride;
-                            BenchmarkRecorder.OutputDirectoryOverride = caseDir;
-                            try { ExecSweep(suite.sweep, caseDir); }
+                            BenchmarkRecorder.OutputDirectoryOverride = legacyDir;
+                            try { ExecSweep(suite.sweep, legacyDir); }
                             finally { BenchmarkRecorder.OutputDirectoryOverride = prevOverride; }
                             didAnything = true;
                         }
 
-                        // Hierarchical probe v3 — single hier_probe.csv per case.
+                        // Hierarchical probe v3 — probe.csv under hier/.
                         if (tech.hierarchicalProbe)
                         {
                             try
                             {
-                                HierarchicalDiag.ProbeLodGroup(lg, caseDir);
+                                System.IO.Directory.CreateDirectory(hierDir);
+                                HierarchicalDiag.ProbeLodGroup(lg, hierDir);
                                 didAnything = true;
                             }
                             catch (Exception ex)
@@ -1950,13 +1962,15 @@ namespace SashaRX.UnityMeshLab
                             }
                         }
 
-                        // Hierarchical repack dry-run — single hier_repack.csv per case.
+                        // Hierarchical repack dry-run — repack.csv + atlas.png
+                        // + lod{N}.png under hier/.
                         if (tech.hierarchicalRepack)
                         {
                             try
                             {
+                                System.IO.Directory.CreateDirectory(hierDir);
                                 var hrOpts = HierarchicalRepack.Options.Default;
-                                var hrResult = HierarchicalRepack.BuildAndWriteForCase(lg, hrOpts, caseDir);
+                                var hrResult = HierarchicalRepack.BuildAndWriteForCase(lg, hrOpts, hierDir);
                                 if (!string.IsNullOrEmpty(hrResult.error))
                                     UvtLog.Warn(UvtLog.Category.Benchmark,
                                         $"[Bench] Case {ci} '{tc.label}' repack: {hrResult.error}");
@@ -2026,7 +2040,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     $"[Bench] complete: {doneCases}/{caseCount} cases [{techList}]" +
                     (overallCancelled ? " (cancelled)" : "") +
-                    $". Per-case dirs: BenchmarkReports/bench_{runStamp}/<idx>_<label>/");
+                    $". Per-case dirs: BenchmarkReports/bench_{runStamp}/<idx>_<label>/{{hier,legacy}}/");
             }
         }
 

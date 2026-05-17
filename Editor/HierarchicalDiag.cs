@@ -528,8 +528,9 @@ namespace SashaRX.UnityMeshLab
             => WriteReport(lgName, records, null);
 
         /// <summary>Write the probe report. If <paramref name="outputDir"/> is
-        /// non-null the CSV lands under it as <c>hier_probe.csv</c> (fixed
-        /// name — one probe per case). Otherwise falls back to the legacy
+        /// non-null the CSV lands under it as <c>probe.csv</c> (fixed
+        /// name — one probe per case, subfolder identifies the technique).
+        /// Otherwise falls back to the legacy
         /// BenchmarkReports/hierdiag_&lt;stamp&gt;_&lt;name&gt;.csv layout for
         /// standalone runs.</summary>
         static string WriteReport(string lgName, List<FaceProbeRecord> records,
@@ -541,7 +542,7 @@ namespace SashaRX.UnityMeshLab
             {
                 dir = outputDir;
                 Directory.CreateDirectory(dir);
-                path = Path.Combine(dir, "hier_probe.csv");
+                path = Path.Combine(dir, "probe.csv");
             }
             else
             {
