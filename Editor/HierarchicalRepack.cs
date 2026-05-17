@@ -120,6 +120,15 @@ namespace SashaRX.UnityMeshLab
             /// — this only picks which one Stage 2+ actually consumes.</summary>
             public ProxyMode proxyMode;
 
+            /// <summary>Stage 2 Poisson sampling rate: samples per unit
+            /// proxy area, scaled so the total sample count is
+            /// invariant to mesh scale. Effective per-tri count is
+            /// max(3, ceil(proxySampleDensity × tri_area /
+            /// meshDiag²)). Default 4000 → ~4000 samples on a 1m² mesh,
+            /// proportional otherwise. Higher = denser pattern at
+            /// the cost of Stage 3 projection runtime.</summary>
+            public int proxySampleDensity;
+
             public static Options Default => new Options
             {
                 shellNormalThresholdDeg = 30f,
@@ -130,6 +139,7 @@ namespace SashaRX.UnityMeshLab
                 skipAreaFrac            = 0.001f,
                 skipMaxFaceCount        = 4,
                 proxyMode               = ProxyMode.Clean,
+                proxySampleDensity      = 4000,
             };
         }
 
@@ -204,23 +214,49 @@ namespace SashaRX.UnityMeshLab
             /// triangle indices (mesh.triangles) so the UV2 array can be
             /// rendered as a UV layout PNG.</summary>
             public int[]     proxyTris;
+            /// <summary>World-space positions of <see cref="proxyUv2"/>'s
+            /// vertex set — indexed by <see cref="proxyTris"/>. Needed by
+            /// Stage 2 sampling because sym-split (clean) or chart-seam
+            /// splitting (auto) can rewrite the proxy's vertex layout vs
+            /// the original deepest-LOD mesh.</summary>
+            public Vector3[] proxyWorldVerts;
             /// <summary>Stage 1 diagnostic: clean variant (sym-split + ARAP
             /// + xatlas pack), always populated regardless of which mode
             /// <see cref="Options.proxyMode"/> picks for downstream use.</summary>
             public Vector2[] proxyUv2Clean;
             public int[]     proxyTrisClean;
+            public Vector3[] proxyWorldVertsClean;
             /// <summary>Stage 1 comparison: raw repack of the deepest LOD's
             /// UV0 through xatlas (no sym-split, no ARAP). Shows what those
             /// steps contribute against the "clean" pipeline.</summary>
             public Vector2[] proxyUv2Raw;
             public int[]     proxyTrisRaw;
+            public Vector3[] proxyWorldVertsRaw;
             /// <summary>Stage 1 comparison: TRUE auto-unwrap — xatlas builds
             /// charts from scratch using the deepest LOD's positions +
             /// normals (no UV0 hint). Requires the native bridge's
             /// xatlasAddMesh export.</summary>
             public Vector2[] proxyUv2Auto;
             public int[]     proxyTrisAuto;
+            public Vector3[] proxyWorldVertsAuto;
+            /// <summary>PR-3 Stage 2: Poisson-style samples drawn uniformly
+            /// across the active proxy's 3D surface, each carrying the
+            /// proxy UV2 it lands on. Drives Stage 3+ projection onto fine
+            /// LOD shells. Null until Stage 2 runs.</summary>
+            public ProxySample[] proxySamples;
             public string error;
+        }
+
+        /// <summary>A Poisson-distributed point on the proxy surface paired
+        /// with the proxy UV2 it inherits. Stage 3 will project worldPos
+        /// onto each fine LOD to decide shell membership.</summary>
+        public struct ProxySample
+        {
+            public Vector3 worldPos;
+            public Vector2 uv2;
+            /// <summary>Index of the proxy triangle this sample sits inside —
+            /// lets Stage 3 group samples by proxy face / chart when needed.</summary>
+            public int     proxyFaceIdx;
         }
 
         // ─── Public entry ────────────────────────────────────────────
@@ -317,11 +353,18 @@ namespace SashaRX.UnityMeshLab
             // operator's scene assets are untouched. The "clean" variant
             // is the one that will drive subsequent stages; the others are
             // diagnostic-only.
-            try { ComputeProxyUv2Variants(meshes[deepest], opts, lg.name, result); }
+            try { ComputeProxyUv2Variants(meshes[deepest], xforms[deepest], opts, lg.name, result); }
             catch (Exception ex)
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     $"[HierRepack] proxy UV2 stage 1 failed on '{lg.name}': {ex.Message}");
+            }
+            // PR-3 Stage 2: Poisson samples on the active proxy.
+            try { GenerateProxySamples(opts, meshDiag, result); }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] proxy sampling stage 2 failed on '{lg.name}': {ex.Message}");
             }
 
             // ── Step 3: domain table init ──
@@ -1226,6 +1269,7 @@ namespace SashaRX.UnityMeshLab
             WriteDryRunReport(lg.name, result, outputDir);
             WriteAtlasPng(outputDir, result);
             WriteProxyUv2Png(outputDir, result);
+            WriteProxySamplesPng(outputDir, result);
             WriteFineLodDomainPngs(outputDir, lg, result);
             LogDryRunSummary(lg.name, result);
             return result;
@@ -1257,8 +1301,8 @@ namespace SashaRX.UnityMeshLab
         /// <see cref="WriteProxyUv2Png"/>. Each populates a pair of
         /// (proxyUv2*, proxyTris*) fields on the Result. Variants that
         /// fail individually log a warning but don't abort the others.</summary>
-        static void ComputeProxyUv2Variants(Mesh deepMesh, Options opts,
-            string lgName, Result result)
+        static void ComputeProxyUv2Variants(Mesh deepMesh, Transform deepXform,
+            Options opts, string lgName, Result result)
         {
             if (deepMesh == null) return;
 
@@ -1284,8 +1328,9 @@ namespace SashaRX.UnityMeshLab
                         rotate: true);
                     if (packed != null && packed.Length > 0)
                     {
-                        result.proxyUv2Clean  = packed;
-                        result.proxyTrisClean = clone.triangles;
+                        result.proxyUv2Clean   = packed;
+                        result.proxyTrisClean  = clone.triangles;
+                        result.proxyWorldVertsClean = ToWorld(clone.vertices, deepXform);
                     }
                 }
                 catch (Exception ex)
@@ -1314,8 +1359,9 @@ namespace SashaRX.UnityMeshLab
                         {
                             var uvOut = new List<Vector2>();
                             clone.GetUVs(1, uvOut);
-                            result.proxyUv2Raw  = uvOut.ToArray();
-                            result.proxyTrisRaw = clone.triangles;
+                            result.proxyUv2Raw       = uvOut.ToArray();
+                            result.proxyTrisRaw      = clone.triangles;
+                            result.proxyWorldVertsRaw = ToWorld(clone.vertices, deepXform);
                         }
                     }
                     finally { UnityEngine.Object.DestroyImmediate(clone); }
@@ -1330,11 +1376,13 @@ namespace SashaRX.UnityMeshLab
             // ── Variant 3: true auto-unwrap (positions + normals) ──
             try
             {
-                AutoUnwrapDeepMesh(deepMesh, opts, out var uvAuto, out var trisAuto);
-                if (uvAuto != null && trisAuto != null)
+                AutoUnwrapDeepMesh(deepMesh, deepXform, opts,
+                    out var uvAuto, out var trisAuto, out var worldAuto);
+                if (uvAuto != null && trisAuto != null && worldAuto != null)
                 {
-                    result.proxyUv2Auto  = uvAuto;
-                    result.proxyTrisAuto = trisAuto;
+                    result.proxyUv2Auto        = uvAuto;
+                    result.proxyTrisAuto       = trisAuto;
+                    result.proxyWorldVertsAuto = worldAuto;
                 }
             }
             catch (Exception ex)
@@ -1356,24 +1404,154 @@ namespace SashaRX.UnityMeshLab
                 case ProxyMode.Raw:
                     if (result.proxyUv2Raw != null)
                     {
-                        result.proxyUv2  = result.proxyUv2Raw;
-                        result.proxyTris = result.proxyTrisRaw;
+                        result.proxyUv2         = result.proxyUv2Raw;
+                        result.proxyTris        = result.proxyTrisRaw;
+                        result.proxyWorldVerts  = result.proxyWorldVertsRaw;
                     }
                     break;
                 case ProxyMode.Auto:
                     if (result.proxyUv2Auto != null)
                     {
-                        result.proxyUv2  = result.proxyUv2Auto;
-                        result.proxyTris = result.proxyTrisAuto;
+                        result.proxyUv2         = result.proxyUv2Auto;
+                        result.proxyTris        = result.proxyTrisAuto;
+                        result.proxyWorldVerts  = result.proxyWorldVertsAuto;
                     }
                     break;
             }
             // Default + fallback: Clean.
             if (result.proxyUv2 == null && result.proxyUv2Clean != null)
             {
-                result.proxyUv2  = result.proxyUv2Clean;
-                result.proxyTris = result.proxyTrisClean;
+                result.proxyUv2         = result.proxyUv2Clean;
+                result.proxyTris        = result.proxyTrisClean;
+                result.proxyWorldVerts  = result.proxyWorldVertsClean;
             }
+        }
+
+        /// <summary>Transform a local-space vertex array into world space
+        /// using <paramref name="xform"/>. Helper for proxy variants that
+        /// need to expose their post-mod vertex positions to Stage 2+ —
+        /// sym-split (clean) and chart-seam splitting (auto) both rewrite
+        /// the proxy vertex layout, so we can't reuse the original deep
+        /// mesh's world verts.</summary>
+        static Vector3[] ToWorld(Vector3[] local, Transform xform)
+        {
+            if (local == null) return null;
+            var w = new Vector3[local.Length];
+            for (int i = 0; i < local.Length; i++) w[i] = xform.TransformPoint(local[i]);
+            return w;
+        }
+
+        // ─── PR-3 Stage 2: Poisson sampling on proxy surface ─────────
+
+        /// <summary>Generate uniform-density samples across the active
+        /// proxy's 3D surface using stratified jittered barycentrics per
+        /// triangle (a close-enough Poisson approximation for the
+        /// diagnostic; true blue-noise can replace this later without
+        /// changing call sites). Each sample carries the world position
+        /// and the proxy UV2 it inherits — Stage 3 will project these
+        /// onto each fine LOD's surface and use the {3D, UV2} pairs to
+        /// fit a per-fine-shell affine transform.</summary>
+        static void GenerateProxySamples(Options opts, float meshDiag, Result r)
+        {
+            if (r.proxyUv2 == null || r.proxyTris == null || r.proxyWorldVerts == null)
+                return;
+            if (r.proxyTris.Length < 3) return;
+
+            float diagSq = Mathf.Max(meshDiag * meshDiag, 1e-6f);
+            float densityPerSqMeshDiag = Mathf.Max(opts.proxySampleDensity, 1);
+            int faceCount = r.proxyTris.Length / 3;
+            var samples = new List<ProxySample>(faceCount * 6);
+            // Use a deterministic LCG so re-runs on the same mesh produce
+            // identical sample sets — keeps the visual diagnostic stable.
+            uint rng = 0x9E3779B9u;
+
+            for (int f = 0; f < faceCount; f++)
+            {
+                int ia = r.proxyTris[f * 3];
+                int ib = r.proxyTris[f * 3 + 1];
+                int ic = r.proxyTris[f * 3 + 2];
+                Vector3 A = r.proxyWorldVerts[ia];
+                Vector3 B = r.proxyWorldVerts[ib];
+                Vector3 C = r.proxyWorldVerts[ic];
+                Vector2 uvA = r.proxyUv2[ia];
+                Vector2 uvB = r.proxyUv2[ib];
+                Vector2 uvC = r.proxyUv2[ic];
+                // Triangle area in world space.
+                float triArea = 0.5f * Vector3.Cross(B - A, C - A).magnitude;
+                if (triArea <= 0f) continue;
+
+                int n = Mathf.Max(3, Mathf.CeilToInt(densityPerSqMeshDiag * triArea / diagSq));
+
+                for (int s = 0; s < n; s++)
+                {
+                    rng = unchecked(rng * 1664525u + 1013904223u);
+                    float u = (rng & 0xFFFFFFu) / 16777216f;
+                    rng = unchecked(rng * 1664525u + 1013904223u);
+                    float v = (rng & 0xFFFFFFu) / 16777216f;
+                    // Uniform sampling on a triangle via the
+                    // sqrt-of-uniform reflection.
+                    if (u + v > 1f) { u = 1f - u; v = 1f - v; }
+                    float w = 1f - u - v;
+                    samples.Add(new ProxySample
+                    {
+                        worldPos     = A * w + B * u + C * v,
+                        uv2          = uvA * w + uvB * u + uvC * v,
+                        proxyFaceIdx = f,
+                    });
+                }
+            }
+            r.proxySamples = samples.ToArray();
+        }
+
+        /// <summary>PR-3 Stage 2 visualization: overlay the proxy samples
+        /// as small dots on the active proxy's UV2 layout. The base
+        /// triangulation is drawn faintly so the sample distribution is
+        /// the dominant visual signal.</summary>
+        static void WriteProxySamplesPng(string outputDir, Result r)
+        {
+            if (r.proxySamples == null || r.proxySamples.Length == 0) return;
+            if (r.proxyUv2 == null || r.proxyTris == null) return;
+
+            // Base: render the active proxy's UV layout as a faded backdrop.
+            string basePath = Path.Combine(outputDir, "proxy_uv2_active.png");
+            UvPngWriter.Render(basePath, r.proxyUv2, r.proxyTris);
+
+            // Now draw samples on top of a fresh canvas with the same
+            // backdrop. Software path: load the rendered base, draw dots.
+            int size = UvPngWriter.DefaultSize;
+            var pixels = new Color32[size * size];
+            byte[] basePng = File.ReadAllBytes(basePath);
+            var baseTex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+            try
+            {
+                baseTex.LoadImage(basePng);
+                var basePixels = baseTex.GetPixels32();
+                // Render may produce different dimensions; just trust loaded size.
+                int w = baseTex.width, h = baseTex.height;
+                if (w * h == basePixels.Length && w == size && h == size)
+                    pixels = basePixels;
+                else
+                {
+                    var bg = new Color32(244, 244, 248, 255);
+                    for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
+                }
+            }
+            finally { UnityEngine.Object.DestroyImmediate(baseTex); }
+
+            // Draw each sample as a 3-pixel disk in bright magenta. Y is
+            // flipped to match UvPngWriter's convention.
+            Color32 dot = new Color32(220, 30, 180, 255);
+            foreach (var sm in r.proxySamples)
+            {
+                int px = Mathf.Clamp(Mathf.FloorToInt(sm.uv2.x * size), 1, size - 2);
+                int py = Mathf.Clamp(Mathf.FloorToInt((1f - sm.uv2.y) * size), 1, size - 2);
+                for (int dy = -1; dy <= 1; dy++)
+                for (int dx = -1; dx <= 1; dx++)
+                    pixels[(py + dy) * size + (px + dx)] = dot;
+            }
+
+            string path = Path.Combine(outputDir, "proxy_samples.png");
+            EncodePng(pixels, size, size, path);
         }
 
         /// <summary>Drive xatlasAddMesh + ComputeCharts + PackCharts on a
@@ -1381,10 +1559,10 @@ namespace SashaRX.UnityMeshLab
         /// per-output-vertex UV2 array and the corresponding output index
         /// buffer. Output index buffer may differ from mesh.triangles —
         /// xatlas can split vertices at chart seams.</summary>
-        static void AutoUnwrapDeepMesh(Mesh mesh, Options opts,
-            out Vector2[] outUv, out int[] outTris)
+        static void AutoUnwrapDeepMesh(Mesh mesh, Transform xform, Options opts,
+            out Vector2[] outUv, out int[] outTris, out Vector3[] outWorldVerts)
         {
-            outUv = null; outTris = null;
+            outUv = null; outTris = null; outWorldVerts = null;
             var verts = mesh.vertices;
             var tris  = mesh.triangles;
             var normals = mesh.normals;
@@ -1451,8 +1629,16 @@ namespace SashaRX.UnityMeshLab
                 XatlasNative.xatlasGetOutputIndices(0, outIndsU, outIc);
 
                 outUv = new Vector2[outVc];
+                outWorldVerts = new Vector3[outVc];
                 for (int i = 0; i < outVc; i++)
+                {
                     outUv[i] = new Vector2(uvFlat[i * 2], uvFlat[i * 2 + 1]);
+                    // xref maps each output vert back to its original input vert,
+                    // whose local position is mesh.vertices[xref[i]]. Apply the
+                    // deepest LOD's xform once to land in world space.
+                    int origIdx = (int)xref[i];
+                    outWorldVerts[i] = xform.TransformPoint(verts[origIdx]);
+                }
                 outTris = new int[outIc];
                 for (int i = 0; i < outIc; i++) outTris[i] = (int)outIndsU[i];
             }
