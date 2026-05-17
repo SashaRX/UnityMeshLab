@@ -1818,7 +1818,11 @@ namespace SashaRX.UnityMeshLab
             // then treat the temp meshes as the new baseline.
             if (origLodGroup != null) ResetWorkingCopies();
 
-            string runStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff",
+            // Human-readable run stamp — `yyyy-MM-dd_HH-mm-ss` is unambiguous
+            // in any locale, sorts chronologically, and the dashes make the
+            // date / time split obvious in a file browser. UTC so two
+            // operators in different timezones produce comparable folder names.
+            string runStamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss",
                 System.Globalization.CultureInfo.InvariantCulture);
             string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
                                  ?? Application.dataPath;
