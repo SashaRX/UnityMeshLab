@@ -260,33 +260,55 @@ namespace SashaRX.UnityMeshLab
             BuildDeepAabbs(deepWorldVerts, deepRawTris, out var deepMin, out var deepMax);
             float overlayDistAbs = opts.overlayDistNorm * meshDiag;
 
-            // PR-3 Stage 1 (proxy UV2 generation): hand the deepest LOD to
-            // xatlas — it auto-packs the existing UV0 shells into a clean
-            // atlas. This is the reference UV layout that finer LODs will
-            // project into in subsequent stages. Stored on the result so
-            // BuildAndWriteForCase can dump proxy_uv2.png for review; the
-            // current per-shell classifier still drives faceToDomain, this
-            // is added in parallel for visual evaluation.
+            // PR-3 Stage 1 (proxy UV2 generation): clean up the deepest LOD's
+            // UV0 into a packed UV2 that the finer LODs will project into.
+            //   1. SymmetrySplitShells — split mirrored / overlapping shells
+            //      so each physical surface gets its own atlas region (the
+            //      legacy pipeline does this in the tool layer separately,
+            //      RepackUv doesn't on its own).
+            //   2. XatlasRepack.RepackUv — xatlas auto-pack with ARAP
+            //      reparameterization for stretched shells (enabled by
+            //      default in RepackOptions.Default).
+            // Both steps run on a clone of the deepest mesh so the
+            // operator's scene assets are untouched. Result.proxyUv2 +
+            // proxyTris are stored for visualization (proxy_uv2.png) and
+            // for subsequent stages' per-shell projection.
             try
             {
                 if (meshes[deepest].uv != null && meshes[deepest].uv.Length > 0)
                 {
-                    var packedUv2 = XatlasRepack.RepackUv(meshes[deepest], meshes[deepest].uv,
-                        faceShellIds: null,
-                        resolution: opts.atlasResolutionPx,
-                        padding: opts.interDomainPaddingPx,
-                        rotate: true);
-                    if (packedUv2 != null && packedUv2.Length > 0)
+                    var clone = UnityEngine.Object.Instantiate(meshes[deepest]);
+                    clone.name = meshes[deepest].name + "_proxy_clone";
+                    try
                     {
-                        result.proxyUv2  = packedUv2;
-                        result.proxyTris = meshes[deepest].triangles;
+                        var shellList = UvShellExtractor.Extract(clone.uv, clone.triangles);
+                        if (shellList != null && shellList.Count > 0)
+                        {
+                            int split = SymmetrySplitShells.Split(clone, shellList);
+                            if (split > 0)
+                                UvtLog.Info(UvtLog.Category.Benchmark,
+                                    $"[HierRepack] proxy sym-split on '{lg.name}': {split} shells split");
+                        }
+                        var packedUv2 = XatlasRepack.RepackUv(clone, clone.uv,
+                            faceShellIds: null,
+                            resolution: opts.atlasResolutionPx,
+                            padding: opts.interDomainPaddingPx,
+                            rotate: true);
+                        if (packedUv2 != null && packedUv2.Length > 0)
+                        {
+                            // Take a snapshot of the clone's tris because sym-split may
+                            // have rewritten the index buffer; pair it with the packed UV.
+                            result.proxyUv2  = packedUv2;
+                            result.proxyTris = clone.triangles;
+                        }
                     }
+                    finally { UnityEngine.Object.DestroyImmediate(clone); }
                 }
             }
             catch (Exception ex)
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
-                    $"[HierRepack] proxy UV2 xatlas-pack failed on '{lg.name}': {ex.Message}");
+                    $"[HierRepack] proxy UV2 stage 1 failed on '{lg.name}': {ex.Message}");
             }
 
             // ── Step 3: domain table init ──
