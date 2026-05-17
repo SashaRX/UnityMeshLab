@@ -176,6 +176,17 @@ namespace SashaRX.UnityMeshLab
             /// triangle indices (mesh.triangles) so the UV2 array can be
             /// rendered as a UV layout PNG.</summary>
             public int[]     proxyTris;
+            /// <summary>Stage 1 comparison: raw repack of the deepest LOD's
+            /// UV0 through xatlas (no sym-split, no ARAP). Shows what those
+            /// steps contribute against the "clean" pipeline.</summary>
+            public Vector2[] proxyUv2Raw;
+            public int[]     proxyTrisRaw;
+            /// <summary>Stage 1 comparison: TRUE auto-unwrap — xatlas builds
+            /// charts from scratch using the deepest LOD's positions +
+            /// normals (no UV0 hint). Requires the native bridge's
+            /// xatlasAddMesh export.</summary>
+            public Vector2[] proxyUv2Auto;
+            public int[]     proxyTrisAuto;
             public string error;
         }
 
@@ -260,51 +271,20 @@ namespace SashaRX.UnityMeshLab
             BuildDeepAabbs(deepWorldVerts, deepRawTris, out var deepMin, out var deepMax);
             float overlayDistAbs = opts.overlayDistNorm * meshDiag;
 
-            // PR-3 Stage 1 (proxy UV2 generation): clean up the deepest LOD's
-            // UV0 into a packed UV2 that the finer LODs will project into.
-            //   1. SymmetrySplitShells — split mirrored / overlapping shells
-            //      so each physical surface gets its own atlas region (the
-            //      legacy pipeline does this in the tool layer separately,
-            //      RepackUv doesn't on its own).
-            //   2. XatlasRepack.RepackUv — xatlas auto-pack with ARAP
-            //      reparameterization for stretched shells (enabled by
-            //      default in RepackOptions.Default).
-            // Both steps run on a clone of the deepest mesh so the
-            // operator's scene assets are untouched. Result.proxyUv2 +
-            // proxyTris are stored for visualization (proxy_uv2.png) and
-            // for subsequent stages' per-shell projection.
-            try
-            {
-                if (meshes[deepest].uv != null && meshes[deepest].uv.Length > 0)
-                {
-                    var clone = UnityEngine.Object.Instantiate(meshes[deepest]);
-                    clone.name = meshes[deepest].name + "_proxy_clone";
-                    try
-                    {
-                        var shellList = UvShellExtractor.Extract(clone.uv, clone.triangles);
-                        if (shellList != null && shellList.Count > 0)
-                        {
-                            int split = SymmetrySplitShells.Split(clone, shellList);
-                            if (split > 0)
-                                UvtLog.Info(UvtLog.Category.Benchmark,
-                                    $"[HierRepack] proxy sym-split on '{lg.name}': {split} shells split");
-                        }
-                        var packedUv2 = XatlasRepack.RepackUv(clone, clone.uv,
-                            faceShellIds: null,
-                            resolution: opts.atlasResolutionPx,
-                            padding: opts.interDomainPaddingPx,
-                            rotate: true);
-                        if (packedUv2 != null && packedUv2.Length > 0)
-                        {
-                            // Take a snapshot of the clone's tris because sym-split may
-                            // have rewritten the index buffer; pair it with the packed UV.
-                            result.proxyUv2  = packedUv2;
-                            result.proxyTris = clone.triangles;
-                        }
-                    }
-                    finally { UnityEngine.Object.DestroyImmediate(clone); }
-                }
-            }
+            // PR-3 Stage 1 (proxy UV2 generation): produce up to three
+            // candidate UV2 layouts for the deepest LOD so the operator can
+            // compare visually:
+            //   • clean — UV0 → sym-split → xatlas pack (ARAP on by default)
+            //   • raw   — UV0 → xatlas pack only (no sym-split, no ARAP).
+            //             Diagnostic: shows what those steps contribute.
+            //   • auto  — TRUE auto-unwrap: positions + normals → xatlas
+            //             builds charts from scratch (no UV0 input). Needs
+            //             the native bridge's xatlasAddMesh export.
+            // All variants run on clones of the deepest mesh so the
+            // operator's scene assets are untouched. The "clean" variant
+            // is the one that will drive subsequent stages; the others are
+            // diagnostic-only.
+            try { ComputeProxyUv2Variants(meshes[deepest], opts, lg.name, result); }
             catch (Exception ex)
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
@@ -1218,15 +1198,203 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
-        /// <summary>PR-3 Stage 1 visualization: render the proxy UV2 (deepest
-        /// LOD after xatlas auto-pack) as a flat UV layout PNG. This is the
-        /// reference atlas the finer LODs will project into. Skipped if
-        /// proxy UV2 generation failed (mesh has no UV0, or xatlas error).</summary>
+        /// <summary>PR-3 Stage 1 visualization: render up to three proxy UV2
+        /// candidates as flat UV layout PNGs for side-by-side comparison.
+        ///   proxy_uv2_clean.png — UV0 → sym-split → xatlas pack (ARAP on)
+        ///   proxy_uv2_raw.png   — UV0 → xatlas pack only (no sym-split,
+        ///                         no ARAP). Shows what those steps add.
+        ///   proxy_uv2_auto.png  — TRUE auto-unwrap from positions + normals
+        ///                         (no UV0 input). Needs the native bridge's
+        ///                         xatlasAddMesh export (post DLL rebuild).
+        /// Each PNG is skipped if its variant failed to produce data.</summary>
         static void WriteProxyUv2Png(string outputDir, Result r)
         {
-            if (r.proxyUv2 == null || r.proxyTris == null) return;
-            string path = Path.Combine(outputDir, "proxy_uv2.png");
-            UvPngWriter.Render(path, r.proxyUv2, r.proxyTris);
+            if (r.proxyUv2 != null && r.proxyTris != null)
+                UvPngWriter.Render(Path.Combine(outputDir, "proxy_uv2_clean.png"),
+                    r.proxyUv2, r.proxyTris);
+            if (r.proxyUv2Raw != null && r.proxyTrisRaw != null)
+                UvPngWriter.Render(Path.Combine(outputDir, "proxy_uv2_raw.png"),
+                    r.proxyUv2Raw, r.proxyTrisRaw);
+            if (r.proxyUv2Auto != null && r.proxyTrisAuto != null)
+                UvPngWriter.Render(Path.Combine(outputDir, "proxy_uv2_auto.png"),
+                    r.proxyUv2Auto, r.proxyTrisAuto);
+        }
+
+        /// <summary>Generate the three proxy UV2 candidates documented at
+        /// <see cref="WriteProxyUv2Png"/>. Each populates a pair of
+        /// (proxyUv2*, proxyTris*) fields on the Result. Variants that
+        /// fail individually log a warning but don't abort the others.</summary>
+        static void ComputeProxyUv2Variants(Mesh deepMesh, Options opts,
+            string lgName, Result result)
+        {
+            if (deepMesh == null) return;
+
+            // ── Variant 1: clean (sym-split + ARAP + pack) ──
+            if (deepMesh.uv != null && deepMesh.uv.Length > 0)
+            {
+                var clone = UnityEngine.Object.Instantiate(deepMesh);
+                clone.name = deepMesh.name + "_proxy_clean";
+                try
+                {
+                    var shells = UvShellExtractor.Extract(clone.uv, clone.triangles);
+                    if (shells != null && shells.Count > 0)
+                    {
+                        int split = SymmetrySplitShells.Split(clone, shells);
+                        if (split > 0)
+                            UvtLog.Info(UvtLog.Category.Benchmark,
+                                $"[HierRepack] proxy sym-split on '{lgName}': {split} shells split");
+                    }
+                    var packed = XatlasRepack.RepackUv(clone, clone.uv,
+                        faceShellIds: null,
+                        resolution: opts.atlasResolutionPx,
+                        padding: opts.interDomainPaddingPx,
+                        rotate: true);
+                    if (packed != null && packed.Length > 0)
+                    {
+                        result.proxyUv2  = packed;
+                        result.proxyTris = clone.triangles;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        $"[HierRepack] proxy clean variant failed on '{lgName}': {ex.Message}");
+                }
+                finally { UnityEngine.Object.DestroyImmediate(clone); }
+            }
+
+            // ── Variant 2: raw (UV0 → pack only) ──
+            if (deepMesh.uv != null && deepMesh.uv.Length > 0)
+            {
+                try
+                {
+                    var rawOpts = XatlasRepack.RepackOptions.Default;
+                    rawOpts.resolution                   = (uint)opts.atlasResolutionPx;
+                    rawOpts.padding                      = (uint)opts.interDomainPaddingPx;
+                    rawOpts.reparameterizeStretchedShells = false; // disable ARAP
+                    var clone = UnityEngine.Object.Instantiate(deepMesh);
+                    clone.name = deepMesh.name + "_proxy_raw";
+                    try
+                    {
+                        var res = XatlasRepack.RepackSingle(clone, rawOpts);
+                        if (res.ok)
+                        {
+                            var uvOut = new List<Vector2>();
+                            clone.GetUVs(1, uvOut);
+                            result.proxyUv2Raw  = uvOut.ToArray();
+                            result.proxyTrisRaw = clone.triangles;
+                        }
+                    }
+                    finally { UnityEngine.Object.DestroyImmediate(clone); }
+                }
+                catch (Exception ex)
+                {
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        $"[HierRepack] proxy raw variant failed on '{lgName}': {ex.Message}");
+                }
+            }
+
+            // ── Variant 3: true auto-unwrap (positions + normals) ──
+            try
+            {
+                AutoUnwrapDeepMesh(deepMesh, opts, out var uvAuto, out var trisAuto);
+                if (uvAuto != null && trisAuto != null)
+                {
+                    result.proxyUv2Auto  = uvAuto;
+                    result.proxyTrisAuto = trisAuto;
+                }
+            }
+            catch (Exception ex)
+            {
+                // xatlasAddMesh missing from the DLL = DllNotFoundException /
+                // EntryPointNotFoundException; treat as "feature not yet
+                // available", don't spam an Error.
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] proxy auto-unwrap unavailable on '{lgName}': {ex.GetType().Name} ({ex.Message})");
+            }
+        }
+
+        /// <summary>Drive xatlasAddMesh + ComputeCharts + PackCharts on a
+        /// raw 3D mesh (positions + normals + indices). Returns the packed
+        /// per-output-vertex UV2 array and the corresponding output index
+        /// buffer. Output index buffer may differ from mesh.triangles —
+        /// xatlas can split vertices at chart seams.</summary>
+        static void AutoUnwrapDeepMesh(Mesh mesh, Options opts,
+            out Vector2[] outUv, out int[] outTris)
+        {
+            outUv = null; outTris = null;
+            var verts = mesh.vertices;
+            var tris  = mesh.triangles;
+            var normals = mesh.normals;
+            int vc = verts.Length;
+            int ic = tris.Length;
+            if (vc == 0 || ic == 0) return;
+
+            var positionsFlat = new float[vc * 3];
+            for (int i = 0; i < vc; i++)
+            {
+                positionsFlat[i * 3 + 0] = verts[i].x;
+                positionsFlat[i * 3 + 1] = verts[i].y;
+                positionsFlat[i * 3 + 2] = verts[i].z;
+            }
+            float[] normalsFlat = null;
+            if (normals != null && normals.Length == vc)
+            {
+                normalsFlat = new float[vc * 3];
+                for (int i = 0; i < vc; i++)
+                {
+                    normalsFlat[i * 3 + 0] = normals[i].x;
+                    normalsFlat[i * 3 + 1] = normals[i].y;
+                    normalsFlat[i * 3 + 2] = normals[i].z;
+                }
+            }
+            var indicesU = new uint[ic];
+            for (int i = 0; i < ic; i++) indicesU[i] = (uint)tris[i];
+
+            XatlasNative.xatlasCreate();
+            try
+            {
+                int addErr = XatlasNative.xatlasAddMesh(positionsFlat, normalsFlat,
+                    (uint)vc, indicesU, (uint)ic);
+                if (addErr != 0)
+                {
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        $"[HierRepack] xatlasAddMesh err={addErr}");
+                    return;
+                }
+                XatlasNative.xatlasComputeCharts();
+                XatlasNative.xatlasPackCharts(
+                    maxChartSize: 0,
+                    padding: (uint)opts.interDomainPaddingPx,
+                    texelsPerUnit: 0f,
+                    resolution: (uint)opts.atlasResolutionPx,
+                    bilinear: 1,
+                    blockAlign: 0,
+                    bruteForce: 1,
+                    rotateCharts: 1,
+                    rotateChartsToAxis: 0);
+
+                int meshCount = XatlasNative.xatlasGetMeshCount();
+                if (meshCount <= 0) return;
+                int outVc = XatlasNative.xatlasGetOutputVertexCount(0);
+                int outIc = XatlasNative.xatlasGetOutputIndexCount(0);
+                if (outVc <= 0 || outIc <= 0) return;
+
+                var xref = new uint[outVc];
+                var uvFlat = new float[outVc * 2];
+                var chartIdx = new uint[outVc];
+                XatlasNative.xatlasGetOutputVertexData(0, xref, uvFlat, chartIdx, outVc);
+
+                var outIndsU = new uint[outIc];
+                XatlasNative.xatlasGetOutputIndices(0, outIndsU, outIc);
+
+                outUv = new Vector2[outVc];
+                for (int i = 0; i < outVc; i++)
+                    outUv[i] = new Vector2(uvFlat[i * 2], uvFlat[i * 2 + 1]);
+                outTris = new int[outIc];
+                for (int i = 0; i < outIc; i++) outTris[i] = (int)outIndsU[i];
+            }
+            finally { XatlasNative.xatlasDestroy(); }
         }
 
         // ─── Diagnostic PNG output ───────────────────────────────────
