@@ -1548,6 +1548,28 @@ namespace SashaRX.UnityMeshLab
                 Vector2 uvA = r.proxyUv2[ia];
                 Vector2 uvB = r.proxyUv2[ib];
                 Vector2 uvC = r.proxyUv2[ic];
+
+                // Skip rogue tris produced by xatlas chart-seam splits
+                // that AssignUv2 had to collapse back to a single UV per
+                // shared vertex: the losing chart's tris end up with one
+                // corner at the WINNER's UV (in a totally different
+                // atlas region), forming a long thin tri that bridges
+                // two unrelated charts. Bary-interp sampling on such a
+                // tri spreads samples across the gap between charts —
+                // exactly the "dots leaking between charts" artifact
+                // visible in proxy_samples.png. A single legitimate
+                // chart occupies a small fraction of the [0,1] UV box
+                // (typical atlas has 10+ charts), so a tri whose UV
+                // bbox exceeds the seam threshold can't be a real
+                // chart-interior triangle.
+                const float kUvSeamBbox = 0.35f;
+                float uvMinX = Mathf.Min(uvA.x, Mathf.Min(uvB.x, uvC.x));
+                float uvMaxX = Mathf.Max(uvA.x, Mathf.Max(uvB.x, uvC.x));
+                float uvMinY = Mathf.Min(uvA.y, Mathf.Min(uvB.y, uvC.y));
+                float uvMaxY = Mathf.Max(uvA.y, Mathf.Max(uvB.y, uvC.y));
+                if (uvMaxX - uvMinX > kUvSeamBbox || uvMaxY - uvMinY > kUvSeamBbox)
+                    continue;
+
                 Vector3 cross = Vector3.Cross(B - A, C - A);
                 float crossMag = cross.magnitude;
                 float triArea = 0.5f * crossMag;
