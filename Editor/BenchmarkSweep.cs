@@ -135,10 +135,15 @@ namespace SashaRX.UnityMeshLab
                 sweepDir = Path.Combine(defaultReportsDir, $"sweep_{sweepStamp}");
             }
             Directory.CreateDirectory(sweepDir);
-            // Use sweepDir's actual parent (not the hard-coded BenchmarkReports/
-            // path) so recovery against a user-picked folder still resolves
-            // sibling _png thumbnail directories correctly.
-            string reportsDir = Directory.GetParent(sweepDir)?.FullName ?? defaultReportsDir;
+            // Per-cell PNG thumbnail dirs now live INSIDE sweepDir alongside
+            // the per-cell CSVs (LightmapTransferTool sets
+            // BenchmarkRecorder.OutputDirectoryOverride = sweepDir before
+            // running cells). Previously they were emitted as siblings of
+            // sweepDir under BenchmarkReports/; index.html linked via
+            // "../<base>_png/<file>". With the new layout the thumbnails
+            // are children of sweepDir, so BuildThumbsCell looks inside it
+            // and the relative link is just "<base>_png/<file>".
+            string reportsDir = sweepDir;
 
             var summaries = new List<RunSummary>(n);
             for (int i = 0; i < n; i++)
@@ -734,9 +739,10 @@ namespace SashaRX.UnityMeshLab
             foreach (string pngAbs in pngs)
             {
                 string fileName = Path.GetFileName(pngAbs);
-                // Sweep dir is sibling of the PNG dir under BenchmarkReports/,
-                // so "../<base>_png/<file>" is the stable relative link.
-                string rel = "../" + pngDirName + "/" + fileName;
+                // PNG dirs now live inside sweepDir alongside index.html,
+                // so the relative link is just "<base>_png/<file>" with no
+                // "../" prefix (see WriteAggregateReport comment).
+                string rel = pngDirName + "/" + fileName;
                 string label = ExtractLodLabel(fileName);
                 sb.Append("<div class=\"thumb\">");
                 sb.Append("<a href=\"").Append(HtmlEscape(rel)).Append("\" target=\"_blank\">");

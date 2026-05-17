@@ -1534,7 +1534,9 @@ namespace SashaRX.UnityMeshLab
             }
             else
             {
-                string sweepStamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss",
+                // Millisecond suffix prevents back-to-back Run Sweep clicks
+                // from clobbering each other's summary.csv / winner.json.
+                string sweepStamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss-fff",
                     System.Globalization.CultureInfo.InvariantCulture);
                 string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
                                      ?? Application.dataPath;
@@ -1606,7 +1608,8 @@ namespace SashaRX.UnityMeshLab
                                     ctx.ReparameterizeStretchedShells = arapIters > 0;
                                     if (arapIters > 0) ctx.ArapIterations = arapIters;
                                     ctx.StretchThreshold              = stretchThr;
-                                    ctx.InternalOversample            = oversample > 0 ? oversample : 1;
+                                    int clampedOversample             = oversample > 0 ? oversample : 1;
+                                    ctx.InternalOversample            = clampedOversample;
                                     symSplitThresholdMode             = symMode;
                                     SymmetrySplitShells.CurrentThresholdMode = symMode;
 
@@ -1618,8 +1621,12 @@ namespace SashaRX.UnityMeshLab
                                     string stretchTag = $"{stretchHundredths / 100}p{(stretchHundredths % 100):D2}";
                                     string symTag = symMode == SymmetrySplitShells.ThresholdMode.LegacyFixed
                                         ? "legacy" : "adaptive";
+                                    // Embed the clamped oversample value (not the raw
+                                    // suite entry) so the cell label matches what
+                                    // actually executed — keeps recovery / winner
+                                    // parsing in sync with the run.
                                     string label = $"sweep_res{r}_pad{s}_bdr{b}_arap{arapIters}_" +
-                                                   $"stretch{stretchTag}_os{oversample}_sym{symTag}";
+                                                   $"stretch{stretchTag}_os{clampedOversample}_sym{symTag}";
                                     string csvBefore = BenchmarkRecorder.LastWrittenCsvPath;
                                     try
                                     {
@@ -1833,11 +1840,13 @@ namespace SashaRX.UnityMeshLab
             // then treat the temp meshes as the new baseline.
             if (origLodGroup != null) ResetWorkingCopies();
 
-            // Human-readable run stamp — `yyyy-MM-dd_HH-mm-ss` is unambiguous
-            // in any locale, sorts chronologically, and the dashes make the
-            // date / time split obvious in a file browser. UTC so two
+            // Human-readable run stamp with ms precision — `yyyy-MM-dd_HH-mm-ss-fff`.
+            // The fff suffix prevents two rapid-fire Run Benchmark clicks
+            // from targeting the same bench_<ts>/ directory (the per-case
+            // paths inside are deterministic, so collisions silently
+            // interleave artefacts and corrupt comparisons). UTC so two
             // operators in different timezones produce comparable folder names.
-            string runStamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss",
+            string runStamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss-fff",
                 System.Globalization.CultureInfo.InvariantCulture);
             string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
                                  ?? Application.dataPath;
