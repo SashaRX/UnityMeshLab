@@ -295,8 +295,19 @@ namespace SashaRX.UnityMeshLab
             }
             else
             {
+                // Default path: ALWAYS in a dated subfolder, never the
+                // BenchmarkReports/ root. Standalone tool actions (Run Full
+                // Pipeline, Run Repack only, Run Transfer only) don't set the
+                // override; without this their CSV/JSON/PNG output would pile
+                // up at the top level, mixed across sessions, and hide any
+                // bench_<ts>/ folder that the unified benchmark produces in
+                // the same directory. One subfolder per BenchmarkRecorder
+                // session, named by the session start time, keeps the top
+                // level clean.
                 string projectRoot = Directory.GetParent(Application.dataPath)?.FullName ?? Application.dataPath;
-                dir = Path.Combine(projectRoot, "BenchmarkReports");
+                string sessionStamp = startedAtUtc.ToString("yyyy-MM-dd_HH-mm-ss",
+                    System.Globalization.CultureInfo.InvariantCulture);
+                dir = Path.Combine(projectRoot, "BenchmarkReports", $"run_{sessionStamp}");
             }
             Directory.CreateDirectory(dir);
 

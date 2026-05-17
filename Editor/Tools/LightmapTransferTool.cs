@@ -1534,7 +1534,7 @@ namespace SashaRX.UnityMeshLab
             }
             else
             {
-                string sweepStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff",
+                string sweepStamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss",
                     System.Globalization.CultureInfo.InvariantCulture);
                 string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
                                      ?? Application.dataPath;
@@ -1548,6 +1548,16 @@ namespace SashaRX.UnityMeshLab
                     $"[Sweep] Could not pre-create sweep dir '{sweepDir}': {ex.Message}");
                 sweepDir = null;
             }
+
+            // Route every per-cell BenchmarkRecorder session into the sweep
+            // dir so the cell CSV/JSON/PNG sit alongside summary.csv etc.
+            // Without this the cells write to BenchmarkReports/run_<stamp>/
+            // (the recorder's default) — orphaned from the aggregate. The
+            // override is restored in the same finally as the sweepDir
+            // cleanup so a thrown cell doesn't leak the redirect.
+            string prevRecorderOverride = BenchmarkRecorder.OutputDirectoryOverride;
+            if (!string.IsNullOrEmpty(sweepDir))
+                BenchmarkRecorder.OutputDirectoryOverride = sweepDir;
 
             int done = 0;
             bool cancelled = false;
@@ -1690,6 +1700,11 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
+                // Restore the recorder's output redirect first — covers the
+                // case where the operator cancels mid-sweep and then runs
+                // a single-shot pipeline action that shouldn't write into
+                // this sweep's dir.
+                BenchmarkRecorder.OutputDirectoryOverride = prevRecorderOverride;
                 if (cancelled) UvProgress.Cancel(); else UvProgress.End();
                 ctx.AtlasResolution               = origRes;
                 ctx.ShellPaddingPx                = origPad;
