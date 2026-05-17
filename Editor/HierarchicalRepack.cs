@@ -167,6 +167,15 @@ namespace SashaRX.UnityMeshLab
             public int    skippedFineFaces;
             /// <summary>Degenerate (zero-area) faces filtered before shell extraction (PR-2.5).</summary>
             public int    degenerateFineFaces;
+            /// <summary>PR-3 stage 1: clean UV2 layout for the deepest LOD,
+            /// produced by xatlas auto-pack on its existing UV0. Diagnostic /
+            /// reference for fine-LOD shell projection in subsequent stages.
+            /// Null if the deepest LOD has no UV0 or xatlas couldn't pack.</summary>
+            public Vector2[] proxyUv2;
+            /// <summary>Companion to <see cref="proxyUv2"/> — the deepest LOD's
+            /// triangle indices (mesh.triangles) so the UV2 array can be
+            /// rendered as a UV layout PNG.</summary>
+            public int[]     proxyTris;
             public string error;
         }
 
@@ -250,6 +259,35 @@ namespace SashaRX.UnityMeshLab
             // query across all fine LODs).
             BuildDeepAabbs(deepWorldVerts, deepRawTris, out var deepMin, out var deepMax);
             float overlayDistAbs = opts.overlayDistNorm * meshDiag;
+
+            // PR-3 Stage 1 (proxy UV2 generation): hand the deepest LOD to
+            // xatlas — it auto-packs the existing UV0 shells into a clean
+            // atlas. This is the reference UV layout that finer LODs will
+            // project into in subsequent stages. Stored on the result so
+            // BuildAndWriteForCase can dump proxy_uv2.png for review; the
+            // current per-shell classifier still drives faceToDomain, this
+            // is added in parallel for visual evaluation.
+            try
+            {
+                if (meshes[deepest].uv != null && meshes[deepest].uv.Length > 0)
+                {
+                    var packedUv2 = XatlasRepack.RepackUv(meshes[deepest], meshes[deepest].uv,
+                        faceShellIds: null,
+                        resolution: opts.atlasResolutionPx,
+                        padding: opts.interDomainPaddingPx,
+                        rotate: true);
+                    if (packedUv2 != null && packedUv2.Length > 0)
+                    {
+                        result.proxyUv2  = packedUv2;
+                        result.proxyTris = meshes[deepest].triangles;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] proxy UV2 xatlas-pack failed on '{lg.name}': {ex.Message}");
+            }
 
             // ── Step 3: domain table init ──
             // Domain numbering:
@@ -1152,9 +1190,21 @@ namespace SashaRX.UnityMeshLab
             if (!string.IsNullOrEmpty(result.error)) return result;
             WriteDryRunReport(lg.name, result, outputDir);
             WriteAtlasPng(outputDir, result);
+            WriteProxyUv2Png(outputDir, result);
             WriteFineLodDomainPngs(outputDir, lg, result);
             LogDryRunSummary(lg.name, result);
             return result;
+        }
+
+        /// <summary>PR-3 Stage 1 visualization: render the proxy UV2 (deepest
+        /// LOD after xatlas auto-pack) as a flat UV layout PNG. This is the
+        /// reference atlas the finer LODs will project into. Skipped if
+        /// proxy UV2 generation failed (mesh has no UV0, or xatlas error).</summary>
+        static void WriteProxyUv2Png(string outputDir, Result r)
+        {
+            if (r.proxyUv2 == null || r.proxyTris == null) return;
+            string path = Path.Combine(outputDir, "proxy_uv2.png");
+            UvPngWriter.Render(path, r.proxyUv2, r.proxyTris);
         }
 
         // ─── Diagnostic PNG output ───────────────────────────────────
