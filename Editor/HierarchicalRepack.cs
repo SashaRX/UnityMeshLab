@@ -1130,8 +1130,184 @@ namespace SashaRX.UnityMeshLab
             var result = Build(lg, opts);
             if (!string.IsNullOrEmpty(result.error)) return result;
             WriteDryRunReport(lg.name, result, outputDir);
+            WriteAtlasPng(outputDir, result);
+            WriteFineLodDomainPngs(outputDir, lg, result);
             LogDryRunSummary(lg.name, result);
             return result;
+        }
+
+        // ─── Diagnostic PNG output ───────────────────────────────────
+
+        /// <summary>Render the packed atlas layout — each domain's uv2Rect
+        /// drawn as a filled rectangle, colored by base vs promoted (blue
+        /// vs warm), with per-domain hue variation so adjacent rects can be
+        /// distinguished. Black 1px border separates rects. Output:
+        /// <c>{outputDir}/hier_repack_atlas.png</c>.</summary>
+        static void WriteAtlasPng(string outputDir, Result r)
+        {
+            if (r.domains == null || r.domains.Length == 0) return;
+            const int size = 1024;
+            var pixels = new Color32[size * size];
+            // Dark backdrop so empty atlas area is visible.
+            var bg = new Color32(24, 24, 28, 255);
+            for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
+
+            for (int i = 0; i < r.domains.Length; i++)
+            {
+                var d = r.domains[i];
+                int x0 = Mathf.Clamp(Mathf.FloorToInt(d.uv2Rect.x * size), 0, size - 1);
+                int y0 = Mathf.Clamp(Mathf.FloorToInt(d.uv2Rect.y * size), 0, size - 1);
+                int x1 = Mathf.Clamp(Mathf.CeilToInt((d.uv2Rect.x + d.uv2Rect.width) * size), 0, size);
+                int y1 = Mathf.Clamp(Mathf.CeilToInt((d.uv2Rect.y + d.uv2Rect.height) * size), 0, size);
+                Color32 fill = DomainColor(i, r.baseShellCount);
+                for (int y = y0; y < y1; y++)
+                {
+                    int row = y * size;
+                    for (int x = x0; x < x1; x++) pixels[row + x] = fill;
+                }
+            }
+
+            string path = Path.Combine(outputDir, "hier_repack_atlas.png");
+            EncodePng(pixels, size, size, path);
+        }
+
+        /// <summary>Render every fine-LOD mesh's triangles in UV0 space,
+        /// colored by their faceToDomain assignment. Lets the operator SEE
+        /// where overlay vs promote vs skip lands on the actual surface —
+        /// red blobs in the middle of a wall mean a topology divergence
+        /// the per-vertex classifier flagged; red strips only along chart
+        /// borders mean only boundary faces flunked consensus. Output:
+        /// <c>{outputDir}/hier_repack_lod{N}.png</c> per fine LOD.</summary>
+        static void WriteFineLodDomainPngs(string outputDir, LODGroup lg, Result r)
+        {
+            if (r.faceToDomain == null) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            int deepest = lodCount - 1;
+            while (deepest > 0 && (lods[deepest].renderers == null
+                || lods[deepest].renderers.Length == 0
+                || lods[deepest].renderers[0] == null)) deepest--;
+
+            for (int li = 0; li < lodCount; li++)
+            {
+                if (li == deepest) continue; // only fine LODs are interesting
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) continue;
+                var uv0 = mesh.uv;
+                if (uv0 == null || uv0.Length == 0) continue;
+                var tris = mesh.triangles;
+                var f2d = r.faceToDomain[li];
+                if (f2d == null || f2d.Length * 3 != tris.Length) continue;
+
+                int size = 1024;
+                var pixels = new Color32[size * size];
+                var bg = new Color32(28, 28, 32, 255);
+                for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
+
+                int faceCount = tris.Length / 3;
+                for (int f = 0; f < faceCount; f++)
+                {
+                    int domain = f2d[f];
+                    Color32 col = DomainColor(domain, r.baseShellCount);
+                    Vector2 a = uv0[tris[f * 3]];
+                    Vector2 b = uv0[tris[f * 3 + 1]];
+                    Vector2 c = uv0[tris[f * 3 + 2]];
+                    RasterizeTriangle(pixels, size, a, b, c, col);
+                }
+
+                string path = Path.Combine(outputDir, $"hier_repack_lod{li}.png");
+                EncodePng(pixels, size, size, path);
+            }
+        }
+
+        /// <summary>Color palette for diagnostic PNGs. Skip / degenerate
+        /// (-1) → dark gray. Base shells (idx &lt; baseShellCount) → green
+        /// family. Promoted clusters (idx ≥ baseShellCount) → warm
+        /// (orange-red) family. Within each family the hue varies by
+        /// domain index hash so adjacent shells are distinguishable.</summary>
+        static Color32 DomainColor(int domainIdx, int baseShellCount)
+        {
+            if (domainIdx < 0) return new Color32(50, 50, 50, 255);
+            // 32-bit Knuth hash → 0..59 hue offset within the family.
+            uint h = unchecked((uint)domainIdx * 2654435761u);
+            int hueOffset = (int)(h % 60u);
+            int valOffset = (int)((h >> 8) % 30u);
+            bool isBase = domainIdx < baseShellCount;
+            float hue, sat, val;
+            if (isBase)
+            {
+                // Green family — hue 90-150°.
+                hue = (90f + hueOffset) / 360f;
+                sat = 0.55f;
+                val = 0.65f + valOffset / 200f;
+            }
+            else
+            {
+                // Warm family — hue 0-30° (red-orange).
+                hue = (hueOffset * 0.5f) / 360f;
+                sat = 0.80f;
+                val = 0.80f + valOffset / 250f;
+            }
+            Color c = Color.HSVToRGB(hue, sat, val);
+            return new Color32(
+                (byte)Mathf.Clamp(c.r * 255f, 0f, 255f),
+                (byte)Mathf.Clamp(c.g * 255f, 0f, 255f),
+                (byte)Mathf.Clamp(c.b * 255f, 0f, 255f), 255);
+        }
+
+        /// <summary>Software-rasterize a single UV0-space triangle with a
+        /// solid color. Edge-function barycentrics with a positive-only
+        /// inside test (top-left rule not enforced — diagnostic doesn't
+        /// need pixel-perfect seam handling).</summary>
+        static void RasterizeTriangle(Color32[] pix, int size,
+            Vector2 a, Vector2 b, Vector2 c, Color32 col)
+        {
+            // UV (0..1) → pixel; Y flipped so (0,0) is bottom-left visually.
+            float ax = a.x * size, ay = (1f - a.y) * size;
+            float bx = b.x * size, by = (1f - b.y) * size;
+            float cx = c.x * size, cy = (1f - c.y) * size;
+
+            int x0 = Mathf.Max(0, Mathf.FloorToInt(Mathf.Min(ax, Mathf.Min(bx, cx))));
+            int x1 = Mathf.Min(size - 1, Mathf.CeilToInt(Mathf.Max(ax, Mathf.Max(bx, cx))));
+            int y0 = Mathf.Max(0, Mathf.FloorToInt(Mathf.Min(ay, Mathf.Min(by, cy))));
+            int y1 = Mathf.Min(size - 1, Mathf.CeilToInt(Mathf.Max(ay, Mathf.Max(by, cy))));
+
+            float denom = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+            if (Mathf.Abs(denom) < 1e-6f) return;
+            float invDenom = 1f / denom;
+
+            for (int y = y0; y <= y1; y++)
+            {
+                int row = y * size;
+                for (int x = x0; x <= x1; x++)
+                {
+                    float w1 = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) * invDenom;
+                    float w2 = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) * invDenom;
+                    float w3 = 1f - w1 - w2;
+                    if (w1 < 0f || w2 < 0f || w3 < 0f) continue;
+                    pix[row + x] = col;
+                }
+            }
+        }
+
+        /// <summary>Encode a pixel buffer to PNG via a transient Texture2D.
+        /// Caller owns the path and ensures the directory exists.</summary>
+        static void EncodePng(Color32[] pixels, int width, int height, string path)
+        {
+            var tex = new Texture2D(width, height, TextureFormat.RGBA32, false);
+            try
+            {
+                tex.SetPixels32(pixels);
+                tex.Apply(false, false);
+                File.WriteAllBytes(path, tex.EncodeToPNG());
+            }
+            finally
+            {
+                Object.DestroyImmediate(tex);
+            }
         }
 
         static void LogDryRunSummary(string lgName, Result r)
