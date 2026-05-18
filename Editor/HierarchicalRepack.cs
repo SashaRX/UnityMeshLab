@@ -1906,9 +1906,7 @@ namespace SashaRX.UnityMeshLab
             r.finalSourceVertexIdx = new int[lodCount][];
             r.finalAtlasV = 1f;
 
-            // Proxy face data: centroid, area, unit normal — and AABBs
-            // (kept for future ray-cast acceleration, currently unused
-            // since the ray-cast fallback is a naive loop over faces).
+            // Proxy face data: centroid, area, unit normal.
             int proxyFaceN = r.proxyTris.Length / 3;
             if (proxyFaceN == 0) return;
             var proxyFaces = new Face3D[proxyFaceN];
@@ -1922,6 +1920,26 @@ namespace SashaRX.UnityMeshLab
                 float mag = cr.magnitude;
                 proxyFaces[f].area   = mag * 0.5f;
                 proxyFaces[f].normal = mag > 1e-12f ? cr / mag : Vector3.up;
+            }
+
+            // Precompute proxy face → proxy UV chart (shell) lookup.
+            // Used as the SEAM-VERTEX DEDUP KEY: vertices shared by two
+            // fine faces that voted for different proxy faces WITHIN the
+            // SAME proxy chart should share their newIdx so adjacent
+            // fine tris stay one connected UV shell. Without this they
+            // become independent UV shells per fine face (each pfMatch
+            // a different key) — visible as rainbow stripes on the
+            // Carousel where many small fine tris each voted for a
+            // different proxy face inside the same canopy-slice chart.
+            int[] proxyFaceToChart = new int[proxyFaceN];
+            for (int i = 0; i < proxyFaceN; i++) proxyFaceToChart[i] = -1;
+            {
+                var uvShells = UvShellExtractor.Extract(r.proxyUv2, r.proxyTris);
+                if (uvShells != null)
+                    for (int si = 0; si < uvShells.Count; si++)
+                        foreach (int fi in uvShells[si].faceIndices)
+                            if (fi >= 0 && fi < proxyFaceN)
+                                proxyFaceToChart[fi] = si;
             }
 
             for (int li = 0; li < lodCount; li++)
@@ -1942,19 +1960,19 @@ namespace SashaRX.UnityMeshLab
                 for (int i = 0; i < localVerts.Length; i++)
                     worldVerts[i] = xform.TransformPoint(localVerts[i]);
 
-                // (origVi, proxyFaceIdx) → newVi dedup. A fine vertex
-                // shared by two fine faces that pick different proxy
-                // faces gets one copy per proxy face so each fine face
-                // stays inside one proxy face's UV region. Same proxy
-                // face → same copy → seam shrinks to a 0-area pair on
-                // identical UVs.
+                // (origVi, proxyChartId) → newVi dedup. Keyed by proxy
+                // CHART (UV shell) instead of proxy FACE so adjacent
+                // fine tris that voted for different proxy faces inside
+                // the SAME chart share their newIdx and stay one
+                // connected UV shell. Different charts → different
+                // copies → independent shells.
                 var dedup   = new Dictionary<long, int>(localVerts.Length);
                 var outUv   = new List<Vector2>(localVerts.Length * 2);
                 var outTris = new int[tris.Length];
                 var outSrc  = new List<int>(localVerts.Length * 2);
-                int NewIndex(int origVi, int proxyFace)
+                int NewIndex(int origVi, int chartId)
                 {
-                    long key = ((long)(proxyFace + 1) << 32) | (uint)origVi;
+                    long key = ((long)(chartId + 1) << 32) | (uint)origVi;
                     if (dedup.TryGetValue(key, out int existing)) return existing;
                     int newIdx = outUv.Count;
                     outUv.Add(Vector2.zero);
@@ -2056,13 +2074,14 @@ namespace SashaRX.UnityMeshLab
                     Vector2 uvB = r.proxyUv2[pb];
                     Vector2 uvC = r.proxyUv2[pc];
                     Vector3 nProxy = proxyFaces[pfMatch].normal;
+                    int chartId = proxyFaceToChart[pfMatch];
 
                     for (int k = 0; k < 3; k++)
                     {
                         int origVi = tris[f * 3 + k];
                         Vector2 uv = ProjectAndBary(worldVerts[origVi],
                             A, B, C, nProxy, uvA, uvB, uvC);
-                        int newIdx = NewIndex(origVi, pfMatch);
+                        int newIdx = NewIndex(origVi, chartId);
                         outTris[f * 3 + k] = newIdx;
                         outUv[newIdx] = uv;
                         if (uv.y > r.finalAtlasV) r.finalAtlasV = uv.y;
