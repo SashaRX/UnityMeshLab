@@ -313,11 +313,22 @@ namespace SashaRX.UnityMeshLab
         public struct FineShellFit
         {
             public int     fineShellId;
-            /// <summary>Number of sample hits used to fit this shell.</summary>
+            /// <summary>Number of sample hits used to fit this shell (after
+            /// dominant-proxy-shell filtering — see <see cref="dominantShare"/>).</summary>
             public int     sampleCount;
             /// <summary>true iff sampleCount ≥ 3 AND the normal matrix was
             /// invertible (planar coords not all colinear).</summary>
             public bool    valid;
+            /// <summary>Proxy shell that supplied the majority of hits in
+            /// this fine shell. -1 if no hits. Stage 5 uses this to pick
+            /// which proxy chart's UV rect the fine shell inherits.</summary>
+            public int     dominantProxyShell;
+            /// <summary>Fraction of raw hits coming from the dominant proxy
+            /// shell. 1.0 = all hits agree (one fine shell ↔ one proxy
+            /// chart); &lt; 0.6 means the fine shell straddles multiple
+            /// proxy charts and should probably be split / promoted by
+            /// Stage 5 instead of overlaid.</summary>
+            public float   dominantShare;
             /// <summary>Centroid (worldspace, area-weighted) of the source
             /// shell. Cached here so Stage 5 / visualisers don't have to
             /// re-run ExtractShells just to find the plane origin.</summary>
@@ -1907,6 +1918,7 @@ namespace SashaRX.UnityMeshLab
 
                 var fits = new FineShellFit[fineShells.Length];
 
+                var proxyTally = new Dictionary<int, int>();
                 for (int s = 0; s < fineShells.Length; s++)
                 {
                     var shell = fineShells[s];
@@ -1914,9 +1926,40 @@ namespace SashaRX.UnityMeshLab
                     fits[s].centroid    = shell.centroid;
                     fits[s].basisU      = shell.basisU;
                     fits[s].basisV      = shell.basisV;
+                    fits[s].dominantProxyShell = -1;
 
-                    // Collect every (worldPos, uv2) sample hit on this shell.
-                    // Walk the shell's faces, then their cached hit lists.
+                    // First pass: vote on which proxy shell sent the most
+                    // samples to this fine shell. One fine shell can
+                    // legitimately span multiple proxy charts (the proxy's
+                    // sym-split fragments a single 3D shell into several
+                    // UV charts), but fitting one affine to ALL such
+                    // samples averages between charts at very different UV
+                    // positions and explodes the extrapolation. We pick the
+                    // dominant proxy shell and fit only to its samples;
+                    // fine shells with low dominantShare are flagged so
+                    // Stage 5 can promote them instead of overlay.
+                    proxyTally.Clear();
+                    int rawHits = 0;
+                    foreach (int f in shell.faceIndices)
+                    {
+                        var ids = proj.perFaceHitSampleIdx[f];
+                        if (ids == null) continue;
+                        foreach (int sid in ids)
+                        {
+                            int psh = r.proxySamples[sid].proxyShellId;
+                            proxyTally.TryGetValue(psh, out int prev);
+                            proxyTally[psh] = prev + 1;
+                            rawHits++;
+                        }
+                    }
+                    int dominant = -1, dominantCount = 0;
+                    foreach (var kv in proxyTally)
+                        if (kv.Value > dominantCount) { dominantCount = kv.Value; dominant = kv.Key; }
+                    fits[s].dominantProxyShell = dominant;
+                    fits[s].dominantShare = rawHits > 0 ? (float)dominantCount / rawHits : 0f;
+
+                    // Second pass: collect (worldPos, uv2) for the dominant
+                    // proxy shell only.
                     var pus = new List<float>(64);
                     var pvs = new List<float>(64);
                     var us  = new List<float>(64);
@@ -1929,6 +1972,7 @@ namespace SashaRX.UnityMeshLab
                         foreach (int sid in ids)
                         {
                             var sm = r.proxySamples[sid];
+                            if (sm.proxyShellId != dominant) continue;
                             Vector3 d = sm.worldPos - shell.centroid;
                             pus.Add(Vector3.Dot(d, shell.basisU));
                             pvs.Add(Vector3.Dot(d, shell.basisV));
@@ -2303,13 +2347,21 @@ namespace SashaRX.UnityMeshLab
 
                 // For each face, look up its shell, apply that shell's
                 // affine to each corner vertex (worldspace → planar coords
-                // via cached centroid/basis on FineShellFit → uv2).
+                // via cached centroid/basis on FineShellFit → uv2). Skip
+                // shells whose hits split too evenly across proxy charts
+                // (dominantShare < 0.6) — their affine is dominated by the
+                // gradient between two unrelated UV regions and extrapolates
+                // wildly outside the chart; Stage 5 will promote them
+                // instead, so showing the broken prediction is just visual
+                // noise.
+                const float kMinDominantShare = 0.6f;
                 for (int f = 0; f < faceCount; f++)
                 {
                     int s = proj.perFaceFineShell[f];
                     if (s < 0 || s >= proj.fineShellFits.Length) continue;
                     var fit = proj.fineShellFits[s];
                     if (!fit.valid) continue;
+                    if (fit.dominantShare < kMinDominantShare) continue;
                     for (int k = 0; k < 3; k++)
                     {
                         int vi = tris[f * 3 + k];
@@ -2774,7 +2826,10 @@ namespace SashaRX.UnityMeshLab
             // PR-3 Stage 4 audit — affine fit health per fine LOD. Bad mean
             // residual or low valid-shell ratio means proxy charts and fine
             // shells don't share a simple planar map; that's the signal to
-            // promote (Stage 5) instead of overlay.
+            // promote (Stage 5) instead of overlay. mixedShells counts fine
+            // shells whose samples come <60% from a single proxy chart —
+            // splitting them is what stops the Stage 5 UV layout from
+            // exploding outside the unit box on assets like the Carousel.
             if (r.lodProjections != null)
             {
                 for (int li = 0; li < r.lodProjections.Length; li++)
@@ -2782,7 +2837,7 @@ namespace SashaRX.UnityMeshLab
                     var proj = r.lodProjections[li];
                     if (proj.fineShellFits == null) continue;
                     int total = proj.fineShellFits.Length;
-                    int valid = 0;
+                    int valid = 0, mixedShells = 0;
                     double sumMean = 0, sumMax = 0;
                     float worstMean = 0;
                     foreach (var fit in proj.fineShellFits)
@@ -2792,6 +2847,7 @@ namespace SashaRX.UnityMeshLab
                         sumMean += fit.meanResidual;
                         sumMax  += fit.maxResidual;
                         if (fit.meanResidual > worstMean) worstMean = fit.meanResidual;
+                        if (fit.dominantShare < 0.6f) mixedShells++;
                     }
                     string row;
                     if (valid == 0)
@@ -2802,6 +2858,7 @@ namespace SashaRX.UnityMeshLab
                     else
                     {
                         row = $"    LOD{li}: shells={total,4}  fit-valid={valid,4}/{total}  " +
+                              $"mixed(<60% dominant)={mixedShells,3}  " +
                               $"meanRes={sumMean / valid,6:F4}  " +
                               $"avgMaxRes={sumMax / valid,6:F4}  " +
                               $"worstMean={worstMean,6:F4} uv2";
