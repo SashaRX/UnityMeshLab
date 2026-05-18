@@ -1377,11 +1377,18 @@ namespace SashaRX.UnityMeshLab
                             UvtLog.Info(UvtLog.Category.Benchmark,
                                 $"[HierRepack] proxy sym-split on '{lgName}': {split} shells split");
                     }
-                    var packed = XatlasRepack.RepackUv(clone, clone.uv,
-                        faceShellIds: null,
-                        resolution: opts.atlasResolutionPx,
-                        padding: opts.interDomainPaddingPx,
-                        rotate: true);
+                    // Call RepackSingle directly (bypass RepackUv) so we can
+                    // disable xatlas's 90° chart rotation. The diagnostic
+                    // operator reads chart orientation as a feature of the
+                    // proxy layout — auto-rotating for ~5% extra packing
+                    // density rotates diagonal triangulations relative to
+                    // the other variants and reads as "разворот".
+                    var cleanOpts = RepackOptions.Default;
+                    cleanOpts.resolution   = (uint)opts.atlasResolutionPx;
+                    cleanOpts.padding      = (uint)opts.interDomainPaddingPx;
+                    cleanOpts.rotateCharts = false;
+                    var packed = XatlasRepack.RepackSingle(clone, cleanOpts).ok
+                        ? clone.uv2 : null;
                     if (packed != null && packed.Length > 0)
                     {
                         result.proxyUv2Clean   = packed;
@@ -1406,6 +1413,7 @@ namespace SashaRX.UnityMeshLab
                     rawOpts.resolution                   = (uint)opts.atlasResolutionPx;
                     rawOpts.padding                      = (uint)opts.interDomainPaddingPx;
                     rawOpts.reparameterizeStretchedShells = false; // disable ARAP
+                    rawOpts.rotateCharts                 = false;  // preserve orientation
                     var clone = UnityEngine.Object.Instantiate(deepMesh);
                     clone.name = deepMesh.name + "_proxy_raw";
                     try
@@ -1920,7 +1928,13 @@ namespace SashaRX.UnityMeshLab
                     bilinear: 1,
                     blockAlign: 0,
                     bruteForce: 1,
-                    rotateCharts: 1,
+                    // 0 disables the 90° chart-rotation step xatlas runs by
+                    // default for packing density. With rotation ON the
+                    // diagonal triangulation inside each chart flips
+                    // between variants — operator reads it as a "rotated
+                    // UV layout". Keeping natural orientation costs ~5%
+                    // packing efficiency but the diagnostic stays stable.
+                    rotateCharts: 0,
                     rotateChartsToAxis: 0);
 
                 int meshCount = XatlasNative.xatlasGetMeshCount();
