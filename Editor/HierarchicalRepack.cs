@@ -277,6 +277,14 @@ namespace SashaRX.UnityMeshLab
             /// overlaid cleanly; higher when shells needed promotion.
             /// </summary>
             public float finalAtlasV;
+            /// <summary>PR-3 Stage 6: cloned fine-LOD meshes with the
+            /// new uv2 baked in (and vertex attributes duplicated to
+            /// match the seam-vertex split). Indexed by LOD; null for
+            /// the deepest LOD and for LODs whose projection failed.
+            /// Built on demand by <see cref="BuildFinalMeshes"/>; the
+            /// menu-driven Apply step swaps these into the renderers'
+            /// MeshFilters via Undo.</summary>
+            public Mesh[] finalMeshes;
             public string error;
         }
 
@@ -2076,6 +2084,109 @@ namespace SashaRX.UnityMeshLab
                 if (dsq < bestSq) { bestSq = dsq; closest = f; }
             }
             return closest;
+        }
+
+        // ─── PR-3 Stage 6: bake the new uv2 into cloned LOD meshes ────
+
+        /// <summary>For every fine LOD that produced a Stage-5 final UV2,
+        /// clone the source mesh with the seam-vertex split applied:
+        /// each output vertex copies positions / normals / tangents /
+        /// uv0..uv7 / colors from <c>mesh.vertices[finalSourceVertexIdx[i]]</c>,
+        /// uv2 from <c>finalUv2[li]</c>, triangles from <c>finalTris[li]</c>.
+        /// Bounds are recomputed; normals / tangents are NOT recalculated
+        /// when the source had them (we keep the authored values, just
+        /// duplicated). Output meshes land on <c>r.finalMeshes[li]</c>.
+        /// In-memory only — the menu-driven Apply step swaps them into
+        /// renderers via Undo; without Apply they're orphaned and the
+        /// next GC cycle reclaims them.</summary>
+        public static void BuildFinalMeshes(LODGroup lg, Result r)
+        {
+            if (lg == null) return;
+            if (r.finalUv2 == null || r.finalTris == null || r.finalSourceVertexIdx == null)
+                return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            r.finalMeshes = new Mesh[lodCount];
+
+            var uvBuf = new List<Vector2>();
+            for (int li = 0; li < lodCount; li++)
+            {
+                if (li >= r.finalUv2.Length) break;
+                var newUv2 = r.finalUv2[li];
+                var newTris = r.finalTris[li];
+                var srcIdx = r.finalSourceVertexIdx[li];
+                if (newUv2 == null || newTris == null || srcIdx == null) continue;
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var src = mf != null ? mf.sharedMesh : null;
+                if (src == null) continue;
+
+                int outVc = srcIdx.Length;
+                var clone = new Mesh
+                {
+                    name = src.name + "_hierUv2",
+                    indexFormat = outVc >= 65000
+                        ? UnityEngine.Rendering.IndexFormat.UInt32
+                        : src.indexFormat,
+                };
+
+                // vertices — required, drives output vertex count.
+                var srcVerts = src.vertices;
+                var newVerts = new Vector3[outVc];
+                for (int i = 0; i < outVc; i++) newVerts[i] = srcVerts[srcIdx[i]];
+                clone.vertices = newVerts;
+
+                // Optional attributes — only copy when the source has
+                // them sized to the source vertex count (skinned meshes
+                // with extra channels are caller's problem; we don't
+                // touch boneWeights / bindposes here).
+                var srcNormals = src.normals;
+                if (srcNormals != null && srcNormals.Length == srcVerts.Length)
+                {
+                    var newN = new Vector3[outVc];
+                    for (int i = 0; i < outVc; i++) newN[i] = srcNormals[srcIdx[i]];
+                    clone.normals = newN;
+                }
+
+                var srcTangents = src.tangents;
+                if (srcTangents != null && srcTangents.Length == srcVerts.Length)
+                {
+                    var newT = new Vector4[outVc];
+                    for (int i = 0; i < outVc; i++) newT[i] = srcTangents[srcIdx[i]];
+                    clone.tangents = newT;
+                }
+
+                var srcColors = src.colors32;
+                if (srcColors != null && srcColors.Length == srcVerts.Length)
+                {
+                    var newC = new Color32[outVc];
+                    for (int i = 0; i < outVc; i++) newC[i] = srcColors[srcIdx[i]];
+                    clone.colors32 = newC;
+                }
+
+                // UV channels 0, 2..7 (1 == uv2 is replaced below).
+                for (int ch = 0; ch < 8; ch++)
+                {
+                    if (ch == 1) continue;
+                    uvBuf.Clear();
+                    src.GetUVs(ch, uvBuf);
+                    if (uvBuf.Count == 0 || uvBuf.Count != srcVerts.Length) continue;
+                    var newUv = new List<Vector2>(outVc);
+                    for (int i = 0; i < outVc; i++) newUv.Add(uvBuf[srcIdx[i]]);
+                    clone.SetUVs(ch, newUv);
+                }
+
+                // The new lightmap UV.
+                clone.uv2 = newUv2;
+
+                // Triangles last (indexFormat / vertex count must be
+                // set before this call).
+                clone.triangles = newTris;
+                clone.RecalculateBounds();
+
+                r.finalMeshes[li] = clone;
+            }
         }
 
         /// <summary>PR-3 Stage 5 visualisation: render the final per-LOD
