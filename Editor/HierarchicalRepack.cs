@@ -313,71 +313,61 @@ namespace SashaRX.UnityMeshLab
             /// <summary>PR-3 Stage 3 → Stage 4 bridge: for each face, indices
             /// into <see cref="Result.proxySamples"/> of every sample that
             /// landed on it. Variable-length arrays (null if no hits) avoid
-            /// allocating one List per face. Stage 4 groups these by fine
-            /// shell to build per-shell (worldPos, uv2) constraint sets.</summary>
+            /// allocating one List per face. Stage 4 groups these by
+            /// proxy chart to build per-chart (worldPos, uv2) constraint
+            /// sets.</summary>
             public int[][] perFaceHitSampleIdx;
-            /// <summary>PR-3 Stage 4: fine-shell index per face (output of
-            /// the same ExtractShells used elsewhere, but cached here so
-            /// Stage 5 / visualisers don't recompute). -1 for degenerate.
-            /// </summary>
-            public int[]   perFaceFineShell;
-            /// <summary>PR-3 Stage 4: one entry per fine shell. The affine
-            /// is the 2D→2D map plane(worldPos) → proxy_uv2 that best fits
-            /// the (worldPos, uv2) sample hits inside the shell. Indexed by
-            /// fine shell ID; entries with valid=false had too few samples
-            /// or a rank-deficient normal matrix.</summary>
-            public FineShellFit[] fineShellFits;
+            /// <summary>PR-3 Stage 4: one entry per proxy chart (indexed by
+            /// proxyShellId — same numbering as <see cref="ProxySample.proxyShellId"/>
+            /// and <see cref="Result.proxyShellBboxes"/>). The affine maps
+            /// the chart group's planar(worldPos) onto proxy_uv2, fit from
+            /// every fine face whose dominantProxyShell is this chart.
+            /// Entries with valid=false had too few hits or a rank-deficient
+            /// normal matrix. Proxy charts no fine face votes for stay
+            /// uninitialised. Stage 5 looks up
+            /// <c>proxyChartFits[perFaceHitSampleIdx-derived chart]</c>
+            /// to project each fine face.</summary>
+            public ProxyChartFit[] proxyChartFits;
             /// <summary>PR-3 Stage 4: mean per-face residual after applying
-            /// the parent shell's affine fit to the sample hits on that
-            /// face. Units = proxy_uv2 coordinates (0..1 range). NaN for
-            /// faces in shells without a valid fit. Drives the residual
+            /// the affine of the face's dominant proxy chart. Units =
+            /// proxy_uv2 coordinates (0..1 range). NaN for faces whose
+            /// dominant chart has no valid fit. Drives the residual
             /// heat-map PNG.</summary>
             public float[] perFaceResidual;
         }
 
         /// <summary>PR-3 Stage 4: least-squares affine fit of (planar(world)
-        /// → proxy_uv2) for one fine 3D shell. The shell is projected onto
-        /// its own (basisU, basisV) plane (already computed by
-        /// <see cref="ExtractShells"/>), giving 2D coords (pu, pv); the
-        /// affine is then  u = au·pu + bu·pv + cu  and analogously for v.
-        /// Two independent 3-parameter normal equations share the same
-        /// 3×3 AᵀA matrix.</summary>
-        public struct FineShellFit
+        /// → proxy_uv2) for ONE proxy chart, fit from every fine LOD face
+        /// that voted for this chart (perFaceDominantProxyShell == chartId).
+        /// Faces are grouped by their proxy chart instead of their fine
+        /// 3D shell because that's what the architecture asks: each proxy
+        /// chart is a lighting domain, and finer LODs' geometry should
+        /// project onto whichever chart their faces correspond to. Two
+        /// independent 3-parameter normal equations share the same 3×3
+        /// AᵀA matrix.</summary>
+        public struct ProxyChartFit
         {
-            public int     fineShellId;
-            /// <summary>Number of sample hits used to fit this shell (after
-            /// dominant-proxy-shell filtering — see <see cref="dominantShare"/>).</summary>
+            public int     proxyChartId;
+            /// <summary>Number of fine faces that voted for this chart.</summary>
+            public int     faceCount;
+            /// <summary>Number of sample hits used to fit (samples landing
+            /// on the group's faces AND having proxyShellId == chartId).</summary>
             public int     sampleCount;
             /// <summary>true iff sampleCount ≥ 3 AND the normal matrix was
             /// invertible (planar coords not all colinear).</summary>
             public bool    valid;
-            /// <summary>Proxy shell that supplied the majority of hits in
-            /// this fine shell. -1 if no hits. Stage 5 uses this to pick
-            /// which proxy chart's UV rect the fine shell inherits.</summary>
-            public int     dominantProxyShell;
-            /// <summary>Fraction of raw hits coming from the dominant proxy
-            /// shell. 1.0 = all hits agree (one fine shell ↔ one proxy
-            /// chart); &lt; 0.6 means the fine shell straddles multiple
-            /// proxy charts and should probably be split / promoted by
-            /// Stage 5 instead of overlaid.</summary>
-            public float   dominantShare;
-            /// <summary>Centroid (worldspace, area-weighted) of the source
-            /// shell. Cached here so Stage 5 / visualisers don't have to
-            /// re-run ExtractShells just to find the plane origin.</summary>
+            /// <summary>Area-weighted centroid (worldspace) of the fine
+            /// faces that fit this chart.</summary>
             public Vector3 centroid;
-            /// <summary>Orthonormal axes of the shell's best-fit plane.
+            /// <summary>Orthonormal axes of the chart group's best-fit
+            /// plane (area-weighted normal of the contributing faces).
             /// Affine input is pu = (p - centroid)·basisU,
             /// pv = (p - centroid)·basisV.</summary>
             public Vector3 basisU;
             public Vector3 basisV;
             public float   au, bu, cu;
             public float   av, bv, cv;
-            /// <summary>Mean residual over the fit samples, in uv2 units.</summary>
             public float   meanResidual;
-            /// <summary>Maximum residual, in uv2 units. Drives residual
-            /// cluster detection — high max with low mean means a few
-            /// outliers (likely a shell that needs splitting / promotion).
-            /// </summary>
             public float   maxResidual;
         }
 
@@ -526,7 +516,7 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 ComputeProxyShellBboxes(result);
-                FitFineShellsToProxy(lg, opts, meshDiag, result);
+                FitProxyChartsToFine(lg, opts, meshDiag, result);
             }
             catch (Exception ex)
             {
@@ -1943,22 +1933,27 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        // ─── PR-3 Stage 4: per-shell affine fit (worldPos → uv2) ──────
+        // ─── PR-3 Stage 4: per-proxy-chart affine fit (worldPos → uv2)
 
-        /// <summary>For every fine LOD, extract 3D shells the same way the
-        /// existing classifier does, then for each fine shell solve a
-        /// least-squares affine that maps the shell's planar coords
-        /// (worldPos projected onto basisU/basisV) to the proxy_uv2 carried
-        /// by the proxy samples that hit faces in that shell. The fit is
-        /// independent on u and v but shares the 3×3 normal matrix.
-        /// Outputs land on <c>FineLodProjection</c>: fineShellFits,
-        /// perFaceFineShell, perFaceResidual. Stage 5 (the actual UV2
-        /// write) reads fineShellFits + applies them per fine vertex.
-        /// </summary>
-        static void FitFineShellsToProxy(LODGroup lg, Options opts,
+        /// <summary>For every fine LOD, group fine faces by their dominant
+        /// proxy chart (output of Stage 3) and solve one least-squares
+        /// affine per chart that maps the chart group's planar coords
+        /// (worldPos projected onto the group's area-weighted plane) to
+        /// the proxy_uv2 the chart's samples carry. Each proxy chart is
+        /// one lighting domain — fitting per chart instead of per fine
+        /// 3D shell guarantees every chart with at least one voting
+        /// face gets its own affine, instead of leaving 11 of 17 charts
+        /// empty because the fine LOD has fewer 3D shells than the
+        /// proxy has UV charts (sym-split fans out one face into many).
+        /// Output lands on <c>FineLodProjection</c>: proxyChartFits,
+        /// perFaceResidual. Stage 5 reads proxyChartFits indexed by
+        /// <c>perFaceDominantProxyShell</c>.</summary>
+        static void FitProxyChartsToFine(LODGroup lg, Options opts,
             float meshDiag, Result r)
         {
             if (r.lodProjections == null || r.proxySamples == null) return;
+            int chartN = r.proxyShellBboxes != null ? r.proxyShellBboxes.Length : 0;
+            if (chartN == 0) return;
             var lods = lg.GetLODs();
             int lodCount = lods.Length;
             int deepest = lodCount - 1;
@@ -1971,6 +1966,7 @@ namespace SashaRX.UnityMeshLab
                 if (li == deepest) continue;
                 var proj = r.lodProjections[li];
                 if (proj.perFaceHitSampleIdx == null) continue;
+                if (proj.perFaceDominantProxyShell == null) continue;
                 var rs = lods[li].renderers;
                 if (rs == null || rs.Length == 0 || rs[0] == null) continue;
                 var mf = rs[0].GetComponent<MeshFilter>();
@@ -1979,98 +1975,87 @@ namespace SashaRX.UnityMeshLab
                 var xform = rs[0].transform;
 
                 var fineFaces = BuildFaceData(mesh, xform, meshDiag,
-                    out Vector3[] fineWorldVerts, out int[] fineRawTris,
-                    out int[] fineCanonicalTris, out _);
+                    out _, out int[] fineRawTris, out _, out _);
                 int faceCount = fineFaces.Length;
                 if (faceCount == 0) continue;
 
-                // Same shell extraction used by the legacy classifier
-                // (Step 4 in Build) — same parameters so shell IDs stay
-                // consistent across stages.
-                var fineFaceToShell = new int[faceCount];
-                var fineShells = ExtractShells(fineFaces, fineWorldVerts, fineRawTris,
-                    fineCanonicalTris, opts.shellNormalThresholdDeg, 0f,
-                    fineFaceToShell, null);
+                // Group fine faces by their dominant proxy chart (output
+                // of Stage 3). Each chart group is one projection unit:
+                // every face in the group projects onto chart C's UV
+                // region via a single affine fit to the samples that
+                // landed on those faces AND came from chart C. This is
+                // the architectural unit: every proxy chart gets its
+                // share of fine geometry instead of being left empty.
+                var faceByChart = new List<int>[chartN];
+                for (int f = 0; f < faceCount; f++)
+                {
+                    int c = proj.perFaceDominantProxyShell[f];
+                    if (c < 0 || c >= chartN) continue;
+                    if (faceByChart[c] == null) faceByChart[c] = new List<int>(16);
+                    faceByChart[c].Add(f);
+                }
 
-                proj.perFaceFineShell = fineFaceToShell;
-                proj.perFaceResidual  = new float[faceCount];
+                var fits = new ProxyChartFit[chartN];
+                proj.perFaceResidual = new float[faceCount];
                 for (int f = 0; f < faceCount; f++) proj.perFaceResidual[f] = float.NaN;
 
-                var fits = new FineShellFit[fineShells.Length];
-
-                var proxyTally = new Dictionary<int, int>();
-                for (int s = 0; s < fineShells.Length; s++)
+                for (int c = 0; c < chartN; c++)
                 {
-                    var shell = fineShells[s];
-                    fits[s].fineShellId = s;
-                    fits[s].centroid    = shell.centroid;
-                    fits[s].basisU      = shell.basisU;
-                    fits[s].basisV      = shell.basisV;
-                    fits[s].dominantProxyShell = -1;
+                    var faces = faceByChart[c];
+                    if (faces == null || faces.Count == 0) continue;
+                    fits[c].proxyChartId = c;
+                    fits[c].faceCount    = faces.Count;
 
-                    // First pass: vote on which proxy shell sent the most
-                    // samples to this fine shell. One fine shell can
-                    // legitimately span multiple proxy charts (the proxy's
-                    // sym-split fragments a single 3D shell into several
-                    // UV charts), but fitting one affine to ALL such
-                    // samples averages between charts at very different UV
-                    // positions and explodes the extrapolation. We pick the
-                    // dominant proxy shell and fit only to its samples;
-                    // fine shells with low dominantShare are flagged so
-                    // Stage 5 can promote them instead of overlay.
-                    proxyTally.Clear();
-                    int rawHits = 0;
-                    foreach (int f in shell.faceIndices)
+                    // Area-weighted centroid + normal of the chart group.
+                    Vector3 nAccum = Vector3.zero;
+                    Vector3 cAccum = Vector3.zero;
+                    float areaSum = 0f;
+                    foreach (int f in faces)
                     {
-                        var ids = proj.perFaceHitSampleIdx[f];
-                        if (ids == null) continue;
-                        foreach (int sid in ids)
-                        {
-                            int psh = r.proxySamples[sid].proxyShellId;
-                            proxyTally.TryGetValue(psh, out int prev);
-                            proxyTally[psh] = prev + 1;
-                            rawHits++;
-                        }
+                        var face = fineFaces[f];
+                        nAccum += face.normal * face.area;
+                        cAccum += face.centroid * face.area;
+                        areaSum += face.area;
                     }
-                    int dominant = -1, dominantCount = 0;
-                    foreach (var kv in proxyTally)
-                        if (kv.Value > dominantCount) { dominantCount = kv.Value; dominant = kv.Key; }
-                    fits[s].dominantProxyShell = dominant;
-                    fits[s].dominantShare = rawHits > 0 ? (float)dominantCount / rawHits : 0f;
+                    if (areaSum < 1e-12f) continue;
+                    fits[c].centroid = cAccum / areaSum;
+                    Vector3 normal = nAccum.normalized;
+                    if (normal.sqrMagnitude < 0.5f) normal = Vector3.up;
+                    ComputePlaneBasis(normal, out Vector3 bU, out Vector3 bV);
+                    fits[c].basisU = bU;
+                    fits[c].basisV = bV;
 
-                    // Second pass: collect (worldPos, uv2) for the dominant
-                    // proxy shell only.
+                    // Collect samples that hit this chart's faces AND
+                    // come from this chart (sample.proxyShellId == c).
+                    // Samples from other charts that happened to land on
+                    // these faces (because their nearest fine face turned
+                    // out to be one of this group's faces) are ignored;
+                    // mixing would distort the affine fit.
                     var pus = new List<float>(64);
                     var pvs = new List<float>(64);
                     var us  = new List<float>(64);
                     var vs  = new List<float>(64);
                     var hitFaces = new List<int>(64);
-                    foreach (int f in shell.faceIndices)
+                    foreach (int f in faces)
                     {
                         var ids = proj.perFaceHitSampleIdx[f];
                         if (ids == null) continue;
                         foreach (int sid in ids)
                         {
                             var sm = r.proxySamples[sid];
-                            if (sm.proxyShellId != dominant) continue;
-                            Vector3 d = sm.worldPos - shell.centroid;
-                            pus.Add(Vector3.Dot(d, shell.basisU));
-                            pvs.Add(Vector3.Dot(d, shell.basisV));
+                            if (sm.proxyShellId != c) continue;
+                            Vector3 d = sm.worldPos - fits[c].centroid;
+                            pus.Add(Vector3.Dot(d, bU));
+                            pvs.Add(Vector3.Dot(d, bV));
                             us.Add(sm.uv2.x);
                             vs.Add(sm.uv2.y);
                             hitFaces.Add(f);
                         }
                     }
                     int nHits = pus.Count;
-                    fits[s].sampleCount = nHits;
-                    if (nHits < 3)
-                    {
-                        fits[s].valid = false;
-                        continue;
-                    }
+                    fits[c].sampleCount = nHits;
+                    if (nHits < 3) { fits[c].valid = false; continue; }
 
-                    // Build the 3×3 normal matrix AᵀA where each A row is
-                    // [pu, pv, 1]. Symmetric, six unique entries.
                     double m00 = 0, m01 = 0, m02 = 0;
                     double m11 = 0, m12 = 0, m22 = nHits;
                     double bu0 = 0, bu1 = 0, bu2 = 0;
@@ -2079,43 +2064,23 @@ namespace SashaRX.UnityMeshLab
                     {
                         double pu = pus[i], pv = pvs[i];
                         double u  = us[i],  v  = vs[i];
-                        m00 += pu * pu;
-                        m01 += pu * pv;
-                        m02 += pu;
-                        m11 += pv * pv;
-                        m12 += pv;
-                        bu0 += pu * u;
-                        bu1 += pv * u;
-                        bu2 += u;
-                        bv0 += pu * v;
-                        bv1 += pv * v;
-                        bv2 += v;
+                        m00 += pu * pu; m01 += pu * pv; m02 += pu;
+                        m11 += pv * pv; m12 += pv;
+                        bu0 += pu * u;  bu1 += pv * u;  bu2 += u;
+                        bv0 += pu * v;  bv1 += pv * v;  bv2 += v;
                     }
-
-                    // Two calls share the same AᵀA; second call only proceeds
-                    // if the first inverted cleanly. Separate ifs (vs `||`)
-                    // because the out vars declared in the second call must
-                    // be definitely assigned by the time we read them below.
                     bool ok = Solve3x3(m00, m01, m02, m01, m11, m12, m02, m12, m22,
                         bu0, bu1, bu2, out double au, out double bu, out double cu);
                     double av = 0, bv = 0, cv = 0;
                     if (ok)
                         ok = Solve3x3(m00, m01, m02, m01, m11, m12, m02, m12, m22,
                             bv0, bv1, bv2, out av, out bv, out cv);
-                    if (!ok)
-                    {
-                        fits[s].valid = false;
-                        continue;
-                    }
+                    if (!ok) { fits[c].valid = false; continue; }
 
-                    fits[s].au = (float)au; fits[s].bu = (float)bu; fits[s].cu = (float)cu;
-                    fits[s].av = (float)av; fits[s].bv = (float)bv; fits[s].cv = (float)cv;
-                    fits[s].valid = true;
+                    fits[c].au = (float)au; fits[c].bu = (float)bu; fits[c].cu = (float)cu;
+                    fits[c].av = (float)av; fits[c].bv = (float)bv; fits[c].cv = (float)cv;
+                    fits[c].valid = true;
 
-                    // Residuals: |predicted_uv - actual_uv| per sample, in
-                    // uv2 units. Track mean + max across the shell, and
-                    // accumulate per-face means so the diagnostic PNG can
-                    // show clusters where the affine fits poorly.
                     var faceResSum   = new Dictionary<int, double>();
                     var faceResCount = new Dictionary<int, int>();
                     double resSum = 0, resMax = 0;
@@ -2135,13 +2100,13 @@ namespace SashaRX.UnityMeshLab
                         faceResCount.TryGetValue(f, out int prevN);
                         faceResCount[f] = prevN + 1;
                     }
-                    fits[s].meanResidual = (float)(resSum / nHits);
-                    fits[s].maxResidual  = (float)resMax;
+                    fits[c].meanResidual = (float)(resSum / nHits);
+                    fits[c].maxResidual  = (float)resMax;
                     foreach (var kv in faceResSum)
                         proj.perFaceResidual[kv.Key] = (float)(kv.Value / faceResCount[kv.Key]);
                 }
 
-                proj.fineShellFits = fits;
+                proj.proxyChartFits = fits;
                 r.lodProjections[li] = proj;
             }
         }
@@ -2307,7 +2272,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if (li == deepest) continue;
                 var proj = r.lodProjections[li];
-                if (proj.fineShellFits == null || proj.perFaceFineShell == null) continue;
+                if (proj.proxyChartFits == null || proj.perFaceDominantProxyShell == null) continue;
                 var rs = lods[li].renderers;
                 if (rs == null || rs.Length == 0 || rs[0] == null) continue;
                 var mf = rs[0].GetComponent<MeshFilter>();
@@ -2317,24 +2282,25 @@ namespace SashaRX.UnityMeshLab
                 var localVerts = mesh.vertices;
                 var tris = mesh.triangles;
                 int faceCount = tris.Length / 3;
-                if (faceCount == 0 || faceCount != proj.perFaceFineShell.Length) continue;
+                if (faceCount == 0 || faceCount != proj.perFaceDominantProxyShell.Length) continue;
 
                 var worldVerts = new Vector3[localVerts.Length];
                 for (int i = 0; i < localVerts.Length; i++)
                     worldVerts[i] = xform.TransformPoint(localVerts[i]);
 
-                int shellCount = proj.fineShellFits.Length;
+                int chartCount = proj.proxyChartFits != null ? proj.proxyChartFits.Length : 0;
 
-                // (origVi, shellId) → newVi dedup. Vertices on a seam
-                // between two shells get one copy per shell so each shell
-                // owns its own UV and no tri spans across shells.
+                // (origVi, chartId) → newVi dedup. Vertices on a seam
+                // between two proxy charts (one face votes for chart A,
+                // another for chart B) get one copy per chart so each
+                // chart owns its own UV and no tri spans across charts.
                 var dedup = new Dictionary<long, int>(localVerts.Length);
                 var outUv = new List<Vector2>(localVerts.Length * 2);
                 var outTris = new int[tris.Length];
                 var outSrc = new List<int>(localVerts.Length * 2);
-                int NewIndex(int origVi, int shellId)
+                int NewIndex(int origVi, int chartId)
                 {
-                    long key = ((long)(shellId + 1) << 32) | (uint)origVi;
+                    long key = ((long)(chartId + 1) << 32) | (uint)origVi;
                     if (dedup.TryGetValue(key, out int existing)) return existing;
                     int newIdx = outUv.Count;
                     outUv.Add(Vector2.zero);
@@ -2345,22 +2311,23 @@ namespace SashaRX.UnityMeshLab
 
                 for (int f = 0; f < faceCount; f++)
                 {
-                    int s = proj.perFaceFineShell[f];
-                    bool hasFit = s >= 0 && s < shellCount && proj.fineShellFits[s].valid;
+                    int c = proj.perFaceDominantProxyShell[f];
+                    bool hasFit = c >= 0 && c < chartCount && proj.proxyChartFits[c].valid;
                     for (int k = 0; k < 3; k++)
                     {
                         int origVi = tris[f * 3 + k];
-                        int newIdx = NewIndex(origVi, s);
+                        int newIdx = NewIndex(origVi, c);
                         outTris[f * 3 + k] = newIdx;
 
                         Vector2 uv;
                         if (hasFit)
                         {
-                            // Direct affine application — preserves the
-                            // shell's natural shape. Vertices CAN land
-                            // outside the parent chart or on a neighbour;
-                            // that's the shared-lighting design.
-                            var fit = proj.fineShellFits[s];
+                            // Direct affine of the face's proxy chart —
+                            // each proxy chart pulls its share of fine
+                            // geometry, no chart is left empty. Vertices
+                            // CAN land outside the parent chart or on a
+                            // neighbour; that's the shared-lighting design.
+                            var fit = proj.proxyChartFits[c];
                             Vector3 d = worldVerts[origVi] - fit.centroid;
                             float pu = Vector3.Dot(d, fit.basisU);
                             float pv = Vector3.Dot(d, fit.basisV);
@@ -2631,7 +2598,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if (li == deepest) continue;
                 var proj = r.lodProjections[li];
-                if (proj.fineShellFits == null || proj.perFaceFineShell == null) continue;
+                if (proj.proxyChartFits == null || proj.perFaceDominantProxyShell == null) continue;
                 var rs = lods[li].renderers;
                 if (rs == null || rs.Length == 0 || rs[0] == null) continue;
                 var mf = rs[0].GetComponent<MeshFilter>();
@@ -2641,32 +2608,28 @@ namespace SashaRX.UnityMeshLab
                 var localVerts = mesh.vertices;
                 var tris = mesh.triangles;
                 int faceCount = tris.Length / 3;
-                if (faceCount == 0 || faceCount != proj.perFaceFineShell.Length) continue;
+                if (faceCount == 0 || faceCount != proj.perFaceDominantProxyShell.Length) continue;
 
-                // Predicted UV2 per output vertex slot. Vertex shared by two
-                // shells gets the value from whichever face we visited last
-                // — fine for a diagnostic; Stage 5 will resolve seam
-                // ownership properly when actually writing mesh.uv2.
+                // Predicted UV2 per output vertex slot. Vertex shared by
+                // two proxy chart groups gets the value from whichever
+                // face we visited last — fine for a diagnostic; the
+                // final UV PNG uses seam-duplication to keep ownership
+                // clean.
                 var predUv  = new Vector2[localVerts.Length];
                 var predHas = new bool[localVerts.Length];
 
-                // For each face, look up its shell, apply that shell's
-                // affine to each corner vertex (worldspace → planar coords
-                // via cached centroid/basis on FineShellFit → uv2). Skip
-                // shells whose hits split too evenly across proxy charts
-                // (dominantShare < 0.6) — their affine is dominated by the
-                // gradient between two unrelated UV regions and extrapolates
-                // wildly outside the chart; Stage 5 will promote them
-                // instead, so showing the broken prediction is just visual
-                // noise.
-                const float kMinDominantShare = 0.6f;
+                // For each face, look up its proxy chart group, apply
+                // that chart's affine to each corner (worldspace → planar
+                // coords via cached centroid/basis on ProxyChartFit →
+                // uv2). Faces whose chart has no valid fit are skipped —
+                // the diagnostic shows only the projections backed by
+                // real sample data.
                 for (int f = 0; f < faceCount; f++)
                 {
-                    int s = proj.perFaceFineShell[f];
-                    if (s < 0 || s >= proj.fineShellFits.Length) continue;
-                    var fit = proj.fineShellFits[s];
+                    int c = proj.perFaceDominantProxyShell[f];
+                    if (c < 0 || c >= proj.proxyChartFits.Length) continue;
+                    var fit = proj.proxyChartFits[c];
                     if (!fit.valid) continue;
-                    if (fit.dominantShare < kMinDominantShare) continue;
                     for (int k = 0; k < 3; k++)
                     {
                         int vi = tris[f * 3 + k];
@@ -3152,42 +3115,45 @@ namespace SashaRX.UnityMeshLab
                     $"sourceLod={d.sourceLodIndex}");
             }
 
-            // PR-3 Stage 4 audit — affine fit health per fine LOD. Bad mean
-            // residual or low valid-shell ratio means proxy charts and fine
-            // shells don't share a simple planar map; that's the signal to
-            // promote (Stage 5) instead of overlay. mixedShells counts fine
-            // shells whose samples come <60% from a single proxy chart —
-            // splitting them is what stops the Stage 5 UV layout from
-            // exploding outside the unit box on assets like the Carousel.
+            // PR-3 Stage 4 audit — affine fit health per fine LOD. Now
+            // grouped by proxy chart: each chart pulls fine faces voting
+            // for it and gets one affine. populated counts how many proxy
+            // charts received any fine geometry; valid counts how many of
+            // those had ≥3 sample hits + non-degenerate plane (so the
+            // affine is reliable). A low populated/total ratio means many
+            // proxy charts are empty — the geometry doesn't map to that
+            // many distinct charts (e.g., sym-split twins where fine LOD
+            // doesn't disambiguate winding).
             if (r.lodProjections != null)
             {
                 for (int li = 0; li < r.lodProjections.Length; li++)
                 {
                     var proj = r.lodProjections[li];
-                    if (proj.fineShellFits == null) continue;
-                    int total = proj.fineShellFits.Length;
-                    int valid = 0, mixedShells = 0;
+                    if (proj.proxyChartFits == null) continue;
+                    int total = proj.proxyChartFits.Length;
+                    int populated = 0, valid = 0;
                     double sumMean = 0, sumMax = 0;
                     float worstMean = 0;
-                    foreach (var fit in proj.fineShellFits)
+                    foreach (var fit in proj.proxyChartFits)
                     {
+                        if (fit.faceCount == 0) continue;
+                        populated++;
                         if (!fit.valid) continue;
                         valid++;
                         sumMean += fit.meanResidual;
                         sumMax  += fit.maxResidual;
                         if (fit.meanResidual > worstMean) worstMean = fit.meanResidual;
-                        if (fit.dominantShare < 0.6f) mixedShells++;
                     }
                     string row;
                     if (valid == 0)
                     {
-                        row = $"    LOD{li}: shells={total,4}  fit-valid=0/{total} " +
-                              $"(too few sample hits or rank-deficient)";
+                        row = $"    LOD{li}: proxy charts={total,4}  populated={populated,4}  " +
+                              $"fit-valid=0/{populated}";
                     }
                     else
                     {
-                        row = $"    LOD{li}: shells={total,4}  fit-valid={valid,4}/{total}  " +
-                              $"mixed(<60% dominant)={mixedShells,3}  " +
+                        row = $"    LOD{li}: proxy charts={total,4}  populated={populated,4}  " +
+                              $"fit-valid={valid,4}/{populated}  " +
                               $"meanRes={sumMean / valid,6:F4}  " +
                               $"avgMaxRes={sumMax / valid,6:F4}  " +
                               $"worstMean={worstMean,6:F4} uv2";
