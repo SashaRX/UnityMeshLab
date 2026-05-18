@@ -1906,26 +1906,6 @@ namespace SashaRX.UnityMeshLab
             r.finalSourceVertexIdx = new int[lodCount][];
             r.finalAtlasV = 1f;
 
-            // Cage-style maximum projection distance. A fine face whose
-            // centroid is farther than this from any matching-normal
-            // proxy face gets dropped (sentinel UV) — keeps a fine face
-            // from binding to a proxy face on the OTHER side of the
-            // asset just because nothing closer matches the normal.
-            // Reuses opts.overlayDistNorm (same semantic: 'fine and
-            // proxy surfaces are within this fraction of the meshDiag').
-            float refDiag = 0f;
-            {
-                var deepRs = lods[deepest].renderers;
-                if (deepRs != null && deepRs.Length > 0 && deepRs[0] != null)
-                {
-                    var dmf = deepRs[0].GetComponent<MeshFilter>();
-                    if (dmf != null && dmf.sharedMesh != null)
-                        refDiag = ComputeMeshDiagonal(dmf.sharedMesh, deepRs[0].transform);
-                }
-            }
-            if (refDiag < 1e-6f) refDiag = 1f;
-            float maxDistAbs = opts.overlayDistNorm * refDiag;
-
             // Proxy face data: centroid, area, unit normal — and AABBs
             // (kept for future ray-cast acceleration, currently unused
             // since the ray-cast fallback is a naive loop over faces).
@@ -1987,15 +1967,15 @@ namespace SashaRX.UnityMeshLab
                 // this fine LOD; proj.perFaceHitSampleIdx[f] lists the
                 // sample indices that landed on fine face f, each
                 // carrying its source proxyFaceIdx. We use that as the
-                // primary correspondence signal, with a ray-cast
-                // fallback for fine faces no sample reached.
+                // primary correspondence signal. NO fallback — fine
+                // faces no sample reached land at sentinel UV so the
+                // diagnostic shows exactly where Poisson coverage is
+                // too sparse.
                 var proj = r.lodProjections != null && li < r.lodProjections.Length
                     ? r.lodProjections[li]
                     : default;
                 int[][] hitsByFace = proj.perFaceHitSampleIdx;
                 var voteTally = new Dictionary<int, int>();
-                float cageEps = Mathf.Max(refDiag * 0.001f, 1e-5f);
-                float maxRayT = maxDistAbs + cageEps;
 
                 for (int f = 0; f < faceCount; f++)
                 {
@@ -2009,7 +1989,6 @@ namespace SashaRX.UnityMeshLab
                     float fineCrossMag = fineCross.magnitude;
                     Vector3 fineNormal = fineCrossMag > 1e-12f
                         ? fineCross / fineCrossMag : Vector3.up;
-                    Vector3 centroid = (va + vb + vc) / 3f;
 
                     int pfMatch = -1;
 
@@ -2046,24 +2025,17 @@ namespace SashaRX.UnityMeshLab
                         }
                     }
 
-                    // Fallback: ray cast from cage origin (centroid +
-                    // eps·N) along -N. Catches fine faces that Poisson
-                    // didn't reach — thin frame trim, sliver tris.
                     if (pfMatch < 0)
                     {
-                        Vector3 origin = centroid + fineNormal * cageEps;
-                        Vector3 dir    = -fineNormal;
-                        pfMatch = RaycastProxyFace(va, vb, vc, origin, dir,
-                            fineNormal, proxyFaces,
-                            r.proxyWorldVerts, r.proxyTris,
-                            r.proxyUv2, maxRayT);
-                    }
-
-                    if (pfMatch < 0)
-                    {
-                        // No proxy face passed any of the filters — park
-                        // the fine face off-atlas. It bakes to nothing
-                        // but the index buffer stays length-consistent.
+                        // No Poisson sample reached this fine face (or
+                        // every voted proxy face failed the filters).
+                        // Park off-atlas — NO fallback. The empty
+                        // regions in lod{N}_final_uv2.png and the bake
+                        // are the diagnostic: they tell the operator
+                        // exactly where Poisson coverage is too sparse
+                        // so density / cage / chart layout can be
+                        // tuned. A ray-cast fallback here would hide
+                        // that signal.
                         for (int k = 0; k < 3; k++)
                         {
                             int origVi = tris[f * 3 + k];
@@ -2147,81 +2119,11 @@ namespace SashaRX.UnityMeshLab
             return proxyCross * fineCross > 0f;
         }
 
-        /// <summary>Cast a ray (<paramref name="origin"/>, <paramref name="dir"/>)
-        /// against all proxy faces, return the index of the first face
-        /// the ray pierces within <paramref name="maxT"/> that also
-        /// passes the normal-sign + UV-winding filters. Used as fallback
-        /// for fine faces no Poisson sample reached (thin frame trim,
-        /// sliver tris). The barycentric of the hit point must be inside
-        /// the proxy triangle.</summary>
-        static int RaycastProxyFace(
-            Vector3 v0, Vector3 v1, Vector3 v2,
-            Vector3 origin, Vector3 dir, Vector3 fineNormal,
-            Face3D[] proxyFaces,
-            Vector3[] proxyVerts, int[] proxyTris,
-            Vector2[] proxyUv2,
-            float maxT)
-        {
-            int closest = -1;
-            float bestT = maxT;
-            for (int f = 0; f < proxyFaces.Length; f++)
-            {
-                if (proxyFaces[f].area <= 0f) continue;
-                Vector3 pn = proxyFaces[f].normal;
-                if (Vector3.Dot(fineNormal, pn) <= 0f) continue;
-
-                float denom = Vector3.Dot(dir, pn);
-                if (Mathf.Abs(denom) < 1e-9f) continue;
-
-                int ia = proxyTris[f * 3];
-                int ib = proxyTris[f * 3 + 1];
-                int ic = proxyTris[f * 3 + 2];
-                Vector3 A = proxyVerts[ia];
-                float t = Vector3.Dot(A - origin, pn) / denom;
-                if (t < 0f || t > bestT) continue;
-
-                Vector3 hit = origin + dir * t;
-                Vector3 B = proxyVerts[ib];
-                Vector3 C = proxyVerts[ic];
-                Vector3 e0 = B - A, e1 = C - A, e2 = hit - A;
-                float d00 = Vector3.Dot(e0, e0);
-                float d01 = Vector3.Dot(e0, e1);
-                float d11 = Vector3.Dot(e1, e1);
-                float d20 = Vector3.Dot(e2, e0);
-                float d21 = Vector3.Dot(e2, e1);
-                float dB = d00 * d11 - d01 * d01;
-                if (Mathf.Abs(dB) < 1e-12f) continue;
-                float bV = (d11 * d20 - d01 * d21) / dB;
-                float bW = (d00 * d21 - d01 * d20) / dB;
-                float bU = 1f - bV - bW;
-                if (bU < -1e-5f || bV < -1e-5f || bW < -1e-5f) continue;
-
-                Vector2 uvA = proxyUv2[ia];
-                Vector2 uvB = proxyUv2[ib];
-                Vector2 uvC = proxyUv2[ic];
-                float proxyCross = (uvB.x - uvA.x) * (uvC.y - uvA.y)
-                                 - (uvB.y - uvA.y) * (uvC.x - uvA.x);
-                if (Mathf.Abs(proxyCross) >= 1e-12f)
-                {
-                    Vector2 pu0 = ProjectAndBary(v0, A, B, C, pn, uvA, uvB, uvC);
-                    Vector2 pu1 = ProjectAndBary(v1, A, B, C, pn, uvA, uvB, uvC);
-                    Vector2 pu2 = ProjectAndBary(v2, A, B, C, pn, uvA, uvB, uvC);
-                    float fineCross = (pu1.x - pu0.x) * (pu2.y - pu0.y)
-                                    - (pu1.y - pu0.y) * (pu2.x - pu0.x);
-                    if (proxyCross * fineCross <= 0f) continue;
-                }
-
-                bestT = t;
-                closest = f;
-            }
-            return closest;
-        }
-
         /// <summary>Ortho-project <paramref name="p"/> onto the plane of
         /// (<paramref name="a"/>, <paramref name="b"/>, <paramref name="c"/>)
         /// along <paramref name="planeNormal"/>, then barycentric-pull
         /// (uvA, uvB, uvC). Used for both the UV-winding sign check in
-        /// <see cref="RaycastProxyFace"/> and the actual UV assignment
+        /// <see cref="PassesProxyFilters"/> and the actual UV assignment
         /// in Stage 5. Falls back to uvA when the proxy triangle is
         /// degenerate.</summary>
         static Vector2 ProjectAndBary(Vector3 p, Vector3 a, Vector3 b, Vector3 c,
