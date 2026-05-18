@@ -327,8 +327,15 @@ namespace SashaRX.UnityMeshLab
             LastWrittenCsvPath = csvPath;
 
             // Per-mesh UV2 snapshots, one PNG per recorded mesh.
+            // Subfolder is a SHORT fixed name (was fileBase + "_png" but
+            // that drove the full path past Windows MAX_PATH = 260 on
+            // assets with long lodGroup / modeTag combos, e.g.
+            // 02_Wooden_Box_Long/legacy/{long}_png/{file}.png =
+            // ≈290 chars and OS rejects). Parent dir already
+            // discriminates the cell uniquely.
             int pngCount = 0;
-            string pngDir = Path.Combine(dir, fileBase + "_png");
+            string pngDir = Path.Combine(dir, "uv2_png");
+            Directory.CreateDirectory(pngDir);
             foreach (var r in records)
             {
                 if (r.uv2Snapshot == null || r.trianglesSnapshot == null) continue;

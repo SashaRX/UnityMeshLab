@@ -732,8 +732,16 @@ namespace SashaRX.UnityMeshLab
                 || string.IsNullOrEmpty(indexDir))
                 return "<em>(no PNG)</em>";
 
-            string pngDirAbs = Path.Combine(csvDir, csvBase + "_png");
-            if (!Directory.Exists(pngDirAbs)) return "<em>(no PNG)</em>";
+            // New layout (post path-length fix): PNG sibling of CSV in a
+            // short fixed subfolder "uv2_png". Legacy layout used
+            // "{csvBase}_png" — keep that as a fallback so already-
+            // recorded sweeps still surface their thumbnails.
+            string pngDirAbs = Path.Combine(csvDir, "uv2_png");
+            if (!Directory.Exists(pngDirAbs))
+            {
+                pngDirAbs = Path.Combine(csvDir, csvBase + "_png");
+                if (!Directory.Exists(pngDirAbs)) return "<em>(no PNG)</em>";
+            }
 
             string[] pngs;
             try { pngs = Directory.GetFiles(pngDirAbs, "*.png"); }

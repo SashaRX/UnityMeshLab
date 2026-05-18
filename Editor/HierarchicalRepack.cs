@@ -1906,6 +1906,27 @@ namespace SashaRX.UnityMeshLab
             r.finalSourceVertexIdx = new int[lodCount][];
             r.finalAtlasV = 1f;
 
+            // Cage-style maximum projection distance. A fine face whose
+            // centroid is farther than this from any matching-normal
+            // proxy face gets dropped (sentinel UV) — keeps a fine face
+            // from binding to a proxy face on the OTHER side of the
+            // asset just because nothing closer matches the normal.
+            // Reuses opts.overlayDistNorm (same semantic: 'fine and
+            // proxy surfaces are within this fraction of the meshDiag').
+            float refDiag = 0f;
+            {
+                var deepRs = lods[deepest].renderers;
+                if (deepRs != null && deepRs.Length > 0 && deepRs[0] != null)
+                {
+                    var dmf = deepRs[0].GetComponent<MeshFilter>();
+                    if (dmf != null && dmf.sharedMesh != null)
+                        refDiag = ComputeMeshDiagonal(dmf.sharedMesh, deepRs[0].transform);
+                }
+            }
+            if (refDiag < 1e-6f) refDiag = 1f;
+            float maxDistAbs = opts.overlayDistNorm * refDiag;
+            float maxDistSq  = maxDistAbs * maxDistAbs;
+
             // Proxy face data: centroid, area, unit normal — and AABBs
             // for cheap rejection during closest-face search. Built once,
             // reused across every fine LOD.
@@ -1993,7 +2014,8 @@ namespace SashaRX.UnityMeshLab
                     int pfMatch = ProjectFaceToProxy(
                         centroid, fineNormal, proxyFaces,
                         r.proxyWorldVerts, r.proxyTris,
-                        proxyMin, proxyMax, /*requireNormalSign*/ true);
+                        proxyMin, proxyMax,
+                        /*requireNormalSign*/ true, maxDistSq);
 
                     if (pfMatch < 0)
                     {
@@ -2061,16 +2083,21 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Closest proxy face by 3D distance to <paramref name="q"/>.
         /// If <paramref name="requireNormalSign"/>, only proxy faces with
         /// dot(fineNormal, proxyNormal) &gt; 0 are considered — that's
-        /// how sym-split mirror twins are disambiguated. Returns -1 if
-        /// nothing passes the filter.</summary>
+        /// how sym-split mirror twins are disambiguated. A face whose
+        /// 3D distance to <paramref name="q"/> exceeds
+        /// <paramref name="maxDistSq"/> (a cage-style cap, in squared
+        /// world units) is also rejected — keeps a fine face from
+        /// projecting onto a proxy face on the OTHER side of the asset
+        /// just because nothing closer matches. Returns -1 if nothing
+        /// passes the filters.</summary>
         static int ProjectFaceToProxy(
             Vector3 q, Vector3 fineNormal, Face3D[] proxyFaces,
             Vector3[] proxyVerts, int[] proxyTris,
             Vector3[] aabbMin, Vector3[] aabbMax,
-            bool requireNormalSign)
+            bool requireNormalSign, float maxDistSq)
         {
             int closest = -1;
-            float bestSq = float.MaxValue;
+            float bestSq = maxDistSq;
             for (int f = 0; f < proxyFaces.Length; f++)
             {
                 if (proxyFaces[f].area <= 0f) continue;
