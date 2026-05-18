@@ -1993,33 +1993,24 @@ namespace SashaRX.UnityMeshLab
                     Vector3 va = worldVerts[ia];
                     Vector3 vb = worldVerts[ib];
                     Vector3 vc = worldVerts[ic];
-                    Vector3 centroid = (va + vb + vc) / 3f;
                     Vector3 fineCross = Vector3.Cross(vb - va, vc - va);
                     float fineCrossMag = fineCross.magnitude;
                     Vector3 fineNormal = fineCrossMag > 1e-12f
                         ? fineCross / fineCrossMag : Vector3.up;
 
-                    // Strict normal-sign correspondence: only consider
-                    // proxy faces whose normal agrees with this fine
-                    // face's normal (dot > 0). Sym-split mirror twins
-                    // differ by chart UV winding — strict sign picks
-                    // the right twin. A fine face whose normal matches
-                    // NOTHING in the proxy (e.g., inner-surface tris on
-                    // a hollow mesh where the proxy is outer-only) is
-                    // intentionally dropped: it has no lighting domain
-                    // in the proxy atlas, so falling back to 'any sign'
-                    // would stack it on top of an outer chart and
-                    // double-cover the same texels (visible as X-pattern
-                    // overlay in final_uv2.png on hollow assets).
+                    // Filters: normal-sign + UV-winding sign + per-vertex
+                    // closest-point distance ≤ cage cap. See
+                    // ProjectFaceToProxy for the rationale; this call
+                    // returns the proxy face that best fits all three of
+                    // the fine triangle's vertices.
                     int pfMatch = ProjectFaceToProxy(
-                        centroid, fineNormal, proxyFaces,
-                        r.proxyWorldVerts, r.proxyTris,
-                        proxyMin, proxyMax,
-                        /*requireNormalSign*/ true, maxDistSq);
+                        va, vb, vc, fineNormal,
+                        proxyFaces, r.proxyWorldVerts, r.proxyTris,
+                        r.proxyUv2, proxyMin, proxyMax, maxDistSq);
 
                     if (pfMatch < 0)
                     {
-                        // No proxy face with matching normal — park the
+                        // No proxy face passed all filters — park the
                         // fine face off-atlas. It will bake to nothing
                         // but the index buffer stays length-consistent.
                         for (int k = 0; k < 3; k++)
@@ -2032,7 +2023,6 @@ namespace SashaRX.UnityMeshLab
                         continue;
                     }
 
-                    // Cache the proxy face data we'll use 3 times.
                     int pa = r.proxyTris[pfMatch * 3];
                     int pb = r.proxyTris[pfMatch * 3 + 1];
                     int pc = r.proxyTris[pfMatch * 3 + 2];
@@ -2047,26 +2037,8 @@ namespace SashaRX.UnityMeshLab
                     for (int k = 0; k < 3; k++)
                     {
                         int origVi = tris[f * 3 + k];
-                        Vector3 wp = worldVerts[origVi];
-                        // Orthographic projection onto proxy face's
-                        // plane: P = wp - n · ((wp - A) · n).
-                        Vector3 P = wp - nProxy * Vector3.Dot(wp - A, nProxy);
-                        Vector3 v0 = B - A, v1 = C - A, v2 = P - A;
-                        float d00 = Vector3.Dot(v0, v0);
-                        float d01 = Vector3.Dot(v0, v1);
-                        float d11 = Vector3.Dot(v1, v1);
-                        float d20 = Vector3.Dot(v2, v0);
-                        float d21 = Vector3.Dot(v2, v1);
-                        float denom = d00 * d11 - d01 * d01;
-                        Vector2 uv;
-                        if (Mathf.Abs(denom) < 1e-12f) { uv = uvA; }
-                        else
-                        {
-                            float bV = (d11 * d20 - d01 * d21) / denom;
-                            float bW = (d00 * d21 - d01 * d20) / denom;
-                            float bU = 1f - bV - bW;
-                            uv = uvA * bU + uvB * bV + uvC * bW;
-                        }
+                        Vector2 uv = ProjectAndBary(worldVerts[origVi],
+                            A, B, C, nProxy, uvA, uvB, uvC);
                         int newIdx = NewIndex(origVi, pfMatch);
                         outTris[f * 3 + k] = newIdx;
                         outUv[newIdx] = uv;
@@ -2080,39 +2052,111 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        /// <summary>Closest proxy face by 3D distance to <paramref name="q"/>.
-        /// If <paramref name="requireNormalSign"/>, only proxy faces with
-        /// dot(fineNormal, proxyNormal) &gt; 0 are considered — that's
-        /// how sym-split mirror twins are disambiguated. A face whose
-        /// 3D distance to <paramref name="q"/> exceeds
-        /// <paramref name="maxDistSq"/> (a cage-style cap, in squared
-        /// world units) is also rejected — keeps a fine face from
-        /// projecting onto a proxy face on the OTHER side of the asset
-        /// just because nothing closer matches. Returns -1 if nothing
-        /// passes the filters.</summary>
+        /// <summary>Closest proxy face for a fine triangle, ranked by the
+        /// MAX of the closest-point distances from the fine triangle's
+        /// three vertices to the proxy face. Per-vertex closest-point
+        /// (Ericson, RTCD §5.1) catches a fine vertex at the edge of a
+        /// long panel chart where the centroid-only ranking would still
+        /// pick a neighbouring proxy face as nearest. The proxy
+        /// candidate also has to pass:
+        ///   - normal-sign (dot(fineN, proxyN) &gt; 0) — first-pass
+        ///     filter for sym-split mirror twins;
+        ///   - UV-winding sign — projects the fine triangle onto the
+        ///     candidate's plane via ortho + barycentric, signs the
+        ///     resulting 2D triangle's cross product, compares with the
+        ///     proxy face's own UV winding. Twins produced by sym-split
+        ///     have opposite UV winding because mirroring 3D flips UV
+        ///     orientation — this fires on diagonal symmetry (Carousel
+        ///     N-fold slices) where the normal-sign filter alone cannot
+        ///     tell adjacent twins apart;
+        ///   - distance ≤ <paramref name="maxDistSq"/> (cage cap).
+        /// Returns -1 if no candidate passes.</summary>
         static int ProjectFaceToProxy(
-            Vector3 q, Vector3 fineNormal, Face3D[] proxyFaces,
+            Vector3 v0, Vector3 v1, Vector3 v2,
+            Vector3 fineNormal,
+            Face3D[] proxyFaces,
             Vector3[] proxyVerts, int[] proxyTris,
+            Vector2[] proxyUv2,
             Vector3[] aabbMin, Vector3[] aabbMax,
-            bool requireNormalSign, float maxDistSq)
+            float maxDistSq)
         {
             int closest = -1;
             float bestSq = maxDistSq;
+            Vector3 centroid = (v0 + v1 + v2) / 3f;
             for (int f = 0; f < proxyFaces.Length; f++)
             {
                 if (proxyFaces[f].area <= 0f) continue;
-                if (requireNormalSign &&
-                    Vector3.Dot(fineNormal, proxyFaces[f].normal) <= 0f)
-                    continue;
-                if (SqDistToAabb(q, aabbMin[f], aabbMax[f]) >= bestSq) continue;
-                Vector3 a = proxyVerts[proxyTris[f * 3]];
-                Vector3 b = proxyVerts[proxyTris[f * 3 + 1]];
-                Vector3 c = proxyVerts[proxyTris[f * 3 + 2]];
-                Vector3 pt = ClosestPointOnTriangle(q, a, b, c);
-                float dsq = (pt - q).sqrMagnitude;
-                if (dsq < bestSq) { bestSq = dsq; closest = f; }
+                Vector3 pn = proxyFaces[f].normal;
+                if (Vector3.Dot(fineNormal, pn) <= 0f) continue;
+                // Cheap AABB reject using face centroid first.
+                if (SqDistToAabb(centroid, aabbMin[f], aabbMax[f]) >= bestSq) continue;
+
+                int ia = proxyTris[f * 3];
+                int ib = proxyTris[f * 3 + 1];
+                int ic = proxyTris[f * 3 + 2];
+                Vector3 a = proxyVerts[ia];
+                Vector3 b = proxyVerts[ib];
+                Vector3 c = proxyVerts[ic];
+
+                // Per-vertex closest-point: worst of the three.
+                float d0 = (ClosestPointOnTriangle(v0, a, b, c) - v0).sqrMagnitude;
+                if (d0 >= bestSq) continue;
+                float d1 = (ClosestPointOnTriangle(v1, a, b, c) - v1).sqrMagnitude;
+                if (d1 >= bestSq) continue;
+                float d2 = (ClosestPointOnTriangle(v2, a, b, c) - v2).sqrMagnitude;
+                if (d2 >= bestSq) continue;
+                float worst = Mathf.Max(d0, Mathf.Max(d1, d2));
+                if (worst >= bestSq) continue;
+
+                // UV-winding sign check. Project each fine corner onto
+                // this proxy face's plane, barycentric-pull a 2D UV,
+                // sign the resulting triangle's cross-product, compare
+                // with the proxy face's own UV winding sign.
+                Vector2 uvA = proxyUv2[ia];
+                Vector2 uvB = proxyUv2[ib];
+                Vector2 uvC = proxyUv2[ic];
+                float proxyCross = (uvB.x - uvA.x) * (uvC.y - uvA.y)
+                                 - (uvB.y - uvA.y) * (uvC.x - uvA.x);
+                if (Mathf.Abs(proxyCross) < 1e-12f) { /* degenerate UV — fall through, don't filter */ }
+                else
+                {
+                    Vector2 pu0 = ProjectAndBary(v0, a, b, c, pn, uvA, uvB, uvC);
+                    Vector2 pu1 = ProjectAndBary(v1, a, b, c, pn, uvA, uvB, uvC);
+                    Vector2 pu2 = ProjectAndBary(v2, a, b, c, pn, uvA, uvB, uvC);
+                    float fineCross = (pu1.x - pu0.x) * (pu2.y - pu0.y)
+                                    - (pu1.y - pu0.y) * (pu2.x - pu0.x);
+                    if (proxyCross * fineCross <= 0f) continue;
+                }
+
+                bestSq = worst;
+                closest = f;
             }
             return closest;
+        }
+
+        /// <summary>Ortho-project <paramref name="p"/> onto the plane of
+        /// (<paramref name="a"/>, <paramref name="b"/>, <paramref name="c"/>)
+        /// along <paramref name="planeNormal"/>, then barycentric-pull
+        /// (uvA, uvB, uvC). Used for both the UV-winding sign check in
+        /// <see cref="ProjectFaceToProxy"/> and the actual UV assignment
+        /// in Stage 5. Falls back to uvA when the proxy triangle is
+        /// degenerate.</summary>
+        static Vector2 ProjectAndBary(Vector3 p, Vector3 a, Vector3 b, Vector3 c,
+            Vector3 planeNormal, Vector2 uvA, Vector2 uvB, Vector2 uvC)
+        {
+            Vector3 P = p - planeNormal * Vector3.Dot(p - a, planeNormal);
+            Vector3 v0 = b - a, v1 = c - a, v2 = P - a;
+            float d00 = Vector3.Dot(v0, v0);
+            float d01 = Vector3.Dot(v0, v1);
+            float d11 = Vector3.Dot(v1, v1);
+            float d20 = Vector3.Dot(v2, v0);
+            float d21 = Vector3.Dot(v2, v1);
+            float denom = d00 * d11 - d01 * d01;
+            if (Mathf.Abs(denom) < 1e-12f) return uvA;
+            float bV = (d11 * d20 - d01 * d21) / denom;
+            float bW = (d00 * d21 - d01 * d20) / denom;
+            float bU = 1f - bV - bW;
+            return uvA * bU + uvB * bV + uvC * bW;
         }
 
         // ─── PR-3 Stage 6: bake the new uv2 into cloned LOD meshes ────
