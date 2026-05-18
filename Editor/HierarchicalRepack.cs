@@ -278,6 +278,64 @@ namespace SashaRX.UnityMeshLab
             /// counterpart on this fine LOD (rare; usually means proxy has
             /// extra geometry the fine LOD doesn't, or vice versa).</summary>
             public int     missedSamples;
+            /// <summary>PR-3 Stage 3 → Stage 4 bridge: for each face, indices
+            /// into <see cref="Result.proxySamples"/> of every sample that
+            /// landed on it. Variable-length arrays (null if no hits) avoid
+            /// allocating one List per face. Stage 4 groups these by fine
+            /// shell to build per-shell (worldPos, uv2) constraint sets.</summary>
+            public int[][] perFaceHitSampleIdx;
+            /// <summary>PR-3 Stage 4: fine-shell index per face (output of
+            /// the same ExtractShells used elsewhere, but cached here so
+            /// Stage 5 / visualisers don't recompute). -1 for degenerate.
+            /// </summary>
+            public int[]   perFaceFineShell;
+            /// <summary>PR-3 Stage 4: one entry per fine shell. The affine
+            /// is the 2D→2D map plane(worldPos) → proxy_uv2 that best fits
+            /// the (worldPos, uv2) sample hits inside the shell. Indexed by
+            /// fine shell ID; entries with valid=false had too few samples
+            /// or a rank-deficient normal matrix.</summary>
+            public FineShellFit[] fineShellFits;
+            /// <summary>PR-3 Stage 4: mean per-face residual after applying
+            /// the parent shell's affine fit to the sample hits on that
+            /// face. Units = proxy_uv2 coordinates (0..1 range). NaN for
+            /// faces in shells without a valid fit. Drives the residual
+            /// heat-map PNG.</summary>
+            public float[] perFaceResidual;
+        }
+
+        /// <summary>PR-3 Stage 4: least-squares affine fit of (planar(world)
+        /// → proxy_uv2) for one fine 3D shell. The shell is projected onto
+        /// its own (basisU, basisV) plane (already computed by
+        /// <see cref="ExtractShells"/>), giving 2D coords (pu, pv); the
+        /// affine is then  u = au·pu + bu·pv + cu  and analogously for v.
+        /// Two independent 3-parameter normal equations share the same
+        /// 3×3 AᵀA matrix.</summary>
+        public struct FineShellFit
+        {
+            public int     fineShellId;
+            /// <summary>Number of sample hits used to fit this shell.</summary>
+            public int     sampleCount;
+            /// <summary>true iff sampleCount ≥ 3 AND the normal matrix was
+            /// invertible (planar coords not all colinear).</summary>
+            public bool    valid;
+            /// <summary>Centroid (worldspace, area-weighted) of the source
+            /// shell. Cached here so Stage 5 / visualisers don't have to
+            /// re-run ExtractShells just to find the plane origin.</summary>
+            public Vector3 centroid;
+            /// <summary>Orthonormal axes of the shell's best-fit plane.
+            /// Affine input is pu = (p - centroid)·basisU,
+            /// pv = (p - centroid)·basisV.</summary>
+            public Vector3 basisU;
+            public Vector3 basisV;
+            public float   au, bu, cu;
+            public float   av, bv, cv;
+            /// <summary>Mean residual over the fit samples, in uv2 units.</summary>
+            public float   meanResidual;
+            /// <summary>Maximum residual, in uv2 units. Drives residual
+            /// cluster detection — high max with low mean means a few
+            /// outliers (likely a shell that needs splitting / promotion).
+            /// </summary>
+            public float   maxResidual;
         }
 
         /// <summary>A Poisson-distributed point on the proxy surface paired
@@ -420,6 +478,13 @@ namespace SashaRX.UnityMeshLab
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     $"[HierRepack] proxy projection stage 3 failed on '{lg.name}': {ex.Message}");
+            }
+            // PR-3 Stage 4: per-fine-shell affine fit of (worldPos → uv2).
+            try { FitFineShellsToProxy(lg, opts, meshDiag, result); }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] proxy shell fit stage 4 failed on '{lg.name}': {ex.Message}");
             }
 
             // ── Step 3: domain table init ──
@@ -1326,6 +1391,8 @@ namespace SashaRX.UnityMeshLab
             WriteProxyUv2Png(outputDir, result);
             WriteProxySamplesPng(outputDir, result);
             WriteProxyHitsPngs(outputDir, lg, result);
+            WriteFineShellResidualPngs(outputDir, lg, result);
+            WriteFineShellPredictedUv2Pngs(outputDir, lg, result);
             WriteFineLodDomainPngs(outputDir, lg, result);
             LogDryRunSummary(lg.name, result);
             return result;
@@ -1724,16 +1791,18 @@ namespace SashaRX.UnityMeshLab
                     perFaceHitCount           = new int[faceCount],
                     perFaceDominantProxyShell = new int[faceCount],
                     perFaceAvgDist            = new float[faceCount],
+                    perFaceHitSampleIdx       = new int[faceCount][],
                 };
                 for (int f = 0; f < faceCount; f++)
                     proj.perFaceDominantProxyShell[f] = -1;
 
-                // Per-face tally of which proxy shell sent the most hits.
-                // Use a flat (face → dict<proxyShell, count>) — but for
-                // speed and zero-allocation per face, defer the tally to
-                // a single pass over hits at the end. Keep an aggregate
-                // list of hits and compute dominants in the post-pass.
-                var hitsByFace = new List<int>[faceCount]; // proxyShellIds
+                // Per-face tally of (sampleIdx, proxyShellId) hits. Sample
+                // indices are persisted in proj.perFaceHitSampleIdx so
+                // Stage 4 can re-walk them per fine shell without redoing
+                // the closest-face search; shell IDs are kept locally for
+                // the dominant-shell vote.
+                var hitsByFace      = new List<int>[faceCount]; // sample indices
+                var shellsByFace    = new List<int>[faceCount]; // proxy shell ids per hit
 
                 for (int sIdx = 0; sIdx < r.proxySamples.Length; sIdx++)
                 {
@@ -1749,20 +1818,27 @@ namespace SashaRX.UnityMeshLab
                     proj.perFaceHitCount[closestFace]++;
                     proj.perFaceAvgDist[closestFace] += dist;
                     if (hitsByFace[closestFace] == null)
-                        hitsByFace[closestFace] = new List<int>(4);
-                    hitsByFace[closestFace].Add(sm.proxyShellId);
+                    {
+                        hitsByFace[closestFace]   = new List<int>(4);
+                        shellsByFace[closestFace] = new List<int>(4);
+                    }
+                    hitsByFace[closestFace].Add(sIdx);
+                    shellsByFace[closestFace].Add(sm.proxyShellId);
                     proj.totalHits++;
                 }
 
-                // Resolve dominant proxy shell per face + finalize avg dist.
+                // Resolve dominant proxy shell per face + finalize avg dist
+                // + freeze the per-face sample list as an int[] (cheaper
+                // than retaining the List<int> for the lifetime of Result).
                 var shellTally = new Dictionary<int, int>();
                 for (int f = 0; f < faceCount; f++)
                 {
                     if (proj.perFaceHitCount[f] == 0) continue;
                     proj.perFaceAvgDist[f] /= proj.perFaceHitCount[f];
-                    var list = hitsByFace[f];
+                    proj.perFaceHitSampleIdx[f] = hitsByFace[f].ToArray();
+                    var shells = shellsByFace[f];
                     shellTally.Clear();
-                    foreach (int sh in list)
+                    foreach (int sh in shells)
                     {
                         shellTally.TryGetValue(sh, out int v);
                         shellTally[sh] = v + 1;
@@ -1774,6 +1850,232 @@ namespace SashaRX.UnityMeshLab
                 }
                 r.lodProjections[li] = proj;
             }
+        }
+
+        // ─── PR-3 Stage 4: per-shell affine fit (worldPos → uv2) ──────
+
+        /// <summary>For every fine LOD, extract 3D shells the same way the
+        /// existing classifier does, then for each fine shell solve a
+        /// least-squares affine that maps the shell's planar coords
+        /// (worldPos projected onto basisU/basisV) to the proxy_uv2 carried
+        /// by the proxy samples that hit faces in that shell. The fit is
+        /// independent on u and v but shares the 3×3 normal matrix.
+        /// Outputs land on <c>FineLodProjection</c>: fineShellFits,
+        /// perFaceFineShell, perFaceResidual. Stage 5 (the actual UV2
+        /// write) reads fineShellFits + applies them per fine vertex.
+        /// </summary>
+        static void FitFineShellsToProxy(LODGroup lg, Options opts,
+            float meshDiag, Result r)
+        {
+            if (r.lodProjections == null || r.proxySamples == null) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            int deepest = lodCount - 1;
+            while (deepest > 0 && (lods[deepest].renderers == null
+                || lods[deepest].renderers.Length == 0
+                || lods[deepest].renderers[0] == null)) deepest--;
+
+            for (int li = 0; li < lodCount; li++)
+            {
+                if (li == deepest) continue;
+                var proj = r.lodProjections[li];
+                if (proj.perFaceHitSampleIdx == null) continue;
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) continue;
+                var xform = rs[0].transform;
+
+                var fineFaces = BuildFaceData(mesh, xform, meshDiag,
+                    out Vector3[] fineWorldVerts, out int[] fineRawTris,
+                    out int[] fineCanonicalTris, out _);
+                int faceCount = fineFaces.Length;
+                if (faceCount == 0) continue;
+
+                // Same shell extraction used by the legacy classifier
+                // (Step 4 in Build) — same parameters so shell IDs stay
+                // consistent across stages.
+                var fineFaceToShell = new int[faceCount];
+                var fineShells = ExtractShells(fineFaces, fineWorldVerts, fineRawTris,
+                    fineCanonicalTris, opts.shellNormalThresholdDeg, 0f,
+                    fineFaceToShell, null);
+
+                proj.perFaceFineShell = fineFaceToShell;
+                proj.perFaceResidual  = new float[faceCount];
+                for (int f = 0; f < faceCount; f++) proj.perFaceResidual[f] = float.NaN;
+
+                var fits = new FineShellFit[fineShells.Length];
+
+                for (int s = 0; s < fineShells.Length; s++)
+                {
+                    var shell = fineShells[s];
+                    fits[s].fineShellId = s;
+                    fits[s].centroid    = shell.centroid;
+                    fits[s].basisU      = shell.basisU;
+                    fits[s].basisV      = shell.basisV;
+
+                    // Collect every (worldPos, uv2) sample hit on this shell.
+                    // Walk the shell's faces, then their cached hit lists.
+                    var pus = new List<float>(64);
+                    var pvs = new List<float>(64);
+                    var us  = new List<float>(64);
+                    var vs  = new List<float>(64);
+                    var hitFaces = new List<int>(64);
+                    foreach (int f in shell.faceIndices)
+                    {
+                        var ids = proj.perFaceHitSampleIdx[f];
+                        if (ids == null) continue;
+                        foreach (int sid in ids)
+                        {
+                            var sm = r.proxySamples[sid];
+                            Vector3 d = sm.worldPos - shell.centroid;
+                            pus.Add(Vector3.Dot(d, shell.basisU));
+                            pvs.Add(Vector3.Dot(d, shell.basisV));
+                            us.Add(sm.uv2.x);
+                            vs.Add(sm.uv2.y);
+                            hitFaces.Add(f);
+                        }
+                    }
+                    int nHits = pus.Count;
+                    fits[s].sampleCount = nHits;
+                    if (nHits < 3)
+                    {
+                        fits[s].valid = false;
+                        continue;
+                    }
+
+                    // Build the 3×3 normal matrix AᵀA where each A row is
+                    // [pu, pv, 1]. Symmetric, six unique entries.
+                    double m00 = 0, m01 = 0, m02 = 0;
+                    double m11 = 0, m12 = 0, m22 = nHits;
+                    double bu0 = 0, bu1 = 0, bu2 = 0;
+                    double bv0 = 0, bv1 = 0, bv2 = 0;
+                    for (int i = 0; i < nHits; i++)
+                    {
+                        double pu = pus[i], pv = pvs[i];
+                        double u  = us[i],  v  = vs[i];
+                        m00 += pu * pu;
+                        m01 += pu * pv;
+                        m02 += pu;
+                        m11 += pv * pv;
+                        m12 += pv;
+                        bu0 += pu * u;
+                        bu1 += pv * u;
+                        bu2 += u;
+                        bv0 += pu * v;
+                        bv1 += pv * v;
+                        bv2 += v;
+                    }
+
+                    // Two calls share the same AᵀA; second call only proceeds
+                    // if the first inverted cleanly. Separate ifs (vs `||`)
+                    // because the out vars declared in the second call must
+                    // be definitely assigned by the time we read them below.
+                    bool ok = Solve3x3(m00, m01, m02, m01, m11, m12, m02, m12, m22,
+                        bu0, bu1, bu2, out double au, out double bu, out double cu);
+                    double av = 0, bv = 0, cv = 0;
+                    if (ok)
+                        ok = Solve3x3(m00, m01, m02, m01, m11, m12, m02, m12, m22,
+                            bv0, bv1, bv2, out av, out bv, out cv);
+                    if (!ok)
+                    {
+                        fits[s].valid = false;
+                        continue;
+                    }
+
+                    fits[s].au = (float)au; fits[s].bu = (float)bu; fits[s].cu = (float)cu;
+                    fits[s].av = (float)av; fits[s].bv = (float)bv; fits[s].cv = (float)cv;
+                    fits[s].valid = true;
+
+                    // Residuals: |predicted_uv - actual_uv| per sample, in
+                    // uv2 units. Track mean + max across the shell, and
+                    // accumulate per-face means so the diagnostic PNG can
+                    // show clusters where the affine fits poorly.
+                    var faceResSum   = new Dictionary<int, double>();
+                    var faceResCount = new Dictionary<int, int>();
+                    double resSum = 0, resMax = 0;
+                    for (int i = 0; i < nHits; i++)
+                    {
+                        double pu = pus[i], pv = pvs[i];
+                        double pUu = au * pu + bu * pv + cu;
+                        double pUv = av * pu + bv * pv + cv;
+                        double du = pUu - us[i];
+                        double dv = pUv - vs[i];
+                        double res = System.Math.Sqrt(du * du + dv * dv);
+                        resSum += res;
+                        if (res > resMax) resMax = res;
+                        int f = hitFaces[i];
+                        faceResSum.TryGetValue(f, out double prev);
+                        faceResSum[f] = prev + res;
+                        faceResCount.TryGetValue(f, out int prevN);
+                        faceResCount[f] = prevN + 1;
+                    }
+                    fits[s].meanResidual = (float)(resSum / nHits);
+                    fits[s].maxResidual  = (float)resMax;
+                    foreach (var kv in faceResSum)
+                        proj.perFaceResidual[kv.Key] = (float)(kv.Value / faceResCount[kv.Key]);
+                }
+
+                proj.fineShellFits = fits;
+                r.lodProjections[li] = proj;
+            }
+        }
+
+        /// <summary>Solve a symmetric 3×3 linear system M·x = b via Gaussian
+        /// elimination with partial pivoting. Returns false if the matrix
+        /// is rank-deficient (samples colinear in the shell plane → can't
+        /// fit a full affine). M is given as 9 scalars row-major; for the
+        /// caller's symmetric AᵀA it's OK to pass m01 twice etc.</summary>
+        static bool Solve3x3(
+            double m00, double m01, double m02,
+            double m10, double m11, double m12,
+            double m20, double m21, double m22,
+            double b0, double b1, double b2,
+            out double x0, out double x1, out double x2)
+        {
+            // Pack into a mutable 3×4 augmented matrix.
+            double[,] a = {
+                { m00, m01, m02, b0 },
+                { m10, m11, m12, b1 },
+                { m20, m21, m22, b2 },
+            };
+            for (int i = 0; i < 3; i++)
+            {
+                // Partial pivot.
+                int piv = i;
+                double pivAbs = System.Math.Abs(a[i, i]);
+                for (int k = i + 1; k < 3; k++)
+                {
+                    double cand = System.Math.Abs(a[k, i]);
+                    if (cand > pivAbs) { pivAbs = cand; piv = k; }
+                }
+                if (pivAbs < 1e-12)
+                {
+                    x0 = x1 = x2 = 0;
+                    return false;
+                }
+                if (piv != i)
+                {
+                    for (int c = 0; c < 4; c++)
+                    {
+                        double tmp = a[i, c];
+                        a[i, c] = a[piv, c];
+                        a[piv, c] = tmp;
+                    }
+                }
+                // Eliminate.
+                for (int k = i + 1; k < 3; k++)
+                {
+                    double f = a[k, i] / a[i, i];
+                    for (int c = i; c < 4; c++) a[k, c] -= f * a[i, c];
+                }
+            }
+            // Back-substitute.
+            x2 = a[2, 3] / a[2, 2];
+            x1 = (a[1, 3] - a[1, 2] * x2) / a[1, 1];
+            x0 = (a[0, 3] - a[0, 1] * x1 - a[0, 2] * x2) / a[0, 0];
+            return true;
         }
 
         /// <summary>Render each fine LOD as a 3D isometric view with faces
@@ -1861,6 +2163,203 @@ namespace SashaRX.UnityMeshLab
                 string path = Path.Combine(outputDir, $"lod{li}_proxy_hits.png");
                 EncodePng(pixels, size, size, path);
             }
+        }
+
+        /// <summary>PR-3 Stage 4 visualisation: render each fine LOD as a
+        /// 3D isometric view with faces shaded by per-face affine residual.
+        /// Color ramp: dark gray (no proxy hits / no fit) → green (low
+        /// residual, fit is faithful) → red (high residual relative to
+        /// the per-LOD p95). The p95 normalisation prevents one outlier
+        /// shell from washing out the rest of the heat map.</summary>
+        static void WriteFineShellResidualPngs(string outputDir, LODGroup lg, Result r)
+        {
+            if (r.lodProjections == null) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            for (int li = 0; li < lodCount; li++)
+            {
+                var proj = r.lodProjections[li];
+                if (proj.perFaceResidual == null) continue;
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) continue;
+                var localVerts = mesh.vertices;
+                var tris = mesh.triangles;
+                int faceCount = tris.Length / 3;
+                if (faceCount == 0 || faceCount != proj.perFaceResidual.Length) continue;
+                var xform = rs[0].transform;
+
+                var worldVerts = new Vector3[localVerts.Length];
+                Vector3 mn = xform.TransformPoint(localVerts[0]);
+                Vector3 mx = mn;
+                worldVerts[0] = mn;
+                for (int i = 1; i < localVerts.Length; i++)
+                {
+                    var p = xform.TransformPoint(localVerts[i]);
+                    worldVerts[i] = p;
+                    mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p);
+                }
+
+                // p95 of residuals (faces with valid finite values) is the
+                // ramp ceiling. Using p95 instead of max keeps the heat map
+                // readable when one shell has a single bad outlier face.
+                var residuals = new List<float>(faceCount);
+                for (int f = 0; f < faceCount; f++)
+                    if (!float.IsNaN(proj.perFaceResidual[f])) residuals.Add(proj.perFaceResidual[f]);
+                float ceil = 0f;
+                if (residuals.Count > 0)
+                {
+                    residuals.Sort();
+                    int idx = Mathf.Clamp(Mathf.FloorToInt(residuals.Count * 0.95f),
+                                          0, residuals.Count - 1);
+                    ceil = residuals[idx];
+                    if (ceil < 1e-6f) ceil = 1e-6f;
+                }
+
+                Vector3 isoR = new Vector3( 0.7071f, 0f, -0.7071f);
+                Vector3 isoU = new Vector3(-0.4082f, 0.8165f, -0.4082f);
+                float umin = float.MaxValue, umax = float.MinValue;
+                float vmin = float.MaxValue, vmax = float.MinValue;
+                for (int cx = 0; cx < 2; cx++)
+                for (int cy = 0; cy < 2; cy++)
+                for (int cz = 0; cz < 2; cz++)
+                {
+                    Vector3 corner = new Vector3(
+                        cx == 0 ? mn.x : mx.x,
+                        cy == 0 ? mn.y : mx.y,
+                        cz == 0 ? mn.z : mx.z);
+                    float cu = Vector3.Dot(corner, isoR);
+                    float cv = Vector3.Dot(corner, isoU);
+                    if (cu < umin) umin = cu; if (cu > umax) umax = cu;
+                    if (cv < vmin) vmin = cv; if (cv > vmax) vmax = cv;
+                }
+                int size = 1024;
+                float du = umax - umin, dv = vmax - vmin;
+                float scale = (size * 0.92f) / Mathf.Max(Mathf.Max(du, dv), 1e-6f);
+                float midU = (umin + umax) * 0.5f, midV = (vmin + vmax) * 0.5f;
+                float half = size * 0.5f;
+
+                var pixels = new Color32[size * size];
+                var bg = new Color32(244, 244, 248, 255);
+                for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
+
+                for (int f = 0; f < faceCount; f++)
+                {
+                    Color32 col = ResidualColor(proj.perFaceResidual[f], ceil);
+                    Vector2 a = IsoProject(worldVerts[tris[f * 3]],     isoR, isoU, midU, midV, scale, half);
+                    Vector2 b = IsoProject(worldVerts[tris[f * 3 + 1]], isoR, isoU, midU, midV, scale, half);
+                    Vector2 c = IsoProject(worldVerts[tris[f * 3 + 2]], isoR, isoU, midU, midV, scale, half);
+                    RasterizeTrianglePx(pixels, size, a, b, c, col);
+                }
+
+                string path = Path.Combine(outputDir, $"lod{li}_shell_residual.png");
+                EncodePng(pixels, size, size, path);
+            }
+        }
+
+        /// <summary>PR-3 Stage 4 visualisation: apply each fine shell's
+        /// affine fit to its vertices and draw the resulting UV2 layout
+        /// over a faint copy of the proxy backdrop. The overlay shows
+        /// where the predicted fine-LOD UVs would land relative to the
+        /// proxy charts. Shells with no valid fit are skipped (they would
+        /// have to be promoted by Stage 5 anyway).</summary>
+        static void WriteFineShellPredictedUv2Pngs(string outputDir, LODGroup lg, Result r)
+        {
+            if (r.lodProjections == null) return;
+            if (r.proxyUv2 == null || r.proxyTris == null) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            int deepest = lodCount - 1;
+            while (deepest > 0 && (lods[deepest].renderers == null
+                || lods[deepest].renderers.Length == 0
+                || lods[deepest].renderers[0] == null)) deepest--;
+
+            int size = UvPngWriter.DefaultSize;
+
+            for (int li = 0; li < lodCount; li++)
+            {
+                if (li == deepest) continue;
+                var proj = r.lodProjections[li];
+                if (proj.fineShellFits == null || proj.perFaceFineShell == null) continue;
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) continue;
+                var xform = rs[0].transform;
+                var localVerts = mesh.vertices;
+                var tris = mesh.triangles;
+                int faceCount = tris.Length / 3;
+                if (faceCount == 0 || faceCount != proj.perFaceFineShell.Length) continue;
+
+                // Predicted UV2 per output vertex slot. Vertex shared by two
+                // shells gets the value from whichever face we visited last
+                // — fine for a diagnostic; Stage 5 will resolve seam
+                // ownership properly when actually writing mesh.uv2.
+                var predUv  = new Vector2[localVerts.Length];
+                var predHas = new bool[localVerts.Length];
+
+                // For each face, look up its shell, apply that shell's
+                // affine to each corner vertex (worldspace → planar coords
+                // via cached centroid/basis on FineShellFit → uv2).
+                for (int f = 0; f < faceCount; f++)
+                {
+                    int s = proj.perFaceFineShell[f];
+                    if (s < 0 || s >= proj.fineShellFits.Length) continue;
+                    var fit = proj.fineShellFits[s];
+                    if (!fit.valid) continue;
+                    for (int k = 0; k < 3; k++)
+                    {
+                        int vi = tris[f * 3 + k];
+                        if (predHas[vi]) continue;
+                        Vector3 wp = xform.TransformPoint(localVerts[vi]);
+                        Vector3 d  = wp - fit.centroid;
+                        float pu = Vector3.Dot(d, fit.basisU);
+                        float pv = Vector3.Dot(d, fit.basisV);
+                        predUv[vi] = new Vector2(
+                            fit.au * pu + fit.bu * pv + fit.cu,
+                            fit.av * pu + fit.bv * pv + fit.cv);
+                        predHas[vi] = true;
+                    }
+                }
+
+                // Strip tris whose corners weren't all predicted (shells
+                // without a valid fit) and remap vertices to a compact
+                // buffer — UvPngWriter expects every tri index in range.
+                var uvList   = new List<Vector2>(localVerts.Length);
+                var triList  = new List<int>(tris.Length);
+                var remap    = new int[localVerts.Length];
+                for (int i = 0; i < remap.Length; i++) remap[i] = -1;
+                for (int f = 0; f < faceCount; f++)
+                {
+                    int a = tris[f * 3], b = tris[f * 3 + 1], c = tris[f * 3 + 2];
+                    if (!predHas[a] || !predHas[b] || !predHas[c]) continue;
+                    if (remap[a] < 0) { remap[a] = uvList.Count; uvList.Add(predUv[a]); }
+                    if (remap[b] < 0) { remap[b] = uvList.Count; uvList.Add(predUv[b]); }
+                    if (remap[c] < 0) { remap[c] = uvList.Count; uvList.Add(predUv[c]); }
+                    triList.Add(remap[a]); triList.Add(remap[b]); triList.Add(remap[c]);
+                }
+                if (uvList.Count == 0 || triList.Count == 0) continue;
+
+                string path = Path.Combine(outputDir, $"lod{li}_predicted_uv2.png");
+                UvPngWriter.Render(path, uvList.ToArray(), triList.ToArray(), size);
+            }
+        }
+
+        /// <summary>Affine-fit residual ramp: NaN / no-fit → dark gray;
+        /// 0 → saturated green (fit is exact); ramp ceiling → red. Linear
+        /// blend in between. Caller passes a non-zero ceiling so the very
+        /// best face still reads as deep green (not black).</summary>
+        static Color32 ResidualColor(float res, float ceil)
+        {
+            if (float.IsNaN(res)) return new Color32(80, 80, 90, 255);
+            float t = Mathf.Clamp01(res / ceil);
+            byte r = (byte)Mathf.Lerp( 60f, 220f, t);
+            byte g = (byte)Mathf.Lerp(170f,  60f, t);
+            byte b = (byte)Mathf.Lerp( 80f,  60f, t);
+            return new Color32(r, g, b, 255);
         }
 
         /// <summary>Heatmap ramp: 0 hits → pink (no proxy support), then
@@ -2270,6 +2769,45 @@ namespace SashaRX.UnityMeshLab
                     $"({d.uv2Rect.x + d.uv2Rect.width:F3},{d.uv2Rect.y + d.uv2Rect.height:F3})  " +
                     $"faces={d.faceCount} area3D={d.totalArea3D:F3} " +
                     $"sourceLod={d.sourceLodIndex}");
+            }
+
+            // PR-3 Stage 4 audit — affine fit health per fine LOD. Bad mean
+            // residual or low valid-shell ratio means proxy charts and fine
+            // shells don't share a simple planar map; that's the signal to
+            // promote (Stage 5) instead of overlay.
+            if (r.lodProjections != null)
+            {
+                for (int li = 0; li < r.lodProjections.Length; li++)
+                {
+                    var proj = r.lodProjections[li];
+                    if (proj.fineShellFits == null) continue;
+                    int total = proj.fineShellFits.Length;
+                    int valid = 0;
+                    double sumMean = 0, sumMax = 0;
+                    float worstMean = 0;
+                    foreach (var fit in proj.fineShellFits)
+                    {
+                        if (!fit.valid) continue;
+                        valid++;
+                        sumMean += fit.meanResidual;
+                        sumMax  += fit.maxResidual;
+                        if (fit.meanResidual > worstMean) worstMean = fit.meanResidual;
+                    }
+                    string row;
+                    if (valid == 0)
+                    {
+                        row = $"    LOD{li}: shells={total,4}  fit-valid=0/{total} " +
+                              $"(too few sample hits or rank-deficient)";
+                    }
+                    else
+                    {
+                        row = $"    LOD{li}: shells={total,4}  fit-valid={valid,4}/{total}  " +
+                              $"meanRes={sumMean / valid,6:F4}  " +
+                              $"avgMaxRes={sumMax / valid,6:F4}  " +
+                              $"worstMean={worstMean,6:F4} uv2";
+                    }
+                    sb.AppendLine(row);
+                }
             }
             UvtLog.Info(UvtLog.Category.Benchmark, sb.ToString());
         }
