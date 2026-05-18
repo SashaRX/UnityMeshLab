@@ -1600,15 +1600,13 @@ namespace SashaRX.UnityMeshLab
             // identical sample sets — keeps the visual diagnostic stable.
             uint rng = 0x9E3779B9u;
 
-            // Pre-pass: compute the median tri UV bbox. Bridge tris (one
-            // vertex at the "winning" chart, two at the "losing" chart)
-            // have a UV bbox an order of magnitude larger than chart-
-            // interior tris, so any tri > 8× median is almost certainly a
-            // rogue. The absolute 0.35 cap below catches catastrophic
-            // bridges even when the chart median is itself bloated; the
-            // adaptive multiplier cleans up the long tail of small-to-
-            // medium bridges that the constant filter missed on the
-            // Carousel / Wooden_Box_Long.
+            // Pre-pass: compute each tri's UV bbox so the per-tri rogue
+            // filter below can read it without recomputing. Adaptive
+            // (median-relative) filter was removed -- it penalised
+            // assets with heterogeneous chart sizes (many thin detail
+            // charts + few large panel charts), where the median falls
+            // to the thin-chart bbox and the large panel charts get
+            // filtered as 'rogue'. Only the absolute cap remains.
             var triUvBboxMax = new float[faceCount];
             for (int f = 0; f < faceCount; f++)
             {
@@ -1624,16 +1622,6 @@ namespace SashaRX.UnityMeshLab
                 float maxY = Mathf.Max(uvA.y, Mathf.Max(uvB.y, uvC.y));
                 triUvBboxMax[f] = Mathf.Max(maxX - minX, maxY - minY);
             }
-            float adaptiveBbox;
-            {
-                var sorted = (float[])triUvBboxMax.Clone();
-                Array.Sort(sorted);
-                float median = sorted[sorted.Length / 2];
-                // Floor at 0.01 so a chart that happens to have all tiny
-                // tris (heavily subdivided panel) doesn't make the
-                // adaptive threshold absurdly small.
-                adaptiveBbox = Mathf.Max(0.01f, median * 8f);
-            }
 
             for (int f = 0; f < faceCount; f++)
             {
@@ -1647,22 +1635,18 @@ namespace SashaRX.UnityMeshLab
                 Vector2 uvB = r.proxyUv2[ib];
                 Vector2 uvC = r.proxyUv2[ic];
 
-                // Skip rogue tris produced by xatlas chart-seam splits
-                // that AssignUv2 had to collapse back to a single UV per
-                // shared vertex: the losing chart's tris end up with one
-                // corner at the WINNER's UV (in a totally different
-                // atlas region), forming a long thin tri that bridges
-                // two unrelated charts. Two layered filters:
-                //   1. Absolute cap (0.35) catches catastrophic bridges
-                //      that span large fractions of the unit box.
-                //   2. Adaptive cap (8× chart median) catches the long
-                //      tail of medium-spread bridges that the absolute
-                //      filter let through (responsible for the scatter
-                //      dots in the gray inter-chart areas of Carousel /
-                //      Wooden_Box_Long proxy_samples.png).
+                // Skip rogue tris from xatlas chart-seam splits (one
+                // corner pinned at a different chart's UV). Only the
+                // absolute cap is used — the previous adaptive (8x
+                // median) cap punished assets with heterogeneous chart
+                // sizes: a model with many thin detail charts + a few
+                // large panel charts has a low median, the adaptive
+                // threshold falls below the legit large charts' bbox,
+                // and the BIG panels lose all their Poisson samples
+                // (visible on Wooden_Box_Long where the four large
+                // square panels had zero pink dots).
                 const float kUvSeamBboxAbs = 0.35f;
                 if (triUvBboxMax[f] > kUvSeamBboxAbs) continue;
-                if (triUvBboxMax[f] > adaptiveBbox)   continue;
 
                 Vector3 cross = Vector3.Cross(B - A, C - A);
                 float crossMag = cross.magnitude;
