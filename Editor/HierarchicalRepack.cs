@@ -1652,6 +1652,14 @@ namespace SashaRX.UnityMeshLab
             // the unit box), not [0,1] linearly. If we map dots [0,1] →
             // [0, size] the points land outside the chart region rendered
             // by the backdrop. Mirror the helper's UvLo / UvHi constants.
+            // V-axis: UvPngWriter draws with GL.LoadPixelMatrix(0,size,0,size)
+            // where screen Y=0 is bottom; ReadPixels copies that to texture
+            // pixels[0..size-1], and EncodeToPNG writes pixels forward so
+            // pixels[0] lands at the TOP of the displayed PNG. To stay aligned
+            // with the backdrop, dots must use py = ny * size (NO extra flip)
+            // — the earlier `1 - ny` mirrored every dot across the horizontal
+            // midline, leaving fan-spokes pointing the wrong way on
+            // asymmetric charts (visible on Gazebo's keystone shells).
             const float kUvLo = -0.1f, kUvHi = 1.1f;
             float uvRange = kUvHi - kUvLo;
             Color32 dot = new Color32(220, 30, 180, 255);
@@ -1660,7 +1668,7 @@ namespace SashaRX.UnityMeshLab
                 float nx = (sm.uv2.x - kUvLo) / uvRange;
                 float ny = (sm.uv2.y - kUvLo) / uvRange;
                 int px = Mathf.Clamp(Mathf.FloorToInt(nx * size), 1, size - 2);
-                int py = Mathf.Clamp(Mathf.FloorToInt((1f - ny) * size), 1, size - 2);
+                int py = Mathf.Clamp(Mathf.FloorToInt(ny * size), 1, size - 2);
                 for (int dy = -1; dy <= 1; dy++)
                 for (int dx = -1; dx <= 1; dx++)
                     pixels[(py + dy) * size + (px + dx)] = dot;
