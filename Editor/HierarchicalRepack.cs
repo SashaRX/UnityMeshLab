@@ -2284,60 +2284,40 @@ namespace SashaRX.UnityMeshLab
                     return newIdx;
                 }
 
-                // Per-chart fallback planar layout: for any chart c that
-                // has fine faces voting for it but lacks a valid affine
-                // fit (≤2 samples or rank-deficient), compute the planar
-                // (pu, pv) bbox of all its contributing vertices, then
-                // normalise each fallback vertex into the chart's UV
-                // bbox via that single (centroid, basis, bbox) → one
-                // consistent transform for the entire group. Doing it
-                // per-face (closest proxy face per face centroid) lets
-                // two faces of the same chart pick DIFFERENT proxy
-                // targets — the (origVi, chartId) dedup then writes the
-                // first face's UV, the second face overwrites it, and
-                // the first face's tri ends up with one corner at the
-                // wrong position → splatter across the atlas.
-                bool[]  fbHas      = new bool[chartCount];
-                float[] fbPMnU     = new float[chartCount];
-                float[] fbPMnV     = new float[chartCount];
-                float[] fbSpanU    = new float[chartCount];
-                float[] fbSpanV    = new float[chartCount];
-                for (int c2 = 0; c2 < chartCount; c2++)
+                // Per-chart fallback: enumerate proxy faces grouped by
+                // their UV chart so we can do closest-face search inside
+                // the same chart only. Computed once per LOD; reused
+                // across all fine vertices that need a fallback. Stores
+                // List<int> of proxy face indices per chart -- proxyTris
+                // / proxyUv2 / proxyWorldVerts give the actual data.
+                int[][] chartProxyFaces = null;
+                if (r.proxyUv2 != null && r.proxyTris != null && r.proxyWorldVerts != null)
                 {
-                    var fit2 = proj.proxyChartFits[c2];
-                    if (fit2.faceCount == 0 || fit2.valid) continue;
-                    if (r.proxyShellBboxes == null
-                        || c2 >= r.proxyShellBboxes.Length) continue;
-                    float pMnU = float.PositiveInfinity, pMxU = float.NegativeInfinity;
-                    float pMnV = float.PositiveInfinity, pMxV = float.NegativeInfinity;
-                    for (int f2 = 0; f2 < faceCount; f2++)
+                    bool anyFallback = false;
+                    for (int c2 = 0; c2 < chartCount; c2++)
                     {
-                        if (proj.perFaceDominantProxyShell[f2] != c2) continue;
-                        for (int k2 = 0; k2 < 3; k2++)
+                        var fit2 = proj.proxyChartFits[c2];
+                        if (fit2.faceCount > 0 && !fit2.valid) { anyFallback = true; break; }
+                    }
+                    if (anyFallback)
+                    {
+                        var uvShells = UvShellExtractor.Extract(r.proxyUv2, r.proxyTris);
+                        if (uvShells != null)
                         {
-                            int vi2 = tris[f2 * 3 + k2];
-                            Vector3 d = worldVerts[vi2] - fit2.centroid;
-                            float pu = Vector3.Dot(d, fit2.basisU);
-                            float pv = Vector3.Dot(d, fit2.basisV);
-                            if (pu < pMnU) pMnU = pu;
-                            if (pu > pMxU) pMxU = pu;
-                            if (pv < pMnV) pMnV = pv;
-                            if (pv > pMxV) pMxV = pv;
+                            chartProxyFaces = new int[chartCount][];
+                            for (int si = 0; si < uvShells.Count && si < chartCount; si++)
+                                chartProxyFaces[si] = uvShells[si].faceIndices.ToArray();
                         }
                     }
-                    if (float.IsInfinity(pMnU)) continue;
-                    fbHas[c2]   = true;
-                    fbPMnU[c2]  = pMnU;
-                    fbPMnV[c2]  = pMnV;
-                    fbSpanU[c2] = Mathf.Max(pMxU - pMnU, 1e-6f);
-                    fbSpanV[c2] = Mathf.Max(pMxV - pMnV, 1e-6f);
                 }
 
                 for (int f = 0; f < faceCount; f++)
                 {
                     int c = proj.perFaceDominantProxyShell[f];
                     bool hasFit = c >= 0 && c < chartCount && proj.proxyChartFits[c].valid;
-                    bool hasFallback = c >= 0 && c < chartCount && fbHas[c];
+                    bool hasFallback = c >= 0 && chartProxyFaces != null
+                        && c < chartProxyFaces.Length && chartProxyFaces[c] != null
+                        && chartProxyFaces[c].Length > 0;
 
                     for (int k = 0; k < 3; k++)
                     {
@@ -2363,24 +2343,66 @@ namespace SashaRX.UnityMeshLab
                         }
                         else if (hasFallback)
                         {
-                            // Planar fallback into the chart's UV bbox.
-                            // Uses the same (centroid, basis) as the
-                            // affine path so neighbouring chart-groups
-                            // share a coherent surface decomposition.
-                            // All vertices of chart c go through the
-                            // SAME (planarBbox → chartBbox) mapping →
-                            // no two faces of the same chart compete
-                            // for the same newIdx.
-                            var fit = proj.proxyChartFits[c];
-                            Rect chart = r.proxyShellBboxes[c];
-                            Vector3 d = worldVerts[origVi] - fit.centroid;
-                            float pu = Vector3.Dot(d, fit.basisU);
-                            float pv = Vector3.Dot(d, fit.basisV);
-                            float nu = (pu - fbPMnU[c]) / fbSpanU[c];
-                            float nv = (pv - fbPMnV[c]) / fbSpanV[c];
-                            uv = new Vector2(
-                                chart.x + nu * chart.width,
-                                chart.y + nv * chart.height);
+                            // Per-vertex closest-proxy-face restricted to
+                            // the dominant chart. Each fine vertex pulls
+                            // the EXACT proxy UV at its 3D position via
+                            // barycentric — the fine LOD inherits the
+                            // proxy's UV layout in the chart instead of
+                            // normalising into the chart bbox (planar
+                            // fallback's fan artifact on small rim charts
+                            // came from many fine tris being spread
+                            // across the bbox with no relation to the
+                            // proxy's actual UV at that point).
+                            Vector3 worldP = worldVerts[origVi];
+                            var pf = chartProxyFaces[c];
+                            int bestF = -1;
+                            float bestSq = float.MaxValue;
+                            Vector3 bestPt = worldP;
+                            int bestPa = 0, bestPb = 0, bestPc = 0;
+                            for (int i = 0; i < pf.Length; i++)
+                            {
+                                int pfi = pf[i];
+                                int pa = r.proxyTris[pfi * 3];
+                                int pb = r.proxyTris[pfi * 3 + 1];
+                                int pcc = r.proxyTris[pfi * 3 + 2];
+                                Vector3 A = r.proxyWorldVerts[pa];
+                                Vector3 B = r.proxyWorldVerts[pb];
+                                Vector3 C = r.proxyWorldVerts[pcc];
+                                Vector3 P = ClosestPointOnTriangle(worldP, A, B, C);
+                                float dsq = (P - worldP).sqrMagnitude;
+                                if (dsq < bestSq)
+                                {
+                                    bestSq = dsq; bestF = pfi; bestPt = P;
+                                    bestPa = pa; bestPb = pb; bestPc = pcc;
+                                }
+                            }
+                            if (bestF >= 0)
+                            {
+                                Vector3 A = r.proxyWorldVerts[bestPa];
+                                Vector3 B = r.proxyWorldVerts[bestPb];
+                                Vector3 C = r.proxyWorldVerts[bestPc];
+                                Vector3 v0 = B - A, v1 = C - A, v2 = bestPt - A;
+                                float d00 = Vector3.Dot(v0, v0);
+                                float d01 = Vector3.Dot(v0, v1);
+                                float d11 = Vector3.Dot(v1, v1);
+                                float d20 = Vector3.Dot(v2, v0);
+                                float d21 = Vector3.Dot(v2, v1);
+                                float denom = d00 * d11 - d01 * d01;
+                                if (Mathf.Abs(denom) < 1e-12f) { uv = r.proxyUv2[bestPa]; }
+                                else
+                                {
+                                    float bV = (d11 * d20 - d01 * d21) / denom;
+                                    float bW = (d00 * d21 - d01 * d20) / denom;
+                                    float bU = 1f - bV - bW;
+                                    uv = r.proxyUv2[bestPa] * bU
+                                       + r.proxyUv2[bestPb] * bV
+                                       + r.proxyUv2[bestPc] * bW;
+                                }
+                            }
+                            else
+                            {
+                                uv = new Vector2(-1f, -1f);
+                            }
                         }
                         else
                         {
