@@ -2313,6 +2313,42 @@ namespace SashaRX.UnityMeshLab
                 {
                     int c = proj.perFaceDominantProxyShell[f];
                     bool hasFit = c >= 0 && c < chartCount && proj.proxyChartFits[c].valid;
+
+                    // Per-face fallback: when the face's chart has no
+                    // valid affine, find ONE proxy face closest to the
+                    // fine face's centroid and pull all three corner UVs
+                    // from that single proxy face's barycentric. Doing
+                    // it per-vertex (each corner picks its own closest
+                    // proxy face) produces tris whose 3 corners land in
+                    // different proxy charts and visually splatters the
+                    // atlas with crossing lines. The whole fine face
+                    // shares one proxy face → one chart.
+                    int fbProxyFace = -1;
+                    Vector3 fbA = Vector3.zero, fbB = Vector3.zero, fbC = Vector3.zero;
+                    Vector2 fbUvA = Vector2.zero, fbUvB = Vector2.zero, fbUvC = Vector2.zero;
+                    if (!hasFit && proxyFaces != null && proxyMin != null)
+                    {
+                        Vector3 a = worldVerts[tris[f * 3]];
+                        Vector3 b = worldVerts[tris[f * 3 + 1]];
+                        Vector3 cv = worldVerts[tris[f * 3 + 2]];
+                        Vector3 centroid = (a + b + cv) / 3f;
+                        fbProxyFace = ProjectVertexToDeepMesh(centroid,
+                            proxyFaces, proxyWVerts, proxyRawTris,
+                            proxyMin, proxyMax, out _);
+                        if (fbProxyFace >= 0)
+                        {
+                            int pa = proxyRawTris[fbProxyFace * 3];
+                            int pb = proxyRawTris[fbProxyFace * 3 + 1];
+                            int pc = proxyRawTris[fbProxyFace * 3 + 2];
+                            fbA = proxyWVerts[pa];
+                            fbB = proxyWVerts[pb];
+                            fbC = proxyWVerts[pc];
+                            fbUvA = r.proxyUv2[pa];
+                            fbUvB = r.proxyUv2[pb];
+                            fbUvC = r.proxyUv2[pc];
+                        }
+                    }
+
                     for (int k = 0; k < 3; k++)
                     {
                         int origVi = tris[f * 3 + k];
@@ -2335,47 +2371,29 @@ namespace SashaRX.UnityMeshLab
                                 fit.au * pu + fit.bu * pv + fit.cu,
                                 fit.av * pu + fit.bv * pv + fit.cv);
                         }
-                        else if (proxyFaces != null && proxyMin != null)
+                        else if (fbProxyFace >= 0)
                         {
-                            // Per-vertex fallback: closest proxy face,
-                            // barycentric pull of proxy UV. Used only
-                            // when the shell-level affine couldn't be
-                            // computed (≤ 2 samples, colinear plane).
-                            int cfIdx = ProjectVertexToDeepMesh(
-                                worldVerts[origVi], proxyFaces,
-                                proxyWVerts, proxyRawTris,
-                                proxyMin, proxyMax, out _);
-                            if (cfIdx >= 0)
-                            {
-                                int ia = proxyRawTris[cfIdx * 3];
-                                int ib = proxyRawTris[cfIdx * 3 + 1];
-                                int ic = proxyRawTris[cfIdx * 3 + 2];
-                                Vector3 A = proxyWVerts[ia];
-                                Vector3 B = proxyWVerts[ib];
-                                Vector3 C = proxyWVerts[ic];
-                                Vector3 P = ClosestPointOnTriangle(
-                                    worldVerts[origVi], A, B, C);
-                                Vector3 v0 = B - A, v1 = C - A, v2 = P - A;
-                                float d00 = Vector3.Dot(v0, v0);
-                                float d01 = Vector3.Dot(v0, v1);
-                                float d11 = Vector3.Dot(v1, v1);
-                                float d20 = Vector3.Dot(v2, v0);
-                                float d21 = Vector3.Dot(v2, v1);
-                                float denom = d00 * d11 - d01 * d01;
-                                if (Mathf.Abs(denom) < 1e-12f) { uv = r.proxyUv2[ia]; }
-                                else
-                                {
-                                    float bV = (d11 * d20 - d01 * d21) / denom;
-                                    float bW = (d00 * d21 - d01 * d20) / denom;
-                                    float bU = 1f - bV - bW;
-                                    uv = r.proxyUv2[ia] * bU
-                                       + r.proxyUv2[ib] * bV
-                                       + r.proxyUv2[ic] * bW;
-                                }
-                            }
+                            // Barycentric pull from the per-face fallback's
+                            // single proxy face. All three fine corners
+                            // project onto the SAME proxy face plane, so
+                            // the fine tri stays inside one proxy face's
+                            // UV region (and therefore one chart).
+                            Vector3 P = ClosestPointOnTriangle(
+                                worldVerts[origVi], fbA, fbB, fbC);
+                            Vector3 v0 = fbB - fbA, v1 = fbC - fbA, v2 = P - fbA;
+                            float d00 = Vector3.Dot(v0, v0);
+                            float d01 = Vector3.Dot(v0, v1);
+                            float d11 = Vector3.Dot(v1, v1);
+                            float d20 = Vector3.Dot(v2, v0);
+                            float d21 = Vector3.Dot(v2, v1);
+                            float denom = d00 * d11 - d01 * d01;
+                            if (Mathf.Abs(denom) < 1e-12f) { uv = fbUvA; }
                             else
                             {
-                                uv = new Vector2(-1f, -1f);
+                                float bV = (d11 * d20 - d01 * d21) / denom;
+                                float bW = (d00 * d21 - d01 * d20) / denom;
+                                float bU = 1f - bV - bW;
+                                uv = fbUvA * bU + fbUvB * bV + fbUvC * bW;
                             }
                         }
                         else
