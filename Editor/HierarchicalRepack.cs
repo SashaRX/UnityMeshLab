@@ -2247,17 +2247,22 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>PR-3 Stage 5 entry point. For each fine LOD, build the
         /// final per-vertex UV2 array:
-        ///   - OVERLAY shells (valid fit, dominantShare ≥ 0.6): apply the
-        ///     shell's affine to each vertex's planar coord, then re-fit
-        ///     the resulting UV bbox to the dominant proxy chart's bbox
-        ///     (with an inset). Scale is the min of (chart.width / pred.width,
-        ///     chart.height / pred.height) so we never expand a tight
-        ///     prediction. Translation re-centers it on the chart.
-        ///   - PROMOTE shells (low share, no fit, or spill > chart × 2):
-        ///     planar-project verts onto basisU/basisV, normalize, pack
-        ///     into a strip above V=1 with a simple shelf packer. Stage 5
-        ///     records finalAtlasV so the caller knows how much taller
-        ///     the atlas got.</summary>
+        ///   - VALID-FIT shells: apply the affine straight to each vertex's
+        ///     planar coord. No clamp, no scale-to-fit, no chart wrapping
+        ///     — the architecture deliberately allows fine vertices to
+        ///     spill outside the proxy chart and overlap neighbouring
+        ///     shells (shared lighting domain; see PR notes). Distorting
+        ///     or compressing the shell to fit the chart would defeat
+        ///     that.
+        ///   - NO-FIT shells (too few samples / rank-deficient): fall
+        ///     back to per-vertex projection — for each vertex find the
+        ///     closest proxy face and read its barycentric proxy_uv2.
+        ///     Per-vertex is coarser than per-shell affine but it's the
+        ///     only signal available without samples.
+        /// Seam vertices are duplicated per shell so adjacent shells
+        /// can carry independent UVs without tris dragging across the
+        /// atlas. Result.finalAtlasV stays 1.0 — no promotion strip;
+        /// any spill above V=1 is on the actual affine output.</summary>
         static void BuildFinalFineUv2(LODGroup lg, Options opts, Result r)
         {
             if (r.lodProjections == null) return;
@@ -2272,15 +2277,31 @@ namespace SashaRX.UnityMeshLab
             r.finalTris = new int[lodCount][];
             r.finalSourceVertexIdx = new int[lodCount][];
             r.finalAtlasV = 1f;
-            const float kChartInsetPx = 2f;
-            float chartInset = kChartInsetPx / Mathf.Max(opts.atlasResolutionPx, 1);
-            const float kMinDominantShare = 0.6f;
-            const float kPromoteSpillFactor = 2.0f;
 
-            float shelfX = 0f, shelfY = 1f, shelfRowH = 0f;
-            const float kPromoteShelfWidth = 1f;
-            const float kPromotePadding = 0.004f;
-            const float kPromoteMaxRectFrac = 0.25f;
+            // Per-vertex fallback needs to query the proxy mesh — build
+            // proxy face AABBs once, reuse across all fine LODs.
+            Face3D[] proxyFaces = null;
+            Vector3[] proxyMin = null, proxyMax = null;
+            int[] proxyRawTris = r.proxyTris;
+            Vector3[] proxyWVerts = r.proxyWorldVerts;
+            if (r.proxyUv2 != null && proxyRawTris != null && proxyWVerts != null
+                && proxyRawTris.Length >= 3)
+            {
+                int pFaceN = proxyRawTris.Length / 3;
+                proxyFaces = new Face3D[pFaceN];
+                for (int f = 0; f < pFaceN; f++)
+                {
+                    var a = proxyWVerts[proxyRawTris[f * 3]];
+                    var b = proxyWVerts[proxyRawTris[f * 3 + 1]];
+                    var c = proxyWVerts[proxyRawTris[f * 3 + 2]];
+                    proxyFaces[f].centroid = (a + b + c) / 3f;
+                    var cr = Vector3.Cross(b - a, c - a);
+                    float mag = cr.magnitude;
+                    proxyFaces[f].area = mag * 0.5f;
+                    proxyFaces[f].normal = mag > 1e-12f ? cr / mag : Vector3.up;
+                }
+                BuildDeepAabbs(proxyWVerts, proxyRawTris, out proxyMin, out proxyMax);
+            }
 
             for (int li = 0; li < lodCount; li++)
             {
@@ -2303,147 +2324,16 @@ namespace SashaRX.UnityMeshLab
                     worldVerts[i] = xform.TransformPoint(localVerts[i]);
 
                 int shellCount = proj.fineShellFits.Length;
-                // Group vertices per shell so we can compute per-shell
-                // predicted / planar bboxes in a single pass.
-                var shellVerts = new List<int>[shellCount];
-                for (int f = 0; f < faceCount; f++)
-                {
-                    int s = proj.perFaceFineShell[f];
-                    if (s < 0 || s >= shellCount) continue;
-                    if (shellVerts[s] == null) shellVerts[s] = new List<int>(32);
-                    for (int k = 0; k < 3; k++) shellVerts[s].Add(tris[f * 3 + k]);
-                }
 
-                // Pass 1: decide overlay vs promote per shell, compute the
-                // predicted UV bbox for overlay candidates (used for the
-                // uniform-scale-into-chart transform).
-                bool[] promote = new bool[shellCount];
-                Vector2[] predMin = new Vector2[shellCount];
-                Vector2[] predMax = new Vector2[shellCount];
-                for (int s = 0; s < shellCount; s++)
-                {
-                    var fit = proj.fineShellFits[s];
-                    bool eligible = fit.valid
-                        && fit.dominantShare >= kMinDominantShare
-                        && fit.dominantProxyShell >= 0
-                        && r.proxyShellBboxes != null
-                        && fit.dominantProxyShell < r.proxyShellBboxes.Length;
-                    if (!eligible) { promote[s] = true; continue; }
-                    var verts = shellVerts[s];
-                    if (verts == null || verts.Count == 0) { promote[s] = true; continue; }
-                    Vector2 mn = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
-                    Vector2 mx = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
-                    foreach (int vi in verts)
-                    {
-                        Vector3 d = worldVerts[vi] - fit.centroid;
-                        float pu = Vector3.Dot(d, fit.basisU);
-                        float pv = Vector3.Dot(d, fit.basisV);
-                        Vector2 puv = new Vector2(
-                            fit.au * pu + fit.bu * pv + fit.cu,
-                            fit.av * pu + fit.bv * pv + fit.cv);
-                        if (puv.x < mn.x) mn.x = puv.x;
-                        if (puv.y < mn.y) mn.y = puv.y;
-                        if (puv.x > mx.x) mx.x = puv.x;
-                        if (puv.y > mx.y) mx.y = puv.y;
-                    }
-                    predMin[s] = mn;
-                    predMax[s] = mx;
-                    Rect chart = r.proxyShellBboxes[fit.dominantProxyShell];
-                    float predW = mx.x - mn.x;
-                    float predH = mx.y - mn.y;
-                    float chartW = Mathf.Max(chart.width,  1e-6f);
-                    float chartH = Mathf.Max(chart.height, 1e-6f);
-                    if (predW > chartW * kPromoteSpillFactor ||
-                        predH > chartH * kPromoteSpillFactor)
-                    {
-                        promote[s] = true;
-                    }
-                }
-
-                // Pass 2: planar bbox + atlas slot per promote shell.
-                float[] promoteRectX  = new float[shellCount];
-                float[] promoteRectY  = new float[shellCount];
-                float[] promoteRectW  = new float[shellCount];
-                float[] promoteRectH  = new float[shellCount];
-                float[] promotePMnU   = new float[shellCount];
-                float[] promotePMnV   = new float[shellCount];
-                float[] promoteSpanU  = new float[shellCount];
-                float[] promoteSpanV  = new float[shellCount];
-                bool[]  promoteReady  = new bool[shellCount];
-                for (int s = 0; s < shellCount; s++)
-                {
-                    if (!promote[s]) continue;
-                    var verts = shellVerts[s];
-                    if (verts == null || verts.Count == 0) continue;
-                    var fit = proj.fineShellFits[s];
-                    Vector3 centroid = fit.centroid;
-                    Vector3 bU = fit.basisU;
-                    Vector3 bV = fit.basisV;
-                    if (bU.sqrMagnitude < 1e-12f || bV.sqrMagnitude < 1e-12f) continue;
-                    float pMnU = float.PositiveInfinity, pMxU = float.NegativeInfinity;
-                    float pMnV = float.PositiveInfinity, pMxV = float.NegativeInfinity;
-                    foreach (int vi in verts)
-                    {
-                        Vector3 d = worldVerts[vi] - centroid;
-                        float pu = Vector3.Dot(d, bU);
-                        float pv = Vector3.Dot(d, bV);
-                        if (pu < pMnU) pMnU = pu;
-                        if (pu > pMxU) pMxU = pu;
-                        if (pv < pMnV) pMnV = pv;
-                        if (pv > pMxV) pMxV = pv;
-                    }
-                    float spanU = Mathf.Max(pMxU - pMnU, 1e-6f);
-                    float spanV = Mathf.Max(pMxV - pMnV, 1e-6f);
-                    float aspect = spanU / spanV;
-                    float rectW, rectH;
-                    if (aspect >= 1f)
-                    {
-                        rectW = Mathf.Min(kPromoteMaxRectFrac,
-                                          spanU / Mathf.Max(spanU, spanV));
-                        rectH = rectW / aspect;
-                    }
-                    else
-                    {
-                        rectH = Mathf.Min(kPromoteMaxRectFrac,
-                                          spanV / Mathf.Max(spanU, spanV));
-                        rectW = rectH * aspect;
-                    }
-                    if (shelfX + rectW + kPromotePadding > kPromoteShelfWidth)
-                    {
-                        shelfX = 0f;
-                        shelfY += shelfRowH + kPromotePadding;
-                        shelfRowH = 0f;
-                    }
-                    promoteRectX[s] = shelfX;
-                    promoteRectY[s] = shelfY;
-                    promoteRectW[s] = rectW;
-                    promoteRectH[s] = rectH;
-                    promotePMnU[s]  = pMnU;
-                    promotePMnV[s]  = pMnV;
-                    promoteSpanU[s] = spanU;
-                    promoteSpanV[s] = spanV;
-                    promoteReady[s] = true;
-                    shelfX += rectW + kPromotePadding;
-                    shelfRowH = Mathf.Max(shelfRowH, rectH);
-                    if (shelfY + shelfRowH > r.finalAtlasV)
-                        r.finalAtlasV = shelfY + shelfRowH;
-                }
-
-                // Pass 3: emit per-face vertices. Each (origVi, shellId)
-                // pair gets one output vertex — vertices on shell seams
-                // get one copy per shell so adjacent shells never share a
-                // UV slot. Faces with shell == -1 (degen / no shell) are
-                // emitted with an off-atlas UV so they bake to nothing
-                // but the index buffer stays length-consistent.
+                // (origVi, shellId) → newVi dedup. Vertices on a seam
+                // between two shells get one copy per shell so each shell
+                // owns its own UV and no tri spans across shells.
                 var dedup = new Dictionary<long, int>(localVerts.Length);
                 var outUv = new List<Vector2>(localVerts.Length * 2);
                 var outTris = new int[tris.Length];
                 var outSrc = new List<int>(localVerts.Length * 2);
                 int NewIndex(int origVi, int shellId)
                 {
-                    // 32-bit shell index ⊕ 32-bit vertex index packed into
-                    // a long key — fits any realistic mesh and avoids
-                    // Dictionary<(int,int)> alloc overhead per face.
                     long key = ((long)(shellId + 1) << 32) | (uint)origVi;
                     if (dedup.TryGetValue(key, out int existing)) return existing;
                     int newIdx = outUv.Count;
@@ -2456,6 +2346,7 @@ namespace SashaRX.UnityMeshLab
                 for (int f = 0; f < faceCount; f++)
                 {
                     int s = proj.perFaceFineShell[f];
+                    bool hasFit = s >= 0 && s < shellCount && proj.fineShellFits[s].valid;
                     for (int k = 0; k < 3; k++)
                     {
                         int origVi = tris[f * 3 + k];
@@ -2463,54 +2354,70 @@ namespace SashaRX.UnityMeshLab
                         outTris[f * 3 + k] = newIdx;
 
                         Vector2 uv;
-                        if (s < 0 || s >= shellCount)
+                        if (hasFit)
                         {
-                            // Faces with no shell — park their UV well
-                            // outside any atlas slot so they're easy to
-                            // spot if they ever show up in the bake.
-                            uv = new Vector2(-1f, -1f);
-                        }
-                        else if (!promote[s])
-                        {
+                            // Direct affine application — preserves the
+                            // shell's natural shape. Vertices CAN land
+                            // outside the parent chart or on a neighbour;
+                            // that's the shared-lighting design.
                             var fit = proj.fineShellFits[s];
-                            Rect chart = r.proxyShellBboxes[fit.dominantProxyShell];
-                            float chartW = Mathf.Max(chart.width  - 2 * chartInset, 1e-6f);
-                            float chartH = Mathf.Max(chart.height - 2 * chartInset, 1e-6f);
-                            float predW  = Mathf.Max(predMax[s].x - predMin[s].x, 1e-6f);
-                            float predH  = Mathf.Max(predMax[s].y - predMin[s].y, 1e-6f);
-                            float scale = Mathf.Min(chartW / predW, chartH / predH);
-                            float predCx = (predMin[s].x + predMax[s].x) * 0.5f;
-                            float predCy = (predMin[s].y + predMax[s].y) * 0.5f;
-                            float chartCx = chart.x + chart.width  * 0.5f;
-                            float chartCy = chart.y + chart.height * 0.5f;
                             Vector3 d = worldVerts[origVi] - fit.centroid;
                             float pu = Vector3.Dot(d, fit.basisU);
                             float pv = Vector3.Dot(d, fit.basisV);
-                            float u  = fit.au * pu + fit.bu * pv + fit.cu;
-                            float v  = fit.av * pu + fit.bv * pv + fit.cv;
-                            float uOut = Mathf.Clamp(chartCx + (u - predCx) * scale,
-                                chart.x + chartInset, chart.x + chart.width  - chartInset);
-                            float vOut = Mathf.Clamp(chartCy + (v - predCy) * scale,
-                                chart.y + chartInset, chart.y + chart.height - chartInset);
-                            uv = new Vector2(uOut, vOut);
+                            uv = new Vector2(
+                                fit.au * pu + fit.bu * pv + fit.cu,
+                                fit.av * pu + fit.bv * pv + fit.cv);
                         }
-                        else if (!promoteReady[s])
+                        else if (proxyFaces != null && proxyMin != null)
                         {
-                            uv = new Vector2(-1f, -1f);
+                            // Per-vertex fallback: closest proxy face,
+                            // barycentric pull of proxy UV. Used only
+                            // when the shell-level affine couldn't be
+                            // computed (≤ 2 samples, colinear plane).
+                            int cfIdx = ProjectVertexToDeepMesh(
+                                worldVerts[origVi], proxyFaces,
+                                proxyWVerts, proxyRawTris,
+                                proxyMin, proxyMax, out _);
+                            if (cfIdx >= 0)
+                            {
+                                int ia = proxyRawTris[cfIdx * 3];
+                                int ib = proxyRawTris[cfIdx * 3 + 1];
+                                int ic = proxyRawTris[cfIdx * 3 + 2];
+                                Vector3 A = proxyWVerts[ia];
+                                Vector3 B = proxyWVerts[ib];
+                                Vector3 C = proxyWVerts[ic];
+                                Vector3 P = ClosestPointOnTriangle(
+                                    worldVerts[origVi], A, B, C);
+                                Vector3 v0 = B - A, v1 = C - A, v2 = P - A;
+                                float d00 = Vector3.Dot(v0, v0);
+                                float d01 = Vector3.Dot(v0, v1);
+                                float d11 = Vector3.Dot(v1, v1);
+                                float d20 = Vector3.Dot(v2, v0);
+                                float d21 = Vector3.Dot(v2, v1);
+                                float denom = d00 * d11 - d01 * d01;
+                                if (Mathf.Abs(denom) < 1e-12f) { uv = r.proxyUv2[ia]; }
+                                else
+                                {
+                                    float bV = (d11 * d20 - d01 * d21) / denom;
+                                    float bW = (d00 * d21 - d01 * d20) / denom;
+                                    float bU = 1f - bV - bW;
+                                    uv = r.proxyUv2[ia] * bU
+                                       + r.proxyUv2[ib] * bV
+                                       + r.proxyUv2[ic] * bW;
+                                }
+                            }
+                            else
+                            {
+                                uv = new Vector2(-1f, -1f);
+                            }
                         }
                         else
                         {
-                            var fit = proj.fineShellFits[s];
-                            Vector3 d = worldVerts[origVi] - fit.centroid;
-                            float pu = Vector3.Dot(d, fit.basisU);
-                            float pv = Vector3.Dot(d, fit.basisV);
-                            float u = promoteRectX[s]
-                                + ((pu - promotePMnU[s]) / promoteSpanU[s]) * promoteRectW[s];
-                            float v = promoteRectY[s]
-                                + ((pv - promotePMnV[s]) / promoteSpanV[s]) * promoteRectH[s];
-                            uv = new Vector2(u, v);
+                            uv = new Vector2(-1f, -1f);
                         }
+
                         outUv[newIdx] = uv;
+                        if (uv.y > r.finalAtlasV) r.finalAtlasV = uv.y;
                     }
                 }
 
@@ -3288,17 +3195,16 @@ namespace SashaRX.UnityMeshLab
                     sb.AppendLine(row);
                 }
             }
-            // Stage 5: how much extra UV space the promotion strip ate up.
-            // 1.0 = every shell overlaid cleanly; values > 1 are the
-            // budget the bake will spend on promoted (own-chart) shells.
-            if (r.finalUv2 != null && r.finalAtlasV > 1f + 1e-4f)
+            // Stage 5: max V reached by the natural affine projection.
+            // Per the architecture, fine vertices CAN spill outside the
+            // proxy chart — we do not distort the shell to fit. >1 just
+            // means at least one shell projects above the unit box.
+            if (r.finalUv2 != null)
             {
-                sb.AppendLine($"  final atlas V extent: {r.finalAtlasV:F3} " +
-                    $"(promoted shells extended above unit box by {(r.finalAtlasV - 1f) * 100f:F1}%)");
-            }
-            else if (r.finalUv2 != null)
-            {
-                sb.AppendLine($"  final atlas V extent: 1.000 (all fine shells overlaid)");
+                sb.AppendLine($"  final UV2 max V: {r.finalAtlasV:F3} " +
+                    (r.finalAtlasV > 1f + 1e-4f
+                        ? "(natural spill above unit box — expected, not distorted)"
+                        : "(within unit box)"));
             }
             UvtLog.Info(UvtLog.Category.Benchmark, sb.ToString());
         }
