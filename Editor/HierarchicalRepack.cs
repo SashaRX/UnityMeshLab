@@ -2053,12 +2053,11 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>Closest proxy face for a fine triangle, ranked by the
-        /// MAX of the closest-point distances from the fine triangle's
-        /// three vertices to the proxy face. Per-vertex closest-point
-        /// (Ericson, RTCD §5.1) catches a fine vertex at the edge of a
-        /// long panel chart where the centroid-only ranking would still
-        /// pick a neighbouring proxy face as nearest. The proxy
-        /// candidate also has to pass:
+        /// closest-point distance from the fine triangle's CENTROID to
+        /// the proxy face (Ericson, RTCD §5.1). Per-vertex MAX-of-3
+        /// ranking was tried — it was too strict on chart-boundary
+        /// triangulation differences and emptied panel chart centres.
+        /// The proxy candidate also has to pass:
         ///   - normal-sign (dot(fineN, proxyN) &gt; 0) — first-pass
         ///     filter for sym-split mirror twins;
         ///   - UV-winding sign — projects the fine triangle onto the
@@ -2098,15 +2097,15 @@ namespace SashaRX.UnityMeshLab
                 Vector3 b = proxyVerts[ib];
                 Vector3 c = proxyVerts[ic];
 
-                // Per-vertex closest-point: worst of the three.
-                float d0 = (ClosestPointOnTriangle(v0, a, b, c) - v0).sqrMagnitude;
-                if (d0 >= bestSq) continue;
-                float d1 = (ClosestPointOnTriangle(v1, a, b, c) - v1).sqrMagnitude;
-                if (d1 >= bestSq) continue;
-                float d2 = (ClosestPointOnTriangle(v2, a, b, c) - v2).sqrMagnitude;
-                if (d2 >= bestSq) continue;
-                float worst = Mathf.Max(d0, Mathf.Max(d1, d2));
-                if (worst >= bestSq) continue;
+                // Centroid → closest-point ranking (Ericson §5.1). Per-
+                // vertex MAX-of-3 was tried but rejected too many
+                // legitimate matches when fine-vs-proxy triangulation
+                // differs at a chart boundary (one fine vertex sits in
+                // a NEIGHBOUR proxy face but the centroid is squarely
+                // in the main one) — left whole panel chart centres
+                // empty with only frame trim projecting to the border.
+                float dsq = (ClosestPointOnTriangle(centroid, a, b, c) - centroid).sqrMagnitude;
+                if (dsq >= bestSq) continue;
 
                 // UV-winding sign check. Project each fine corner onto
                 // this proxy face's plane, barycentric-pull a 2D UV,
@@ -2128,7 +2127,7 @@ namespace SashaRX.UnityMeshLab
                     if (proxyCross * fineCross <= 0f) continue;
                 }
 
-                bestSq = worst;
+                bestSq = dsq;
                 closest = f;
             }
             return closest;
