@@ -1978,26 +1978,28 @@ namespace SashaRX.UnityMeshLab
                     Vector3 fineNormal = fineCrossMag > 1e-12f
                         ? fineCross / fineCrossMag : Vector3.up;
 
-                    // Two-pass closest-face search: first require
-                    // normal-sign agreement (dot > 0); if nothing
-                    // passes, accept any sign. Sym-split twins differ
-                    // only by chart UV winding — picking the matching-
-                    // sign twin lands the fine face on the right chart.
+                    // Strict normal-sign correspondence: only consider
+                    // proxy faces whose normal agrees with this fine
+                    // face's normal (dot > 0). Sym-split mirror twins
+                    // differ by chart UV winding — strict sign picks
+                    // the right twin. A fine face whose normal matches
+                    // NOTHING in the proxy (e.g., inner-surface tris on
+                    // a hollow mesh where the proxy is outer-only) is
+                    // intentionally dropped: it has no lighting domain
+                    // in the proxy atlas, so falling back to 'any sign'
+                    // would stack it on top of an outer chart and
+                    // double-cover the same texels (visible as X-pattern
+                    // overlay in final_uv2.png on hollow assets).
                     int pfMatch = ProjectFaceToProxy(
                         centroid, fineNormal, proxyFaces,
                         r.proxyWorldVerts, r.proxyTris,
                         proxyMin, proxyMax, /*requireNormalSign*/ true);
-                    if (pfMatch < 0)
-                        pfMatch = ProjectFaceToProxy(
-                            centroid, fineNormal, proxyFaces,
-                            r.proxyWorldVerts, r.proxyTris,
-                            proxyMin, proxyMax, /*requireNormalSign*/ false);
 
                     if (pfMatch < 0)
                     {
-                        // No proxy face at all -- shouldn't happen on a
-                        // well-formed LODGroup, but if it does we park
-                        // off-atlas so the bake doesn't pull garbage.
+                        // No proxy face with matching normal — park the
+                        // fine face off-atlas. It will bake to nothing
+                        // but the index buffer stays length-consistent.
                         for (int k = 0; k < 3; k++)
                         {
                             int origVi = tris[f * 3 + k];
