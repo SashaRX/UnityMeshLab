@@ -2078,6 +2078,25 @@ namespace SashaRX.UnityMeshLab
             return closest;
         }
 
+        /// <summary>PR-3 Stage 5 visualisation: render the final per-LOD
+        /// UV2 layout — exactly what would be written to mesh.uv2. The
+        /// yellow border drawn by UvPngWriter is the unit box, so any
+        /// natural spill above V=1 (or below 0) shows up outside it.</summary>
+        static void WriteFinalUv2Pngs(string outputDir, LODGroup lg, Result r)
+        {
+            if (r.finalUv2 == null || r.finalTris == null) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            for (int li = 0; li < lodCount; li++)
+            {
+                var uv = r.finalUv2[li];
+                var tr = r.finalTris[li];
+                if (uv == null || tr == null || tr.Length < 3) continue;
+                string path = Path.Combine(outputDir, $"lod{li}_final_uv2.png");
+                UvPngWriter.Render(path, uv, tr);
+            }
+        }
+
         /// <summary>Render each fine LOD as a 3D isometric view with faces
         /// shaded by proxy-sample hit density. Heat ramp: pink (zero hits =
         /// fine has no proxy support → promote candidate) → light green
