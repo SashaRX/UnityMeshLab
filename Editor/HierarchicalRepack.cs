@@ -285,6 +285,19 @@ namespace SashaRX.UnityMeshLab
             /// menu-driven Apply step swaps these into the renderers'
             /// MeshFilters via Undo.</summary>
             public Mesh[] finalMeshes;
+            /// <summary>PR-3 Stage B: classical xatlas unwrap (sym-split
+            /// + ARAP + pack) of each FINE LOD independently. Indexed
+            /// by LOD; null for deepest and for LODs without UV0.
+            /// Diagnostic-only at this stage -- Stage D's cascade
+            /// projection will read these to seed unmatched-shell
+            /// repacking. PNG output: lod{N}_classical_uv2.png.
+            /// </summary>
+            public Vector2[][] fineClassicalUv2;
+            /// <summary>PR-3 Stage B: triangle index buffer for the
+            /// classical unwrap above. Indexed by LOD. xatlas may split
+            /// vertices at chart seams so this differs from the source
+            /// mesh.triangles. Pair with fineClassicalUv2.</summary>
+            public int[][]     fineClassicalTris;
             public string error;
         }
 
@@ -445,6 +458,15 @@ namespace SashaRX.UnityMeshLab
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     $"[HierRepack] proxy UV2 stage 1 failed on '{lg.name}': {ex.Message}");
+            }
+            // PR-3 Stage B: classical xatlas unwrap of each non-deepest
+            // LOD independently. Diagnostic only at this stage; Stage D
+            // will use these to seed the cascade repack.
+            try { ComputeFineClassicalUnwraps(lg, opts, result); }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] fine classical unwrap stage B failed on '{lg.name}': {ex.Message}");
             }
             // PR-3 Stage 2: Poisson samples on the active proxy.
             try { GenerateProxySamples(opts, meshDiag, result); }
@@ -1378,6 +1400,7 @@ namespace SashaRX.UnityMeshLab
             WriteDryRunReport(lg.name, result, outputDir);
             WriteAtlasPng(outputDir, result);
             WriteProxyUv2Png(outputDir, result);
+            WriteFineClassicalUv2Pngs(outputDir, lg, result);
             WriteProxySamplesPng(outputDir, result);
             WriteProxyHitsPngs(outputDir, lg, result);
             WriteFinalUv2Pngs(outputDir, lg, result);
@@ -1543,6 +1566,75 @@ namespace SashaRX.UnityMeshLab
                 result.proxyUv2         = result.proxyUv2Clean;
                 result.proxyTris        = result.proxyTrisClean;
                 result.proxyWorldVerts  = result.proxyWorldVertsClean;
+            }
+        }
+
+        /// <summary>PR-3 Stage B: run the classical xatlas unwrap
+        /// (sym-split + ARAP + pack, same params as proxy) on EACH
+        /// non-deepest LOD independently. Stores per-LOD (uv2, tris)
+        /// pairs on Result.fineClassicalUv2 / fineClassicalTris.
+        /// Diagnostic-only at this stage — gives the operator a
+        /// side-by-side view of how the fine LOD would unwrap if it
+        /// were unwrapped without any inheritance from the proxy.
+        /// Stage D's cascade projection will use these layouts as the
+        /// seed for repacking unmatched shells.</summary>
+        static void ComputeFineClassicalUnwraps(LODGroup lg, Options opts, Result r)
+        {
+            if (lg == null) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            int deepest = lodCount - 1;
+            while (deepest > 0 && (lods[deepest].renderers == null
+                || lods[deepest].renderers.Length == 0
+                || lods[deepest].renderers[0] == null)) deepest--;
+
+            r.fineClassicalUv2  = new Vector2[lodCount][];
+            r.fineClassicalTris = new int[lodCount][];
+
+            for (int li = 0; li < lodCount; li++)
+            {
+                if (li == deepest) continue;
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var src = mf != null ? mf.sharedMesh : null;
+                if (src == null) continue;
+                if (src.uv == null || src.uv.Length == 0) continue;
+
+                var clone = UnityEngine.Object.Instantiate(src);
+                clone.name = src.name + "_lod" + li + "_classical";
+                try
+                {
+                    // Same pipeline as the proxy's clean variant:
+                    // sym-split mirror-flipped shells, then pack via
+                    // xatlas at the operator-configured resolution and
+                    // padding. rotateCharts off so chart orientation
+                    // stays comparable across LODs for the diagnostic.
+                    var shells = UvShellExtractor.Extract(clone.uv, clone.triangles);
+                    if (shells != null && shells.Count > 0)
+                    {
+                        int split = SymmetrySplitShells.Split(clone, shells);
+                        if (split > 0)
+                            UvtLog.Info(UvtLog.Category.Benchmark,
+                                $"[HierRepack] lod{li} classical sym-split on '{lg.name}': {split} shells split");
+                    }
+                    var packOpts = RepackOptions.Default;
+                    packOpts.resolution   = (uint)opts.atlasResolutionPx;
+                    packOpts.padding      = (uint)opts.interDomainPaddingPx;
+                    packOpts.rotateCharts = false;
+                    var res = XatlasRepack.RepackSingle(clone, packOpts);
+                    if (res.ok && clone.uv2 != null && clone.uv2.Length > 0)
+                    {
+                        r.fineClassicalUv2[li]  = clone.uv2;
+                        r.fineClassicalTris[li] = clone.triangles;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        $"[HierRepack] lod{li} classical unwrap failed on '{lg.name}': {ex.Message}");
+                }
+                finally { UnityEngine.Object.DestroyImmediate(clone); }
             }
         }
 
@@ -2247,6 +2339,28 @@ namespace SashaRX.UnityMeshLab
                 clone.RecalculateBounds();
 
                 r.finalMeshes[li] = clone;
+            }
+        }
+
+        /// <summary>PR-3 Stage B visualisation: render the classical
+        /// xatlas unwrap of each non-deepest LOD as a standalone layout
+        /// PNG. Side-by-side with proxy_uv2_active.png the operator
+        /// can confirm each LOD unwraps into a clean layout with the
+        /// expected shell orientation; Stage D's cascade projection
+        /// will fold these into the per-LOD final UV.</summary>
+        static void WriteFineClassicalUv2Pngs(string outputDir, LODGroup lg, Result r)
+        {
+            if (r.fineClassicalUv2 == null || r.fineClassicalTris == null) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            for (int li = 0; li < lodCount; li++)
+            {
+                if (li >= r.fineClassicalUv2.Length) break;
+                var uv = r.fineClassicalUv2[li];
+                var tr = r.fineClassicalTris[li];
+                if (uv == null || tr == null || tr.Length < 3) continue;
+                string path = Path.Combine(outputDir, $"lod{li}_classical_uv2.png");
+                UvPngWriter.Render(path, uv, tr);
             }
         }
 
