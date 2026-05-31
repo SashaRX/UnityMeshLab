@@ -1,58 +1,26 @@
-// HierarchicalRepack.cs — builder for the inverse-hierarchical UV2 atlas.
+// HierarchicalRepack.cs — builder for the hierarchical UV2 atlas
+// (cascade plan v2 — group-then-final-pack).
 //
-// Phase A of the new pipeline. Read-only — does NOT write mesh.uv2 yet
-// (that's InverseTransfer in PR-3). Just produces the per-mesh-per-face
-// → LightingDomain assignment + the atlas layout that InverseTransfer
-// will project into.
+// CURRENT STATE: legacy PR-2 single-proxy / promote-overlay classifier
+// and the PR-3 single-proxy projector have both been removed. The
+// surviving Build() runs only Stage 1 (proxy unwrap variants) +
+// Stage B (per-LOD classical unwrap diagnostic) + Stage 2 (Poisson
+// samples on the deepest LOD) + Stage 3 (per-fine-LOD sample projection
+// bookkeeping). Stage C (per-LOD 3D shell extract + group seed),
+// Stage D (cascade pairwise grouping deep→fine), Stage E (final pack
+// of all canonical charts + per-LOD uv2), Stage F (apply + bake)
+// come next per Documentation~/HIERARCHICAL_CASCADE_PLAN.md.
 //
-// Pipeline (PR-2.7 — Frostbite-style per-vertex projection):
-//   1. Pick the deepest LOD from the LODGroup as the "proxy" — its shells
-//      define the lighting domains that finer LODs will share.
-//   2. Extract 3D shells on the deepest LOD via union-find on face
-//      adjacency + normal threshold (≤30° — matches probe v2/v3 + xatlas
-//      hard-edge analysis convention). Adjacency uses CANONICAL vertex
-//      indices (deduplicated by world-space position) so UV/normal seams
-//      in Unity's mesh.vertices don't fragment a single physical surface
-//      into many single-tri shells. Degenerate (area<1e-12) tris are
-//      skipped entirely (faceToDomain = -1).
-//   3. For each finer LOD: project every vertex onto the closest deepest-
-//      LOD triangle (brute-force scan + per-tri AABB rejection). Per fine
-//      face:
-//        Overlay  — all three corners are within overlayDistNorm × meshDiag
-//                   of the proxy AND collapse to the same proxy shell:
-//                   the face inherits that shell's atlas rect. No new
-//                   domain — wall+sign, box+decal, roof+ornament.
-//        Marked   — anything else (any corner detached from proxy, OR
-//                   corners straddle shell boundaries → face has no
-//                   single parent and would interpolate across atlas
-//                   regions). Goes into the "needs own domain" pile.
-//   4. Cluster Marked faces by adjacency (union-find again) per fine LOD.
-//      Each cluster classifies as:
-//        Skip     — tiny + few faces (skipAreaFrac × deep area AND
-//                   ≤ skipMaxFaceCount). Handles, fasteners, noise.
-//        Promote  — gets its own atlas domain.
-//   5. Build LightingDomain[]: one per base shell + one per promoted
-//      cluster. Overlaid/skipped faces don't create domains.
-//   6. Pack atlas rects. PR-2 used a naive horizontal-strip packer; this
-//      stage keeps it as a placeholder until PR-2.8 swaps xatlas via
-//      XatlasNative.
+// PUBLIC API still exposed:
+//   • Build(LODGroup, Options) → Result
+//   • BuildAndWriteForCase(LODGroup, Options, string) → Result
+//   • BuildFinalMeshes(LODGroup, Result)  (consumes finalUv2/Tris/
+//     SourceVertexIdx — currently null until Stage E re-populates)
 //
-// Why per-vertex projection vs the PR-2.5 per-shell angle/extent test:
-//   • Robust to fragmented base shells (Carousel cylinder: 270 small
-//     shells stop being a problem because a fine vertex finds the
-//     closest one regardless of how many parents exist).
-//   • Robust to lost angled panels after dedup (Gazebo octagonal roof:
-//     fine vertex projects onto the merged Y-axis roof at a finite
-//     distance, overlays cleanly).
-//   • A single physically-meaningful threshold (distance) replaces three
-//     correlated geometric tests (angle, perp distance, planar fit).
-//   • Same complexity O(fine verts × deep faces) with AABB prefilter —
-//     well under a second on our worst test case.
-//
-// Public types are documented for cross-PR clarity. Internal helpers
-// duplicate small bits of HierarchicalDiag (shell extraction, face
-// classification) to keep PR-2 a single file; refactor into a shared
-// `HierarchicalShellExtractor` is a deliberate follow-up.
+// Public types kept for cross-stage data flow; legacy fields
+// (LightingDomain, PromotedCluster, faceToDomain, baseShellCount,
+// atlasPixelWidth/Height, totalFineFaces/promotedFineFaces/...) are
+// gone.
 
 using System;
 using System.Collections.Generic;
@@ -164,47 +132,8 @@ namespace SashaRX.UnityMeshLab
             Auto = 2,
         }
 
-        /// <summary>
-        /// One atlas region representing a single lighting domain — either a
-        /// base shell from the deepest LOD (the typical case) or a promoted
-        /// cluster of fine-LOD faces (detail that doesn't share its parent's
-        /// lighting). The plane + basis (u,v unit vectors orthogonal to
-        /// normal) are world-space; InverseTransfer projects a fine-LOD vertex
-        /// onto this plane using basis dot products and maps the local 2D
-        /// coord into <see cref="uv2Rect"/>.
-        /// </summary>
-        public struct LightingDomain
-        {
-            public Rect    uv2Rect;        // in [0,1]² atlas coords
-            public Vector3 planeCentroid;  // world-space
-            public Vector3 planeNormal;    // world-space, unit
-            public Vector3 planeU;         // world-space basis u, unit, ⊥ normal
-            public Vector3 planeV;         // world-space basis v, unit, ⊥ normal and u
-            public float   planeExtentU;   // max signed projection along u (used to map local-2D → [0,1])
-            public float   planeExtentV;   // same along v
-            public bool    isPromoted;     // false = base shell on deepest LOD; true = promoted fine cluster
-            public int     sourceLodIndex; // only meaningful when isPromoted: which fine LOD the cluster came from
-            public int     faceCount;      // # faces contributing to this domain (diag)
-            public float   totalArea3D;    // sum of contributing face areas in world space (diag)
-        }
-
         public class Result
         {
-            public LightingDomain[] domains;
-            public int atlasPixelWidth;
-            public int atlasPixelHeight;
-            public int baseShellCount;
-            public int promotedClusterCount;
-            /// <summary>Per-LOD assignment: faceToDomain[lod][faceIdx] = domain index, or -1 if the face has no assignment (degenerate, skipped, multi-renderer LOD).</summary>
-            public int[][] faceToDomain;
-            public int    totalFineFaces;
-            public int    promotedFineFaces;
-            /// <summary>Fine faces whose shell was overlaid onto a parent base shell — they share a parent's atlas rect (PR-2.5).</summary>
-            public int    overlaidFineFaces;
-            /// <summary>Fine faces whose shell was discarded as geometric noise — no atlas slot, faceToDomain = -1 (PR-2.5).</summary>
-            public int    skippedFineFaces;
-            /// <summary>Degenerate (zero-area) faces filtered before shell extraction (PR-2.5).</summary>
-            public int    degenerateFineFaces;
             /// <summary>PR-3 stage 1: clean UV2 layout for the deepest LOD,
             /// produced by xatlas auto-pack on its existing UV0. Diagnostic /
             /// reference for fine-LOD shell projection in subsequent stages.
@@ -419,26 +348,13 @@ namespace SashaRX.UnityMeshLab
                 return result;
             }
 
-            // ── Step 2: extract 3D shells on the deepest LOD ──
+            // Mesh diagonal — reference scale for sampling density,
+            // distance thresholds and canonical-vertex deduplication.
+            // Legacy PR-2 deepest-LOD shell extraction / promote-overlay
+            // classifier was removed; cascade architecture (plan v2)
+            // does per-LOD shell work inside its own stages.
             float meshDiag = ComputeMeshDiagonal(meshes[deepest], xforms[deepest]);
             if (meshDiag < 1e-6f) meshDiag = 1f;
-            int deepDegen;
-            var deepFaces  = BuildFaceData(meshes[deepest], xforms[deepest], meshDiag,
-                out Vector3[] deepWorldVerts, out int[] deepRawTris,
-                out int[] deepCanonicalTris, out deepDegen);
-            var deepFaceToShell = new int[deepFaces.Length];
-            var deepShells = ExtractShells(deepFaces, deepWorldVerts, deepRawTris,
-                deepCanonicalTris, opts.shellNormalThresholdDeg, opts.shellMergeAngleDeg,
-                deepFaceToShell, null);
-            float totalDeepArea = 0f;
-            for (int si = 0; si < deepShells.Length; si++) totalDeepArea += deepShells[si].totalArea;
-            if (totalDeepArea < 1e-12f) totalDeepArea = 1e-12f;
-
-            // Precompute deepest-LOD per-tri AABBs for the projector's
-            // early-out filter (built once, used by every fine-LOD vertex
-            // query across all fine LODs).
-            BuildDeepAabbs(deepWorldVerts, deepRawTris, out var deepMin, out var deepMax);
-            float overlayDistAbs = opts.overlayDistNorm * meshDiag;
 
             // PR-3 Stage 1 (proxy UV2 generation): produce up to three
             // candidate UV2 layouts for the deepest LOD so the operator can
@@ -482,195 +398,6 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     $"[HierRepack] proxy projection stage 3 failed on '{lg.name}': {ex.Message}");
             }
-            // PR-3 Stage 5: final UV2 per fine LOD via orthographic
-            // projection of each fine face onto the nearest proxy face
-            // (with normal-sign disambiguation for sym-split mirror
-            // twins), then barycentric pull of proxy_uv2. Per the
-            // operator's architecture: 'orthographically project each
-            // finer LOD's faces into the LOD-deepest atlas regions by
-            // 3D nearest-face + normal-sign correspondence.' No affine
-            // fit, no clamp, no chart wrapping -- UV2 overlaps inside
-            // a region are intentional (shared lighting domain).
-            try { BuildFinalFineUv2(lg, opts, result); }
-            catch (Exception ex)
-            {
-                UvtLog.Warn(UvtLog.Category.Benchmark,
-                    $"[HierRepack] final uv2 stage 5 failed on '{lg.name}': {ex.Message}");
-            }
-
-            // ── Step 3: domain table init ──
-            // Domain numbering:
-            //   [0 .. baseN-1]              → base shells (deepest LOD)
-            //   [baseN .. baseN+P-1]        → promoted fine shells (P grows)
-            // Overlay assigns faceToDomain = parentBaseShellIdx.
-            // Skip leaves faceToDomain = -1 (no atlas slot).
-            int baseN = deepShells.Length;
-            result.faceToDomain = new int[lodCount][];
-            for (int li = 0; li < lodCount; li++)
-            {
-                int faceCount = (meshes[li] != null) ? meshes[li].triangles.Length / 3 : 0;
-                var arr = new int[faceCount];
-                for (int i = 0; i < faceCount; i++) arr[i] = -1;
-                result.faceToDomain[li] = arr;
-            }
-
-            // Deepest LOD: each face → its own base shell (degenerate → -1).
-            for (int f = 0; f < deepFaces.Length; f++)
-                result.faceToDomain[deepest][f] = deepFaceToShell[f];
-
-            // ── Step 4: per-vertex projection on each fine LOD ──
-            // Project every fine-LOD vertex onto the deep mesh; then decide
-            // each fine face based on its 3 corners' projection state:
-            //   • All 3 verts within overlayDistAbs of the proxy AND all
-            //     fall onto the SAME deep shell → Overlay(that shell).
-            //   • Anything else → flagged for promote/skip clustering.
-            // The mismatch case (corners straddle shell boundaries) goes to
-            // promote because interpolating a fine face's UV across two
-            // disjoint atlas rects would bleed lightmap data across
-            // unrelated surfaces.
-            var promotedClusters = new List<PromotedCluster>();
-            int totalFineFaces = 0, promotedFineFaces = 0,
-                overlaidFineFaces = 0, skippedFineFaces = 0, degenFineFaces = deepDegen;
-            // degenFineFaces is a slight misnomer — it includes the deepest
-            // LOD's degenerates too, so the report can show "all degenerate
-            // tris dropped from atlas" in one number.
-
-            for (int li = 0; li < deepest; li++)
-            {
-                if (meshes[li] == null) continue;
-                int fineDegen;
-                var fineFaces = BuildFaceData(meshes[li], xforms[li], meshDiag,
-                    out Vector3[] fineWorldVerts, out int[] fineRawTris,
-                    out int[] fineCanonicalTris, out fineDegen);
-                degenFineFaces += fineDegen;
-                totalFineFaces += fineFaces.Length;
-
-                // Per-shell classification: extract fine shells first, then
-                // vote each shell as a unit. A single outlier vertex no
-                // longer drags a whole physical surface into promote — the
-                // shell wins by majority of its vertices' nearest-base-shell
-                // projections.
-                //
-                // Per-fine-vertex projection result: index into deepShells,
-                // or -1 if the vertex is too far from the proxy surface.
-                int vertCount = fineWorldVerts.Length;
-                var vertOverlayShell = new int[vertCount];
-                for (int v = 0; v < vertCount; v++)
-                {
-                    int closestFace = ProjectVertexToDeepMesh(fineWorldVerts[v],
-                        deepFaces, deepWorldVerts, deepRawTris, deepMin, deepMax,
-                        out float dist);
-                    if (closestFace >= 0 && dist <= overlayDistAbs)
-                        vertOverlayShell[v] = deepFaceToShell[closestFace];
-                    else
-                        vertOverlayShell[v] = -1;
-                }
-
-                // Extract fine shells (full mesh, no mask — every shell will
-                // be classified). shellMergeAngleDeg = 0 here: fine shells
-                // shouldn't merge across panel boundaries.
-                var fineFaceToShell = new int[fineFaces.Length];
-                var fineShells = ExtractShells(fineFaces, fineWorldVerts, fineRawTris,
-                    fineCanonicalTris, opts.shellNormalThresholdDeg, 0f,
-                    fineFaceToShell, null);
-
-                // For each fine shell: vote on parent base shell across its
-                // vertices. Winner = base shell with the most votes; if
-                // winner gets ≥ overlayVoteFrac of total votes AND the shell
-                // is not "tiny noise", overlay. Else skip (tiny) or promote.
-                //
-                // Vote counts are per-vertex (not per-face) so the shell
-                // size dominates over face topology. A wall plank with 50
-                // verts on LOD3 wall #5 and 2 verts straddling onto wall #6
-                // overlays cleanly onto #5 instead of promoting.
-                var shellVotes = new Dictionary<int, int>();
-                var shellVertSet = new HashSet<int>();
-                for (int s = 0; s < fineShells.Length; s++)
-                {
-                    var shell = fineShells[s];
-                    shellVotes.Clear();
-                    shellVertSet.Clear();
-                    foreach (int f in shell.faceIndices)
-                    {
-                        for (int k = 0; k < 3; k++)
-                        {
-                            int vi = fineRawTris[f * 3 + k];
-                            if (!shellVertSet.Add(vi)) continue;
-                            int ps = vertOverlayShell[vi];
-                            if (ps < 0) continue;
-                            shellVotes.TryGetValue(ps, out int prev);
-                            shellVotes[ps] = prev + 1;
-                        }
-                    }
-                    int totalVotes = shellVertSet.Count;
-                    int winnerShell = -1, winnerVotes = 0;
-                    foreach (var kv in shellVotes)
-                        if (kv.Value > winnerVotes) { winnerVotes = kv.Value; winnerShell = kv.Key; }
-
-                    // Overlay threshold: winner takes a majority of the
-                    // shell's vertices (≥ 50% by default — 1 outlier per
-                    // 2 inliers is fine; a half-promoted shell is honest).
-                    bool overlayPasses = winnerShell >= 0
-                                      && totalVotes > 0
-                                      && winnerVotes * 2 >= totalVotes;
-
-                    float areaFrac = shell.totalArea / totalDeepArea;
-                    bool tinyArea  = areaFrac < opts.skipAreaFrac;
-                    bool fewFaces  = shell.faceCount <= opts.skipMaxFaceCount;
-
-                    int domainIdx;
-                    if (overlayPasses)
-                    {
-                        domainIdx = winnerShell;
-                        overlaidFineFaces += shell.faceCount;
-                    }
-                    else if (tinyArea && fewFaces)
-                    {
-                        domainIdx = -1;
-                        skippedFineFaces += shell.faceCount;
-                    }
-                    else
-                    {
-                        domainIdx = baseN + promotedClusters.Count;
-                        promotedClusters.Add(MakePromotedClusterFromShell(shell, li));
-                        promotedFineFaces += shell.faceCount;
-                    }
-                    foreach (int f in shell.faceIndices)
-                        result.faceToDomain[li][f] = domainIdx;
-                }
-            }
-            result.totalFineFaces      = totalFineFaces;
-            result.promotedFineFaces   = promotedFineFaces;
-            result.overlaidFineFaces   = overlaidFineFaces;
-            result.skippedFineFaces    = skippedFineFaces;
-            result.degenerateFineFaces = degenFineFaces;
-
-            // ── Step 5: materialise LightingDomain[] ──
-            var domains = new LightingDomain[baseN + promotedClusters.Count];
-            for (int si = 0; si < baseN; si++)
-            {
-                domains[si] = MakeDomainFromShell(deepShells[si], isPromoted: false, sourceLodIndex: deepest);
-            }
-            for (int ci = 0; ci < promotedClusters.Count; ci++)
-            {
-                var c = promotedClusters[ci];
-                domains[baseN + ci] = MakeDomainFromCluster(c);
-            }
-
-            // ── Step 6: naive horizontal-strip packer ──
-            // Stack rectangles into a fixed-width atlas (opts.atlasResolutionPx),
-            // wrapping to a new row when full. Each rect's pixel size derives
-            // from its world-space planar extent normalized to a "texels per
-            // world unit" target. PR-2.8 will replace this with xatlas via the
-            // existing XatlasNative wrapper — at which point this method just
-            // hands xatlas a virtual mesh with shellIDs and reads the rect
-            // assignment back out.
-            PackAtlasNaive(domains, opts, out int atlasW, out int atlasH);
-            result.domains = domains;
-            result.atlasPixelWidth = atlasW;
-            result.atlasPixelHeight = atlasH;
-            result.baseShellCount  = baseN;
-            result.promotedClusterCount = promotedClusters.Count;
             return result;
         }
 
@@ -696,19 +423,6 @@ namespace SashaRX.UnityMeshLab
             public float   extentV;
         }
 
-        sealed class PromotedCluster
-        {
-            public List<int> faceIndices = new List<int>();
-            public Vector3   centroid;
-            public Vector3   dominantNormal;
-            public Vector3   basisU;
-            public Vector3   basisV;
-            public float     extentU;
-            public float     extentV;
-            public float     totalArea;
-            public int       sourceLodIndex;
-        }
-
         // ─── Face data + diagonal ────────────────────────────────────
 
         /// <summary>Build per-face data for one mesh. Out-params:
@@ -721,7 +435,7 @@ namespace SashaRX.UnityMeshLab
         /// UV/normal seams still share edges — without this, ExtractShells sees
         /// ~3× too many shells on curved geometry. <paramref name="degenerateCount"/>
         /// reports tris dropped (their Face3D.area is set to 0 so callers can
-        /// skip them via faceToDomain = -1 instead of producing zero-area
+        /// skip them via a sentinel marker instead of producing zero-area
         /// shells).</summary>
         static Face3D[] BuildFaceData(Mesh mesh, Transform xform, float meshDiag,
             out Vector3[] worldVerts, out int[] rawTris, out int[] canonicalTris,
@@ -1212,176 +926,6 @@ namespace SashaRX.UnityMeshLab
             return closest;
         }
 
-        /// <summary>Materialise a fine-LOD shell (collected from the promote-
-        /// pile after projective classification) as a <see cref="PromotedCluster"/>.
-        /// The shell already has area-weighted plane data + vertex-based
-        /// extents — just copy fields and tag the source LOD.</summary>
-        static PromotedCluster MakePromotedClusterFromShell(Shell3D shell, int sourceLodIndex)
-        {
-            return new PromotedCluster
-            {
-                faceIndices    = shell.faceIndices,
-                centroid       = shell.centroid,
-                dominantNormal = shell.dominantNormal,
-                basisU         = shell.basisU,
-                basisV         = shell.basisV,
-                extentU        = shell.extentU,
-                extentV        = shell.extentV,
-                totalArea      = shell.totalArea,
-                sourceLodIndex = sourceLodIndex,
-            };
-        }
-
-        // ─── Plane basis + extents ───────────────────────────────────
-
-        /// <summary>Pick two orthonormal vectors in the plane normal to <paramref name="n"/>.
-        /// Algorithm: take any axis not parallel to n, cross to get basisU, cross again for basisV.</summary>
-        static void ComputePlaneBasis(Vector3 n, out Vector3 u, out Vector3 v)
-        {
-            Vector3 helper = Mathf.Abs(n.x) < 0.9f ? Vector3.right : Vector3.up;
-            u = Vector3.Cross(n, helper).normalized;
-            v = Vector3.Cross(n, u).normalized;
-        }
-
-        /// <summary>Project every CORNER VERTEX of every face in the shell onto
-        /// (u,v) basis centred at <paramref name="origin"/>; max abs value along
-        /// each axis becomes the half-extent. Vertex-based (not centroid-based)
-        /// because InverseTransfer will project the SAME vertices into the
-        /// atlas rect; a centroid-based extent under-shoots long thin triangles
-        /// (corner verts spill outside the rect → wrap-around bleeding in the
-        /// baked lightmap).</summary>
-        static void ComputeExtents(Vector3[] worldVerts, int[] rawTris,
-            List<int> faceIndices, Vector3 origin,
-            Vector3 u, Vector3 v, out float extU, out float extV)
-        {
-            float maxU = 0f, maxV = 0f;
-            foreach (int f in faceIndices)
-            {
-                for (int k = 0; k < 3; k++)
-                {
-                    Vector3 d = worldVerts[rawTris[f * 3 + k]] - origin;
-                    float pu = Mathf.Abs(Vector3.Dot(d, u));
-                    float pv = Mathf.Abs(Vector3.Dot(d, v));
-                    if (pu > maxU) maxU = pu;
-                    if (pv > maxV) maxV = pv;
-                }
-            }
-            // Small floor — degenerate shells (1-2 tiny triangles) would otherwise
-            // have zero extent and divide-by-zero in InverseTransfer's mapping.
-            const float kMinExtent = 1e-4f;
-            extU = Mathf.Max(maxU, kMinExtent);
-            extV = Mathf.Max(maxV, kMinExtent);
-        }
-
-        // ─── Domain materialisation ──────────────────────────────────
-
-        static LightingDomain MakeDomainFromShell(Shell3D shell, bool isPromoted, int sourceLodIndex)
-            => new LightingDomain
-            {
-                planeCentroid  = shell.centroid,
-                planeNormal    = shell.dominantNormal,
-                planeU         = shell.basisU,
-                planeV         = shell.basisV,
-                planeExtentU   = shell.extentU,
-                planeExtentV   = shell.extentV,
-                isPromoted     = isPromoted,
-                sourceLodIndex = sourceLodIndex,
-                faceCount      = shell.faceCount,
-                totalArea3D    = shell.totalArea,
-                uv2Rect        = new Rect(0, 0, 0, 0), // filled by packer
-            };
-
-        static LightingDomain MakeDomainFromCluster(PromotedCluster c)
-            => new LightingDomain
-            {
-                planeCentroid  = c.centroid,
-                planeNormal    = c.dominantNormal,
-                planeU         = c.basisU,
-                planeV         = c.basisV,
-                planeExtentU   = c.extentU,
-                planeExtentV   = c.extentV,
-                isPromoted     = true,
-                sourceLodIndex = c.sourceLodIndex,
-                faceCount      = c.faceIndices.Count,
-                totalArea3D    = c.totalArea,
-                uv2Rect        = new Rect(0, 0, 0, 0),
-            };
-
-        // ─── Naive horizontal-strip atlas packer ─────────────────────
-
-        /// <summary>
-        /// PR-2 placeholder packer. Sorts domains by descending plane area, then
-        /// packs them left-to-right into rows of <paramref name="opts"/>.atlasResolutionPx
-        /// pixels wide. Atlas grows downward as rows fill up. Each domain gets a
-        /// pixel rect proportional to its planar (extentU × 2, extentV × 2) at a
-        /// uniform texels-per-world-unit derived from the max domain. The rect is
-        /// then normalized to [0,1]² and stored in <see cref="LightingDomain.uv2Rect"/>.
-        ///
-        /// PR-2.8 swaps this for xatlas via XatlasNative. The contract is the same:
-        /// after the call, every domain has a valid uv2Rect and atlasW/H are the
-        /// final dimensions.
-        /// </summary>
-        static void PackAtlasNaive(LightingDomain[] domains, Options opts,
-            out int atlasW, out int atlasH)
-        {
-            atlasW = Mathf.Max(64, opts.atlasResolutionPx);
-            atlasH = 1;
-            if (domains == null || domains.Length == 0) return;
-
-            // Find the largest plane diagonal across all domains so we can pick
-            // texels-per-world-unit such that the biggest domain occupies about
-            // half the atlas width (leaves room for siblings on the same row).
-            float maxDiag = 0f;
-            for (int i = 0; i < domains.Length; i++)
-            {
-                float diag = 2f * Mathf.Sqrt(domains[i].planeExtentU * domains[i].planeExtentU
-                                           + domains[i].planeExtentV * domains[i].planeExtentV);
-                if (diag > maxDiag) maxDiag = diag;
-            }
-            if (maxDiag < 1e-6f) maxDiag = 1f;
-            float texelsPerWorld = (atlasW * 0.5f) / maxDiag;
-
-            // Sort by descending pixel area (biggest first) for better strip packing.
-            var order = new int[domains.Length];
-            for (int i = 0; i < domains.Length; i++) order[i] = i;
-            var widths  = new int[domains.Length];
-            var heights = new int[domains.Length];
-            for (int i = 0; i < domains.Length; i++)
-            {
-                int w = Mathf.Max(2, Mathf.CeilToInt(2f * domains[i].planeExtentU * texelsPerWorld));
-                int h = Mathf.Max(2, Mathf.CeilToInt(2f * domains[i].planeExtentV * texelsPerWorld));
-                widths[i] = w; heights[i] = h;
-            }
-            Array.Sort(order, (a, b) => (widths[b] * heights[b]).CompareTo(widths[a] * heights[a]));
-
-            int pad = Mathf.Max(0, opts.interDomainPaddingPx);
-            int cursorX = pad, cursorY = pad, rowH = 0;
-            var pxRects = new RectInt[domains.Length];
-            for (int oi = 0; oi < order.Length; oi++)
-            {
-                int i = order[oi];
-                int w = widths[i], h = heights[i];
-                if (cursorX + w + pad > atlasW)
-                {
-                    cursorX = pad;
-                    cursorY += rowH + pad;
-                    rowH = 0;
-                }
-                pxRects[i] = new RectInt(cursorX, cursorY, w, h);
-                cursorX += w + pad;
-                if (h > rowH) rowH = h;
-            }
-            atlasH = Mathf.Max(64, cursorY + rowH + pad);
-
-            // Normalize to [0,1] using the final atlas dimensions.
-            float invW = 1f / atlasW;
-            float invH = 1f / atlasH;
-            for (int i = 0; i < domains.Length; i++)
-            {
-                var r = pxRects[i];
-                domains[i].uv2Rect = new Rect(r.x * invW, r.y * invH, r.width * invW, r.height * invH);
-            }
-        }
 
         // ─── Public callable for the unified benchmark orchestrator ──
 
@@ -1397,15 +941,18 @@ namespace SashaRX.UnityMeshLab
         {
             var result = Build(lg, opts);
             if (!string.IsNullOrEmpty(result.error)) return result;
-            WriteDryRunReport(lg.name, result, outputDir);
-            WriteAtlasPng(outputDir, result);
+            // Diagnostic PNG outputs that survived the legacy purge:
+            //  • Stage 1   — proxy_uv2_clean/raw/auto.png
+            //  • Stage B   — lodN_classical_uv2.png (per fine LOD)
+            //  • Stage 2/3 — proxy_samples.png + lodN_proxy_hits.png
+            // Stage 5 single-proxy final_uv2.png, atlas.png, lodN.png
+            // (legacy domain category map) and the dry-run CSV writer
+            // were dependencies of the deleted PR-2 pipeline. They will
+            // come back during plan v2's Stage C/D/E with new layouts.
             WriteProxyUv2Png(outputDir, result);
             WriteFineClassicalUv2Pngs(outputDir, lg, result);
             WriteProxySamplesPng(outputDir, result);
             WriteProxyHitsPngs(outputDir, lg, result);
-            WriteFinalUv2Pngs(outputDir, lg, result);
-            WriteFineLodDomainPngs(outputDir, lg, result);
-            LogDryRunSummary(lg.name, result);
             return result;
         }
 
@@ -1947,299 +1494,48 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        // ─── PR-3 Stage 5: ortho-project fine faces onto proxy faces ──
-
-        /// <summary>For every fine LOD, project each fine face
-        /// orthographically onto the nearest deepest-LOD (proxy) face in
-        /// 3D, with normal-sign disambiguation so sym-split mirror twins
-        /// pick the chart whose winding matches the fine face. Each fine
-        /// vertex's UV is the barycentric pull of proxy_uv2 at the
-        /// orthogonal projection point on the chosen proxy face plane —
-        /// the fine LOD inherits the proxy's UV layout directly. No
-        /// affine fits, no clamps, no chart wrapping. Per the
-        /// architecture: 'orthographically project each finer LOD's
-        /// faces into the LOD-deepest atlas regions by 3D nearest-face
-        /// + normal-sign correspondence. UV2 overlaps inside a region
-        /// are intentional (shared lighting domain).'
-        /// Seam vertices on shared fine edges where each side picked a
-        /// different proxy face get one output copy per (origVi, proxy
-        /// face) — keeps every fine tri inside one proxy face's UV
-        /// region, no inter-region tris.</summary>
-        static void BuildFinalFineUv2(LODGroup lg, Options opts, Result r)
-        {
-            if (lg == null) return;
-            if (r.proxyUv2 == null || r.proxyTris == null || r.proxyWorldVerts == null)
-                return;
-            var lods = lg.GetLODs();
-            int lodCount = lods.Length;
-            int deepest = lodCount - 1;
-            while (deepest > 0 && (lods[deepest].renderers == null
-                || lods[deepest].renderers.Length == 0
-                || lods[deepest].renderers[0] == null)) deepest--;
-
-            r.finalUv2 = new Vector2[lodCount][];
-            r.finalTris = new int[lodCount][];
-            r.finalSourceVertexIdx = new int[lodCount][];
-            r.finalAtlasV = 1f;
-
-            // Proxy face data: centroid, area, unit normal.
-            int proxyFaceN = r.proxyTris.Length / 3;
-            if (proxyFaceN == 0) return;
-            var proxyFaces = new Face3D[proxyFaceN];
-            for (int f = 0; f < proxyFaceN; f++)
-            {
-                Vector3 a = r.proxyWorldVerts[r.proxyTris[f * 3]];
-                Vector3 b = r.proxyWorldVerts[r.proxyTris[f * 3 + 1]];
-                Vector3 c = r.proxyWorldVerts[r.proxyTris[f * 3 + 2]];
-                proxyFaces[f].centroid = (a + b + c) / 3f;
-                Vector3 cr = Vector3.Cross(b - a, c - a);
-                float mag = cr.magnitude;
-                proxyFaces[f].area   = mag * 0.5f;
-                proxyFaces[f].normal = mag > 1e-12f ? cr / mag : Vector3.up;
-            }
-
-            // Precompute proxy face → proxy UV chart (shell) lookup.
-            // Used as the SEAM-VERTEX DEDUP KEY: vertices shared by two
-            // fine faces that voted for different proxy faces WITHIN the
-            // SAME proxy chart should share their newIdx so adjacent
-            // fine tris stay one connected UV shell. Without this they
-            // become independent UV shells per fine face (each pfMatch
-            // a different key) — visible as rainbow stripes on the
-            // Carousel where many small fine tris each voted for a
-            // different proxy face inside the same canopy-slice chart.
-            int[] proxyFaceToChart = new int[proxyFaceN];
-            for (int i = 0; i < proxyFaceN; i++) proxyFaceToChart[i] = -1;
-            {
-                var uvShells = UvShellExtractor.Extract(r.proxyUv2, r.proxyTris);
-                if (uvShells != null)
-                    for (int si = 0; si < uvShells.Count; si++)
-                        foreach (int fi in uvShells[si].faceIndices)
-                            if (fi >= 0 && fi < proxyFaceN)
-                                proxyFaceToChart[fi] = si;
-            }
-
-            for (int li = 0; li < lodCount; li++)
-            {
-                if (li == deepest) continue;
-                var rs = lods[li].renderers;
-                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
-                var mf = rs[0].GetComponent<MeshFilter>();
-                var mesh = mf != null ? mf.sharedMesh : null;
-                if (mesh == null) continue;
-                var xform = rs[0].transform;
-                var localVerts = mesh.vertices;
-                var tris = mesh.triangles;
-                int faceCount = tris.Length / 3;
-                if (faceCount == 0) continue;
-
-                var worldVerts = new Vector3[localVerts.Length];
-                for (int i = 0; i < localVerts.Length; i++)
-                    worldVerts[i] = xform.TransformPoint(localVerts[i]);
-
-                // (origVi, proxyChartId) → newVi dedup. Keyed by proxy
-                // CHART (UV shell) instead of proxy FACE so adjacent
-                // fine tris that voted for different proxy faces inside
-                // the SAME chart share their newIdx and stay one
-                // connected UV shell. Different charts → different
-                // copies → independent shells.
-                var dedup   = new Dictionary<long, int>(localVerts.Length);
-                var outUv   = new List<Vector2>(localVerts.Length * 2);
-                var outTris = new int[tris.Length];
-                var outSrc  = new List<int>(localVerts.Length * 2);
-                int NewIndex(int origVi, int chartId)
-                {
-                    long key = ((long)(chartId + 1) << 32) | (uint)origVi;
-                    if (dedup.TryGetValue(key, out int existing)) return existing;
-                    int newIdx = outUv.Count;
-                    outUv.Add(Vector2.zero);
-                    outSrc.Add(origVi);
-                    dedup[key] = newIdx;
-                    return newIdx;
-                }
-
-                // Stage 3 already projected every Poisson sample onto
-                // this fine LOD; proj.perFaceHitSampleIdx[f] lists the
-                // sample indices that landed on fine face f, each
-                // carrying its source proxyFaceIdx. We use that as the
-                // primary correspondence signal. NO fallback — fine
-                // faces no sample reached land at sentinel UV so the
-                // diagnostic shows exactly where Poisson coverage is
-                // too sparse.
-                var proj = r.lodProjections != null && li < r.lodProjections.Length
-                    ? r.lodProjections[li]
-                    : default;
-                int[][] hitsByFace = proj.perFaceHitSampleIdx;
-                var voteTally = new Dictionary<int, int>();
-
-                for (int f = 0; f < faceCount; f++)
-                {
-                    int ia = tris[f * 3];
-                    int ib = tris[f * 3 + 1];
-                    int ic = tris[f * 3 + 2];
-                    Vector3 va = worldVerts[ia];
-                    Vector3 vb = worldVerts[ib];
-                    Vector3 vc = worldVerts[ic];
-                    Vector3 fineCross = Vector3.Cross(vb - va, vc - va);
-                    float fineCrossMag = fineCross.magnitude;
-                    Vector3 fineNormal = fineCrossMag > 1e-12f
-                        ? fineCross / fineCrossMag : Vector3.up;
-
-                    int pfMatch = -1;
-
-                    // Primary: Poisson sample vote. Each fine face has a
-                    // list of proxy samples that landed on it (Stage 3
-                    // output). Each sample carries the proxyFaceIdx it
-                    // was generated on. Most-voted proxy face that
-                    // ALSO passes the normal-sign + UV-winding filters
-                    // wins.
-                    var samples = r.proxySamples;
-                    if (hitsByFace != null && f < hitsByFace.Length
-                        && hitsByFace[f] != null && samples != null)
-                    {
-                        voteTally.Clear();
-                        var ids = hitsByFace[f];
-                        for (int i = 0; i < ids.Length; i++)
-                        {
-                            int sIdx = ids[i];
-                            if (sIdx < 0 || sIdx >= samples.Length) continue;
-                            int pf = samples[sIdx].proxyFaceIdx;
-                            voteTally.TryGetValue(pf, out int prev);
-                            voteTally[pf] = prev + 1;
-                        }
-                        int bestVotes = 0;
-                        foreach (var kv in voteTally)
-                        {
-                            if (kv.Value <= bestVotes) continue;
-                            if (!PassesProxyFilters(va, vb, vc, fineNormal,
-                                    kv.Key, proxyFaces,
-                                    r.proxyWorldVerts, r.proxyTris,
-                                    r.proxyUv2)) continue;
-                            pfMatch = kv.Key;
-                            bestVotes = kv.Value;
-                        }
-                    }
-
-                    if (pfMatch < 0)
-                    {
-                        // No Poisson sample reached this fine face (or
-                        // every voted proxy face failed the filters).
-                        // Park off-atlas — NO fallback. The empty
-                        // regions in lod{N}_final_uv2.png and the bake
-                        // are the diagnostic: they tell the operator
-                        // exactly where Poisson coverage is too sparse
-                        // so density / cage / chart layout can be
-                        // tuned. A ray-cast fallback here would hide
-                        // that signal.
-                        for (int k = 0; k < 3; k++)
-                        {
-                            int origVi = tris[f * 3 + k];
-                            int newIdx = NewIndex(origVi, -1);
-                            outTris[f * 3 + k] = newIdx;
-                            outUv[newIdx] = new Vector2(-1f, -1f);
-                        }
-                        continue;
-                    }
-
-                    int pa = r.proxyTris[pfMatch * 3];
-                    int pb = r.proxyTris[pfMatch * 3 + 1];
-                    int pc = r.proxyTris[pfMatch * 3 + 2];
-                    Vector3 A = r.proxyWorldVerts[pa];
-                    Vector3 B = r.proxyWorldVerts[pb];
-                    Vector3 C = r.proxyWorldVerts[pc];
-                    Vector2 uvA = r.proxyUv2[pa];
-                    Vector2 uvB = r.proxyUv2[pb];
-                    Vector2 uvC = r.proxyUv2[pc];
-                    Vector3 nProxy = proxyFaces[pfMatch].normal;
-                    int chartId = proxyFaceToChart[pfMatch];
-
-                    for (int k = 0; k < 3; k++)
-                    {
-                        int origVi = tris[f * 3 + k];
-                        Vector2 uv = ProjectAndBary(worldVerts[origVi],
-                            A, B, C, nProxy, uvA, uvB, uvC);
-                        int newIdx = NewIndex(origVi, chartId);
-                        outTris[f * 3 + k] = newIdx;
-                        outUv[newIdx] = uv;
-                        if (uv.y > r.finalAtlasV) r.finalAtlasV = uv.y;
-                    }
-                }
-
-                r.finalUv2[li]             = outUv.ToArray();
-                r.finalTris[li]            = outTris;
-                r.finalSourceVertexIdx[li] = outSrc.ToArray();
-            }
-        }
-
-        /// <summary>Test whether a specific proxy face is a valid match
-        /// for the given fine triangle. Used by the Poisson sample
-        /// voting step in <see cref="BuildFinalFineUv2"/>:
-        ///   - normal-sign (dot(fineN, proxyN) &gt; 0) — first-pass
-        ///     filter for sym-split mirror twins;
-        ///   - UV-winding sign — projects the fine triangle onto the
-        ///     candidate's plane via ortho + barycentric, signs the
-        ///     resulting 2D triangle's cross product, compares with the
-        ///     proxy face's own UV winding. Twins produced by sym-split
-        ///     have opposite UV winding because mirroring 3D flips UV
-        ///     orientation — this fires on diagonal symmetry (Carousel
-        ///     N-fold slices) where the normal-sign filter alone cannot
-        ///     tell adjacent twins apart.
-        /// </summary>
-        static bool PassesProxyFilters(
-            Vector3 v0, Vector3 v1, Vector3 v2, Vector3 fineNormal,
-            int pfIdx, Face3D[] proxyFaces,
-            Vector3[] proxyVerts, int[] proxyTris, Vector2[] proxyUv2)
-        {
-            if (pfIdx < 0 || pfIdx >= proxyFaces.Length) return false;
-            if (proxyFaces[pfIdx].area <= 0f) return false;
-            Vector3 pn = proxyFaces[pfIdx].normal;
-            if (Vector3.Dot(fineNormal, pn) <= 0f) return false;
-
-            int ia = proxyTris[pfIdx * 3];
-            int ib = proxyTris[pfIdx * 3 + 1];
-            int ic = proxyTris[pfIdx * 3 + 2];
-            Vector3 A = proxyVerts[ia];
-            Vector3 B = proxyVerts[ib];
-            Vector3 C = proxyVerts[ic];
-            Vector2 uvA = proxyUv2[ia];
-            Vector2 uvB = proxyUv2[ib];
-            Vector2 uvC = proxyUv2[ic];
-            float proxyCross = (uvB.x - uvA.x) * (uvC.y - uvA.y)
-                             - (uvB.y - uvA.y) * (uvC.x - uvA.x);
-            if (Mathf.Abs(proxyCross) < 1e-12f) return true;
-            Vector2 pu0 = ProjectAndBary(v0, A, B, C, pn, uvA, uvB, uvC);
-            Vector2 pu1 = ProjectAndBary(v1, A, B, C, pn, uvA, uvB, uvC);
-            Vector2 pu2 = ProjectAndBary(v2, A, B, C, pn, uvA, uvB, uvC);
-            float fineCross = (pu1.x - pu0.x) * (pu2.y - pu0.y)
-                            - (pu1.y - pu0.y) * (pu2.x - pu0.x);
-            return proxyCross * fineCross > 0f;
-        }
-
-        /// <summary>Ortho-project <paramref name="p"/> onto the plane of
-        /// (<paramref name="a"/>, <paramref name="b"/>, <paramref name="c"/>)
-        /// along <paramref name="planeNormal"/>, then barycentric-pull
-        /// (uvA, uvB, uvC). Used for both the UV-winding sign check in
-        /// <see cref="PassesProxyFilters"/> and the actual UV assignment
-        /// in Stage 5. Falls back to uvA when the proxy triangle is
-        /// degenerate.</summary>
-        static Vector2 ProjectAndBary(Vector3 p, Vector3 a, Vector3 b, Vector3 c,
-            Vector3 planeNormal, Vector2 uvA, Vector2 uvB, Vector2 uvC)
-        {
-            Vector3 P = p - planeNormal * Vector3.Dot(p - a, planeNormal);
-            Vector3 v0 = b - a, v1 = c - a, v2 = P - a;
-            float d00 = Vector3.Dot(v0, v0);
-            float d01 = Vector3.Dot(v0, v1);
-            float d11 = Vector3.Dot(v1, v1);
-            float d20 = Vector3.Dot(v2, v0);
-            float d21 = Vector3.Dot(v2, v1);
-            float denom = d00 * d11 - d01 * d01;
-            if (Mathf.Abs(denom) < 1e-12f) return uvA;
-            float bV = (d11 * d20 - d01 * d21) / denom;
-            float bW = (d00 * d21 - d01 * d20) / denom;
-            float bU = 1f - bV - bW;
-            return uvA * bU + uvB * bV + uvC * bW;
-        }
 
         // ─── PR-3 Stage 6: bake the new uv2 into cloned LOD meshes ────
+
+        /// <summary>Pick two orthonormal vectors in the plane normal to <paramref name="n"/>.
+        /// Algorithm: take any axis not parallel to n, cross to get basisU, cross again for basisV.
+        /// Used by <see cref="ExtractShells"/> when materialising 3D shells with a local basis.</summary>
+        static void ComputePlaneBasis(Vector3 n, out Vector3 u, out Vector3 v)
+        {
+            Vector3 helper = Mathf.Abs(n.x) < 0.9f ? Vector3.right : Vector3.up;
+            u = Vector3.Cross(n, helper).normalized;
+            v = Vector3.Cross(n, u).normalized;
+        }
+
+        /// <summary>Project every CORNER VERTEX of every face in the shell onto
+        /// (u,v) basis centred at <paramref name="origin"/>; max abs value along
+        /// each axis becomes the half-extent. Vertex-based (not centroid-based)
+        /// because the projector will project the SAME vertices into the
+        /// atlas rect; a centroid-based extent under-shoots long thin triangles
+        /// (corner verts spill outside the rect → wrap-around bleeding in the
+        /// baked lightmap).</summary>
+        static void ComputeExtents(Vector3[] worldVerts, int[] rawTris,
+            List<int> faceIndices, Vector3 origin,
+            Vector3 u, Vector3 v, out float extU, out float extV)
+        {
+            float maxU = 0f, maxV = 0f;
+            foreach (int f in faceIndices)
+            {
+                for (int k = 0; k < 3; k++)
+                {
+                    Vector3 d = worldVerts[rawTris[f * 3 + k]] - origin;
+                    float pu = Mathf.Abs(Vector3.Dot(d, u));
+                    float pv = Mathf.Abs(Vector3.Dot(d, v));
+                    if (pu > maxU) maxU = pu;
+                    if (pv > maxV) maxV = pv;
+                }
+            }
+            // Small floor — degenerate shells (1-2 tiny triangles) would otherwise
+            // have zero extent and divide-by-zero in any downstream projector.
+            const float kMinExtent = 1e-4f;
+            extU = Mathf.Max(maxU, kMinExtent);
+            extV = Mathf.Max(maxV, kMinExtent);
+        }
 
         /// <summary>For every fine LOD that produced a Stage-5 final UV2,
         /// clone the source mesh with the seam-vertex split applied:
@@ -2364,24 +1660,6 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        /// <summary>PR-3 Stage 5 visualisation: render the final per-LOD
-        /// UV2 layout — exactly what would be written to mesh.uv2. The
-        /// yellow border drawn by UvPngWriter is the unit box, so any
-        /// natural spill above V=1 (or below 0) shows up outside it.</summary>
-        static void WriteFinalUv2Pngs(string outputDir, LODGroup lg, Result r)
-        {
-            if (r.finalUv2 == null || r.finalTris == null) return;
-            var lods = lg.GetLODs();
-            int lodCount = lods.Length;
-            for (int li = 0; li < lodCount; li++)
-            {
-                var uv = r.finalUv2[li];
-                var tr = r.finalTris[li];
-                if (uv == null || tr == null || tr.Length < 3) continue;
-                string path = Path.Combine(outputDir, $"lod{li}_final_uv2.png");
-                UvPngWriter.Render(path, uv, tr);
-            }
-        }
 
         /// <summary>Render each fine LOD as a 3D isometric view with faces
         /// shaded by proxy-sample hit density. Heat ramp: pink (zero hits =
@@ -2584,139 +1862,6 @@ namespace SashaRX.UnityMeshLab
             finally { XatlasNative.xatlasDestroy(); }
         }
 
-        // ─── Diagnostic PNG output ───────────────────────────────────
-
-        /// <summary>Render the packed atlas layout — each domain's uv2Rect
-        /// drawn as a filled rectangle, colored by base vs promoted (blue
-        /// vs warm), with per-domain hue variation so adjacent rects can be
-        /// distinguished. Black 1px border separates rects. Output:
-        /// <c>{outputDir}/atlas.png</c>.</summary>
-        static void WriteAtlasPng(string outputDir, Result r)
-        {
-            if (r.domains == null || r.domains.Length == 0) return;
-            const int size = 1024;
-            var pixels = new Color32[size * size];
-            // Dark backdrop so empty atlas area is visible.
-            var bg = new Color32(24, 24, 28, 255);
-            for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
-
-            for (int i = 0; i < r.domains.Length; i++)
-            {
-                var d = r.domains[i];
-                int x0 = Mathf.Clamp(Mathf.FloorToInt(d.uv2Rect.x * size), 0, size - 1);
-                int y0 = Mathf.Clamp(Mathf.FloorToInt(d.uv2Rect.y * size), 0, size - 1);
-                int x1 = Mathf.Clamp(Mathf.CeilToInt((d.uv2Rect.x + d.uv2Rect.width) * size), 0, size);
-                int y1 = Mathf.Clamp(Mathf.CeilToInt((d.uv2Rect.y + d.uv2Rect.height) * size), 0, size);
-                Color32 fill = DomainColor(i, r.baseShellCount);
-                for (int y = y0; y < y1; y++)
-                {
-                    int row = y * size;
-                    for (int x = x0; x < x1; x++) pixels[row + x] = fill;
-                }
-            }
-
-            string path = Path.Combine(outputDir, "atlas.png");
-            EncodePng(pixels, size, size, path);
-        }
-
-        /// <summary>Render every fine-LOD mesh's triangles, projected onto
-        /// the world-space plane that shows the largest surface (axis with
-        /// the smallest AABB extent → normal to the "best view" plane).
-        /// Colored by faceToDomain assignment. Lets the operator SEE
-        /// where overlay vs promote vs skip lands on the actual physical
-        /// surface — red blobs in the middle of an obvious wall mean a
-        /// topology divergence the per-vertex classifier flagged; red
-        /// strips only along chart borders mean only boundary faces flunk
-        /// face-consensus. Output: <c>{outputDir}/lod{N}.png</c>
-        /// per fine LOD. Background is light so face colors pop; skip /
-        /// degenerate faces render bright magenta so they're impossible
-        /// to mistake for backdrop. Atlas-projection (UV0) is intentionally
-        /// NOT used here — assets often pack UV0 into a corner sub-region,
-        /// leaving the diagnostic 95% empty.</summary>
-        static void WriteFineLodDomainPngs(string outputDir, LODGroup lg, Result r)
-        {
-            if (r.faceToDomain == null) return;
-            var lods = lg.GetLODs();
-            int lodCount = lods.Length;
-            int deepest = lodCount - 1;
-            while (deepest > 0 && (lods[deepest].renderers == null
-                || lods[deepest].renderers.Length == 0
-                || lods[deepest].renderers[0] == null)) deepest--;
-
-            for (int li = 0; li < lodCount; li++)
-            {
-                if (li == deepest) continue; // only fine LODs are interesting
-                var rs = lods[li].renderers;
-                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
-                var mf = rs[0].GetComponent<MeshFilter>();
-                var mesh = mf != null ? mf.sharedMesh : null;
-                if (mesh == null) continue;
-                var xform = rs[0].transform;
-                var localVerts = mesh.vertices;
-                if (localVerts == null || localVerts.Length == 0) continue;
-                var tris = mesh.triangles;
-                var f2d = r.faceToDomain[li];
-                if (f2d == null || f2d.Length * 3 != tris.Length) continue;
-
-                // World-space verts + AABB.
-                var worldVerts = new Vector3[localVerts.Length];
-                Vector3 mn = xform.TransformPoint(localVerts[0]);
-                Vector3 mx = mn;
-                worldVerts[0] = mn;
-                for (int i = 1; i < localVerts.Length; i++)
-                {
-                    var p = xform.TransformPoint(localVerts[i]);
-                    worldVerts[i] = p;
-                    mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p);
-                }
-
-                // Isometric projection — axonometric basis on the (1,1,1)
-                // normal so three orthogonal box faces are visible. Beats
-                // a single-axis planar projection for boxes (top-down shows
-                // only 2 walls), gives an immediate 3D read of the mesh.
-                Vector3 isoR = new Vector3( 0.7071f, 0f, -0.7071f);            // right axis
-                Vector3 isoU = new Vector3(-0.4082f, 0.8165f, -0.4082f);       // up axis
-                // Project the 8 AABB corners to size the viewport.
-                float umin = float.MaxValue, umax = float.MinValue;
-                float vmin = float.MaxValue, vmax = float.MinValue;
-                for (int cx = 0; cx < 2; cx++)
-                for (int cy = 0; cy < 2; cy++)
-                for (int cz = 0; cz < 2; cz++)
-                {
-                    Vector3 corner = new Vector3(
-                        cx == 0 ? mn.x : mx.x,
-                        cy == 0 ? mn.y : mx.y,
-                        cz == 0 ? mn.z : mx.z);
-                    float cu = Vector3.Dot(corner, isoR);
-                    float cv = Vector3.Dot(corner, isoU);
-                    if (cu < umin) umin = cu; if (cu > umax) umax = cu;
-                    if (cv < vmin) vmin = cv; if (cv > vmax) vmax = cv;
-                }
-                int size = 1024;
-                float du = umax - umin, dv = vmax - vmin;
-                float scale = (size * 0.92f) / Mathf.Max(Mathf.Max(du, dv), 1e-6f);
-                float midU = (umin + umax) * 0.5f, midV = (vmin + vmax) * 0.5f;
-                float half = size * 0.5f;
-
-                var pixels = new Color32[size * size];
-                var bg = new Color32(244, 244, 248, 255); // light backdrop
-                for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
-
-                int faceCount = tris.Length / 3;
-                for (int f = 0; f < faceCount; f++)
-                {
-                    int domain = f2d[f];
-                    Color32 col = CategoryColor(domain, r.baseShellCount);
-                    Vector2 a = IsoProject(worldVerts[tris[f * 3]],     isoR, isoU, midU, midV, scale, half);
-                    Vector2 b = IsoProject(worldVerts[tris[f * 3 + 1]], isoR, isoU, midU, midV, scale, half);
-                    Vector2 c = IsoProject(worldVerts[tris[f * 3 + 2]], isoR, isoU, midU, midV, scale, half);
-                    RasterizeTrianglePx(pixels, size, a, b, c, col);
-                }
-
-                string path = Path.Combine(outputDir, $"lod{li}.png");
-                EncodePng(pixels, size, size, path);
-            }
-        }
 
         static Vector2 IsoProject(Vector3 p, Vector3 isoR, Vector3 isoU,
             float midU, float midV, float scale, float half)
@@ -2727,54 +1872,6 @@ namespace SashaRX.UnityMeshLab
                                half - (pv - midV) * scale);
         }
 
-        /// <summary>Color palette for diagnostic PNGs. Skip / degenerate
-        /// (-1) → dark gray. Base shells (idx &lt; baseShellCount) → green
-        /// family. Promoted clusters (idx ≥ baseShellCount) → warm
-        /// (orange-red) family. Within each family the hue varies by
-        /// domain index hash so adjacent shells are distinguishable.</summary>
-        // Solid category palette for per-LOD diagnostic PNGs — the question
-        // there is "is this face overlay / promote / skip?" Per-domain hue
-        // variation would create false visual differences between LODs that
-        // actually classify the same.
-        static readonly Color32 kColorOverlay   = new Color32( 80, 190,  90, 255);
-        static readonly Color32 kColorPromote   = new Color32(220,  90,  70, 255);
-        static readonly Color32 kColorSkipDegen = new Color32(255,  40, 200, 255);
-
-        static Color32 CategoryColor(int domainIdx, int baseShellCount)
-        {
-            if (domainIdx < 0) return kColorSkipDegen;
-            return domainIdx < baseShellCount ? kColorOverlay : kColorPromote;
-        }
-
-        // Per-domain palette for atlas-layout PNG — there each rect must be
-        // visually distinct from its neighbours, so we keep the hash-based
-        // hue variation but only within the green / warm families.
-        static Color32 DomainColor(int domainIdx, int baseShellCount)
-        {
-            if (domainIdx < 0) return kColorSkipDegen;
-            uint h = unchecked((uint)domainIdx * 2654435761u);
-            int hueOffset = (int)(h % 60u);
-            int valOffset = (int)((h >> 8) % 30u);
-            bool isBase = domainIdx < baseShellCount;
-            float hue, sat, val;
-            if (isBase)
-            {
-                hue = (90f + hueOffset) / 360f;
-                sat = 0.60f;
-                val = 0.70f + valOffset / 200f;
-            }
-            else
-            {
-                hue = (hueOffset * 0.5f) / 360f;
-                sat = 0.85f;
-                val = 0.85f + valOffset / 300f;
-            }
-            Color c = Color.HSVToRGB(hue, sat, val);
-            return new Color32(
-                (byte)Mathf.Clamp(c.r * 255f, 0f, 255f),
-                (byte)Mathf.Clamp(c.g * 255f, 0f, 255f),
-                (byte)Mathf.Clamp(c.b * 255f, 0f, 255f), 255);
-        }
 
         /// <summary>Software-rasterize a triangle given in pixel coordinates
         /// with a solid color. Edge-function barycentrics with positive-only
@@ -2823,144 +1920,5 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static void LogDryRunSummary(string lgName, Result r)
-        {
-            var sb = new StringBuilder();
-            sb.AppendLine();
-            sb.AppendLine($"[HierRepack] Dry-run on '{lgName}':");
-            sb.AppendLine($"  domains:        {r.domains.Length} total " +
-                $"({r.baseShellCount} base / {r.promotedClusterCount} promoted shells)");
-            sb.AppendLine($"  atlas:          {r.atlasPixelWidth} × {r.atlasPixelHeight} px " +
-                $"(naive strip packer — PR-2.8 will swap in xatlas)");
-            int denom = Mathf.Max(1, r.totalFineFaces);
-            sb.AppendLine($"  fine faces:     {r.totalFineFaces} total");
-            sb.AppendLine($"    promoted:     {r.promotedFineFaces,6} ({100f * r.promotedFineFaces / denom,5:F1}%)");
-            sb.AppendLine($"    overlaid:     {r.overlaidFineFaces,6} ({100f * r.overlaidFineFaces / denom,5:F1}%)");
-            sb.AppendLine($"    skipped:      {r.skippedFineFaces,6} ({100f * r.skippedFineFaces / denom,5:F1}%)");
-            sb.AppendLine($"    degenerate:   {r.degenerateFineFaces,6} (filtered before shell extraction)");
-
-            // Per-LOD assignment audit — how many of each LOD's faces went where.
-            for (int li = 0; li < r.faceToDomain.Length; li++)
-            {
-                var arr = r.faceToDomain[li];
-                if (arr == null || arr.Length == 0) continue;
-                int baseCount = 0, promCount = 0, miss = 0;
-                for (int f = 0; f < arr.Length; f++)
-                {
-                    int idx = arr[f];
-                    if (idx < 0) miss++;
-                    else if (idx < r.baseShellCount) baseCount++;
-                    else promCount++;
-                }
-                // base = native shell (deepest LOD) or overlaid onto a base
-                // (fine LODs); promoted = own atlas domain; skip/degen = -1.
-                sb.AppendLine($"    LOD{li}: {arr.Length,5} faces  " +
-                    $"base/overlay={baseCount,5}  promoted={promCount,5}  skip/degen={miss}");
-            }
-
-            // Top-K largest and smallest domains by pixel area — useful for
-            // sanity-checking the packer's distribution.
-            int domainsToShow = Mathf.Min(5, r.domains.Length);
-            var byArea = new int[r.domains.Length];
-            for (int i = 0; i < r.domains.Length; i++) byArea[i] = i;
-            Array.Sort(byArea, (a, b) =>
-            {
-                float aa = r.domains[a].uv2Rect.width * r.domains[a].uv2Rect.height;
-                float ba = r.domains[b].uv2Rect.width * r.domains[b].uv2Rect.height;
-                return ba.CompareTo(aa);
-            });
-            sb.AppendLine($"  Top {domainsToShow} largest domains:");
-            for (int i = 0; i < domainsToShow; i++)
-            {
-                var d = r.domains[byArea[i]];
-                sb.AppendLine($"    #{byArea[i]:D4} {(d.isPromoted ? "PROM" : "BASE")} " +
-                    $"rect=({d.uv2Rect.x:F3},{d.uv2Rect.y:F3})-" +
-                    $"({d.uv2Rect.x + d.uv2Rect.width:F3},{d.uv2Rect.y + d.uv2Rect.height:F3})  " +
-                    $"faces={d.faceCount} area3D={d.totalArea3D:F3} " +
-                    $"sourceLod={d.sourceLodIndex}");
-            }
-
-            // Stage 5: max V reached by the natural ortho-projection.
-            // Per the architecture, fine vertices CAN spill outside the
-            // proxy chart — we do not distort. >1 just means at least
-            // one fine face's projection landed above the unit box.
-            if (r.finalUv2 != null)
-            {
-                sb.AppendLine($"  final UV2 max V: {r.finalAtlasV:F3} " +
-                    (r.finalAtlasV > 1f + 1e-4f
-                        ? "(natural spill above unit box — expected, not distorted)"
-                        : "(within unit box)"));
-            }
-            UvtLog.Info(UvtLog.Category.Benchmark, sb.ToString());
-        }
-
-        // Default path used by stand-alone callers (none remain in this PR,
-        // kept for future ad-hoc invocations).
-        static string WriteDryRunReport(string lgName, Result r)
-            => WriteDryRunReport(lgName, r, null);
-
-        /// <summary>Write the per-case dry-run CSV. If <paramref name="outputDir"/>
-        /// is non-null the file lands as <c>{outputDir}/repack.csv</c>
-        /// (subfolder identifies the technique); otherwise falls back to the
-        /// timestamped BenchmarkReports/ layout used by stand-alone callers.</summary>
-        static string WriteDryRunReport(string lgName, Result r, string outputDir)
-        {
-            string dir;
-            string path;
-            if (!string.IsNullOrEmpty(outputDir))
-            {
-                dir = outputDir;
-                Directory.CreateDirectory(dir);
-                path = Path.Combine(dir, "repack.csv");
-            }
-            else
-            {
-                string projectRoot = Directory.GetParent(Application.dataPath)?.FullName
-                                     ?? Application.dataPath;
-                dir = Path.Combine(projectRoot, "BenchmarkReports");
-                Directory.CreateDirectory(dir);
-                string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
-                path = Path.Combine(dir, $"hierrepack_{stamp}_{Sanitize(lgName)}.csv");
-            }
-            var inv = CultureInfo.InvariantCulture;
-            var sb = new StringBuilder();
-            sb.AppendLine("domainIdx,isPromoted,sourceLod,faceCount,totalArea3D," +
-                "uvRectX,uvRectY,uvRectW,uvRectH," +
-                "planeCx,planeCy,planeCz,planeNx,planeNy,planeNz," +
-                "extentU,extentV");
-            for (int i = 0; i < r.domains.Length; i++)
-            {
-                var d = r.domains[i];
-                sb.Append(i.ToString(inv)).Append(',');
-                sb.Append(d.isPromoted ? '1' : '0').Append(',');
-                sb.Append(d.sourceLodIndex.ToString(inv)).Append(',');
-                sb.Append(d.faceCount.ToString(inv)).Append(',');
-                sb.Append(d.totalArea3D.ToString("R", inv)).Append(',');
-                sb.Append(d.uv2Rect.x.ToString("R", inv)).Append(',');
-                sb.Append(d.uv2Rect.y.ToString("R", inv)).Append(',');
-                sb.Append(d.uv2Rect.width.ToString("R", inv)).Append(',');
-                sb.Append(d.uv2Rect.height.ToString("R", inv)).Append(',');
-                sb.Append(d.planeCentroid.x.ToString("R", inv)).Append(',');
-                sb.Append(d.planeCentroid.y.ToString("R", inv)).Append(',');
-                sb.Append(d.planeCentroid.z.ToString("R", inv)).Append(',');
-                sb.Append(d.planeNormal.x.ToString("R", inv)).Append(',');
-                sb.Append(d.planeNormal.y.ToString("R", inv)).Append(',');
-                sb.Append(d.planeNormal.z.ToString("R", inv)).Append(',');
-                sb.Append(d.planeExtentU.ToString("R", inv)).Append(',');
-                sb.Append(d.planeExtentV.ToString("R", inv));
-                sb.AppendLine();
-            }
-            File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
-            return path;
-        }
-
-        static string Sanitize(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "unnamed";
-            var sb = new StringBuilder(s.Length);
-            foreach (char c in s)
-                sb.Append(char.IsLetterOrDigit(c) || c == '-' || c == '_' ? c : '_');
-            return sb.ToString();
-        }
     }
 }
