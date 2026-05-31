@@ -227,7 +227,57 @@ namespace SashaRX.UnityMeshLab
             /// vertices at chart seams so this differs from the source
             /// mesh.triangles. Pair with fineClassicalUv2.</summary>
             public int[][]     fineClassicalTris;
+
+            // ─── Stage C: per-LOD 3D shells + group seed ────────────
+            /// <summary>Stage C: 3D shells extracted per LOD via
+            /// ExtractShells on each LOD's geometry. Indexed by LOD
+            /// level (matches LODGroup.GetLODs()). Each LOD has its
+            /// own shell set — same params (shellNormalThresholdDeg)
+            /// across LODs so shells on geometrically-equivalent LODs
+            /// come out comparable.</summary>
+            public Shell3D[][] perLodShells;
+            /// <summary>Stage C: face → shellId per LOD. -1 for
+            /// degenerate faces filtered out by ExtractShells. Pair
+            /// with <see cref="perLodShells"/>.</summary>
+            public int[][]     perLodFaceToShell;
+            /// <summary>Stage C / Stage D: lighting domain groups.
+            /// Stage C seeds one group per deepest-LOD shell. Stage D
+            /// joins finer-LOD shells into existing groups (cascade
+            /// matching) or creates new groups for shells with no
+            /// match. Stage E packs canonical shells into the final
+            /// atlas.</summary>
+            public LightingDomainGroup[] groups;
+            /// <summary>Stage C / Stage D: per-LOD shell → group id.
+            /// Stage C fills the deepest LOD with 0..N-1 (one group
+            /// per shell). Stage D fills the rest via cascade voting;
+            /// -1 means the shell has no group yet (unmatched, Stage
+            /// D will assign a fresh group).</summary>
+            public int[][]     perLodShellToGroup;
+
             public string error;
+        }
+
+        /// <summary>Stage C / D / E: a single lighting domain — a set
+        /// of shells across multiple LODs that share lighting. Owned
+        /// by its <c>canonicalLod</c> shell (the deepest-LOD member),
+        /// whose geometry + UV parameterisation are the chart that
+        /// Stage E packs into the final atlas. Finer members are
+        /// projected onto the canonical member's plane and inherit
+        /// its placed UV by barycentric pull.</summary>
+        public struct LightingDomainGroup
+        {
+            public int groupId;
+            /// <summary>Deepest LOD level that has a shell in this
+            /// group. The canonical chart for Stage E packing.</summary>
+            public int canonicalLod;
+            /// <summary>Shell id (index into <c>perLodShells[canonicalLod]</c>)
+            /// of the canonical member.</summary>
+            public int canonicalShellId;
+            /// <summary>All (lod, shellId) members of the group.
+            /// Includes the canonical member as the first entry.
+            /// Stage D appends finer members during cascade matching.
+            /// </summary>
+            public List<(int lod, int shellId)> members;
         }
 
         /// <summary>PR-3 Stage 3 output: for one fine LOD, how the proxy
@@ -398,6 +448,16 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     $"[HierRepack] proxy projection stage 3 failed on '{lg.name}': {ex.Message}");
             }
+            // Stage C: per-LOD 3D shell extract + seed deepest-LOD
+            // groups. No matching / no UV here — only segmentation +
+            // data-model seed. Stage D consumes perLodShells +
+            // perLodShellToGroup + groups.
+            try { ExtractPerLodShellsAndSeedGroups(lg, opts, meshDiag, result); }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] stage C shells/groups failed on '{lg.name}': {ex.Message}");
+            }
             return result;
         }
 
@@ -410,7 +470,7 @@ namespace SashaRX.UnityMeshLab
             public float   area;
         }
 
-        struct Shell3D
+        public struct Shell3D
         {
             public Vector3 centroid;       // area-weighted
             public Vector3 dominantNormal; // area-weighted, unit
@@ -953,6 +1013,8 @@ namespace SashaRX.UnityMeshLab
             WriteFineClassicalUv2Pngs(outputDir, lg, result);
             WriteProxySamplesPng(outputDir, result);
             WriteProxyHitsPngs(outputDir, lg, result);
+            // Stage C: per-LOD 3D shell partition iso views.
+            WritePerLodShellsPngs(outputDir, lg, result);
             return result;
         }
 
@@ -1494,6 +1556,92 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // ─── Stage C: per-LOD 3D shell extract + group seed ──────────
+
+        /// <summary>For each LOD in the LODGroup, run BuildFaceData +
+        /// ExtractShells with the same parameters (so shells across
+        /// LODs come out comparable). Fills <c>r.perLodShells</c> and
+        /// <c>r.perLodFaceToShell</c>. Then seeds <c>r.groups</c>: each
+        /// shell on the deepest LOD becomes its own LightingDomainGroup
+        /// with canonicalLod = deepest. Finer LODs' shells are left
+        /// unassigned (perLodShellToGroup[li] = all -1) — Stage D's
+        /// cascade matcher fills them in.</summary>
+        static void ExtractPerLodShellsAndSeedGroups(LODGroup lg, Options opts,
+            float meshDiag, Result r)
+        {
+            if (lg == null) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            r.perLodShells = new Shell3D[lodCount][];
+            r.perLodFaceToShell = new int[lodCount][];
+            r.perLodShellToGroup = new int[lodCount][];
+
+            // Pick deepest LOD (last that has a renderer + mesh).
+            int deepest = lodCount - 1;
+            while (deepest > 0)
+            {
+                var rs = lods[deepest].renderers;
+                if (rs != null && rs.Length > 0 && rs[0] != null
+                    && rs[0].GetComponent<MeshFilter>()?.sharedMesh != null) break;
+                deepest--;
+            }
+
+            for (int li = 0; li < lodCount; li++)
+            {
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) continue;
+                var xform = rs[0].transform;
+
+                int faceCount = mesh.triangles.Length / 3;
+                if (faceCount == 0) continue;
+
+                var faces = BuildFaceData(mesh, xform, meshDiag,
+                    out Vector3[] worldVerts, out int[] rawTris,
+                    out int[] canonicalTris, out _);
+                var faceToShell = new int[faces.Length];
+                var shells = ExtractShells(faces, worldVerts, rawTris,
+                    canonicalTris, opts.shellNormalThresholdDeg,
+                    opts.shellMergeAngleDeg, faceToShell, null);
+
+                r.perLodShells[li] = shells;
+                r.perLodFaceToShell[li] = faceToShell;
+                r.perLodShellToGroup[li] = new int[shells.Length];
+                for (int s = 0; s < shells.Length; s++)
+                    r.perLodShellToGroup[li][s] = -1;
+
+                UvtLog.Info(UvtLog.Category.Benchmark,
+                    $"[HierRepack] Stage C: LOD{li} '{lg.name}' → {shells.Length} shells");
+            }
+
+            // Seed groups from deepest LOD's shells.
+            var deepShells = r.perLodShells[deepest];
+            if (deepShells == null || deepShells.Length == 0)
+            {
+                r.groups = new LightingDomainGroup[0];
+                return;
+            }
+            var groups = new LightingDomainGroup[deepShells.Length];
+            var deepShellToGroup = r.perLodShellToGroup[deepest];
+            for (int si = 0; si < deepShells.Length; si++)
+            {
+                groups[si] = new LightingDomainGroup
+                {
+                    groupId          = si,
+                    canonicalLod     = deepest,
+                    canonicalShellId = si,
+                    members          = new List<(int, int)> { (deepest, si) },
+                };
+                deepShellToGroup[si] = si;
+            }
+            r.groups = groups;
+
+            UvtLog.Info(UvtLog.Category.Benchmark,
+                $"[HierRepack] Stage C: '{lg.name}' seeded {groups.Length} groups "
+                + $"(canonical=LOD{deepest}); finer LOD shells await Stage D matching");
+        }
 
         // ─── PR-3 Stage 6: bake the new uv2 into cloned LOD meshes ────
 
@@ -1763,6 +1911,104 @@ namespace SashaRX.UnityMeshLab
             byte g = (byte)Mathf.Lerp(240f, 170f, t);
             byte b = (byte)Mathf.Lerp(200f,  80f, t);
             return new Color32(r, g, b, 255);
+        }
+
+        /// <summary>Hash-based hue palette for diagnostic PNGs whose
+        /// "label" is an integer id with no semantic ordering (shellId,
+        /// groupId). Knuth multiplicative hash spreads adjacent ids
+        /// across the colour wheel, magenta sentinel for -1.</summary>
+        static Color32 LabelColor(int id)
+        {
+            if (id < 0) return new Color32(255, 40, 200, 255); // unassigned / degen
+            uint h = unchecked((uint)id * 2654435761u);
+            float hue = (h % 360u) / 360f;
+            // Slightly desaturated + medium-bright so the white wire
+            // outlines from UvPngWriter / RasterizeTrianglePx are still
+            // readable on top.
+            Color c = Color.HSVToRGB(hue, 0.55f, 0.85f);
+            return new Color32(
+                (byte)Mathf.Clamp(c.r * 255f, 0f, 255f),
+                (byte)Mathf.Clamp(c.g * 255f, 0f, 255f),
+                (byte)Mathf.Clamp(c.b * 255f, 0f, 255f), 255);
+        }
+
+        /// <summary>Stage C visualisation: render each LOD as a 3D
+        /// isometric view with faces shaded by their shellId. Same
+        /// projector + rasterizer used by WriteProxyHitsPngs. One PNG
+        /// per LOD: <c>lod{N}_shells.png</c>.</summary>
+        static void WritePerLodShellsPngs(string outputDir, LODGroup lg, Result r)
+        {
+            if (r.perLodShells == null || r.perLodFaceToShell == null) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            for (int li = 0; li < lodCount; li++)
+            {
+                if (li >= r.perLodShells.Length) break;
+                var faceToShell = r.perLodFaceToShell[li];
+                if (faceToShell == null) continue;
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) continue;
+
+                var localVerts = mesh.vertices;
+                var tris = mesh.triangles;
+                int faceCount = tris.Length / 3;
+                if (faceCount == 0 || faceCount != faceToShell.Length) continue;
+                var xform = rs[0].transform;
+
+                // World-space vertex transform + AABB for iso viewport.
+                var worldVerts = new Vector3[localVerts.Length];
+                Vector3 mn = xform.TransformPoint(localVerts[0]);
+                Vector3 mx = mn;
+                worldVerts[0] = mn;
+                for (int i = 1; i < localVerts.Length; i++)
+                {
+                    var p = xform.TransformPoint(localVerts[i]);
+                    worldVerts[i] = p;
+                    mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p);
+                }
+
+                Vector3 isoR = new Vector3( 0.7071f, 0f, -0.7071f);
+                Vector3 isoU = new Vector3(-0.4082f, 0.8165f, -0.4082f);
+                float umin = float.MaxValue, umax = float.MinValue;
+                float vmin = float.MaxValue, vmax = float.MinValue;
+                for (int cx = 0; cx < 2; cx++)
+                for (int cy = 0; cy < 2; cy++)
+                for (int cz = 0; cz < 2; cz++)
+                {
+                    Vector3 corner = new Vector3(
+                        cx == 0 ? mn.x : mx.x,
+                        cy == 0 ? mn.y : mx.y,
+                        cz == 0 ? mn.z : mx.z);
+                    float cu = Vector3.Dot(corner, isoR);
+                    float cv = Vector3.Dot(corner, isoU);
+                    if (cu < umin) umin = cu; if (cu > umax) umax = cu;
+                    if (cv < vmin) vmin = cv; if (cv > vmax) vmax = cv;
+                }
+                int size = 1024;
+                float du = umax - umin, dv = vmax - vmin;
+                float scale = (size * 0.92f) / Mathf.Max(Mathf.Max(du, dv), 1e-6f);
+                float midU = (umin + umax) * 0.5f, midV = (vmin + vmax) * 0.5f;
+                float half = size * 0.5f;
+
+                var pixels = new Color32[size * size];
+                var bg = new Color32(244, 244, 248, 255);
+                for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
+
+                for (int f = 0; f < faceCount; f++)
+                {
+                    Color32 col = LabelColor(faceToShell[f]);
+                    Vector2 a = IsoProject(worldVerts[tris[f * 3]],     isoR, isoU, midU, midV, scale, half);
+                    Vector2 b = IsoProject(worldVerts[tris[f * 3 + 1]], isoR, isoU, midU, midV, scale, half);
+                    Vector2 c = IsoProject(worldVerts[tris[f * 3 + 2]], isoR, isoU, midU, midV, scale, half);
+                    RasterizeTrianglePx(pixels, size, a, b, c, col);
+                }
+
+                string path = Path.Combine(outputDir, $"lod{li}_shells.png");
+                EncodePng(pixels, size, size, path);
+            }
         }
 
         /// <summary>Drive xatlasAddMesh + ComputeCharts + PackCharts on a
