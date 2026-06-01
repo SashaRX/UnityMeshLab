@@ -75,6 +75,17 @@ namespace SashaRX.UnityMeshLab
         bool stageRunRepack     = true;
         bool stageRunTransfer   = true;
 
+        // Weld stage sub-step: meshopt binary-equivalence dedup +
+        // GPU cache/overdraw/fetch reorder. This is NOT a UV weld — it
+        // removes vertices that are byte-identical in position + normal
+        // + uv0 (a GPU optimisation per meshoptimizer's
+        // generateVertexRemap, which the library docs explicitly warn
+        // is unsuitable for attribute-seam handling). The actual UV-aware
+        // seam weld is Uv0Analyzer.UvEdgeWeld. Kept ON by default to
+        // preserve prior behaviour, but now a separate, clearly-labelled
+        // toggle so the operator can run the pure UV weld alone.
+        bool stageWeldRunMeshopt = true;
+
         // Per-stage outcome from the most recent ExecFullPipeline run.
         // Drawn as a small status icon at the right of each stage row.
         enum StageStatus { Idle, Running, Success, Failed, Skipped }
@@ -571,7 +582,8 @@ namespace SashaRX.UnityMeshLab
                     }
                     bool hasTargetLods = ctx.MeshEntries.Any(e => e.include && e.lodIndex != ctx.SourceLodIndex);
                     if ((anyIssues || hasTargetLods) && !uv0Welded)
-                        ColorBtn(new Color(.9f,.7f,.2f), "Weld (false seams + source-guided)", 22, ExecWeldUv0);
+                        ColorBtn(new Color(.9f,.7f,.2f), "Weld (false seams + source-guided)", 22,
+                            () => ExecWeldUv0(runMeshoptFirst: stageWeldRunMeshopt));
                     else if (uv0Welded)
                         EditorGUILayout.LabelField("UV0 welded", EditorStyles.miniLabel);
                 }
@@ -600,11 +612,23 @@ namespace SashaRX.UnityMeshLab
                 "Diagnose UV0 seams and count shells. Cheap; recommended to leave on.",
                 ref stageRunAnalyzeUv0, hasSettings: false, drawSettings: null);
 
-            // 2. Weld UV0 — merges false-seam vertices using source-guided weld.
+            // 2. Weld UV0 — UV-aware false-seam weld (+ optional meshopt
+            //    GPU dedup as a clearly-separated sub-step).
             DrawStageRow(2, "Weld UV0",
-                "Merge false-seam vertices (UV0 verts that share position but were split). "
-                + "Required for clean shell extraction in Repack and Transfer.",
-                ref stageRunWeldUv0, hasSettings: false, drawSettings: null);
+                "Merge false-seam vertices (UV0 verts that share a 3D edge + matching UV "
+                + "but were split). Instance-pair guard blocks welds across mirror / N-fold "
+                + "shells. Required for clean shell extraction in Repack and Transfer.",
+                ref stageRunWeldUv0, hasSettings: true, drawSettings: () =>
+                {
+                    stageWeldRunMeshopt = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Pre-optimize (meshopt dedup)",
+                            "Run meshoptimizer's binary-equivalence dedup + GPU cache/"
+                            + "overdraw/fetch reorder before the UV weld. This is a GPU "
+                            + "optimisation, NOT a UV weld — it only removes byte-identical "
+                            + "vertices (always safe). Turn OFF to run the pure UV-aware "
+                            + "seam weld in isolation."),
+                        stageWeldRunMeshopt);
+                });
 
             // 3. Symmetry split — uses inverted skipSymmetrySplitStep field
             // so existing diagnostic flag continues to work elsewhere.
@@ -1316,7 +1340,15 @@ namespace SashaRX.UnityMeshLab
             requestRepaint?.Invoke();
         }
 
-        void ExecWeldUv0()
+        /// <summary>meshopt binary-equivalence dedup + GPU cache/overdraw/
+        /// fetch reorder. NOT a UV weld — only removes vertices that are
+        /// byte-identical in position + normal + uv0 (per meshoptimizer's
+        /// generateVertexRemap; the library docs explicitly warn it is
+        /// unsuitable for attribute-seam handling). Exact duplicates are
+        /// always safe to merge, so no chart-awareness is needed here.
+        /// The semantic UV-aware seam weld is <see cref="ExecWeldUv0"/>.
+        /// </summary>
+        void ExecMeshOptimize()
         {
             if (ctx.LodGroup == null) return;
             foreach (var e in ctx.MeshEntries)
@@ -1328,13 +1360,47 @@ namespace SashaRX.UnityMeshLab
                     e.originalMesh.name = e.fbxMesh.name + "_wc";
                 }
                 var optResult = MeshOptimizer.Optimize(e.originalMesh);
-                if (optResult.ok) { e.wasWelded = true; UvtLog.Info($"[Weld] '{e.originalMesh.name}' LOD{e.lodIndex}: meshopt optimized"); }
+                if (optResult.ok)
+                {
+                    e.wasWelded = true;
+                    UvtLog.Info($"[MeshOpt] '{e.originalMesh.name}' LOD{e.lodIndex}: "
+                        + $"meshopt dedup/reorder ({optResult.originalVertexCount} → "
+                        + $"{optResult.optimizedVertexCount} verts)");
+                }
             }
+            ctx.ClearAllCaches();
+            requestRepaint?.Invoke();
+        }
 
-            // UV edge weld for all meshes
+        /// <summary>UV-aware false-seam weld via Uv0Analyzer.UvEdgeWeld.
+        /// Merges vertices that share a 3D edge AND matching UV0 on both
+        /// endpoints (a real chart-interior false seam), with the
+        /// instance-pair guard that blocks welds across mirror / N-fold
+        /// instance shells. This is the actual "weld" — distinct from
+        /// the meshopt GPU dedup in <see cref="ExecMeshOptimize"/>.
+        ///
+        /// When <paramref name="runMeshoptFirst"/> is true (pipeline
+        /// default) the meshopt dedup runs first so exact duplicates are
+        /// gone before the UV weld looks for seams. Set false to run the
+        /// pure UV weld in isolation.</summary>
+        void ExecWeldUv0(bool runMeshoptFirst = true)
+        {
+            if (ctx.LodGroup == null) return;
+
+            if (runMeshoptFirst)
+                ExecMeshOptimize();
+
+            // UV-aware edge weld for all meshes.
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
+                // Materialise a working copy if we skipped meshopt (which
+                // is what normally clones the fbx mesh).
+                if (e.originalMesh == e.fbxMesh)
+                {
+                    e.originalMesh = UvCanvasView.MakeReadableCopy(e.fbxMesh);
+                    e.originalMesh.name = e.fbxMesh.name + "_wc";
+                }
                 var welded = Uv0Analyzer.UvEdgeWeld(e.originalMesh);
                 if (welded != null && welded != e.originalMesh)
                 {
@@ -2162,7 +2228,7 @@ namespace SashaRX.UnityMeshLab
             if (stageRunWeldUv0)
             {
                 stageOutcome[2] = StageStatus.Running;
-                try { ExecWeldUv0(); stageOutcome[2] = StageStatus.Success; }
+                try { ExecWeldUv0(runMeshoptFirst: stageWeldRunMeshopt); stageOutcome[2] = StageStatus.Success; }
                 catch { stageOutcome[2] = StageStatus.Failed; throw; }
             }
             else
