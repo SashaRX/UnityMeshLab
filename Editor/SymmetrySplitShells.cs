@@ -178,18 +178,26 @@ namespace SashaRX.UnityMeshLab
 
                 int N = DetectFoldCount(shell, uv0C, posC, tris, verts, out int rotAxis, out Vector3 center);
 
-                // N-fold gate: only cut if the shell's UV actually self-overlaps.
+                // N-fold gate: only cut if the shell's UV genuinely self-overlaps.
                 // DetectFoldCount looks at 3D rotational symmetry, so a cleanly
-                // unwrapped cylinder (side-by-side wrap, no UV overlap) trips it
-                // even though xatlas can already pack the chart as-is — cutting
-                // such a shell into N sawtooth sectors strictly degrades the
-                // unwrap. HasUv0Overlap is the same gate SplitWithParams already
-                // uses for the prescribed N-fold path (lines 322, 346); applying
-                // it here makes the two entry points symmetric.
-                if (N >= 3 && !HasUv0Overlap(shell, uv0C))
+                // unwrapped cylinder (side-by-side rectangle, no UV overlap) trips
+                // it even though xatlas can already pack the chart — cutting that
+                // into N sawtooth sectors strictly degrades the unwrap.
+                //
+                // We DON'T use HasUv0Overlap here (it gates SplitWithParams) — that
+                // helper is a spatial-hash density check on a 0.01 UV grid and
+                // false-positives on any dense chart. UvCoverageRatio is a pure
+                // ratio of summed triangle UV area to bbox area: ~1 for a clean
+                // rectangle wrap, ~N for N stacked instances. Threshold 1.5 cleanly
+                // separates the cases independent of mesh scale or triangle count.
+                if (N >= 3)
                 {
-                    UvtLog.Verbose($"[SymSplit] Shell {si}: N-fold N={N} detected but UV doesn't self-overlap; skipping cut (clean unwrap, xatlas can pack)");
-                    N = 1;
+                    float coverageRatio = UvCoverageRatio(shell, uv0, tris);
+                    if (coverageRatio < 1.5f)
+                    {
+                        UvtLog.Verbose($"[SymSplit] Shell {si}: N-fold N={N} detected but UV doesn't self-overlap (coverage={coverageRatio:F2}); skipping cut (clean unwrap, xatlas can pack)");
+                        N = 1;
+                    }
                 }
 
                 if (N >= 3)
@@ -1157,6 +1165,36 @@ namespace SashaRX.UnityMeshLab
         // ═══════════════════════════════════════════════════════════════
         //  Helpers
         // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// <summary>
+        /// Ratio of summed |triangle UV area| to UV bbox area for a shell.
+        /// A clean non-overlapping unwrap covers a fraction of its bbox so the
+        /// ratio is &lt;= 1.0 (rectangle wrap ≈ 1.0, irregular shapes lower).
+        /// N stacked / mirrored UV instances inside one shell push the ratio
+        /// toward N — this is the "xatlas can't pack as-is" signal that the
+        /// N-fold gate uses to decide whether the rotational cut is needed.
+        /// Returns 0 when the shell or its bbox is degenerate.
+        /// </summary>
+        static float UvCoverageRatio(UvShell shell, Vector2[] uv0, int[] tris)
+        {
+            if (shell == null || shell.faceIndices == null || shell.faceIndices.Count == 0)
+                return 0f;
+            float bboxW = Mathf.Max(shell.boundsMax.x - shell.boundsMin.x, 1e-9f);
+            float bboxH = Mathf.Max(shell.boundsMax.y - shell.boundsMin.y, 1e-9f);
+            float bboxArea = bboxW * bboxH;
+            if (bboxArea < 1e-12f) return 0f;
+
+            float sumAbsArea = 0f;
+            foreach (int f in shell.faceIndices)
+            {
+                int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
+                if (i0 >= uv0.Length || i1 >= uv0.Length || i2 >= uv0.Length) continue;
+                Vector2 a = uv0[i0], b = uv0[i1], c = uv0[i2];
+                sumAbsArea += 0.5f * Mathf.Abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y));
+            }
+            return sumAbsArea / bboxArea;
+        }
 
         /// <summary>
         /// Check if a shell has UV0 overlap (multiple faces sharing the same UV0 space
