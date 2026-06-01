@@ -178,6 +178,20 @@ namespace SashaRX.UnityMeshLab
 
                 int N = DetectFoldCount(shell, uv0C, posC, tris, verts, out int rotAxis, out Vector3 center);
 
+                // N-fold gate: only cut if the shell's UV actually self-overlaps.
+                // DetectFoldCount looks at 3D rotational symmetry, so a cleanly
+                // unwrapped cylinder (side-by-side wrap, no UV overlap) trips it
+                // even though xatlas can already pack the chart as-is — cutting
+                // such a shell into N sawtooth sectors strictly degrades the
+                // unwrap. HasUv0Overlap is the same gate SplitWithParams already
+                // uses for the prescribed N-fold path (lines 322, 346); applying
+                // it here makes the two entry points symmetric.
+                if (N >= 3 && !HasUv0Overlap(shell, uv0C))
+                {
+                    UvtLog.Verbose($"[SymSplit] Shell {si}: N-fold N={N} detected but UV doesn't self-overlap; skipping cut (clean unwrap, xatlas can pack)");
+                    N = 1;
+                }
+
                 if (N >= 3)
                 {
                     // N-fold rotational split
