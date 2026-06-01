@@ -3,6 +3,7 @@
 // flipped UV triangles, overlapping shells.
 // Fix: welds false seams by merging duplicate vertex indices.
 
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -779,6 +780,92 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            // ── 1b. Detect "instance-pair" UV shells (mirror / N-fold copies) ──
+            // Two distinct UV shells whose UV bboxes substantially overlap
+            // are instance / mirror copies the artist kept separate on
+            // purpose (cylinder halves with mirrored unwrap, N-fold
+            // sectors all stacked on one UV island, etc). Welding across
+            // them collapses the topology into a single shell which
+            // SymSplit then has to re-cut via N-fold rotational —
+            // producing many small sawtooth sectors instead of the
+            // original two clean halves. Detect such pairs up front and
+            // block welds whose endpoints land in different members of
+            // an instance pair.
+            //
+            // A vertex's shellId comes from UvShellExtractor on the
+            // input (uv0, tris). vertShell[i] = -1 if the vertex isn't
+            // referenced by any triangle in the extracted shells (e.g.,
+            // orphan vertex slot left over from earlier passes).
+            int[] vertShell = new int[vertCount];
+            bool[,] blockedShellPair = null;
+            int shellCountForLog = 0;
+            try
+            {
+                var uvShells = UvShellExtractor.Extract(uv0, tris);
+                if (uvShells != null && uvShells.Count >= 2)
+                {
+                    shellCountForLog = uvShells.Count;
+                    for (int i = 0; i < vertCount; i++) vertShell[i] = -1;
+                    for (int si = 0; si < uvShells.Count; si++)
+                    {
+                        var sh = uvShells[si];
+                        foreach (int vi in sh.vertexIndices)
+                            if (vi >= 0 && vi < vertCount) vertShell[vi] = si;
+                    }
+                    blockedShellPair = new bool[uvShells.Count, uvShells.Count];
+                    int blocked = 0;
+                    for (int a = 0; a < uvShells.Count; a++)
+                    {
+                        var ba = uvShells[a];
+                        float aw = Mathf.Max(ba.boundsMax.x - ba.boundsMin.x, 1e-9f);
+                        float ah = Mathf.Max(ba.boundsMax.y - ba.boundsMin.y, 1e-9f);
+                        float aArea = aw * ah;
+                        for (int b = a + 1; b < uvShells.Count; b++)
+                        {
+                            var bb = uvShells[b];
+                            // UV bbox intersection area.
+                            float ix0 = Mathf.Max(ba.boundsMin.x, bb.boundsMin.x);
+                            float iy0 = Mathf.Max(ba.boundsMin.y, bb.boundsMin.y);
+                            float ix1 = Mathf.Min(ba.boundsMax.x, bb.boundsMax.x);
+                            float iy1 = Mathf.Min(ba.boundsMax.y, bb.boundsMax.y);
+                            if (ix1 <= ix0 || iy1 <= iy0) continue;
+                            float interArea = (ix1 - ix0) * (iy1 - iy0);
+                            float bw = Mathf.Max(bb.boundsMax.x - bb.boundsMin.x, 1e-9f);
+                            float bh = Mathf.Max(bb.boundsMax.y - bb.boundsMin.y, 1e-9f);
+                            float bArea = bw * bh;
+                            float smallerArea = Mathf.Min(aArea, bArea);
+                            // overlap-fraction of the SMALLER shell. >= 0.5
+                            // means one shell sits inside the other's UV
+                            // footprint — instance / mirror pattern, not
+                            // a chart-edge seam. Tuning here trades
+                            // false-blocks (legitimate near-coincident
+                            // charts) vs false-passes (instance pairs
+                            // welded then re-fragmented by sym-split).
+                            const float kInstanceOverlapFrac = 0.5f;
+                            if (smallerArea > 0f && interArea / smallerArea >= kInstanceOverlapFrac)
+                            {
+                                blockedShellPair[a, b] = true;
+                                blockedShellPair[b, a] = true;
+                                blocked++;
+                            }
+                        }
+                    }
+                    if (blocked > 0)
+                    {
+                        UvtLog.Verbose($"[UV0Fix] UvEdgeWeld '{mesh.name}': "
+                            + $"{blocked} instance-pair shell pair(s) flagged "
+                            + $"(of {uvShells.Count} shells); cross-pair welds blocked");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Warn($"[UV0Fix] UvEdgeWeld '{mesh.name}': instance-pair "
+                    + $"detection failed ({ex.Message}); falling back to "
+                    + $"unconditional weld (legacy behaviour)");
+                blockedShellPair = null;
+            }
+
             // ── 2. Build edge adjacency ──
             // EdgeKey = sorted pair of position group IDs
             // Value = list of (vertA, vertB) where vertA is the vertex with lower group
@@ -826,6 +913,22 @@ namespace SashaRX.UnityMeshLab
 
                         if (dA <= uvThreshold && dB <= uvThreshold)
                         {
+                            // Instance-pair guard: if endpoints land in
+                            // two distinct shells flagged as instance
+                            // copies (UV bboxes substantially overlap),
+                            // skip — these were kept separate on purpose
+                            // and welding would force SymSplit to re-cut
+                            // them as N-fold sectors (cylinder halves →
+                            // 11 sawtooth slivers issue).
+                            if (blockedShellPair != null)
+                            {
+                                int sAa = vertShell[eA.vA], sBa = vertShell[eB.vA];
+                                int sAb = vertShell[eA.vB], sBb = vertShell[eB.vB];
+                                if (sAa >= 0 && sBa >= 0 && sAa != sBa
+                                    && blockedShellPair[sAa, sBa]) continue;
+                                if (sAb >= 0 && sBb >= 0 && sAb != sBb
+                                    && blockedShellPair[sAb, sBb]) continue;
+                            }
                             if (Find(parent, eA.vA) != Find(parent, eB.vA))
                             {
                                 Union(parent, rank, eA.vA, eB.vA);
