@@ -2202,6 +2202,65 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         bool ExecFullPipelineCore() => ExecFullPipelineCoreImpl(useAsync: false).GetAwaiter().GetResult();
 
+        /// <summary>
+        /// Rewind every entry's working mesh to a pristine state before a
+        /// full-pipeline run so the run is idempotent. Working copies are
+        /// materialised lazily by the individual stages (each does
+        /// <c>if (e.originalMesh == e.fbxMesh) … MakeReadableCopy</c>), so it
+        /// is enough to point <see cref="MeshEntry.originalMesh"/> back at
+        /// <see cref="MeshEntry.fbxMesh"/>, destroy the stale clone, drop the
+        /// derived (repacked / transferred) meshes, and clear the per-step
+        /// flags. Mirrors the per-step reset done between auto-tune configs,
+        /// but covers the whole entry set including non-included entries so
+        /// nothing from a prior run leaks into this one.
+        /// </summary>
+        void ResetWorkingMeshesToFbx()
+        {
+            if (ctx?.MeshEntries == null) return;
+            foreach (var e in ctx.MeshEntries)
+            {
+                if (e == null) continue;
+
+                // Drop derived meshes produced by an earlier run.
+                if (e.transferredMesh != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(e.transferredMesh);
+                    e.transferredMesh = null;
+                }
+                if (e.repackedMesh != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(e.repackedMesh);
+                    e.repackedMesh = null;
+                }
+                e.repackedAtlasWidth = 0;
+                e.repackedAtlasHeight = 0;
+                e.transferState = null;
+                e.shellTransferResult = null;
+                e.validationReport = null;
+
+                // Rewind the working mesh to the imported fbx asset. The stale
+                // working clone (weld / sym-split product) is destroyed — it is
+                // ours, never the asset (fbxMesh is owned by the AssetDatabase).
+                if (e.fbxMesh != null)
+                {
+                    if (e.originalMesh != null && e.originalMesh != e.fbxMesh)
+                        UnityEngine.Object.DestroyImmediate(e.originalMesh);
+                    e.originalMesh = e.fbxMesh;
+                }
+
+                e.wasWelded = false;
+                e.wasEdgeWelded = false;
+                e.wasSymmetrySplit = false;
+            }
+
+            ctx.ClearAllCaches();
+            accumulatedOverlapHints.Clear();
+            shellTransformCache.Clear();
+            ctx.HasRepack = false;
+            ctx.HasTransfer = false;
+            uv0Welded = false;
+        }
+
         async Task<bool> ExecFullPipelineCoreImpl(bool useAsync)
         {
             string version = UnityEditor.PackageManager.PackageInfo
@@ -2210,6 +2269,15 @@ namespace SashaRX.UnityMeshLab
 
             // Reset per-stage outcome state — fresh run, fresh icons.
             for (int i = 0; i < stageOutcome.Length; i++) stageOutcome[i] = StageStatus.Idle;
+
+            // Idempotency: rewind every working mesh to the pristine fbx asset
+            // before stage 1. Without this each re-run welds/sym-splits on top
+            // of the PREVIOUS run's already-mutated working mesh — meshopt
+            // re-dedups, weld re-merges, and sym-split re-cuts an already-cut
+            // shell, so identical settings produce a different (degrading)
+            // result every time. Resetting here makes a full-pipeline run a
+            // pure function of (fbxMesh, settings).
+            ResetWorkingMeshesToFbx();
 
             // 1. Analyze (skipped via Setup stage toggle)
             if (stageRunAnalyzeUv0)
