@@ -179,7 +179,7 @@ namespace SashaRX.UnityMeshLab
             int vertCount = source.vertexCount;
 
             if (uv0 == null || uv0.Length == 0)
-                return Object.Instantiate(source);
+                return UnityEngine.Object.Instantiate(source);
 
             bool hasNormals = normals != null && normals.Length == vertCount;
             var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals);
@@ -187,7 +187,7 @@ namespace SashaRX.UnityMeshLab
             if (weldMap.Count == 0)
             {
                 UvtLog.Verbose($"[UV0Fix] '{source.name}': no false seams found");
-                return Object.Instantiate(source);
+                return UnityEngine.Object.Instantiate(source);
             }
 
             // Remap index buffer
@@ -445,7 +445,7 @@ namespace SashaRX.UnityMeshLab
             bool tHasNormals = tNormals != null && tNormals.Length == tVertCount;
 
             if (tUv0 == null || tUv0.Length == 0)
-                return Object.Instantiate(target);
+                return UnityEngine.Object.Instantiate(target);
 
             // ── Build source: vertex → shell ID lookup ──
             var sUv0 = source.uv;
@@ -456,7 +456,7 @@ namespace SashaRX.UnityMeshLab
             if (sUv0 == null || sUv0.Length == 0)
             {
                 UvtLog.Warn("[UV0Fix] Source mesh has no UV0, cannot guide weld");
-                return Object.Instantiate(target);
+                return UnityEngine.Object.Instantiate(target);
             }
 
             var sourceShells = UvShellExtractor.Extract(sUv0, sTris);
