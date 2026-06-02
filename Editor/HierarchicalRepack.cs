@@ -458,6 +458,18 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     $"[HierRepack] stage C shells/groups failed on '{lg.name}': {ex.Message}");
             }
+            // Stage D: cascade grouping deep→fine. Walks each (li_proxy,
+            // li_proxy-1) transition, samples the deeper LOD's surface
+            // tagged with the deeper LOD's shell id, projects samples onto
+            // the finer LOD via closest-face, and votes per finer shell
+            // whether to join the parent's group (matchedFrac >= 0.5) or
+            // open a new group. Membership only — UV is Stage E's job.
+            try { CascadeGroupShells(lg, opts, meshDiag, result); }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] stage D cascade grouping failed on '{lg.name}': {ex.Message}");
+            }
             return result;
         }
 
@@ -1015,6 +1027,9 @@ namespace SashaRX.UnityMeshLab
             WriteProxyHitsPngs(outputDir, lg, result);
             // Stage C: per-LOD 3D shell partition iso views.
             WritePerLodShellsPngs(outputDir, lg, result);
+            // Stage D: per-LOD lighting-domain groups (same colour across
+            // LODs when cascade matched; new colours for unmatched detail).
+            WritePerLodGroupsPngs(outputDir, lg, result);
             return result;
         }
 
@@ -1643,6 +1658,242 @@ namespace SashaRX.UnityMeshLab
                 + $"(canonical=LOD{deepest}); finer LOD shells await Stage D matching");
         }
 
+        // ─── Stage D: cascade grouping deep → fine ─────────────────────
+
+        /// <summary>
+        /// Stage D — cascade grouping deepest → LOD0. Walks each LOD
+        /// transition (li_proxy, li_proxy-1) deep-side-first, Poisson-
+        /// samples the deeper LOD's surface tagged with the deeper LOD's
+        /// SHELL id, projects the samples onto the finer LOD's geometry
+        /// (closest-point-on-face), and uses the per-shell vote tally to
+        /// decide whether each finer shell joins the parent's lighting
+        /// domain group or starts its own.
+        ///
+        /// Membership only — NO UV is written here. Stage E will pick
+        /// each domain's canonical chart and pack the final atlas; this
+        /// stage only fills <c>r.perLodShellToGroup</c> and grows
+        /// <c>r.groups</c>.
+        ///
+        /// Match rule: per finer shell, look up
+        /// <c>perLodFaceToShell[li_proxy-1][f]</c> for every face that
+        /// received hits, weighted by hit count → modal proxy shell +
+        /// its hit fraction. If the modal fraction ≥ <c>kMatchFrac</c>
+        /// AND there are at least <c>kMinHits</c> total hits, join the
+        /// parent's group; otherwise create a new group whose canonical
+        /// member is the finer shell itself (cluster of detail geometry
+        /// missing from the deeper LOD — windows, screws, trim).
+        /// </summary>
+        static void CascadeGroupShells(LODGroup lg, Options opts,
+            float meshDiag, Result r)
+        {
+            if (lg == null || r == null) return;
+            if (r.perLodShells == null || r.perLodFaceToShell == null
+                || r.perLodShellToGroup == null || r.groups == null) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+
+            // Same deepest-LOD picker as Stage C — must agree so the
+            // seed groups Stage C wrote line up with our cascade start.
+            int deepest = lodCount - 1;
+            while (deepest > 0)
+            {
+                var rs = lods[deepest].renderers;
+                if (rs != null && rs.Length > 0 && rs[0] != null
+                    && rs[0].GetComponent<MeshFilter>()?.sharedMesh != null) break;
+                deepest--;
+            }
+            if (deepest <= 0) return;
+
+            // Stage E will read r.groups as an array — but cascade may add
+            // unmatched groups for finer LODs as we descend, so work on a
+            // growing list and snapshot back to array at the end.
+            var groups = new List<LightingDomainGroup>(r.groups);
+
+            // Tuning knobs. Match plan v2 §"Дыра 6 matched threshold".
+            const float kMatchFrac = 0.5f;
+            const int   kMinHits   = 4;
+            float distAbsThreshold = opts.overlayDistNorm * meshDiag;
+
+            for (int liProxy = deepest; liProxy >= 1; liProxy--)
+            {
+                int liFine = liProxy - 1;
+
+                var proxyShells     = r.perLodShells[liProxy];
+                var fineShells      = r.perLodShells[liFine];
+                var proxyFaceToShell = r.perLodFaceToShell[liProxy];
+                var fineFaceToShell  = r.perLodFaceToShell[liFine];
+                if (proxyShells == null || fineShells == null
+                    || proxyFaceToShell == null || fineFaceToShell == null) continue;
+
+                var rsProxy = lods[liProxy].renderers;
+                var rsFine  = lods[liFine].renderers;
+                if (rsProxy == null || rsProxy.Length == 0 || rsProxy[0] == null) continue;
+                if (rsFine  == null || rsFine .Length == 0 || rsFine [0] == null) continue;
+                var mfProxy = rsProxy[0].GetComponent<MeshFilter>();
+                var mfFine  = rsFine [0].GetComponent<MeshFilter>();
+                var proxyMesh = mfProxy != null ? mfProxy.sharedMesh : null;
+                var fineMesh  = mfFine  != null ? mfFine .sharedMesh : null;
+                if (proxyMesh == null || fineMesh == null) continue;
+
+                // 1) Sample the deeper LOD's surface, tagged with deeper-LOD
+                //    SHELL id (not UV-derived). Uses the same density knob
+                //    as the existing GenerateProxySamples — that one drives
+                //    UV-aware projection on the deepest LOD only, this one
+                //    drives shell-membership voting between adjacent LODs.
+                var proxyFaces = BuildFaceData(proxyMesh, rsProxy[0].transform,
+                    meshDiag, out Vector3[] proxyWorld, out int[] proxyRawTris,
+                    out _, out _);
+                int proxyFaceCount = proxyFaces.Length;
+                if (proxyFaceCount == 0) continue;
+
+                float diagSq = Mathf.Max(meshDiag * meshDiag, 1e-6f);
+                float densityPerSqMeshDiag = Mathf.Max(opts.proxySampleDensity, 1);
+                var samples = new List<(Vector3 pos, int shellId)>(proxyFaceCount * 6);
+                uint rng = 0x9E3779B9u;
+
+                for (int f = 0; f < proxyFaceCount; f++)
+                {
+                    if (proxyFaces[f].area <= 0f) continue;
+                    int shellId = (f < proxyFaceToShell.Length) ? proxyFaceToShell[f] : -1;
+                    if (shellId < 0) continue;
+
+                    Vector3 A = proxyWorld[proxyRawTris[f * 3]];
+                    Vector3 B = proxyWorld[proxyRawTris[f * 3 + 1]];
+                    Vector3 C = proxyWorld[proxyRawTris[f * 3 + 2]];
+
+                    int n = Mathf.Max(3, Mathf.CeilToInt(
+                        densityPerSqMeshDiag * proxyFaces[f].area / diagSq));
+                    for (int s = 0; s < n; s++)
+                    {
+                        rng = unchecked(rng * 1664525u + 1013904223u);
+                        float u = (rng & 0xFFFFFFu) / 16777216f;
+                        rng = unchecked(rng * 1664525u + 1013904223u);
+                        float v = (rng & 0xFFFFFFu) / 16777216f;
+                        if (u + v > 1f) { u = 1f - u; v = 1f - v; }
+                        float w = 1f - u - v;
+                        samples.Add((A * w + B * u + C * v, shellId));
+                    }
+                }
+                if (samples.Count == 0) continue;
+
+                // 2) Project samples onto the finer LOD's geometry. For each
+                //    fine face, tally per-deeper-shell hit count so we can
+                //    later aggregate per fine SHELL.
+                var fineFaces = BuildFaceData(fineMesh, rsFine[0].transform,
+                    meshDiag, out Vector3[] fineWorld, out int[] fineRawTris,
+                    out _, out _);
+                int fineFaceCount = fineFaces.Length;
+                if (fineFaceCount == 0) continue;
+                BuildDeepAabbs(fineWorld, fineRawTris,
+                    out var fineMin, out var fineMax);
+
+                // perFineFace[shellId → hits]. List of dicts keeps total
+                // memory proportional to "faces that got any hits".
+                var perFineFace = new Dictionary<int, int>[fineFaceCount];
+
+                int totalHits = 0, totalMissed = 0;
+                foreach (var sm in samples)
+                {
+                    int closest = ProjectVertexToDeepMesh(sm.pos,
+                        fineFaces, fineWorld, fineRawTris,
+                        fineMin, fineMax, out float dist);
+                    if (closest < 0 || dist > distAbsThreshold)
+                    {
+                        totalMissed++;
+                        continue;
+                    }
+                    var bucket = perFineFace[closest];
+                    if (bucket == null)
+                    {
+                        bucket = new Dictionary<int, int>(2);
+                        perFineFace[closest] = bucket;
+                    }
+                    bucket.TryGetValue(sm.shellId, out int cnt);
+                    bucket[sm.shellId] = cnt + 1;
+                    totalHits++;
+                }
+
+                // 3) Aggregate per finer SHELL. perFineShellTally[fineShellId]
+                //    [proxyShellId] = total hits across the fine shell's faces.
+                var perFineShellTally = new Dictionary<int, int>[fineShells.Length];
+                for (int s = 0; s < fineShells.Length; s++)
+                    perFineShellTally[s] = new Dictionary<int, int>(2);
+                for (int f = 0; f < fineFaceCount; f++)
+                {
+                    var bucket = perFineFace[f];
+                    if (bucket == null) continue;
+                    int fineShell = (f < fineFaceToShell.Length) ? fineFaceToShell[f] : -1;
+                    if (fineShell < 0 || fineShell >= fineShells.Length) continue;
+                    var dst = perFineShellTally[fineShell];
+                    foreach (var kv in bucket)
+                    {
+                        dst.TryGetValue(kv.Key, out int c);
+                        dst[kv.Key] = c + kv.Value;
+                    }
+                }
+
+                // 4) For each finer shell, decide: join parent group or new.
+                int joined = 0, fresh = 0, alreadyAssigned = 0;
+                var proxyShellToGroup = r.perLodShellToGroup[liProxy];
+                var fineShellToGroup  = r.perLodShellToGroup[liFine];
+
+                for (int s = 0; s < fineShells.Length; s++)
+                {
+                    if (fineShellToGroup[s] >= 0) { alreadyAssigned++; continue; }
+
+                    var tally = perFineShellTally[s];
+                    int shellTotal = 0, bestProxy = -1, bestCount = 0;
+                    foreach (var kv in tally)
+                    {
+                        shellTotal += kv.Value;
+                        if (kv.Value > bestCount) { bestCount = kv.Value; bestProxy = kv.Key; }
+                    }
+                    float matchedFrac = shellTotal > 0 ? (float)bestCount / shellTotal : 0f;
+
+                    bool joinParent = bestProxy >= 0
+                                   && bestProxy < proxyShellToGroup.Length
+                                   && shellTotal >= kMinHits
+                                   && matchedFrac >= kMatchFrac
+                                   && proxyShellToGroup[bestProxy] >= 0;
+
+                    if (joinParent)
+                    {
+                        int gid = proxyShellToGroup[bestProxy];
+                        fineShellToGroup[s] = gid;
+                        var grp = groups[gid];
+                        if (grp.members == null) grp.members = new List<(int, int)>();
+                        grp.members.Add((liFine, s));
+                        groups[gid] = grp;
+                        joined++;
+                    }
+                    else
+                    {
+                        int gid = groups.Count;
+                        groups.Add(new LightingDomainGroup
+                        {
+                            groupId          = gid,
+                            canonicalLod     = liFine,
+                            canonicalShellId = s,
+                            members          = new List<(int, int)> { (liFine, s) },
+                        });
+                        fineShellToGroup[s] = gid;
+                        fresh++;
+                    }
+                }
+
+                UvtLog.Info(UvtLog.Category.Benchmark,
+                    $"[HierRepack] Stage D: '{lg.name}' LOD{liProxy}→LOD{liFine} "
+                    + $"samples={samples.Count} hits={totalHits} missed={totalMissed} "
+                    + $"| joined={joined} new={fresh} reused={alreadyAssigned} "
+                    + $"(threshold matchedFrac>={kMatchFrac:F2}, minHits>={kMinHits})");
+            }
+
+            r.groups = groups.ToArray();
+            UvtLog.Info(UvtLog.Category.Benchmark,
+                $"[HierRepack] Stage D: '{lg.name}' final group count = {r.groups.Length} "
+                + $"(seeded={r.perLodShells[deepest]?.Length ?? 0} from deepest LOD{deepest})");
+        }
+
         // ─── PR-3 Stage 6: bake the new uv2 into cloned LOD meshes ────
 
         /// <summary>Pick two orthonormal vectors in the plane normal to <paramref name="n"/>.
@@ -2007,6 +2258,92 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 string path = Path.Combine(outputDir, $"lod{li}_shells.png");
+                EncodePng(pixels, size, size, path);
+            }
+        }
+
+        /// <summary>Stage D diagnostic: same iso-view as lod{N}_shells.png
+        /// but each face is coloured by its lighting-domain GROUP id
+        /// instead of its per-LOD shell id. Because <see cref="LabelColor"/>
+        /// is a pure hash of the integer id, a group that spans several
+        /// LODs gets the SAME colour on every LOD where it appears — that's
+        /// the visual cue that confirms the cascade converged. Unmatched
+        /// finer shells get fresh colours that don't appear on the deeper
+        /// PNGs. Written to lod{N}_groups.png.</summary>
+        static void WritePerLodGroupsPngs(string outputDir, LODGroup lg, Result r)
+        {
+            if (r.perLodShells == null || r.perLodFaceToShell == null
+                || r.perLodShellToGroup == null) return;
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            for (int li = 0; li < lodCount; li++)
+            {
+                if (li >= r.perLodShells.Length) break;
+                var faceToShell  = r.perLodFaceToShell[li];
+                var shellToGroup = r.perLodShellToGroup[li];
+                if (faceToShell == null || shellToGroup == null) continue;
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) continue;
+
+                var localVerts = mesh.vertices;
+                var tris = mesh.triangles;
+                int faceCount = tris.Length / 3;
+                if (faceCount == 0 || faceCount != faceToShell.Length) continue;
+                var xform = rs[0].transform;
+
+                var worldVerts = new Vector3[localVerts.Length];
+                Vector3 mn = xform.TransformPoint(localVerts[0]);
+                Vector3 mx = mn;
+                worldVerts[0] = mn;
+                for (int i = 1; i < localVerts.Length; i++)
+                {
+                    var p = xform.TransformPoint(localVerts[i]);
+                    worldVerts[i] = p;
+                    mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p);
+                }
+
+                Vector3 isoR = new Vector3( 0.7071f, 0f, -0.7071f);
+                Vector3 isoU = new Vector3(-0.4082f, 0.8165f, -0.4082f);
+                float umin = float.MaxValue, umax = float.MinValue;
+                float vmin = float.MaxValue, vmax = float.MinValue;
+                for (int cx = 0; cx < 2; cx++)
+                for (int cy = 0; cy < 2; cy++)
+                for (int cz = 0; cz < 2; cz++)
+                {
+                    Vector3 corner = new Vector3(
+                        cx == 0 ? mn.x : mx.x,
+                        cy == 0 ? mn.y : mx.y,
+                        cz == 0 ? mn.z : mx.z);
+                    float cu = Vector3.Dot(corner, isoR);
+                    float cv = Vector3.Dot(corner, isoU);
+                    if (cu < umin) umin = cu; if (cu > umax) umax = cu;
+                    if (cv < vmin) vmin = cv; if (cv > vmax) vmax = cv;
+                }
+                int size = 1024;
+                float du = umax - umin, dv = vmax - vmin;
+                float scale = (size * 0.92f) / Mathf.Max(Mathf.Max(du, dv), 1e-6f);
+                float midU = (umin + umax) * 0.5f, midV = (vmin + vmax) * 0.5f;
+                float half = size * 0.5f;
+
+                var pixels = new Color32[size * size];
+                var bg = new Color32(244, 244, 248, 255);
+                for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
+
+                for (int f = 0; f < faceCount; f++)
+                {
+                    int sh = faceToShell[f];
+                    int gid = (sh >= 0 && sh < shellToGroup.Length) ? shellToGroup[sh] : -1;
+                    Color32 col = LabelColor(gid);
+                    Vector2 a = IsoProject(worldVerts[tris[f * 3]],     isoR, isoU, midU, midV, scale, half);
+                    Vector2 b = IsoProject(worldVerts[tris[f * 3 + 1]], isoR, isoU, midU, midV, scale, half);
+                    Vector2 c = IsoProject(worldVerts[tris[f * 3 + 2]], isoR, isoU, midU, midV, scale, half);
+                    RasterizeTrianglePx(pixels, size, a, b, c, col);
+                }
+
+                string path = Path.Combine(outputDir, $"lod{li}_groups.png");
                 EncodePng(pixels, size, size, path);
             }
         }
