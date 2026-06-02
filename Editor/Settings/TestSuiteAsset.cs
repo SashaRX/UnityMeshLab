@@ -149,6 +149,24 @@ namespace SashaRX.UnityMeshLab
 
             [Tooltip("Hierarchical Repack dry-run — per-vertex projection classifier, atlas layout. Output: hier_repack.csv (+ atlas PNG when available).")]
             public bool hierarchicalRepack = true;
+
+            [Tooltip("Stage D cascade-threshold sweep — rebuilds each case across the " +
+                     "cascadeMatchFrac × cascadeMinHits grid below and emits per-cell group " +
+                     "iso-view PNGs (lod{N}_groups_mf{F}_mh{H}.png) + stage_d_sweep.csv. " +
+                     "Comparison-only (no auto-winner): pick the knee by eyeballing the PNG " +
+                     "grid + join/new ratios. Off by default — opt in; each cell is a full " +
+                     "HierarchicalRepack build so the grid multiplies dry-run time.")]
+            public bool stageDSweep = false;
+
+            [Tooltip("Stage D sweep: cascade matchedFrac values. A finer shell joins its parent " +
+                     "group when the modal deeper-shell hit fraction is >= this. Lower = more " +
+                     "merging; higher = more fresh groups. Each entry × cascadeMinHitsVariants " +
+                     "is one cell.")]
+            public float[] cascadeMatchFracVariants = { 0.35f, 0.5f, 0.65f };
+
+            [Tooltip("Stage D sweep: minimum total sample hits before a finer shell's modal vote " +
+                     "is trusted to join a parent group. Below = fresh group regardless of fraction.")]
+            public int[] cascadeMinHitsVariants = { 2, 4, 8 };
         }
 
         [Tooltip("Techniques to run per case during 'Run Benchmark'. All artefacts land under one bench_<stamp>/<case>/ directory so a single button gives a complete pipeline snapshot.")]

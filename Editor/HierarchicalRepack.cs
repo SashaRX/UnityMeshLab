@@ -97,6 +97,23 @@ namespace SashaRX.UnityMeshLab
             /// the cost of Stage 3 projection runtime.</summary>
             public int proxySampleDensity;
 
+            /// <summary>Stage D cascade-match threshold: a finer-LOD shell
+            /// joins its deeper-LOD parent's lighting-domain group when the
+            /// MODAL deeper shell's hit fraction (bestProxyHits / totalShellHits)
+            /// is ≥ this. Below → the shell opens a fresh group (it's detail
+            /// the deeper LOD lacks). Lower = more aggressive merging (risks
+            /// lighting bleed across domains); higher = more fresh groups
+            /// (risks atlas waste / over-segmentation). Sweep this with
+            /// <see cref="cascadeMinHits"/> to find the knee per asset class.</summary>
+            public float cascadeMatchFrac;
+
+            /// <summary>Stage D cascade-match gate: a finer-LOD shell needs at
+            /// least this many total projected sample hits before its modal
+            /// vote is trusted to join a parent group. Below → fresh group
+            /// regardless of fraction (too few samples = noisy vote, usually
+            /// a sliver shell). Pairs with <see cref="cascadeMatchFrac"/>.</summary>
+            public int cascadeMinHits;
+
             public static Options Default => new Options
             {
                 shellNormalThresholdDeg = 30f,
@@ -108,6 +125,8 @@ namespace SashaRX.UnityMeshLab
                 skipMaxFaceCount        = 4,
                 proxyMode               = ProxyMode.Clean,
                 proxySampleDensity      = 4000,
+                cascadeMatchFrac        = 0.5f,
+                cascadeMinHits          = 4,
             };
         }
 
@@ -253,8 +272,33 @@ namespace SashaRX.UnityMeshLab
             /// -1 means the shell has no group yet (unmatched, Stage
             /// D will assign a fresh group).</summary>
             public int[][]     perLodShellToGroup;
+            /// <summary>Stage D bookkeeping: one entry per LOD transition the
+            /// cascade walked (deepest→0), in walk order. Drives the
+            /// stage_d_sweep.csv diagnostic so threshold sweeps can be scored
+            /// by join/new ratios without re-deriving from perLodShellToGroup.
+            /// Null until Stage D runs.</summary>
+            public List<CascadeStat> cascadeStats;
 
             public string error;
+        }
+
+        /// <summary>Stage D per-transition counters for one (proxy, fine)
+        /// LOD pair. Logged live and persisted on <see cref="Result.cascadeStats"/>
+        /// for the threshold sweep CSV.</summary>
+        public struct CascadeStat
+        {
+            public int liProxy;
+            public int liFine;
+            public int samples;
+            public int hits;
+            public int missed;
+            /// <summary>Finer shells that inherited a parent group.</summary>
+            public int joined;
+            /// <summary>Finer shells that opened a fresh group (no match).</summary>
+            public int fresh;
+            /// <summary>Finer shells already assigned by an earlier
+            /// (deeper) transition — skipped this pass.</summary>
+            public int reused;
         }
 
         /// <summary>Stage C / D / E: a single lighting domain — a set
@@ -1033,6 +1077,105 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
+        /// <summary>Stage D threshold sweep — for each
+        /// (matchFrac × minHits) grid cell, rebuild the LODGroup with those
+        /// cascade thresholds and emit the group iso-view PNGs suffixed by
+        /// the cell (<c>lod{N}_groups_mf{F}_mh{H}.png</c>) plus one
+        /// <c>stage_d_sweep.csv</c> row per LOD transition per cell. No
+        /// auto-winner — Stage E (which would expose a lightmap-defect
+        /// scalar) isn't built yet, so the operator compares the PNG grid
+        /// and the join/new ratios by eye. Each cell is a full
+        /// <see cref="Build"/> on a fresh <see cref="Result"/>, so there is
+        /// zero cross-cell contamination; the cost is that the
+        /// cascade-independent stages (xatlas unwraps, sampling) re-run per
+        /// cell — acceptable for an opt-in diagnostic on a small grid.
+        /// Returns the last cell's Result (or the error Result if the very
+        /// first cell failed).</summary>
+        public static Result BuildStageDSweep(LODGroup lg, Options baseOpts,
+            float[] matchFracGrid, int[] minHitsGrid, string outputDir)
+        {
+            if (matchFracGrid == null || matchFracGrid.Length == 0)
+                matchFracGrid = new[] { baseOpts.cascadeMatchFrac };
+            if (minHitsGrid == null || minHitsGrid.Length == 0)
+                minHitsGrid = new[] { baseOpts.cascadeMinHits };
+
+            var csv = new System.Text.StringBuilder();
+            csv.AppendLine("matchFrac,minHits,groupCount,seedGroups,"
+                + "liProxy,liFine,samples,hits,missed,joined,fresh,reused");
+
+            Result last = null;
+            foreach (float mf in matchFracGrid)
+            foreach (int mh in minHitsGrid)
+            {
+                var opts = baseOpts;
+                opts.cascadeMatchFrac = mf;
+                opts.cascadeMinHits   = mh;
+
+                Result r;
+                try { r = Build(lg, opts); }
+                catch (Exception ex)
+                {
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        $"[HierRepack] Stage D sweep cell mf={mf:F2} mh={mh} "
+                        + $"on '{lg.name}' threw: {ex.Message}");
+                    continue;
+                }
+                last = r;
+                if (!string.IsNullOrEmpty(r.error))
+                {
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        $"[HierRepack] Stage D sweep cell mf={mf:F2} mh={mh} "
+                        + $"on '{lg.name}': {r.error}");
+                    continue;
+                }
+
+                // Stable, filesystem-safe cell suffix. Period → 'p' so the
+                // extension split stays unambiguous (lod0_groups_mf0p50_mh4.png).
+                string suffix = $"_mf{mf.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture).Replace('.', 'p')}_mh{mh}";
+                WritePerLodGroupsPngs(outputDir, lg, r, suffix);
+
+                int groupCount = r.groups?.Length ?? 0;
+                int seedGroups = (r.cascadeStats != null && r.cascadeStats.Count > 0)
+                    ? groupCount - SumFresh(r.cascadeStats)  // groups present before any fresh adds
+                    : groupCount;
+                if (r.cascadeStats != null)
+                    foreach (var st in r.cascadeStats)
+                        csv.AppendLine(
+                            $"{mf.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)},"
+                            + $"{mh},{groupCount},{seedGroups},"
+                            + $"{st.liProxy},{st.liFine},{st.samples},{st.hits},"
+                            + $"{st.missed},{st.joined},{st.fresh},{st.reused}");
+                else
+                    csv.AppendLine(
+                        $"{mf.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)},"
+                        + $"{mh},{groupCount},{seedGroups},,,,,,,,");
+            }
+
+            try
+            {
+                File.WriteAllText(Path.Combine(outputDir, "stage_d_sweep.csv"),
+                    csv.ToString());
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] Stage D sweep CSV write failed on '{lg.name}': {ex.Message}");
+            }
+
+            UvtLog.Info(UvtLog.Category.Benchmark,
+                $"[HierRepack] Stage D sweep '{lg.name}': "
+                + $"{matchFracGrid.Length}×{minHitsGrid.Length} cells → stage_d_sweep.csv "
+                + $"+ lod*_groups_mf*_mh*.png");
+            return last;
+        }
+
+        static int SumFresh(List<CascadeStat> stats)
+        {
+            int n = 0;
+            foreach (var s in stats) n += s.fresh;
+            return n;
+        }
+
         /// <summary>PR-3 Stage 1 visualization: render up to three proxy UV2
         /// candidates as flat UV layout PNGs for side-by-side comparison.
         ///   proxy_uv2_clean.png — UV0 → sym-split → xatlas pack (ARAP on)
@@ -1708,10 +1851,14 @@ namespace SashaRX.UnityMeshLab
             // unmatched groups for finer LODs as we descend, so work on a
             // growing list and snapshot back to array at the end.
             var groups = new List<LightingDomainGroup>(r.groups);
+            r.cascadeStats = new List<CascadeStat>();
 
-            // Tuning knobs. Match plan v2 §"Дыра 6 matched threshold".
-            const float kMatchFrac = 0.5f;
-            const int   kMinHits   = 4;
+            // Tuning knobs — now in Options so the Stage-D threshold sweep
+            // can vary them per cell. Defaults (0.5 / 4) match plan v2
+            // §"Дыра 6 matched threshold". A non-positive minHits would let
+            // zero-hit shells join on a 0/0 vote; clamp to 1.
+            float kMatchFrac = Mathf.Clamp01(opts.cascadeMatchFrac);
+            int   kMinHits   = Mathf.Max(1, opts.cascadeMinHits);
             float distAbsThreshold = opts.overlayDistNorm * meshDiag;
 
             for (int liProxy = deepest; liProxy >= 1; liProxy--)
@@ -1880,6 +2027,18 @@ namespace SashaRX.UnityMeshLab
                         fresh++;
                     }
                 }
+
+                r.cascadeStats.Add(new CascadeStat
+                {
+                    liProxy = liProxy,
+                    liFine  = liFine,
+                    samples = samples.Count,
+                    hits    = totalHits,
+                    missed  = totalMissed,
+                    joined  = joined,
+                    fresh   = fresh,
+                    reused  = alreadyAssigned,
+                });
 
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     $"[HierRepack] Stage D: '{lg.name}' LOD{liProxy}→LOD{liFine} "
@@ -2270,7 +2429,8 @@ namespace SashaRX.UnityMeshLab
         /// the visual cue that confirms the cascade converged. Unmatched
         /// finer shells get fresh colours that don't appear on the deeper
         /// PNGs. Written to lod{N}_groups.png.</summary>
-        static void WritePerLodGroupsPngs(string outputDir, LODGroup lg, Result r)
+        static void WritePerLodGroupsPngs(string outputDir, LODGroup lg, Result r,
+            string fileSuffix = "")
         {
             if (r.perLodShells == null || r.perLodFaceToShell == null
                 || r.perLodShellToGroup == null) return;
@@ -2343,7 +2503,7 @@ namespace SashaRX.UnityMeshLab
                     RasterizeTrianglePx(pixels, size, a, b, c, col);
                 }
 
-                string path = Path.Combine(outputDir, $"lod{li}_groups.png");
+                string path = Path.Combine(outputDir, $"lod{li}_groups{fileSuffix}.png");
                 EncodePng(pixels, size, size, path);
             }
         }

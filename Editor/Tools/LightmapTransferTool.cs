@@ -530,7 +530,7 @@ namespace SashaRX.UnityMeshLab
                             "Iterate every TestSuiteAsset.cases[]; for each model, " +
                             "spawn its FBX, then run every technique enabled in " +
                             "suite.techniques (legacyXatlasSweep, hierarchicalProbe, " +
-                            "hierarchicalRepack). All artefacts land under one directory " +
+                            "hierarchicalRepack, stageDSweep). All artefacts land under one directory " +
                             "BenchmarkReports/bench_<ts>/<idx>_<label>/."),
                         GUILayout.Height(22)))
                     {
@@ -1866,6 +1866,8 @@ namespace SashaRX.UnityMeshLab
         ///   • hierarchicalProbe  → probe v3 per-face stay/promote diagnostic.
         ///   • hierarchicalRepack → per-vertex projection classifier + atlas
         ///                          layout (PR-2.7).
+        ///   • stageDSweep        → cascade-threshold grid (matchFrac × minHits);
+        ///                          per-cell group PNGs + stage_d_sweep.csv.
         /// All artefacts for a single case land under one directory
         /// <c>BenchmarkReports/bench_&lt;ts&gt;/&lt;idx&gt;_&lt;label&gt;/</c>
         /// so comparing techniques across the same model is a directory listing
@@ -1886,7 +1888,8 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
             var tech = suite.techniques ?? new TestSuiteAsset.BenchTechniques();
-            if (!tech.legacyXatlasSweep && !tech.hierarchicalProbe && !tech.hierarchicalRepack)
+            if (!tech.legacyXatlasSweep && !tech.hierarchicalProbe
+                && !tech.hierarchicalRepack && !tech.stageDSweep)
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     "[Bench] All techniques disabled in suite.techniques — nothing to do.");
@@ -2074,6 +2077,31 @@ namespace SashaRX.UnityMeshLab
                             }
                         }
 
+                        // Stage D cascade-threshold sweep — opt-in comparison
+                        // grid (matchFrac × minHits) over the same case.
+                        // Emits per-cell group PNGs + stage_d_sweep.csv under
+                        // hier/. No auto-winner (Stage E / lightmap-defect
+                        // scalar not built yet) — the operator eyeballs the
+                        // grid. Full rebuild per cell, so this multiplies the
+                        // dry-run cost; gated behind its own flag.
+                        if (tech.stageDSweep)
+                        {
+                            try
+                            {
+                                System.IO.Directory.CreateDirectory(hierDir);
+                                HierarchicalRepack.BuildStageDSweep(lg,
+                                    HierarchicalRepack.Options.Default,
+                                    tech.cascadeMatchFracVariants,
+                                    tech.cascadeMinHitsVariants, hierDir);
+                                didAnything = true;
+                            }
+                            catch (Exception ex)
+                            {
+                                UvtLog.Error(UvtLog.Category.Benchmark,
+                                    $"[Bench] Case {ci} '{tc.label}' Stage D sweep threw: {ex.Message}");
+                            }
+                        }
+
                         if (didAnything) doneCases++;
                     }
                     catch (Exception ex)
@@ -2125,6 +2153,7 @@ namespace SashaRX.UnityMeshLab
                         tech.legacyXatlasSweep   ? "legacy" : null,
                         tech.hierarchicalProbe   ? "probe"  : null,
                         tech.hierarchicalRepack  ? "repack" : null,
+                        tech.stageDSweep         ? "stageDsweep" : null,
                     }
                     .Where(s => s != null));
                 UvtLog.Info(UvtLog.Category.Benchmark,
