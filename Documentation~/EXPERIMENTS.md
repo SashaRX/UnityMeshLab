@@ -351,3 +351,32 @@
 - EditMode red/green: `TransferTargetDetection_IgnoresSourceOnlySelection`.
 - EditMode red/green: `Uv2PixelMargin_ScalesFromResolvedAtlasSize`.
 - Full model benchmark (Carousel/Playground/WateringCan) в этом checkout не прогнан: тестовые FBX/`BenchmarkReports/` отсутствуют в репозитории. Нужен ручной Unity прогон на suite для финального сравнения `repackMs`, `density spread`, `overlapShellPairs`, `invertedCount`, `texelDensityBadCount`.
+
+## Эксперимент 2026-06-03 — Stage D cascade-threshold sweep (4 кейса × 9 ячеек)
+
+**Контекст:** Plan v2 Stage D (cascade group matching deep→fine) родил пороги `cascadeMatchFrac` × `cascadeMinHits`. Чтобы найти knee, прогнали sweep `{0.35,0.50,0.65} × {2,4,8}` на 4 моделях (Gazebo/Carousel/Playground/WoodenBox01). Артефакты — `bench_2026-06-03_00-01-29-061/{case}/hier/stage_d_sweep.csv` + `lod{N}_groups_mf*_mh*.png`.
+
+**Что подтвердилось:**
+- Каскадная идея валидна: крупные lighting-домены держат цвет (= один groupId) через все LOD'ы. WoodenBox: пол/задняя стена/правая стена/рама стабильны LOD3→LOD0. Carousel: 6 пирогов канопе и скамьи идентичны LOD2→LOD0 даже при final groupCount=922.
+- `missed=0` на каждом переходе во всех кейсах. Проекция здорова, `overlayDistNorm=0.03` не зажат.
+- Каскад идёт deepest-first, `reused=0` — родитель всегда резолвится до того, как finer спросит про него.
+
+**Что НЕ работает — главные находки:**
+1. **Пороги почти не влияют на качество доменов.** Визуальная сетка 3×3 на Carousel LOD0 идентична на крупных поверхностях во всех 9 ячейках. Разница 808↔1198 групп — целиком в мелких шеллах (тонкая рама, проволока, кромка). Тюнить mf/mh ради качества доменов смысла мало.
+2. **Взрыв групп идёт НЕ от плохого матчинга, а от пролиферации микро-шеллов в Stage C.** Carousel LOD0 = 773 raw shells ≈ 6 крупных кусков канопе + ~767 тонких деталей. Поэтому 269→922, Playground 318→1664. И `skipAreaFrac`/`skipMaxFaceCount` тогда были объявлены в `Options.Default`, но **нигде не применялись**.
+3. **`minHits` работал контр-продуктивно.** Это был доминирующий рычаг (Carousel LOD1→0 fresh при mh=2/4/8: 421/467/618). Логика «мало хитов → не доверяем голосу → fresh» наказывала именно те крошечные шеллы, которым отдельный домен нужен в последнюю очередь.
+4. **`groupCount` — обманчивая метрика.** Она зависит от шума микро-шеллов, не от качества доменов. Минимизировать её = минимизировать фрагментацию проволоки.
+
+**Изменение:** Stage D получил **tiny-shell merge ветку** (commit на бранче `claude/fix-transfer-bugs-KYVQD`):
+- finer shell с `totalArea ≤ opts.skipAreaFrac × totalFineArea` И `faceCount ≤ opts.skipMaxFaceCount` force-join'ится на доминантного родителя независимо от matchedFrac/minHits, если bestProxy резолвится.
+- Tiny shell без матча (`bestProxy<0` — деталь которой действительно нет на deeper LOD) всё ещё открывает fresh, но засчитывается в отдельный счётчик `tinyOrphan` для видимости. Topological-neighbour fallback для этого кейса не делаем — отложен до данных, показывающих что он нужен.
+- `CascadeStat` расширен: `tinyJoined`, `tinyOrphan`. CSV свипа добавляет 2 колонки. Лог Stage D печатает их.
+
+**НЕ сделано / открытые вопросы:**
+- Scored auto-winner свипа не строим: до Stage E (final pack + per-LOD UV2 + lightmap-defect счётчики трансфера) нет объективного скаляра для оптимизации `(matchFrac, minHits, skipAreaFrac, skipMaxFaceCount)`. Свип остаётся сравнительным (PNG + CSV под глаза).
+- Не нормализовали пороги по `meshDiag`: knee может смещаться между кейсами. Подтверждено в свипе для Playground (LOD3→2 join только 25% против 75% на LOD1→0) — но это геометрическая реальность (LOD3 беднее деталью), не порог.
+- Default `skipAreaFrac=0.001`/`skipMaxFaceCount=4` оставлен как есть — ожидаем повторного свипа после tiny-merge, теперь уже по `tinyJoined`/`tinyOrphan`, чтобы калибровать.
+
+**Проверка:**
+- Свип-прогон 4 кейса × 9 ячеек завершился без ошибок, артефакты на месте.
+- Повторный свип после tiny-merge ещё не делался — TODO следующим шагом, на тех же 4 кейсах, чтобы померить просадку `fresh` и убедиться что `tinyOrphan` мал.

@@ -70,16 +70,23 @@ namespace SashaRX.UnityMeshLab
             /// scalar, the way Frostbite's lightmap-proxy pipeline does.</summary>
             public float overlayDistNorm;
 
-            /// <summary>Skip a fine-LOD promoted cluster if BOTH (a) its 3D area
-            /// is below this fraction of the total deepest-LOD area AND (b) its
-            /// face count is at or below <see cref="skipMaxFaceCount"/>. Handles,
-            /// fasteners, and other small geometric noise where allocating any
-            /// atlas space is wasteful.</summary>
+            /// <summary>Stage D tiny-shell merge threshold (sweep 2026-06-03).
+            /// A finer-LOD shell whose <c>totalArea ≤ skipAreaFrac × totalFineArea</c>
+            /// AND <c>faceCount ≤ skipMaxFaceCount</c> is force-joined to its
+            /// modal proxy parent even when the regular matchedFrac/minHits
+            /// gate fails, because it's almost certainly thin trim / wire /
+            /// fastener noise — the dominant source of fresh-group explosion
+            /// on detail-heavy assets (Carousel 269→922 without this; Stage E
+            /// would waste atlas space on every single piece of wire). If the
+            /// tiny shell has no proxy match at all (bestProxy &lt; 0) it
+            /// still opens a fresh group; counted as <c>tinyOrphan</c>.</summary>
             public float skipAreaFrac;
 
-            /// <summary>Companion to <see cref="skipAreaFrac"/> — a cluster with
-            /// many faces always promotes even if its total area is small,
-            /// because face count alone implies someone will see it.</summary>
+            /// <summary>Companion to <see cref="skipAreaFrac"/> — gate is AND,
+            /// so a shell needs to be both area-small AND face-count-small to
+            /// qualify as "tiny". Stops the rule from merging long thin
+            /// strips (small area, many faces) that genuinely deserve their
+            /// own domain.</summary>
             public int skipMaxFaceCount;
 
             /// <summary>Which proxy UV2 variant drives the downstream
@@ -299,6 +306,18 @@ namespace SashaRX.UnityMeshLab
             /// <summary>Finer shells already assigned by an earlier
             /// (deeper) transition — skipped this pass.</summary>
             public int reused;
+            /// <summary>Tiny shells (area &lt;= skipAreaFrac × totalFine AND
+            /// faceCount &lt;= skipMaxFaceCount) that failed the regular
+            /// matchedFrac/minHits test but had a resolvable parent, so
+            /// they were force-joined instead of opening a fresh group.
+            /// Sweep 2026-06-03 showed these are the dominant source of
+            /// fresh-group explosion on detail-heavy assets (thin trim,
+            /// wire, fasteners).</summary>
+            public int tinyJoined;
+            /// <summary>Tiny shells with no proxy match at all (deeper LOD
+            /// genuinely lacks the geometry) — they still open fresh
+            /// groups; subset of <see cref="fresh"/>.</summary>
+            public int tinyOrphan;
         }
 
         /// <summary>Stage C / D / E: a single lighting domain — a set
@@ -1101,7 +1120,8 @@ namespace SashaRX.UnityMeshLab
 
             var csv = new System.Text.StringBuilder();
             csv.AppendLine("matchFrac,minHits,groupCount,seedGroups,"
-                + "liProxy,liFine,samples,hits,missed,joined,fresh,reused");
+                + "liProxy,liFine,samples,hits,missed,joined,fresh,reused,"
+                + "tinyJoined,tinyOrphan");
 
             Result last = null;
             foreach (float mf in matchFracGrid)
@@ -1144,11 +1164,12 @@ namespace SashaRX.UnityMeshLab
                             $"{mf.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)},"
                             + $"{mh},{groupCount},{seedGroups},"
                             + $"{st.liProxy},{st.liFine},{st.samples},{st.hits},"
-                            + $"{st.missed},{st.joined},{st.fresh},{st.reused}");
+                            + $"{st.missed},{st.joined},{st.fresh},{st.reused},"
+                            + $"{st.tinyJoined},{st.tinyOrphan}");
                 else
                     csv.AppendLine(
                         $"{mf.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)},"
-                        + $"{mh},{groupCount},{seedGroups},,,,,,,,");
+                        + $"{mh},{groupCount},{seedGroups},,,,,,,,,,");
             }
 
             try
@@ -1980,7 +2001,26 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 // 4) For each finer shell, decide: join parent group or new.
-                int joined = 0, fresh = 0, alreadyAssigned = 0;
+                // Tiny-shell rule (sweep insight 2026-06-03): finer shells
+                // below skipAreaFrac × totalFineArea AND ≤ skipMaxFaceCount
+                // get force-joined to their modal proxy parent even when
+                // matchedFrac / minHits would normally fail them — they're
+                // the thin trim / wire / fastener that the sweep showed was
+                // the dominant source of fresh-group explosion (Carousel
+                // 269→922) without affecting major lighting domains. If a
+                // tiny shell has NO proxy match at all (bestProxy<0; deeper
+                // LOD genuinely lacks it), it still opens a fresh group —
+                // a topological-neighbour fallback would handle that case
+                // but adds an adjacency build; defer until the data shows
+                // it's needed. Counted separately in the log.
+                float totalFineArea = 0f;
+                for (int s = 0; s < fineShells.Length; s++)
+                    totalFineArea += fineShells[s].totalArea;
+                float tinyAreaAbs = Mathf.Max(0f, opts.skipAreaFrac) * totalFineArea;
+                int tinyFaceMax = Mathf.Max(0, opts.skipMaxFaceCount);
+
+                int joined = 0, fresh = 0, tinyJoined = 0, tinyOrphan = 0;
+                int alreadyAssigned = 0;
                 var proxyShellToGroup = r.perLodShellToGroup[liProxy];
                 var fineShellToGroup  = r.perLodShellToGroup[liFine];
 
@@ -1997,13 +2037,17 @@ namespace SashaRX.UnityMeshLab
                     }
                     float matchedFrac = shellTotal > 0 ? (float)bestCount / shellTotal : 0f;
 
-                    bool joinParent = bestProxy >= 0
-                                   && bestProxy < proxyShellToGroup.Length
+                    bool parentResolves = bestProxy >= 0
+                                       && bestProxy < proxyShellToGroup.Length
+                                       && proxyShellToGroup[bestProxy] >= 0;
+                    bool normalJoin = parentResolves
                                    && shellTotal >= kMinHits
-                                   && matchedFrac >= kMatchFrac
-                                   && proxyShellToGroup[bestProxy] >= 0;
+                                   && matchedFrac >= kMatchFrac;
+                    bool isTiny = fineShells[s].totalArea <= tinyAreaAbs
+                               && fineShells[s].faceCount <= tinyFaceMax;
+                    bool tinyForceJoin = isTiny && parentResolves && !normalJoin;
 
-                    if (joinParent)
+                    if (normalJoin || tinyForceJoin)
                     {
                         int gid = proxyShellToGroup[bestProxy];
                         fineShellToGroup[s] = gid;
@@ -2011,7 +2055,7 @@ namespace SashaRX.UnityMeshLab
                         if (grp.members == null) grp.members = new List<(int, int)>();
                         grp.members.Add((liFine, s));
                         groups[gid] = grp;
-                        joined++;
+                        if (tinyForceJoin) tinyJoined++; else joined++;
                     }
                     else
                     {
@@ -2025,6 +2069,7 @@ namespace SashaRX.UnityMeshLab
                         });
                         fineShellToGroup[s] = gid;
                         fresh++;
+                        if (isTiny) tinyOrphan++;
                     }
                 }
 
@@ -2038,13 +2083,17 @@ namespace SashaRX.UnityMeshLab
                     joined  = joined,
                     fresh   = fresh,
                     reused  = alreadyAssigned,
+                    tinyJoined = tinyJoined,
+                    tinyOrphan = tinyOrphan,
                 });
 
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     $"[HierRepack] Stage D: '{lg.name}' LOD{liProxy}→LOD{liFine} "
                     + $"samples={samples.Count} hits={totalHits} missed={totalMissed} "
-                    + $"| joined={joined} new={fresh} reused={alreadyAssigned} "
-                    + $"(threshold matchedFrac>={kMatchFrac:F2}, minHits>={kMinHits})");
+                    + $"| joined={joined} tinyJoined={tinyJoined} new={fresh} "
+                    + $"(tinyOrphan={tinyOrphan}) reused={alreadyAssigned} "
+                    + $"(thresholds mf>={kMatchFrac:F2} mh>={kMinHits} "
+                    + $"tinyArea<={opts.skipAreaFrac:F3}×total tinyFaces<={tinyFaceMax})");
             }
 
             r.groups = groups.ToArray();
