@@ -2079,11 +2079,13 @@ namespace SashaRX.UnityMeshLab
 
                         // Stage D cascade-threshold sweep — opt-in comparison
                         // grid (matchFrac × minHits) over the same case.
-                        // Emits per-cell group PNGs + stage_d_sweep.csv under
-                        // hier/. No auto-winner (Stage E / lightmap-defect
-                        // scalar not built yet) — the operator eyeballs the
-                        // grid. Full rebuild per cell, so this multiplies the
-                        // dry-run cost; gated behind its own flag.
+                        // Writes stage_d_sweep.csv under hier/ (the real
+                        // output); per-cell PNGs only when stageDSweepEmitPngs
+                        // is set (off by default — near-identical across cells,
+                        // suppressed as noise). No auto-winner (Stage E /
+                        // lightmap-defect scalar not built yet). Full rebuild
+                        // per cell, so this multiplies the dry-run cost; gated
+                        // behind its own flag.
                         if (tech.stageDSweep)
                         {
                             try
@@ -2092,7 +2094,8 @@ namespace SashaRX.UnityMeshLab
                                 HierarchicalRepack.BuildStageDSweep(lg,
                                     HierarchicalRepack.Options.Default,
                                     tech.cascadeMatchFracVariants,
-                                    tech.cascadeMinHitsVariants, hierDir);
+                                    tech.cascadeMinHitsVariants, hierDir,
+                                    tech.stageDSweepEmitPngs);
                                 didAnything = true;
                             }
                             catch (Exception ex)

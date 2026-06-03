@@ -167,6 +167,14 @@ namespace SashaRX.UnityMeshLab
             [Tooltip("Stage D sweep: minimum total sample hits before a finer shell's modal vote " +
                      "is trusted to join a parent group. Below = fresh group regardless of fraction.")]
             public int[] cascadeMinHitsVariants = { 2, 4, 8 };
+
+            [Tooltip("Stage D sweep: also write a per-cell group iso-view PNG for every cell × LOD " +
+                     "(lod{N}_groups_mf{F}_mh{H}.png). Off by default — the first sweep showed these " +
+                     "are near-identical across cells on the major surfaces (variation is sub-pixel " +
+                     "trim only), so they're suppressed as noise; stage_d_sweep.csv is the real " +
+                     "output and lod{N}_groups.png (default thresholds) is the canonical visual. " +
+                     "Enable only for a deep visual dive.")]
+            public bool stageDSweepEmitPngs = false;
         }
 
         [Tooltip("Techniques to run per case during 'Run Benchmark'. All artefacts land under one bench_<stamp>/<case>/ directory so a single button gives a complete pipeline snapshot.")]

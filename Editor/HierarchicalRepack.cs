@@ -1098,20 +1098,30 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Stage D threshold sweep — for each
         /// (matchFrac × minHits) grid cell, rebuild the LODGroup with those
-        /// cascade thresholds and emit the group iso-view PNGs suffixed by
-        /// the cell (<c>lod{N}_groups_mf{F}_mh{H}.png</c>) plus one
-        /// <c>stage_d_sweep.csv</c> row per LOD transition per cell. No
-        /// auto-winner — Stage E (which would expose a lightmap-defect
-        /// scalar) isn't built yet, so the operator compares the PNG grid
-        /// and the join/new ratios by eye. Each cell is a full
-        /// <see cref="Build"/> on a fresh <see cref="Result"/>, so there is
-        /// zero cross-cell contamination; the cost is that the
-        /// cascade-independent stages (xatlas unwraps, sampling) re-run per
-        /// cell — acceptable for an opt-in diagnostic on a small grid.
-        /// Returns the last cell's Result (or the error Result if the very
-        /// first cell failed).</summary>
+        /// cascade thresholds and append one <c>stage_d_sweep.csv</c> row
+        /// per LOD transition per cell. No auto-winner — Stage E (which
+        /// would expose a lightmap-defect scalar) isn't built yet, so the
+        /// CSV's join/new/tiny ratios are the signal.
+        ///
+        /// The CSV is the deliverable. Per-cell group iso-view PNGs
+        /// (<c>lod{N}_groups_mf{F}_mh{H}.png</c>) are written ONLY when
+        /// <paramref name="emitPerCellPngs"/> is true — the first sweep run
+        /// showed those PNGs are near-identical across cells on the major
+        /// surfaces (variation is sub-pixel trim only), so by default they're
+        /// suppressed as noise. The canonical visual is the baseline
+        /// <c>lod{N}_groups.png</c> the hierarchicalRepack technique already
+        /// writes at the default thresholds. Flip the flag for a deep visual
+        /// dive (cells × LODs PNGs).
+        ///
+        /// Each cell is a full <see cref="Build"/> on a fresh
+        /// <see cref="Result"/>, so there is zero cross-cell contamination;
+        /// the cost is that the cascade-independent stages (xatlas unwraps,
+        /// sampling) re-run per cell — acceptable for an opt-in diagnostic on
+        /// a small grid. Returns the last cell's Result (or the error Result
+        /// if the very first cell failed).</summary>
         public static Result BuildStageDSweep(LODGroup lg, Options baseOpts,
-            float[] matchFracGrid, int[] minHitsGrid, string outputDir)
+            float[] matchFracGrid, int[] minHitsGrid, string outputDir,
+            bool emitPerCellPngs = false)
         {
             if (matchFracGrid == null || matchFracGrid.Length == 0)
                 matchFracGrid = new[] { baseOpts.cascadeMatchFrac };
@@ -1149,10 +1159,14 @@ namespace SashaRX.UnityMeshLab
                     continue;
                 }
 
-                // Stable, filesystem-safe cell suffix. Period → 'p' so the
+                // Per-cell PNGs are opt-in noise (see method summary) — the
+                // CSV is the real output. Suffix: period → 'p' so the
                 // extension split stays unambiguous (lod0_groups_mf0p50_mh4.png).
-                string suffix = $"_mf{mf.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture).Replace('.', 'p')}_mh{mh}";
-                WritePerLodGroupsPngs(outputDir, lg, r, suffix);
+                if (emitPerCellPngs)
+                {
+                    string suffix = $"_mf{mf.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture).Replace('.', 'p')}_mh{mh}";
+                    WritePerLodGroupsPngs(outputDir, lg, r, suffix);
+                }
 
                 int groupCount = r.groups?.Length ?? 0;
                 int seedGroups = (r.cascadeStats != null && r.cascadeStats.Count > 0)
@@ -1185,8 +1199,8 @@ namespace SashaRX.UnityMeshLab
 
             UvtLog.Info(UvtLog.Category.Benchmark,
                 $"[HierRepack] Stage D sweep '{lg.name}': "
-                + $"{matchFracGrid.Length}×{minHitsGrid.Length} cells → stage_d_sweep.csv "
-                + $"+ lod*_groups_mf*_mh*.png");
+                + $"{matchFracGrid.Length}×{minHitsGrid.Length} cells → stage_d_sweep.csv"
+                + (emitPerCellPngs ? " + lod*_groups_mf*_mh*.png" : " (per-cell PNGs suppressed)"));
             return last;
         }
 
