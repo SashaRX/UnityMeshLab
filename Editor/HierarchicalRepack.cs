@@ -565,6 +565,17 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     $"[HierRepack] stage E domain pack failed on '{lg.name}': {ex.Message}");
             }
+            // Stage E (slice E2): the cascade — every LOD's shells project into
+            // their group's atlas rect so matched shells share the region
+            // across LODs (one bake valid everywhere) and unmatched shells use
+            // their repacked slot. Produces per-LOD finalUv2/finalTris/
+            // finalSourceVertexIdx.
+            try { BuildCascadedUv2(lg, opts, meshDiag, result); }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] stage E cascade uv2 failed on '{lg.name}': {ex.Message}");
+            }
             return result;
         }
 
@@ -1128,6 +1139,9 @@ namespace SashaRX.UnityMeshLab
             // Stage E (slice E1): the packed shared domain atlas — one chart
             // per lighting-domain group, laid out by xatlas.
             WriteDomainAtlasPng(outputDir, result);
+            // Stage E (slice E2): per-LOD cascaded uv2 — same domain → same
+            // atlas region across LODs. lod{N}_final_uv2.png.
+            WriteFinalUv2Pngs(outputDir, lg, result);
             return result;
         }
 
@@ -1263,6 +1277,21 @@ namespace SashaRX.UnityMeshLab
             if (r.domainAtlasUv == null || r.domainAtlasTris == null) return;
             UvPngWriter.Render(Path.Combine(outputDir, "domains_atlas.png"),
                 r.domainAtlasUv, r.domainAtlasTris);
+        }
+
+        /// <summary>Stage E (slice E2) diagnostic: render each LOD's cascaded
+        /// uv2 to lod{N}_final_uv2.png. Same lighting domain → same atlas
+        /// region across LODs, so the colour/region of a domain should line up
+        /// from LOD0 down to the deepest.</summary>
+        static void WriteFinalUv2Pngs(string outputDir, LODGroup lg, Result r)
+        {
+            if (r.finalUv2 == null || r.finalTris == null) return;
+            for (int li = 0; li < r.finalUv2.Length; li++)
+            {
+                if (r.finalUv2[li] == null || r.finalTris[li] == null) continue;
+                UvPngWriter.Render(Path.Combine(outputDir, $"lod{li}_final_uv2.png"),
+                    r.finalUv2[li], r.finalTris[li]);
+            }
         }
 
         static void WriteProxyUv2Png(string outputDir, Result r)
@@ -2163,29 +2192,26 @@ namespace SashaRX.UnityMeshLab
 
         // ─── Stage E (slice E1): pack lighting-domain canonical charts ──
 
-        /// <summary>Stage E, slice 1. For each lighting-domain group, take its
-        /// canonical (deepest-member) shell and emit its faces with the mesh's
-        /// AUTHORED UV0 as the chart UV — a real unwrap that stitches the
-        /// shell without folding. Single-plane projection (the original
-        /// approach) collapses wrap-around shells — cylinders, rings, tubes,
-        /// arcs — whose area-weighted dominantNormal cancels to ~zero, giving
-        /// folded sine-wave / bowtie / rosette charts; it survives only as the
-        /// fallback for shells with no UV0. (Original projection note: basis
-        /// basisU/basisV centred at centroid,
-        /// normalised by the half-extents so the chart lands in roughly
-        /// [0,1]). Both forms feed xatlas as a UV mesh with
-        /// faceMaterial = groupId. xatlas treats each material as a hard chart
-        /// boundary, so every group becomes its own chart; PackCharts then
-        /// lays the charts out without overlap. xatlas output UV is already
-        /// normalised [0,1] in this native build (confirmed against
-        /// proxy_uv2_auto.png), so we read it back directly.
+        /// <summary>Stage E, slice 1 — define the SHARED atlas layout. For
+        /// each lighting-domain group, take its canonical (deepest-member)
+        /// shell — the one that found no deeper match, i.e. the seed we
+        /// REPACK — project its faces onto the shell's own plane
+        /// (basisU/basisV centred at centroid, normalised by the half-extents
+        /// → local [0,1]) and feed it to xatlas as a UV mesh with
+        /// faceMaterial = groupId. Each material is a hard chart boundary, so
+        /// every group packs as its own chart; we read back each group's
+        /// placed rect (<c>r.domainAtlasRects[groupId]</c>). With
+        /// rotateCharts:0 the placed chart is the input [0,1] box uniformly
+        /// scaled/translated into that rect, so <see cref="BuildCascadedUv2"/>
+        /// can reproduce the placement with a plain [0,1]→rect map.
         ///
-        /// Output is the SHARED domain layout: <c>r.domainAtlasRects[groupId]</c>
-        /// is where that lighting domain lives in the atlas. Slice E2 maps
-        /// every LOD's member shells into their group's rect so the whole
-        /// domain occupies the same atlas region across LODs. No per-LOD UV2
-        /// or mesh writing happens here; <c>r.domainAtlasUv</c> /
-        /// <c>r.domainAtlasTris</c> back the domains_atlas.png diagnostic.</summary>
+        /// This is layout only. The cascade payoff — every LOD's matched
+        /// shells PROJECTING into their group's rect so one bake is valid
+        /// across all LODs, and unmatched shells owning their repacked rect —
+        /// is <see cref="BuildCascadedUv2"/>. xatlas output UV is already
+        /// normalised [0,1] in this native build (confirmed against
+        /// proxy_uv2_auto.png). <c>r.domainAtlasUv</c> / <c>r.domainAtlasTris</c>
+        /// back the domains_atlas.png diagnostic.</summary>
         static void PackDomainCharts(LODGroup lg, Options opts, float meshDiag, Result r)
         {
             if (r.groups == null || r.groups.Length == 0) return;
@@ -2200,7 +2226,6 @@ namespace SashaRX.UnityMeshLab
             // tinyOrphan groups born on a finer LOD have their canonical there.
             var worldVertsByLod = new Vector3[lodCount][];
             var rawTrisByLod = new int[lodCount][];
-            var uv0ByLod = new Vector2[lodCount][];   // authored UV0, indexed like worldVerts
             var builtLod = new bool[lodCount];
             void EnsureLodGeometry(int li)
             {
@@ -2216,7 +2241,6 @@ namespace SashaRX.UnityMeshLab
                     out Vector3[] wv, out int[] rt, out _, out _);
                 worldVertsByLod[li] = wv;
                 rawTrisByLod[li] = rt;
-                uv0ByLod[li] = mesh.uv; // Vector2[] sized to vertexCount, or empty
             }
 
             // Build one UV mesh: 3 verts per canonical face, each carrying its
@@ -2243,18 +2267,12 @@ namespace SashaRX.UnityMeshLab
 
                 var sh = shellsAtCl[grp.canonicalShellId];
                 if (sh.faceIndices == null || sh.faceIndices.Count == 0) continue;
-
-                // Per-shell chart UV. Prefer the mesh's AUTHORED UV0 — a real
-                // unwrap that doesn't fold. Single-plane projection collapses
-                // wrap-around shells (cylinders, rings, tubes, arcs) because
-                // their area-weighted dominantNormal cancels to ~zero, giving
-                // a garbage basis (sine-wave / bowtie / rosette charts). Using
-                // the authored UV shell and stitching it per lighting domain
-                // via faceMaterial=groupId avoids that entirely. Planar
-                // projection stays as the fallback for shells whose mesh has
-                // no UV0.
-                var uv0 = uv0ByLod[cl];
-                bool useUv0 = uv0 != null && uv0.Length == wv.Length;
+                // Planar projection of the canonical shell onto its own plane
+                // → local [0,1] via half-extents. rotateCharts:0 keeps xatlas
+                // from rotating the chart, so the placed rect is this [0,1]
+                // box uniformly scaled/translated — which means BuildCascadedUv2
+                // can reproduce the placement with a plain [0,1]→rect map and
+                // every LOD's shells land aligned with the canonical.
                 float invU = 0.5f / Mathf.Max(sh.extentU, 1e-4f);
                 float invV = 0.5f / Mathf.Max(sh.extentV, 1e-4f);
 
@@ -2264,20 +2282,9 @@ namespace SashaRX.UnityMeshLab
                     for (int k = 0; k < 3; k++)
                     {
                         int vi = rt[f * 3 + k];
-                        float u, v;
-                        if (useUv0)
-                        {
-                            // Authored UV shell — stitched per group, no fold.
-                            u = uv0[vi].x;
-                            v = uv0[vi].y;
-                        }
-                        else
-                        {
-                            // Fallback: planar projection onto the shell plane.
-                            Vector3 d = wv[vi] - sh.centroid;
-                            u = 0.5f + Vector3.Dot(d, sh.basisU) * invU;
-                            v = 0.5f + Vector3.Dot(d, sh.basisV) * invV;
-                        }
+                        Vector3 d = wv[vi] - sh.centroid;
+                        float u = 0.5f + Vector3.Dot(d, sh.basisU) * invU;
+                        float v = 0.5f + Vector3.Dot(d, sh.basisV) * invV;
                         uvList.Add(u);
                         uvList.Add(v);
                         idxList.Add(vCounter);
@@ -2392,6 +2399,102 @@ namespace SashaRX.UnityMeshLab
                     + $"(canonical faces={fc}, outVerts={outVc})");
             }
             finally { XatlasNative.xatlasDestroy(); }
+        }
+
+        // ─── Stage E (slice E2): cascade — project every LOD into its rect ──
+
+        /// <summary>Stage E, slice 2 — the cascade payoff. Stage E1 packed each
+        /// group's canonical (deepest-member) shell and recorded its placed
+        /// atlas rect in <c>r.domainAtlasRects[groupId]</c>. Here EVERY shell
+        /// on EVERY LOD inherits that shared placement: it projects its verts
+        /// onto its group's CANONICAL shell plane (basisU/basisV/centroid/
+        /// half-extents from Stage C) to a local [0,1], then maps that into the
+        /// group's rect. So a matched finer shell lands in the SAME atlas
+        /// region as the canonical it cascaded into — one lightmap bake is
+        /// valid across all LODs, which is the whole point. An unmatched shell
+        /// is the canonical of its own fresh group, so it maps into the rect it
+        /// was repacked into in E1. Because PackDomainCharts used the same
+        /// planar projection with rotateCharts:0, the canonical's own verts
+        /// reproduce its packed chart and finer members align with it.
+        ///
+        /// Fills <c>r.finalUv2</c> / <c>r.finalTris</c> /
+        /// <c>r.finalSourceVertexIdx</c> per LOD (output verts are one per face
+        /// corner — no dedup; Stage F copies attributes from the source vertex
+        /// each one points at). Rendered by lod{N}_final_uv2.png.</summary>
+        static void BuildCascadedUv2(LODGroup lg, Options opts, float meshDiag, Result r)
+        {
+            if (r.groups == null || r.groups.Length == 0) return;
+            if (r.perLodShells == null || r.perLodShellToGroup == null) return;
+            if (r.domainAtlasRects == null) return;
+
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+            r.finalUv2 = new Vector2[lodCount][];
+            r.finalTris = new int[lodCount][];
+            r.finalSourceVertexIdx = new int[lodCount][];
+
+            for (int li = 0; li < lodCount; li++)
+            {
+                var shells = r.perLodShells[li];
+                var shellToGroup = r.perLodShellToGroup[li];
+                if (shells == null || shellToGroup == null) continue;
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) continue;
+
+                BuildFaceData(mesh, rs[0].transform, meshDiag,
+                    out Vector3[] wv, out int[] rt, out _, out _);
+
+                var uvOut  = new List<Vector2>(rt.Length);
+                var triOut = new List<int>(rt.Length);
+                var srcOut = new List<int>(rt.Length);
+
+                for (int s = 0; s < shells.Length; s++)
+                {
+                    int gid = (s < shellToGroup.Length) ? shellToGroup[s] : -1;
+                    if (gid < 0 || gid >= r.groups.Length) continue;
+                    var grp = r.groups[gid];
+                    if (grp.canonicalLod < 0 || grp.canonicalLod >= lodCount) continue;
+                    var canonShells = r.perLodShells[grp.canonicalLod];
+                    if (canonShells == null || grp.canonicalShellId < 0
+                        || grp.canonicalShellId >= canonShells.Length) continue;
+                    Rect rect = (gid < r.domainAtlasRects.Length)
+                        ? r.domainAtlasRects[gid] : new Rect(0, 0, 0, 0);
+                    if (rect.width <= 0f || rect.height <= 0f) continue;
+
+                    var canon = canonShells[grp.canonicalShellId];
+                    float invU = 0.5f / Mathf.Max(canon.extentU, 1e-4f);
+                    float invV = 0.5f / Mathf.Max(canon.extentV, 1e-4f);
+
+                    var sh = shells[s];
+                    if (sh.faceIndices == null) continue;
+                    foreach (int f in sh.faceIndices)
+                    {
+                        if (f < 0 || f * 3 + 2 >= rt.Length) continue;
+                        for (int k = 0; k < 3; k++)
+                        {
+                            int vi = rt[f * 3 + k];
+                            Vector3 d = wv[vi] - canon.centroid;
+                            float lu = Mathf.Clamp01(0.5f + Vector3.Dot(d, canon.basisU) * invU);
+                            float lv = Mathf.Clamp01(0.5f + Vector3.Dot(d, canon.basisV) * invV);
+                            triOut.Add(uvOut.Count);
+                            uvOut.Add(new Vector2(rect.x + lu * rect.width,
+                                                  rect.y + lv * rect.height));
+                            srcOut.Add(vi);
+                        }
+                    }
+                }
+
+                r.finalUv2[li] = uvOut.ToArray();
+                r.finalTris[li] = triOut.ToArray();
+                r.finalSourceVertexIdx[li] = srcOut.ToArray();
+
+                UvtLog.Info(UvtLog.Category.Benchmark,
+                    $"[HierRepack] Stage E2: '{lg.name}' LOD{li} cascaded uv2 "
+                    + $"verts={uvOut.Count} tris={triOut.Count / 3} shells={shells.Length}");
+            }
         }
 
         // ─── PR-3 Stage 6: bake the new uv2 into cloned LOD meshes ────
