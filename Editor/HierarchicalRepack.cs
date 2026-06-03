@@ -2334,8 +2334,8 @@ namespace SashaRX.UnityMeshLab
                 foreach (int f in sh.faceIndices)
                 {
                     if (f < 0 || f * 3 + 2 >= rt.Length) continue;
-                    int fa = rt[f * 3], fb = rt[f * 3 + 1], fc = rt[f * 3 + 2];
-                    if (fa >= uv0.Length || fb >= uv0.Length || fc >= uv0.Length) continue;
+                    int e0 = rt[f * 3], e1 = rt[f * 3 + 1], e2 = rt[f * 3 + 2];
+                    if (e0 >= uv0.Length || e1 >= uv0.Length || e2 >= uv0.Length) continue;
                     for (int k = 0; k < 3; k++)
                     {
                         int vi = rt[f * 3 + k];
