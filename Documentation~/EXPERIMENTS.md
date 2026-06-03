@@ -504,3 +504,24 @@ UV0/фолдинг — побочный вопрос; параметризаци
 Итог: рецепт «сохранять shell → проецировать → выровнять → идентичный тексель» реализован и подтверждён визуально.
 
 **Остаточные мелочи (не блокеры):** packing ~50% (packEff=0.5, можно поднять); тонкий трим — очень тонкие полоски (реальная геометрия); Carousel плотный/шумный (сотни тонких деталей). Допущение про общий UV0-layout LOD'ов подтвердилось на тест-сьюте (домены сошлись).
+
+## Эксперимент 2026-06-03 (Stage E3) — объективные метрики на атласе → `stage_e_metrics.csv`
+
+**Зачем.** До E3 у каскада не было объективного скаляра: Stage D-свип сравнивали по `groupCount`/PNG (обманчиво, шум микро-шеллов), Stage E1/E2 — на глаз по `domains_atlas.png`/`lod{N}_final_uv2.png`. Известный дефект E2 (фолдинг кривых canonical'ов, «Union Jack») не был оцифрован. E3 даёт лайтмап-дефект-числа на упакованном UV2.
+
+**Что сделано (один метод-эмиттер, без изменения поведения пайплайна):**
+- `WriteAtlasMetricsCsv(outputDir, lg, r)` в `HierarchicalRepack.cs` — вызывается из `BuildAndWriteForCase` после `WriteFinalUv2Pngs`. Read-only: на каждый LOD строит **временный world-space меш** из `finalUv2/finalTris/finalSourceVertexIdx` (позиции через `transform.TransformPoint` → `areaWorld` физический, сравним с фикс. `texelsPerUnit`), прогоняет существующий `TransferValidator`, уничтожает меш (`DestroyImmediate`).
+- **Переиспользование, не изобретение:** `TransferValidator.Validate` (per-triangle inverted / zeroArea / oob / texelBad + `texelDensityMedian` + per-tri `texelDensityRatios`) + `TransferValidator.DetectUv2Overlaps` (AABB→SAT по UV-островам). Без `transferResult` все overlap-пары трактуются как diff-src = «сколько пар чартов реально пересекаются».
+
+**Грабли, которые разобрал по дороге:**
+- `UvShellExtractor.Extract` объединяет грани **по shared vertex index** (union-find), а E2 пишет **полностью разваренный** меш (3 уникальных верта на угол) → в лоб каждый треугольник = свой «шелл» → семантика `overlapShellPairs` сломана + O(faces²). **Фикс:** `WeldByPlacedUv` — перед overlap-проходом варю углы по квантованной (`q=1e-5`) placed-UV2 позиции; грани одного шелла делят исходную вершину → идентичная UV2 → склеиваются в реальный остров. `Validate` (per-tri) работает на исходной топологии, weld не нужен.
+- `Validate` ставит `Inverted` по знаку UV2-winding **независимо от UV0** — то, что надо: фолдинг E2 даёт перевёрнутые грани, ловится напрямую. UV0 во временный меш не кладём (stretch требует `transferResult`, нам не нужен; вырожденные грани всё равно всплывают в `texelBad`).
+
+**Колонки CSV** (строка на LOD + строка `TOTAL`): `faces, inverted, zeroArea, oob, texelBad, overlapPairs, overlapTris, defective, defectPct, texelMedian, texelP5, texelP95, texelSpread (=P95/P5), uvArea`. `texelSpread` идеального единого текселя → ≈1; рост = фолдинг/дисторшн. `defectPct` (TOTAL) = доля граней с любым дефект-флагом = **скаляр кейса** для пересвипа порогов Stage D.
+
+**Проверка:** Unity-компиляция недоступна — статическая сверка типов/сигнатур (`Validate`/`DetectUv2Overlaps`/`ValidationReport`/`TriIssue` все public, тот же namespace), баланс скобок (фигурные 0, круглые-дельта не изменилась vs HEAD → мой код парный), diff чисто аддитивный (+222/−0). Прогон бенча на 4 кейсах + чтение `stage_e_metrics.csv` (ожидаем: ненулевой `inverted`/`texelSpread` на кривых доменах — Carousel обод, Gazebo арки; ~0 на плоских — WoodenBox) — следующий ручной шаг.
+
+**Открыто после E3:**
+- Скаляр готов → можно пере-свайпить Stage D `(matchFrac, minHits, skipAreaFrac, skipMaxFaceCount)` уже по `defectPct`/`texelSpread`, а не по `groupCount`/глаз. `BuildStageDSweep` пока пишет только `stage_d_sweep.csv` — подключить E3-скаляр в свип-строку как auto-winner = следующий логичный коммит.
+- E3 НЕ интегрирован в свип (пишет per-default-cell, не per-cell). Для auto-winner нужно вызвать метрики внутри `BuildStageDSweep` на каждой ячейке.
+- Фолдинг кривых canonical'ов теперь измерим (`inverted`/`texelSpread`), но не исправлен — кандидат на отдельный фикс (classical unwrap кривых вместо planar/preserve-UV0).

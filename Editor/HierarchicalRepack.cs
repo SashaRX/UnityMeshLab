@@ -1166,6 +1166,10 @@ namespace SashaRX.UnityMeshLab
             // Stage E (slice E2): per-LOD cascaded uv2 — same domain → same
             // atlas region across LODs. lod{N}_final_uv2.png.
             WriteFinalUv2Pngs(outputDir, lg, result);
+            // Stage E (slice E3): objective lightmap-defect metrics over the
+            // cascaded atlas — inverted / texel-density spread / inter-domain
+            // overlap → stage_e_metrics.csv (the scalar the Stage D sweep lacked).
+            WriteAtlasMetricsCsv(outputDir, lg, result);
             return result;
         }
 
@@ -1317,6 +1321,224 @@ namespace SashaRX.UnityMeshLab
                     r.finalUv2[li], r.finalTris[li]);
             }
         }
+
+        /// <summary>Stage E (slice E3) diagnostic: the objective lightmap-defect
+        /// scalar the Stage D threshold sweep was missing. Runs
+        /// <see cref="TransferValidator"/> over each LOD's cascaded atlas UV2 and
+        /// writes <c>stage_e_metrics.csv</c> — one row per LOD plus a TOTAL row.
+        ///
+        /// Columns (all measured on the packed UV2, in WORLD units so texel
+        /// density is physical and comparable to the fixed texelsPerUnit the
+        /// pack targeted):
+        ///   • inverted    — faces with flipped UV2 winding. Directly counts the
+        ///     E2 curved-canonical folding defect ("Union Jack" charts).
+        ///   • texelMedian / P5 / P95 / spread — areaWorld/areaUV2 distribution;
+        ///     spread = P95/P5. A perfectly uniform-density cascade → spread ≈ 1.
+        ///   • oob / texelBad — faces outside [0,1] / texel-density outliers.
+        ///   • overlapPairs / overlapTris — DIFFERENT UV-island pairs that
+        ///     actually overlap (inter-domain bleed). The cascaded mesh is fully
+        ///     unwelded (one vertex per face corner), so we re-weld by placed-UV
+        ///     position first — otherwise <see cref="UvShellExtractor.Extract"/>'s
+        ///     shared-index union would treat every triangle as its own shell.
+        ///   • defective / defectPct — faces carrying ANY of the above flags. The
+        ///     TOTAL row's defectPct is the case scalar for the sweep comparison.
+        ///   • uvArea — Σ|UV2 tri area|, the atlas fraction the LOD fills.
+        ///
+        /// Read-only: builds throwaway world-space meshes, validates, destroys
+        /// them. Never touches the scene.</summary>
+        static void WriteAtlasMetricsCsv(string outputDir, LODGroup lg, Result r)
+        {
+            if (lg == null || r == null) return;
+            if (r.finalUv2 == null || r.finalTris == null || r.finalSourceVertexIdx == null)
+                return;
+
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+
+            var csv = new StringBuilder();
+            csv.AppendLine("lod,faces,inverted,zeroArea,oob,texelBad,"
+                + "overlapPairs,overlapTris,defective,defectPct,"
+                + "texelMedian,texelP5,texelP95,texelSpread,uvArea");
+
+            // case totals + pooled texel ratios for the TOTAL row
+            int tFaces = 0, tInv = 0, tZero = 0, tOob = 0, tTxl = 0;
+            int tOvP = 0, tOvT = 0, tDef = 0;
+            double tUvArea = 0.0;
+            var pooled = new List<float>();
+
+            for (int li = 0; li < lodCount && li < r.finalUv2.Length; li++)
+            {
+                var uv2 = r.finalUv2[li];
+                var tris = (li < r.finalTris.Length) ? r.finalTris[li] : null;
+                var srcIdx = (li < r.finalSourceVertexIdx.Length) ? r.finalSourceVertexIdx[li] : null;
+                if (uv2 == null || tris == null || srcIdx == null) continue;
+                if (uv2.Length == 0 || tris.Length < 3 || srcIdx.Length != uv2.Length) continue;
+
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var srcMesh = mf != null ? mf.sharedMesh : null;
+                if (srcMesh == null) continue;
+                var xform = rs[0].transform;
+                var srcVerts = srcMesh.vertices;
+
+                // Throwaway mesh: one vertex per face corner (matches the unwelded
+                // E2 layout). Positions in WORLD space → areaWorld is physical.
+                int vc = srcIdx.Length;
+                var verts = new Vector3[vc];
+                for (int i = 0; i < vc; i++)
+                {
+                    int vi = srcIdx[i];
+                    verts[i] = (vi >= 0 && vi < srcVerts.Length)
+                        ? xform.TransformPoint(srcVerts[vi]) : Vector3.zero;
+                }
+
+                Mesh tmp = null;
+                TransferValidator.ValidationReport rep = null;
+                try
+                {
+                    tmp = new Mesh
+                    {
+                        name = "_uvtE3metrics",
+                        indexFormat = vc >= 65000
+                            ? UnityEngine.Rendering.IndexFormat.UInt32
+                            : UnityEngine.Rendering.IndexFormat.UInt16,
+                    };
+                    tmp.vertices = verts;
+                    tmp.triangles = tris;
+                    // Per-triangle metrics (inverted / zeroArea / oob / texel
+                    // density) on the real unwelded topology + world verts.
+                    rep = TransferValidator.Validate(tmp, uv2, null);
+                    // Overlap needs real UV islands: re-weld corners sharing a
+                    // placed-UV position, then reuse the validator's SAT pass.
+                    // DetectUv2Overlaps reads UV + triangles only (not vertices),
+                    // so swapping the index buffer in place is safe.
+                    tmp.triangles = WeldByPlacedUv(uv2, tris);
+                    TransferValidator.DetectUv2Overlaps(tmp, uv2, rep, null);
+                }
+                catch (Exception ex)
+                {
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        $"[HierRepack] Stage E3 metrics LOD{li} failed on '{lg.name}': {ex.Message}");
+                    continue;
+                }
+                finally { if (tmp != null) UnityEngine.Object.DestroyImmediate(tmp); }
+
+                int faces = tris.Length / 3;
+
+                // defective = any lightmap-relevant flag (post-overlap). Recount
+                // from perTriangle so the Overlap flag (set after Validate's own
+                // clean count) is included and nothing is double-counted.
+                int defect = 0;
+                if (rep.perTriangle != null)
+                    for (int f = 0; f < rep.perTriangle.Length; f++)
+                        if (rep.perTriangle[f] != TransferValidator.TriIssue.None) defect++;
+
+                // texel-density spread from per-triangle ratios
+                var ratios = new List<float>(faces);
+                if (rep.texelDensityRatios != null)
+                    foreach (float t in rep.texelDensityRatios)
+                        if (!float.IsNaN(t) && t > 1e-12f) ratios.Add(t);
+                ratios.Sort();
+                pooled.AddRange(ratios);
+                float p5 = Percentile(ratios, 0.05f);
+                float p95 = Percentile(ratios, 0.95f);
+                float spread = (p5 > 1e-12f) ? p95 / p5 : 0f;
+
+                // uvArea = Σ|UV2 tri area| — atlas fraction the LOD fills.
+                double uvArea = 0.0;
+                for (int f = 0; f < faces; f++)
+                {
+                    int a = tris[f * 3], b = tris[f * 3 + 1], c = tris[f * 3 + 2];
+                    uvArea += Mathf.Abs(SignedUvArea(uv2[a], uv2[b], uv2[c]));
+                }
+
+                csv.AppendLine(string.Format(CultureInfo.InvariantCulture,
+                    "{0},{1},{2},{3},{4},{5},{6},{7},{8},{9:0.###},{10:0.#####},{11:0.#####},{12:0.#####},{13:0.###},{14:0.#####}",
+                    li, faces, rep.invertedCount, rep.zeroAreaCount, rep.oobCount,
+                    rep.texelDensityBadCount, rep.overlapShellPairs, rep.overlapTriangleCount,
+                    defect, 100.0 * defect / Mathf.Max(1, faces),
+                    rep.texelDensityMedian, p5, p95, spread, uvArea));
+
+                tFaces += faces; tInv += rep.invertedCount; tZero += rep.zeroAreaCount;
+                tOob += rep.oobCount; tTxl += rep.texelDensityBadCount;
+                tOvP += rep.overlapShellPairs; tOvT += rep.overlapTriangleCount;
+                tDef += defect; tUvArea += uvArea;
+            }
+
+            // TOTAL row — pooled texel percentiles across all LODs
+            pooled.Sort();
+            float gMed = Percentile(pooled, 0.5f);
+            float gP5 = Percentile(pooled, 0.05f);
+            float gP95 = Percentile(pooled, 0.95f);
+            float gSpread = (gP5 > 1e-12f) ? gP95 / gP5 : 0f;
+            float defPct = 100f * tDef / Mathf.Max(1, tFaces);
+            csv.AppendLine(string.Format(CultureInfo.InvariantCulture,
+                "TOTAL,{0},{1},{2},{3},{4},{5},{6},{7},{8:0.###},{9:0.#####},{10:0.#####},{11:0.#####},{12:0.###},{13:0.#####}",
+                tFaces, tInv, tZero, tOob, tTxl, tOvP, tOvT, tDef, defPct,
+                gMed, gP5, gP95, gSpread, tUvArea));
+
+            try
+            {
+                File.WriteAllText(Path.Combine(outputDir, "stage_e_metrics.csv"), csv.ToString());
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] Stage E3 metrics CSV write failed on '{lg.name}': {ex.Message}");
+                return;
+            }
+
+            UvtLog.Info(UvtLog.Category.Benchmark,
+                $"[HierRepack] Stage E3 '{lg.name}': defectPct={defPct:F2}% "
+                + $"(inv={tInv} oob={tOob} txlBad={tTxl} ovlp={tOvP}pairs/{tOvT}tri "
+                + $"spread={gSpread:F1}×) over {tFaces} faces → stage_e_metrics.csv");
+        }
+
+        /// <summary>Re-weld a fully-unwelded cascaded UV2 buffer: corners whose
+        /// placed UV2 quantises to the same sub-pixel cell collapse onto the
+        /// first index seen there. <see cref="BuildCascadedUv2"/> emits one
+        /// vertex per face corner but identical UV2 on a shell's shared verts
+        /// (same UV0 → same placement), so this rebuilds the real UV islands
+        /// that <see cref="UvShellExtractor.Extract"/> finds by shared index.
+        /// Returns a remapped index buffer the same length as
+        /// <paramref name="tris"/>; the UV2 array is unchanged (collapsed indices
+        /// reference an equal UV).</summary>
+        static int[] WeldByPlacedUv(Vector2[] uv2, int[] tris)
+        {
+            const float q = 1e-5f; // sub-pixel at any sane atlas resolution
+            var map = new Dictionary<long, int>(uv2.Length);
+            var canon = new int[uv2.Length];
+            for (int i = 0; i < uv2.Length; i++)
+            {
+                int qx = Mathf.RoundToInt(uv2[i].x / q);
+                int qy = Mathf.RoundToInt(uv2[i].y / q);
+                long key = ((long)(uint)qx << 32) | (uint)qy;
+                if (map.TryGetValue(key, out int first)) canon[i] = first;
+                else { map[key] = i; canon[i] = i; }
+            }
+            var outTris = new int[tris.Length];
+            for (int i = 0; i < tris.Length; i++)
+            {
+                int v = tris[i];
+                outTris[i] = (v >= 0 && v < canon.Length) ? canon[v] : v;
+            }
+            return outTris;
+        }
+
+        /// <summary>Percentile of a PRE-SORTED ascending list (nearest-rank).
+        /// Returns 0 for an empty list.</summary>
+        static float Percentile(List<float> sorted, float q)
+        {
+            if (sorted == null || sorted.Count == 0) return 0f;
+            int idx = Mathf.Clamp(
+                Mathf.RoundToInt(q * (sorted.Count - 1)), 0, sorted.Count - 1);
+            return sorted[idx];
+        }
+
+        /// <summary>Signed area of a UV triangle (½ cross product).</summary>
+        static float SignedUvArea(Vector2 a, Vector2 b, Vector2 c)
+            => 0.5f * ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y));
 
         static void WriteProxyUv2Png(string outputDir, Result r)
         {
