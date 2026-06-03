@@ -406,5 +406,20 @@
 **Вывод / следующий шаг (ранее отложенный — теперь данные требуют его):** нужен **topological-neighbour fallback** для tinyOrphan. Раньше в коде стоял комментарий «defer until the data shows it's needed» — данные показали: на финишных LOD'ах orphan'ы дают 85–98% fresh. План: построить shell-shell adjacency на finer LOD (по общим рёбрам `canonicalTris`), и tinyOrphan вливать в соседний шелл с наибольшей общей границей, наследуя его groupId, вместо открытия fresh-группы. Открытый вопрос — что делать с orphan'ом, у которого ВСЕ соседи тоже tinyOrphan (цепочка крошечных шеллов): либо chain-resolve до первого не-tiny, либо слить такой кластер в один общий домен.
 
 **НЕ сделано:**
-- Topological fallback ещё не реализован — это следующий PR.
-- Defaults `skipAreaFrac=0.001`/`skipMaxFaceCount=4` не трогали; после fallback'а пересвипнуть и калибровать уже по остаточному `tinyOrphan`.
+- Topological fallback ещё не реализован — отложен (см. ниже: сначала Stage E даёт объективную метрику).
+- Defaults `skipAreaFrac=0.001`/`skipMaxFaceCount=4` не трогали; калибровать уже по метрикам Stage E, а не по `tinyOrphan`.
+
+## Эксперимент 2026-06-03 (Stage E) — старт пакинга домен-атласа, слайс E1
+
+**Решение:** вместо tinyOrphan-fallback идём в Stage E. Обоснование: `groupCount`/`tinyOrphan` — это 3D-сегментация без единой UV-координаты, объективной метрики нет. Только Stage E даёт 2D-атлас → overlap/density/inverted. И вероятно orphan-крошево в атласе займёт пренебрежимо мало — решим это уже по метрикам.
+
+**Нарезка (один концерн = один коммит):**
+- **E1 (этот коммит):** `PackDomainCharts` — для каждой lighting-группы её canonical-шелл проецируется планарно (`basisU/V`, `extentU/V` из Stage C) в локальный [0,1], скармливается в `xatlasAddUvMesh` с `faceMaterial = groupId` (границы чартов по группам), `ComputeCharts`+`PackCharts` раскладывают. Выход: `r.domainAtlasRects[groupId]` (общий layout домена) + `domains_atlas.png`. Без записи мешей.
+- **E2:** для каждого LOD member-шеллы проецируются в rect своей группы → `finalUv2/finalTris/finalSourceVertexIdx` → `BuildFinalMeshes` (Stage F готов) → `lodN_final_uv2.png`.
+- **E3:** метрики на атласе (overlap-пары / inverted / texel density) → CSV + скаляр для пере-свипа порогов.
+
+**Технические находки при реализации E1:**
+- `xatlasAddUvMesh → ComputeCharts → PackCharts` — рабочая последовательность в этой кодовой базе (так делает `XatlasRepack.RepackSingle`); `ComputeCharts` на UV-меше НЕ пере-развёртывает, держит наши UV, а `faceMaterial` задаёт границы чартов.
+- Выход `xatlasGetOutputVertexData` уже нормирован в [0,1] в этой нативной сборке — проверено по `proxy_uv2_auto.png` (читает выход напрямую, заполняет 0-1 box). Комментарий «atlas-pixel space» в `XatlasRepack.cs` устарел.
+
+**Проверка:** Unity-компиляция в этом окружении недоступна (нет toolchain'а; тесты/FBX/бенч — ручной прогон). Сделана статическая сверка сигнатур (`xatlasAddUvMesh`/`PackCharts`/`GetOutputVertexData`), полей `Shell3D`/`Options`, баланс скобок. Прогон бенча на 4 кейсах + визуальная проверка `domains_atlas.png` — следующий шаг (ручной, в Unity).

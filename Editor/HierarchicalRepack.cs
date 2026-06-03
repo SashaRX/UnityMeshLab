@@ -286,6 +286,26 @@ namespace SashaRX.UnityMeshLab
             /// Null until Stage D runs.</summary>
             public List<CascadeStat> cascadeStats;
 
+            // ─── Stage E: packed lighting-domain atlas ──────────────
+            /// <summary>Stage E (slice E1): packed UV of the canonical
+            /// charts — one chart per lighting-domain group, each group's
+            /// canonical (deepest-member) shell projected onto its own
+            /// plane and laid out by xatlas. Normalised [0,1]. Diagnostic
+            /// render: domains_atlas.png. Null until Stage E runs.</summary>
+            public Vector2[] domainAtlasUv;
+            /// <summary>Stage E (slice E1): index buffer for
+            /// <see cref="domainAtlasUv"/>. xatlas may split vertices at
+            /// chart seams, so this is its own buffer.</summary>
+            public int[] domainAtlasTris;
+            /// <summary>Stage E (slice E1): packed atlas rect (normalised
+            /// [0,1]) of each lighting-domain group, indexed by groupId.
+            /// This is the SHARED layout: slice E2 maps every LOD's member
+            /// shells into their group's rect so the whole lighting domain
+            /// occupies the same atlas region across all LODs. Null entries
+            /// (zero-size rect) mean the group contributed no packable
+            /// geometry.</summary>
+            public Rect[] domainAtlasRects;
+
             public string error;
         }
 
@@ -532,6 +552,18 @@ namespace SashaRX.UnityMeshLab
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     $"[HierRepack] stage D cascade grouping failed on '{lg.name}': {ex.Message}");
+            }
+            // Stage E (slice E1): parameterise each lighting-domain group's
+            // canonical shell planarly and pack the charts into one shared
+            // atlas via xatlas (faceMaterial = groupId forces a chart
+            // boundary per group). Produces the per-group atlas rects that
+            // slice E2 will map every LOD's member shells into. Layout only
+            // — no per-LOD UV2 / mesh writing here.
+            try { PackDomainCharts(lg, opts, meshDiag, result); }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] stage E domain pack failed on '{lg.name}': {ex.Message}");
             }
             return result;
         }
@@ -1093,6 +1125,9 @@ namespace SashaRX.UnityMeshLab
             // Stage D: per-LOD lighting-domain groups (same colour across
             // LODs when cascade matched; new colours for unmatched detail).
             WritePerLodGroupsPngs(outputDir, lg, result);
+            // Stage E (slice E1): the packed shared domain atlas — one chart
+            // per lighting-domain group, laid out by xatlas.
+            WriteDomainAtlasPng(outputDir, result);
             return result;
         }
 
@@ -1220,6 +1255,16 @@ namespace SashaRX.UnityMeshLab
         ///                         (no UV0 input). Needs the native bridge's
         ///                         xatlasAddMesh export (post DLL rebuild).
         /// Each PNG is skipped if its variant failed to produce data.</summary>
+        /// <summary>Stage E (slice E1) diagnostic: render the packed shared
+        /// domain atlas (one chart per lighting-domain group) to
+        /// domains_atlas.png via the shared UV writer. UV is already [0,1].</summary>
+        static void WriteDomainAtlasPng(string outputDir, Result r)
+        {
+            if (r.domainAtlasUv == null || r.domainAtlasTris == null) return;
+            UvPngWriter.Render(Path.Combine(outputDir, "domains_atlas.png"),
+                r.domainAtlasUv, r.domainAtlasTris);
+        }
+
         static void WriteProxyUv2Png(string outputDir, Result r)
         {
             if (r.proxyUv2Clean != null && r.proxyTrisClean != null)
@@ -2114,6 +2159,208 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Info(UvtLog.Category.Benchmark,
                 $"[HierRepack] Stage D: '{lg.name}' final group count = {r.groups.Length} "
                 + $"(seeded={r.perLodShells[deepest]?.Length ?? 0} from deepest LOD{deepest})");
+        }
+
+        // ─── Stage E (slice E1): pack lighting-domain canonical charts ──
+
+        /// <summary>Stage E, slice 1. For each lighting-domain group, take its
+        /// canonical (deepest-member) shell, project every face corner onto
+        /// the shell's own plane (basisU/basisV centred at centroid,
+        /// normalised by the half-extents so the chart lands in roughly
+        /// [0,1]²), and hand the whole set to xatlas as a UV mesh with
+        /// faceMaterial = groupId. xatlas treats each material as a hard chart
+        /// boundary, so every group becomes its own chart; PackCharts then
+        /// lays the charts out without overlap. xatlas output UV is already
+        /// normalised [0,1] in this native build (confirmed against
+        /// proxy_uv2_auto.png), so we read it back directly.
+        ///
+        /// Output is the SHARED domain layout: <c>r.domainAtlasRects[groupId]</c>
+        /// is where that lighting domain lives in the atlas. Slice E2 maps
+        /// every LOD's member shells into their group's rect so the whole
+        /// domain occupies the same atlas region across LODs. No per-LOD UV2
+        /// or mesh writing happens here; <c>r.domainAtlasUv</c> /
+        /// <c>r.domainAtlasTris</c> back the domains_atlas.png diagnostic.</summary>
+        static void PackDomainCharts(LODGroup lg, Options opts, float meshDiag, Result r)
+        {
+            if (r.groups == null || r.groups.Length == 0) return;
+            if (r.perLodShells == null) return;
+
+            var lods = lg.GetLODs();
+            int lodCount = lods.Length;
+
+            // Lazy per-LOD geometry cache (worldVerts + rawTris). Stage C
+            // didn't keep these on the Result; recompute on first use. Most
+            // groups' canonical shells live on the deepest LOD, but fresh /
+            // tinyOrphan groups born on a finer LOD have their canonical there.
+            var worldVertsByLod = new Vector3[lodCount][];
+            var rawTrisByLod = new int[lodCount][];
+            var builtLod = new bool[lodCount];
+            void EnsureLodGeometry(int li)
+            {
+                if (builtLod[li]) return;
+                builtLod[li] = true;
+                if (li < 0 || li >= lodCount) return;
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) return;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) return;
+                BuildFaceData(mesh, rs[0].transform, meshDiag,
+                    out Vector3[] wv, out int[] rt, out _, out _);
+                worldVertsByLod[li] = wv;
+                rawTrisByLod[li] = rt;
+            }
+
+            // Build one UV mesh: 3 verts per canonical face, each carrying its
+            // planar UV; faceMaterial = groupId; index buffer is sequential.
+            var uvList = new List<float>(1024);
+            var idxList = new List<uint>(1024);
+            var faceMatList = new List<uint>(512);
+            var inputVertGroup = new List<int>(1024); // myVertIdx → groupId
+            uint vCounter = 0;
+
+            for (int g = 0; g < r.groups.Length; g++)
+            {
+                var grp = r.groups[g];
+                int cl = grp.canonicalLod;
+                if (cl < 0 || cl >= lodCount) continue;
+                var shellsAtCl = r.perLodShells[cl];
+                if (shellsAtCl == null || grp.canonicalShellId < 0
+                    || grp.canonicalShellId >= shellsAtCl.Length) continue;
+                EnsureLodGeometry(cl);
+                var wv = worldVertsByLod[cl];
+                var rt = rawTrisByLod[cl];
+                if (wv == null || rt == null) continue;
+
+                var sh = shellsAtCl[grp.canonicalShellId];
+                if (sh.faceIndices == null || sh.faceIndices.Count == 0) continue;
+                // Half-extents → map [-ext,+ext] onto [0,1]. ComputeExtents
+                // already floored these away from zero, but guard anyway.
+                float invU = 0.5f / Mathf.Max(sh.extentU, 1e-4f);
+                float invV = 0.5f / Mathf.Max(sh.extentV, 1e-4f);
+
+                foreach (int f in sh.faceIndices)
+                {
+                    if (f < 0 || f * 3 + 2 >= rt.Length) continue;
+                    for (int k = 0; k < 3; k++)
+                    {
+                        Vector3 d = wv[rt[f * 3 + k]] - sh.centroid;
+                        float u = 0.5f + Vector3.Dot(d, sh.basisU) * invU;
+                        float v = 0.5f + Vector3.Dot(d, sh.basisV) * invV;
+                        uvList.Add(u);
+                        uvList.Add(v);
+                        idxList.Add(vCounter);
+                        inputVertGroup.Add(grp.groupId);
+                        vCounter++;
+                    }
+                    faceMatList.Add((uint)grp.groupId);
+                }
+            }
+
+            int vc = (int)vCounter;
+            int ic = idxList.Count;
+            int fc = faceMatList.Count;
+            if (vc == 0 || ic == 0 || fc == 0)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] Stage E: '{lg.name}' no canonical chart geometry — skipped");
+                return;
+            }
+
+            var uvArr = uvList.ToArray();
+            var idxArr = idxList.ToArray();
+            var faceMatArr = faceMatList.ToArray();
+
+            XatlasNative.xatlasCreate();
+            try
+            {
+                int addErr = XatlasNative.xatlasAddUvMesh(uvArr, (uint)vc, idxArr,
+                    (uint)ic, faceMatArr, (uint)fc);
+                if (addErr != 0)
+                {
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        $"[HierRepack] Stage E: '{lg.name}' xatlasAddUvMesh err={addErr}");
+                    return;
+                }
+                XatlasNative.xatlasComputeCharts();
+                XatlasNative.xatlasPackCharts(
+                    maxChartSize: 0,
+                    padding: (uint)opts.interDomainPaddingPx,
+                    texelsPerUnit: 0f,
+                    resolution: (uint)opts.atlasResolutionPx,
+                    bilinear: 1,
+                    blockAlign: 0,
+                    bruteForce: 1,
+                    rotateCharts: 0,
+                    rotateChartsToAxis: 0);
+
+                if (XatlasNative.xatlasGetMeshCount() <= 0) return;
+                int outVc = XatlasNative.xatlasGetOutputVertexCount(0);
+                int outIc = XatlasNative.xatlasGetOutputIndexCount(0);
+                if (outVc <= 0 || outIc <= 0) return;
+
+                var xref = new uint[outVc];
+                var outUvFlat = new float[outVc * 2];
+                var chartIdx = new uint[outVc];
+                XatlasNative.xatlasGetOutputVertexData(0, xref, outUvFlat, chartIdx, outVc);
+                var outIndsU = new uint[outIc];
+                XatlasNative.xatlasGetOutputIndices(0, outIndsU, outIc);
+
+                // Read placed UV (already [0,1]) and accumulate each group's
+                // chart bounding rect via its output verts. xref[i] maps an
+                // output vert back to our input vert, whose group we recorded.
+                var domUv = new Vector2[outVc];
+                var rectMin = new Vector2[r.groups.Length];
+                var rectMax = new Vector2[r.groups.Length];
+                for (int g = 0; g < r.groups.Length; g++)
+                {
+                    rectMin[g] = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
+                    rectMax[g] = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
+                }
+                for (int i = 0; i < outVc; i++)
+                {
+                    var uv = new Vector2(outUvFlat[i * 2], outUvFlat[i * 2 + 1]);
+                    domUv[i] = uv;
+                    int myVert = (int)xref[i];
+                    if (myVert < 0 || myVert >= inputVertGroup.Count) continue;
+                    int gid = inputVertGroup[myVert];
+                    if (gid < 0 || gid >= r.groups.Length) continue;
+                    if (uv.x < rectMin[gid].x) rectMin[gid].x = uv.x;
+                    if (uv.y < rectMin[gid].y) rectMin[gid].y = uv.y;
+                    if (uv.x > rectMax[gid].x) rectMax[gid].x = uv.x;
+                    if (uv.y > rectMax[gid].y) rectMax[gid].y = uv.y;
+                }
+
+                var rects = new Rect[r.groups.Length];
+                int packedGroups = 0;
+                for (int g = 0; g < r.groups.Length; g++)
+                {
+                    if (rectMax[g].x < rectMin[g].x)
+                    {
+                        rects[g] = new Rect(0f, 0f, 0f, 0f); // group contributed nothing
+                        continue;
+                    }
+                    rects[g] = new Rect(rectMin[g].x, rectMin[g].y,
+                        rectMax[g].x - rectMin[g].x, rectMax[g].y - rectMin[g].y);
+                    packedGroups++;
+                }
+
+                var domTris = new int[outIc];
+                for (int i = 0; i < outIc; i++) domTris[i] = (int)outIndsU[i];
+
+                r.domainAtlasUv = domUv;
+                r.domainAtlasTris = domTris;
+                r.domainAtlasRects = rects;
+
+                uint aw = XatlasNative.xatlasGetAtlasWidth();
+                uint ah = XatlasNative.xatlasGetAtlasHeight();
+                uint charts = XatlasNative.xatlasGetChartCount();
+                UvtLog.Info(UvtLog.Category.Benchmark,
+                    $"[HierRepack] Stage E: '{lg.name}' packed {packedGroups}/{r.groups.Length} "
+                    + $"domain charts (xatlas charts={charts}) into {aw}×{ah} atlas "
+                    + $"(canonical faces={fc}, outVerts={outVc})");
+            }
+            finally { XatlasNative.xatlasDestroy(); }
         }
 
         // ─── PR-3 Stage 6: bake the new uv2 into cloned LOD meshes ────
