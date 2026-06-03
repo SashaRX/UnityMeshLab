@@ -357,8 +357,10 @@ namespace SashaRX.UnityMeshLab
         /// <see cref="Result.domainPlacements"/>.</summary>
         public struct DomainPlacement
         {
-            public float su, ou;   // atlasU = su·inU + ou
-            public float sv, ov;   // atlasV = sv·inV + ov
+            public Vector2 uvc;    // canonical UV0-island centroid
+            public float scale;    // uniform scale: in = (uv0 − uvc)·scale
+            public float su, ou;   // atlasU = su·in.x + ou
+            public float sv, ov;   // atlasV = sv·in.y + ov
             public bool valid;
         }
 
@@ -2251,6 +2253,7 @@ namespace SashaRX.UnityMeshLab
             // tinyOrphan groups born on a finer LOD have their canonical there.
             var worldVertsByLod = new Vector3[lodCount][];
             var rawTrisByLod = new int[lodCount][];
+            var uv0ByLod = new Vector2[lodCount][];   // authored UV0, indexed like worldVerts
             var builtLod = new bool[lodCount];
             void EnsureLodGeometry(int li)
             {
@@ -2266,22 +2269,28 @@ namespace SashaRX.UnityMeshLab
                     out Vector3[] wv, out int[] rt, out _, out _);
                 worldVertsByLod[li] = wv;
                 rawTrisByLod[li] = rt;
+                uv0ByLod[li] = mesh.uv;   // Vector2[] sized to vertexCount, or empty
             }
 
-            // Build one UV mesh: 3 verts per canonical face. The chart UV is the
-            // canonical shell projected onto its own plane in WORLD UNITS — NO
-            // per-shell [0,1] normalisation (that stretched non-square shells
-            // and gave every shell a different texel density). Real proportions
-            // in, fixed texelsPerUnit at pack time → identical texel density
-            // out. faceMaterial = groupId; index buffer is sequential. We also
-            // record each input vert's group + its (inU,inV) so the readback can
-            // fit the per-group inU→atlasU / inV→atlasV affine.
+            // Build one UV mesh per canonical face. We PRESERVE the shell's own
+            // authored UV0 — its real unwrap — and only apply a single uniform
+            // scale + recentre per shell. No planar re-projection (that threw
+            // the shell's parameterisation away and folded curves). The scale
+            // S = sqrt(area3D / areaUV0) makes every canonical's UV-area equal
+            // its 3D area, so a fixed texelsPerUnit at pack time → identical
+            // texel density everywhere, with the shell shape kept intact.
+            // faceMaterial = groupId. We record each input vert's group + its
+            // scaled coord so the readback can fit the per-group affine, and we
+            // stash (uvc, S) per group so BuildCascadedUv2 can transform finer
+            // members' UV0 into the same frame.
             var uvList = new List<float>(1024);
             var idxList = new List<uint>(1024);
             var faceMatList = new List<uint>(512);
             var inputVertGroup = new List<int>(1024);  // myVertIdx → groupId
-            var inputVertU = new List<float>(1024);    // myVertIdx → inU (world)
-            var inputVertV = new List<float>(1024);    // myVertIdx → inV (world)
+            var inputVertU = new List<float>(1024);    // myVertIdx → scaled uv0.x
+            var inputVertV = new List<float>(1024);    // myVertIdx → scaled uv0.y
+            var pendingUvc = new Vector2[r.groups.Length];
+            var pendingScale = new float[r.groups.Length];
             uint vCounter = 0;
             double totalCanonArea = 0.0;
 
@@ -2294,23 +2303,44 @@ namespace SashaRX.UnityMeshLab
                 if (shellsAtCl == null || grp.canonicalShellId < 0
                     || grp.canonicalShellId >= shellsAtCl.Length) continue;
                 EnsureLodGeometry(cl);
-                var wv = worldVertsByLod[cl];
                 var rt = rawTrisByLod[cl];
-                if (wv == null || rt == null) continue;
+                var uv0 = uv0ByLod[cl];
+                if (rt == null || uv0 == null || uv0.Length == 0) continue;
 
                 var sh = shellsAtCl[grp.canonicalShellId];
                 if (sh.faceIndices == null || sh.faceIndices.Count == 0) continue;
+
+                // Preserve the shell's UV0 island: centroid + UV0 area, then a
+                // single uniform scale to normalise texel density (UV-area →
+                // 3D-area). Shape untouched.
+                Vector2 uvc = Vector2.zero; int cornerCount = 0; double uvArea = 0.0;
+                foreach (int f in sh.faceIndices)
+                {
+                    if (f < 0 || f * 3 + 2 >= rt.Length) continue;
+                    int a = rt[f * 3], b = rt[f * 3 + 1], c = rt[f * 3 + 2];
+                    if (a >= uv0.Length || b >= uv0.Length || c >= uv0.Length) continue;
+                    uvc += uv0[a] + uv0[b] + uv0[c]; cornerCount += 3;
+                    uvArea += 0.5 * Mathf.Abs((uv0[b].x - uv0[a].x) * (uv0[c].y - uv0[a].y)
+                                            - (uv0[c].x - uv0[a].x) * (uv0[b].y - uv0[a].y));
+                }
+                if (cornerCount == 0) continue;
+                uvc /= cornerCount;
+                float S = (uvArea > 1e-12)
+                    ? Mathf.Sqrt(sh.totalArea / (float)uvArea) : 1f;
+                pendingUvc[grp.groupId] = uvc;
+                pendingScale[grp.groupId] = S;
                 totalCanonArea += sh.totalArea;
 
                 foreach (int f in sh.faceIndices)
                 {
                     if (f < 0 || f * 3 + 2 >= rt.Length) continue;
+                    int fa = rt[f * 3], fb = rt[f * 3 + 1], fc = rt[f * 3 + 2];
+                    if (fa >= uv0.Length || fb >= uv0.Length || fc >= uv0.Length) continue;
                     for (int k = 0; k < 3; k++)
                     {
                         int vi = rt[f * 3 + k];
-                        Vector3 d = wv[vi] - sh.centroid;
-                        float u = Vector3.Dot(d, sh.basisU); // world units, no normalise
-                        float v = Vector3.Dot(d, sh.basisV);
+                        float u = (uv0[vi].x - uvc.x) * S;   // preserved UV0, scaled
+                        float v = (uv0[vi].y - uvc.y) * S;
                         uvList.Add(u);
                         uvList.Add(v);
                         idxList.Add(vCounter);
@@ -2323,10 +2353,10 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            // Fixed texel density: size the pack so all canonical area fits the
-            // atlas at ~packEff coverage. texelsPerUnit is texels per world unit;
-            // with world-unit input UV, every chart scales by the same factor →
-            // identical texel density across all domains.
+            // Fixed texel density: with each shell's UV scaled so UV-area ==
+            // 3D-area, the input UV is effectively in world units, so sizing the
+            // pack by total canonical 3D area gives every chart the SAME
+            // texels/unit.
             const float kPackEff = 0.5f;
             float texelsPerUnit = (totalCanonArea > 1e-9)
                 ? opts.atlasResolutionPx * Mathf.Sqrt(kPackEff / (float)totalCanonArea)
@@ -2445,6 +2475,8 @@ namespace SashaRX.UnityMeshLab
                         double svD = (n * aSioV[g] - aSiV[g] * aSoV[g]) / denV;
                         placements[g] = new DomainPlacement
                         {
+                            uvc = pendingUvc[g],
+                            scale = pendingScale[g],
                             su = (float)suD,
                             ou = (float)((aSoU[g] - suD * aSi[g]) / n),
                             sv = (float)svD,
@@ -2477,19 +2509,18 @@ namespace SashaRX.UnityMeshLab
 
         // ─── Stage E (slice E2): cascade — align every LOD to its domain ──
 
-        /// <summary>Stage E, slice 2 — the cascade payoff. Stage E1 packed each
-        /// group's canonical (deepest-member) shell and fitted the affine
-        /// <c>r.domainPlacements[groupId]</c> (canonical-plane coordinate →
-        /// atlas UV). Here EVERY shell on EVERY LOD reuses that SAME affine:
-        /// project the vert onto the group's canonical plane (basisU/basisV/
-        /// centroid from Stage C) to a world-unit (inU,inV), then
-        /// <c>uv = (su·inU+ou, sv·inV+ov)</c>. So a matched finer shell lands
-        /// in the SAME atlas region as the canonical it cascaded into, at the
-        /// SAME texel density — one lightmap bake is valid across all LODs,
-        /// which is the whole point. An unmatched shell is the canonical of its
-        /// own fresh group, so it uses the affine for the slot it was repacked
-        /// into. No per-shell [0,1] normalisation → real proportions, uniform
-        /// texel density.
+        /// <summary>Stage E, slice 2 — the cascade payoff. Stage E1 PRESERVED
+        /// each group's canonical shell UV0 (recentre + uniform scale) and
+        /// fitted <c>r.domainPlacements[groupId]</c>: uvc, scale, and the affine
+        /// (scaled-UV0 → atlas UV). Here EVERY shell on EVERY LOD reuses that
+        /// SAME placement on its OWN authored UV0:
+        /// <c>in = (uv0 − uvc)·scale; uv = (su·in.x+ou, sv·in.y+ov)</c>. Members
+        /// of a lighting domain share UV0 layout across LODs, so the same UV0
+        /// coord maps to the same atlas texel on every LOD → a matched finer
+        /// shell lands in the SAME atlas region as its canonical, at the SAME
+        /// texel density, with the shell's real unwrap intact (no planar
+        /// re-projection, no distortion). An unmatched shell is the canonical of
+        /// its own fresh group and uses the placement for its repacked slot.
         ///
         /// Fills <c>r.finalUv2</c> / <c>r.finalTris</c> /
         /// <c>r.finalSourceVertexIdx</c> per LOD (output verts are one per face
@@ -2519,7 +2550,9 @@ namespace SashaRX.UnityMeshLab
                 if (mesh == null) continue;
 
                 BuildFaceData(mesh, rs[0].transform, meshDiag,
-                    out Vector3[] wv, out int[] rt, out _, out _);
+                    out Vector3[] _, out int[] rt, out _, out _);
+                var uv0 = mesh.uv;
+                if (uv0 == null || uv0.Length == 0) continue;
 
                 var uvOut  = new List<Vector2>(rt.Length);
                 var triOut = new List<int>(rt.Length);
@@ -2529,31 +2562,29 @@ namespace SashaRX.UnityMeshLab
                 {
                     int gid = (s < shellToGroup.Length) ? shellToGroup[s] : -1;
                     if (gid < 0 || gid >= r.groups.Length) continue;
-                    var grp = r.groups[gid];
-                    if (grp.canonicalLod < 0 || grp.canonicalLod >= lodCount) continue;
-                    var canonShells = r.perLodShells[grp.canonicalLod];
-                    if (canonShells == null || grp.canonicalShellId < 0
-                        || grp.canonicalShellId >= canonShells.Length) continue;
                     if (gid >= r.domainPlacements.Length) continue;
                     var pl = r.domainPlacements[gid];
                     if (!pl.valid) continue;
 
-                    // Same plane (canonical basis/centroid) + same fitted affine
-                    // the canonical itself uses → finer members land in the SAME
-                    // atlas region at the SAME texel density. No per-shell [0,1]
-                    // normalisation, no distortion.
-                    var canon = canonShells[grp.canonicalShellId];
+                    // PRESERVE the shell: take its own authored UV0, recentre +
+                    // uniform-scale into the SAME frame the canonical was fitted
+                    // in (canonical's uvc + scale), then apply the group affine.
+                    // Members of a domain share UV0 layout across LODs, so the
+                    // same UV0 coord maps to the same atlas texel on every LOD —
+                    // one bake valid everywhere, at uniform texel density, with
+                    // the shell's real unwrap intact (no planar re-projection).
                     var sh = shells[s];
                     if (sh.faceIndices == null) continue;
                     foreach (int f in sh.faceIndices)
                     {
                         if (f < 0 || f * 3 + 2 >= rt.Length) continue;
+                        int a = rt[f * 3], b = rt[f * 3 + 1], c = rt[f * 3 + 2];
+                        if (a >= uv0.Length || b >= uv0.Length || c >= uv0.Length) continue;
                         for (int k = 0; k < 3; k++)
                         {
                             int vi = rt[f * 3 + k];
-                            Vector3 d = wv[vi] - canon.centroid;
-                            float inU = Vector3.Dot(d, canon.basisU);
-                            float inV = Vector3.Dot(d, canon.basisV);
+                            float inU = (uv0[vi].x - pl.uvc.x) * pl.scale;
+                            float inV = (uv0[vi].y - pl.uvc.y) * pl.scale;
                             triOut.Add(uvOut.Count);
                             uvOut.Add(new Vector2(pl.su * inU + pl.ou,
                                                   pl.sv * inV + pl.ov));
