@@ -2164,10 +2164,16 @@ namespace SashaRX.UnityMeshLab
         // ─── Stage E (slice E1): pack lighting-domain canonical charts ──
 
         /// <summary>Stage E, slice 1. For each lighting-domain group, take its
-        /// canonical (deepest-member) shell, project every face corner onto
-        /// the shell's own plane (basisU/basisV centred at centroid,
+        /// canonical (deepest-member) shell and emit its faces with the mesh's
+        /// AUTHORED UV0 as the chart UV — a real unwrap that stitches the
+        /// shell without folding. Single-plane projection (the original
+        /// approach) collapses wrap-around shells — cylinders, rings, tubes,
+        /// arcs — whose area-weighted dominantNormal cancels to ~zero, giving
+        /// folded sine-wave / bowtie / rosette charts; it survives only as the
+        /// fallback for shells with no UV0. (Original projection note: basis
+        /// basisU/basisV centred at centroid,
         /// normalised by the half-extents so the chart lands in roughly
-        /// [0,1]²), and hand the whole set to xatlas as a UV mesh with
+        /// [0,1]). Both forms feed xatlas as a UV mesh with
         /// faceMaterial = groupId. xatlas treats each material as a hard chart
         /// boundary, so every group becomes its own chart; PackCharts then
         /// lays the charts out without overlap. xatlas output UV is already
@@ -2194,6 +2200,7 @@ namespace SashaRX.UnityMeshLab
             // tinyOrphan groups born on a finer LOD have their canonical there.
             var worldVertsByLod = new Vector3[lodCount][];
             var rawTrisByLod = new int[lodCount][];
+            var uv0ByLod = new Vector2[lodCount][];   // authored UV0, indexed like worldVerts
             var builtLod = new bool[lodCount];
             void EnsureLodGeometry(int li)
             {
@@ -2209,10 +2216,12 @@ namespace SashaRX.UnityMeshLab
                     out Vector3[] wv, out int[] rt, out _, out _);
                 worldVertsByLod[li] = wv;
                 rawTrisByLod[li] = rt;
+                uv0ByLod[li] = mesh.uv; // Vector2[] sized to vertexCount, or empty
             }
 
             // Build one UV mesh: 3 verts per canonical face, each carrying its
-            // planar UV; faceMaterial = groupId; index buffer is sequential.
+            // chart UV (authored UV0 where available, planar projection as a
+            // fallback); faceMaterial = groupId; index buffer is sequential.
             var uvList = new List<float>(1024);
             var idxList = new List<uint>(1024);
             var faceMatList = new List<uint>(512);
@@ -2234,8 +2243,18 @@ namespace SashaRX.UnityMeshLab
 
                 var sh = shellsAtCl[grp.canonicalShellId];
                 if (sh.faceIndices == null || sh.faceIndices.Count == 0) continue;
-                // Half-extents → map [-ext,+ext] onto [0,1]. ComputeExtents
-                // already floored these away from zero, but guard anyway.
+
+                // Per-shell chart UV. Prefer the mesh's AUTHORED UV0 — a real
+                // unwrap that doesn't fold. Single-plane projection collapses
+                // wrap-around shells (cylinders, rings, tubes, arcs) because
+                // their area-weighted dominantNormal cancels to ~zero, giving
+                // a garbage basis (sine-wave / bowtie / rosette charts). Using
+                // the authored UV shell and stitching it per lighting domain
+                // via faceMaterial=groupId avoids that entirely. Planar
+                // projection stays as the fallback for shells whose mesh has
+                // no UV0.
+                var uv0 = uv0ByLod[cl];
+                bool useUv0 = uv0 != null && uv0.Length == wv.Length;
                 float invU = 0.5f / Mathf.Max(sh.extentU, 1e-4f);
                 float invV = 0.5f / Mathf.Max(sh.extentV, 1e-4f);
 
@@ -2244,9 +2263,21 @@ namespace SashaRX.UnityMeshLab
                     if (f < 0 || f * 3 + 2 >= rt.Length) continue;
                     for (int k = 0; k < 3; k++)
                     {
-                        Vector3 d = wv[rt[f * 3 + k]] - sh.centroid;
-                        float u = 0.5f + Vector3.Dot(d, sh.basisU) * invU;
-                        float v = 0.5f + Vector3.Dot(d, sh.basisV) * invV;
+                        int vi = rt[f * 3 + k];
+                        float u, v;
+                        if (useUv0)
+                        {
+                            // Authored UV shell — stitched per group, no fold.
+                            u = uv0[vi].x;
+                            v = uv0[vi].y;
+                        }
+                        else
+                        {
+                            // Fallback: planar projection onto the shell plane.
+                            Vector3 d = wv[vi] - sh.centroid;
+                            u = 0.5f + Vector3.Dot(d, sh.basisU) * invU;
+                            v = 0.5f + Vector3.Dot(d, sh.basisV) * invV;
+                        }
                         uvList.Add(u);
                         uvList.Add(v);
                         idxList.Add(vCounter);
