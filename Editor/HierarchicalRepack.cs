@@ -305,6 +305,18 @@ namespace SashaRX.UnityMeshLab
             /// (zero-size rect) mean the group contributed no packable
             /// geometry.</summary>
             public Rect[] domainAtlasRects;
+            /// <summary>Stage E: per-group affine that maps a point's
+            /// canonical-plane coordinate (in WORLD units: dot(worldPos −
+            /// canonCentroid, canonBasisU/V)) to packed atlas UV —
+            /// <c>uv = (su·inU + ou, sv·inV + ov)</c>. Fitted from the
+            /// canonical chart's placed UV, so the canonical reproduces its
+            /// own placement and every finer member of the group reuses the
+            /// SAME affine → all members align in the same atlas region at the
+            /// SAME texel density (xatlas packed at a fixed texelsPerUnit, so
+            /// su≈sv is uniform across groups). Replaces the old per-shell
+            /// [0,1] normalisation, which distorted non-square shells and gave
+            /// each shell a different texel density. Indexed by groupId.</summary>
+            public DomainPlacement[] domainPlacements;
 
             public string error;
         }
@@ -338,6 +350,16 @@ namespace SashaRX.UnityMeshLab
             /// genuinely lacks the geometry) — they still open fresh
             /// groups; subset of <see cref="fresh"/>.</summary>
             public int tinyOrphan;
+        }
+
+        /// <summary>Stage E: affine map from a canonical-plane coordinate (world
+        /// units) to packed atlas UV, per lighting-domain group. See
+        /// <see cref="Result.domainPlacements"/>.</summary>
+        public struct DomainPlacement
+        {
+            public float su, ou;   // atlasU = su·inU + ou
+            public float sv, ov;   // atlasV = sv·inV + ov
+            public bool valid;
         }
 
         /// <summary>Stage C / D / E: a single lighting domain — a set
@@ -2195,15 +2217,18 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Stage E, slice 1 — define the SHARED atlas layout. For
         /// each lighting-domain group, take its canonical (deepest-member)
         /// shell — the one that found no deeper match, i.e. the seed we
-        /// REPACK — project its faces onto the shell's own plane
-        /// (basisU/basisV centred at centroid, normalised by the half-extents
-        /// → local [0,1]) and feed it to xatlas as a UV mesh with
-        /// faceMaterial = groupId. Each material is a hard chart boundary, so
-        /// every group packs as its own chart; we read back each group's
-        /// placed rect (<c>r.domainAtlasRects[groupId]</c>). With
-        /// rotateCharts:0 the placed chart is the input [0,1] box uniformly
-        /// scaled/translated into that rect, so <see cref="BuildCascadedUv2"/>
-        /// can reproduce the placement with a plain [0,1]→rect map.
+        /// REPACK — project its faces onto the shell's own plane in WORLD
+        /// UNITS (inU = dot(worldPos − centroid, basisU); inV likewise; NO
+        /// per-shell normalisation, so proportions are real) and feed it to
+        /// xatlas as a UV mesh with faceMaterial = groupId. Pack runs at a
+        /// FIXED texelsPerUnit (sized so all canonical area fits the atlas at
+        /// ~packEff), so every chart gets identical texel density. Each
+        /// material is a hard chart boundary → one chart per group. From each
+        /// group's placed verts we least-squares-fit the affine
+        /// inU→atlasU / inV→atlasV (<c>r.domainPlacements[groupId]</c>); the
+        /// canonical reproduces its own placement and <see cref="BuildCascadedUv2"/>
+        /// reuses the affine for every finer member. (<c>r.domainAtlasRects</c>
+        /// keeps the bbox for the diagnostic.)
         ///
         /// This is layout only. The cascade payoff — every LOD's matched
         /// shells PROJECTING into their group's rect so one bake is valid
@@ -2243,14 +2268,22 @@ namespace SashaRX.UnityMeshLab
                 rawTrisByLod[li] = rt;
             }
 
-            // Build one UV mesh: 3 verts per canonical face, each carrying its
-            // chart UV (authored UV0 where available, planar projection as a
-            // fallback); faceMaterial = groupId; index buffer is sequential.
+            // Build one UV mesh: 3 verts per canonical face. The chart UV is the
+            // canonical shell projected onto its own plane in WORLD UNITS — NO
+            // per-shell [0,1] normalisation (that stretched non-square shells
+            // and gave every shell a different texel density). Real proportions
+            // in, fixed texelsPerUnit at pack time → identical texel density
+            // out. faceMaterial = groupId; index buffer is sequential. We also
+            // record each input vert's group + its (inU,inV) so the readback can
+            // fit the per-group inU→atlasU / inV→atlasV affine.
             var uvList = new List<float>(1024);
             var idxList = new List<uint>(1024);
             var faceMatList = new List<uint>(512);
-            var inputVertGroup = new List<int>(1024); // myVertIdx → groupId
+            var inputVertGroup = new List<int>(1024);  // myVertIdx → groupId
+            var inputVertU = new List<float>(1024);    // myVertIdx → inU (world)
+            var inputVertV = new List<float>(1024);    // myVertIdx → inV (world)
             uint vCounter = 0;
+            double totalCanonArea = 0.0;
 
             for (int g = 0; g < r.groups.Length; g++)
             {
@@ -2267,14 +2300,7 @@ namespace SashaRX.UnityMeshLab
 
                 var sh = shellsAtCl[grp.canonicalShellId];
                 if (sh.faceIndices == null || sh.faceIndices.Count == 0) continue;
-                // Planar projection of the canonical shell onto its own plane
-                // → local [0,1] via half-extents. rotateCharts:0 keeps xatlas
-                // from rotating the chart, so the placed rect is this [0,1]
-                // box uniformly scaled/translated — which means BuildCascadedUv2
-                // can reproduce the placement with a plain [0,1]→rect map and
-                // every LOD's shells land aligned with the canonical.
-                float invU = 0.5f / Mathf.Max(sh.extentU, 1e-4f);
-                float invV = 0.5f / Mathf.Max(sh.extentV, 1e-4f);
+                totalCanonArea += sh.totalArea;
 
                 foreach (int f in sh.faceIndices)
                 {
@@ -2283,17 +2309,28 @@ namespace SashaRX.UnityMeshLab
                     {
                         int vi = rt[f * 3 + k];
                         Vector3 d = wv[vi] - sh.centroid;
-                        float u = 0.5f + Vector3.Dot(d, sh.basisU) * invU;
-                        float v = 0.5f + Vector3.Dot(d, sh.basisV) * invV;
+                        float u = Vector3.Dot(d, sh.basisU); // world units, no normalise
+                        float v = Vector3.Dot(d, sh.basisV);
                         uvList.Add(u);
                         uvList.Add(v);
                         idxList.Add(vCounter);
                         inputVertGroup.Add(grp.groupId);
+                        inputVertU.Add(u);
+                        inputVertV.Add(v);
                         vCounter++;
                     }
                     faceMatList.Add((uint)grp.groupId);
                 }
             }
+
+            // Fixed texel density: size the pack so all canonical area fits the
+            // atlas at ~packEff coverage. texelsPerUnit is texels per world unit;
+            // with world-unit input UV, every chart scales by the same factor →
+            // identical texel density across all domains.
+            const float kPackEff = 0.5f;
+            float texelsPerUnit = (totalCanonArea > 1e-9)
+                ? opts.atlasResolutionPx * Mathf.Sqrt(kPackEff / (float)totalCanonArea)
+                : 0f;
 
             int vc = (int)vCounter;
             int ic = idxList.Count;
@@ -2324,7 +2361,7 @@ namespace SashaRX.UnityMeshLab
                 XatlasNative.xatlasPackCharts(
                     maxChartSize: 0,
                     padding: (uint)opts.interDomainPaddingPx,
-                    texelsPerUnit: 0f,
+                    texelsPerUnit: texelsPerUnit,   // fixed → identical texel density
                     resolution: (uint)opts.atlasResolutionPx,
                     bilinear: 1,
                     blockAlign: 0,
@@ -2344,13 +2381,24 @@ namespace SashaRX.UnityMeshLab
                 var outIndsU = new uint[outIc];
                 XatlasNative.xatlasGetOutputIndices(0, outIndsU, outIc);
 
-                // Read placed UV (already [0,1]) and accumulate each group's
-                // chart bounding rect via its output verts. xref[i] maps an
-                // output vert back to our input vert, whose group we recorded.
+                // Read placed UV ([0,1]) and, per group, fit the affine
+                // inU→atlasU and inV→atlasV by least squares over the canonical
+                // chart's output verts (exact: xatlas applied a uniform scale +
+                // translation, rotateCharts:0 so no rotation; LSQ is robust to
+                // any axis flip). xref[i] maps an output vert back to our input
+                // vert, whose group + (inU,inV) we recorded. Also keep the bbox
+                // rect for the diagnostic.
+                int nG = r.groups.Length;
                 var domUv = new Vector2[outVc];
-                var rectMin = new Vector2[r.groups.Length];
-                var rectMax = new Vector2[r.groups.Length];
-                for (int g = 0; g < r.groups.Length; g++)
+                var rectMin = new Vector2[nG];
+                var rectMax = new Vector2[nG];
+                // LSQ accumulators per group, per axis: n, Σin, Σout, Σin², Σin·out
+                var aN  = new double[nG];
+                var aSi = new double[nG]; var aSoU = new double[nG];
+                var aSii = new double[nG]; var aSioU = new double[nG];
+                var aSiV = new double[nG]; var aSoV = new double[nG];
+                var aSiiV = new double[nG]; var aSioV = new double[nG];
+                for (int g = 0; g < nG; g++)
                 {
                     rectMin[g] = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
                     rectMax[g] = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
@@ -2362,16 +2410,23 @@ namespace SashaRX.UnityMeshLab
                     int myVert = (int)xref[i];
                     if (myVert < 0 || myVert >= inputVertGroup.Count) continue;
                     int gid = inputVertGroup[myVert];
-                    if (gid < 0 || gid >= r.groups.Length) continue;
+                    if (gid < 0 || gid >= nG) continue;
+                    double inU = inputVertU[myVert], inV = inputVertV[myVert];
+                    aN[gid]   += 1.0;
+                    aSi[gid]  += inU;  aSoU[gid] += uv.x;
+                    aSii[gid] += inU * inU; aSioU[gid] += inU * uv.x;
+                    aSiV[gid] += inV;  aSoV[gid] += uv.y;
+                    aSiiV[gid]+= inV * inV; aSioV[gid] += inV * uv.y;
                     if (uv.x < rectMin[gid].x) rectMin[gid].x = uv.x;
                     if (uv.y < rectMin[gid].y) rectMin[gid].y = uv.y;
                     if (uv.x > rectMax[gid].x) rectMax[gid].x = uv.x;
                     if (uv.y > rectMax[gid].y) rectMax[gid].y = uv.y;
                 }
 
-                var rects = new Rect[r.groups.Length];
+                var rects = new Rect[nG];
+                var placements = new DomainPlacement[nG];
                 int packedGroups = 0;
-                for (int g = 0; g < r.groups.Length; g++)
+                for (int g = 0; g < nG; g++)
                 {
                     if (rectMax[g].x < rectMin[g].x)
                     {
@@ -2380,6 +2435,23 @@ namespace SashaRX.UnityMeshLab
                     }
                     rects[g] = new Rect(rectMin[g].x, rectMin[g].y,
                         rectMax[g].x - rectMin[g].x, rectMax[g].y - rectMin[g].y);
+
+                    double n = aN[g];
+                    double denU = n * aSii[g] - aSi[g] * aSi[g];
+                    double denV = n * aSiiV[g] - aSiV[g] * aSiV[g];
+                    if (n >= 2.0 && System.Math.Abs(denU) > 1e-12 && System.Math.Abs(denV) > 1e-12)
+                    {
+                        double suD = (n * aSioU[g] - aSi[g] * aSoU[g]) / denU;
+                        double svD = (n * aSioV[g] - aSiV[g] * aSoV[g]) / denV;
+                        placements[g] = new DomainPlacement
+                        {
+                            su = (float)suD,
+                            ou = (float)((aSoU[g] - suD * aSi[g]) / n),
+                            sv = (float)svD,
+                            ov = (float)((aSoV[g] - svD * aSiV[g]) / n),
+                            valid = true,
+                        };
+                    }
                     packedGroups++;
                 }
 
@@ -2389,6 +2461,7 @@ namespace SashaRX.UnityMeshLab
                 r.domainAtlasUv = domUv;
                 r.domainAtlasTris = domTris;
                 r.domainAtlasRects = rects;
+                r.domainPlacements = placements;
 
                 uint aw = XatlasNative.xatlasGetAtlasWidth();
                 uint ah = XatlasNative.xatlasGetAtlasHeight();
@@ -2396,26 +2469,27 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     $"[HierRepack] Stage E: '{lg.name}' packed {packedGroups}/{r.groups.Length} "
                     + $"domain charts (xatlas charts={charts}) into {aw}×{ah} atlas "
-                    + $"(canonical faces={fc}, outVerts={outVc})");
+                    + $"(canonical faces={fc}, outVerts={outVc}, "
+                    + $"texels/unit={texelsPerUnit:F1}, canonArea={totalCanonArea:F2})");
             }
             finally { XatlasNative.xatlasDestroy(); }
         }
 
-        // ─── Stage E (slice E2): cascade — project every LOD into its rect ──
+        // ─── Stage E (slice E2): cascade — align every LOD to its domain ──
 
         /// <summary>Stage E, slice 2 — the cascade payoff. Stage E1 packed each
-        /// group's canonical (deepest-member) shell and recorded its placed
-        /// atlas rect in <c>r.domainAtlasRects[groupId]</c>. Here EVERY shell
-        /// on EVERY LOD inherits that shared placement: it projects its verts
-        /// onto its group's CANONICAL shell plane (basisU/basisV/centroid/
-        /// half-extents from Stage C) to a local [0,1], then maps that into the
-        /// group's rect. So a matched finer shell lands in the SAME atlas
-        /// region as the canonical it cascaded into — one lightmap bake is
-        /// valid across all LODs, which is the whole point. An unmatched shell
-        /// is the canonical of its own fresh group, so it maps into the rect it
-        /// was repacked into in E1. Because PackDomainCharts used the same
-        /// planar projection with rotateCharts:0, the canonical's own verts
-        /// reproduce its packed chart and finer members align with it.
+        /// group's canonical (deepest-member) shell and fitted the affine
+        /// <c>r.domainPlacements[groupId]</c> (canonical-plane coordinate →
+        /// atlas UV). Here EVERY shell on EVERY LOD reuses that SAME affine:
+        /// project the vert onto the group's canonical plane (basisU/basisV/
+        /// centroid from Stage C) to a world-unit (inU,inV), then
+        /// <c>uv = (su·inU+ou, sv·inV+ov)</c>. So a matched finer shell lands
+        /// in the SAME atlas region as the canonical it cascaded into, at the
+        /// SAME texel density — one lightmap bake is valid across all LODs,
+        /// which is the whole point. An unmatched shell is the canonical of its
+        /// own fresh group, so it uses the affine for the slot it was repacked
+        /// into. No per-shell [0,1] normalisation → real proportions, uniform
+        /// texel density.
         ///
         /// Fills <c>r.finalUv2</c> / <c>r.finalTris</c> /
         /// <c>r.finalSourceVertexIdx</c> per LOD (output verts are one per face
@@ -2425,7 +2499,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (r.groups == null || r.groups.Length == 0) return;
             if (r.perLodShells == null || r.perLodShellToGroup == null) return;
-            if (r.domainAtlasRects == null) return;
+            if (r.domainPlacements == null) return;
 
             var lods = lg.GetLODs();
             int lodCount = lods.Length;
@@ -2460,14 +2534,15 @@ namespace SashaRX.UnityMeshLab
                     var canonShells = r.perLodShells[grp.canonicalLod];
                     if (canonShells == null || grp.canonicalShellId < 0
                         || grp.canonicalShellId >= canonShells.Length) continue;
-                    Rect rect = (gid < r.domainAtlasRects.Length)
-                        ? r.domainAtlasRects[gid] : new Rect(0, 0, 0, 0);
-                    if (rect.width <= 0f || rect.height <= 0f) continue;
+                    if (gid >= r.domainPlacements.Length) continue;
+                    var pl = r.domainPlacements[gid];
+                    if (!pl.valid) continue;
 
+                    // Same plane (canonical basis/centroid) + same fitted affine
+                    // the canonical itself uses → finer members land in the SAME
+                    // atlas region at the SAME texel density. No per-shell [0,1]
+                    // normalisation, no distortion.
                     var canon = canonShells[grp.canonicalShellId];
-                    float invU = 0.5f / Mathf.Max(canon.extentU, 1e-4f);
-                    float invV = 0.5f / Mathf.Max(canon.extentV, 1e-4f);
-
                     var sh = shells[s];
                     if (sh.faceIndices == null) continue;
                     foreach (int f in sh.faceIndices)
@@ -2477,11 +2552,11 @@ namespace SashaRX.UnityMeshLab
                         {
                             int vi = rt[f * 3 + k];
                             Vector3 d = wv[vi] - canon.centroid;
-                            float lu = Mathf.Clamp01(0.5f + Vector3.Dot(d, canon.basisU) * invU);
-                            float lv = Mathf.Clamp01(0.5f + Vector3.Dot(d, canon.basisV) * invV);
+                            float inU = Vector3.Dot(d, canon.basisU);
+                            float inV = Vector3.Dot(d, canon.basisV);
                             triOut.Add(uvOut.Count);
-                            uvOut.Add(new Vector2(rect.x + lu * rect.width,
-                                                  rect.y + lv * rect.height));
+                            uvOut.Add(new Vector2(pl.su * inU + pl.ou,
+                                                  pl.sv * inV + pl.ov));
                             srcOut.Add(vi);
                         }
                     }
