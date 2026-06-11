@@ -1291,7 +1291,9 @@ namespace SashaRX.UnityMeshLab
             var csv = new System.Text.StringBuilder();
             csv.AppendLine("matchFrac,minHits,groupCount,seedGroups,"
                 + "liProxy,liFine,samples,hits,missed,joined,fresh,reused,"
-                + "tinyJoined,tinyOrphan");
+                + "tinyJoined,tinyOrphan,"
+                + "e3OverlapTexels,e3OverlapPct,e3TpuSpreadMax,e3XLodMinPct,"
+                + "e3MisalignedGroups,e3UnplacedFaces");
 
             Result last = null;
             foreach (float mf in matchFracGrid)
@@ -1332,6 +1334,33 @@ namespace SashaRX.UnityMeshLab
                 int seedGroups = (r.cascadeStats != null && r.cascadeStats.Count > 0)
                     ? groupCount - SumFresh(r.cascadeStats)  // groups present before any fresh adds
                     : groupCount;
+
+                // Stage E3 cell-level aggregates, repeated on every
+                // transition row (like groupCount) — the objective scalar
+                // this sweep previously lacked. Minimise e3OverlapTexels
+                // first; e3XLodMinPct guards the cascade contract.
+                int e3Overlap = 0, e3Mis = 0, e3Unplaced = 0;
+                long e3Covered = 0;
+                float e3SpreadMax = 0f, e3XMin = 100f;
+                if (r.stageEMetrics != null)
+                    foreach (var em in r.stageEMetrics)
+                    {
+                        if (em.faces == 0) continue;
+                        e3Overlap += em.overlapTexels;
+                        e3Covered += em.coveredTexels;
+                        e3Mis += em.misalignedGroups;
+                        e3Unplaced += em.unplacedFaces;
+                        if (em.tpuSpread > e3SpreadMax) e3SpreadMax = em.tpuSpread;
+                        if (em.xLodTexels > 0 && em.xLodContainedPct < e3XMin)
+                            e3XMin = em.xLodContainedPct;
+                    }
+                float e3OverlapPct = e3Covered > 0
+                    ? 100f * e3Overlap / e3Covered : 0f;
+                string e3Cols = string.Format(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    "{0},{1:0.###},{2:0.###},{3:0.##},{4},{5}",
+                    e3Overlap, e3OverlapPct, e3SpreadMax, e3XMin, e3Mis, e3Unplaced);
+
                 if (r.cascadeStats != null)
                     foreach (var st in r.cascadeStats)
                         csv.AppendLine(
@@ -1339,11 +1368,11 @@ namespace SashaRX.UnityMeshLab
                             + $"{mh},{groupCount},{seedGroups},"
                             + $"{st.liProxy},{st.liFine},{st.samples},{st.hits},"
                             + $"{st.missed},{st.joined},{st.fresh},{st.reused},"
-                            + $"{st.tinyJoined},{st.tinyOrphan}");
+                            + $"{st.tinyJoined},{st.tinyOrphan},{e3Cols}");
                 else
                     csv.AppendLine(
                         $"{mf.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)},"
-                        + $"{mh},{groupCount},{seedGroups},,,,,,,,,,");
+                        + $"{mh},{groupCount},{seedGroups},,,,,,,,,,,{e3Cols}");
             }
 
             try
