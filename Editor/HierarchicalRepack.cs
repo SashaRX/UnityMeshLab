@@ -2469,10 +2469,22 @@ namespace SashaRX.UnityMeshLab
                     double n = aN[g];
                     double denU = n * aSii[g] - aSi[g] * aSi[g];
                     double denV = n * aSiiV[g] - aSiV[g] * aSiV[g];
-                    if (n >= 2.0 && System.Math.Abs(denU) > 1e-12 && System.Math.Abs(denV) > 1e-12)
+                    bool okU = System.Math.Abs(denU) > 1e-12;
+                    bool okV = System.Math.Abs(denV) > 1e-12;
+                    if (n >= 2.0 && (okU || okV))
                     {
-                        double suD = (n * aSioU[g] - aSi[g] * aSoU[g]) / denU;
-                        double svD = (n * aSioV[g] - aSiV[g] * aSoV[g]) / denV;
+                        double suD = okU ? (n * aSioU[g] - aSi[g] * aSoU[g]) / denU : 0.0;
+                        double svD = okV ? (n * aSioV[g] - aSiV[g] * aSoV[g]) / denV : 0.0;
+                        // A zero-variance axis (perfectly straight axis-aligned
+                        // strip in UV0) leaves that axis's LSQ slope
+                        // unconstrained — NOT a reason to drop the whole group:
+                        // every member shell on every LOD would silently lose
+                        // its placement. xatlas applied a uniform scale
+                        // (rotateCharts:0, no flip), so borrow the resolved
+                        // axis's magnitude; finer members DO vary along the
+                        // degenerate axis and land at the right density.
+                        if (!okU) suD = System.Math.Abs(svD);
+                        if (!okV) svD = System.Math.Abs(suD);
                         placements[g] = new DomainPlacement
                         {
                             uvc = pendingUvc[g],
@@ -2481,6 +2493,25 @@ namespace SashaRX.UnityMeshLab
                             ou = (float)((aSoU[g] - suD * aSi[g]) / n),
                             sv = (float)svD,
                             ov = (float)((aSoV[g] - svD * aSiV[g]) / n),
+                            valid = true,
+                        };
+                    }
+                    else if (n >= 1.0 && texelsPerUnit > 0f)
+                    {
+                        // Both axes degenerate — the canonical chart collapsed
+                        // to a point in UV0. Fall back to the designed mapping:
+                        // the pack ran at a fixed texelsPerUnit, so the scale is
+                        // texelsPerUnit/resolution; anchor at the mean placed UV
+                        // so members at least land inside their packed slot.
+                        double s = texelsPerUnit / (double)opts.atlasResolutionPx;
+                        placements[g] = new DomainPlacement
+                        {
+                            uvc = pendingUvc[g],
+                            scale = pendingScale[g],
+                            su = (float)s,
+                            ou = (float)((aSoU[g] - s * aSi[g]) / n),
+                            sv = (float)s,
+                            ov = (float)((aSoV[g] - s * aSiV[g]) / n),
                             valid = true,
                         };
                     }
@@ -2557,14 +2588,21 @@ namespace SashaRX.UnityMeshLab
                 var uvOut  = new List<Vector2>(rt.Length);
                 var triOut = new List<int>(rt.Length);
                 var srcOut = new List<int>(rt.Length);
+                int unplacedShells = 0, unplacedFaces = 0;
 
                 for (int s = 0; s < shells.Length; s++)
                 {
                     int gid = (s < shellToGroup.Length) ? shellToGroup[s] : -1;
-                    if (gid < 0 || gid >= r.groups.Length) continue;
-                    if (gid >= r.domainPlacements.Length) continue;
-                    var pl = r.domainPlacements[gid];
-                    if (!pl.valid) continue;
+                    bool placed = gid >= 0 && gid < r.groups.Length
+                        && gid < r.domainPlacements.Length
+                        && r.domainPlacements[gid].valid;
+                    // A shell whose group never got a placement (Stage E1
+                    // produced nothing for it) must STILL be emitted —
+                    // skipping it would delete real geometry from the final
+                    // meshes. Park its uv2 at (0,0): a bad bake on those
+                    // faces, never a hole in the mesh.
+                    var pl = placed ? r.domainPlacements[gid] : default;
+                    if (!placed) unplacedShells++;
 
                     // PRESERVE the shell: take its own authored UV0, recentre +
                     // uniform-scale into the SAME frame the canonical was fitted
@@ -2580,14 +2618,20 @@ namespace SashaRX.UnityMeshLab
                         if (f < 0 || f * 3 + 2 >= rt.Length) continue;
                         int a = rt[f * 3], b = rt[f * 3 + 1], c = rt[f * 3 + 2];
                         if (a >= uv0.Length || b >= uv0.Length || c >= uv0.Length) continue;
+                        if (!placed) unplacedFaces++;
                         for (int k = 0; k < 3; k++)
                         {
                             int vi = rt[f * 3 + k];
-                            float inU = (uv0[vi].x - pl.uvc.x) * pl.scale;
-                            float inV = (uv0[vi].y - pl.uvc.y) * pl.scale;
+                            Vector2 uvv = Vector2.zero;
+                            if (placed)
+                            {
+                                float inU = (uv0[vi].x - pl.uvc.x) * pl.scale;
+                                float inV = (uv0[vi].y - pl.uvc.y) * pl.scale;
+                                uvv = new Vector2(pl.su * inU + pl.ou,
+                                                  pl.sv * inV + pl.ov);
+                            }
                             triOut.Add(uvOut.Count);
-                            uvOut.Add(new Vector2(pl.su * inU + pl.ou,
-                                                  pl.sv * inV + pl.ov));
+                            uvOut.Add(uvv);
                             srcOut.Add(vi);
                         }
                     }
@@ -2597,6 +2641,11 @@ namespace SashaRX.UnityMeshLab
                 r.finalTris[li] = triOut.ToArray();
                 r.finalSourceVertexIdx[li] = srcOut.ToArray();
 
+                if (unplacedFaces > 0)
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        $"[HierRepack] Stage E2: '{lg.name}' LOD{li} — {unplacedShells} shells "
+                        + $"({unplacedFaces} faces) had no valid domain placement; emitted at "
+                        + "uv2 (0,0) so the final mesh keeps its geometry. Check Stage E1 warnings.");
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     $"[HierRepack] Stage E2: '{lg.name}' LOD{li} cascaded uv2 "
                     + $"verts={uvOut.Count} tris={triOut.Count / 3} shells={shells.Length}");
