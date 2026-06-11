@@ -66,11 +66,31 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
+            // Stage E3 headline so the operator sees atlas quality without
+            // digging through the Console (full table: stage_e_metrics.csv
+            // in benchmark runs, per-LOD lines in the log).
+            string e3Note = "";
+            if (result.stageEMetrics != null)
+            {
+                int overlapPx = 0, unplaced = 0, misaligned = 0;
+                foreach (var m in result.stageEMetrics)
+                {
+                    overlapPx += m.overlapTexels;
+                    unplaced += m.unplacedFaces;
+                    misaligned += m.misalignedGroups;
+                }
+                e3Note = $"\nAtlas check: overlap {overlapPx} texel(s), " +
+                    $"unplaced faces {unplaced}, misaligned domains {misaligned}." +
+                    (unplaced > 0 || misaligned > 0
+                        ? "\nWARNING: non-zero defects — see Console for per-LOD detail."
+                        : "");
+            }
+
             UvtLog.Info(UvtLog.Category.Benchmark,
                 $"[HierRepack] Applied UV2 to '{lg.name}' ({applyCount} LODs). Ctrl+Z to revert.");
             EditorUtility.DisplayDialog("Hier UV2",
                 $"Applied hierarchical UV2 to {applyCount} LOD(s) on '{lg.name}'.\n" +
-                "Use Ctrl+Z to revert.",
+                "Use Ctrl+Z to revert." + e3Note,
                 "OK");
         }
 

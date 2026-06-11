@@ -318,6 +318,30 @@ namespace SashaRX.UnityMeshLab
             /// each shell a different texel density. Indexed by groupId.</summary>
             public DomainPlacement[] domainPlacements;
 
+            // ─── Stage E2/E3: per-face provenance + atlas metrics ────
+            /// <summary>Stage E2: per LOD, per EMITTED face → Stage C shell
+            /// id (parallel to finalTris/3). Lets Stage E3 tell legitimate
+            /// same-shell seam ties from genuine UV overlaps.</summary>
+            public int[][] finalFaceShell;
+            /// <summary>Stage E2: per LOD, per emitted face → lighting-domain
+            /// group id (-1 when the shell had no group).</summary>
+            public int[][] finalFaceGroup;
+            /// <summary>Stage E2: per LOD, faces emitted with the uv2 (0,0)
+            /// fallback because their group had no valid placement. Non-zero
+            /// means Stage E1 has gaps worth investigating.</summary>
+            public int[] finalUnplacedFaces;
+            /// <summary>Stage E3: objective per-LOD atlas quality metrics —
+            /// the scalars threshold sweeps optimise and Apply reports.
+            /// Indexed by LOD; default entries where the LOD produced no
+            /// final UV2. CSV: stage_e_metrics.csv.</summary>
+            public StageEMetrics[] stageEMetrics;
+            /// <summary>Stage E3: per-LOD coverage/overlap raster
+            /// (stageEMetricsRes² Color32) — grey covered, red overlapping,
+            /// near-black empty. PNG: lod{N}_overlap.png.</summary>
+            public Color32[][] stageEOverlapPx;
+            /// <summary>Stage E3: side length of the metric raster.</summary>
+            public int stageEMetricsRes;
+
             public string error;
         }
 
@@ -362,6 +386,55 @@ namespace SashaRX.UnityMeshLab
             public float su, ou;   // atlasU = su·in.x + ou
             public float sv, ov;   // atlasV = sv·in.y + ov
             public bool valid;
+        }
+
+        /// <summary>Stage E3: per-LOD atlas quality metrics measured on the
+        /// final cascaded UV2 (texel-centre raster at the atlas resolution).
+        /// See <see cref="Result.stageEMetrics"/>; persisted to
+        /// stage_e_metrics.csv by the benchmark.</summary>
+        public struct StageEMetrics
+        {
+            public int lod;
+            /// <summary>Faces in the source LOD mesh — compare with
+            /// <see cref="faces"/> to spot silently dropped geometry.</summary>
+            public int srcFaces;
+            /// <summary>Faces emitted into finalUv2/finalTris.</summary>
+            public int faces;
+            /// <summary>Faces emitted with the uv2 (0,0) placement fallback.</summary>
+            public int unplacedFaces;
+            /// <summary>~Zero UV-area faces — not rasterised, no density sample.</summary>
+            public int degenUvFaces;
+            /// <summary>Faces with negative (flipped) UV winding.</summary>
+            public int invertedFaces;
+            /// <summary>Output verts outside [0,1] by more than half a texel.</summary>
+            public int oobVerts;
+            public int coveredTexels;
+            /// <summary>coveredTexels / res² × 100.</summary>
+            public float utilizationPct;
+            /// <summary>Texels claimed by 2+ triangles that are neither the
+            /// same face nor same-shell seam-adjacent — the direct
+            /// lightmap-bleed proxy (UV0 mirror-reuse, residual folds).</summary>
+            public int overlapTexels;
+            public float overlapPctOfCovered;
+            /// <summary>Distinct cross-shell pairs in conflict (capped 4096).</summary>
+            public int overlapShellPairs;
+            /// <summary>Area-derived texels-per-world-unit (√(Σtexel²/Σarea3D)).</summary>
+            public float tpuMean;
+            /// <summary>Area-weighted 1st / 99th percentile texel density.</summary>
+            public float tpuP1, tpuP99;
+            /// <summary>tpuP99 / tpuP1 — 1.0 = perfectly uniform.</summary>
+            public float tpuSpread;
+            /// <summary>Texels owned by groups whose canonical lives on a
+            /// DIFFERENT LOD — the population the cascade promises to align.</summary>
+            public int xLodTexels;
+            /// <summary>% of <see cref="xLodTexels"/> that fall inside the
+            /// canonical LOD's footprint for the same group (3×3 dilated).
+            /// Low = the asset violates the shared-UV0-layout assumption →
+            /// one bake would NOT be valid across LODs.</summary>
+            public float xLodContainedPct;
+            /// <summary>Groups with ≥16 texels at this LOD and &lt;50%
+            /// containment — concrete cross-LOD alignment failures.</summary>
+            public int misalignedGroups;
         }
 
         /// <summary>Stage C / D / E: a single lighting domain — a set
@@ -599,6 +672,16 @@ namespace SashaRX.UnityMeshLab
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
                     $"[HierRepack] stage E cascade uv2 failed on '{lg.name}': {ex.Message}");
+            }
+            // Stage E (slice E3): objective atlas quality metrics — overlap
+            // texels/pairs, inverted/degenerate faces, texel-density spread,
+            // cross-LOD containment. The scalar that threshold sweeps
+            // optimise and the reliability gate the Apply menu reports.
+            try { ComputeStageEMetrics(lg, opts, result); }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] stage E3 metrics failed on '{lg.name}': {ex.Message}");
             }
             return result;
         }
@@ -1166,6 +1249,10 @@ namespace SashaRX.UnityMeshLab
             // Stage E (slice E2): per-LOD cascaded uv2 — same domain → same
             // atlas region across LODs. lod{N}_final_uv2.png.
             WriteFinalUv2Pngs(outputDir, lg, result);
+            // Stage E (slice E3): objective metrics CSV + coverage/overlap
+            // rasters (stage_e_metrics.csv, lod{N}_overlap.png).
+            WriteStageEMetricsCsv(outputDir, result);
+            WriteStageEOverlapPngs(outputDir, result);
             return result;
         }
 
@@ -1315,6 +1402,52 @@ namespace SashaRX.UnityMeshLab
                 if (r.finalUv2[li] == null || r.finalTris[li] == null) continue;
                 UvPngWriter.Render(Path.Combine(outputDir, $"lod{li}_final_uv2.png"),
                     r.finalUv2[li], r.finalTris[li]);
+            }
+        }
+
+        /// <summary>Stage E3: one CSV row per LOD with the atlas quality
+        /// metrics — stage_e_metrics.csv (InvariantCulture).</summary>
+        static void WriteStageEMetricsCsv(string outputDir, Result r)
+        {
+            if (r.stageEMetrics == null) return;
+            var csv = new StringBuilder();
+            csv.AppendLine("lod,srcFaces,faces,unplacedFaces,degenUvFaces,invertedFaces,"
+                + "oobVerts,coveredTexels,utilPct,overlapTexels,overlapPctOfCovered,"
+                + "overlapShellPairs,tpuMean,tpuP1,tpuP99,tpuSpread,"
+                + "xLodTexels,xLodContainedPct,misalignedGroups");
+            var ci = CultureInfo.InvariantCulture;
+            foreach (var m in r.stageEMetrics)
+                csv.AppendLine(string.Format(ci,
+                    "{0},{1},{2},{3},{4},{5},{6},{7},{8:0.##},{9},{10:0.###},{11},"
+                    + "{12:0.##},{13:0.##},{14:0.##},{15:0.###},{16},{17:0.##},{18}",
+                    m.lod, m.srcFaces, m.faces, m.unplacedFaces, m.degenUvFaces,
+                    m.invertedFaces, m.oobVerts, m.coveredTexels, m.utilizationPct,
+                    m.overlapTexels, m.overlapPctOfCovered, m.overlapShellPairs,
+                    m.tpuMean, m.tpuP1, m.tpuP99, m.tpuSpread,
+                    m.xLodTexels, m.xLodContainedPct, m.misalignedGroups));
+            try
+            {
+                File.WriteAllText(Path.Combine(outputDir, "stage_e_metrics.csv"),
+                    csv.ToString());
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] Stage E3 metrics CSV write failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>Stage E3 diagnostic: per-LOD coverage/overlap raster —
+        /// grey covered, red overlapping texels. lod{N}_overlap.png.</summary>
+        static void WriteStageEOverlapPngs(string outputDir, Result r)
+        {
+            if (r.stageEOverlapPx == null || r.stageEMetricsRes <= 0) return;
+            int res = r.stageEMetricsRes;
+            for (int li = 0; li < r.stageEOverlapPx.Length; li++)
+            {
+                if (r.stageEOverlapPx[li] == null) continue;
+                EncodePng(r.stageEOverlapPx[li], res, res,
+                    Path.Combine(outputDir, $"lod{li}_overlap.png"));
             }
         }
 
@@ -2568,6 +2701,9 @@ namespace SashaRX.UnityMeshLab
             r.finalUv2 = new Vector2[lodCount][];
             r.finalTris = new int[lodCount][];
             r.finalSourceVertexIdx = new int[lodCount][];
+            r.finalFaceShell = new int[lodCount][];
+            r.finalFaceGroup = new int[lodCount][];
+            r.finalUnplacedFaces = new int[lodCount];
 
             for (int li = 0; li < lodCount; li++)
             {
@@ -2588,6 +2724,8 @@ namespace SashaRX.UnityMeshLab
                 var uvOut  = new List<Vector2>(rt.Length);
                 var triOut = new List<int>(rt.Length);
                 var srcOut = new List<int>(rt.Length);
+                var shellOut = new List<int>(rt.Length / 3);  // per emitted face
+                var groupOut = new List<int>(rt.Length / 3);
                 int unplacedShells = 0, unplacedFaces = 0;
 
                 for (int s = 0; s < shells.Length; s++)
@@ -2634,12 +2772,17 @@ namespace SashaRX.UnityMeshLab
                             uvOut.Add(uvv);
                             srcOut.Add(vi);
                         }
+                        shellOut.Add(s);
+                        groupOut.Add(gid);
                     }
                 }
 
                 r.finalUv2[li] = uvOut.ToArray();
                 r.finalTris[li] = triOut.ToArray();
                 r.finalSourceVertexIdx[li] = srcOut.ToArray();
+                r.finalFaceShell[li] = shellOut.ToArray();
+                r.finalFaceGroup[li] = groupOut.ToArray();
+                r.finalUnplacedFaces[li] = unplacedFaces;
 
                 if (unplacedFaces > 0)
                     UvtLog.Warn(UvtLog.Category.Benchmark,
@@ -2649,6 +2792,318 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     $"[HierRepack] Stage E2: '{lg.name}' LOD{li} cascaded uv2 "
                     + $"verts={uvOut.Count} tris={triOut.Count / 3} shells={shells.Length}");
+            }
+        }
+
+        // ─── Stage E (slice E3): objective atlas quality metrics ─────
+
+        /// <summary>True when two emitted faces share a source vertex or a
+        /// near-coincident atlas-UV vertex — i.e. they're seam/fan-adjacent in
+        /// the same island, so a tied texel between them is rasterisation
+        /// noise, not a UV overlap. Mirror-reused islands (the defect this
+        /// filter must NOT hide) live on different shells and never reach this
+        /// check. Known blind spot: a single triangle folded exactly over its
+        /// edge-neighbour passes as adjacent; folds deeper than one triangle
+        /// still get caught via their non-adjacent pairs.</summary>
+        static bool FacesTouch(Vector2[] uv, int[] tris, int[] srcIdx,
+            int fa, int fb, float weldTol2)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                int va = tris[fa * 3 + i];
+                for (int j = 0; j < 3; j++)
+                {
+                    int vb = tris[fb * 3 + j];
+                    if (srcIdx != null && srcIdx[va] == srcIdx[vb]) return true;
+                    float du = uv[va].x - uv[vb].x;
+                    float dv = uv[va].y - uv[vb].y;
+                    if (du * du + dv * dv <= weldTol2) return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>Stage E, slice 3 — measure the final per-LOD UV2 on an
+        /// atlas-resolution texel-centre raster so the pipeline has an
+        /// OBJECTIVE defect scalar instead of eyeballed PNGs. Per LOD:
+        ///   • overlapTexels / overlapShellPairs — texels claimed by 2+
+        ///     triangles that are neither the same face nor same-shell
+        ///     seam-adjacent. Cross-shell conflicts always count (UV0
+        ///     mirror-reuse between shells IS the defect; islands that merely
+        ///     touch contribute ~1px lines vs full-area genuine overlaps).
+        ///   • invertedFaces / degenUvFaces / oobVerts — winding flips,
+        ///     zero-area UV, verts outside [0,1].
+        ///   • tpu* — area-weighted texels-per-world-unit spread; preserve-UV0
+        ///     + fixed texelsPerUnit should keep this near 1×.
+        ///   • xLodContainedPct / misalignedGroups — cross-LOD check: texels
+        ///     of groups whose canonical lives on another LOD must land inside
+        ///     that canonical's footprint (3×3 dilated). Low containment =
+        ///     the asset violates the shared-UV0-layout assumption → the bake
+        ///     would NOT be valid across LODs.
+        /// Pure readback — no mesh/UV mutation. Also fills the
+        /// lod{N}_overlap.png raster buffers.</summary>
+        static void ComputeStageEMetrics(LODGroup lg, Options opts, Result r)
+        {
+            if (r.finalUv2 == null || r.finalTris == null) return;
+            if (r.groups == null || r.finalFaceShell == null || r.finalFaceGroup == null) return;
+
+            int res = Mathf.Clamp(opts.atlasResolutionPx, 64, 2048);
+            var lods = lg.GetLODs();
+            int lodCount = Mathf.Min(lods.Length, r.finalUv2.Length);
+            r.stageEMetricsRes = res;
+            r.stageEMetrics = new StageEMetrics[lodCount];
+            r.stageEOverlapPx = new Color32[lodCount][];
+
+            var ownerFaceByLod = new int[lodCount][];
+            float weldTol = 0.75f / res;
+            float weldTol2 = weldTol * weldTol;
+            float halfTexel = 0.5f / res;
+
+            for (int li = 0; li < lodCount; li++)
+            {
+                var m = new StageEMetrics { lod = li };
+                r.stageEMetrics[li] = m;
+                var uv = r.finalUv2[li];
+                var tris = r.finalTris[li];
+                var srcIdx = (r.finalSourceVertexIdx != null
+                    && li < r.finalSourceVertexIdx.Length)
+                    ? r.finalSourceVertexIdx[li] : null;
+                var fShell = (li < r.finalFaceShell.Length) ? r.finalFaceShell[li] : null;
+                if (uv == null || tris == null || fShell == null) continue;
+
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) continue;
+
+                // World-space verts once per LOD — density needs 3D areas.
+                var localVerts = mesh.vertices;
+                var xform = rs[0].transform;
+                var wv = new Vector3[localVerts.Length];
+                for (int i = 0; i < localVerts.Length; i++)
+                    wv[i] = xform.TransformPoint(localVerts[i]);
+
+                int srcFaces = 0;
+                for (int sm = 0; sm < mesh.subMeshCount; sm++)
+                    srcFaces += (int)(mesh.GetIndexCount(sm) / 3);
+
+                int faceCount = tris.Length / 3;
+                m.srcFaces = srcFaces;
+                m.faces = faceCount;
+                m.unplacedFaces = (r.finalUnplacedFaces != null
+                    && li < r.finalUnplacedFaces.Length)
+                    ? r.finalUnplacedFaces[li] : 0;
+
+                for (int i = 0; i < uv.Length; i++)
+                    if (uv[i].x < -halfTexel || uv[i].x > 1f + halfTexel
+                        || uv[i].y < -halfTexel || uv[i].y > 1f + halfTexel)
+                        m.oobVerts++;
+
+                var ownerFace = new int[res * res];
+                for (int i = 0; i < ownerFace.Length; i++) ownerFace[i] = -1;
+                var overlap = new bool[res * res];
+                var pairSet = new HashSet<long>();
+
+                var dens = new float[faceCount];
+                var densArea = new float[faceCount];
+                int densCount = 0;
+                double sumTexArea = 0.0, sumArea3 = 0.0;
+
+                for (int f = 0; f < faceCount; f++)
+                {
+                    int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
+                    Vector2 a = uv[i0], b = uv[i1], c = uv[i2];
+                    float signed = 0.5f * ((b.x - a.x) * (c.y - a.y)
+                                         - (c.x - a.x) * (b.y - a.y));
+                    if (signed < 0f) m.invertedFaces++;
+                    float uvArea = Mathf.Abs(signed);
+                    if (uvArea < 1e-12f) { m.degenUvFaces++; continue; }
+
+                    if (srcIdx != null)
+                    {
+                        int s0 = srcIdx[i0], s1 = srcIdx[i1], s2 = srcIdx[i2];
+                        if (s0 < wv.Length && s1 < wv.Length && s2 < wv.Length)
+                        {
+                            float area3 = 0.5f * Vector3.Cross(
+                                wv[s1] - wv[s0], wv[s2] - wv[s0]).magnitude;
+                            if (area3 > 1e-12f)
+                            {
+                                float texArea = uvArea * res * res;
+                                dens[densCount] = texArea / area3;
+                                densArea[densCount] = area3;
+                                densCount++;
+                                sumTexArea += texArea;
+                                sumArea3 += area3;
+                            }
+                        }
+                    }
+
+                    // Texel-centre ownership raster (both windings welcome —
+                    // dividing by a negative denom flips the w signs back).
+                    float ax = a.x * res, ay = a.y * res;
+                    float bx = b.x * res, by = b.y * res;
+                    float cx = c.x * res, cy = c.y * res;
+                    int x0 = Mathf.Max(0, Mathf.FloorToInt(
+                        Mathf.Min(ax, Mathf.Min(bx, cx)) - 0.5f));
+                    int x1 = Mathf.Min(res - 1, Mathf.CeilToInt(
+                        Mathf.Max(ax, Mathf.Max(bx, cx)) - 0.5f));
+                    int y0 = Mathf.Max(0, Mathf.FloorToInt(
+                        Mathf.Min(ay, Mathf.Min(by, cy)) - 0.5f));
+                    int y1 = Mathf.Min(res - 1, Mathf.CeilToInt(
+                        Mathf.Max(ay, Mathf.Max(by, cy)) - 0.5f));
+                    if (x1 < x0 || y1 < y0) continue;
+                    float denom = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+                    if (Mathf.Abs(denom) < 1e-9f) continue;
+                    float invDenom = 1f / denom;
+
+                    for (int y = y0; y <= y1; y++)
+                    {
+                        float py = y + 0.5f;
+                        int row = y * res;
+                        for (int x = x0; x <= x1; x++)
+                        {
+                            float px = x + 0.5f;
+                            float w1 = ((by - cy) * (px - cx)
+                                      + (cx - bx) * (py - cy)) * invDenom;
+                            if (w1 < 0f || w1 > 1f) continue;
+                            float w2 = ((cy - ay) * (px - cx)
+                                      + (ax - cx) * (py - cy)) * invDenom;
+                            if (w2 < 0f || w1 + w2 > 1f) continue;
+                            int t = row + x;
+                            int of = ownerFace[t];
+                            if (of < 0)
+                            {
+                                ownerFace[t] = f;
+                                m.coveredTexels++;
+                                continue;
+                            }
+                            if (of == f) continue;
+                            bool sameShell = fShell[of] == fShell[f];
+                            if (sameShell && FacesTouch(uv, tris, srcIdx, of, f, weldTol2))
+                                continue;   // seam/fan tie — legitimate
+                            if (!overlap[t])
+                            {
+                                overlap[t] = true;
+                                m.overlapTexels++;
+                            }
+                            if (!sameShell && pairSet.Count < 4096)
+                            {
+                                long sa = fShell[of], sb = fShell[f];
+                                pairSet.Add(sa < sb ? (sa << 32) | sb : (sb << 32) | sa);
+                            }
+                        }
+                    }
+                }
+
+                m.utilizationPct = 100f * m.coveredTexels / (res * res);
+                m.overlapPctOfCovered = m.coveredTexels > 0
+                    ? 100f * m.overlapTexels / m.coveredTexels : 0f;
+                m.overlapShellPairs = pairSet.Count;
+
+                if (densCount > 0 && sumArea3 > 0.0)
+                {
+                    m.tpuMean = Mathf.Sqrt((float)(sumTexArea / sumArea3));
+                    Array.Sort(dens, densArea, 0, densCount);
+                    double acc = 0.0;
+                    double lo = 0.01 * sumArea3, hi = 0.99 * sumArea3;
+                    float p1 = dens[0], p99 = dens[densCount - 1];
+                    bool gotLo = false;
+                    for (int i = 0; i < densCount; i++)
+                    {
+                        acc += densArea[i];
+                        if (!gotLo && acc >= lo) { p1 = dens[i]; gotLo = true; }
+                        if (acc >= hi) { p99 = dens[i]; break; }
+                    }
+                    m.tpuP1 = Mathf.Sqrt(p1);
+                    m.tpuP99 = Mathf.Sqrt(p99);
+                    m.tpuSpread = m.tpuP1 > 1e-6f ? m.tpuP99 / m.tpuP1 : 0f;
+                }
+
+                var pxBuf = new Color32[res * res];
+                var colEmpty = new Color32(12, 12, 12, 255);
+                var colCov = new Color32(96, 96, 96, 255);
+                var colOver = new Color32(255, 48, 48, 255);
+                for (int t = 0; t < pxBuf.Length; t++)
+                    pxBuf[t] = overlap[t] ? colOver
+                        : (ownerFace[t] >= 0 ? colCov : colEmpty);
+                r.stageEOverlapPx[li] = pxBuf;
+
+                ownerFaceByLod[li] = ownerFace;
+                r.stageEMetrics[li] = m;
+            }
+
+            // Cross-LOD containment: every texel of a group whose canonical
+            // lives on ANOTHER LOD must fall inside that canonical LOD's
+            // footprint for the same group (3×3 dilated to absorb raster
+            // noise). This is the cascade's contract — one bake valid across
+            // all LODs — measured instead of assumed.
+            int nG = r.groups.Length;
+            var totByGroup = new int[nG];
+            var inByGroup = new int[nG];
+            for (int li = 0; li < lodCount; li++)
+            {
+                var ownerFace = ownerFaceByLod[li];
+                var fGroup = (li < r.finalFaceGroup.Length) ? r.finalFaceGroup[li] : null;
+                if (ownerFace == null || fGroup == null) continue;
+                Array.Clear(totByGroup, 0, nG);
+                Array.Clear(inByGroup, 0, nG);
+
+                for (int y = 0; y < res; y++)
+                for (int x = 0; x < res; x++)
+                {
+                    int f = ownerFace[y * res + x];
+                    if (f < 0 || f >= fGroup.Length) continue;
+                    int g = fGroup[f];
+                    if (g < 0 || g >= nG) continue;
+                    int cl = r.groups[g].canonicalLod;
+                    if (cl == li || cl < 0 || cl >= lodCount) continue;
+                    var canonOwner = ownerFaceByLod[cl];
+                    var canonGroup = (cl < r.finalFaceGroup.Length)
+                        ? r.finalFaceGroup[cl] : null;
+                    if (canonOwner == null || canonGroup == null) continue;
+                    totByGroup[g]++;
+                    bool inside = false;
+                    for (int dy = -1; dy <= 1 && !inside; dy++)
+                    {
+                        int ny = y + dy;
+                        if (ny < 0 || ny >= res) continue;
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            int nx = x + dx;
+                            if (nx < 0 || nx >= res) continue;
+                            int cf = canonOwner[ny * res + nx];
+                            if (cf >= 0 && cf < canonGroup.Length && canonGroup[cf] == g)
+                            { inside = true; break; }
+                        }
+                    }
+                    if (inside) inByGroup[g]++;
+                }
+
+                int tot = 0, contained = 0, misaligned = 0;
+                for (int g = 0; g < nG; g++)
+                {
+                    tot += totByGroup[g];
+                    contained += inByGroup[g];
+                    if (totByGroup[g] >= 16 && inByGroup[g] * 2 < totByGroup[g])
+                        misaligned++;
+                }
+                var mm = r.stageEMetrics[li];
+                mm.xLodTexels = tot;
+                mm.xLodContainedPct = tot > 0 ? 100f * contained / tot : 100f;
+                mm.misalignedGroups = misaligned;
+                r.stageEMetrics[li] = mm;
+
+                UvtLog.Info(UvtLog.Category.Benchmark,
+                    $"[HierRepack] Stage E3: '{lg.name}' LOD{li} — "
+                    + $"faces={mm.faces}/{mm.srcFaces} unplaced={mm.unplacedFaces} "
+                    + $"inverted={mm.invertedFaces} degenUv={mm.degenUvFaces} "
+                    + $"oobVerts={mm.oobVerts} | util={mm.utilizationPct:F1}% "
+                    + $"overlap={mm.overlapTexels}px ({mm.overlapPctOfCovered:F2}% of covered, "
+                    + $"{mm.overlapShellPairs} shell pairs) | tpu mean={mm.tpuMean:F1} "
+                    + $"p1={mm.tpuP1:F1} p99={mm.tpuP99:F1} spread={mm.tpuSpread:F2}x "
+                    + $"| xLOD={mm.xLodTexels}px contained={mm.xLodContainedPct:F1}% "
+                    + $"misalignedGroups={mm.misalignedGroups}");
             }
         }
 
