@@ -1555,7 +1555,11 @@ namespace SashaRX.UnityMeshLab
 
                 if (snap.vertexCount != cloneMf.sharedMesh.vertexCount)
                 {
-                    UvtLog.Warn($"[FBX Export] Skip '{cloneMf.sharedMesh.name}': vertex count mismatch (scene={snap.vertexCount}, clone={cloneMf.sharedMesh.vertexCount}).");
+                    UvtLog.Warn($"[FBX Export] Skip '{cloneMf.sharedMesh.name}': vertex-count mismatch " +
+                        $"(authored={snap.vertexCount}, FBX clone={cloneMf.sharedMesh.vertexCount}). " +
+                        "The source FBX re-imports at a different vertex count than the tool worked on — " +
+                        "usually 'Generate Lightmap UVs' splitting vertices. Disable it on the model " +
+                        "importer and re-run the tool.");
                     continue;
                 }
 
@@ -1855,16 +1859,6 @@ namespace SashaRX.UnityMeshLab
             // ── Phase 1: Prepare importer (single reimport, scoped to intent) ──
             ModelImporter srcImporter = null;
             bool madeReadable = false;
-            // Snapshot importer toggles we lock for the snapshot+export pass
-            // so Phase 5 can put them back; otherwise a single isolated
-            // re-save permanently disables the user's weld / compression /
-            // optimization settings on the source FBX. (generateSecondaryUV
-            // is deliberately NOT restored — see Phase 1 note below.)
-            bool restoreWeldVertices = false;
-            bool restoreMeshCompression = false;
-            bool restoreMeshOptimization = false;
-            ModelImporterMeshCompression originalMeshCompression = ModelImporterMeshCompression.Off;
-            MeshOptimizationFlags originalMeshOptimizationFlags = 0;
             if (!isVariantExport)
             {
                 srcImporter = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
@@ -1880,28 +1874,22 @@ namespace SashaRX.UnityMeshLab
                     // setting stays off.
                     if (intent.IncludesUv(1) && srcImporter.generateSecondaryUV)
                         { srcImporter.generateSecondaryUV = false; needsReimport = true; }
-                    // weld / compression / optimization renumber vertices →
-                    // break per-vertex data. Lock when intent writes any
-                    // per-vertex channel.
-                    if (intent.TouchesPerVertex())
-                    {
-                        if (srcImporter.weldVertices)
-                            { srcImporter.weldVertices = false; needsReimport = true; restoreWeldVertices = true; }
-                        if (srcImporter.meshCompression != ModelImporterMeshCompression.Off)
-                            {
-                                originalMeshCompression = srcImporter.meshCompression;
-                                srcImporter.meshCompression = ModelImporterMeshCompression.Off;
-                                needsReimport = true;
-                                restoreMeshCompression = true;
-                            }
-                        if (srcImporter.meshOptimizationFlags != 0)
-                            {
-                                originalMeshOptimizationFlags = srcImporter.meshOptimizationFlags;
-                                srcImporter.meshOptimizationFlags = 0;
-                                needsReimport = true;
-                                restoreMeshOptimization = true;
-                            }
-                    }
+
+                    // NOTE: we deliberately do NOT disable weldVertices /
+                    // meshCompression / meshOptimizationFlags here. The snapshot
+                    // is captured from the tool's working mesh, which was built
+                    // from the CURRENT import; the clone below is also loaded
+                    // from the current import, so the two share a vertex layout.
+                    // Disabling weld/optimization and reimporting would renumber
+                    // the clone's vertices, desyncing it from the snapshot —
+                    // CopyIsolatedSnapshotsToClone would then skip every mesh on
+                    // a vertex-count mismatch and write nothing. The wide
+                    // LOD-rebuild path never does this reimport either. And
+                    // because those settings were previously restored right
+                    // after export, the final re-imported FBX kept the user's
+                    // original weld/optimization state regardless — so removing
+                    // the reimport changes nothing about the exported result
+                    // except that the authored data now actually lands.
                     if (!srcImporter.isReadable)
                         { srcImporter.isReadable = true; needsReimport = true; madeReadable = true; }
                     if (needsReimport)
@@ -2082,24 +2070,16 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Phase 5: Restore importer settings + working copies ──
+            // Only isReadable is restored: Phase 1 no longer touches weld /
+            // compression / optimization, and generateSecondaryUV is left
+            // disabled on purpose so the just-authored UV1 is not regenerated.
             if (!isVariantExport)
             {
-                if (srcImporter != null)
+                if (srcImporter != null && madeReadable)
                 {
-                    bool needsRestoreReimport = false;
-                    if (madeReadable)
-                        { srcImporter.isReadable = false; needsRestoreReimport = true; }
-                    if (restoreWeldVertices)
-                        { srcImporter.weldVertices = true; needsRestoreReimport = true; }
-                    if (restoreMeshCompression)
-                        { srcImporter.meshCompression = originalMeshCompression; needsRestoreReimport = true; }
-                    if (restoreMeshOptimization)
-                        { srcImporter.meshOptimizationFlags = originalMeshOptimizationFlags; needsRestoreReimport = true; }
-                    if (needsRestoreReimport)
-                    {
-                        Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
-                        srcImporter.SaveAndReimport();
-                    }
+                    srcImporter.isReadable = false;
+                    Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
+                    srcImporter.SaveAndReimport();
                 }
                 RestoreWorkingCopiesToScene();
             }
