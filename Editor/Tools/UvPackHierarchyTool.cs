@@ -90,6 +90,17 @@ namespace SashaRX.UnityMeshLab
 
         public void OnRefresh()
         {
+            // ExecutePack re-selects the first packed child so the canvas shows
+            // the packed UV1; that selection change routes back here via the
+            // Hub. Destroying the packed meshes now would wipe results the user
+            // still needs to Apply / Overwrite. Skip the destructive cleanup
+            // while the new selection is still inside the packed hierarchy root
+            // (mirrors the guard in RefreshEntriesIfNeeded).
+            var sel = Selection.activeGameObject;
+            if (packedMeshes.Count > 0 && hierarchyRoot != null && sel != null &&
+                (sel == hierarchyRoot || sel.transform.IsChildOf(hierarchyRoot.transform)))
+                return;
+
             RestoreScene();
             DestroyPackedMeshes();
         }

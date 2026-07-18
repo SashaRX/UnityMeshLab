@@ -689,7 +689,40 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            string sourceFbxPath = ctx?.SourceFbxPath;
+            // In hierarchy mode ctx.SourceFbxPath can be empty (container
+            // selection) or stale (from a previous selection), so resolve the
+            // FBX from the included entries themselves. Reject selections that
+            // span multiple FBX files — variant export writes one output FBX.
+            string sourceFbxPath;
+            if (hierarchyMode)
+            {
+                var fbxPaths = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+                foreach (var e in entries)
+                {
+                    var srcMesh = e.fbxMesh ?? (e.meshFilter != null ? e.meshFilter.sharedMesh : null);
+                    if (srcMesh == null) continue;
+                    string p = AssetDatabase.GetAssetPath(srcMesh);
+                    if (!string.IsNullOrEmpty(p) && p.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
+                        fbxPaths.Add(p);
+                }
+                if (fbxPaths.Count == 0)
+                {
+                    UvtLog.Error("[Vertex Colors] No source FBX resolved from the included meshes.");
+                    return;
+                }
+                if (fbxPaths.Count > 1)
+                {
+                    UvtLog.Error("[Vertex Colors] Included meshes span multiple FBX files — " +
+                                 "variant export needs a single source FBX. Narrow the selection.\n  " +
+                                 string.Join("\n  ", fbxPaths));
+                    return;
+                }
+                sourceFbxPath = fbxPaths.First();
+            }
+            else
+            {
+                sourceFbxPath = ctx?.SourceFbxPath;
+            }
             if (string.IsNullOrEmpty(sourceFbxPath))
             {
                 UvtLog.Error("[Vertex Colors] No source FBX path resolved on the current selection.");
