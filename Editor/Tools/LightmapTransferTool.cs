@@ -2578,8 +2578,8 @@ namespace SashaRX.UnityMeshLab
             // Snapshot importer toggles we lock for the snapshot+export pass
             // so Phase 5 can put them back; otherwise a single isolated
             // re-save permanently disables the user's weld / compression /
-            // optimization / secondary-UV settings on the source FBX.
-            bool restoreGenerateSecondaryUV = false;
+            // optimization settings on the source FBX. (generateSecondaryUV
+            // is deliberately NOT restored — see Phase 1 note below.)
             bool restoreWeldVertices = false;
             bool restoreMeshCompression = false;
             bool restoreMeshOptimization = false;
@@ -2593,8 +2593,13 @@ namespace SashaRX.UnityMeshLab
                 {
                     // generateSecondaryUV writes Unity UV channel 1.
                     // Lock only when the intent overwrites that channel.
+                    // Intentionally NOT restored in Phase 5: re-enabling it
+                    // makes Unity regenerate channel 1 on the restore reimport
+                    // and clobber the UV1 we just authored into the FBX. When
+                    // the tool writes UV1, authored data must win, so the
+                    // setting stays off.
                     if (intent.IncludesUv(1) && srcImporter.generateSecondaryUV)
-                        { srcImporter.generateSecondaryUV = false; needsReimport = true; restoreGenerateSecondaryUV = true; }
+                        { srcImporter.generateSecondaryUV = false; needsReimport = true; }
                     // weld / compression / optimization renumber vertices →
                     // break per-vertex data. Lock when intent writes any
                     // per-vertex channel.
@@ -2804,8 +2809,6 @@ namespace SashaRX.UnityMeshLab
                     bool needsRestoreReimport = false;
                     if (madeReadable)
                         { srcImporter.isReadable = false; needsRestoreReimport = true; }
-                    if (restoreGenerateSecondaryUV)
-                        { srcImporter.generateSecondaryUV = true; needsRestoreReimport = true; }
                     if (restoreWeldVertices)
                         { srcImporter.weldVertices = true; needsRestoreReimport = true; }
                     if (restoreMeshCompression)

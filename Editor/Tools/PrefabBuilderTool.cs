@@ -2967,6 +2967,13 @@ namespace SashaRX.UnityMeshLab
                 Undo.RecordObject(firstEntry.meshFilter, "Merge");
                 firstEntry.meshFilter.sharedMesh = mergedMesh;
 
+                // Record the LODGroup before rewriting its renderer arrays.
+                // Without this, undoing the merge restores the destroyed
+                // GameObjects (Undo.DestroyObjectImmediate is undoable) but
+                // leaves the LODGroup pointing at the merged renderer list,
+                // so the restored objects fall out of LOD switching.
+                Undo.RecordObject(ctx.LodGroup, "Merge");
+
                 var lods = ctx.LodGroup.GetLODs();
                 for (int li = 0; li < lods.Length; li++)
                 {
@@ -2989,6 +2996,11 @@ namespace SashaRX.UnityMeshLab
                     lods[li].renderers = renderers.ToArray();
                 }
                 ctx.LodGroup.SetLODs(lods);
+                // Persist the renderer-array change on prefab instances;
+                // otherwise the merge survives only in the live scene and is
+                // lost on scene reload / prefab reapply.
+                if (PrefabUtility.IsPartOfPrefabInstance(ctx.LodGroup))
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(ctx.LodGroup);
 
                 foreach (var go in destroyList)
                 {

@@ -26,6 +26,10 @@ namespace SashaRX.UnityMeshLab
             public int    triangleCount;
             public int    submeshCount;
 
+            // Mesh has Read/Write disabled — CPU buffers are inaccessible, so
+            // no analysis could run. Reported instead of throwing.
+            public bool   notReadable;
+
             // Symptom 1: Merge Close Vertices ate UV seams
             public int    uniquePositionCount;
             public float  splitVertexRatio;     // (vertexCount - uniquePositionCount) / vertexCount
@@ -79,6 +83,15 @@ namespace SashaRX.UnityMeshLab
                 submeshCount = mesh.subMeshCount,
             };
 
+            // Read/Write disabled meshes throw on any CPU buffer access
+            // (mesh.vertices / .normals / .triangles / GetUVs). Common on
+            // imported FBX assets — report it instead of aborting the run.
+            if (!mesh.isReadable)
+            {
+                report.notReadable = true;
+                return report;
+            }
+
             var positions = mesh.vertices;
             var normals   = mesh.normals;
             var triangles = mesh.triangles;
@@ -103,7 +116,12 @@ namespace SashaRX.UnityMeshLab
             var report = Validate(mesh);
             if (report == null) return null;
             string ctx = string.IsNullOrEmpty(contextLabel) ? "" : $"[{contextLabel}] ";
-            if (report.HasIssues)
+            if (report.notReadable)
+            {
+                UvtLog.Warn($"[MeshLabValidator] {ctx}'{report.meshName}': mesh is not readable " +
+                            "(enable Read/Write in the model importer to validate).");
+            }
+            else if (report.HasIssues)
             {
                 UvtLog.Warn($"[MeshLabValidator] {ctx}{report.Summary}");
                 if (report.seamsLikelyMerged)

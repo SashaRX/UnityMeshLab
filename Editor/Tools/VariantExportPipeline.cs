@@ -76,6 +76,44 @@ namespace SashaRX.UnityMeshLab
             return painted.Count;
         }
 
+        // Capture the current vertex colors of every mesh BakeSolidColorOnEntries
+        // would paint, so the batch can be rolled back. A null value means the
+        // mesh had no colors32 and should be cleared on restore.
+        static Dictionary<Mesh, Color32[]> SnapshotEntryColors(IEnumerable<MeshEntry> entries)
+        {
+            var backup = new Dictionary<Mesh, Color32[]>();
+            if (entries == null) return backup;
+            foreach (var entry in entries)
+            {
+                if (entry == null || entry.renderer == null || !entry.include) continue;
+                if (MeshHygieneUtility.IsCollisionNodeName(entry.renderer.name)) continue;
+
+                var meshes = new[] { entry.originalMesh, entry.repackedMesh, entry.transferredMesh, entry.fbxMesh };
+                foreach (var mesh in meshes)
+                {
+                    if (mesh == null || mesh.vertexCount == 0) continue;
+                    if (backup.ContainsKey(mesh)) continue;
+                    var c = mesh.colors32;
+                    backup[mesh] = (c != null && c.Length == mesh.vertexCount) ? c : null;
+                }
+            }
+            return backup;
+        }
+
+        // Restore vertex colors captured by SnapshotEntryColors.
+        static void RestoreEntryColors(Dictionary<Mesh, Color32[]> backup)
+        {
+            if (backup == null) return;
+            foreach (var kv in backup)
+            {
+                var mesh = kv.Key;
+                if (mesh == null) continue;
+                Undo.RecordObject(mesh, "Restore Vertex Colors");
+                mesh.colors32 = kv.Value ?? new Color32[mesh.vertexCount];
+                EditorUtility.SetDirty(mesh);
+            }
+        }
+
         // Run a batch of variants against the same source FBX/prefab. Each
         // variant must finish its export + import + prefab clone cycle
         // before the next one starts — wrapping the loop in
@@ -143,6 +181,12 @@ namespace SashaRX.UnityMeshLab
                 return results;
             }
 
+            // BakeSolidColorOnEntries paints the shared source meshes in place
+            // for each variant. Snapshot their original vertex colors up front
+            // and restore afterwards so the scene / working meshes aren't left
+            // wearing the last variant's solid color (and later exports don't
+            // start from that contaminated state).
+            var colorBackup = SnapshotEntryColors(entries);
             try
             {
                 foreach (var v in variants)
@@ -150,6 +194,7 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
+                RestoreEntryColors(colorBackup);
                 AssetDatabase.Refresh();
             }
             return results;
