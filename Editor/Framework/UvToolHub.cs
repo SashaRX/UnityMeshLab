@@ -123,6 +123,17 @@ namespace SashaRX.UnityMeshLab
             SceneView.duringSceneGui += OnSceneGUI;
             Undo.undoRedoPerformed -= OnUndoRedo;
             Undo.undoRedoPerformed += OnUndoRedo;
+
+            UvProgress.OnChanged -= OnProgressChanged;
+            UvProgress.OnChanged += OnProgressChanged;
+        }
+
+        void OnProgressChanged()
+        {
+            // Snapshot updates arrive from the main thread (xatlas pack
+            // polling, transfer phase reports). Just queue a repaint — when
+            // the editor next pumps OnGUI it picks up UvProgress.Current.
+            Repaint();
         }
 
         void SelectToolById(string toolId)
@@ -145,6 +156,7 @@ namespace SashaRX.UnityMeshLab
 
             SceneView.duringSceneGui -= OnSceneGUI;
             Undo.undoRedoPerformed -= OnUndoRedo;
+            UvProgress.OnChanged -= OnProgressChanged;
 
             ActiveTool?.OnDeactivate();
 
@@ -180,6 +192,8 @@ namespace SashaRX.UnityMeshLab
                     e.meshFilter.sharedMesh = e.fbxMesh;
                 if (e.transferredMesh != null) { DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
                 if (e.repackedMesh != null) { DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
+                e.repackedAtlasWidth = 0;
+                e.repackedAtlasHeight = 0;
                 if (e.originalMesh != null && e.originalMesh != e.fbxMesh) { DestroyImmediate(e.originalMesh); e.originalMesh = null; }
             }
         }
@@ -348,6 +362,12 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.EndVertical();
 
             EditorGUILayout.EndHorizontal();
+
+            // Progress strip sits at the very bottom of the window — it is a
+            // status-bar-style row that doesn't displace the toolbar / sub-tabs
+            // layout when the active state toggles. The reserved height is
+            // unconditional so appearing / disappearing also doesn't shift.
+            DrawProgressStrip();
         }
 
         void OnSceneGUI(SceneView sv)
@@ -388,6 +408,180 @@ namespace SashaRX.UnityMeshLab
             if (lvl != UvtLog.Current) UvtLog.Current = lvl;
 
             EditorGUILayout.EndHorizontal();
+        }
+
+        // ════════════════════════════════════════════════════════════
+        //  Inline progress strip — sits at the very bottom of the window
+        //  (status-bar pattern). The full row width is reserved
+        //  unconditionally so toggling the active state doesn't displace
+        //  any layout above. When idle the strip blends into the chrome
+        //  with no text or animation. When active it shows: bold primary
+        //  (title · phase) on the left, optional detail right-aligned next
+        //  to it, elapsed in its own column, and a properly sized Cancel
+        //  button flush with the right edge.
+        // ════════════════════════════════════════════════════════════
+        const float kProgressStripHeight = 22f;
+
+        void DrawProgressStrip()
+        {
+            var rect = GUILayoutUtility.GetRect(0, kProgressStripHeight,
+                GUILayout.ExpandWidth(true), GUILayout.Height(kProgressStripHeight));
+
+            var snap = UvProgress.Current;
+
+            // Background — matches the toolbar so the bottom strip visually
+            // mirrors the top one. Active state darkens to draw attention.
+            Color toolbarTint = EditorGUIUtility.isProSkin
+                ? new Color(0.235f, 0.235f, 0.235f)
+                : new Color(0.78f, 0.78f, 0.78f);
+            Color activeTint = EditorGUIUtility.isProSkin
+                ? new Color(0.16f, 0.16f, 0.16f)
+                : new Color(0.70f, 0.70f, 0.70f);
+            EditorGUI.DrawRect(rect, snap.active ? activeTint : toolbarTint);
+
+            // Top hairline — separates the strip from the content above.
+            // (Bottom is the window edge so no separator needed there.)
+            var sep = new Rect(rect.x, rect.y, rect.width, 1);
+            EditorGUI.DrawRect(sep, new Color(0, 0, 0, EditorGUIUtility.isProSkin ? 0.45f : 0.25f));
+
+            if (!snap.active)
+            {
+                // Idle — show last operation outcome if we have one.
+                var last = UvProgress.Last;
+                if (!last.valid) return;
+                string symbol;
+                Color symbolColor;
+                switch (last.status)
+                {
+                    case UnityEditor.Progress.Status.Succeeded:
+                        symbol = "✓"; symbolColor = new Color(0.5f, 0.95f, 0.55f); break;
+                    case UnityEditor.Progress.Status.Canceled:
+                        symbol = "✗"; symbolColor = new Color(1f, 0.75f, 0.30f); break;
+                    case UnityEditor.Progress.Status.Failed:
+                        symbol = "✗"; symbolColor = new Color(0.95f, 0.45f, 0.45f); break;
+                    default:
+                        symbol = "·"; symbolColor = new Color(0.75f, 0.75f, 0.75f); break;
+                }
+                var symRect = new Rect(rect.x + 8f, rect.y, 14f, rect.height);
+                var symStyle = new GUIStyle(EditorStyles.miniBoldLabel)
+                {
+                    alignment = TextAnchor.MiddleLeft,
+                    normal = { textColor = symbolColor },
+                };
+                GUI.Label(symRect, symbol, symStyle);
+                var idleStyle = new GUIStyle(EditorStyles.miniLabel)
+                {
+                    alignment = TextAnchor.MiddleLeft,
+                    normal = { textColor = new Color(0.75f, 0.75f, 0.75f) },
+                };
+                var idleTextRect = new Rect(rect.x + 26f, rect.y,
+                                            rect.width - 32f, rect.height);
+                string idleText = $"{last.title}  ·  {last.duration:0.0}s";
+                GUI.Label(idleTextRect, idleText, idleStyle);
+                return;
+            }
+
+            // Fill — determinate fraction or animated marquee for indeterminate.
+            var innerRect = new Rect(rect.x, rect.y + 1, rect.width, rect.height - 1);
+            float frac = snap.fraction;
+            Color fillColor = snap.cancelRequested
+                ? new Color(0.95f, 0.55f, 0.20f, 0.50f)
+                : new Color(0.30f, 0.60f, 0.95f, 0.50f);
+            if (frac >= 0f)
+            {
+                var fill = innerRect;
+                fill.width *= Mathf.Clamp01(frac);
+                EditorGUI.DrawRect(fill, fillColor);
+            }
+            else
+            {
+                // Marquee — band sweeps left→right, eased so the edges of
+                // the band slide off-screen rather than snapping at the rim.
+                double cycle = (EditorApplication.timeSinceStartup * 0.55) % 1.0;
+                float t = (float)cycle;
+                float bandW = innerRect.width * 0.22f;
+                float x = innerRect.x + (innerRect.width + bandW) * t - bandW;
+                var fill = new Rect(x, innerRect.y, bandW, innerRect.height);
+                fillColor.a = 0.38f;
+                EditorGUI.DrawRect(fill, fillColor);
+                Repaint(); // keep the marquee moving.
+            }
+
+            // Compose primary (title · phase) and optional detail. Drop
+            // detail when it duplicates the phase verbatim.
+            string primary = snap.title ?? string.Empty;
+            if (!string.IsNullOrEmpty(snap.phase))
+            {
+                if (!string.IsNullOrEmpty(primary)) primary += " · ";
+                primary += snap.phase;
+            }
+            string detail = snap.detail;
+            if (!string.IsNullOrEmpty(detail) && !string.IsNullOrEmpty(snap.phase)
+                && detail.StartsWith(snap.phase, System.StringComparison.Ordinal))
+                detail = null;
+            string elapsed = $"{snap.Elapsed:0.0}s";
+
+            // Column geometry. Cancel button gets its own slot pinned to the
+            // right edge; elapsed sits to its left; primary/detail share the
+            // remaining width with detail right-aligned.
+            const float kBtnW = 60f;
+            const float kBtnPad = 6f;
+            const float kElapsedW = 44f;
+            const float kColGap = 8f;
+            bool showCancel = snap.cancelable || snap.cancelRequested;
+            float rightReserve = showCancel ? (kBtnW + kBtnPad) : kBtnPad;
+
+            var elapsedRect = new Rect(rect.xMax - rightReserve - kElapsedW, rect.y,
+                                       kElapsedW, rect.height);
+            float primaryRight = elapsedRect.x - kColGap;
+            var primaryRect = new Rect(rect.x + 8f, rect.y,
+                                       primaryRight - (rect.x + 8f), rect.height);
+
+            var primaryStyle = new GUIStyle(EditorStyles.miniBoldLabel)
+            {
+                alignment = TextAnchor.MiddleLeft,
+                normal = { textColor = Color.white },
+            };
+            var detailStyle = new GUIStyle(EditorStyles.miniLabel)
+            {
+                alignment = TextAnchor.MiddleRight,
+                normal = { textColor = new Color(0.85f, 0.85f, 0.85f) },
+            };
+            var elapsedStyle = new GUIStyle(EditorStyles.miniLabel)
+            {
+                alignment = TextAnchor.MiddleRight,
+                normal = { textColor = new Color(0.75f, 0.85f, 1f) },
+            };
+
+            if (!string.IsNullOrEmpty(detail))
+                GUI.Label(primaryRect, detail, detailStyle);
+            GUI.Label(primaryRect, primary, primaryStyle);
+            GUI.Label(elapsedRect, elapsed, elapsedStyle);
+
+            // Cancel control — vertically centred against the strip and
+            // sized to the strip's height (minus 4px breathing room) so it
+            // sits cleanly inside the row instead of overflowing.
+            if (snap.cancelable && !snap.cancelRequested)
+            {
+                float btnH = rect.height - 4f;
+                var btnRect = new Rect(rect.xMax - kBtnW - kBtnPad,
+                                       rect.y + (rect.height - btnH) * 0.5f,
+                                       kBtnW, btnH);
+                if (GUI.Button(btnRect, "Cancel", EditorStyles.miniButton))
+                    UvProgress.RequestCancel();
+            }
+            else if (snap.cancelRequested)
+            {
+                var labelRect2 = new Rect(rect.xMax - kBtnW - kBtnPad, rect.y,
+                                          kBtnW, rect.height);
+                var cancelStyle = new GUIStyle(EditorStyles.miniLabel)
+                {
+                    normal = { textColor = new Color(1f, 0.7f, 0.2f) },
+                    alignment = TextAnchor.MiddleCenter,
+                    fontStyle = FontStyle.Italic,
+                };
+                GUI.Label(labelRect2, "cancelling…", cancelStyle);
+            }
         }
 
         string BuildWindowBrandText()

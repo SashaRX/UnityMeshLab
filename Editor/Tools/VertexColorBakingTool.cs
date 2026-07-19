@@ -68,6 +68,7 @@ namespace SashaRX.UnityMeshLab
         // Bake settings
         bool  backfaceCulling = true;
         bool  cosineWeighted  = true;
+        bool  binaryHit       = false;
         int   bakeMode = 0; // 0=GPU, 1=CPU
         int   bakeTypeIndex = 0; // 0=AO, 1=Thickness
         int   occluderModeIndex = (int)VertexAOOccluderMode.SameRootNearby;
@@ -522,6 +523,9 @@ namespace SashaRX.UnityMeshLab
             cosineWeighted = EditorGUILayout.Toggle(
                 new GUIContent("Cosine Weighted", "Cosine: rays near normal contribute more (physically correct).\nUniform: all hemisphere directions contribute equally (harder shadows)."),
                 cosineWeighted);
+            binaryHit = EditorGUILayout.Toggle(
+                new GUIContent("Binary Hit", "On: any ray hit fully occludes regardless of distance — preserves dark corners and tight crevices (Fewes-style).\nOff: linear distance falloff (1 − t/Radius) — softer, more global."),
+                binaryHit);
 
             if (bakeTypeIndex == 0)
             {
@@ -1128,6 +1132,7 @@ namespace SashaRX.UnityMeshLab
             groundOffset    = groundOffset,
             backfaceCulling = backfaceCulling,
             cosineWeighted  = cosineWeighted,
+            binaryHit       = binaryHit,
             useGPU          = bakeMode == 0,
             bakeType        = (AOBakeType)bakeTypeIndex,
             occluderMode    = bakeTypeIndex == 0

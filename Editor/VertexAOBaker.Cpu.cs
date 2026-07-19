@@ -17,6 +17,11 @@ namespace SashaRX.UnityMeshLab
         {
             UvtLog.Info("[Vertex AO] Using CPU mode (BVH ray tracing).");
             var result = new Dictionary<Mesh, float[]>();
+            bool ownsProgress = !UvProgress.IsActive;
+            if (ownsProgress)
+                UvProgress.Begin("Vertex AO (CPU, parallel)", cancelable: true);
+            try
+            {
 
             // Build combined BVH from all meshes
             var allVerts = new List<Vector3>();
@@ -103,6 +108,7 @@ namespace SashaRX.UnityMeshLab
                     float jCos = Mathf.Cos(jitterAngle), jSin = Mathf.Sin(jitterAngle);
 
                     bool cosW = settings.cosineWeighted;
+                    bool binaryHit = settings.binaryHit;
                     float occludedWeight = 0f, totalWeight = 0f;
                     for (int d = 0; d < directions.Length; d++)
                     {
@@ -132,8 +138,9 @@ namespace SashaRX.UnityMeshLab
                             }
                             else
                             {
-                                // Distance falloff: closer hits occlude more
-                                float falloff = 1f - hit.t / maxDist;
+                                // Binary: any hit fully occludes (Fewes-style, harder corners).
+                                // Falloff: closer hits occlude more (default, softer).
+                                float falloff = binaryHit ? 1f : (1f - hit.t / maxDist);
                                 occludedWeight += weight * falloff;
                                 continue;
                             }
@@ -145,7 +152,7 @@ namespace SashaRX.UnityMeshLab
                             float t = (groundY - origin.y) / jitteredDir.y;
                             if (t > 0 && t < maxDist)
                             {
-                                float falloff = 1f - t / maxDist;
+                                float falloff = binaryHit ? 1f : (1f - t / maxDist);
                                 occludedWeight += weight * falloff;
                             }
                         }
@@ -160,10 +167,11 @@ namespace SashaRX.UnityMeshLab
                 });
 
                 // Progress bar on main thread (poll after parallel completes per mesh)
-                if (EditorUtility.DisplayCancelableProgressBar("Baking Vertex AO (CPU, parallel)",
-                    $"Mesh {processed + verts.Length}/{totalVerts} vertices", (float)(processed + verts.Length) / totalVerts))
+                UvProgress.Report(
+                    (float)(processed + verts.Length) / Mathf.Max(1, totalVerts),
+                    $"Mesh {processed + verts.Length}/{totalVerts} vertices");
+                if (UvProgress.CancelRequested)
                 {
-                    EditorUtility.ClearProgressBar();
                     result[mesh] = ao;
                     return result;
                 }
@@ -176,8 +184,12 @@ namespace SashaRX.UnityMeshLab
 
             foreach (var c in cpuCopies)
                 UnityEngine.Object.DestroyImmediate(c);
-            EditorUtility.ClearProgressBar();
             return result;
+            }
+            finally
+            {
+                if (ownsProgress) UvProgress.End();
+            }
         }
     }
 }

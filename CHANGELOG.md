@@ -5,16 +5,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **`UvProgress` service** (`Editor/Framework/UvProgress.cs`) — central non-modal progress reporting. Routes status to `UnityEditor.Progress` (Background Tasks panel) plus an inline strip drawn at the bottom of the hub window. Supports nested scopes, phase labels, indeterminate/determinate fractions, cooperative cancellation via `UvProgress.CancelRequested` (`Volatile.Read`-backed `_cancelFlag` so background `Task.Run` work observes user-cancel reliably across the memory barrier), a thread-safe `ReportFromBackground` for `Task.Run` callers (with `Interlocked.Exchange`-guarded snapshot/clear so a racing writer can't lose an update; the `EditorApplication.update` pump is hooked once on assembly load from the main thread via `[InitializeOnLoadMethod]`), and a `Last` outcome shown while idle.
+- **Inline progress strip in `UvToolHub`** — sits at the bottom of the window as a status bar. Reserves fixed height unconditionally so toggling active state doesn't displace any layout. Shows title · phase · detail · elapsed in distinct columns with a Cancel button pinned to the right; while idle displays `✓ / ✗ Last-operation · 12.3s`. Marquee animation for indeterminate fractions; orange tint while cancelling.
+- **Async pipeline (no main-thread freeze)**:
+  - `XatlasRepack.RunPackCancelableAsync` polls the native pack via `EditorApplication.update` + `TaskCompletionSource`. Main thread stays free while xatlas runs in `Task.Run`; the "Hold on — Waiting for Unity's code" dialog no longer fires.
+  - `XatlasRepack.RepackMultiAsync` shares its body with sync `RepackMulti` via a `PackFn` delegate.
+  - `GroupedShellTransfer.TransferAsync` extracts mesh data on the main thread, then runs the algorithm body in `Task.Run`. Phase reports surface live in the strip via `ReportFromBackground`; `Cancel` mid-transfer is honoured at every phase boundary.
+  - `LightmapTransferTool` exposes `ExecRepackAsync` / `ExecRepackPerMeshAsync` / `ExecTransferAllAsync` / `ExecFullPipelineAsync`. Repack, Transfer, and Run Full Pipeline buttons fire-and-forget the async variants; sweep / auto-tune internal loops keep the sync wrappers.
+- **Pipeline section in Setup tab** — replaces the freestanding "Repack" header + scattered SymSplit toggles. Numbered stage rows (1 Analyze, 2 Weld, 3 SymSplit, 4 Repack, 5 Transfer) with on/off toggles, coloured state stripes, nested per-stage settings, and right-aligned outcome icons (`…` running / `✓` success / `✗` failed / `⏭` skipped). The big "Run Full Pipeline" button respects every stage toggle; a "Run Repack only" / "Run Transfer only" shortcut pair below it skips the upstream stages for iteration loops.
+- **Transfer tab status icons** — `✓` (every entry transferred) / `◐` (partial) / `•` (pending) on each LOD foldout with mesh count and aggregate vertex coverage; per-mesh sub-rows mirror the same icon plus shells-matched and coverage %. Replaces the previous crude single-letter `V` / `O` markers.
+- **Project Settings ▸ Mesh Lab ▸ Maintenance ▸ Reset to defaults** — restamps every Mesh Lab project setting back to its built-in default value (Repack defaults, Output path, Sidecar mode, Vertex AO defaults, Show Debug UI). Confirmed via DisplayDialog; existing sidecars / scene state untouched.
+- **Explicit Weld stage toggle** — previously Weld always ran inside the full pipeline with no UI to opt out. Now a top-level stage with its own checkbox.
+- **Texel-density preview under Repack stage** — `area X m² · density Y tex/m → atlas Z px` (auto) or `→ effective ≈ Y tex/m` (manual). Mirrors the Repack tab preview so users see the resolved atlas size from the Setup tab without switching tabs.
+- **Repack tab redesigned** — flat 25-row foldout replaced with five collapsible sections: Resolution, Pack Quality, Density, Compression, Advanced (debug-only). Settings grouped by domain so the panel is navigable.
+- **Project Settings ▸ Mesh Lab ▸ Developer ▸ Show Debug UI** — single toggle that hides every diagnostic / benchmarking surface in the package:
+  - Setup tab: `Parameter Sweep`, `Log filters`, `UV0 Analysis & Fix`, the SymSplit `Apply to target LODs (advanced)` toggle.
+  - Repack tab: the `Advanced (debug)` section (manual texels-per-UV-unit, post-pack density correction, SymSplit threshold mode).
+  - Unity top menu: `Mesh Lab ▸ Export FBX Metrics (Selected Assets)` and `(Scene LODGroup)`.
+  - Assets ▸ Create context menu: `Mesh Lab ▸ Sweep Test Suite` (was always-visible `Lightmap UV Tool/Test Suite` via `[CreateAssetMenu]`).
+- **In-flight gate + `FireAndForget` helper** for fire-and-forget async UI actions. The "Run Full Pipeline" / "Run Repack only" / "Run Transfer only" / "Repack All" / "Transfer All Targets" buttons now sit inside an `EditorGUI.DisabledScope` on `_pipelineInFlight` so a second click can't launch an interleaving run; `FireAndForget` attaches `ContinueWith` on the Unity sync context to log Task faults through `UvtLog.Error`, release the gate, and call `UvProgress.Fail` so a thrown exception can't leave the strip stuck on a stale phase.
+- **Cancel-aware benchmark recording** in `ExecTransferAllImpl` — mirrors the `completedSuccessfully` guard `ExecFullPipelineImpl` already uses. Cancelled transfers no longer emit stale `shellTransferResult` / validation rows that taint sweep aggregates.
+- **Solid Color bake mode.** Fills `mesh.colors32` with a uniform `Color32` across every mesh variant of an entry (`originalMesh`, `repackedMesh`, `transferredMesh`, `fbxMesh`). Collision meshes are skipped via `MeshHygieneUtility.IsCollisionNodeName`. Each write goes through `Undo.RecordObject` + `EditorUtility.SetDirty`.
+- **Batch variant export pipeline.** New `VariantExportPipeline` (`Editor/Tools/VariantExportPipeline.cs`) drives a list of `(Color, suffix)` variants against a source FBX and an optional source prefab. Per variant it paints, exports `{base}_{suffix}.fbx`, instantiates the source prefab, unpacks it (full clone, not a Prefab Variant), swaps `MeshFilter.sharedMesh` to the matching new sub-mesh by name, and saves `{base}_{suffix}.prefab`. Each variant completes its own export → import → clone cycle, with a single `AssetDatabase.Refresh` at the end. Suffixes are validated against `^[A-Za-z0-9_]+$` and duplicates inside a batch are rejected upfront. Conflicts are overwritten — git is the rollback path.
+- **`LightmapTransferTool.ExportVertexColorsToFbxAs(sourceFbxPath, outputFbxPath, entries, uvChannelOverride)`** — public entry point that writes a new FBX next to (or anywhere relative to) the source without mutating the source importer, scene mesh bindings, or working copies.
+
 ### Changed
 - **Vertex AO tab renamed to Vertex Color Baking.** `VertexAOTool` → `VertexColorBakingTool`, `ToolId` `vertex_ao` → `vertex_color_baking`. Asset GUID preserved so existing references stay intact. AO functionality is unchanged and reachable via the new toolbar at the top of the tab.
-
-### Added
-- **Solid Color bake mode.** Fills `mesh.colors32` with a uniform `Color32` across every mesh variant of an entry (`originalMesh`, `repackedMesh`, `transferredMesh`, `fbxMesh`). Collision meshes are skipped via `MeshHygieneUtility.IsCollisionNodeName`. Each write goes through `Undo.RecordObject` + `EditorUtility.SetDirty`.
-- **Batch variant export pipeline.** New `VariantExportPipeline` (`Editor/Tools/VariantExportPipeline.cs`) drives a list of `(Color, suffix)` variants against a source FBX and an optional source prefab. Per variant it paints, exports `{base}_{suffix}.fbx`, instantiates the source prefab, unpacks it (full clone, not a Prefab Variant), swaps `MeshFilter.sharedMesh` to the matching new sub-mesh by name, and saves `{base}_{suffix}.prefab`. The whole batch runs inside `AssetDatabase.StartAssetEditing/StopAssetEditing` with a single refresh. Suffixes are validated against `^[A-Za-z0-9_]+$` and duplicates inside a batch are rejected upfront. Conflicts are overwritten — git is the rollback path.
-- **`LightmapTransferTool.ExportVertexColorsToFbxAs(sourceFbxPath, outputFbxPath, entries, uvChannelOverride)`** — public entry point that writes a new FBX next to (or anywhere relative to) the source without mutating the source importer, scene mesh bindings, or working copies.
+- **Default `RepackResolutionMode` is now `AutoFromTexelDensity`** (was `Manual`). Uniform real-world texels-per-meter is the desired outcome for lightmaps; the previous fixed-resolution default produced wildly different texel density per asset depending on world size.
+- **xatlas pack no longer raises a modal progress dialog** (`EditorUtility.DisplayCancelableProgressBar`). Progress now flows through `UvProgress` to the Background Tasks panel and the inline strip; cancel via `UvProgress.CancelRequested`.
+- **Hoisted all late `sourceMesh.*` and `targetMesh.*` reads** in `GroupedShellTransfer.Transfer` up to the initial Mesh-data extraction block. Keeps the algorithm body Unity-API-free so it runs cleanly in `Task.Run`.
 
 ### Refactored
 - `LightmapTransferTool.ExportVertexColorsToFbxCore` now accepts an optional `outputFbxPathOverride` and returns `bool` for success. When the override is set and differs from the source path, Phase 1 (source importer mutation), Phase 4 scene relink, and Phase 5 restore are skipped so the source FBX and live scene stay untouched. Existing overwrite and hierarchy-mode callers keep their void-style usage.
+
+### Removed
+- All `EditorUtility.DisplayProgressBar` / `DisplayCancelableProgressBar` / `ClearProgressBar` calls. Replaced with `UvProgress` everywhere (XatlasRepack, LightmapTransferTool, VertexAOBaker.Cpu, FbxMetricsExporter, LodGenerationTool).
+- `[CreateAssetMenu(menuName = "Lightmap UV Tool/Test Suite")]` from `TestSuiteAsset` — replaced with a gated `[MenuItem("Assets/Create/Mesh Lab/Sweep Test Suite")]`.
+- Transfer tab decluttered: removed the misplaced `Generate LODs` section (full LOD-Gen UI lives in the dedicated LOD Gen tab), the `FBX Export` block (Export as New / Overwrite Source — both duplicates of the sidebar footer's `Export New FBX` / `Overwrite FBX`), and the `Save FBX from main (_main)` button (duplicate of the footer's `Backup from main`). Transfer tab now reads: per-LOD status list → `Transfer All Targets` → `Quality Report` → `Validation Overlay` → `Apply UV2` actions.
+
+## [1.0.5] - 2026-05-13
+
+### Added
+- **Pre-pack shell snap to integer atlas pixels** (`SnapShellsToIntegerPixels`, default ON). Before handing shells to xatlas, each shell is scaled per-axis around its UV centroid so its bbox extent is an integer number of atlas texels. Makes xatlas's own per-chart `ceil(extents)` rescale (xatlas.cpp ~line 8345, upstream Issue #18 wontfix) a no-op for every chart, so the uniform per-shell density set up by `TexelDensityNormalizer` survives the pack instead of being amplified by sub-pixel rounding. **No xatlas fork required** — the package builds stock xatlas master via `FetchContent`.
+- Auto-resolution mode for Repack (`ResolutionMode.AutoFromTexelDensity`) — pick a target texels-per-meter density and the tool computes the atlas resolution from total 3D area. Manual mode unchanged. Sweep automatically forces Manual so each cell's `atlasResolutions[i]` is the resolution xatlas actually packs at.
+- `[Density]` / `[Density:snap]` / `[Density:postUV2]` diagnostic logs at multiple pipeline checkpoints (snap / postAssign / postOrphan / postBorder / postCorrection / final) so per-shell density drift is visible per stage.
+- Cancellable xatlas pack — `xatlasPackCharts` now runs on a background `Task` while the main thread polls `DisplayCancelableProgressBar`. xatlas itself has no native cancel API, so cancel = wait for in-flight pack to finish, then discard result and stop pipeline.
+- Pack cost-budget preflight — refuses packs that would take many minutes (brute-force budget 500M ops, heuristic 20B). Auto-disables brute force above the budget instead of hanging the editor.
+- UI toggles in Pre-pack panel: `Snap shells to integer atlas pixels (pre-pack)`, `Post-pack density correction (experimental)`, `Internal pack oversample` popup.
+
+### Fixed
+- Per-shell lightmap texel density variance on real artist UVs (target ~1× from ~14× spread). Achieved purely via input preparation — no xatlas patch required.
+- Sweep `atlasResolutions` dimension was collapsed to a single value when `RepackResolutionMode == AutoFromTexelDensity` (every cell recomputed and overrode the swept value). Sweep now snapshots and forces Manual for the duration.
+- `BenchmarkRecorder` `atlasRes` column now reflects the resolution xatlas actually packed at (post auto-compute), not the raw `ctx.AtlasResolution` UI setting.
+- Benchmark per-mesh records now skip entries with `include == false` so user-deselected meshes carrying stale `TransferResult` / `ValidationReport` don't surface as failed rows in sweep aggregates.
+- `BenchmarkSweep` `totalMs` no longer double-counts inner stages — `pipelineMs` is the outermost wall clock and already contains repack + transfer + validate; summing all four triple-counted inner work. Standalone Repack/Transfer rows (no pipeline wrapper) fall back to the sum of inner stages.
+
+### Changed
+- `TexelDensityNormalizer` now logs a rich `[Density] pre … post … scale …` summary at Info level instead of a terse "rescaled N/N shells" line.
+- `Native~/third_party/xatlas/` removed; `Native~/CMakeLists.txt` reverted to `FetchContent_Declare(xatlas)` against upstream master.
 
 ## [1.0.0] - 2026-04-20
 

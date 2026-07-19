@@ -289,6 +289,8 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Verbose($"[UV0Fix] '{source.name}': welded {weldMap.Count} pairs, " +
                       $"removed {removed} vertices ({vertCount} → {newVertCount})");
 
+            TangentValidator.ValidateAfterWeld(source, result, "WeldUv0");
+
             return result;
         }
 
@@ -307,6 +309,10 @@ namespace SashaRX.UnityMeshLab
             int vertCount = mesh.vertexCount;
 
             if (uv0 == null || uv0.Length == 0) return false;
+
+            // Snapshot tangent presence before the in-place rebuild so the post-weld
+            // validation can detect TBN data going missing during the merge.
+            bool hadTangentsBefore = TangentValidator.HasTangents(mesh);
 
             bool hasNormals = normals != null && normals.Length == vertCount;
             var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals);
@@ -410,6 +416,13 @@ namespace SashaRX.UnityMeshLab
 
             UvtLog.Verbose($"[UV0Fix] WeldInPlace '{mesh.name}': " +
                       $"welded {weldMap.Count} pairs, {vertCount} → {newVertCount} verts");
+
+            bool nowHasTangents = TangentValidator.HasTangents(mesh);
+            if (hadTangentsBefore && !nowHasTangents)
+                UvtLog.Warn($"[TBN] WeldInPlace '{mesh.name}': source had tangents but result has none — TBN dropped during weld");
+            else if (nowHasTangents)
+                TangentValidator.ValidateTangentsW(mesh.tangents, mesh.name, "WeldInPlace");
+
             return true;
         }
 
@@ -673,6 +686,8 @@ namespace SashaRX.UnityMeshLab
                       $"welded {weldMap.Count} pairs (foldover:{foldoverWelds} seam:{seamWelds}), " +
                       $"removed {removed} verts ({tVertCount} → {newVertCount}), " +
                       $"shells {shellsBefore} → {shellsAfter}");
+
+            TangentValidator.ValidateAfterWeld(target, result, "SourceGuidedWeld");
 
             return result;
         }
@@ -1014,7 +1029,60 @@ namespace SashaRX.UnityMeshLab
                       $"({vertCount} → {newVertCount}), " +
                       $"shells {shellsBefore} → {shellsAfter}");
 
+            // After the merge, run TBN sanity. UvEdgeWeld writes through Union-Find
+            // groups so different merged vertices may have had opposing tangent.w —
+            // this is exactly the case the user asked us to surface as an error.
+            TangentValidator.ValidateAfterWeld(mesh, result, "UvEdgeWeld");
+            ValidateUnionFindTangentHandedness(mesh, parent, "UvEdgeWeld");
+
             return result;
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        //  Tangent handedness check across Union-Find weld groups.
+        //  When two vertices with opposing tangent.w are unified the
+        //  resulting normal-mapped lighting will flip on one side, so
+        //  warn loudly when the input mesh had tangents.
+        // ═══════════════════════════════════════════════════════════
+        static void ValidateUnionFindTangentHandedness(Mesh sourceMesh, int[] parent, string operation)
+        {
+            if (sourceMesh == null || parent == null) return;
+            var srcTan = sourceMesh.tangents;
+            if (srcTan == null || srcTan.Length != parent.Length) return;
+
+            var rootSign = new Dictionary<int, int>();
+            int conflictVerts = 0;
+            int firstConflictRoot = -1;
+
+            for (int i = 0; i < parent.Length; i++)
+            {
+                int root = Find(parent, i);
+                if (root == i) continue;
+
+                float w = srcTan[i].w;
+                if (w == 0f || float.IsNaN(w)) continue;
+                int sign = w > 0f ? 1 : -1;
+
+                if (!rootSign.TryGetValue(root, out int existing))
+                {
+                    float rootW = srcTan[root].w;
+                    if (rootW != 0f && !float.IsNaN(rootW))
+                        rootSign[root] = rootW > 0f ? 1 : -1;
+                    else
+                        rootSign[root] = sign;
+                    existing = rootSign[root];
+                }
+
+                if (existing != sign)
+                {
+                    conflictVerts++;
+                    if (firstConflictRoot < 0) firstConflictRoot = root;
+                }
+            }
+
+            if (conflictVerts > 0)
+                UvtLog.Warn($"[TBN] {operation} '{sourceMesh.name}': merged {conflictVerts} vertices with opposing tangent.w handedness " +
+                            $"(first conflict at root vertex {firstConflictRoot}) — normal map shading may flip across the merged seam");
         }
 
         static void AddEdge(Dictionary<long, List<(int vA, int vB)>> edgeMap,

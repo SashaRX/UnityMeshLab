@@ -81,10 +81,12 @@ namespace SashaRX.UnityMeshLab
             var lods = ctx.LodGroup.GetLODs();
             var newLods = new List<LOD>(lods);
 
+            UvProgress.Begin($"Generate LODs ({opts.count} levels)", cancelable: true);
             try
             {
                 for (int lodIdx = 0; lodIdx < opts.count; lodIdx++)
                 {
+                    if (UvProgress.CancelRequested) break;
                     float ratio = opts.ratios[lodIdx];
                     var settings = new MeshSimplifier.SimplifySettings
                     {
@@ -97,8 +99,8 @@ namespace SashaRX.UnityMeshLab
                     };
 
                     float progress = (float)lodIdx / opts.count;
-                    EditorUtility.DisplayProgressBar("Generate LODs",
-                        $"LOD{startLod + lodIdx} (ratio {ratio:P0})", progress);
+                    UvProgress.Report(progress,
+                        $"LOD{startLod + lodIdx} (ratio {ratio:P0})");
 
                     var lodRenderers = new List<Renderer>();
                     int lodLevel = startLod + lodIdx;
@@ -198,7 +200,7 @@ namespace SashaRX.UnityMeshLab
                 ctx.LodGroup = LodGroupUtility.Rebuild(ctx.LodGroup.gameObject, newLods.ToArray());
                 AssetDatabase.SaveAssets();
             }
-            finally { EditorUtility.ClearProgressBar(); }
+            finally { UvProgress.End(); }
 
             foreach (var (entry, srcMesh) in sourceMeshes)
             {

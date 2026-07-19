@@ -24,6 +24,15 @@ namespace SashaRX.UnityMeshLab
         public int aoChannelType;   // 0=VertexColor, 1-5=UV0-UV4
         public int aoChannelComp;   // 0=R/X, 1=G/Y, 2=B, 3=A
 
+        // ── Developer UI ──
+        // When true, the UV2 Transfer tool exposes diagnostic / benchmarking
+        // sections (Parameter Sweep, Log Filters, UV0 Analysis & Fix, the
+        // SymSplit "Apply to target LODs (advanced)" toggle, Skip SymSplit
+        // diagnostic). Off by default — keeps the day-to-day UI minimal for
+        // production users. Toggleable per project from Project Settings ▸
+        // Mesh Lab ▸ Developer.
+        public bool showDebugUI;
+
         static MeshLabProjectSettings s_Instance;
 
         public static MeshLabProjectSettings Instance
@@ -77,8 +86,24 @@ namespace SashaRX.UnityMeshLab
             var inst = Instance;
 
             EditorGUILayout.Space(8);
-            EditorGUILayout.LabelField("Repack Defaults", EditorStyles.boldLabel);
             EditorGUI.BeginChangeCheck();
+
+            // ── Developer (top — gates the visibility of debug surfaces ──
+            // across the whole package; users look here first when "where
+            // did Sweep go?" comes up). ──
+            EditorGUILayout.LabelField("Developer", EditorStyles.boldLabel);
+            inst.showDebugUI = EditorGUILayout.Toggle(
+                new GUIContent("Show Debug UI",
+                    "When enabled, the UV2 Transfer tool shows diagnostic and "
+                    + "benchmarking sections (Parameter Sweep, Log Filters, UV0 "
+                    + "Analysis & Fix, advanced SymSplit / Repack toggles). "
+                    + "Also reveals 'Mesh Lab ▸ Export FBX Metrics' menu items "
+                    + "and the 'Assets ▸ Create ▸ Mesh Lab ▸ Sweep Test Suite' "
+                    + "action. Off by default for a clean production UI."),
+                inst.showDebugUI);
+
+            EditorGUILayout.Space(12);
+            EditorGUILayout.LabelField("Repack Defaults", EditorStyles.boldLabel);
             inst.atlasResolution = EditorGUILayout.IntField("Atlas Resolution", inst.atlasResolution);
             inst.shellPaddingPx  = EditorGUILayout.IntSlider("Shell Padding", inst.shellPaddingPx, 0, 16);
             inst.borderPaddingPx = EditorGUILayout.IntSlider("Border Padding", inst.borderPaddingPx, 0, 16);
@@ -116,18 +141,61 @@ namespace SashaRX.UnityMeshLab
             // Maintenance
             EditorGUILayout.Space(12);
             EditorGUILayout.LabelField("Maintenance", EditorStyles.boldLabel);
-            var bgc = GUI.backgroundColor;
-            GUI.backgroundColor = new Color(.7f, .15f, .15f);
-            if (GUILayout.Button("Delete All Sidecars", GUILayout.Height(22), GUILayout.MaxWidth(200)))
+            using (new EditorGUILayout.HorizontalScope())
             {
-                if (EditorUtility.DisplayDialog("Delete All Sidecars",
-                    "This will delete every _uv2data.asset in the project.\nContinue?",
-                    "Delete", "Cancel"))
+                var bgc = GUI.backgroundColor;
+                GUI.backgroundColor = new Color(.7f, .15f, .15f);
+                if (GUILayout.Button("Delete All Sidecars", GUILayout.Height(22), GUILayout.MaxWidth(200)))
                 {
-                    UvToolHub.NukeAllSidecarsStatic();
+                    if (EditorUtility.DisplayDialog("Delete All Sidecars",
+                        "This will delete every _uv2data.asset in the project.\nContinue?",
+                        "Delete", "Cancel"))
+                    {
+                        UvToolHub.NukeAllSidecarsStatic();
+                    }
+                }
+                GUI.backgroundColor = bgc;
+
+                if (GUILayout.Button(
+                        new GUIContent("Reset to defaults",
+                            "Reset every Mesh Lab project setting (Repack defaults, Output path, "
+                            + "Sidecar mode, Vertex AO defaults, Show Debug UI) back to its built-in "
+                            + "default value. Does NOT touch existing sidecar files or scene state."),
+                        GUILayout.Height(22), GUILayout.MaxWidth(180)))
+                {
+                    if (EditorUtility.DisplayDialog("Reset Mesh Lab Settings",
+                        "Reset every project setting to its built-in default?",
+                        "Reset", "Cancel"))
+                    {
+                        ResetToDefaults();
+                    }
                 }
             }
-            GUI.backgroundColor = bgc;
+        }
+
+        // Re-stamp every settable field with the value of a fresh instance —
+        // single source of truth, no risk of skipping a future field.
+        static void ResetToDefaults()
+        {
+            var inst = Instance;
+            var fresh = CreateInstance<MeshLabProjectSettings>();
+            try
+            {
+                inst.atlasResolution = fresh.atlasResolution;
+                inst.shellPaddingPx  = fresh.shellPaddingPx;
+                inst.borderPaddingPx = fresh.borderPaddingPx;
+                inst.repackPerMesh   = fresh.repackPerMesh;
+                inst.savePath        = fresh.savePath;
+                inst.sidecarMode     = fresh.sidecarMode;
+                inst.aoChannelType   = fresh.aoChannelType;
+                inst.aoChannelComp   = fresh.aoChannelComp;
+                inst.showDebugUI     = fresh.showDebugUI;
+                Save();
+            }
+            finally
+            {
+                DestroyImmediate(fresh);
+            }
         }
     }
 }

@@ -14,6 +14,7 @@
 // target UV0 differs from source UV0 (always the case on LOD meshes).
 
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
@@ -99,6 +100,13 @@ namespace SashaRX.UnityMeshLab
             public int[] targetShellIssues;  // per-shell issue count (inverted/degenerate faces)
             public int shellsRejected;       // shells where UV2 was not written (too many issues)
             public int shellsOverlapFixed;   // force3D shells relocated due to UV2 overlap
+
+            // ─── Topology enforcement snapshot (per-target, captured by Transfer) ───
+            // Copied from LastTopology* immediately after EnforceShellTopologyOnUv2
+            // so multi-mesh runs don't all read the final target's global values.
+            public int  topologyIterations;
+            public int  topologyFixed;
+            public bool topologyCapHit;
 
             // ─── Cross-LOD overlap hints ───
             // Populated for merged shells to propagate source selection to subsequent LODs.
@@ -753,29 +761,119 @@ namespace SashaRX.UnityMeshLab
         //            fewer inverted/zero-area triangles.
         // ═══════════════════════════════════════════════════════════
 
+        static float ComputeUv2PixelMargin(int atlasWidth, int atlasHeight, float pixels, float fallback)
+        {
+            int w = Mathf.Max(0, atlasWidth);
+            int h = Mathf.Max(0, atlasHeight);
+            int dim = (w > 0 && h > 0) ? Mathf.Min(w, h) : Mathf.Max(w, h);
+            return dim > 0 ? pixels / dim : fallback;
+        }
+
+        /// <summary>
+        /// Sync entry point — reads mesh data on the calling thread (must be
+        /// the editor main thread) then runs the transfer algorithm inline.
+        /// Used by tests and any synchronous caller. Interactive UI paths
+        /// should call <see cref="TransferAsync"/> so the editor main thread
+        /// is free during the algorithm's heavy compute.
+        /// </summary>
         public static TransferResult Transfer(Mesh targetMesh, Mesh sourceMesh,
             List<OverlapSourceHint> previousLodHints = null,
-            List<CrossLodMatchHint> previousLodMatchHints = null)
+            List<CrossLodMatchHint> previousLodMatchHints = null,
+            int sourceAtlasWidth = 0,
+            int sourceAtlasHeight = 0)
         {
-            var result = new TransferResult();
+            ExtractMeshData(targetMesh, sourceMesh,
+                out var srcVerts, out var srcTris, out var srcUv0, out var srcUv2, out var srcNormals, out var sourceMeshName,
+                out var tVerts, out var tNormals, out var tUv0, out var tgtTris, out var vertCount, out var targetMeshName);
+            return TransferCore(
+                srcVerts, srcTris, srcUv0, srcUv2, srcNormals, sourceMeshName,
+                tVerts, tNormals, tUv0, tgtTris, vertCount, targetMeshName,
+                previousLodHints, previousLodMatchHints,
+                sourceAtlasWidth, sourceAtlasHeight);
+        }
 
-            // Source data
-            var srcVerts = sourceMesh.vertices;
-            var srcTris = sourceMesh.triangles;
+        /// <summary>
+        /// Async entry point — Mesh data is read synchronously on the editor
+        /// main thread (Mesh.* accessors are not thread-safe), then the
+        /// pure-compute algorithm body runs on a background thread via
+        /// <see cref="Task.Run"/>. The editor main thread is free for the
+        /// entire compute, so the hub window keeps repainting and inline
+        /// progress updates. <see cref="UvProgress.Report"/> calls inside the
+        /// body forward to Unity's Progress API; the calls are wrapped in
+        /// try/catch so a non-main-thread Progress.Report no-op cleanly.
+        /// </summary>
+        public static Task<TransferResult> TransferAsync(Mesh targetMesh, Mesh sourceMesh,
+            List<OverlapSourceHint> previousLodHints = null,
+            List<CrossLodMatchHint> previousLodMatchHints = null,
+            int sourceAtlasWidth = 0,
+            int sourceAtlasHeight = 0)
+        {
+            ExtractMeshData(targetMesh, sourceMesh,
+                out var srcVerts, out var srcTris, out var srcUv0, out var srcUv2, out var srcNormals, out var sourceMeshName,
+                out var tVerts, out var tNormals, out var tUv0, out var tgtTris, out var vertCount, out var targetMeshName);
+            return Task.Run(() => TransferCore(
+                srcVerts, srcTris, srcUv0, srcUv2, srcNormals, sourceMeshName,
+                tVerts, tNormals, tUv0, tgtTris, vertCount, targetMeshName,
+                previousLodHints, previousLodMatchHints,
+                sourceAtlasWidth, sourceAtlasHeight));
+        }
+
+        // Main-thread mesh read — splits Mesh API access (Mesh.vertices etc.
+        // are not thread-safe) from the pure-compute body so the body can run
+        // in <see cref="Task.Run"/>.
+        static void ExtractMeshData(Mesh targetMesh, Mesh sourceMesh,
+            out Vector3[] srcVerts, out int[] srcTris,
+            out Vector2[] srcUv0, out Vector2[] srcUv2,
+            out Vector3[] srcNormals, out string sourceMeshName,
+            out Vector3[] tVerts, out Vector3[] tNormals,
+            out Vector2[] tUv0, out int[] tgtTris,
+            out int vertCount, out string targetMeshName)
+        {
+            srcVerts = sourceMesh.vertices;
+            srcTris = sourceMesh.triangles;
             var srcUv0List = new List<Vector2>(); sourceMesh.GetUVs(0, srcUv0List);
             var srcUv2List = new List<Vector2>(); sourceMesh.GetUVs(1, srcUv2List);
-            var srcUv0 = srcUv0List.ToArray();
-            var srcUv2 = srcUv2List.ToArray();
+            srcUv0 = srcUv0List.ToArray();
+            srcUv2 = srcUv2List.ToArray();
+            srcNormals = sourceMesh.normals;
+            sourceMeshName = sourceMesh.name;
+
+            tVerts = targetMesh.vertices;
+            tNormals = targetMesh.normals;
+            var tUv0List = new List<Vector2>(); targetMesh.GetUVs(0, tUv0List);
+            tUv0 = tUv0List.ToArray();
+            vertCount = targetMesh.vertexCount;
+            tgtTris = targetMesh.triangles;
+            targetMeshName = targetMesh.name;
+        }
+
+        // Pure-compute body — operates only on the plain arrays passed in;
+        // safe to invoke from a background thread via Task.Run.
+        static TransferResult TransferCore(
+            Vector3[] srcVerts, int[] srcTris,
+            Vector2[] srcUv0, Vector2[] srcUv2,
+            Vector3[] srcNormals, string sourceMeshName,
+            Vector3[] tVerts, Vector3[] tNormals,
+            Vector2[] tUv0, int[] tgtTris,
+            int vertCount, string targetMeshName,
+            List<OverlapSourceHint> previousLodHints,
+            List<CrossLodMatchHint> previousLodMatchHints,
+            int sourceAtlasWidth, int sourceAtlasHeight)
+        {
+            var result = new TransferResult();
+            float uv2OobMargin = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 1.25f, 0.005f);
+            float uv2BoundsTolerance = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 2.5f, 0.01f);
+            if (sourceAtlasWidth > 0 || sourceAtlasHeight > 0)
+            {
+                UvtLog.Verbose(UvtLog.Category.Match,
+                    $"[GroupedTransfer] UV2 tolerances from atlas {sourceAtlasWidth}x{sourceAtlasHeight}: " +
+                    $"oobMargin={uv2OobMargin:F6}, boundsTol={uv2BoundsTolerance:F6}");
+            }
 
             if (srcUv0.Length == 0 || srcUv2.Length == 0)
             { UvtLog.Error("[GroupedTransfer] Source missing UV0/UV2"); return result; }
 
-            // Target data
-            var tVerts = targetMesh.vertices;
-            var tNormals = targetMesh.normals;
-            var tUv0List = new List<Vector2>(); targetMesh.GetUVs(0, tUv0List);
-            var tUv0 = tUv0List.ToArray();
-            int vertCount = targetMesh.vertexCount;
+            UvProgress.ReportFromBackground($"'{targetMeshName}' ← '{sourceMeshName}'");
 
             if (tUv0.Length == 0)
             { UvtLog.Error("[GroupedTransfer] Target missing UV0"); return result; }
@@ -813,8 +911,9 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Phase 1: Extract shells ──
+            UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 1 — extract shells");
+            if (UvProgress.CancelRequested) return result;
             var srcShells = UvShellExtractor.Extract(srcUv0, srcTris);
-            var tgtTris = targetMesh.triangles;
             var tgtShells = UvShellExtractor.Extract(tUv0, tgtTris);
 
             // ── Phase 1a: Merge fragment shells ──
@@ -920,6 +1019,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Phase 1b: Precompute similarity transform per source shell ──
+            UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 1b — transforms ({srcShells.Count} src)");
+            if (UvProgress.CancelRequested) return result;
             var srcTransforms = new SimilarityTransform[srcShells.Count];
             for (int si = 0; si < srcShells.Count; si++)
             {
@@ -1098,6 +1199,8 @@ namespace SashaRX.UnityMeshLab
                 $"overlapGroups={overlapGroups.Count}(maxSize={maxOverlapGroupSize})");
 
             // ── Phase 2a: Match each target shell → best source shell ──
+            UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 2a — match {tgtShells.Count} targets");
+            if (UvProgress.CancelRequested) return result;
             result.targetShellToSourceShell = new int[tgtShells.Count];
             result.targetShellMethod = new int[tgtShells.Count]; // 0=interp, 1=xform, 2=merged
             result.targetShellCentroids = new Vector3[tgtShells.Count];
@@ -1267,7 +1370,6 @@ namespace SashaRX.UnityMeshLab
             // positions and causes visible UV2 jumps between LODs.
             // Keeping the computation for diagnostics only.
             {
-                var srcNormals = sourceMesh.normals;
                 float coverageMaxDist = Mathf.Max(meshDiagonal * 0.05f, 0.01f);
                 float coverageMinDot = 0.5f; // ~60°
 
@@ -1303,6 +1405,8 @@ namespace SashaRX.UnityMeshLab
                 tgtIsFragmentMerged);
 
             // ── Phase 2b: Deduplicate — resolve same-source conflicts ──
+            UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 2b — dedup");
+            if (UvProgress.CancelRequested) return result;
             // When multiple non-merged target shells claim the same source shell
             // (common with overlapping/tiling UV0), keep the best match and
             // reassign others to different source shells at the same 3D location.
@@ -1813,6 +1917,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Phase 3: Transfer UV2 using final source assignments ──
+            UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 3 — transfer {vertCount} verts");
+            if (UvProgress.CancelRequested) return result;
             // Verbose: dump per-shell matching for diagnostics
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
             {
@@ -2021,7 +2127,7 @@ namespace SashaRX.UnityMeshLab
                             srcTransforms[si],
                             srcIsRibbon[si], srcRibbonAxis[si], srcRibbonAxis2[si], srcRibbonCentroid[si],
                             srcUv2Min, srcUv2Max, groupMembers,
-                            kRayMaxDist);
+                            kRayMaxDist, uv2BoundsTolerance);
 
                         var best = SelectBestCandidate(allCandidates, tShell.faceIndices, tgtTris, tUv0);
                         if (best.HasValue)
@@ -2746,7 +2852,7 @@ namespace SashaRX.UnityMeshLab
                             srcIsRibbon[chosenSrc], srcRibbonAxis[chosenSrc],
                             srcRibbonAxis2[chosenSrc], srcRibbonCentroid[chosenSrc],
                             srcUv2Min, srcUv2Max, null,
-                            kRayMaxDist);
+                            kRayMaxDist, uv2BoundsTolerance);
 
                         var bestOverlap = SelectBestCandidate(
                             overlapCandidates, tShell.faceIndices, tgtTris, tUv0);
@@ -2841,7 +2947,7 @@ namespace SashaRX.UnityMeshLab
                     // the outliers using the matched source's constrained UV0 lookup.
                     if (bestMergedUv2 != null && bestMergedUv2.Count > 1 && chosenSrc >= 0)
                     {
-                        const float kUv2Margin = 0.005f;
+                        float kUv2Margin = uv2OobMargin;
                         Vector2 sMin = srcUv2Min[chosenSrc];
                         Vector2 sMax = srcUv2Max[chosenSrc];
 
@@ -3077,7 +3183,7 @@ namespace SashaRX.UnityMeshLab
                         // Penalize xform if it extrapolates beyond source shell's UV2 bounds.
                         // Extrapolation is the primary cause of cross-source UV2 overlaps,
                         // since interp stays within source UV2 convex hull by construction.
-                        const float kOobMargin = 0.005f;
+                        float kOobMargin = uv2OobMargin;
                         Vector2 srcBMin2 = srcUv2Min[chosenSrc];
                         Vector2 srcBMax2 = srcUv2Max[chosenSrc];
                         Vector2 xfBMin = new Vector2(float.MaxValue, float.MaxValue);
@@ -3288,12 +3394,19 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Info($"[GroupedTransfer] Post-fix total: {totalOutlierVerts} outlier verts corrected");
             }
 
-            // ── Post-transfer UV2 overlap detection & relocation ──
-            // Force3D shells may land in UV2 regions occupied by other shells.
-            // Detect overlapping force3D shells and collapse them to their source's
-            // UV2 centroid to eliminate overlaps.
+            // ── Post-transfer UV2 overlap detection & reporting ──
+            // Force3D fallback shells may land in UV2 regions occupied by other
+            // shells. Previously this stage collapsed every offender to its
+            // source's UV2 centroid — a "fix" that destroyed the shell: 40
+            // faces sharing one UV2 point bake into a single lightmap pixel,
+            // far worse than the bleeding the collapse was meant to prevent.
+            //
+            // We now only DETECT and report the overlap, leaving the shell's
+            // 3D-projected UV2 layout intact. The bake gets some bleeding for
+            // the offending shells but each face still owns a distinct texel.
+            // A proper free-space relocator (preserving shell shape) is the
+            // right long-term fix — until then, bleeding beats collapse.
             {
-                // Build per-shell UV2 AABB
                 var shellUv2Min = new Vector2[tgtShells.Count];
                 var shellUv2Max = new Vector2[tgtShells.Count];
                 var shellHasUv2 = new bool[tgtShells.Count];
@@ -3317,51 +3430,41 @@ namespace SashaRX.UnityMeshLab
                     shellHasUv2[tsi] = hasAny;
                 }
 
-                int overlapsFixed = 0;
+                int overlapsReported = 0;
                 for (int tsi = 0; tsi < tgtShells.Count; tsi++)
                 {
                     if (!tgtForce3DFallback[tsi]) continue;
                     if (!shellHasUv2[tsi]) continue;
 
-                    bool overlaps = false;
+                    int firstOverlapWith = -1;
                     for (int tsj = 0; tsj < tgtShells.Count; tsj++)
                     {
                         if (tsj == tsi) continue;
                         if (!shellHasUv2[tsj]) continue;
-                        if (tgtForce3DFallback[tsj]) continue; // don't compare force3D vs force3D
+                        if (tgtForce3DFallback[tsj]) continue;
 
                         if (shellUv2Min[tsi].x < shellUv2Max[tsj].x &&
                             shellUv2Max[tsi].x > shellUv2Min[tsj].x &&
                             shellUv2Min[tsi].y < shellUv2Max[tsj].y &&
                             shellUv2Max[tsi].y > shellUv2Min[tsj].y)
                         {
-                            overlaps = true;
+                            firstOverlapWith = tsj;
                             break;
                         }
                     }
 
-                    if (overlaps)
+                    if (firstOverlapWith >= 0)
                     {
-                        int src = result.targetShellToSourceShell[tsi];
-                        Vector2 centroid;
-                        if (src >= 0 && src < srcUv2Min.Length)
-                            centroid = (srcUv2Min[src] + srcUv2Max[src]) * 0.5f;
-                        else
-                            centroid = (shellUv2Min[tsi] + shellUv2Max[tsi]) * 0.5f;
-
-                        foreach (int vi in tgtShells[tsi].vertexIndices)
-                        {
-                            if (vi < result.uv2.Length)
-                                result.uv2[vi] = centroid;
-                        }
-                        overlapsFixed++;
+                        overlapsReported++;
                         result.shellsOverlapFixed++;
-                        UvtLog.Info($"[GroupedTransfer] Overlap fix: t{tsi} collapsed to " +
-                            $"src{src} centroid ({centroid.x:F4},{centroid.y:F4})");
+                        UvtLog.Warn($"[GroupedTransfer] UV2 overlap: t{tsi} (force3D fallback) " +
+                            $"overlaps t{firstOverlapWith} — leaving UV2 untouched " +
+                            $"(bleeding > collapse; consider re-unwrapping in DCC)");
                     }
                 }
-                if (overlapsFixed > 0)
-                    UvtLog.Info($"[GroupedTransfer] Overlap fix: {overlapsFixed} force3D shells relocated");
+                if (overlapsReported > 0)
+                    UvtLog.Warn($"[GroupedTransfer] UV2 overlap: {overlapsReported} force3D shells " +
+                        $"have overlapping UV2 with non-fallback shells (lightmap bleeding likely)");
             }
 
             // ── Classify all shells ──
@@ -3410,7 +3513,7 @@ namespace SashaRX.UnityMeshLab
             result.shellsInterpolation = shellsInterpolation;
             result.shellsMerged = shellsMerged;
 
-            UvtLog.Info($"[GroupedTransfer] '{targetMesh.name}': " +
+            UvtLog.Info($"[GroupedTransfer] '{targetMeshName}': " +
                 $"{tgtShells.Count} target → {shellsMatched} matched " +
                 $"(xform:{shellsTransform} interp:{shellsInterpolation} merged:{shellsMerged}), " +
                 $"{transferred}/{vertCount} verts" +
@@ -3439,7 +3542,7 @@ namespace SashaRX.UnityMeshLab
             // which specific shells produce different UV2.
             {
                 var fpSb = new System.Text.StringBuilder();
-                fpSb.Append($"[GroupedTransfer] UV2 fingerprint '{targetMesh.name}':");
+                fpSb.Append($"[GroupedTransfer] UV2 fingerprint '{targetMeshName}':");
                 for (int tsi2 = 0; tsi2 < tgtShells.Count; tsi2++)
                 {
                     var shell = tgtShells[tsi2];
@@ -3468,6 +3571,20 @@ namespace SashaRX.UnityMeshLab
 
             // ── Shell topology consistency: detect & fix displaced vertices ──
             EnforceShellTopologyOnUv2(result.uv2, tVerts, tgtTris, tgtShells);
+            // Snapshot the per-call topology counters into the result so downstream
+            // consumers (BenchmarkRecorder) get accurate per-target values; the
+            // static LastTopology* fields get overwritten on the next Transfer call.
+            result.topologyIterations = LastTopologyIterations;
+            result.topologyFixed      = LastTopologyFixed;
+            result.topologyCapHit     = LastTopologyCapHit;
+
+            // ── Collapse-to-line diagnostic ──
+            // Detect target shells whose UV2 layout has collapsed to a line
+            // (one bbox dim near zero) or extreme sliver (UV aspect ≫ 3D
+            // aspect) — pure logging, no behaviour change. Especially useful
+            // on lower LODs where degenerate parameterisation can ride
+            // through similarity-transform / strip-param transfer.
+            DiagnoseCollapsedTargetShells(tgtShells, tgtTris, tVerts, result.uv2);
 
             // UV2 bounds check
             int oob = 0;
@@ -3476,10 +3593,11 @@ namespace SashaRX.UnityMeshLab
             {
                 var uv = result.uv2[i];
                 uvMin = Vector2.Min(uvMin, uv); uvMax = Vector2.Max(uvMax, uv);
-                if (uv.x < -0.01f || uv.x > 1.01f || uv.y < -0.01f || uv.y > 1.01f) oob++;
+                if (uv.x < -uv2BoundsTolerance || uv.x > 1f + uv2BoundsTolerance ||
+                    uv.y < -uv2BoundsTolerance || uv.y > 1f + uv2BoundsTolerance) oob++;
             }
             if (oob > 0)
-                UvtLog.Warn($"[GroupedTransfer] '{targetMesh.name}': {oob} verts outside 0-1! " +
+                UvtLog.Warn($"[GroupedTransfer] '{targetMeshName}': {oob} verts outside 0-1! " +
                     $"UV2=[{uvMin.x:F3},{uvMin.y:F3}]-[{uvMax.x:F3},{uvMax.y:F3}]");
 
             // Populate cross-LOD overlap hints for subsequent LODs.
@@ -3557,9 +3675,23 @@ namespace SashaRX.UnityMeshLab
         //  Works on raw UV2 array + UvShell list (independent of TargetTransferState)
         // ═══════════════════════════════════════════════════════════
 
+        // ── Benchmark counters (reset by the caller, read after EnforceShellTopologyOnUv2) ──
+        /// <summary>
+        /// Number of Laplacian iterations actually executed in the most recent
+        /// <see cref="EnforceShellTopologyOnUv2"/> call. Capped at <c>kMaxTopologyIterations</c>.
+        /// </summary>
+        public static int LastTopologyIterations;
+        /// <summary>Total vertices moved by the most recent topology enforcement pass.</summary>
+        public static int LastTopologyFixed;
+        /// <summary>True when the iteration cap was reached and more fixes were still pending.</summary>
+        public static bool LastTopologyCapHit;
+
         static void EnforceShellTopologyOnUv2(
             Vector2[] uv2, Vector3[] verts, int[] triangles, List<UvShell> shells)
         {
+            LastTopologyIterations = 0;
+            LastTopologyFixed = 0;
+            LastTopologyCapHit = false;
             if (uv2 == null || uv2.Length == 0) return;
 
             int faceCount = triangles.Length / 3;
@@ -3793,17 +3925,22 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 totalFixed += fixedThisPass;
-                UvtLog.Verbose($"[ShellTopology] iter={iteration} fixed={fixedThisPass} candidates={candidates.Count}");
+                LastTopologyIterations = iteration + 1;
+                UvtLog.Verbose(UvtLog.Category.Topology, $"iter={iteration} fixed={fixedThisPass} candidates={candidates.Count}");
                 if (fixedThisPass == 0) break;
 
                 if (iteration == kMaxTopologyIterations - 1 && fixedThisPass > 0)
-                    UvtLog.Warn($"[ShellTopology] Cap reached ({kMaxTopologyIterations} iterations) " +
+                {
+                    LastTopologyCapHit = true;
+                    UvtLog.Warn(UvtLog.Category.Topology, $"Cap reached ({kMaxTopologyIterations} iterations) " +
                         $"with {fixedThisPass} vertices still fixable — consider increasing cap");
+                }
             }
 
+            LastTopologyFixed = totalFixed;
             if (totalFixed > 0)
             {
-                UvtLog.Info($"[GroupedTransfer] Shell topology enforcement fixed {totalFixed} displaced vertices");
+                UvtLog.Info(UvtLog.Category.Topology, $"Shell topology enforcement fixed {totalFixed} displaced vertices");
             }
         }
 
@@ -4062,7 +4199,7 @@ namespace SashaRX.UnityMeshLab
             // Cross-source UV2 guard data
             Vector2[] srcUv2Min, Vector2[] srcUv2Max, List<int> overlapGroupMembers,
             // Thresholds
-            float kRayMaxDist)
+            float kRayMaxDist, float uv2BoundsTolerance)
         {
             var candidates = new List<OverlapCandidate>();
             int[] tgtTris = null; // not needed — issues counted by caller
@@ -4243,7 +4380,8 @@ namespace SashaRX.UnityMeshLab
                     foreach (var kv in uv2Map)
                     {
                         Vector2 uv = kv.Value;
-                        if (uv.x < -0.01f || uv.x > 1.01f || uv.y < -0.01f || uv.y > 1.01f)
+                        if (uv.x < -uv2BoundsTolerance || uv.x > 1f + uv2BoundsTolerance ||
+                            uv.y < -uv2BoundsTolerance || uv.y > 1f + uv2BoundsTolerance)
                         {
                             partXfRejected = true;
                             break;
@@ -4331,8 +4469,8 @@ namespace SashaRX.UnityMeshLab
                     }
 
                     // Reject if result goes outside 0-1 range (catches wild extrapolation)
-                    if (xfMin.x < -0.01f || xfMax.x > 1.01f ||
-                        xfMin.y < -0.01f || xfMax.y > 1.01f)
+                    if (xfMin.x < -uv2BoundsTolerance || xfMax.x > 1f + uv2BoundsTolerance ||
+                        xfMin.y < -uv2BoundsTolerance || xfMax.y > 1f + uv2BoundsTolerance)
                         rejected = true;
 
                     // Reject if result extends too far beyond source's UV2 AABB
@@ -4720,6 +4858,124 @@ namespace SashaRX.UnityMeshLab
             }
 
             return newShells;
+        }
+
+        /// <summary>
+        /// Post-transfer diagnostic: scan target shells for UV2 layouts that
+        /// have collapsed to a line / extreme sliver. Detection is geometric
+        /// only (UV2 bbox + UV2 aspect vs 3D in-plane aspect), independent of
+        /// the source/transfer path that produced the UV2. Pure logging — no
+        /// modifications to uv2.
+        ///
+        /// Flags:
+        ///   - bbox.x &lt; epsilon OR bbox.y &lt; epsilon → "line"
+        ///   - uv2_aspect / 3d_aspect ≥ 5 → "sliver" (UV stretched far beyond
+        ///     what the surface shape would warrant)
+        ///   - uv2 triangle-area / uv2 bbox-area &lt; 0.05 → "degenerate"
+        ///     (verts collinear within the bbox)
+        /// </summary>
+        static void DiagnoseCollapsedTargetShells(
+            List<UvShell> tgtShells, int[] tgtTris, Vector3[] tVerts, Vector2[] uv2)
+        {
+            if (tgtShells == null || tgtTris == null || tVerts == null || uv2 == null) return;
+            const float LINE_EPS = 1e-5f;
+            const float ASPECT_RATIO_THRESHOLD = 5f;
+            const float FILL_RATIO_THRESHOLD = 0.05f;
+            int reported = 0;
+            const int MAX_REPORTS = 15;
+
+            var sb = new System.Text.StringBuilder(128);
+            int totalCollapsed = 0;
+            for (int si = 0; si < tgtShells.Count; si++)
+            {
+                var shell = tgtShells[si];
+                if (shell?.vertexIndices == null || shell.vertexIndices.Count == 0) continue;
+                if (shell.faceIndices == null || shell.faceIndices.Count == 0) continue;
+
+                // UV2 bbox + triangle area
+                Vector2 mn = new Vector2(float.MaxValue, float.MaxValue);
+                Vector2 mx = new Vector2(float.MinValue, float.MinValue);
+                foreach (int v in shell.vertexIndices)
+                {
+                    if ((uint)v >= (uint)uv2.Length) continue;
+                    mn = Vector2.Min(mn, uv2[v]);
+                    mx = Vector2.Max(mx, uv2[v]);
+                }
+                Vector2 sz = mx - mn;
+                if (sz.x < 0f || sz.y < 0f) continue;
+
+                double triAreaUv2 = 0.0;
+                double triArea3D = 0.0;
+                foreach (int f in shell.faceIndices)
+                {
+                    int t = f * 3;
+                    if ((uint)(t + 2) >= (uint)tgtTris.Length) continue;
+                    int i0 = tgtTris[t], i1 = tgtTris[t + 1], i2 = tgtTris[t + 2];
+                    if ((uint)i0 >= (uint)uv2.Length || (uint)i1 >= (uint)uv2.Length || (uint)i2 >= (uint)uv2.Length) continue;
+                    Vector2 a = uv2[i0], b = uv2[i1], c = uv2[i2];
+                    triAreaUv2 += System.Math.Abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) * 0.5;
+                    if ((uint)i0 < (uint)tVerts.Length && (uint)i1 < (uint)tVerts.Length && (uint)i2 < (uint)tVerts.Length)
+                    {
+                        Vector3 p0 = tVerts[i0], p1 = tVerts[i1], p2 = tVerts[i2];
+                        triArea3D += Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5;
+                    }
+                }
+
+                string reason = null;
+
+                bool collapsedToLine = sz.x < LINE_EPS || sz.y < LINE_EPS;
+                if (collapsedToLine)
+                {
+                    reason = "line (bbox dim ≈ 0)";
+                }
+                else
+                {
+                    float uv2Aspect = Mathf.Max(sz.x, sz.y) / Mathf.Max(LINE_EPS, Mathf.Min(sz.x, sz.y));
+
+                    // Cheap 3D aspect estimate: AABB of shell verts, drop smallest
+                    // dim, ratio of the other two. Doesn't need PCA for a sanity
+                    // check.
+                    Vector3 mn3 = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                    Vector3 mx3 = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+                    foreach (int v in shell.vertexIndices)
+                    {
+                        if ((uint)v >= (uint)tVerts.Length) continue;
+                        mn3 = Vector3.Min(mn3, tVerts[v]);
+                        mx3 = Vector3.Max(mx3, tVerts[v]);
+                    }
+                    Vector3 sz3 = mx3 - mn3;
+                    float dx = Mathf.Abs(sz3.x), dy = Mathf.Abs(sz3.y), dz = Mathf.Abs(sz3.z);
+                    float d0 = Mathf.Min(dx, Mathf.Min(dy, dz));
+                    float d2 = Mathf.Max(dx, Mathf.Max(dy, dz));
+                    float d1 = dx + dy + dz - d0 - d2;
+                    float aspect3D = d1 > 1e-8f ? d2 / d1 : 1f;
+
+                    if (uv2Aspect / Mathf.Max(1f, aspect3D) >= ASPECT_RATIO_THRESHOLD)
+                        reason = $"sliver (uv2 {uv2Aspect:F1}:1 vs 3D {aspect3D:F1}:1)";
+                    else
+                    {
+                        float bboxAreaUv2 = sz.x * sz.y;
+                        if (bboxAreaUv2 > 1e-12f)
+                        {
+                            float fill = (float)(triAreaUv2 / bboxAreaUv2);
+                            if (fill < FILL_RATIO_THRESHOLD && triAreaUv2 > 0)
+                                reason = $"degenerate (fill {fill * 100f:F1}%)";
+                        }
+                    }
+                }
+
+                if (reason == null) continue;
+                totalCollapsed++;
+                if (reported < MAX_REPORTS)
+                {
+                    UvtLog.Warn(UvtLog.Category.Validation,
+                        $"[CollapseDiag] target shell #{si} ({shell.faceIndices.Count}f, {shell.vertexIndices.Count}v) UV2 bbox=({sz.x:F5}, {sz.y:F5}) area={triAreaUv2:F6} — {reason}");
+                    reported++;
+                }
+            }
+            if (totalCollapsed > 0)
+                UvtLog.Warn(UvtLog.Category.Validation,
+                    $"[CollapseDiag] {totalCollapsed} target shell(s) flagged as collapsed/sliver/degenerate (first {Mathf.Min(totalCollapsed, MAX_REPORTS)} logged above)");
         }
     }
 }

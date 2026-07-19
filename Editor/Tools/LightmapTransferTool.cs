@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEditor;
@@ -23,6 +24,26 @@ namespace SashaRX.UnityMeshLab
         public int    ToolOrder => 0;
         public Action RequestRepaint { set => requestRepaint = value; }
 
+        static bool IsBruteForcePackAvailable(int internalOversample)
+        {
+            int oversample = internalOversample > 0 ? internalOversample : 1;
+            return oversample <= 1;
+        }
+
+        static bool HasIncludedTransferTargets(IEnumerable<MeshEntry> entries, int sourceLodIndex)
+        {
+            if (entries == null) return false;
+            foreach (var e in entries)
+            {
+                if (e == null) continue;
+                if (!e.include) continue;
+                if (e.lodIndex == sourceLodIndex) continue;
+                if (e.originalMesh == null) continue;
+                return true;
+            }
+            return false;
+        }
+
         // ── Internal tab ──
         enum Tab { Setup, Repack, Transfer }
         Tab tab = Tab.Setup;
@@ -36,11 +57,107 @@ namespace SashaRX.UnityMeshLab
         Dictionary<int, bool> transferLodFoldouts = new Dictionary<int, bool>();
         Dictionary<int, bool> reportLodFoldouts = new Dictionary<int, bool>();
         bool foldOutput = true;
-        bool foldUv0Analysis, foldRepackSettings = true;
+        bool foldUv0Analysis;
+        bool foldLogFilters;
+        bool foldValidationOverlay;
         bool splitTargetsInSymmetryStep;
+        bool skipSymmetrySplitStep;
         SymmetrySplitShells.ThresholdMode symSplitThresholdMode = SymmetrySplitShells.ThresholdMode.LegacyFixed;
         HashSet<int> lastSymmetrySplitLods = new HashSet<int>();
+
+        // ── Pipeline stage toggles (Setup tab) ──
+        // Each toggle controls whether the corresponding stage runs as part
+        // of the Full Pipeline. They default ON; the user can deselect a
+        // stage to skip it (useful for "transfer only" or "repack only"
+        // runs without invoking Weld every time).
+        bool stageRunAnalyzeUv0 = true;
+        bool stageRunWeldUv0    = true;
+        bool stageRunRepack     = true;
+        bool stageRunTransfer   = true;
+
+        // Per-stage outcome from the most recent ExecFullPipeline run.
+        // Drawn as a small status icon at the right of each stage row.
+        enum StageStatus { Idle, Running, Success, Failed, Skipped }
+        const int kStageCount = 6; // 1..5 are used; index 0 unused for clarity
+        readonly StageStatus[] stageOutcome = new StageStatus[kStageCount];
+
+        // In-flight gate for fire-and-forget async pipeline operations.
+        // The "Run Full Pipeline", "Run Repack only", "Run Transfer only",
+        // "Repack All" (Repack tab), and "Transfer All Targets" (Transfer
+        // tab) buttons all schedule async work that yields during native
+        // pack / shell transfer. Without a gate, a second click while the
+        // first run is in flight launches an interleaving second run that
+        // mutates shared state (stageOutcome, MeshEntries, caches,
+        // ctx.HasRepack/HasTransfer) and corrupts results. The buttons
+        // wrap themselves in EditorGUI.DisabledScope on this flag AND the
+        // FireAndForget helper short-circuits if it's already set, so even
+        // a stale event reaching the click path can't double-trigger.
+        bool _pipelineInFlight;
+
+        /// <summary>
+        /// Schedule a fire-and-forget async pipeline action with: (a) an
+        /// in-flight gate that suppresses double-clicks, (b) Task fault
+        /// observation that logs unhandled exceptions through UvtLog so the
+        /// editor never silently aborts mid-pipeline, and (c) automatic UI
+        /// state reset (UvProgress.Fail + Repaint) on failure.
+        /// </summary>
+        void FireAndForget(System.Func<Task> action, string label)
+        {
+            if (_pipelineInFlight)
+            {
+                UvtLog.Warn($"[Pipeline] '{label}' ignored — another pipeline operation is already running.");
+                return;
+            }
+            _pipelineInFlight = true;
+            try
+            {
+                var task = action();
+                // Continuation runs on the editor main thread courtesy of
+                // UnitySynchronizationContext, so it's safe to touch the
+                // flag, UvProgress, and Repaint directly. The fall-back to
+                // ExecuteSynchronously covers the case where the Task is
+                // already complete at attachment time (sync path through
+                // useAsync=false would land here).
+                task.ContinueWith(t =>
+                {
+                    _pipelineInFlight = false;
+                    if (t.IsFaulted)
+                    {
+                        var ex = t.Exception?.GetBaseException();
+                        UvtLog.Error($"[Pipeline] '{label}' failed: {ex?.Message}");
+                        if (ex != null) UvtLog.Error(ex.StackTrace);
+                        // If the inner code didn't already close its
+                        // UvProgress scope, fail it so the strip stops
+                        // showing a stale "running…" state.
+                        if (UvProgress.IsActive) UvProgress.Fail(ex?.Message ?? "error");
+                    }
+                    requestRepaint?.Invoke();
+                }, TaskScheduler.FromCurrentSynchronizationContext());
+            }
+            catch (System.Exception ex)
+            {
+                // Synchronous throw before the Task even starts.
+                _pipelineInFlight = false;
+                UvtLog.Error($"[Pipeline] '{label}' failed to start: {ex.Message}");
+                if (UvProgress.IsActive) UvProgress.Fail(ex.Message);
+                requestRepaint?.Invoke();
+            }
+        }
         Vector2 reportScroll;
+        TestSuiteAsset sweepSuite;
+
+        // Cache of the filterable UvtLog categories — enumerated once on type init
+        // to avoid per-repaint Enum.GetValues allocations inside the Log filters UI.
+        // Composite flag UvtLog.Category.All is filtered out; only single bits remain.
+        static readonly UvtLog.Category[] s_logCategories = BuildLogCategoryList();
+        static UvtLog.Category[] BuildLogCategoryList()
+        {
+            var all = (UvtLog.Category[])Enum.GetValues(typeof(UvtLog.Category));
+            var list = new List<UvtLog.Category>(all.Length);
+            foreach (var c in all)
+                if (c != UvtLog.Category.All) list.Add(c);
+            return list.ToArray();
+        }
 
         // ── LOD generation ──
         int generateLodCount = 2;
@@ -324,40 +441,102 @@ namespace SashaRX.UnityMeshLab
                 ColorBtn(new Color(.9f,.35f,.35f), "Reset All Working Copies", 20, ResetWorkingCopies);
             }
 
-            EditorGUILayout.Space(4);
-            H("Repack");
-            EditorGUILayout.BeginHorizontal();
-            EditorGUILayout.LabelField("Resolution", GUILayout.Width(66));
-            ctx.AtlasResolution = EditorGUILayout.IntField(ctx.AtlasResolution, GUILayout.Width(60));
-            GUILayout.Space(8);
-            EditorGUILayout.LabelField("Pad", GUILayout.Width(26));
-            ctx.ShellPaddingPx = EditorGUILayout.IntField(ctx.ShellPaddingPx, GUILayout.Width(30));
-            GUILayout.Space(8);
-            EditorGUILayout.LabelField("Bdr", GUILayout.Width(24));
-            ctx.BorderPaddingPx = EditorGUILayout.IntField(ctx.BorderPaddingPx, GUILayout.Width(30));
-            EditorGUILayout.EndHorizontal();
-
             EditorGUILayout.Space(6);
-            ctx.RepackPerMesh = EditorGUILayout.ToggleLeft("Per-mesh repack (each group -> [0,1])", ctx.RepackPerMesh);
-            symSplitThresholdMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
-                "SymSplit thresholds", symSplitThresholdMode);
-            SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
-            ColorBtn(new Color(.2f,.75f,.95f), "Run Full Pipeline", 30, ExecFullPipeline);
-            splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft("SymSplit target LODs (advanced)", splitTargetsInSymmetryStep);
+            DrawPipelineSection();
 
+            // ── Output (always visible, production setting) ──
+            EditorGUILayout.Space(8);
+            H("Output");
+            EditorGUI.indentLevel++;
+            ctx.PipeSettings.saveNewMeshAssets = EditorGUILayout.Toggle("Save Assets", ctx.PipeSettings.saveNewMeshAssets);
+            if (ctx.PipeSettings.saveNewMeshAssets)
+                ctx.PipeSettings.savePath = EditorGUILayout.TextField("Path", ctx.PipeSettings.savePath);
+            EditorGUI.indentLevel--;
+
+            // ── Debug / diagnostics ──
+            // Hidden by default — toggleable from Project Settings ▸ Mesh Lab
+            // ▸ Developer. Houses Parameter Sweep, Log Filters, and UV0
+            // Analysis & Fix; production users see a clean Setup tab without
+            // these benchmark / diagnostic blocks.
+            if (MeshLabProjectSettings.Instance.showDebugUI)
+                DrawSetupDebugSection();
+        }
+
+        // ──────────────── Setup tab debug section ──────────────────────
+        //
+        // Houses diagnostic and benchmarking blocks that are not part of
+        // day-to-day production use: Parameter Sweep, Log Filters, UV0
+        // Analysis & Fix. Gated by MeshLabProjectSettings.showDebugUI so
+        // shipping artists see a clean Setup tab; developers flip the
+        // toggle in Project Settings ▸ Mesh Lab ▸ Developer.
+        void DrawSetupDebugSection()
+        {
+            EditorGUILayout.Space(10);
+            // Banner so the debug block is unmistakably distinct from the
+            // production sections above it.
+            var bannerRect = GUILayoutUtility.GetRect(0, 20f, GUILayout.ExpandWidth(true));
+            EditorGUI.DrawRect(bannerRect, new Color(0.55f, 0.35f, 0.10f, 0.30f));
+            var bannerStyle = new GUIStyle(EditorStyles.miniBoldLabel)
+            {
+                alignment = TextAnchor.MiddleLeft,
+                normal = { textColor = new Color(1f, 0.85f, 0.55f) },
+            };
+            GUI.Label(new Rect(bannerRect.x + 6f, bannerRect.y, bannerRect.width - 12f, bannerRect.height),
+                "DEBUG  ·  hide via Project Settings ▸ Mesh Lab ▸ Show Debug UI",
+                bannerStyle);
+
+            // ── Parameter Sweep ──
             EditorGUILayout.Space(6);
-            H("Pipeline Settings");
+            H("Parameter Sweep");
+            sweepSuite = (TestSuiteAsset)EditorGUILayout.ObjectField(
+                "Sweep suite", sweepSuite, typeof(TestSuiteAsset), false);
+            int cells = 0;
+            if (sweepSuite != null && sweepSuite.sweep != null)
+            {
+                var sm = sweepSuite.sweep;
+                int rL  = sm.atlasResolutions?.Length              ?? 0;
+                int pL  = sm.shellPaddingPxVariants?.Length        ?? 0;
+                int bL  = sm.borderPaddingPxVariants?.Length       ?? 0;
+                int arL = sm.arapIterationsVariants?.Length        ?? 0;
+                int stL = sm.stretchThresholdVariants?.Length      ?? 0;
+                cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL)
+                      * Mathf.Max(1, arL) * Mathf.Max(1, stL);
+            }
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0))
+                {
+                    if (GUILayout.Button($"Run Sweep ({cells})", GUILayout.Height(22)))
+                        ExecSweep(sweepSuite.sweep);
+                }
+                if (GUILayout.Button(new GUIContent("Rebuild Report",
+                        "Pick a BenchmarkReports/ folder and rebuild summary.csv / winner.json / index.html " +
+                        "from the per-cell CSVs already on disk. Use this after a mid-sweep Unity crash."),
+                        GUILayout.Height(22)))
+                {
+                    ExecRebuildSweepReport();
+                }
+            }
 
-            foldOutput = EditorGUILayout.Foldout(foldOutput, "Output", true);
-            if (foldOutput)
+            // ── Log filters ──
+            EditorGUILayout.Space(6);
+            foldLogFilters = EditorGUILayout.Foldout(foldLogFilters, "Log filters", true);
+            if (foldLogFilters)
             {
                 EditorGUI.indentLevel++;
-                ctx.PipeSettings.saveNewMeshAssets = EditorGUILayout.Toggle("Save Assets", ctx.PipeSettings.saveNewMeshAssets);
-                if (ctx.PipeSettings.saveNewMeshAssets)
-                    ctx.PipeSettings.savePath = EditorGUILayout.TextField("Path", ctx.PipeSettings.savePath);
+                UvtLog.Current = (UvtLog.Level)EditorGUILayout.EnumPopup("Level", UvtLog.Current);
+                var enabled = UvtLog.EnabledCategories;
+                for (int i = 0; i < s_logCategories.Length; i++)
+                {
+                    var cat = s_logCategories[i];
+                    bool on = (enabled & cat) != 0;
+                    bool newOn = EditorGUILayout.ToggleLeft(cat.ToString(), on);
+                    if (newOn != on) UvtLog.SetCategoryEnabled(cat, newOn);
+                }
                 EditorGUI.indentLevel--;
             }
 
+            // ── UV0 Analysis & Fix ──
             EditorGUILayout.Space(4);
             foldUv0Analysis = EditorGUILayout.Foldout(foldUv0Analysis, "UV0 Analysis & Fix", true);
             if (foldUv0Analysis)
@@ -379,71 +558,647 @@ namespace SashaRX.UnityMeshLab
                     else if (uv0Welded)
                         EditorGUILayout.LabelField("UV0 welded", EditorStyles.miniLabel);
                 }
+            }
+        }
 
-                // Save/Export buttons are at the top of Setup tab
+        // ──────────────── Pipeline section (Setup tab) ────────────────
+        //
+        // Replaces the old freestanding "Repack" header + scattered SymSplit
+        // toggles with a single stage-oriented panel. Each stage:
+        //   • can be toggled on/off (skipped from the Full Pipeline run);
+        //   • has its specific settings nested directly underneath when on;
+        //   • shows a coloured stripe on the left for at-a-glance state.
+        // The big "Run Full Pipeline" button at the bottom drives every
+        // enabled stage in order: Analyze → Weld → SymSplit → Repack → Transfer.
+        void DrawPipelineSection()
+        {
+            EditorGUILayout.LabelField("Pipeline", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(
+                "Toggle stages to include in Run Full Pipeline. Stage-specific settings appear when enabled.",
+                EditorStyles.miniLabel);
+            EditorGUILayout.Space(2);
+
+            // 1. Analyze UV0 — diagnostic only, cheap.
+            DrawStageRow(1, "Analyze UV0",
+                "Diagnose UV0 seams and count shells. Cheap; recommended to leave on.",
+                ref stageRunAnalyzeUv0, hasSettings: false, drawSettings: null);
+
+            // 2. Weld UV0 — merges false-seam vertices using source-guided weld.
+            DrawStageRow(2, "Weld UV0",
+                "Merge false-seam vertices (UV0 verts that share position but were split). "
+                + "Required for clean shell extraction in Repack and Transfer.",
+                ref stageRunWeldUv0, hasSettings: false, drawSettings: null);
+
+            // 3. Symmetry split — uses inverted skipSymmetrySplitStep field
+            // so existing diagnostic flag continues to work elsewhere.
+            bool runSym = !skipSymmetrySplitStep;
+            DrawStageRow(3, "Symmetry Split",
+                "Split mirrored / overlapping UV0 shells in the source so each "
+                + "physical surface gets its own atlas tile. Auto-tunes the "
+                + "separation threshold across a few values and picks the best.",
+                ref runSym, hasSettings: true, drawSettings: () =>
+                {
+                    symSplitThresholdMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
+                        new GUIContent("Threshold mode",
+                            "Strategy for picking the SymSplit separation threshold. "
+                            + "Legacy Fixed uses 0.10; Adaptive picks per-shell from area."),
+                        symSplitThresholdMode);
+                    SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
+                    // Advanced / debug-only toggle — hidden from production UI.
+                    if (MeshLabProjectSettings.Instance.showDebugUI)
+                    {
+                        splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft(
+                            new GUIContent("Apply to target LODs (advanced)",
+                                "Run SymSplit on every included LOD instead of only the source. "
+                                + "Coordinated across LODs so each surface keeps its identity."),
+                            splitTargetsInSymmetryStep);
+                    }
+                });
+            skipSymmetrySplitStep = !runSym;
+
+            // 4. Repack — main settings live here so users see resolution etc.
+            // at the same place as the stage toggle.
+            DrawStageRow(4, "Repack (xatlas)",
+                "Pack source LOD UVs into a clean UV2 atlas using xatlas. "
+                + "Auto-resolution from texel density is the default; the "
+                + "Mode picker below switches to manual resolution.",
+                ref stageRunRepack, hasSettings: true, drawSettings: () =>
+                {
+                    // Vertical layout — sidebar is narrow and the previous
+                    // three-column row truncated labels ("Resolutior", "Pa",
+                    // "B "). One control per line, default labelWidth handles
+                    // alignment correctly even under indentLevel.
+
+                    // Mode picker — using friendly labels so the enum value
+                    // "AutoFromTexelDensity" doesn't show up as a run-on.
+                    int modeIdx = ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity ? 1 : 0;
+                    int newModeIdx = EditorGUILayout.Popup(
+                        new GUIContent("Mode",
+                            "Manual: pick atlas resolution (px) — the tool reports effective texel density.\n"
+                            + "Auto from texel density: pick target tex/m — the tool derives atlas size from "
+                            + "total 3D area."),
+                        modeIdx,
+                        new[] { "Manual", "Auto from texel density" });
+                    ctx.RepackResolutionMode = newModeIdx == 1
+                        ? ResolutionMode.AutoFromTexelDensity
+                        : ResolutionMode.Manual;
+
+                    // Show only the active driver — opposite mode's field
+                    // would confuse the user (Manual Resolution staying on
+                    // screen while Auto-mode preview says "atlas 64 px" was
+                    // exactly the contradiction we just had).
+                    if (ctx.RepackResolutionMode == ResolutionMode.Manual)
+                    {
+                        ctx.AtlasResolution = EditorGUILayout.IntField(
+                            new GUIContent("Resolution (px)",
+                                "Atlas resolution in pixels. Power-of-two values recommended (64..4096)."),
+                            ctx.AtlasResolution);
+                    }
+                    else
+                    {
+                        ctx.LightmapDensity = EditorGUILayout.Slider(
+                            new GUIContent("Texels per meter",
+                                "Target lightmap density. Atlas size = ceil_pow2(sqrt(area × density² / coverage))."),
+                            ctx.LightmapDensity, 0.5f, 100f);
+                    }
+
+                    ctx.ShellPaddingPx = EditorGUILayout.IntSlider(
+                        new GUIContent("Shell padding (px)",
+                            "Inter-shell padding in atlas pixels. Prevents bleed between neighbours."),
+                        ctx.ShellPaddingPx, 0, 16);
+                    ctx.BorderPaddingPx = EditorGUILayout.IntSlider(
+                        new GUIContent("Border padding (px)",
+                            "Atlas-edge padding in pixels."),
+                        ctx.BorderPaddingPx, 0, 16);
+
+                    ctx.RepackPerMesh = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Per-mesh repack (each group → [0,1])",
+                            "Pack each mesh group into its own [0,1] atlas instead of sharing one."),
+                        ctx.RepackPerMesh);
+
+                    // Texel density preview — live summary of the resolved
+                    // atlas size so the user sees what xatlas will actually
+                    // pack into without having to switch to the Repack tab.
+                    double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
+                        ctx.ForLod(ctx.SourceLodIndex)
+                            .Where(e => e.originalMesh != null)
+                            .Select(e => e.originalMesh));
+                    string previewLine;
+                    if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
+                    {
+                        uint autoRes = MeshAreaHelper.ComputeAutoResolution(
+                            total3DArea, ctx.LightmapDensity, ctx.TargetUvCoverage);
+                        previewLine =
+                            $"area {total3DArea:F2} m²  ·  density {ctx.LightmapDensity:F1} tex/m  " +
+                            $"→  atlas {autoRes} px";
+                    }
+                    else
+                    {
+                        int resForDisplay = Mathf.Max(1, ctx.AtlasResolution);
+                        double effDensity = total3DArea > 0.0
+                            ? resForDisplay / System.Math.Sqrt(total3DArea / Mathf.Max(0.0001f, ctx.TargetUvCoverage))
+                            : 0.0;
+                        previewLine =
+                            $"area {total3DArea:F2} m²  ·  atlas {resForDisplay} px  " +
+                            $"→  effective ≈ {effDensity:F1} tex/m";
+                    }
+                    EditorGUILayout.LabelField(previewLine, EditorStyles.miniLabel);
+                });
+
+            // 5. Transfer.
+            bool hasTargets = ctx.LodGroup != null && HasIncludedTransferTargets(ctx.MeshEntries, ctx.SourceLodIndex);
+            DrawStageRow(5, "Transfer to LODs",
+                hasTargets
+                    ? "Project source UV2 onto every included target LOD."
+                    : "No target LODs included — Transfer will skip even when enabled.",
+                ref stageRunTransfer, hasSettings: false, drawSettings: null, dimmed: !hasTargets);
+
+            // Primary action — wrapped in EditorGUI.DisabledScope on the
+            // in-flight gate so the button visibly greys out while a run is
+            // active. FireAndForget catches Task faults so an exception
+            // mid-pipeline can't leave the strip stuck on a stale phase.
+            EditorGUILayout.Space(6);
+            using (new EditorGUI.DisabledScope(_pipelineInFlight))
+            {
+                ColorBtn(new Color(.2f, .75f, .95f), "▶ Run Full Pipeline", 30,
+                    () => FireAndForget(ExecFullPipelineAsync, "Run Full Pipeline"));
+
+                // Step shortcuts for iterative work — bypasses the full
+                // pipeline and runs only the named stage so the user can poke
+                // at Repack (resolution / padding tweaks) or Transfer (LOD
+                // inclusion tweaks) in a tight loop without re-running
+                // Analyze / Weld / SymSplit every time.
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    using (new EditorGUI.DisabledScope(ctx.LodGroup == null))
+                    {
+                        if (GUILayout.Button(new GUIContent("Run Repack only",
+                                "Skip Analyze / Weld / SymSplit and run only Repack on the source LOD."),
+                                GUILayout.Height(22)))
+                        {
+                            var src = ctx.ForLod(ctx.SourceLodIndex);
+                            FireAndForget(
+                                () => ctx.RepackPerMesh ? ExecRepackPerMeshAsync(src) : ExecRepackAsync(src),
+                                "Run Repack only");
+                        }
+                    }
+                    using (new EditorGUI.DisabledScope(!ctx.HasRepack || !hasTargets))
+                    {
+                        if (GUILayout.Button(new GUIContent("Run Transfer only",
+                                "Re-run Transfer against the existing source UV2 (requires a prior Repack)."),
+                                GUILayout.Height(22)))
+                        {
+                            FireAndForget(ExecTransferAllAsync, "Run Transfer only");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Single pipeline stage row: ordinal badge + coloured state stripe +
+        // toggle label + optional nested settings (drawn when enabled).
+        void DrawStageRow(int ordinal, string title, string tooltip,
+                          ref bool enabled, bool hasSettings, Action drawSettings,
+                          bool dimmed = false)
+        {
+            // Reserve the row rect so we can paint a left stripe before the
+            // controls. Default control height is the IMGUI single-line height.
+            float lineH = EditorGUIUtility.singleLineHeight + 2f;
+            var rowRect = GUILayoutUtility.GetRect(0, lineH, GUILayout.ExpandWidth(true));
+
+            // Left stripe: green when enabled, grey when disabled.
+            var stripeRect = new Rect(rowRect.x, rowRect.y + 1, 3f, rowRect.height - 2);
+            Color stripeColor = enabled
+                ? (dimmed ? new Color(0.45f, 0.55f, 0.45f) : new Color(0.35f, 0.78f, 0.45f))
+                : new Color(0.40f, 0.40f, 0.40f);
+            EditorGUI.DrawRect(stripeRect, stripeColor);
+
+            // Ordinal badge — small numbered chip on the left.
+            var ordRect = new Rect(rowRect.x + 8f, rowRect.y, 18f, rowRect.height);
+            var ordStyle = new GUIStyle(EditorStyles.miniBoldLabel)
+            {
+                alignment = TextAnchor.MiddleLeft,
+                normal = { textColor = enabled ? new Color(0.85f, 0.85f, 0.85f) : new Color(0.55f, 0.55f, 0.55f) },
+            };
+            GUI.Label(ordRect, ordinal.ToString(), ordStyle);
+
+            // Status icon (right side) — outcome of the most recent run.
+            const float iconW = 18f;
+            var status = ordinal >= 0 && ordinal < stageOutcome.Length
+                ? stageOutcome[ordinal] : StageStatus.Idle;
+            string icon = null;
+            Color iconColor = default;
+            switch (status)
+            {
+                case StageStatus.Running:
+                    icon = "…"; iconColor = new Color(0.45f, 0.75f, 1f); break;
+                case StageStatus.Success:
+                    icon = "✓"; iconColor = new Color(0.45f, 0.90f, 0.55f); break;
+                case StageStatus.Failed:
+                    icon = "✗"; iconColor = new Color(0.95f, 0.45f, 0.45f); break;
+                case StageStatus.Skipped:
+                    icon = "⏭"; iconColor = new Color(0.65f, 0.65f, 0.65f); break;
+            }
+            if (icon != null)
+            {
+                var iconRect = new Rect(rowRect.xMax - iconW - 4f, rowRect.y, iconW, rowRect.height);
+                var iconStyle = new GUIStyle(EditorStyles.miniBoldLabel)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    normal = { textColor = iconColor },
+                };
+                GUI.Label(iconRect, icon, iconStyle);
+            }
+
+            // Toggle + bold label.
+            float toggleRightInset = (icon != null ? iconW + 8f : 4f);
+            var toggleRect = new Rect(rowRect.x + 26f, rowRect.y,
+                                      rowRect.width - 30f - toggleRightInset, rowRect.height);
+            var oldColor = GUI.contentColor;
+            if (dimmed) GUI.contentColor = new Color(1f, 1f, 1f, 0.6f);
+            enabled = EditorGUI.ToggleLeft(toggleRect, new GUIContent(title, tooltip), enabled, EditorStyles.boldLabel);
+            GUI.contentColor = oldColor;
+
+            // Nested per-stage settings.
+            if (hasSettings && enabled && drawSettings != null)
+            {
+                EditorGUI.indentLevel++;
+                drawSettings();
+                EditorGUI.indentLevel--;
+                EditorGUILayout.Space(2);
             }
         }
 
         // ──────────────── Repack ────────────────
+        //
+        // Standalone Repack tab — surfaces every xatlas setting for the user
+        // who wants to drive Repack on its own (e.g. iterating on resolution
+        // / brute force / oversample without running Analyze + Weld + Transfer).
+        // Settings are grouped into four collapsible sections so the panel
+        // is navigable instead of one 25-row flat list:
+        //   • Resolution      — atlas size, padding, density target
+        //   • Pack Quality    — packer choice, rotation, oversample, max chart
+        //   • Density         — per-shell normalisation, ARAP, coverage, clamp
+        //   • Compression     — bilinear safety, block alignment
+        //   • Advanced (debug)— manual texels-per-UV-unit, post-pack correction
+        //                       (gated by Project Settings ▸ Mesh Lab ▸ Show
+        //                       Debug UI — these are tuning knobs for the
+        //                       package author, not production users).
+
+        bool foldRepackResolution = true;
+        bool foldRepackQuality    = true;
+        bool foldRepackDensity    = true;
+        bool foldRepackCompression;
+        bool foldRepackAdvanced;
 
         void DrawRepack()
         {
-            H("xatlas Repack (LOD0 -> UV2)");
+            H("xatlas Repack");
             if (ctx.LodGroup == null) { Warn("Set LODGroup first."); return; }
-            foldRepackSettings = EditorGUILayout.Foldout(foldRepackSettings, "Settings", true);
-            if (foldRepackSettings)
+
+            // ── Resolution & padding ───────────────────────────────────
+            foldRepackResolution = EditorGUILayout.Foldout(foldRepackResolution, "Resolution", true);
+            if (foldRepackResolution)
             {
                 EditorGUI.indentLevel++;
-                ctx.AtlasResolution = EditorGUILayout.IntField("Resolution", ctx.AtlasResolution);
-                ctx.ShellPaddingPx = EditorGUILayout.IntSlider("Shell Padding", ctx.ShellPaddingPx, 0, 16);
-                ctx.BorderPaddingPx = EditorGUILayout.IntSlider("Border Padding", ctx.BorderPaddingPx, 0, 16);
+                DrawRepackResolutionControls();
                 EditorGUI.indentLevel--;
             }
+
+            // ── Pack quality ───────────────────────────────────────────
+            EditorGUILayout.Space(2);
+            foldRepackQuality = EditorGUILayout.Foldout(foldRepackQuality, "Pack Quality", true);
+            if (foldRepackQuality)
+            {
+                EditorGUI.indentLevel++;
+                DrawRepackQualityControls();
+                EditorGUI.indentLevel--;
+            }
+
+            // ── Density ────────────────────────────────────────────────
+            EditorGUILayout.Space(2);
+            foldRepackDensity = EditorGUILayout.Foldout(foldRepackDensity, "Density", true);
+            if (foldRepackDensity)
+            {
+                EditorGUI.indentLevel++;
+                DrawRepackDensityControls();
+                EditorGUI.indentLevel--;
+            }
+
+            // ── Compression ────────────────────────────────────────────
+            EditorGUILayout.Space(2);
+            foldRepackCompression = EditorGUILayout.Foldout(foldRepackCompression, "Compression", true);
+            if (foldRepackCompression)
+            {
+                EditorGUI.indentLevel++;
+                DrawRepackCompressionControls();
+                EditorGUI.indentLevel--;
+            }
+
+            // ── Advanced (debug only) ──────────────────────────────────
+            if (MeshLabProjectSettings.Instance.showDebugUI)
+            {
+                EditorGUILayout.Space(2);
+                foldRepackAdvanced = EditorGUILayout.Foldout(foldRepackAdvanced, "Advanced (debug)", true);
+                if (foldRepackAdvanced)
+                {
+                    EditorGUI.indentLevel++;
+                    DrawRepackAdvancedControls();
+                    EditorGUI.indentLevel--;
+                }
+            }
+
+            // ── Action ─────────────────────────────────────────────────
+            EditorGUILayout.Space(6);
             var src = ctx.ForLod(ctx.SourceLodIndex);
-            EditorGUILayout.Space(4);
-            ctx.RepackPerMesh = EditorGUILayout.ToggleLeft("Per-mesh repack", ctx.RepackPerMesh);
+            ctx.RepackPerMesh = EditorGUILayout.ToggleLeft(
+                new GUIContent("Per-mesh repack",
+                    "Pack each mesh group into its own [0,1] atlas instead of sharing one."),
+                ctx.RepackPerMesh);
+            using (new EditorGUI.DisabledScope(_pipelineInFlight))
+            {
+                ColorBtn(new Color(.3f,.8f,.4f), "Repack All", 26, () =>
+                {
+                    FireAndForget(
+                        () => ctx.RepackPerMesh ? ExecRepackPerMeshAsync(src) : ExecRepackAsync(src),
+                        "Repack All");
+                });
+            }
+            if (ctx.HasRepack)
+                EditorGUILayout.HelpBox("Repack done. Preview UV1, then Transfer.", MessageType.Info);
+        }
+
+        void DrawRepackResolutionControls()
+        {
+            // Friendly Popup instead of EnumPopup so "AutoFromTexelDensity"
+            // doesn't show up as a run-on label. Order matches the enum.
+            int modeIdx = ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity ? 1 : 0;
+            int newModeIdx = EditorGUILayout.Popup(
+                new GUIContent("Mode",
+                    "Manual: pick atlas resolution (power of two), tool shows effective density.\n"
+                    + "Auto from texel density: pick target texels/m, tool sizes atlas from total 3D area "
+                    + "rounded up to next power of two, clamped to [64, 4096]."),
+                modeIdx,
+                new[] { "Manual", "Auto from texel density" });
+            ctx.RepackResolutionMode = newModeIdx == 1
+                ? ResolutionMode.AutoFromTexelDensity
+                : ResolutionMode.Manual;
+
+            double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
+                ctx.ForLod(ctx.SourceLodIndex)
+                    .Where(e => e.originalMesh != null)
+                    .Select(e => e.originalMesh));
+
+            if (ctx.RepackResolutionMode == ResolutionMode.Manual)
+            {
+                ctx.AtlasResolution = EditorGUILayout.IntField(
+                    new GUIContent("Resolution (px)",
+                        "Atlas resolution in pixels. Power-of-two values recommended (64..4096)."),
+                    ctx.AtlasResolution);
+                int resForDisplay = Mathf.Max(1, ctx.AtlasResolution);
+                double effDensity = total3DArea > 0.0
+                    ? resForDisplay / System.Math.Sqrt(total3DArea / Mathf.Max(0.0001f, ctx.TargetUvCoverage))
+                    : 0.0;
+                EditorGUILayout.LabelField(" ",
+                    $"area {total3DArea:F2} m² · effective ≈ {effDensity:F1} tex/m",
+                    EditorStyles.miniLabel);
+            }
+            else
+            {
+                ctx.LightmapDensity = EditorGUILayout.Slider(
+                    new GUIContent("Texels per meter",
+                        "Target density. Atlas size = ceil_pow2(sqrt(area × density² / coverage)). "
+                        + "Typical: 5–20 for props, 1–5 for large environment pieces."),
+                    ctx.LightmapDensity, 0.5f, 100f);
+                uint autoRes = MeshAreaHelper.ComputeAutoResolution(
+                    total3DArea, ctx.LightmapDensity, ctx.TargetUvCoverage);
+                EditorGUILayout.LabelField(" ",
+                    $"area {total3DArea:F2} m² · computed {autoRes} px",
+                    EditorStyles.miniLabel);
+            }
+
+            ctx.ShellPaddingPx = EditorGUILayout.IntSlider(
+                new GUIContent("Shell Padding (px)",
+                    "Inter-shell padding in atlas pixels. Prevents bleed between neighbours."),
+                ctx.ShellPaddingPx, 0, 16);
+            ctx.BorderPaddingPx = EditorGUILayout.IntSlider(
+                new GUIContent("Border Padding (px)",
+                    "Atlas-edge padding in pixels."),
+                ctx.BorderPaddingPx, 0, 16);
+        }
+
+        void DrawRepackQualityControls()
+        {
+            bool bruteForceAvailable = IsBruteForcePackAvailable(ctx.InternalOversample);
+            using (new EditorGUI.DisabledScope(!bruteForceAvailable))
+            {
+                ctx.XatlasBruteForce = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Brute force pack",
+                        "Run xatlas's exhaustive packer (slower, tighter atlas). Only active when "
+                        + "Internal pack oversample is 1×; 2×+ forces the heuristic packer."),
+                    ctx.XatlasBruteForce);
+            }
+            if (!bruteForceAvailable)
+                EditorGUILayout.LabelField(" ", "Heuristic packer forced by oversample > 1", EditorStyles.miniLabel);
+
+            ctx.XatlasRotateCharts = EditorGUILayout.ToggleLeft(
+                new GUIContent("Rotate charts",
+                    "xatlas may rotate charts to fit better (recommended)."),
+                ctx.XatlasRotateCharts);
+            using (new EditorGUI.DisabledScope(!ctx.XatlasRotateCharts))
+            {
+                EditorGUI.indentLevel++;
+                ctx.XatlasRotateChartsToAxis = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Snap rotation to axis",
+                        "Constrain rotation to 0/90/180/270° (preserves texel alignment)."),
+                    ctx.XatlasRotateChartsToAxis);
+                EditorGUI.indentLevel--;
+            }
+
+            int[] osValues = { 1, 2, 4, 8, 16 };
+            string[] osLabels = { "1× (off)", "2×", "4×", "8×", "16×" };
+            int currentOs = Mathf.Max(1, ctx.InternalOversample);
+            int osIdx = 0;
+            for (int i = 0; i < osValues.Length; i++)
+                if (osValues[i] == currentOs) { osIdx = i; break; }
+            int newOsIdx = EditorGUILayout.Popup(
+                new GUIContent("Internal oversample",
+                    "Internal atlas = user resolution × this factor. Mitigates xatlas's per-chart "
+                    + "ceil(extents) stretch that breaks uniform density for sub-pixel shells. "
+                    + "4× cuts density spread from ~14× down to ~2×. 2×+ forces heuristic packer."),
+                osIdx, osLabels);
+            ctx.InternalOversample = osValues[Mathf.Clamp(newOsIdx, 0, osValues.Length - 1)];
+
+            ctx.XatlasMaxChartSize = EditorGUILayout.IntField(
+                new GUIContent("Max chart size (px)",
+                    "Hard cap on individual chart dimension. 0 = unbounded — one huge chart could "
+                    + "force atlas growth past requested resolution. Cap to atlas resolution or smaller."),
+                ctx.XatlasMaxChartSize);
+            if (ctx.XatlasMaxChartSize < 0) ctx.XatlasMaxChartSize = 0;
+        }
+
+        void DrawRepackDensityControls()
+        {
+            ctx.NormalizeTexelDensity = EditorGUILayout.ToggleLeft(
+                new GUIContent("Normalize texel density",
+                    "Per-shell UV0 rescale so UV-area is proportional to 3D surface area. "
+                    + "Produces uniform texels-per-world-unit in the baked lightmap."),
+                ctx.NormalizeTexelDensity);
+            using (new EditorGUI.DisabledScope(!ctx.NormalizeTexelDensity))
+            {
+                EditorGUI.indentLevel++;
+                ctx.ReparameterizeStretchedShells = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Auto-fix stretched shells (ARAP)",
+                        "Measure Sander L² stretch per shell; re-parameterize via ARAP local-global "
+                        + "for shells above the threshold."),
+                    ctx.ReparameterizeStretchedShells);
+                using (new EditorGUI.DisabledScope(!ctx.ReparameterizeStretchedShells))
+                {
+                    EditorGUI.indentLevel++;
+                    ctx.StretchThreshold = EditorGUILayout.Slider(
+                        new GUIContent("L² stretch threshold",
+                            "1.0 = isometric, 1.5 = typical unwrap (default), 2.0 = noticeable, 3.0+ = severe."),
+                        ctx.StretchThreshold, 1.0f, 3.0f);
+                    ctx.ArapIterations = EditorGUILayout.IntSlider(
+                        new GUIContent("ARAP iterations",
+                            "Local-global iteration count. 50 default; 100–200 for highly twisted strips."),
+                        ctx.ArapIterations, 10, 200);
+                    EditorGUI.indentLevel--;
+                }
+                ctx.TargetUvCoverage = EditorGUILayout.Slider(
+                    new GUIContent("UV coverage budget",
+                        "Fraction of [0,1]² normalized UVs sum to. Lower → safer fit, smaller charts; "
+                        + "higher → tighter pack but risk of overflow + downscale."),
+                    ctx.TargetUvCoverage, 0.3f, 0.95f);
+                ctx.ClampLightmapToUnit = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Clamp UV2 to [0,1]",
+                        "Cheap safety net against verts pushed a fraction of a texel outside the unit square."),
+                    ctx.ClampLightmapToUnit);
+                EditorGUI.indentLevel--;
+            }
+        }
+
+        void DrawRepackCompressionControls()
+        {
+            ctx.XatlasBilinear = EditorGUILayout.ToggleLeft(
+                new GUIContent("Bilinear-safe padding",
+                    "Pad each chart by 1 extra texel so bilinear sampling doesn't leak neighbours. "
+                    + "Default ON for lightmap use."),
+                ctx.XatlasBilinear);
+            ctx.XatlasBlockAlign = EditorGUILayout.ToggleLeft(
+                new GUIContent("Block-align (BC/DXT)",
+                    "Snap chart placement to 4×4 texel blocks. Required for BC1/DXT compressed "
+                    + "lightmaps to avoid color bleed across block boundaries. Costs ~3-8% packing."),
+                ctx.XatlasBlockAlign);
+            using (new EditorGUI.DisabledScope(!ctx.XatlasBlockAlign))
+            {
+                int[] blockSizes = { 4, 5, 6, 8, 10, 12 };
+                string[] blockLabels = { "4×4 (BC/ETC/DXT)", "5×5 (ASTC)", "6×6 (ASTC)", "8×8 (ASTC)", "10×10 (ASTC)", "12×12 (ASTC)" };
+                int currentIdx = System.Array.IndexOf(blockSizes, ctx.XatlasBlockSize);
+                if (currentIdx < 0) currentIdx = 0;
+                EditorGUI.indentLevel++;
+                int newIdx = EditorGUILayout.Popup(
+                    new GUIContent("Block size",
+                        "Compression block size. 4×4 covers BC1/BC3/BC5/BC7/ETC2/DXT*."),
+                    currentIdx, blockLabels);
+                ctx.XatlasBlockSize = blockSizes[newIdx];
+                EditorGUI.indentLevel--;
+            }
+        }
+
+        void DrawRepackAdvancedControls()
+        {
+            ctx.PostPackDensityCorrection = EditorGUILayout.ToggleLeft(
+                new GUIContent("Post-pack density correction (experimental)",
+                    "After pack, shrink over-dense shells toward the median around their UV2 centroid. "
+                    + "Compensates xatlas's per-chart ceil(extents) stretch. Shrink-only; leaves gaps."),
+                ctx.PostPackDensityCorrection);
+            ctx.XatlasTexelsPerUnit = EditorGUILayout.FloatField(
+                new GUIContent("Texels per UV unit (manual)",
+                    "Override xatlas's auto-derived texel density. 0 = auto-derive from atlas resolution. "
+                    + "Manual value pins a fixed texels-per-UV-unit for cross-lightmap density parity."),
+                ctx.XatlasTexelsPerUnit);
+            if (ctx.XatlasTexelsPerUnit < 0f) ctx.XatlasTexelsPerUnit = 0f;
+            // SymSplit thresholds shared with Setup tab — duplicated here for
+            // convenience when iterating on Repack only.
             symSplitThresholdMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
-                "SymSplit thresholds", symSplitThresholdMode);
+                new GUIContent("SymSplit thresholds",
+                    "Shared with Setup tab. Strategy for picking the SymSplit separation threshold."),
+                symSplitThresholdMode);
             SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
-            ColorBtn(new Color(.3f,.8f,.4f), "Repack All", 26, () => {
-                if (ctx.RepackPerMesh) ExecRepackPerMesh(src);
-                else ExecRepack(src);
-            });
-            if (ctx.HasRepack) EditorGUILayout.HelpBox("Repack done. Preview UV1, then Transfer.", MessageType.Info);
         }
 
         // ──────────────── Transfer ────────────────
 
         void DrawTransfer()
         {
-            H("UV Transfer (Source -> Targets)");
+            H("UV Transfer (Source → Targets)");
             if (ctx.LodGroup == null) { Warn("Set LODGroup first."); return; }
             if (!ctx.HasRepack) { Warn("Run Repack first."); return; }
 
+            // Per-LOD summary card. ✓ when every included entry in the LOD
+            // has a transferredMesh, dimmed dot otherwise. Header carries
+            // mesh count and aggregate vertex coverage so the user sees the
+            // shape of the result without expanding each row.
             for (int li = 0; li < ctx.LodCount; li++)
             {
                 if (li == ctx.SourceLodIndex) continue;
                 var ee = ctx.ForLod(li);
                 if (ee.Count == 0) continue;
-                bool done = ee.All(e => e.transferredMesh != null);
+                bool allDone = ee.All(e => e.transferredMesh != null);
+                bool noneDone = ee.All(e => e.transferredMesh == null);
+
+                int totalV = 0, transferredV = 0;
+                foreach (var e in ee)
+                {
+                    if (e.shellTransferResult == null) continue;
+                    totalV += e.shellTransferResult.verticesTotal;
+                    transferredV += e.shellTransferResult.verticesTransferred;
+                }
+                float coverage = totalV > 0 ? transferredV * 100f / totalV : 0f;
+
+                string headerIcon = allDone ? "✓" : (noneDone ? "•" : "◐");
+                string summary = totalV > 0
+                    ? $"   LOD{li}  ·  {ee.Count} mesh{(ee.Count == 1 ? "" : "es")}  ·  {coverage:F0}% verts"
+                    : $"   LOD{li}  ·  {ee.Count} mesh{(ee.Count == 1 ? "" : "es")}";
+
+                // Status colour on the icon glyph; the foldout label itself
+                // stays the default colour so it remains readable.
+                var oldContent = GUI.contentColor;
+                GUI.contentColor = allDone
+                    ? new Color(0.45f, 0.90f, 0.55f)
+                    : (noneDone ? new Color(0.65f, 0.65f, 0.65f) : new Color(0.95f, 0.78f, 0.35f));
                 if (!transferLodFoldouts.ContainsKey(li)) transferLodFoldouts[li] = false;
-                transferLodFoldouts[li] = EditorGUILayout.Foldout(transferLodFoldouts[li], (done ? "V" : "O") + " LOD" + li, true);
+                transferLodFoldouts[li] = EditorGUILayout.Foldout(transferLodFoldouts[li], headerIcon + summary, true);
+                GUI.contentColor = oldContent;
                 if (!transferLodFoldouts[li]) continue;
+
+                EditorGUI.indentLevel++;
                 foreach (var e in ee)
                 {
                     string extra = "";
                     if (e.shellTransferResult != null)
                     {
                         var r = e.shellTransferResult;
-                        float p = r.verticesTotal > 0 ? r.verticesTransferred * 100f / r.verticesTotal : 0;
-                        extra = $" ({r.shellsMatched}sh, {p:F0}%)";
+                        float p = r.verticesTotal > 0 ? r.verticesTransferred * 100f / r.verticesTotal : 0f;
+                        extra = $"  ·  {r.shellsMatched} sh  ·  {p:F0}%";
                     }
-                    EditorGUILayout.LabelField("  " + (e.transferredMesh != null ? "V" : "O") + " " + e.renderer.name + extra, EditorStyles.miniLabel);
+                    string rowIcon = e.transferredMesh != null ? "✓" : "•";
+                    GUI.contentColor = e.transferredMesh != null
+                        ? new Color(0.45f, 0.90f, 0.55f)
+                        : new Color(0.65f, 0.65f, 0.65f);
+                    EditorGUILayout.LabelField(rowIcon + "  " + e.renderer.name + extra, EditorStyles.miniLabel);
+                    GUI.contentColor = oldContent;
                 }
+                EditorGUI.indentLevel--;
             }
 
             EditorGUILayout.Space(6);
-            ColorBtn(new Color(.3f,.6f,1f), "Transfer All Targets", 26, ExecTransferAll);
+            using (new EditorGUI.DisabledScope(_pipelineInFlight))
+            {
+                ColorBtn(new Color(.3f,.6f,1f), "Transfer All Targets", 26,
+                    () => FireAndForget(ExecTransferAllAsync, "Transfer All Targets"));
+            }
 
             if (ctx.HasTransfer)
             {
@@ -481,37 +1236,48 @@ namespace SashaRX.UnityMeshLab
                 }
                 EditorGUILayout.EndScrollView();
 
+                EditorGUILayout.Space(4);
+                foldValidationOverlay = EditorGUILayout.Foldout(foldValidationOverlay, "Validation Overlay", true);
+                if (foldValidationOverlay)
+                {
+                    EditorGUI.indentLevel++;
+                    var mask = canvas != null ? canvas.ValidationFilterMask : TransferValidator.TriIssue.None;
+                    bool changed = false;
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Inverted,    "Inverted");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Stretched,   "Stretched");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.ZeroArea,    "ZeroArea");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.OutOfBounds, "OutOfBounds");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Overlap,     "Overlap");
+                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.TexelDensity,"TexelDensity");
+                    if (changed && canvas != null)
+                    {
+                        canvas.ValidationFilterMask = mask;
+                        requestRepaint?.Invoke();
+                    }
+                    EditorGUILayout.LabelField(
+                        mask == TransferValidator.TriIssue.None ? "(all triangles drawn)" : $"mask: {mask}",
+                        EditorStyles.miniLabel);
+                    EditorGUI.indentLevel--;
+                }
+
                 EditorGUILayout.Space(6);
+                // Post-transfer actions — what you do immediately after a
+                // successful UV2 transfer (apply to FBX / reset).
+                //
+                // FBX export ("Overwrite FBX" / "Export New FBX" /
+                // "Backup from main") and "Save Mesh Assets" live in the
+                // sidebar footer for any tab; duplicating them here was
+                // confusing redundancy.
+                //
+                // "Generate LODs" was rendered here too, but LOD generation
+                // is the job of the dedicated LOD Gen tab — keeping it on
+                // Transfer made the tab feel scope-creepy.
                 H("Apply UV2");
                 ColorBtn(new Color(.3f,.85f,.4f), "Apply UV2 to FBX", 26, ApplyUv2ToFbx);
                 EditorGUILayout.Space(2);
                 ColorBtn(new Color(.9f,.3f,.3f), "Reset UV2 (delete sidecar)", 20, ResetUv2FromFbx);
                 EditorGUILayout.Space(2);
                 ColorBtn(new Color(.5f,.15f,.15f), "Reset Pipeline State", 20, ResetPipelineState);
-                EditorGUILayout.Space(2);
-                ColorBtn(new Color(.6f,.5f,.8f), "Save FBX from main (_main)", 20, RestoreFbxFromGitMain);
-
-                EditorGUILayout.Space(4);
-                H("FBX Export");
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-                ColorBtn(new Color(.4f,.7f,.95f), "Export as New FBX", 24, () => ExportFbx(false));
-                EditorGUILayout.Space(2);
-                ColorBtn(new Color(.95f,.6f,.2f), "Overwrite Source FBX", 24, () => ExportFbx(true));
-#else
-                EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.Info);
-#endif
-
-                EditorGUILayout.Space(4);
-                H("Generate LODs");
-                generateLodCount = EditorGUILayout.IntSlider("LOD Count", generateLodCount, 1, 4);
-                for (int i = 0; i < generateLodCount && i < generateLodRatios.Length; i++)
-                    generateLodRatios[i] = EditorGUILayout.Slider("  LOD" + (i+1) + " ratio", generateLodRatios[i], 0.01f, 0.99f);
-                generateTargetError = EditorGUILayout.Slider("Target Error", generateTargetError, 0.001f, 0.5f);
-                generateUv2Weight = EditorGUILayout.Slider("UV2 Weight", generateUv2Weight, 0f, 500f);
-                generateNormalWeight = EditorGUILayout.Slider("Normal Weight", generateNormalWeight, 0f, 10f);
-                generateLockBorder = EditorGUILayout.Toggle("Lock Border", generateLockBorder);
-                generateAddToLodGroup = EditorGUILayout.Toggle("Add to LODGroup", generateAddToLodGroup);
-                ColorBtn(new Color(.7f,.4f,.95f), "Generate LODs", 26, GenerateLods);
             }
         }
 
@@ -637,18 +1403,357 @@ namespace SashaRX.UnityMeshLab
             requestRepaint?.Invoke();
         }
 
-        void ExecFullPipeline()
+        // Sync entry — used by sweep loops where each cell runs end-to-end
+        // before the loop moves on. Editor blocks for the cell duration.
+        void ExecFullPipeline() => ExecFullPipelineImpl("FullPipeline", useAsync: false).GetAwaiter().GetResult();
+        void ExecFullPipeline(string runLabel) => ExecFullPipelineImpl(runLabel, useAsync: false).GetAwaiter().GetResult();
+
+        // Async entry — button-click path; editor main thread stays responsive.
+        Task ExecFullPipelineAsync() => ExecFullPipelineImpl("FullPipeline", useAsync: true);
+
+        async Task ExecFullPipelineImpl(string runLabel, bool useAsync)
         {
             if (ctx.LodGroup == null) return;
+            using var _bench = BenchmarkRecorder.NewRun(ctx, runLabel,
+                splitTargetsInSymmetryStep, symSplitThresholdMode);
+            BenchmarkRecorder.Current?.StageBegin("pipeline");
+            bool completedSuccessfully = false;
+            try
+            {
+                completedSuccessfully = await ExecFullPipelineCoreImpl(useAsync);
+            }
+            finally
+            {
+                BenchmarkRecorder.Current?.StageEnd("pipeline");
+                // When the pipeline aborts early (user-cancel or exception)
+                // the per-mesh shellTransferResult / validation state is stale
+                // from a previous run — recording it would emit misleading
+                // metrics that taint sweep winners. Skip RecordMesh entirely
+                // in that case; the sweep aggregator already treats cells
+                // with no CSV row as failed.
+                if (completedSuccessfully && BenchmarkRecorder.Current != null)
+                    foreach (var e in ctx.MeshEntries)
+                    {
+                        // Skip excluded entries: a user-deselected mesh has
+                        // stale TransferResult/ValidationReport from a prior
+                        // run and would surface as a failed row in sweep
+                        // aggregates even though the pipeline never touched it.
+                        if (!e.include) continue;
+                        BenchmarkRecorder.Current.RecordMesh(e);
+                    }
+            }
+        }
+
+        /// <summary>
+        /// Run the full pipeline once per cell of a sweep matrix (cartesian product of
+        /// atlasResolutions × shellPaddingPxVariants × borderPaddingPxVariants ×
+        /// arapIterationsVariants × stretchThresholdVariants). Each cell writes
+        /// its own CSV/JSON with runLabel "sweep_res{R}_pad{S}_bdr{B}_arap{N}_stretch{T}".
+        /// After the loop, if at least two cells completed, BenchmarkSweep.WriteAggregateReport
+        /// is invoked to score the cells and write a sweep_<timestamp>/summary.csv +
+        /// winner.json under BenchmarkReports/. Original ctx values are restored on exit.
+        /// </summary>
+        void ExecSweep(TestSuiteAsset.SweepMatrix sm)
+        {
+            if (ctx.LodGroup == null || sm == null) return;
+            var resArr = (sm.atlasResolutions != null && sm.atlasResolutions.Length > 0)
+                ? sm.atlasResolutions : new[] { ctx.AtlasResolution };
+            var padArr = (sm.shellPaddingPxVariants != null && sm.shellPaddingPxVariants.Length > 0)
+                ? sm.shellPaddingPxVariants : new[] { ctx.ShellPaddingPx };
+            var bdrArr = (sm.borderPaddingPxVariants != null && sm.borderPaddingPxVariants.Length > 0)
+                ? sm.borderPaddingPxVariants : new[] { ctx.BorderPaddingPx };
+            var arapItersArr = (sm.arapIterationsVariants != null && sm.arapIterationsVariants.Length > 0)
+                ? sm.arapIterationsVariants
+                : new[] { ctx.ReparameterizeStretchedShells ? ctx.ArapIterations : 0 };
+            var stretchArr = (sm.stretchThresholdVariants != null && sm.stretchThresholdVariants.Length > 0)
+                ? sm.stretchThresholdVariants : new[] { ctx.StretchThreshold };
+
+            int total = resArr.Length * padArr.Length * bdrArr.Length
+                      * arapItersArr.Length * stretchArr.Length;
+
+            // Snapshot ctx fields we mutate — restored unconditionally below.
+            int   origRes         = ctx.AtlasResolution;
+            int   origPad         = ctx.ShellPaddingPx;
+            int   origBdr         = ctx.BorderPaddingPx;
+            bool  origArapOn      = ctx.ReparameterizeStretchedShells;
+            int   origArapIters   = ctx.ArapIterations;
+            float origStretchThr  = ctx.StretchThreshold;
+            // The sweep iterates an explicit atlasResolutions array. If the
+            // user left AutoFromTexelDensity selected, ExecRepackCore would
+            // overwrite ctx.AtlasResolution every cell and every row would
+            // record the auto value — collapsing the resolution dimension of
+            // the sweep. Force Manual for the duration of the sweep so each
+            // cell's `r` is the resolution xatlas actually packs at.
+            ResolutionMode origResMode = ctx.RepackResolutionMode;
+            ctx.RepackResolutionMode = ResolutionMode.Manual;
+
+            // Aligned lists: writtenCsvPaths[i] is the CSV path produced by
+            // cellConfigs[i]. Passed to BenchmarkSweep after the loop completes.
+            var writtenCsvPaths = new List<string>(total);
+            var cellConfigs     = new List<BenchmarkSweep.CellConfig>(total);
+
+            // Pre-create the sweep_<timestamp>/ directory so the incremental
+            // aggregate after every successful cell can rewrite summary.csv /
+            // winner.json / index.html into a stable path. The final aggregate
+            // in the finally block uses the same directory.
+            // Millisecond precision — second-level stamps collided when an
+            // operator kicked off two sweeps in the same second (scripted
+            // runs, quick UI re-clicks). Without ms the second sweep would
+            // overwrite the first one's summary.csv / winner.json.
+            string sweepStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff",
+                System.Globalization.CultureInfo.InvariantCulture);
+            string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
+                                 ?? Application.dataPath;
+            string sweepDir = System.IO.Path.Combine(projectRoot, "BenchmarkReports",
+                $"sweep_{sweepStamp}");
+            try { System.IO.Directory.CreateDirectory(sweepDir); }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[Sweep] Could not pre-create sweep dir '{sweepDir}': {ex.Message}");
+                sweepDir = null;
+            }
+
+            int done = 0;
+            bool cancelled = false;
+            UvProgress.Begin($"Pipeline Sweep ({total} cells)", cancelable: true);
+            try
+            {
+                foreach (int r in resArr)
+                {
+                    if (cancelled) break;
+                    foreach (int s in padArr)
+                    {
+                        if (cancelled) break;
+                        foreach (int b in bdrArr)
+                        {
+                            if (cancelled) break;
+                            foreach (int arapIters in arapItersArr)
+                            {
+                                if (cancelled) break;
+                                foreach (float stretchThr in stretchArr)
+                                {
+                                    if (cancelled) break;
+                                    UvProgress.Report(
+                                        (float)done / Mathf.Max(1, total),
+                                        $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}, " +
+                                        $"arap={arapIters}, stretch={stretchThr:F2}");
+                                    if (UvProgress.CancelRequested)
+                                    {
+                                        cancelled = true;
+                                        break;
+                                    }
+
+                                    UvtLog.Verbose(UvtLog.Category.Benchmark,
+                                        $"[Sweep] cell {done + 1}/{total}: GC heap " +
+                                        $"{GC.GetTotalMemory(false) / (1024 * 1024)} MB");
+
+                                    ctx.AtlasResolution               = r;
+                                    ctx.ShellPaddingPx                = s;
+                                    ctx.BorderPaddingPx               = b;
+                                    ctx.ReparameterizeStretchedShells = arapIters > 0;
+                                    if (arapIters > 0) ctx.ArapIterations = arapIters;
+                                    ctx.StretchThreshold              = stretchThr;
+
+                                    if (sm.resetBetweenRuns) ResetWorkingCopies();
+
+                                    // Encode stretch threshold as e.g. "1p50" — Sanitize() collapses '.' to '_'
+                                    // and that would break the recovery regex's _stretch(\d+p\d+)_ token.
+                                    int stretchHundredths = Mathf.RoundToInt(stretchThr * 100f);
+                                    string stretchTag = $"{stretchHundredths / 100}p{(stretchHundredths % 100):D2}";
+                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_arap{arapIters}_stretch{stretchTag}";
+                                    string csvBefore = BenchmarkRecorder.LastWrittenCsvPath;
+                                    try
+                                    {
+                                        ExecFullPipeline(label);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        UvtLog.Error(UvtLog.Category.Benchmark,
+                                            $"[Sweep] Cell {done + 1}/{total} threw: {ex.Message}");
+                                    }
+
+                                    // Capture the CSV the recorder just wrote (null if
+                                    // the pipeline aborted before WriteArtefacts ran).
+                                    string csvAfter = BenchmarkRecorder.LastWrittenCsvPath;
+                                    string csvPath = (csvAfter != null && csvAfter != csvBefore)
+                                        ? csvAfter : null;
+
+                                    writtenCsvPaths.Add(csvPath);
+                                    cellConfigs.Add(new BenchmarkSweep.CellConfig
+                                    {
+                                        atlasRes         = r,
+                                        shellPad         = s,
+                                        borderPad        = b,
+                                        arapEnabled      = arapIters > 0,
+                                        arapIterations   = arapIters,
+                                        stretchThreshold = stretchThr,
+                                    });
+                                    done++;
+
+                                    // Incremental aggregate: rewrite summary/winner/html after
+                                    // every successful cell so a mid-sweep Unity crash leaves
+                                    // usable reports. WriteAggregateReport accepts the same
+                                    // pre-created sweepDir each call and overwrites in place.
+                                    if (!string.IsNullOrEmpty(sweepDir))
+                                    {
+                                        try
+                                        {
+                                            BenchmarkSweep.WriteAggregateReport(
+                                                writtenCsvPaths, cellConfigs, sweepDir);
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            UvtLog.Warn(UvtLog.Category.Benchmark,
+                                                $"[Sweep] Incremental aggregate failed: {ex.Message}");
+                                        }
+                                    }
+
+                                    // Release temporary meshes accumulated by the pipeline so
+                                    // the native atlas allocator and the managed GC heap don't
+                                    // balloon across 48+ cells (the original 30-cell crash was
+                                    // most likely OOM or fragmentation in this code path).
+                                    try
+                                    {
+                                        System.GC.Collect();
+                                        UnityEngine.Resources.UnloadUnusedAssets();
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        UvtLog.Verbose(UvtLog.Category.Benchmark,
+                                            $"[Sweep] Between-cell cleanup hiccup: {ex.Message}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                if (cancelled) UvProgress.Cancel(); else UvProgress.End();
+                ctx.AtlasResolution               = origRes;
+                ctx.ShellPaddingPx                = origPad;
+                ctx.BorderPaddingPx               = origBdr;
+                ctx.ReparameterizeStretchedShells = origArapOn;
+                ctx.ArapIterations                = origArapIters;
+                ctx.StretchThreshold              = origStretchThr;
+                ctx.RepackResolutionMode          = origResMode;
+                UvtLog.Info(UvtLog.Category.Benchmark,
+                    $"Sweep complete: {done}/{total} cells{(cancelled ? " (cancelled)" : "")}");
+
+                // Aggregate per-cell CSVs into a sweep_<timestamp>/summary.csv +
+                // winner.json. The incremental writer in the foreach above
+                // already keeps these in sync after every successful cell —
+                // this final call refreshes the same sweepDir to cover the
+                // edge case where the last cell threw before the incremental
+                // write executed. Safe to call even if individual cells
+                // produced no CSV (they are recorded as failed entries).
+                if (writtenCsvPaths.Count >= 1)
+                {
+                    try
+                    {
+                        BenchmarkSweep.WriteAggregateReport(writtenCsvPaths, cellConfigs, sweepDir);
+                    }
+                    catch (Exception ex)
+                    {
+                        UvtLog.Error(UvtLog.Category.Benchmark,
+                            $"[Sweep] Aggregate report failed: {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Prompts the user for a BenchmarkReports/ folder and asks
+        /// <see cref="BenchmarkSweep.RebuildFromExistingCsvs"/> to reconstruct
+        /// summary.csv / winner.json / index.html from whatever per-cell CSVs
+        /// are still on disk after a mid-sweep Unity crash. Surfaces the result
+        /// (or a "no CSVs found" message) via <see cref="EditorUtility.DisplayDialog"/>.
+        /// </summary>
+        void ExecRebuildSweepReport()
+        {
+            string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
+                                 ?? Application.dataPath;
+            string defaultDir = System.IO.Path.Combine(projectRoot, "BenchmarkReports");
+            if (!System.IO.Directory.Exists(defaultDir)) defaultDir = projectRoot;
+
+            string picked = EditorUtility.OpenFolderPanel(
+                "Pick BenchmarkReports/ folder to rebuild", defaultDir, "");
+            if (string.IsNullOrEmpty(picked)) return;
+
+            string outDir;
+            try
+            {
+                outDir = BenchmarkSweep.RebuildFromExistingCsvs(picked);
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Error(UvtLog.Category.Benchmark,
+                    $"[Sweep] Rebuild threw: {ex.Message}");
+                EditorUtility.DisplayDialog("Rebuild Sweep Report",
+                    $"Rebuild failed: {ex.Message}", "OK");
+                return;
+            }
+
+            if (string.IsNullOrEmpty(outDir))
+            {
+                EditorUtility.DisplayDialog("Rebuild Sweep Report",
+                    "No matching CSVs were found in:\n" + picked +
+                    "\n\nLook for files named *_sweep_resR_padS_bdrB_arapA_stretchT_*.csv.",
+                    "OK");
+                return;
+            }
+
+            EditorUtility.DisplayDialog("Rebuild Sweep Report",
+                "Recovery report written to:\n" + outDir +
+                "\n\nOpen index.html in a browser for the per-run gallery.",
+                "OK");
+        }
+
+        /// <summary>
+        /// Run the auto-tune full pipeline. Returns <c>true</c> when the
+        /// pipeline ran end-to-end and the in-memory per-mesh state reflects
+        /// the just-completed run; returns <c>false</c> when the user
+        /// cancelled mid-flight so the caller can skip artefact recording
+        /// (stale state from a prior run would otherwise be written).
+        /// </summary>
+        bool ExecFullPipelineCore() => ExecFullPipelineCoreImpl(useAsync: false).GetAwaiter().GetResult();
+
+        async Task<bool> ExecFullPipelineCoreImpl(bool useAsync)
+        {
             string version = UnityEditor.PackageManager.PackageInfo
                 .FindForAssembly(typeof(LightmapTransferTool).Assembly)?.version ?? "0.0.0";
             UvtLog.Info($"[Pipeline] Starting full pipeline... (v{version})");
 
-            // 1. Analyze
-            ExecAnalyzeUv0();
+            // Reset per-stage outcome state — fresh run, fresh icons.
+            for (int i = 0; i < stageOutcome.Length; i++) stageOutcome[i] = StageStatus.Idle;
 
-            // 2. Weld
-            ExecWeldUv0();
+            // 1. Analyze (skipped via Setup stage toggle)
+            if (stageRunAnalyzeUv0)
+            {
+                stageOutcome[1] = StageStatus.Running;
+                try { ExecAnalyzeUv0(); stageOutcome[1] = StageStatus.Success; }
+                catch { stageOutcome[1] = StageStatus.Failed; throw; }
+            }
+            else
+            {
+                stageOutcome[1] = StageStatus.Skipped;
+                UvtLog.Info("[Pipeline] Analyze UV0 stage SKIPPED by user toggle");
+            }
+
+            // 2. Weld (skipped via Setup stage toggle)
+            if (stageRunWeldUv0)
+            {
+                stageOutcome[2] = StageStatus.Running;
+                try { ExecWeldUv0(); stageOutcome[2] = StageStatus.Success; }
+                catch { stageOutcome[2] = StageStatus.Failed; throw; }
+            }
+            else
+            {
+                stageOutcome[2] = StageStatus.Skipped;
+                UvtLog.Info("[Pipeline] Weld UV0 stage SKIPPED by user toggle");
+            }
 
             // ── Auto-tune: try multiple SymSplit configs, pick best ──
             // Save working copies so we can restore between attempts.
@@ -658,6 +1763,10 @@ namespace SashaRX.UnityMeshLab
                     savedMeshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
 
             float[] separationConfigs = { 0.10f, 0.05f, 0.20f };
+            bool hasTransferTargets = HasIncludedTransferTargets(ctx.MeshEntries, ctx.SourceLodIndex);
+            if (!hasTransferTargets)
+                UvtLog.Warn("[Pipeline] No included target LOD meshes; running source repack only and skipping transfer/auto-tune.");
+
             int bestRejected = int.MaxValue;
             float bestCoverage = 0f;
             int bestConfigIdx = 0;
@@ -665,16 +1774,17 @@ namespace SashaRX.UnityMeshLab
             var bestTransfers = new Dictionary<MeshEntry, (Mesh transferred, GroupedShellTransfer.TransferResult tr)>();
 
             bool cancelled = false;
+            UvProgress.Begin("Auto-tune Pipeline", cancelable: true);
             try
             {
                 for (int ci = 0; ci < separationConfigs.Length; ci++)
                 {
                     float sepThresh = separationConfigs[ci];
 
-                    if (EditorUtility.DisplayCancelableProgressBar(
-                        "Auto-tune Pipeline",
-                        $"Config {ci + 1}/{separationConfigs.Length} (separation={sepThresh:P0})",
-                        (float)ci / separationConfigs.Length))
+                    UvProgress.Report(
+                        (float)ci / separationConfigs.Length,
+                        $"Config {ci + 1}/{separationConfigs.Length} (separation={sepThresh:P0})");
+                    if (UvProgress.CancelRequested)
                     {
                         UvtLog.Warn("[Pipeline] Auto-tune cancelled by user.");
                         cancelled = true;
@@ -691,6 +1801,8 @@ namespace SashaRX.UnityMeshLab
                             kv.Key.originalMesh.name = kv.Value.name;
                             kv.Key.wasSymmetrySplit = false;
                             kv.Key.repackedMesh = null;
+                            kv.Key.repackedAtlasWidth = 0;
+                            kv.Key.repackedAtlasHeight = 0;
                             kv.Key.transferredMesh = null;
                             kv.Key.shellTransferResult = null;
                         }
@@ -701,16 +1813,63 @@ namespace SashaRX.UnityMeshLab
                         ctx.HasTransfer = false;
                     }
 
-                    // 3. SymSplit
-                    ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh);
+                    // 3. SymSplit (skipped via diagnostic toggle to isolate xatlas packing)
+                    if (!skipSymmetrySplitStep)
+                    {
+                        stageOutcome[3] = StageStatus.Running;
+                        try { ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh); stageOutcome[3] = StageStatus.Success; }
+                        catch { stageOutcome[3] = StageStatus.Failed; throw; }
+                    }
+                    else
+                    {
+                        stageOutcome[3] = StageStatus.Skipped;
+                        UvtLog.Info(UvtLog.Category.SymSplit, "[Pipeline] SymSplit step SKIPPED by user toggle");
+                    }
 
-                    // 4. Repack
-                    var src = ctx.ForLod(ctx.SourceLodIndex);
-                    if (ctx.RepackPerMesh) ExecRepackPerMesh(src);
-                    else ExecRepack(src);
+                    // 4. Repack (skipped via Setup stage toggle)
+                    if (stageRunRepack)
+                    {
+                        stageOutcome[4] = StageStatus.Running;
+                        try
+                        {
+                            var src = ctx.ForLod(ctx.SourceLodIndex);
+                            if (ctx.RepackPerMesh) await ExecRepackPerMeshImpl(src, useAsync);
+                            else                   await ExecRepackImpl(src, useAsync);
+                            stageOutcome[4] = ctx.HasRepack ? StageStatus.Success : StageStatus.Failed;
+                        }
+                        catch { stageOutcome[4] = StageStatus.Failed; throw; }
+                    }
+                    else
+                    {
+                        stageOutcome[4] = StageStatus.Skipped;
+                        UvtLog.Info("[Pipeline] Repack stage SKIPPED by user toggle");
+                    }
 
-                    // 5. Transfer
-                    if (ctx.HasRepack) ExecTransferAll();
+                    // 5. Transfer (skipped via Setup stage toggle)
+                    if (stageRunTransfer && ctx.HasRepack && hasTransferTargets)
+                    {
+                        stageOutcome[5] = StageStatus.Running;
+                        try
+                        {
+                            await ExecTransferAllImpl(useAsync);
+                            stageOutcome[5] = ctx.HasTransfer ? StageStatus.Success : StageStatus.Failed;
+                        }
+                        catch { stageOutcome[5] = StageStatus.Failed; throw; }
+                    }
+                    else if (ctx.HasRepack)
+                    {
+                        ctx.HasTransfer = false;
+                        stageOutcome[5] = stageRunTransfer ? StageStatus.Skipped : StageStatus.Skipped;
+                        if (!stageRunTransfer)
+                            UvtLog.Info("[Pipeline] Transfer stage SKIPPED by user toggle");
+                    }
+                    else
+                    {
+                        stageOutcome[5] = StageStatus.Skipped;
+                    }
+
+                    if (!hasTransferTargets)
+                        break;
 
                     // Evaluate quality
                     int totalRejected = 0;
@@ -766,7 +1925,7 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                EditorUtility.ClearProgressBar();
+                if (cancelled) UvProgress.Cancel(); else UvProgress.End();
             }
 
             // Restore best config if not the last one tested
@@ -791,7 +1950,7 @@ namespace SashaRX.UnityMeshLab
             if (cancelled)
             {
                 requestRepaint?.Invoke();
-                return;
+                return false;
             }
             if (separationConfigs.Length > 1 && bestConfigIdx > 0)
                 UvtLog.Info($"[Pipeline] Auto-tune: selected config #{bestConfigIdx} " +
@@ -799,12 +1958,62 @@ namespace SashaRX.UnityMeshLab
 
             UvtLog.Info("[Pipeline] Complete.");
             requestRepaint?.Invoke();
+            return true;
         }
 
-        void ExecRepack(List<MeshEntry> entries)
+        // Sync entry — used by sweep / auto-tune internal loops which are
+        // already on the main thread and have their own outer progress scope.
+        // Editor freezes for the pack duration (acceptable for dev tools).
+        void ExecRepack(List<MeshEntry> entries) => ExecRepackImpl(entries, useAsync: false).GetAwaiter().GetResult();
+
+        // Async entry — button-click path. Editor main thread is free during
+        // xatlas pack so the inline progress strip keeps repainting and Unity
+        // never shows the "Hold on / Waiting for Unity's code…" busy dialog.
+        Task ExecRepackAsync(List<MeshEntry> entries) => ExecRepackImpl(entries, useAsync: true);
+
+        async Task ExecRepackImpl(List<MeshEntry> entries, bool useAsync)
         {
             if (entries.Count == 0) return;
-            UvtLog.Info($"[Repack] {entries.Count} meshes, res={ctx.AtlasResolution}, pad={ctx.ShellPaddingPx}, bdr={ctx.BorderPaddingPx}");
+            using var _bench = BenchmarkRecorder.NewRun(ctx, "Repack",
+                splitTargetsInSymmetryStep, symSplitThresholdMode);
+            bool ownsSession = _bench is BenchmarkRecorder;
+            bool ownsProgress = !UvProgress.IsActive;
+            if (ownsProgress)
+                UvProgress.Begin($"Repack ({entries.Count} mesh{(entries.Count == 1 ? "" : "es")})",
+                                 cancelable: true);
+            BenchmarkRecorder.Current?.StageBegin("repack");
+            try { await ExecRepackCoreImpl(entries, useAsync); }
+            finally
+            {
+                BenchmarkRecorder.Current?.StageEnd("repack");
+                if (ownsSession && BenchmarkRecorder.Current != null)
+                    foreach (var e in entries)
+                        BenchmarkRecorder.Current.RecordMesh(e);
+                if (ownsProgress) UvProgress.End();
+            }
+        }
+
+        void ExecRepackCore(List<MeshEntry> entries) => ExecRepackCoreImpl(entries, useAsync: false).GetAwaiter().GetResult();
+
+        async Task ExecRepackCoreImpl(List<MeshEntry> entries, bool useAsync)
+        {
+            uint resolvedResolution = (uint)ctx.AtlasResolution;
+            if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
+            {
+                double area = MeshAreaHelper.ComputeTotal3DAreaMeters(
+                    entries.Where(e => e.originalMesh != null).Select(e => e.originalMesh));
+                resolvedResolution = MeshAreaHelper.ComputeAutoResolution(
+                    area, ctx.LightmapDensity, ctx.TargetUvCoverage);
+                UvtLog.Info(
+                    $"[Repack] Auto-resolution: area={area:F2} m², density={ctx.LightmapDensity:F2} tex/m, " +
+                    $"coverage={ctx.TargetUvCoverage:F2} → {resolvedResolution} px");
+            }
+            // Stamp the recorder with the resolution xatlas will actually use,
+            // not the raw UI value — relevant for AutoFromTexelDensity mode
+            // where the resolved value can differ by an octave from the user
+            // setting.
+            BenchmarkRecorder.Current?.SetResolvedAtlasResolution((int)resolvedResolution);
+            UvtLog.Info($"[Repack] {entries.Count} meshes, res={resolvedResolution}, pad={ctx.ShellPaddingPx}, bdr={ctx.BorderPaddingPx}");
             var validEntries = new List<MeshEntry>();
             var meshCopies = new List<Mesh>();
             foreach (var e in entries)
@@ -820,20 +2029,42 @@ namespace SashaRX.UnityMeshLab
             if (meshCopies.Count == 0) return;
 
             var opts = RepackOptions.Default;
-            opts.resolution = (uint)ctx.AtlasResolution;
+            opts.resolution = resolvedResolution;
             opts.padding = (uint)ctx.ShellPaddingPx;
             opts.borderPadding = (uint)ctx.BorderPaddingPx;
+            opts.bruteForce = ctx.XatlasBruteForce;
+            opts.rotateCharts = ctx.XatlasRotateCharts;
+            opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
+            opts.normalizeTexelDensity = ctx.NormalizeTexelDensity;
+            opts.reparameterizeStretchedShells = ctx.ReparameterizeStretchedShells;
+            opts.stretchThreshold = ctx.StretchThreshold;
+            opts.arapIterations = ctx.ArapIterations;
+            opts.clampLightmapToUnit = ctx.ClampLightmapToUnit;
+            opts.targetUvCoverage = ctx.TargetUvCoverage;
+            opts.postPackDensityCorrection = ctx.PostPackDensityCorrection;
+            opts.internalOversample = ctx.InternalOversample > 0 ? ctx.InternalOversample : 1;
+            opts.maxChartSize = ctx.XatlasMaxChartSize;
+            opts.bilinear = ctx.XatlasBilinear;
+            opts.blockAlign = ctx.XatlasBlockAlign;
+            opts.blockSize = ctx.XatlasBlockSize;
+            opts.texelsPerUnit = ctx.XatlasTexelsPerUnit;
 
-            var results = XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);
+            var results = useAsync
+                ? await XatlasRepack.RepackMultiAsync(meshCopies.ToArray(), opts)
+                : XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);
             for (int i = 0; i < validEntries.Count; i++)
             {
                 if (!results[i].ok)
                 {
                     UvtLog.Error("[Repack] " + validEntries[i].renderer.name + ": " + results[i].error);
                     UnityEngine.Object.DestroyImmediate(meshCopies[i]);
+                    validEntries[i].repackedAtlasWidth = 0;
+                    validEntries[i].repackedAtlasHeight = 0;
                     continue;
                 }
                 validEntries[i].repackedMesh = meshCopies[i];
+                validEntries[i].repackedAtlasWidth = results[i].atlasWidth;
+                validEntries[i].repackedAtlasHeight = results[i].atlasHeight;
             }
 
             ctx.HasRepack = true;
@@ -841,7 +2072,10 @@ namespace SashaRX.UnityMeshLab
             requestRepaint?.Invoke();
         }
 
-        void ExecRepackPerMesh(List<MeshEntry> entries)
+        void ExecRepackPerMesh(List<MeshEntry> entries) => ExecRepackPerMeshImpl(entries, useAsync: false).GetAwaiter().GetResult();
+        Task ExecRepackPerMeshAsync(List<MeshEntry> entries) => ExecRepackPerMeshImpl(entries, useAsync: true);
+
+        async Task ExecRepackPerMeshImpl(List<MeshEntry> entries, bool useAsync)
         {
             var groups = new Dictionary<string, List<MeshEntry>>();
             foreach (var e in entries)
@@ -851,23 +2085,86 @@ namespace SashaRX.UnityMeshLab
                 groups[key].Add(e);
             }
             foreach (var kv in groups)
-                ExecRepack(kv.Value);
+                await ExecRepackImpl(kv.Value, useAsync);
         }
 
-        void ExecTransferAll()
+        void ExecTransferAll() => ExecTransferAllImpl(useAsync: false).GetAwaiter().GetResult();
+        Task ExecTransferAllAsync() => ExecTransferAllImpl(useAsync: true);
+
+        async Task ExecTransferAllImpl(bool useAsync)
         {
-            accumulatedOverlapHints.Clear();
-            accumulatedMatchHints.Clear();
+            using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
+                splitTargetsInSymmetryStep, symSplitThresholdMode);
+            bool ownsSession = _bench is BenchmarkRecorder;
+            bool ownsProgress = !UvProgress.IsActive;
+            int targetLodCount = 0;
             for (int li = 0; li < ctx.LodCount; li++)
+                if (li != ctx.SourceLodIndex) targetLodCount++;
+            if (ownsProgress)
+                UvProgress.Begin($"UV2 Transfer ({targetLodCount} target LOD{(targetLodCount == 1 ? "" : "s")})",
+                                 cancelable: true);
+            BenchmarkRecorder.Current?.StageBegin("transfer");
+            // Mirrors the completedSuccessfully guard in ExecFullPipelineImpl:
+            // when the transfer loop is cancelled or aborts early, LODs we
+            // didn't actually process keep their stale shellTransferResult /
+            // validation data from a prior run. RecordMesh on those entries
+            // would emit benchmark rows that misrepresent this run. Set the
+            // flag only after the loop reaches its natural end.
+            bool completedSuccessfully = false;
+            try
             {
-                if (li == ctx.SourceLodIndex) continue;
-                ExecTransferLod(li);
+                if (!HasIncludedTransferTargets(ctx.MeshEntries, ctx.SourceLodIndex))
+                {
+                    ctx.HasTransfer = false;
+                    UvtLog.Warn("[Transfer] No included target LOD meshes; transfer skipped.");
+                    requestRepaint?.Invoke();
+                    return;
+                }
+
+                accumulatedOverlapHints.Clear();
+                accumulatedMatchHints.Clear();
+                int processed = 0;
+                for (int li = 0; li < ctx.LodCount; li++)
+                {
+                    if (li == ctx.SourceLodIndex) continue;
+                    if (UvProgress.CancelRequested)
+                    {
+                        UvtLog.Warn("[Transfer] Cancelled by user — stopping after LOD" + li);
+                        break;
+                    }
+                    UvProgress.SetPhase($"Transfer → LOD{li}",
+                                        fraction: targetLodCount > 0 ? (float)processed / targetLodCount : 0f,
+                                        detail: $"LOD{li}");
+                    await ExecTransferLodImpl(li, useAsync);
+                    processed++;
+                }
+                ctx.HasTransfer = !UvProgress.CancelRequested;
+                completedSuccessfully = !UvProgress.CancelRequested;
+                requestRepaint?.Invoke();
             }
-            ctx.HasTransfer = true;
-            requestRepaint?.Invoke();
+            finally
+            {
+                BenchmarkRecorder.Current?.StageEnd("transfer");
+                // Skip RecordMesh entirely on user-cancel / early abort so
+                // we don't taint sweep aggregates with prior-run state.
+                if (completedSuccessfully && ownsSession && BenchmarkRecorder.Current != null)
+                    foreach (var e in ctx.MeshEntries)
+                    {
+                        if (!e.include) continue;
+                        BenchmarkRecorder.Current.RecordMesh(e);
+                    }
+                if (ownsProgress)
+                {
+                    if (UvProgress.CancelRequested) UvProgress.Cancel();
+                    else UvProgress.End();
+                }
+            }
         }
 
-        void ExecTransferLod(int tLod)
+        void ExecTransferLod(int tLod) => ExecTransferLodImpl(tLod, useAsync: false).GetAwaiter().GetResult();
+        Task ExecTransferLodAsync(int tLod) => ExecTransferLodImpl(tLod, useAsync: true);
+
+        async Task ExecTransferLodImpl(int tLod, bool useAsync)
         {
             var targets = ctx.ForLod(tLod);
             if (targets.Count == 0) return;
@@ -876,6 +2173,7 @@ namespace SashaRX.UnityMeshLab
 
             foreach (var tgt in targets)
             {
+                if (UvProgress.CancelRequested) break;
                 if (tgt.originalMesh == tgt.fbxMesh)
                 {
                     tgt.originalMesh = UvCanvasView.MakeReadableCopy(tgt.fbxMesh);
@@ -901,9 +2199,18 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (srcInfos == null) continue;
 
-                var tr = GroupedShellTransfer.Transfer(tgtMesh, srcMesh,
-                    accumulatedOverlapHints.Count > 0 ? accumulatedOverlapHints : null,
-                    accumulatedMatchHints.Count > 0 ? accumulatedMatchHints : null);
+                UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
+                var tr = useAsync
+                    ? await GroupedShellTransfer.TransferAsync(tgtMesh, srcMesh,
+                        accumulatedOverlapHints.Count > 0 ? accumulatedOverlapHints : null,
+                        accumulatedMatchHints.Count > 0 ? accumulatedMatchHints : null,
+                        srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
+                        srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0)
+                    : GroupedShellTransfer.Transfer(tgtMesh, srcMesh,
+                        accumulatedOverlapHints.Count > 0 ? accumulatedOverlapHints : null,
+                        accumulatedMatchHints.Count > 0 ? accumulatedMatchHints : null,
+                        srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
+                        srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0);
                 if (tr.uv2 == null) { UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); continue; }
 
                 // Accumulate overlap hints for subsequent LODs
@@ -919,12 +2226,21 @@ namespace SashaRX.UnityMeshLab
                 // Build output mesh with UV2 applied
                 var om = UnityEngine.Object.Instantiate(tgtMesh);
                 om.name = tgtMesh.name + "_uvTransfer";
+                if (ctx.ClampLightmapToUnit)
+                {
+                    int clamped = XatlasRepack.ClampUvsToUnit(tr.uv2);
+                    if (clamped > 0)
+                        UvtLog.Verbose(UvtLog.Category.Match,
+                            $"Clamped {clamped} UV2 vert(s) into [0,1] on '{tgt.renderer.name}'");
+                }
                 om.SetUVs(1, new List<Vector2>(tr.uv2));
                 tgt.transferredMesh = om;
                 tgt.shellTransferResult = tr;
 
                 // Validation
+                BenchmarkRecorder.Current?.StageBegin("validate");
                 tgt.validationReport = TransferValidator.Validate(tgtMesh, tr.uv2, tr);
+                BenchmarkRecorder.Current?.StageEnd("validate");
 
                 float pct = tr.verticesTotal > 0 ? tr.verticesTransferred * 100f / tr.verticesTotal : 0;
                 UvtLog.Info($"[Transfer] '{tgt.renderer.name}' LOD{tLod}: {tr.shellsMatched} shells, {pct:F0}% coverage");
@@ -1262,6 +2578,12 @@ namespace SashaRX.UnityMeshLab
                     PreserveUvChannels(sidecarMesh, entry.originalMesh);
                     OverwriteUvChannel(sidecarMesh, entry.originalMesh, 1);
                 }
+
+                // TBN: keep tangent presence in sync with the source FBX. If the FBX
+                // import did not produce tangents, do not let derived/welded meshes
+                // smuggle a synthesized tangent stream into the sidecar payload.
+                // When tangents are present, validate the W (handedness) component.
+                TangentValidator.EnforceTangentsMatchOriginal(sidecarMesh, entry.fbxMesh, "Sidecar");
 
                 Vector2[] auxiliaryUv = null;
                 int auxiliaryTargetUvChannel = -1;
@@ -2378,6 +3700,10 @@ namespace SashaRX.UnityMeshLab
                             if (uv2Donor != null)
                                 MergeUvComponentFromDonor(exportMesh, uv2Donor, aoUvChannel, aoUvComponent);
                         }
+                        // Keep exported tangents consistent with the source mesh
+                        // (from main's TangentValidator). meshName is already
+                        // resolved at the top of this loop body.
+                        TangentValidator.EnforceTangentsMatchOriginal(exportMesh, entry.fbxMesh, "FBX Export");
                         meshReplacements[meshName] = exportMesh;
                         if (entry.renderer != null)
                             meshRendererTemplates[meshName] = entry.renderer;
@@ -2450,6 +3776,7 @@ namespace SashaRX.UnityMeshLab
                             if (uv2Donor != null)
                                 MergeUvComponentFromDonor(exportMesh, uv2Donor, aoUvChannel, aoUvComponent);
                         }
+                        TangentValidator.EnforceTangentsMatchOriginal(exportMesh, entry.fbxMesh, "FBX Export");
                         newMf.sharedMesh = exportMesh;
                         var mr = child.AddComponent<MeshRenderer>();
                         if (lastLodRendererTemplate != null)
@@ -2630,19 +3957,25 @@ namespace SashaRX.UnityMeshLab
                             for (int s = 0; s < srcCol.subMeshCount; s++)
                                 stripped.SetTriangles(srcCol.GetTriangles(s), s);
                             stripped.RecalculateNormals();
-                            // Generate tangents from normals (no UVs to derive from)
-                            var normals = stripped.normals;
-                            var tangents = new Vector4[normals.Length];
-                            for (int ti = 0; ti < normals.Length; ti++)
+                            // Only synthesize tangents when the source actually had them.
+                            // Otherwise downstream tooling sees added TBN data that did
+                            // not exist in the original FBX import.
+                            if (TangentValidator.HasTangents(srcCol))
                             {
-                                Vector3 n = normals[ti];
-                                Vector3 t = Vector3.Cross(n, Vector3.up);
-                                if (t.sqrMagnitude < 0.001f)
-                                    t = Vector3.Cross(n, Vector3.right);
-                                t.Normalize();
-                                tangents[ti] = new Vector4(t.x, t.y, t.z, 1f);
+                                var normals = stripped.normals;
+                                var tangents = new Vector4[normals.Length];
+                                for (int ti = 0; ti < normals.Length; ti++)
+                                {
+                                    Vector3 n = normals[ti];
+                                    Vector3 t = Vector3.Cross(n, Vector3.up);
+                                    if (t.sqrMagnitude < 0.001f)
+                                        t = Vector3.Cross(n, Vector3.right);
+                                    t.Normalize();
+                                    tangents[ti] = new Vector4(t.x, t.y, t.z, 1f);
+                                }
+                                stripped.tangents = tangents;
+                                TangentValidator.ValidateTangentsW(tangents, stripped.name, "FBX Export (collision)");
                             }
-                            stripped.tangents = tangents;
                             stripped.RecalculateBounds();
                             colMf.sharedMesh = stripped;
                         }
@@ -3388,10 +4721,12 @@ namespace SashaRX.UnityMeshLab
             var lods = ctx.LodGroup.GetLODs();
             var newLods = new List<LOD>(lods);
 
+            UvProgress.Begin("Generate LODs", cancelable: true);
             try
             {
                 for (int lodIdx = 0; lodIdx < generateLodCount; lodIdx++)
                 {
+                    if (UvProgress.CancelRequested) break;
                     float ratio = generateLodRatios[lodIdx];
                     var settings = new MeshSimplifier.SimplifySettings
                     {
@@ -3404,8 +4739,8 @@ namespace SashaRX.UnityMeshLab
                     };
 
                     float progress = (float)lodIdx / generateLodCount;
-                    EditorUtility.DisplayProgressBar("Generate LODs",
-                        $"LOD {lodIdx + 1}/{generateLodCount} (ratio {ratio:P0})", progress);
+                    UvProgress.Report(progress,
+                        $"LOD {lodIdx + 1}/{generateLodCount} (ratio {ratio:P0})");
 
                     var lodRenderers = new List<Renderer>();
                     foreach (var (entry, srcMesh) in sourceMeshes)
@@ -3456,7 +4791,7 @@ namespace SashaRX.UnityMeshLab
                 AssetDatabase.SaveAssets();
                 AssetDatabase.Refresh();
             }
-            finally { EditorUtility.ClearProgressBar(); }
+            finally { UvProgress.End(); }
 
             // Add new LOD entries without destroying pipeline state
             var currentLods2 = ctx.LodGroup.GetLODs();
@@ -3496,6 +4831,7 @@ namespace SashaRX.UnityMeshLab
             {
                 Mesh m = GetResultMesh(e);
                 if (m == null) continue;
+                TangentValidator.EnforceTangentsMatchOriginal(m, e.fbxMesh, "SaveAll");
                 string ap = AssetDatabase.GenerateUniqueAssetPath(p + "/" + m.name + ".asset");
                 AssetDatabase.CreateAsset(m, ap); n++;
             }
@@ -3533,6 +4869,8 @@ namespace SashaRX.UnityMeshLab
                     e.meshFilter.sharedMesh = e.fbxMesh;
                 if (e.transferredMesh != null) { UnityEngine.Object.DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
                 if (e.repackedMesh != null) { UnityEngine.Object.DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
+                e.repackedAtlasWidth = 0;
+                e.repackedAtlasHeight = 0;
                 if (e.originalMesh != null && e.originalMesh != e.fbxMesh) UnityEngine.Object.DestroyImmediate(e.originalMesh);
                 if (e.fbxMesh != null) e.originalMesh = e.fbxMesh;
                 e.shellTransferResult = null;
@@ -4162,6 +5500,16 @@ namespace SashaRX.UnityMeshLab
 
         static void H(string t) { EditorGUILayout.Space(2); EditorGUILayout.LabelField(t, EditorStyles.boldLabel); }
         static void Warn(string t) { EditorGUILayout.HelpBox(t, MessageType.Warning); }
+
+        static bool ToggleIssueBit(ref TransferValidator.TriIssue mask, TransferValidator.TriIssue bit, string label)
+        {
+            bool on = (mask & bit) != 0;
+            bool newOn = EditorGUILayout.ToggleLeft(label, on);
+            if (newOn == on) return false;
+            if (newOn) mask |= bit;
+            else       mask &= ~bit;
+            return true;
+        }
 
         void ColorBtn(Color col, string l, int h, Action a)
         {
