@@ -13,7 +13,7 @@ Editor/             @SashaRX
 
 # Native plugins (binary + source)
 Plugins/            @SashaRX
-Native/             @SashaRX
+Native~/            @SashaRX
 
 # Shaders
 Shaders/            @SashaRX

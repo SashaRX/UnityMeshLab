@@ -10,8 +10,7 @@ REVIEW.md.meta
 .github/
 
 # Native C++ source — users get prebuilt Plugins/ only
-Native/
-Native.meta
+Native~/
 
 # Dev/build files
 CONFLICT_CHECK_LAST_5_PRS.md

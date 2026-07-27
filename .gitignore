@@ -38,6 +38,10 @@ Thumbs.db
 # CMake build output (xatlas fetched automatically)
 Native~/_deps/
 
+# Local agent/session state and generated experiment output
+.remember/
+_results~/
+
 # Test file
 test.txt
 

@@ -7,7 +7,7 @@
 <!-- Check all that apply -->
 
 - [ ] `Editor/` — Editor tools / UI
-- [ ] `Plugins/` / `Native/` — Native plugins
+- [ ] `Plugins/` / `Native~/` — Native plugins
 - [ ] `Shaders/` — Compute / render shaders
 - [ ] `package.json` — Version / dependencies
 - [ ] `.github/` — CI / workflows
