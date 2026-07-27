@@ -21,8 +21,8 @@ See `AGENTS.md` for shared rules that apply to all AI agents.
 - No `using System.Text.RegularExpressions` in `LightmapTransferTool.cs` — use fully qualified `System.Text.RegularExpressions.Regex`
 - `internal` visibility for cross-tool helpers (same assembly)
 - `Undo.RecordObject` / `Undo.AddComponent` / `Undo.DestroyObjectImmediate` for all scene modifications
-- Logging via `UvtLog.Info()` / `UvtLog.Warn()` / `UvtLog.Error()` (prefixed `[LightmapUV]`)
-- FBX code gated by `#if LIGHTMAP_UV_TOOL_FBX_EXPORTER`
+- Logging via `UvtLog.Info()` / `UvtLog.Warn()` / `UvtLog.Error()` (prefixed `[MeshLab]`)
+- FBX code gated by `#if UNITY_MESH_LAB_FBX_EXPORTER`
 - `RestoreWorkingMeshes()` before clearing/switching LODGroup context
 - Destroy temporary meshes (repacked, transferred, welded) when no longer needed
 

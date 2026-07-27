@@ -38,7 +38,7 @@ Located under `.github/workflows/`:
 
 ## Deviations from `_shared/naming-conventions.md`
 
-None at the canonical-target level. Both historical deviations (bare `LightmapUvTool` namespace, `com.sasharx.lightmap-uv-tool` package id) were resolved in the 1.0.0 release.
+None at the canonical-target level. Historical namespace and package-ID deviations were resolved in the 1.0.0 release.
 
 ## Primary domain vocabulary
 
@@ -47,7 +47,7 @@ Terms that identify tasks as in-scope for this repo (used as description trigger
 - Mesh editor, mesh hygiene, mesh repacking.
 - Lightmap UV, UV2, baked lightmap, UV transfer.
 - LOD group, LOD UV workflow, LOD sibling detection.
-- FBX export (gated by `LIGHTMAP_UV_TOOL_FBX_EXPORTER`).
+- FBX export (gated by `UNITY_MESH_LAB_FBX_EXPORTER`).
 - Sidecar asset (`Uv2DataAsset` — persists UV2/collision data next to FBX).
 
 ## Repo-specific rules (from CLAUDE.md)
@@ -55,14 +55,14 @@ Terms that identify tasks as in-scope for this repo (used as description trigger
 Shared with agents via `CLAUDE.md`:
 
 - No `using System.Text.RegularExpressions` in `LightmapTransferTool.cs` — use fully qualified `System.Text.RegularExpressions.Regex`.
-- Log via `UvtLog.Info` / `UvtLog.Warn` / `UvtLog.Error` — prefixed `[LightmapUV]`.
+- Log via `UvtLog.Info` / `UvtLog.Warn` / `UvtLog.Error` — prefixed `[MeshLab]`.
 - Use `Undo.RecordObject` / `Undo.AddComponent` / `Undo.DestroyObjectImmediate` for scene modifications.
 - Call `RestoreWorkingMeshes()` before clearing/switching LODGroup context.
 - Destroy temporary meshes (repacked, transferred, welded) when no longer needed.
 
 ## Migration history
 
-- **1.0.0 (2026-04-20)** — package id renamed `com.sasharx.lightmap-uv-tool` → `com.sasharx.unitymeshlab`; namespace renamed `LightmapUvTool` → `SashaRX.UnityMeshLab`; repository URL corrected to `UnityMeshLab.git`. Downstream migration steps in `CHANGELOG.md`.
+- **1.0.0 (2026-04-20)** — package ID, namespace, and repository URL were standardized to the current UnityMeshLab identity. Downstream migration steps are recorded in `CHANGELOG.md`.
 
 ## Further reading
 

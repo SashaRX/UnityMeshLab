@@ -164,7 +164,7 @@ Example: gate code on the presence of the FBX exporter package.
 
 ```json
 "versionDefines": [
-  { "name": "com.unity.formats.fbx", "expression": "[5.0.0,6.0.0)", "define": "LIGHTMAP_UV_TOOL_FBX_EXPORTER" }
+  { "name": "com.unity.formats.fbx", "expression": "[5.0.0,6.0.0)", "define": "UNITY_MESH_LAB_FBX_EXPORTER" }
 ]
 ```
 

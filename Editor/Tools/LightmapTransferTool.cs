@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEditor;
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+#if UNITY_MESH_LAB_FBX_EXPORTER
 using UnityEditor.Formats.Fbx.Exporter;
 #endif
 
@@ -3250,7 +3250,7 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public void ExportVertexColorsToFbx()
         {
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+#if UNITY_MESH_LAB_FBX_EXPORTER
             if (ctx?.MeshEntries == null || ctx.MeshEntries.Count == 0)
             {
                 UvtLog.Error("[FBX Export] No meshes loaded.");
@@ -3524,7 +3524,7 @@ namespace SashaRX.UnityMeshLab
 
         void ExportFbx(bool overwriteSource)
         {
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+#if UNITY_MESH_LAB_FBX_EXPORTER
             if (ctx?.MeshEntries == null || ctx.MeshEntries.Count == 0)
             {
                 UvtLog.Error("[FBX Export] No meshes loaded.");
@@ -4697,7 +4697,7 @@ namespace SashaRX.UnityMeshLab
             if (sourceMeshes.Count == 0) { UvtLog.Error("[GenerateLOD] No source meshes found."); return; }
 
             string savePath = ctx.PipeSettings.savePath;
-            if (string.IsNullOrEmpty(savePath)) savePath = "Assets/LightmapUvTool_Output";
+            if (string.IsNullOrEmpty(savePath)) savePath = "Assets/UnityMeshLab/Output";
             if (!AssetDatabase.IsValidFolder(savePath))
             {
                 var par = System.IO.Path.GetDirectoryName(savePath);
@@ -4806,7 +4806,7 @@ namespace SashaRX.UnityMeshLab
         void SaveAll()
         {
             string p = ctx.PipeSettings.savePath;
-            if (string.IsNullOrEmpty(p)) p = "Assets/LightmapUvTool_Output";
+            if (string.IsNullOrEmpty(p)) p = "Assets/UnityMeshLab/Output";
             if (!AssetDatabase.IsValidFolder(p))
             {
                 var par = System.IO.Path.GetDirectoryName(p);
@@ -5196,7 +5196,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (spotMat == null)
             {
-                var sh = Shader.Find("Hidden/LightmapUvTool/SpotProjection");
+                var sh = Shader.Find("Hidden/UnityMeshLab/SpotProjection");
                 if (sh != null) spotMat = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };
             }
             if (shellOverlayMat == null)

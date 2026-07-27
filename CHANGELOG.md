@@ -62,9 +62,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [1.0.0] - 2026-04-20
 
 ### Changed (breaking)
-- **Package identifier** renamed from `com.sasharx.lightmap-uv-tool` to `com.sasharx.unitymeshlab` to align with the repository name and the canonical `com.sasharx.<lowercase-package>` rule in `.claude/skills/_shared/naming-conventions.md`. Downstream consumers must update the entry in `Packages/manifest.json`.
-- **Root namespace** migrated from `LightmapUvTool` to `SashaRX.UnityMeshLab` across all 48 Editor C# files. The asmdef `name` and `rootNamespace` were updated and the asmdef file was renamed `LightmapUvTool.Editor.asmdef` → `SashaRX.UnityMeshLab.Editor.asmdef` (GUID preserved). External code that referenced the bare `LightmapUvTool` namespace must switch to `SashaRX.UnityMeshLab`.
-- **`repository.url`** updated from `UnityLodUvLightmapTransfer.git` to `UnityMeshLab.git` to match the current canonical GitHub URL.
+- **Package identifier** standardized as `com.sasharx.unitymeshlab` to align with the repository name and the canonical `com.sasharx.<lowercase-package>` rule in `.claude/skills/_shared/naming-conventions.md`. Downstream consumers must update the entry in `Packages/manifest.json`.
+- **Root namespace** standardized as `SashaRX.UnityMeshLab` across all Editor C# files. The asmdef `name`, `rootNamespace`, and filename were updated with the GUID preserved.
+- **`repository.url`** standardized as `UnityMeshLab.git` to match the canonical GitHub URL.
 
 ### Added
 - `documentationUrl`, `changelogUrl`, and `licensesUrl` fields in `package.json`.
@@ -76,13 +76,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   ```json
   "com.sasharx.unitymeshlab": "https://github.com/SashaRX/UnityMeshLab.git"
   ```
-- In any code that referenced the `LightmapUvTool` namespace, switch to `SashaRX.UnityMeshLab`.
+- In downstream code, use the canonical `SashaRX.UnityMeshLab` namespace.
 
 ## [0.15.36] - 2026-04-07
 
 ### Added — Cleanup tool (#59)
 - **New "Cleanup" tab** (ToolOrder 45, between Collision and Vertex AO) for mesh/material/collider/scene hygiene
-- **Fix Materials**: detect Hidden_LightmapUvTool shaders on renderers, match LOD1+ materials to LOD0, strip unused material slots
+- **Fix Materials**: detect hidden UnityMeshLab shaders on renderers, match LOD1+ materials to LOD0, strip unused material slots
 - **Clean Colliders**: strip UV/normal/tangent/color from _COL meshes, detect and remove duplicate _COL objects
 - **Scene Cleanup**: remove orphaned LOD objects after FBX reimport, rebuild LODGroup from hierarchy naming
 - **Mesh**: batch weld via meshopt, strip empty UV channels, per-LOD vertex/tri count summary
@@ -107,7 +107,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 #### Vertex AO Baking
 - **GPU vertex AO baker**: hemisphere depth sampling via compute shader
 - **CPU fallback**: for platforms without compute shader support
-- **Depth shader**: `Hidden/LightmapUvTool/VertexAODepth` for orthographic depth rendering
+- **Depth shader**: `Hidden/UnityMeshLab/VertexAODepth` for orthographic depth rendering
 - **Compute shader**: `VertexAOAccum.compute` with AccumulateAO and FinalizeAO kernels
 
 #### Safety & Lifecycle

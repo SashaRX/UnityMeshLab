@@ -413,7 +413,7 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Info("Collision meshes applied to scene.");
         }
 
-        const string AppliedMeshAssetFolder = "Assets/LightmapUvTool/GeneratedCollisionMeshes";
+        const string AppliedMeshAssetFolder = "Assets/UnityMeshLab/GeneratedCollisionMeshes";
 
         static Mesh CreateAppliedMeshCopy(Mesh source, string fallbackName)
         {
@@ -431,15 +431,15 @@ namespace SashaRX.UnityMeshLab
 
         static void EnsureAppliedMeshFolderExists()
         {
-            if (AssetDatabase.IsValidFolder("Assets/LightmapUvTool"))
+            if (AssetDatabase.IsValidFolder("Assets/UnityMeshLab"))
             {
                 if (!AssetDatabase.IsValidFolder(AppliedMeshAssetFolder))
-                    AssetDatabase.CreateFolder("Assets/LightmapUvTool", "GeneratedCollisionMeshes");
+                    AssetDatabase.CreateFolder("Assets/UnityMeshLab", "GeneratedCollisionMeshes");
                 return;
             }
 
-            AssetDatabase.CreateFolder("Assets", "LightmapUvTool");
-            AssetDatabase.CreateFolder("Assets/LightmapUvTool", "GeneratedCollisionMeshes");
+            AssetDatabase.CreateFolder("Assets", "UnityMeshLab");
+            AssetDatabase.CreateFolder("Assets/UnityMeshLab", "GeneratedCollisionMeshes");
         }
 
         // ── Sidecar persistence ──
@@ -466,7 +466,7 @@ namespace SashaRX.UnityMeshLab
             // Save mesh assets to savePath (like LOD Gen does)
             string savePath = !string.IsNullOrEmpty(ctx.PipeSettings.savePath)
                 ? ctx.PipeSettings.savePath
-                : "Assets/LightmapUvTool_Output";
+                : "Assets/UnityMeshLab/Output";
             if (!AssetDatabase.IsValidFolder(savePath))
             {
                 var par = Path.GetDirectoryName(savePath);

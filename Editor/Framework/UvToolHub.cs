@@ -1000,7 +1000,7 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.Space(4);
 
             var bg = GUI.backgroundColor;
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+#if UNITY_MESH_LAB_FBX_EXPORTER
             if (!PostprocessorDefineManager.IsEnabled())
             {
                 EditorGUILayout.HelpBox(

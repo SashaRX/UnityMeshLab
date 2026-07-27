@@ -1,4 +1,4 @@
-Shader "Hidden/LightmapUvTool/SpotProjection"
+Shader "Hidden/UnityMeshLab/SpotProjection"
 {
     Properties
     {

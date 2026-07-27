@@ -101,7 +101,7 @@ Extend `Editor/PostprocessorDefineManager.cs`:
   or `Plugins/x86_64/umlab-embree.so` (Linux).
 - If present: add `UNITYMESHLAB_EMBREE` to `PlayerSettings` scripting defines
   (Editor platform group). If absent: remove it.
-- Mirrors the existing pattern for `LIGHTMAP_UV_TOOL_FBX_EXPORTER`.
+- Mirrors the existing pattern for `UNITY_MESH_LAB_FBX_EXPORTER`.
 
 ## C ABI surface
 

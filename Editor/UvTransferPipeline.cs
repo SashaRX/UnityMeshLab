@@ -14,7 +14,7 @@ namespace SashaRX.UnityMeshLab
             public static PipelineSettings Default => new PipelineSettings
             {
                 saveNewMeshAssets = true,
-                savePath = "Assets/LightmapUvTool_Output"
+                savePath = "Assets/UnityMeshLab/Output"
             };
         }
     }

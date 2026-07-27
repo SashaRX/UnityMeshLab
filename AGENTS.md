@@ -28,9 +28,9 @@ The canonical rule set lives in `.claude/skills/`. This file is the top-level po
 - **LODGroup lifecycle**: call `RestoreWorkingMeshes()` before clearing or switching LODGroup context.
 - **LOD / collision naming**: `Name_LOD{N}` (e.g., `Chair_LOD0`), `Name_COL` or `Name_COL_Hull{N}`. Group key extracted via `UvToolContext.ExtractGroupKey()`.
 - **Sidecar assets**: `ModelName_uv2data.asset` — persists UV2/collision data alongside FBX.
-- **FBX exporter**: code gated by `#if LIGHTMAP_UV_TOOL_FBX_EXPORTER`.
+- **FBX exporter**: code gated by `#if UNITY_MESH_LAB_FBX_EXPORTER`.
 - **Regex in `LightmapTransferTool.cs`**: use fully-qualified `System.Text.RegularExpressions.Regex` — no top-level `using`.
-- **Logging**: `UvtLog.Info` / `UvtLog.Warn` / `UvtLog.Error` (prefix `[LightmapUV]`).
+- **Logging**: `UvtLog.Info` / `UvtLog.Warn` / `UvtLog.Error` (prefix `[MeshLab]`).
 
 For mutation safety, package structure, serialization, CI, and release mechanics — consult the relevant skill in `.claude/skills/`, not this file.
 

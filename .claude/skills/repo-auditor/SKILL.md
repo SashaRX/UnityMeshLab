@@ -11,7 +11,7 @@ Read-only audit skill for Unity UPM repositories. Produces a prioritized Markdow
 
 Covered here:
 
-- Skills directory structure and coherence with `.claude/skills/skills-overhaul-plan.md` if present.
+- Skills directory structure and internal reference coherence.
 - Agent docs (`AGENTS.md`, `CLAUDE.md`) presence and consistency with each other.
 - `.github/workflows/` presence for Unity CI and release automation.
 - `LICENSE`, `CHANGELOG.md`, `README.md` presence and format.
@@ -110,7 +110,7 @@ grep -n '^\*\.meta$' .gitignore 2>/dev/null
 
 Every finding should name a follow-up target:
 
-- Skills directory findings → this skill (`repo-auditor`) and `skills-overhaul-plan.md` if present.
+- Skills directory findings → this skill (`repo-auditor`).
 - Agent doc findings → manual resolution; this skill does not author.
 - CI findings → `unity-ci-validation`.
 - package.json / asmdef findings → `unity-package-reviewer` for audit, `unity-package-architect` for fix.

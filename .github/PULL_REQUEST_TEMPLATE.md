@@ -19,7 +19,7 @@
 - [ ] No Editor ↔ Runtime dependency leaks
 - [ ] Undo support for all scene modifications
 - [ ] Temporary meshes cleaned up
-- [ ] `#if LIGHTMAP_UV_TOOL_FBX_EXPORTER` guards on FBX code
+- [ ] `#if UNITY_MESH_LAB_FBX_EXPORTER` guards on FBX code
 - [ ] CHANGELOG.md updated (if user-visible change)
 
 ## Test Plan

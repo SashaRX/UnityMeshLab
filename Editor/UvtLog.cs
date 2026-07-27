@@ -30,9 +30,9 @@ namespace SashaRX.UnityMeshLab
             All = General | SymSplit | Repack | Match | Dedup | Overlap | Topology | Validation | Export | Benchmark | TransferDiag,
         }
 
-        const string LevelPrefKey = "LightmapUvTool_LogLevel";
-        const string MaskPrefKey  = "LightmapUvTool_LogCategoryMask";
-        const string Prefix       = "[LightmapUV]";
+        const string LevelPrefKey = "UnityMeshLab_LogLevel";
+        const string MaskPrefKey  = "UnityMeshLab_LogCategoryMask";
+        const string Prefix       = "[MeshLab]";
 
         static Level? _cachedLevel;
         static int?   _cachedMask;

@@ -16,7 +16,7 @@ When Claude is invoked for PR review (not implementation), follow these rules.
 ### Package Integrity
 - [ ] `package.json` version follows semver
 - [ ] `asmdef` references correct — no circular deps, correct platforms
-- [ ] Define symbols (`LIGHTMAP_UV_TOOL_FBX_EXPORTER`) match `versionDefines`
+- [ ] Define symbols (`UNITY_MESH_LAB_FBX_EXPORTER`) match `versionDefines`
 - [ ] No Runtime ↔ Editor dependency leaks
 
 ### Backward Compatibility

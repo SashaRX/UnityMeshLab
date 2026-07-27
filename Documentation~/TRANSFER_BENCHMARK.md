@@ -71,7 +71,7 @@ strip-parameterization.
 | `SymmetrySplitShells.LastFallbackCount` / `LastTotalSplitCount` | `Editor/SymmetrySplitShells.cs` | Counters read by the recorder. |
 | `GroupedShellTransfer.LastTopologyIterations` / `LastTopologyFixed` / `LastTopologyCapHit` | `Editor/GroupedShellTransfer.cs` | Counters for the Laplacian topology pass. |
 | `UvCanvasView.ValidationFilterMask` | `Editor/Framework/UvCanvasView.cs` | Restricts the validation fill/overlay to selected `TriIssue` bits. |
-| `TestSuiteAsset` | `Editor/Settings/TestSuiteAsset.cs` | ScriptableObject registry of benchmark cases (FBX + LOD path + expected ranges). Create via `Assets → Create → Lightmap UV Tool → Test Suite`. |
+| `TestSuiteAsset` | `Editor/Settings/TestSuiteAsset.cs` | ScriptableObject registry of benchmark cases (FBX + LOD path + expected ranges). Create via `Assets → Create → Mesh Lab → Sweep Test Suite`. |
 
 ## Metrics (one CSV row per mesh × LOD)
 
@@ -121,7 +121,7 @@ JSON output mirrors the CSV but nests `records[]` inside a run envelope.
 ## Protocol
 
 1. **Prepare a suite.**
-   `Assets → Create → Lightmap UV Tool → Test Suite`. Add one `TestCase` per
+   `Assets → Create → Mesh Lab → Sweep Test Suite`. Add one `TestCase` per
    model; set a short `label` (becomes `runLabel` in CSV), point `fbxAsset`
    at the FBX, and list your expected ranges in `expectations` (informational;
    not enforced automatically).
@@ -292,7 +292,7 @@ When a run is noisy (e.g. Adaptive threshold messages spam the console), open
 *Pipeline Settings → Log filters* and uncheck the offending `UvtLog.Category`.
 Verbosity (`Level`) still controls global threshold; the mask is an additional
 silencer persisted per user in EditorPrefs
-(`LightmapUvTool_LogCategoryMask`).
+(`UnityMeshLab_LogCategoryMask`).
 
 | Category | Typical messages |
 | --- | --- |

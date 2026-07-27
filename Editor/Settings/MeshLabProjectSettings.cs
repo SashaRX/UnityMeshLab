@@ -15,7 +15,7 @@ namespace SashaRX.UnityMeshLab
         public bool repackPerMesh;
 
         // ── Output ──
-        public string savePath = "Assets/LightmapUvTool_Output";
+        public string savePath = "Assets/UnityMeshLab/Output";
 
         // ── UV2 pipeline ──
         public bool sidecarMode;
