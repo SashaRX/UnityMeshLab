@@ -145,6 +145,36 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void RepackSingle_NormalizesMirroredShellWithoutModifyingUv0()
+        {
+            if (!NativeAvailable()) Assert.Ignore("xatlas native plugin not available");
+
+            var mesh = BuildTiledMesh(1);
+            try
+            {
+                var mirroredUv0 = mesh.uv;
+                for (int i = 0; i < mirroredUv0.Length; i++)
+                    mirroredUv0[i].x = 0.5f - mirroredUv0[i].x;
+                mesh.uv = mirroredUv0;
+
+                var opts = RepackOptions.Default;
+                opts.resolution = 256;
+                opts.padding = 2;
+                var result = XatlasRepack.RepackSingle(mesh, opts);
+
+                Assert.IsTrue(result.ok, $"Repack failed: {result.error}");
+                Assert.AreEqual(1, result.flippedShells,
+                    "Standalone repack must normalize mirrored shells even when Weld was not run");
+                CollectionAssert.AreEqual(mirroredUv0, mesh.uv,
+                    "Repack normalization must only modify its local UV0 copy");
+            }
+            finally
+            {
+                Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [Test]
         public void PackPreflight_DisablesBruteForce_WhenInternalOversampleIsAboveOne()
         {
             var method = typeof(XatlasRepack).GetMethod(
