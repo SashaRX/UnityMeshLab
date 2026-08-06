@@ -75,6 +75,13 @@ namespace SashaRX.UnityMeshLab
         bool  includeCollisionOccluders;
         static readonly string[] bakeModeLabels = { "GPU", "CPU" };
         static readonly string[] bakeTypeLabels = { "Ambient Occlusion", "Thickness" };
+        // Hard safety ceilings prevent crafted or accidental LOD meshes from exhausting
+        // editor/GPU memory. Batches are processed separately, but their accumulated size
+        // still bounds the total bake time and retained result arrays.
+        const long MaxVerticesPerLodBatch = 5_000_000;
+        const long MaxIndicesPerLodBatch = 30_000_000;
+        const long MaxTargetVerticesPerBake = 10_000_000;
+        const int MaxMeshesPerLodBatch = 256;
         bool applySelectedRendererOnly;
         bool applySelectedSubmeshOnly;
         int selectedSubmeshIndex;
@@ -510,6 +517,14 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Warn("[Vertex AO] No valid meshes to bake.");
                 return;
             }
+
+            if (!TryValidateBakeWorkload(batches, out string workloadError))
+            {
+                foreach (var batch in batches)
+                    DisposeBatchTemporaryMeshes(batch);
+                UvtLog.Error("[Vertex AO] Bake refused: " + workloadError);
+                return;
+            }
             StoreBatchStats(batches);
 
             bakeStopwatch = Stopwatch.StartNew();
@@ -533,6 +548,56 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Warn("[Vertex AO] Compute shaders not supported. Falling back to CPU.");
                 ExecuteBakeCPU(batches, settings, entries);
             }
+        }
+
+        static bool TryValidateBakeWorkload(List<LodBakeBatch> batches, out string error)
+        {
+            long totalTargetVertices = 0;
+
+            foreach (var batch in batches)
+            {
+                int meshCount = batch.targetMeshes.Count + batch.occluderMeshes.Count;
+                if (meshCount > MaxMeshesPerLodBatch)
+                {
+                    error = $"LOD{batch.lodIndex} contains {meshCount:N0} target/occluder meshes; " +
+                            $"the safety limit is {MaxMeshesPerLodBatch:N0}. Exclude or simplify meshes before baking.";
+                    return false;
+                }
+
+                long batchVertices = 0;
+                ulong batchIndices = 0;
+                foreach (var (mesh, _) in batch.targetMeshes.Concat(batch.occluderMeshes))
+                {
+                    if (mesh == null)
+                        continue;
+
+                    batchVertices += mesh.vertexCount;
+                    for (int submesh = 0; submesh < mesh.subMeshCount; submesh++)
+                        batchIndices += mesh.GetIndexCount(submesh);
+
+                    if (batchVertices > MaxVerticesPerLodBatch || batchIndices > (ulong)MaxIndicesPerLodBatch)
+                    {
+                        error = $"LOD{batch.lodIndex} requires {batchVertices:N0} vertices and {batchIndices:N0} indices; " +
+                                $"the per-LOD safety limits are {MaxVerticesPerLodBatch:N0} vertices and " +
+                                $"{MaxIndicesPerLodBatch:N0} indices. Exclude or simplify meshes before baking.";
+                        return false;
+                    }
+                }
+
+                foreach (var (mesh, _) in batch.targetMeshes)
+                    totalTargetVertices += mesh != null ? mesh.vertexCount : 0;
+
+                if (totalTargetVertices > MaxTargetVerticesPerBake)
+                {
+                    error = $"the selected LODs contain {totalTargetVertices:N0} target vertices; " +
+                            $"the per-bake safety limit is {MaxTargetVerticesPerBake:N0}. " +
+                            "Exclude or simplify meshes before baking.";
+                    return false;
+                }
+            }
+
+            error = null;
+            return true;
         }
 
         List<LodBakeBatch> BuildLodBatches(List<MeshEntry> entries, VertexAOSettings settings)
