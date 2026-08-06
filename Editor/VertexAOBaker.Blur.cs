@@ -11,6 +11,10 @@ namespace SashaRX.UnityMeshLab
         // creating a quadratic number of comparisons and neighbor entries.
         const int MaxSeamCandidatesPerVertex = 256;
 
+        // Keeps the editor-triggered 3D spatial blur bounded when the grid degenerates
+        // into a single cell (tiny radius on a dense mesh, or fully coincident vertices).
+        const int MaxSpatialNeighborsPerVertex = 256;
+
         public static float[] BlurAO(float[] ao, int[] triangles, int vertexCount, int iterations, float strength,
             Vector3[] positions = null, Vector3[] normals = null, Vector2[] uv0 = null,
             bool crossHardEdges = true, bool crossUvSeams = true)
@@ -122,6 +126,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (ao == null || positions == null || iterations <= 0 || radius <= 0) return ao;
             int count = ao.Length;
+            if (positions.Length != count) return ao;
 
             // Build spatial grid for fast neighbor lookup
             float cellSize = radius;
@@ -152,18 +157,27 @@ namespace SashaRX.UnityMeshLab
 
                     float weightSum = 1f; // self weight
                     float aoSum = src[v];
+                    int checks = 0;
 
-                    // 27-cell neighborhood
-                    for (int dx = -1; dx <= 1; dx++)
-                    for (int dy = -1; dy <= 1; dy++)
-                    for (int dz = -1; dz <= 1; dz++)
+                    // 27-cell neighborhood, with a per-vertex candidate budget so dense
+                    // cells cannot turn this into O(n²).
+                    for (int dx = -1; dx <= 1 && checks < MaxSpatialNeighborsPerVertex; dx++)
+                    for (int dy = -1; dy <= 1 && checks < MaxSpatialNeighborsPerVertex; dy++)
+                    for (int dz = -1; dz <= 1 && checks < MaxSpatialNeighborsPerVertex; dz++)
                     {
                         long nkey = PackKey(cx + dx, cy + dy, cz + dz);
                         if (!grid.TryGetValue(nkey, out var cell)) continue;
-                        for (int ci = 0; ci < cell.Count; ci++)
+                        // Rotate the sample window per vertex so a cell that exceeds the
+                        // budget does not always contribute its lowest indices.
+                        int start = cell.Count > 0 ? v % cell.Count : 0;
+                        for (int offset = 0;
+                             offset < cell.Count && checks < MaxSpatialNeighborsPerVertex;
+                             offset++)
                         {
+                            int ci = (start + offset) % cell.Count;
                             int ni = cell[ci];
                             if (ni == v) continue;
+                            checks++;
                             float distSq = (positions[ni] - p).sqrMagnitude;
                             if (distSq >= radiusSq) continue;
 
