@@ -52,8 +52,16 @@ EXPORT void* ConvexDecomp_Compute(
     int          minEdgeLength,
     int          findBestPlane)
 {
-    if (!vertices || !indices || vertexCount <= 0 || indexCount < 3)
+    if (!vertices || !indices || vertexCount <= 0 || indexCount < 3 || indexCount % 3 != 0)
         return nullptr;
+
+    // V-HACD treats indices as unsigned and dereferences them without bounds checks.
+    // Validate at the native API boundary so malformed meshes cannot cause OOB reads.
+    for (int i = 0; i < indexCount; i++)
+    {
+        if (indices[i] < 0 || indices[i] >= vertexCount)
+            return nullptr;
+    }
 
     // Recursive splitting can create 2^depth intermediate hulls, followed by an
     // O(n²) merge-cost allocation. Treat the native ABI as a trust boundary so
