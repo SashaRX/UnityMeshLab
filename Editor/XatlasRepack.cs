@@ -692,8 +692,34 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         static long ComputePackCost(int shellCount, uint internalRes)
         {
+            long shells = Math.Max(0, shellCount);
             long res = internalRes;
-            return (long)Math.Max(0, shellCount) * res * res;
+            if (res != 0 && shells > long.MaxValue / res)
+                return long.MaxValue;
+
+            long shellPixels = shells * res;
+            if (res != 0 && shellPixels > long.MaxValue / res)
+                return long.MaxValue;
+
+            return shellPixels * res;
+        }
+
+        static bool TryResolveInternalPackDimensions(
+            RepackOptions opts, out int oversample, out uint resolution, out uint padding)
+        {
+            oversample = opts.internalOversample > 0 ? opts.internalOversample : 1;
+            ulong resolvedResolution = (ulong)opts.resolution * (uint)oversample;
+            ulong resolvedPadding = (ulong)opts.padding * (uint)oversample;
+            if (resolvedResolution > uint.MaxValue || resolvedPadding > uint.MaxValue)
+            {
+                resolution = 0;
+                padding = 0;
+                return false;
+            }
+
+            resolution = (uint)resolvedResolution;
+            padding = (uint)resolvedPadding;
+            return true;
         }
 
         static int ResolvePackBruteForce(
@@ -1113,9 +1139,13 @@ namespace SashaRX.UnityMeshLab
                 // resolution makes every chart's extent oversample× larger, so
                 // ceil rounding becomes fractional. Padding scales by the same
                 // factor to keep the gap fraction in UV space constant.
-                int oversample = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                uint internalRes = opts.resolution * (uint)oversample;
-                uint internalPad = opts.padding    * (uint)oversample;
+                if (!TryResolveInternalPackDimensions(
+                        opts, out int oversample, out uint internalRes, out uint internalPad))
+                {
+                    result.error = "atlas resolution or padding is too large for the internal oversample";
+                    UvtLog.Warn(UvtLog.Category.Repack, $"[xatlas] {result.error} — refusing to start pack.");
+                    return result;
+                }
 
                 bool packed = RunPackCancelable(
                     mesh.name, shells.Count, internalRes, oversample,
@@ -1442,9 +1472,15 @@ namespace SashaRX.UnityMeshLab
                 // Pack all charts together into one atlas
                 // See RepackSingle for oversample rationale (ceil-stretch fix)
                 // and RunPackCancelable for cost-budget + cancel handling.
-                int oversampleM = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                uint internalResM = opts.resolution * (uint)oversampleM;
-                uint internalPadM = opts.padding    * (uint)oversampleM;
+                if (!TryResolveInternalPackDimensions(
+                        opts, out int oversampleM, out uint internalResM, out uint internalPadM))
+                {
+                    const string error = "atlas resolution or padding is too large for the internal oversample";
+                    UvtLog.Warn(UvtLog.Category.Repack, $"[xatlas] {error} — refusing to start pack.");
+                    for (int m = 0; m < meshCount; m++)
+                        results[m].error = error;
+                    return results;
+                }
 
                 int totalShellsM = 0;
                 for (int m = 0; m < meshCount; m++)

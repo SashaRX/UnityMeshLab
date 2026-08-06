@@ -159,6 +159,37 @@ namespace SashaRX.UnityMeshLab.Tests
                 "Oversampled packs should use the xatlas heuristic packer even when the UI brute-force toggle is enabled.");
             StringAssert.Contains("oversample", (string)args[4]);
         }
+
+        [Test]
+        public void PackPreflight_RejectsOverflowingOversampledDimensions()
+        {
+            var method = typeof(XatlasRepack).GetMethod(
+                "TryResolveInternalPackDimensions",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "XatlasRepack should validate oversampled dimensions before native packing");
+
+            var opts = RepackOptions.Default;
+            opts.resolution = (uint)int.MaxValue;
+            opts.internalOversample = 4;
+            object[] args = { opts, 0, (uint)0, (uint)0 };
+
+            Assert.IsFalse((bool)method.Invoke(null, args));
+            Assert.AreEqual(0u, (uint)args[2]);
+            Assert.AreEqual(0u, (uint)args[3]);
+        }
+
+        [Test]
+        public void PackCost_SaturatesInsteadOfOverflowing()
+        {
+            var method = typeof(XatlasRepack).GetMethod(
+                "ComputePackCost",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "XatlasRepack should expose pack cost calculation as a testable helper");
+
+            long cost = (long)method.Invoke(null, new object[] { 1, uint.MaxValue });
+
+            Assert.AreEqual(long.MaxValue, cost);
+        }
     }
 
     public class GroupedShellTransferTests
