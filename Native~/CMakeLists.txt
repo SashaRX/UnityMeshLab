@@ -4,14 +4,8 @@ project(xatlas-unity-bridge LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ── Fetch xatlas source ──
+# ── Dependencies ──
 include(FetchContent)
-FetchContent_Declare(
-    xatlas
-    GIT_REPOSITORY https://github.com/jpcy/xatlas.git
-    GIT_TAG        master
-    GIT_SHALLOW    TRUE
-)
 FetchContent_Declare(
     meshoptimizer
     GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
@@ -21,17 +15,21 @@ FetchContent_Declare(
 set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 # meshoptimizer static lib must be PIC when linked into our shared lib (Linux/GCC)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-FetchContent_MakeAvailable(xatlas meshoptimizer)
+FetchContent_MakeAvailable(meshoptimizer)
+
+# Keep xatlas vendored so native builds never execute or compile code from a
+# moving upstream branch. Update this reviewed snapshot explicitly when needed.
+set(XATLAS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xatlas")
 
 # ── Build shared library ──
 add_library(xatlas-unity SHARED
     xatlas-unity-bridge.cpp
     src/collision.cpp
-    ${xatlas_SOURCE_DIR}/source/xatlas/xatlas.cpp
+    ${XATLAS_SOURCE_DIR}/xatlas.cpp
 )
 
 target_include_directories(xatlas-unity PRIVATE
-    ${xatlas_SOURCE_DIR}/source/xatlas
+    ${XATLAS_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 
