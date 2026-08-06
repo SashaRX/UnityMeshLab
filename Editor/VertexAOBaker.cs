@@ -203,13 +203,41 @@ namespace SashaRX.UnityMeshLab
             var correction  = new double[vertCount];
             var totalWeight = new double[vertCount];
 
-            // Median area to define "large" triangle threshold
+            // Ignore degenerate triangles when establishing the scale. Besides not
+            // describing a surface, zero-area padding must not lower the threshold.
             float medianArea = ComputeMedianTriArea(verts, tris, xform);
+            if (medianArea <= 0f || float.IsNaN(medianArea) || float.IsInfinity(medianArea))
+                return (float[])ao.Clone();
+
             float largeThreshold = medianArea * 4f;
 
             int triCount = tris.Length / 3;
-            Parallel.For(0, triCount, ti =>
+            // A malformed mesh can contain an arbitrarily large index buffer while
+            // having very few vertices. Bound the costly raycast pass to work that is
+            // proportional to the actual mesh, while leaving normal (~2 tris/vertex)
+            // meshes unaffected.
+            int maxCorrectionTriangles = Math.Min(
+                triCount,
+                Math.Max(256, vertCount > int.MaxValue / 4 ? int.MaxValue : vertCount * 4));
+            var candidates = new List<int>(maxCorrectionTriangles);
+            for (int ti = 0; ti < triCount && candidates.Count < maxCorrectionTriangles; ti++)
             {
+                if (UvProgress.CancelRequested) break;
+
+                int t = ti * 3;
+                Vector3 p0 = xform.MultiplyPoint3x4(verts[tris[t]]);
+                Vector3 p1 = xform.MultiplyPoint3x4(verts[tris[t + 1]]);
+                Vector3 p2 = xform.MultiplyPoint3x4(verts[tris[t + 2]]);
+                float area = Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5f;
+                if (area >= largeThreshold && !float.IsNaN(area) && !float.IsInfinity(area))
+                    candidates.Add(ti);
+            }
+
+            Parallel.For(0, candidates.Count, (candidateIndex, loopState) =>
+            {
+                if (UvProgress.CancelRequested) { loopState.Stop(); return; }
+
+                int ti = candidates[candidateIndex];
                 int t = ti * 3;
                 int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
                 Vector3 p0 = xform.MultiplyPoint3x4(verts[i0]);
@@ -241,6 +269,12 @@ namespace SashaRX.UnityMeshLab
 
                     for (int d = 0; d < directions.Length; d++)
                     {
+                        if ((d & 63) == 0 && UvProgress.CancelRequested)
+                        {
+                            loopState.Stop();
+                            return;
+                        }
+
                         float ndot = Vector3.Dot(directions[d], faceNorm);
                         if (ndot <= 0) continue;
                         totW += ndot;
@@ -272,7 +306,7 @@ namespace SashaRX.UnityMeshLab
                 // Surface must be significantly brighter than the dark vertices
                 if (surfaceAO <= vertexAvgAO + 0.1f) return;
 
-                double weight = area / medianArea;
+                double weight = (double)area / medianArea;
                 double sao = surfaceAO;
 
                 // Only correct vertices that are very dark (< 0.2)
@@ -321,17 +355,20 @@ namespace SashaRX.UnityMeshLab
         static float ComputeMedianTriArea(Vector3[] verts, int[] tris, Matrix4x4 xform)
         {
             int triCount = tris.Length / 3;
-            if (triCount == 0) return 1f;
-            var areas = new float[triCount];
+            if (triCount == 0) return 0f;
+            var areas = new List<float>(triCount);
             for (int t = 0; t < triCount; t++)
             {
                 Vector3 p0 = xform.MultiplyPoint3x4(verts[tris[t * 3]]);
                 Vector3 p1 = xform.MultiplyPoint3x4(verts[tris[t * 3 + 1]]);
                 Vector3 p2 = xform.MultiplyPoint3x4(verts[tris[t * 3 + 2]]);
-                areas[t] = Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5f;
+                float area = Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5f;
+                if (area > 0f && !float.IsNaN(area) && !float.IsInfinity(area))
+                    areas.Add(area);
             }
-            Array.Sort(areas);
-            return areas[triCount / 2];
+            if (areas.Count == 0) return 0f;
+            areas.Sort();
+            return areas[areas.Count / 2];
         }
 
         // ── Shared Helpers ──
