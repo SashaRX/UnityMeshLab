@@ -21,6 +21,11 @@ namespace SashaRX.UnityMeshLab
 {
     public static class GroupedShellTransfer
     {
+        // Keep overlap detection bounded: FindOverlapGroups compares every shell pair.
+        // Typical production meshes stay well below this limit; pathological meshes
+        // fall back to the original fixed retry count instead of stalling the Editor.
+        const int kMaxShellsForOverlapScan = 512;
+
         // ─── Similarity Transform (4 params: a, b, tx, ty) ───
         public struct SimilarityTransform
         {
@@ -1187,12 +1192,21 @@ namespace SashaRX.UnityMeshLab
                 : 0.001f;
             float kUv0BadThreshold = Mathf.Max(avgUv0Edge * avgUv0Edge, 0.001f);
 
-            // Adaptive kMaxRetries based on overlap group size
-            var overlapGroups = UvShellExtractor.FindOverlapGroups(srcShells);
+            // Adaptive kMaxRetries based on overlap group size. The overlap detector is
+            // quadratic, so never run it for attacker-controlled, highly fragmented meshes.
+            bool scanOverlapGroups = srcShells.Count <= kMaxShellsForOverlapScan;
+            var overlapGroups = scanOverlapGroups
+                ? UvShellExtractor.FindOverlapGroups(srcShells)
+                : new List<List<int>>();
             int maxOverlapGroupSize = 0;
             foreach (var group in overlapGroups)
                 maxOverlapGroupSize = Mathf.Max(maxOverlapGroupSize, group.Count);
-            int kMaxRetries = Mathf.Clamp(maxOverlapGroupSize + 2, 5, srcShells.Count);
+            int kMaxRetries = scanOverlapGroups
+                ? Mathf.Clamp(maxOverlapGroupSize + 2, 5, srcShells.Count)
+                : Mathf.Min(5, srcShells.Count);
+
+            if (!scanOverlapGroups)
+                UvtLog.Warn($"[GroupedTransfer] Skipping quadratic UV overlap scan for {srcShells.Count} source shells (limit {kMaxShellsForOverlapScan}).");
 
             // Build overlap group membership: srcShell → list of all group members
             var srcShellOverlapMembers = new List<int>[srcShells.Count];
