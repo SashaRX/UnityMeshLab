@@ -19,6 +19,10 @@ namespace SashaRX.UnityMeshLab
         const int MaxReplayUvChannel = 7;
         const int DefaultReplayUvChannel = 1;
 
+        // Serialized sidecars are untrusted import inputs. Bound expensive candidate
+        // comparisons so coincident/quantized vertices cannot make imports quadratic.
+        const int MaxRemapCandidateChecks = 1000000;
+
         // Run well after Bakery and other postprocessors (default order = 0).
         public override int GetPostprocessOrder() => 10000;
 
@@ -1146,6 +1150,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < newCount; i++) newRemap[i] = -1;
             var coveredOpt = new bool[optCount > 0 ? optCount : 1];
             int matched = 0;
+            int candidateChecksRemaining = MaxRemapCandidateChecks;
 
             for (int i = 0; i < newCount; i++)
             {
@@ -1153,7 +1158,7 @@ namespace SashaRX.UnityMeshLab
                 if (!posLookup.TryGetValue(key, out var candidates)) continue;
 
                 int bestOld = PickBestCandidate(candidates, i, origRemap, coveredOpt,
-                    hasUv0 ? newUv0 : null, storedUv0);
+                    hasUv0 ? newUv0 : null, storedUv0, ref candidateChecksRemaining);
 
                 if (bestOld >= 0)
                 {
@@ -1165,6 +1170,10 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
             }
+
+            if (candidateChecksRemaining <= 0)
+                UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': remap rebuild comparison limit reached; " +
+                            "remaining vertices were left unmapped.");
 
             // A partial remap is unsafe: replay would leave optimized vertices at
             // their default values while still restoring triangles that reference
@@ -1209,7 +1218,8 @@ namespace SashaRX.UnityMeshLab
         /// just because their opt slot is already covered.
         /// </summary>
         static int PickBestCandidate(List<int> candidates, int newIdx, int[] origRemap, bool[] coveredOpt,
-                                      List<Vector2> newUv0, Vector2[] storedUv0)
+                                      List<Vector2> newUv0, Vector2[] storedUv0,
+                                      ref int candidateChecksRemaining)
         {
             if (candidates.Count == 1)
             {
@@ -1224,6 +1234,7 @@ namespace SashaRX.UnityMeshLab
             float bestUv0Dist = float.MaxValue;
             for (int k = 0; k < candidates.Count; k++)
             {
+                if (candidateChecksRemaining-- <= 0) return -1;
                 int ci = candidates[k];
                 if (origRemap[ci] < 0) continue;
                 float d = hasUv ? Vector2.SqrMagnitude(newUv0[newIdx] - storedUv0[ci]) : 0f;
@@ -1244,6 +1255,7 @@ namespace SashaRX.UnityMeshLab
 
             for (int k = 0; k < candidates.Count; k++)
             {
+                if (candidateChecksRemaining-- <= 0) return -1;
                 int ci = candidates[k];
                 int opt = origRemap[ci];
 
@@ -1339,7 +1351,9 @@ namespace SashaRX.UnityMeshLab
             var result = new Vector2[count];
             var used = new bool[sourceUv.Length];
             var meshMatched = new bool[count];
+            var candidateCursors = new Dictionary<(int, int, int), int>();
             int matched = 0;
+            int candidateChecksRemaining = MaxRemapCandidateChecks;
 
             for (int i = 0; i < count; i++)
             {
@@ -1364,6 +1378,7 @@ namespace SashaRX.UnityMeshLab
                     int bestIdx = -1;
                     foreach (int ci in candidates)
                     {
+                        if (candidateChecksRemaining-- <= 0) break;
                         if (used[ci]) continue;
                         float d = Vector2.SqrMagnitude(meshUv0[i] - entry.vertUv0[ci]);
                         if (d < bestDist)
@@ -1380,11 +1395,15 @@ namespace SashaRX.UnityMeshLab
                         matched++;
                     }
                 }
-                else
+
+                // Missing UV0, or a deliberately huge duplicate bucket: use the
+                // next unused index in this bucket. The cursor makes this linear.
+                if (!meshMatched[i] && (!hasUv0 || candidateChecksRemaining <= 0))
                 {
-                    // No UV0 data — pick first unused candidate
-                    foreach (int ci in candidates)
+                    candidateCursors.TryGetValue(key, out int cursor);
+                    while (cursor < candidates.Count)
                     {
+                        int ci = candidates[cursor++];
                         if (!used[ci])
                         {
                             result[i] = sourceUv[ci];
@@ -1394,6 +1413,7 @@ namespace SashaRX.UnityMeshLab
                             break;
                         }
                     }
+                    candidateCursors[key] = cursor;
                 }
             }
 
@@ -1415,6 +1435,7 @@ namespace SashaRX.UnityMeshLab
                 int fallbackMatched = 0;
                 foreach (int mi in unmatchedMesh)
                 {
+                    if (candidateChecksRemaining <= 0) break;
                     float bestDist = float.MaxValue;
                     int bestIdx = -1;
                     int bestListIdx = -1;
@@ -1422,6 +1443,7 @@ namespace SashaRX.UnityMeshLab
                     // First try: nearest UNUSED sidecar vertex within tight tolerance (1mm)
                     for (int j = 0; j < unusedSidecar.Count; j++)
                     {
+                        if (candidateChecksRemaining-- <= 0) break;
                         int si = unusedSidecar[j];
                         float d = Vector3.SqrMagnitude(meshPos[mi] - entry.vertPositions[si]);
                         if (d < bestDist)
@@ -1436,7 +1458,9 @@ namespace SashaRX.UnityMeshLab
                     {
                         result[mi] = sourceUv[bestIdx];
                         used[bestIdx] = true;
-                        unusedSidecar.RemoveAt(bestListIdx);
+                        int lastListIdx = unusedSidecar.Count - 1;
+                        unusedSidecar[bestListIdx] = unusedSidecar[lastListIdx];
+                        unusedSidecar.RemoveAt(lastListIdx);
                         matched++;
                         fallbackMatched++;
                         nearestFallbackCount++;
@@ -1451,6 +1475,7 @@ namespace SashaRX.UnityMeshLab
                     bestIdx = -1;
                     for (int si = 0; si < entry.vertPositions.Length; si++)
                     {
+                        if (candidateChecksRemaining-- <= 0) break;
                         float d = Vector3.SqrMagnitude(meshPos[mi] - entry.vertPositions[si]);
                         if (d < bestDist) { bestDist = d; bestIdx = si; }
                     }
@@ -1462,6 +1487,10 @@ namespace SashaRX.UnityMeshLab
                         nearestAnyReuseCount++;
                     }
                 }
+
+                if (candidateChecksRemaining <= 0)
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': {channelLabel} remap comparison limit reached; " +
+                                "remaining vertices will keep zero.");
 
                 if (nearestFallbackCount > 0)
                     UvtLog.Info($"[UV2 Postprocess] '{mesh.name}': {nearestFallbackCount} {channelLabel} vertices matched by nearest-unused fallback");
