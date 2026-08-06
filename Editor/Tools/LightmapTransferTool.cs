@@ -2763,7 +2763,7 @@ namespace SashaRX.UnityMeshLab
                 // Hash the full path so two FBX files with the same filename
                 // (e.g. Assets/A/Chair.fbx and Assets/B/Chair.fbx) get distinct
                 // backup names and never overwrite each other.
-                string pathHash = Math.Abs(fullPath.GetHashCode()).ToString("X8");
+                string pathHash = unchecked((uint)fullPath.GetHashCode()).ToString("X8");
                 string metaBak = System.IO.Path.Combine(
                     System.IO.Path.GetTempPath(),
                     System.IO.Path.GetFileName(fullPath) + "." + pathHash + ".meta.bak");
@@ -3028,7 +3028,7 @@ namespace SashaRX.UnityMeshLab
                 // backup names and never overwrite each other.
                 string fullSourcePath = System.IO.Path.GetFullPath(sourceFbxPath);
                 string fbxBakName = System.IO.Path.GetFileName(fullSourcePath) + "." +
-                    Math.Abs(fullSourcePath.GetHashCode()).ToString("X8");
+                    unchecked((uint)fullSourcePath.GetHashCode()).ToString("X8");
                 if (overwriteSource)
                 {
                     if (!EditorUtility.DisplayDialog("Overwrite Source FBX",
