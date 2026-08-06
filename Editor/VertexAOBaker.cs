@@ -213,9 +213,14 @@ namespace SashaRX.UnityMeshLab
             float largeThreshold = medianArea * 4f;
 
             int triCount = tris.Length / 3;
+            // Parallel.For's loopState.Stop() only prevents new iterations; the ones
+            // that already ran have written into correction/totalWeight. Applying
+            // that partial accumulation would brighten an essentially random subset
+            // of vertices, so record the cancellation and discard the whole pass.
+            bool cancelled = false;
             Parallel.For(0, triCount, (ti, loopState) =>
             {
-                if (UvProgress.CancelRequested) { loopState.Stop(); return; }
+                if (UvProgress.CancelRequested) { cancelled = true; loopState.Stop(); return; }
 
                 int t = ti * 3;
                 int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
@@ -250,6 +255,7 @@ namespace SashaRX.UnityMeshLab
                     {
                         if ((d & 63) == 0 && UvProgress.CancelRequested)
                         {
+                            cancelled = true;
                             loopState.Stop();
                             return;
                         }
@@ -297,6 +303,14 @@ namespace SashaRX.UnityMeshLab
                     InterlockedAddDouble(ref totalWeight[vi], weight);
                 }
             });
+
+            // Cancelled mid-pass: correction/totalWeight cover only the triangles
+            // that happened to finish, so return the input untouched.
+            if (cancelled)
+            {
+                UvtLog.Info("[Vertex AO] Face-area correction cancelled — AO left unchanged.");
+                return (float[])ao.Clone();
+            }
 
             // Apply corrections
             var correctedAO = (float[])ao.Clone();

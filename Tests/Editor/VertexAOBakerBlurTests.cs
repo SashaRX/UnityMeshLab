@@ -1,7 +1,6 @@
 // VertexAOBakerBlurTests.cs — regression coverage for the AO blur passes:
 // optional mesh attributes and bounded work on dense/degenerate meshes.
 
-using System.Diagnostics;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -73,12 +72,11 @@ namespace SashaRX.UnityMeshLab.Tests
             for (int i = 0; i < vertexCount; i++)
                 ao[i] = i % 2;
 
-            var stopwatch = Stopwatch.StartNew();
+            // The work budget is enforced by [Timeout] alone: a wall-clock
+            // assertion inside the test measures the CI runner, not the budget.
             float[] result = VertexAOBaker.BlurAO3D(ao, positions, 10, 1f, 0.01f);
-            stopwatch.Stop();
 
             Assert.That(result, Has.Length.EqualTo(vertexCount));
-            Assert.That(stopwatch.ElapsedMilliseconds, Is.LessThan(20000));
         }
     }
 }

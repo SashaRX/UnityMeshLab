@@ -11,6 +11,13 @@ namespace SashaRX.UnityMeshLab
         // creating a quadratic number of comparisons and neighbor entries.
         const int MaxSeamCandidatesPerVertex = 256;
 
+        // The matched cap above only counts candidates that actually connect, so a
+        // vertex surrounded by thousands of near-but-not-matching candidates still
+        // scanned its whole neighbourhood — the quadratic worst case the cap was
+        // meant to remove. This second, larger cap bounds the candidates *examined*,
+        // whether they match or not.
+        const int MaxSeamComparisonsPerVertex = 4096;
+
         // Keeps the editor-triggered 3D spatial blur bounded when the grid degenerates
         // into a single cell (tiny radius on a dense mesh, or fully coincident vertices).
         const int MaxSpatialNeighborsPerVertex = 256;
@@ -76,19 +83,25 @@ namespace SashaRX.UnityMeshLab
                     int by = Mathf.RoundToInt(p.y / cellSize);
                     int bz = Mathf.RoundToInt(p.z / cellSize);
                     int matched = 0;
+                    int examined = 0;
 
-                    for (int dx = -1; dx <= 1 && matched < MaxSeamCandidatesPerVertex; dx++)
-                    for (int dy = -1; dy <= 1 && matched < MaxSeamCandidatesPerVertex; dy++)
-                    for (int dz = -1; dz <= 1 && matched < MaxSeamCandidatesPerVertex; dz++)
+                    for (int dx = -1; dx <= 1 && matched < MaxSeamCandidatesPerVertex
+                                             && examined < MaxSeamComparisonsPerVertex; dx++)
+                    for (int dy = -1; dy <= 1 && matched < MaxSeamCandidatesPerVertex
+                                             && examined < MaxSeamComparisonsPerVertex; dy++)
+                    for (int dz = -1; dz <= 1 && matched < MaxSeamCandidatesPerVertex
+                                             && examined < MaxSeamComparisonsPerVertex; dz++)
                     {
                         var nkey = new Vector3Int(bx + dx, by + dy, bz + dz);
                         if (!posMap.TryGetValue(nkey, out var group)) continue;
 
-                        for (int i = 0; i < group.Count && matched < MaxSeamCandidatesPerVertex; i++)
+                        for (int i = 0; i < group.Count && matched < MaxSeamCandidatesPerVertex
+                                                        && examined < MaxSeamComparisonsPerVertex; i++)
                         {
                             int vj = group[i];
                             if (vj <= vi) continue;
 
+                            examined++;
                             if (TryConnectSeamVerts(neighbors, positions, normals, uv0,
                                     vi, vj, posEpsSq, normThresh, uvEps,
                                     crossHardEdges, crossUvSeams))
