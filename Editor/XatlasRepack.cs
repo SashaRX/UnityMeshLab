@@ -982,6 +982,7 @@ namespace SashaRX.UnityMeshLab
             var opts = RepackOptions.Default;
             opts.resolution = (uint)resolution;
             opts.padding = (uint)padding;
+            opts.rotateCharts = rotate;
             // Work on a temporary copy so original mesh is untouched
             var tmp = UnityEngine.Object.Instantiate(mesh);
             tmp.name = mesh.name + "_repack_tmp";
