@@ -4125,6 +4125,8 @@ namespace SashaRX.UnityMeshLab
 
             var lods = ctx.LodGroup.GetLODs();
             var newLods = new List<LOD>(lods);
+            LodGenerationTool.NormalizeSingleLodTransitionForGeneration(
+                newLods, ctx.SourceLodIndex + 1);
 
             UvProgress.Begin("Generate LODs", cancelable: true);
             try
