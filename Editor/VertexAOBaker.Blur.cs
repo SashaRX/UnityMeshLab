@@ -6,6 +6,11 @@ namespace SashaRX.UnityMeshLab
 {
     public static partial class VertexAOBaker
     {
+        // Exact all-pairs seam matching is useful for ordinary split vertices, but a
+        // pathological mesh can put every vertex in one cell. Bound candidate work
+        // per vertex and fall back to a sparse connection for oversized cells.
+        const int MaxSeamCandidatesPerCell = 64;
+
         public static float[] BlurAO(float[] ao, int[] triangles, int vertexCount, int iterations, float strength,
             Vector3[] positions = null, Vector3[] normals = null, Vector2[] uv0 = null,
             bool crossHardEdges = true, bool crossUvSeams = true)
@@ -52,16 +57,11 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 // Check each vertex against same cell + 26 neighbors
-                var processed = new HashSet<long>();
                 foreach (var kvp in posMap)
                 {
                     var group = kvp.Value;
-                    // Match within same cell
-                    for (int i = 0; i < group.Count; i++)
-                        for (int j = i + 1; j < group.Count; j++)
-                            TryConnectSeamVerts(neighbors, positions, normals, uv0,
-                                group[i], group[j], posEpsSq, normThresh, uvEps,
-                                crossHardEdges, crossUvSeams);
+                    ConnectSeamCell(neighbors, positions, normals, uv0, group,
+                        posEpsSq, normThresh, uvEps, crossHardEdges, crossUvSeams);
                 }
 
                 // Also check across adjacent cells
@@ -79,15 +79,14 @@ namespace SashaRX.UnityMeshLab
                     for (int dy = -1; dy <= 1; dy++)
                     for (int dz = -1; dz <= 1; dz++)
                     {
-                        if (dx == 0 && dy == 0 && dz == 0) continue;
+                        // Visit each pair of adjacent cells once.
+                        if (dx < 0 || (dx == 0 && dy < 0) ||
+                            (dx == 0 && dy == 0 && dz <= 0)) continue;
                         long nkey = ((long)(bx+dx) * 73856093L) ^ ((long)(by+dy) * 19349663L) ^ ((long)(bz+dz) * 83492791L);
                         if (!posMap.TryGetValue(nkey, out var ngroup)) continue;
 
-                        foreach (int vi in group)
-                            foreach (int vj in ngroup)
-                                TryConnectSeamVerts(neighbors, positions, normals, uv0,
-                                    vi, vj, posEpsSq, normThresh, uvEps,
-                                    crossHardEdges, crossUvSeams);
+                        ConnectSeamCells(neighbors, positions, normals, uv0, group, ngroup,
+                            posEpsSq, normThresh, uvEps, crossHardEdges, crossUvSeams);
                     }
                 }
             }
@@ -194,12 +193,47 @@ namespace SashaRX.UnityMeshLab
             return ((long)x * 73856093L) ^ ((long)y * 19349663L) ^ ((long)z * 83492791L);
         }
 
-        static void TryConnectSeamVerts(List<int>[] neighbors,
-            Vector3[] positions, Vector3[] normals, Vector2[] uv0,
-            int vi, int vj, float posEpsSq, float normThresh, float uvEps,
+        static void ConnectSeamCell(List<int>[] neighbors,
+            Vector3[] positions, Vector3[] normals, Vector2[] uv0, List<int> group,
+            float posEpsSq, float normThresh, float uvEps,
             bool crossHardEdges, bool crossUvSeams)
         {
-            if ((positions[vi] - positions[vj]).sqrMagnitude > posEpsSq) return;
+            int exactCount = Mathf.Min(group.Count, MaxSeamCandidatesPerCell);
+            for (int i = 0; i < exactCount; i++)
+                for (int j = i + 1; j < exactCount; j++)
+                    TryConnectSeamVerts(neighbors, positions, normals, uv0,
+                        group[i], group[j], posEpsSq, normThresh, uvEps,
+                        crossHardEdges, crossUvSeams);
+
+            // A single verified edge is enough to keep each overflow vertex in the
+            // seam component without materialising a complete graph.
+            for (int i = exactCount; i < group.Count; i++)
+                for (int j = 0; j < exactCount; j++)
+                    if (TryConnectSeamVerts(neighbors, positions, normals, uv0,
+                        group[i], group[j], posEpsSq, normThresh, uvEps,
+                        crossHardEdges, crossUvSeams, true)) break;
+        }
+
+        static void ConnectSeamCells(List<int>[] neighbors,
+            Vector3[] positions, Vector3[] normals, Vector2[] uv0,
+            List<int> group, List<int> otherGroup,
+            float posEpsSq, float normThresh, float uvEps,
+            bool crossHardEdges, bool crossUvSeams)
+        {
+            int candidateCount = Mathf.Min(otherGroup.Count, MaxSeamCandidatesPerCell);
+            foreach (int vi in group)
+                for (int j = 0; j < candidateCount; j++)
+                    if (TryConnectSeamVerts(neighbors, positions, normals, uv0,
+                        vi, otherGroup[j], posEpsSq, normThresh, uvEps,
+                        crossHardEdges, crossUvSeams, true)) break;
+        }
+
+        static bool TryConnectSeamVerts(List<int>[] neighbors,
+            Vector3[] positions, Vector3[] normals, Vector2[] uv0,
+            int vi, int vj, float posEpsSq, float normThresh, float uvEps,
+            bool crossHardEdges, bool crossUvSeams, bool sparse = false)
+        {
+            if ((positions[vi] - positions[vj]).sqrMagnitude > posEpsSq) return false;
 
             bool normalsMatch = normals == null ||
                 Vector3.Dot(normals[vi], normals[vj]) >= normThresh;
@@ -207,7 +241,21 @@ namespace SashaRX.UnityMeshLab
                 (uv0[vi] - uv0[vj]).sqrMagnitude < uvEps * uvEps;
 
             if ((normalsMatch || crossHardEdges) && (uvsMatch || crossUvSeams))
-                AddNeighbor(neighbors, vi, vj);
+            {
+                if (sparse) AddNeighborFromSparseVertex(neighbors, vi, vj);
+                else AddNeighbor(neighbors, vi, vj);
+                return true;
+            }
+            return false;
+        }
+
+        static void AddNeighborFromSparseVertex(List<int>[] neighbors, int sparse, int other)
+        {
+            // The sparse side is bounded, so duplicate detection remains cheap. If
+            // absent, the reverse entry is necessarily absent for this undirected edge.
+            if (neighbors[sparse].Contains(other)) return;
+            neighbors[sparse].Add(other);
+            neighbors[other].Add(sparse);
         }
 
         static void AddNeighbor(List<int>[] neighbors, int a, int b)
