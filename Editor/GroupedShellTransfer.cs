@@ -255,9 +255,10 @@ namespace SashaRX.UnityMeshLab
             var uv2List = new List<Vector2>();
             sourceMesh.GetUVs(0, uv0List);
             sourceMesh.GetUVs(1, uv2List);
-            if (uv0List.Count == 0 || uv2List.Count == 0)
+            if (uv0List.Count != sourceMesh.vertexCount ||
+                uv2List.Count != sourceMesh.vertexCount)
             {
-                UvtLog.Error("[GroupedTransfer] Source mesh missing UV0 or UV2");
+                UvtLog.Error("[GroupedTransfer] Source mesh has missing or incomplete UV0/UV2");
                 return null;
             }
             var uv0 = uv0List.ToArray();
@@ -870,8 +871,8 @@ namespace SashaRX.UnityMeshLab
                     $"oobMargin={uv2OobMargin:F6}, boundsTol={uv2BoundsTolerance:F6}");
             }
 
-            if (srcUv0.Length == 0 || srcUv2.Length == 0)
-            { UvtLog.Error("[GroupedTransfer] Source missing UV0/UV2"); return result; }
+            if (srcUv0.Length != srcVerts.Length || srcUv2.Length != srcVerts.Length)
+            { UvtLog.Error("[GroupedTransfer] Source has missing or incomplete UV0/UV2"); return result; }
 
             UvProgress.ReportFromBackground($"'{targetMeshName}' ← '{sourceMeshName}'");
 
