@@ -562,11 +562,16 @@ namespace SashaRX.UnityMeshLab
             int nearestFallback, nearestAnyReuse, unmatched;
             int primaryTargetUvChannel = ResolvePrimaryTargetUvChannel(entry.targetUvChannel, mesh.name);
             string primaryLabel = $"channel {primaryTargetUvChannel}";
-            var uv2 = RemapUvSetIfNeeded(entry, entry.uv2, mesh, primaryLabel, out didRemap, out nearestFallback, out nearestAnyReuse, out unmatched);
+            var uv2 = RemapUvSetIfNeeded(entry, entry.uv2, mesh, primaryLabel, out didRemap, out nearestFallback, out nearestAnyReuse, out unmatched, out bool remapAborted);
             stats.remapped = didRemap;
             stats.nearestFallbackCount = nearestFallback;
             stats.nearestAnyReuseCount = nearestAnyReuse;
             stats.unmatchedVerts = unmatched;
+            // A partially resolved remap is worse than no remap: it would flatten
+            // the untouched tail of the channel to (0,0). RemapUvSetIfNeeded has
+            // already logged the reason.
+            if (remapAborted || uv2 == null || uv2.Length != mesh.vertexCount)
+                return false;
             mesh.SetUVs(primaryTargetUvChannel, uv2);
             if (entry.auxiliaryUv != null &&
                 IsValidReplayUvChannel(entry.auxiliaryTargetUvChannel, mesh.name, "auxiliary"))
@@ -581,8 +586,9 @@ namespace SashaRX.UnityMeshLab
                     out auxDidRemap,
                     out auxNearestFallback,
                     out auxNearestAnyReuse,
-                    out auxUnmatched);
-                if (auxiliaryUv != null && auxiliaryUv.Length == mesh.vertexCount)
+                    out auxUnmatched,
+                    out bool auxRemapAborted);
+                if (!auxRemapAborted && auxiliaryUv != null && auxiliaryUv.Length == mesh.vertexCount)
                     mesh.SetUVs(entry.auxiliaryTargetUvChannel, auxiliaryUv);
             }
             return true;
@@ -782,7 +788,17 @@ namespace SashaRX.UnityMeshLab
             var optPos = new Vector3[optCount];
             var optNormals = rawNormals != null && rawNormals.Length == rawCount ? new Vector3[optCount] : null;
             var optTangents = rawTangents != null && rawTangents.Length == rawCount ? new Vector4[optCount] : null;
-            var optColors = rawColors != null && rawColors.Length == rawCount ? new Color32[optCount] : null;
+            // Colors have two possible sources and the sidecar's optimized colors
+            // are the authoritative one (they survive merges and orphans that the
+            // remap cannot reconstruct). Allocating only when the RAW FBX carries
+            // colors dropped them entirely for the common case of a mesh whose
+            // colors were produced after import — e.g. baked vertex AO — because
+            // the raw mesh has no color channel at all.
+            bool hasRawColors = rawColors != null && rawColors.Length == rawCount;
+            bool hasOptimizedColors = hasGroundTruth &&
+                                      entry.optimizedColors != null &&
+                                      entry.optimizedColors.Length == optCount;
+            var optColors = hasRawColors || hasOptimizedColors ? new Color32[optCount] : null;
 
             var optUvs = new List<Vector2>[8];
             for (int ch = 0; ch < 8; ch++)
@@ -803,14 +819,13 @@ namespace SashaRX.UnityMeshLab
                     System.Array.Copy(entry.optimizedNormals, optNormals, optCount);
                 if (optTangents != null && entry.optimizedTangents != null && entry.optimizedTangents.Length == optCount)
                     System.Array.Copy(entry.optimizedTangents, optTangents, optCount);
-                if (optColors != null && entry.optimizedColors != null && entry.optimizedColors.Length == optCount)
+                if (hasOptimizedColors)
                     System.Array.Copy(entry.optimizedColors, optColors, optCount);
 
                 // UV channels and legacy colors — from remap (UV0 is modified by weld,
                 // so it must come from the raw FBX). Optimized colors remain authoritative
                 // because merged and orphan vertices cannot always be reconstructed by remap.
-                bool remapColors = optColors != null &&
-                    (entry.optimizedColors == null || entry.optimizedColors.Length != optCount);
+                bool remapColors = optColors != null && !hasOptimizedColors && hasRawColors;
                 for (int i = 0; i < rawCount; i++)
                 {
                     int dst = remap[i];
@@ -1309,12 +1324,14 @@ namespace SashaRX.UnityMeshLab
             out bool didRemap,
             out int nearestFallbackCount,
             out int nearestAnyReuseCount,
-            out int unmatchedCount)
+            out int unmatchedCount,
+            out bool aborted)
         {
             didRemap = false;
             nearestFallbackCount = 0;
             nearestAnyReuseCount = 0;
             unmatchedCount = 0;
+            aborted = false;
 
             // No position data stored — backward compat, use UV2 as-is
             if (sourceUv == null) return null;
@@ -1488,10 +1505,6 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
 
-                if (candidateChecksRemaining <= 0)
-                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': {channelLabel} remap comparison limit reached; " +
-                                "remaining vertices will keep zero.");
-
                 if (nearestFallbackCount > 0)
                     UvtLog.Info($"[UV2 Postprocess] '{mesh.name}': {nearestFallbackCount} {channelLabel} vertices matched by nearest-unused fallback");
 
@@ -1502,8 +1515,22 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            didRemap = true;
             unmatchedCount = count - matched;
+
+            // Running out of comparison budget leaves the tail of `result` at
+            // (0,0). Handing that back would write a half-remapped channel into
+            // the mesh on every auto-reimport, so abort the replay for this entry
+            // instead — same contract as the stale-remap abort.
+            if (candidateChecksRemaining <= 0 && matched < count)
+            {
+                aborted = true;
+                UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': {channelLabel} remap comparison limit reached " +
+                            $"with {count - matched}/{count} vertices unresolved — " +
+                            "replay aborted, mesh left untouched.");
+                return null;
+            }
+
+            didRemap = true;
 
             if (matched < count)
                 UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': {channelLabel} position remap {matched}/{count} " +
