@@ -53,6 +53,7 @@ namespace SashaRX.UnityMeshLab
         public static readonly Color cNone   = new Color(.3f,.3f,.3f,.3f);
 
         public static readonly Color cValClean    = new Color(.2f, .85f, .3f, .4f);
+        public static readonly Color cValInverted = new Color(.9f, .15f, .15f, .5f);
         public static readonly Color cValStretch  = new Color(.95f, .85f, .15f, .5f);
         public static readonly Color cValZero     = new Color(.7f, .2f, .9f, .5f);
         public static readonly Color cValOOB      = new Color(1f, .5f, .1f, .5f);
@@ -765,6 +766,7 @@ namespace SashaRX.UnityMeshLab
                 else if ((fl & TransferValidator.TriIssue.Overlap) != 0)     nc = cValOverlap;
                 else if ((fl & TransferValidator.TriIssue.OutOfBounds) != 0) nc = cValOOB;
                 else if ((fl & TransferValidator.TriIssue.TexelDensity) != 0)nc = cValTexel;
+                else if ((fl & TransferValidator.TriIssue.Inverted) != 0)    nc = cValInverted;
                 else nc = cValClean;
                 GL.Color(nc);
                 Vx(ox, oy, sz, uv[a0]); Vx(ox, oy, sz, uv[a1]); Vx(ox, oy, sz, uv[a2]);
@@ -793,6 +795,7 @@ namespace SashaRX.UnityMeshLab
                 else if ((fl & TransferValidator.TriIssue.Overlap) != 0)     nc = cValOverlap;
                 else if ((fl & TransferValidator.TriIssue.OutOfBounds) != 0) nc = cValOOB;
                 else if ((fl & TransferValidator.TriIssue.TexelDensity) != 0)nc = cValTexel;
+                else if ((fl & TransferValidator.TriIssue.Inverted) != 0)    nc = cValInverted;
                 else continue;
                 GL.Color(nc);
                 Vx(ox, oy, sz, uv[a0]); Vx(ox, oy, sz, uv[a1]); Vx(ox, oy, sz, uv[a2]);
