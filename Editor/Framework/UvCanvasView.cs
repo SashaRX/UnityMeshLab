@@ -620,7 +620,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if (tot>=MAX_TRI) break;
                 int colorKey = GetShellColorKey(ctx, s, entry);
-                Color c = pal[colorKey % pal.Length];
+                Color c = pal[(colorKey & int.MaxValue) % pal.Length];
                 if (s.shellId == selectedShellId)
                     c = Color.Lerp(c, Color.white, 0.45f);
                 c.a = s.shellId == selectedShellId ? Mathf.Clamp01(FillAlpha * 1.85f) : FillAlpha;
@@ -880,26 +880,23 @@ namespace SashaRX.UnityMeshLab
         /// by extreme vertices which survive simplification, unlike the centroid which
         /// shifts when interior vertices are removed non-uniformly.
         /// </summary>
-        static int ShellBBoxHash(UvShell shell, Mesh mesh, int uvChannel = 1)
+        static int ShellBBoxHash(UvShell shell, Vector2[] uvs)
         {
-            if (shell?.vertexIndices == null || shell.vertexIndices.Count == 0 || mesh == null)
-                return shell?.shellId ?? 0;
-            var uvs = new List<Vector2>();
-            mesh.GetUVs(uvChannel, uvs);
-            if (uvs.Count != mesh.vertexCount)
-            {
-                mesh.GetUVs(0, uvs);
-                if (uvs.Count != mesh.vertexCount) return shell.shellId;
-            }
+            if (shell?.vertexIndices == null || shell.vertexIndices.Count == 0 || uvs == null)
+                return (shell?.shellId ?? 0) & int.MaxValue;
             Vector2 mn = new Vector2(float.MaxValue, float.MaxValue);
             Vector2 mx = new Vector2(float.MinValue, float.MinValue);
+            bool hasValidUv = false;
             foreach (int vi in shell.vertexIndices)
             {
-                if (vi < 0 || vi >= uvs.Count) continue;
+                if (vi < 0 || vi >= uvs.Length) continue;
                 var uv = uvs[vi];
+                if (!UOk(uv)) continue;
+                hasValidUv = true;
                 if (uv.x < mn.x) mn.x = uv.x; if (uv.y < mn.y) mn.y = uv.y;
                 if (uv.x > mx.x) mx.x = uv.x; if (uv.y > mx.y) mx.y = uv.y;
             }
+            if (!hasValidUv) return shell.shellId & int.MaxValue;
             // Hash bbox center — quantize at 100x for robustness
             Vector2 center = (mn + mx) * 0.5f;
             int qx = Mathf.RoundToInt(center.x * 100f);
@@ -907,7 +904,7 @@ namespace SashaRX.UnityMeshLab
             // Include bbox size to distinguish overlapping shells of different sizes
             int qw = Mathf.RoundToInt((mx.x - mn.x) * 100f);
             int qh = Mathf.RoundToInt((mx.y - mn.y) * 100f);
-            return Mathf.Abs((qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381));
+            return ((qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381)) & int.MaxValue;
         }
 
         public int GetShellColorKey(UvToolContext ctx, UvShell shell, MeshEntry entry)
@@ -921,7 +918,12 @@ namespace SashaRX.UnityMeshLab
             // Always use UV bounding-box hash for maximum cross-LOD consistency.
             // Previous strategies (shellTransferResult, UV0 shell map) produced
             // extraction-order-dependent keys that changed between LODs.
-            int result = ShellBBoxHash(shell, mesh);
+            var uvs = mesh != null ? RdUvCached(mesh, 1) : null;
+            if (mesh != null && (uvs == null || uvs.Length != mesh.vertexCount))
+                uvs = RdUvCached(mesh, 0);
+            if (mesh != null && (uvs == null || uvs.Length != mesh.vertexCount))
+                uvs = null;
+            int result = ShellBBoxHash(shell, uvs);
             ctx.ShellColorKeyCache[cacheKey] = result;
             return result;
         }
