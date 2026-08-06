@@ -1037,8 +1037,11 @@ namespace SashaRX.UnityMeshLab
             // faceShellIds. A future opt-in will materialise the split.
             LogHardEdgeAnalysis(shells, tris, mesh.vertices, meshLabel: mesh.name);
 
-            // UV0 winding normalized by ExecWeldUv0.
-            result.flippedShells = 0;
+            // Repack is also exposed as a standalone operation, so it cannot
+            // rely on the optional Weld stage having normalized UV0 first.
+            // mesh.uv returns a copy; normalize that working copy so the
+            // caller's UV0 channel remains unchanged.
+            result.flippedShells = NormalizeShellWinding(uv0, tris, shells);
 
             // ── Flatten UV0 ──
             float[] uvFlat = new float[vertCount * 2];
@@ -1395,9 +1398,13 @@ namespace SashaRX.UnityMeshLab
                 LogHardEdgeAnalysis(shells, allTris[m], allPositions[m], meshLabel: mesh.name);
             }
 
-            // UV0 winding normalized by ExecWeldUv0.
+            // RepackMulti can be invoked directly from the Repack tab (and
+            // Weld is optional in the full pipeline), so normalize every
+            // local UV0 copy at this API boundary instead of assuming a
+            // previous stage ran.
             for (int m = 0; m < meshCount; m++)
-                results[m].flippedShells = 0;
+                results[m].flippedShells = NormalizeShellWinding(
+                    allUv0[m], allTris[m], allShells[m]);
 
             // Local UV0 copies (flattened) per mesh — fed to xatlas, mutated
             // by pre-pack passes (ARAP + density normalisation + perturbation);
