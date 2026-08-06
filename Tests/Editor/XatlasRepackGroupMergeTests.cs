@@ -183,6 +183,29 @@ namespace SashaRX.UnityMeshLab.Tests
     public class LightmapTransferToolUiTests
     {
         [Test]
+        public void SweepSafety_RejectsOversizedGrid_AndClampsArapIterations()
+        {
+            const System.Reflection.BindingFlags flags =
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+            var countMethod = typeof(LightmapTransferTool).GetMethod("TryGetSweepCellCount", flags);
+            var arapMethod = typeof(LightmapTransferTool).GetMethod("SanitizeSweepArapIterations", flags);
+            Assert.IsNotNull(countMethod);
+            Assert.IsNotNull(arapMethod);
+
+            var acceptedArgs = new object[] { 0, new[] { 3, 4, 1, 2, 1 } };
+            Assert.IsTrue((bool)countMethod.Invoke(null, acceptedArgs));
+            Assert.AreEqual(24, acceptedArgs[0]);
+
+            var rejectedArgs = new object[] { 0, new[] { 50000, 50000, 1, 1, 1 } };
+            Assert.IsFalse((bool)countMethod.Invoke(null, rejectedArgs));
+            Assert.AreEqual(1001, rejectedArgs[0]);
+
+            Assert.AreEqual(0, arapMethod.Invoke(null, new object[] { -1 }));
+            Assert.AreEqual(50, arapMethod.Invoke(null, new object[] { 50 }));
+            Assert.AreEqual(200, arapMethod.Invoke(null, new object[] { int.MaxValue }));
+        }
+
+        [Test]
         public void BruteForceOption_IsUnavailable_WhenInternalOversampleIsAboveOne()
         {
             var method = typeof(LightmapTransferTool).GetMethod(

@@ -15,6 +15,9 @@ namespace SashaRX.UnityMeshLab
 {
     public class LightmapTransferTool : IUvTool
     {
+        const int MaxSweepCells = 1000;
+        const int MaxSweepArapIterations = 200;
+
         UvToolContext ctx;
         UvCanvasView canvas;
         Action requestRepaint;
@@ -43,6 +46,25 @@ namespace SashaRX.UnityMeshLab
             }
             return false;
         }
+
+        static bool TryGetSweepCellCount(out int total, params int[] axisLengths)
+        {
+            total = 1;
+            foreach (int axisLength in axisLengths)
+            {
+                int length = Mathf.Max(1, axisLength);
+                if (total > MaxSweepCells / length)
+                {
+                    total = MaxSweepCells + 1;
+                    return false;
+                }
+                total *= length;
+            }
+            return true;
+        }
+
+        static int SanitizeSweepArapIterations(int iterations)
+            => Mathf.Clamp(iterations, 0, MaxSweepArapIterations);
 
         // ── Internal tab ──
         enum Tab { Setup, Repack, Transfer }
@@ -491,6 +513,7 @@ namespace SashaRX.UnityMeshLab
             sweepSuite = (TestSuiteAsset)EditorGUILayout.ObjectField(
                 "Sweep suite", sweepSuite, typeof(TestSuiteAsset), false);
             int cells = 0;
+            bool sweepSizeValid = true;
             if (sweepSuite != null && sweepSuite.sweep != null)
             {
                 var sm = sweepSuite.sweep;
@@ -499,12 +522,14 @@ namespace SashaRX.UnityMeshLab
                 int bL  = sm.borderPaddingPxVariants?.Length       ?? 0;
                 int arL = sm.arapIterationsVariants?.Length        ?? 0;
                 int stL = sm.stretchThresholdVariants?.Length      ?? 0;
-                cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL)
-                      * Mathf.Max(1, arL) * Mathf.Max(1, stL);
+                sweepSizeValid = TryGetSweepCellCount(out cells, rL, pL, bL, arL, stL);
             }
+            if (!sweepSizeValid)
+                EditorGUILayout.HelpBox($"Sweep exceeds the {MaxSweepCells}-cell safety limit. Shorten one or more variant arrays.",
+                    MessageType.Error);
             using (new EditorGUILayout.HorizontalScope())
             {
-                using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0))
+                using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0 || !sweepSizeValid))
                 {
                     if (GUILayout.Button($"Run Sweep ({cells})", GUILayout.Height(22)))
                         ExecSweep(sweepSuite.sweep);
@@ -1468,8 +1493,16 @@ namespace SashaRX.UnityMeshLab
             var stretchArr = (sm.stretchThresholdVariants != null && sm.stretchThresholdVariants.Length > 0)
                 ? sm.stretchThresholdVariants : new[] { ctx.StretchThreshold };
 
-            int total = resArr.Length * padArr.Length * bdrArr.Length
-                      * arapItersArr.Length * stretchArr.Length;
+            if (!TryGetSweepCellCount(out int total, resArr.Length, padArr.Length, bdrArr.Length,
+                    arapItersArr.Length, stretchArr.Length))
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[Sweep] Refusing to run more than {MaxSweepCells} cells.");
+                EditorUtility.DisplayDialog("Sweep Too Large",
+                    $"This sweep exceeds the {MaxSweepCells}-cell safety limit. Shorten one or more variant arrays.",
+                    "OK");
+                return;
+            }
 
             // Snapshot ctx fields we mutate — restored unconditionally below.
             int   origRes         = ctx.AtlasResolution;
@@ -1531,13 +1564,14 @@ namespace SashaRX.UnityMeshLab
                             foreach (int arapIters in arapItersArr)
                             {
                                 if (cancelled) break;
+                                int safeArapIters = SanitizeSweepArapIterations(arapIters);
                                 foreach (float stretchThr in stretchArr)
                                 {
                                     if (cancelled) break;
                                     UvProgress.Report(
                                         (float)done / Mathf.Max(1, total),
                                         $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}, " +
-                                        $"arap={arapIters}, stretch={stretchThr:F2}");
+                                        $"arap={safeArapIters}, stretch={stretchThr:F2}");
                                     if (UvProgress.CancelRequested)
                                     {
                                         cancelled = true;
@@ -1551,8 +1585,8 @@ namespace SashaRX.UnityMeshLab
                                     ctx.AtlasResolution               = r;
                                     ctx.ShellPaddingPx                = s;
                                     ctx.BorderPaddingPx               = b;
-                                    ctx.ReparameterizeStretchedShells = arapIters > 0;
-                                    if (arapIters > 0) ctx.ArapIterations = arapIters;
+                                    ctx.ReparameterizeStretchedShells = safeArapIters > 0;
+                                    if (safeArapIters > 0) ctx.ArapIterations = safeArapIters;
                                     ctx.StretchThreshold              = stretchThr;
 
                                     if (sm.resetBetweenRuns) ResetWorkingCopies();
@@ -1561,7 +1595,7 @@ namespace SashaRX.UnityMeshLab
                                     // and that would break the recovery regex's _stretch(\d+p\d+)_ token.
                                     int stretchHundredths = Mathf.RoundToInt(stretchThr * 100f);
                                     string stretchTag = $"{stretchHundredths / 100}p{(stretchHundredths % 100):D2}";
-                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_arap{arapIters}_stretch{stretchTag}";
+                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_arap{safeArapIters}_stretch{stretchTag}";
                                     string csvBefore = BenchmarkRecorder.LastWrittenCsvPath;
                                     try
                                     {
@@ -1585,8 +1619,8 @@ namespace SashaRX.UnityMeshLab
                                         atlasRes         = r,
                                         shellPad         = s,
                                         borderPad        = b,
-                                        arapEnabled      = arapIters > 0,
-                                        arapIterations   = arapIters,
+                                        arapEnabled      = safeArapIters > 0,
+                                        arapIterations   = safeArapIters,
                                         stretchThreshold = stretchThr,
                                     });
                                     done++;

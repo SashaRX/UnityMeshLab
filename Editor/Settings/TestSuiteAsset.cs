@@ -105,7 +105,7 @@ namespace SashaRX.UnityMeshLab
 
             [Tooltip("ARAP stretched-shell reparameterization variants. 0 = OFF; >0 = ON with that many " +
                      "local-global iterations. Default {0} (ARAP off — opt in by adding e.g. 50 or 100 to " +
-                     "this list). Each non-zero value spawns a separate sweep cell.")]
+                     "this list). Values are clamped to 0..200; each entry spawns a separate sweep cell.")]
             public int[] arapIterationsVariants = { 0, 50 };
 
             [Tooltip("Sander L² stretch threshold variants used to gate ARAP. 1.0 = isometric; 1.5 = typical " +
