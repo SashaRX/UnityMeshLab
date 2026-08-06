@@ -190,12 +190,19 @@ namespace SashaRX.UnityMeshLab
         // while a background pack is still using it.
         static int s_nativeSessionInFlight;
 
-        static void AcquireNativeSession()
+        const string kSessionBusyError =
+            "An xatlas repack operation is already in progress.";
+
+        /// <summary>
+        /// Claims the process-global atlas. Returns false when another repack
+        /// already holds it — the public entry points report that through
+        /// <see cref="RepackResult.error"/> rather than an exception, because
+        /// every caller consumes the result-based contract.
+        /// </summary>
+        static bool TryAcquireNativeSession()
         {
-            if (System.Threading.Interlocked.CompareExchange(
-                    ref s_nativeSessionInFlight, 1, 0) != 0)
-                throw new InvalidOperationException(
-                    "An xatlas repack operation is already in progress.");
+            return System.Threading.Interlocked.CompareExchange(
+                ref s_nativeSessionInFlight, 1, 0) == 0;
         }
 
         static void ReleaseNativeSession()
@@ -983,19 +990,24 @@ namespace SashaRX.UnityMeshLab
             opts.resolution = (uint)resolution;
             opts.padding = (uint)padding;
             opts.rotateCharts = rotate;
-            // Work on a temporary copy so original mesh is untouched
+            // Work on a temporary copy so original mesh is untouched. The copy is
+            // destroyed in a finally: the early-out path handled a failed result,
+            // but an exception escaping RepackSingle (native bridge, mesh access)
+            // used to leak the mesh into the editor session.
             var tmp = UnityEngine.Object.Instantiate(mesh);
-            tmp.name = mesh.name + "_repack_tmp";
-            var result = RepackSingle(tmp, opts);
-            if (!result.ok)
+            try
+            {
+                tmp.name = mesh.name + "_repack_tmp";
+                var result = RepackSingle(tmp, opts);
+                if (!result.ok) return null;
+                var uvOut = new List<Vector2>();
+                tmp.GetUVs(1, uvOut);
+                return uvOut.ToArray();
+            }
+            finally
             {
                 UnityEngine.Object.DestroyImmediate(tmp);
-                return null;
             }
-            var uvOut = new List<Vector2>();
-            tmp.GetUVs(1, uvOut);
-            UnityEngine.Object.DestroyImmediate(tmp);
-            return uvOut.ToArray();
         }
 
         public static RepackResult RepackSingle(Mesh mesh, RepackOptions opts)
@@ -1143,7 +1155,11 @@ namespace SashaRX.UnityMeshLab
             uint   xatlasFaceCount    = (uint)faceCount;
 
             // ── xatlas pipeline ──
-            AcquireNativeSession();
+            if (!TryAcquireNativeSession())
+            {
+                result.error = kSessionBusyError;
+                return result;
+            }
             try
             {
                 XatlasNative.xatlasCreate();
@@ -1412,7 +1428,14 @@ namespace SashaRX.UnityMeshLab
             var allUvFlat = new float[meshCount][];
 
             // ── Single xatlas session for all meshes ──
-            AcquireNativeSession();
+            if (!TryAcquireNativeSession())
+            {
+                // Nothing was packed, so every mesh carries the same failure —
+                // the per-mesh loop in the tool logs and skips each of them.
+                for (int m = 0; m < meshCount; m++)
+                    results[m].error = kSessionBusyError;
+                return results;
+            }
             try
             {
                 XatlasNative.xatlasCreate();
