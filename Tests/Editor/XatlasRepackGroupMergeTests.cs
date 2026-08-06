@@ -224,5 +224,49 @@ namespace SashaRX.UnityMeshLab.Tests
                     Object.DestroyImmediate(e.originalMesh);
             }
         }
+
+        [Test]
+        public void ExportPruning_RemovesUnselectedMeshesRecursively_ButPreservesHierarchy()
+        {
+            var method = typeof(LightmapTransferTool).GetMethod(
+                "PruneUnselectedExportMeshes",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "LightmapTransferTool should expose export subset pruning as a testable helper");
+
+            var root = new GameObject("SourceRoot");
+            var selectedMesh = new Mesh { name = "Selected" };
+            var hiddenMesh = new Mesh { name = "Internal" };
+            try
+            {
+                var selected = new GameObject("SelectedNode");
+                selected.transform.SetParent(root.transform, false);
+                selected.AddComponent<MeshFilter>().sharedMesh = selectedMesh;
+                selected.AddComponent<MeshRenderer>();
+
+                var container = new GameObject("PreservedPivot");
+                container.transform.SetParent(root.transform, false);
+                var hidden = new GameObject("InactiveInternalNode");
+                hidden.transform.SetParent(container.transform, false);
+                hidden.SetActive(false);
+                hidden.AddComponent<MeshFilter>().sharedMesh = hiddenMesh;
+                hidden.AddComponent<MeshRenderer>();
+                hidden.AddComponent<MeshCollider>().sharedMesh = hiddenMesh;
+
+                method.Invoke(null, new object[] { root, new HashSet<Mesh> { selectedMesh } });
+
+                Assert.AreSame(selectedMesh, selected.GetComponent<MeshFilter>().sharedMesh);
+                Assert.IsNull(hidden.GetComponent<MeshFilter>());
+                Assert.IsNull(hidden.GetComponent<MeshRenderer>());
+                Assert.IsNull(hidden.GetComponent<MeshCollider>());
+                Assert.AreSame(container.transform, hidden.transform.parent,
+                    "Pruning mesh data must not flatten the source FBX hierarchy");
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+                Object.DestroyImmediate(selectedMesh);
+                Object.DestroyImmediate(hiddenMesh);
+            }
+        }
     }
 }
