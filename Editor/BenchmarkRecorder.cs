@@ -106,9 +106,19 @@ namespace SashaRX.UnityMeshLab
         /// captures everything and the inner caller gets a scope whose Dispose does nothing.
         /// Always call inside `using (BenchmarkRecorder.NewRun(...)) { ... }`.
         /// </summary>
+        /// <remarks>
+        /// Recording is a diagnostic surface, so it is skipped entirely unless
+        /// Project Settings ▸ Mesh Lab ▸ Show Debug UI is on — the same flag that
+        /// gates Parameter Sweep, the FBX metrics menu items and the rest of the
+        /// transfer diagnostics. With the flag off the caller gets a no-op scope,
+        /// <see cref="Current"/> stays null and no BenchmarkReports/ folder (nor its
+        /// per-mesh PNG subfolder) is created for a production transfer run.
+        /// Existing report folders on disk are left untouched.
+        /// </remarks>
         public static IDisposable NewRun(UvToolContext ctx, string label,
             bool splitTargets, SymmetrySplitShells.ThresholdMode symMode)
         {
+            if (!MeshLabProjectSettings.Instance.showDebugUI) return NoOpScope.Instance;
             if (Current != null) return NoOpScope.Instance;
             Current = new BenchmarkRecorder(ctx, label, splitTargets, symMode);
             return Current;

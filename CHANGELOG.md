@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   - Repack tab: the `Advanced (debug)` section (manual texels-per-UV-unit, post-pack density correction, SymSplit threshold mode).
   - Unity top menu: `Mesh Lab ▸ Export FBX Metrics (Selected Assets)` and `(Scene LODGroup)`.
   - Assets ▸ Create context menu: `Mesh Lab ▸ Sweep Test Suite` (was always-visible `Lightmap UV Tool/Test Suite` via `[CreateAssetMenu]`).
+  - On-disk transfer-analysis artefacts: `BenchmarkRecorder.NewRun` returns a no-op scope when the toggle is off, so Run Full Pipeline / Repack / Transfer All no longer create `<projectRoot>/BenchmarkReports/` and its per-mesh `*_png/` subfolder on a production run. Existing report folders on disk are left untouched.
 - **In-flight gate + `FireAndForget` helper** for fire-and-forget async UI actions. The "Run Full Pipeline" / "Run Repack only" / "Run Transfer only" / "Repack All" / "Transfer All Targets" buttons now sit inside an `EditorGUI.DisabledScope` on `_pipelineInFlight` so a second click can't launch an interleaving run; `FireAndForget` attaches `ContinueWith` on the Unity sync context to log Task faults through `UvtLog.Error`, release the gate, and call `UvProgress.Fail` so a thrown exception can't leave the strip stuck on a stale phase.
 - **Cancel-aware benchmark recording** in `ExecTransferAllImpl` — mirrors the `completedSuccessfully` guard `ExecFullPipelineImpl` already uses. Cancelled transfers no longer emit stale `shellTransferResult` / validation rows that taint sweep aggregates.
 

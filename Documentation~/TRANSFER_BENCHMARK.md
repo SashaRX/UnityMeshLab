@@ -67,7 +67,7 @@ strip-parameterization.
 | Piece | Location | What it does |
 | --- | --- | --- |
 | `UvtLog.Category` | `Editor/UvtLog.cs` | Per-subsystem log filter. Toggle in *Pipeline Settings → Log filters*. |
-| `BenchmarkRecorder` | `Editor/BenchmarkRecorder.cs` | Collects per-mesh metrics during `ExecFullPipeline` / `ExecTransferAll`; writes CSV + JSON into `<projectRoot>/BenchmarkReports/` on session end. |
+| `BenchmarkRecorder` | `Editor/BenchmarkRecorder.cs` | Collects per-mesh metrics during `ExecFullPipeline` / `ExecTransferAll`; writes CSV + JSON into `<projectRoot>/BenchmarkReports/` on session end. Only records when *Project Settings ▸ Mesh Lab ▸ Developer ▸ Show Debug UI* is on — with the toggle off `NewRun` returns a no-op scope and no report folder is created. |
 | `SymmetrySplitShells.LastFallbackCount` / `LastTotalSplitCount` | `Editor/SymmetrySplitShells.cs` | Counters read by the recorder. |
 | `GroupedShellTransfer.LastTopologyIterations` / `LastTopologyFixed` / `LastTopologyCapHit` | `Editor/GroupedShellTransfer.cs` | Counters for the Laplacian topology pass. |
 | `UvCanvasView.ValidationFilterMask` | `Editor/Framework/UvCanvasView.cs` | Restricts the validation fill/overlay to selected `TriIssue` bits. |
@@ -112,7 +112,9 @@ JSON output mirrors the CSV but nests `records[]` inside a run envelope.
    - `Per-mesh repack` on/off
    - `SymSplit target LODs (advanced)` on/off
 
-3. **Run the pipeline.** Click *Run Full Pipeline*. `BenchmarkRecorder` wraps
+3. **Run the pipeline.** Enable *Project Settings ▸ Mesh Lab ▸ Developer ▸ Show
+   Debug UI* first — recording is skipped entirely while it is off. Then click
+   *Run Full Pipeline*. `BenchmarkRecorder` wraps
    the call, writes `<projectRoot>/BenchmarkReports/{ts}_{lodGroup}_FullPipeline_{mode}.{csv,json}`
    when the run finishes.
 
