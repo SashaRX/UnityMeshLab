@@ -328,6 +328,12 @@ namespace SashaRX.UnityMeshLab
         // ── Scene ──
         double sceneSpotLastRaycastTime;
         const double sceneSpotThrottleSec = 0.033;
+        // Per-hover triangle budget for the SceneView pick. Sized to cover a typical
+        // 20-50k tri LOD0 game mesh (and a few of them) so hover keeps working on
+        // real assets, while still bounding the per-mousemove cost.
+        const int sceneSpotTriangleBudget = 100000;
+        double sceneSpotLastBudgetWarnTime;
+        const double sceneSpotBudgetWarnIntervalSec = 5.0;
 
         // ════════════════════════════════════════════════════════════
         //  Lifecycle
@@ -4852,11 +4858,24 @@ namespace SashaRX.UnityMeshLab
             public MeshEntry meshEntry;
         }
 
+        // Hover runs every ~33 ms, so the skip notice is rate-limited — but it must
+        // not be silent: a skipped mesh simply stops responding to SceneView hover.
+        void WarnHoverBudgetSkip(Mesh mesh)
+        {
+            double now = EditorApplication.timeSinceStartup;
+            if (now - sceneSpotLastBudgetWarnTime < sceneSpotBudgetWarnIntervalSec) return;
+            sceneSpotLastBudgetWarnTime = now;
+            UvtLog.Warn($"[SceneSpot] Hover pick skipped '{(mesh != null ? mesh.name : "<null>")}' — " +
+                        $"exceeds the {sceneSpotTriangleBudget} triangle budget per hover. " +
+                        "Use the UV canvas or a lower preview LOD to inspect it.");
+        }
+
         bool TryRaycastPreview(Ray ray, out SceneHit bestHit)
         {
             bestHit = default;
             bestHit.distance = float.PositiveInfinity;
             bool found = false;
+            int remainingTriangleBudget = sceneSpotTriangleBudget;
 
             foreach (var entry in ctx.ForLod(ctx.PreviewLod))
             {
@@ -4867,10 +4886,36 @@ namespace SashaRX.UnityMeshLab
                 Bounds wb = TransformBounds(mesh.bounds, l2w);
                 if (!wb.IntersectRay(ray, out float aabbDist) || aabbDist > bestHit.distance) continue;
 
+                // Inspect index metadata before reading mesh arrays: those properties make
+                // full managed copies and shell extraction is linear in the face count.
+                // Skip a mesh rather than partially testing it, which could report a false hit.
+                ulong meshIndexCount = 0;
+                for (int subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
+                {
+                    ulong indexCount = mesh.GetIndexCount(subMesh);
+                    if (indexCount > (ulong)remainingTriangleBudget * 3UL - meshIndexCount)
+                    {
+                        meshIndexCount = ulong.MaxValue;
+                        break;
+                    }
+                    meshIndexCount += indexCount;
+                }
+                if (meshIndexCount == ulong.MaxValue)
+                {
+                    WarnHoverBudgetSkip(mesh);
+                    continue;
+                }
+
                 var v = mesh.vertices;
                 var tri = canvas.GetTrianglesCached(mesh);
                 var uv = canvas.RdUvCached(mesh, ctx.PreviewUvChannel);
                 if (v == null || tri == null || uv == null) continue;
+                if (tri.Length / 3 > remainingTriangleBudget)
+                {
+                    WarnHoverBudgetSkip(mesh);
+                    continue;
+                }
+                remainingTriangleBudget -= tri.Length / 3;
                 int[] faceToShell = ctx.UvPreviewShellCache.GetFaceToShell(mesh, ctx.PreviewUvChannel, uv, tri);
 
                 for (int f = 0; f + 2 < tri.Length; f += 3)
