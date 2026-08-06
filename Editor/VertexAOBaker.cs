@@ -51,6 +51,14 @@ namespace SashaRX.UnityMeshLab
 
     public static partial class VertexAOBaker
     {
+        // Hard ceilings keep imported, attacker-controlled meshes from exhausting
+        // editor or GPU resources before the bake's cancellation UI can run.
+        const long MaxBakeVertices = 2_000_000;
+        const long MaxBakeTriangles = 4_000_000;
+        const long MaxBakeSubMeshes = 1_024;
+        const long MaxBakeEstimatedBytes = 512L * 1024L * 1024L;
+        const long MaxBakeWorkItems = 250_000_000;
+
         // ── Public API ──
 
         /// <summary>
@@ -72,6 +80,12 @@ namespace SashaRX.UnityMeshLab
         {
             if (targets == null || targets.Count == 0)
                 return new Dictionary<Mesh, float[]>();
+
+            if (!TryValidateBakeBudget(targets, occluders, settings, false, out var error))
+            {
+                UvtLog.Error($"[Vertex AO] Bake refused: {error}");
+                return new Dictionary<Mesh, float[]>();
+            }
 
             return BakeMultiMeshCPU(targets, occluders, settings);
         }
@@ -99,6 +113,12 @@ namespace SashaRX.UnityMeshLab
         {
             if (rawAO == null || rawAO.Count == 0)
                 return rawAO;
+
+            if (!TryValidateBakeBudget(targets, occluders, settings, true, out var error))
+            {
+                UvtLog.Error($"[Vertex AO] Face-area correction refused: {error}");
+                return rawAO;
+            }
 
             // Build combined BVH
             var allVerts = new List<Vector3>();
@@ -132,6 +152,111 @@ namespace SashaRX.UnityMeshLab
                 UnityEngine.Object.DestroyImmediate(c);
             return result;
         }
+
+        internal static bool TryValidateBakeBudget(
+            List<(Mesh mesh, Matrix4x4 transform)> targets,
+            List<(Mesh mesh, Matrix4x4 transform)> occluders,
+            VertexAOSettings settings,
+            bool includeFaceAreaCorrection,
+            out string error)
+        {
+            long targetVertices = 0;
+            long totalVertices = 0;
+            long totalTriangles = 0;
+            long totalSubMeshes = 0;
+
+            if (!AccumulateMeshBudget(targets, true, ref targetVertices, ref totalVertices,
+                    ref totalTriangles, ref totalSubMeshes, out error) ||
+                !AccumulateMeshBudget(occluders, false, ref targetVertices, ref totalVertices,
+                    ref totalTriangles, ref totalSubMeshes, out error))
+                return false;
+
+            int samples = settings != null ? settings.sampleCount : 0;
+            if (samples <= 0)
+            {
+                error = "sample count must be greater than zero.";
+                return false;
+            }
+
+            // Conservative lower bound covering combined CPU arrays/BVH storage and
+            // per-target transformed arrays/results or equivalent GPU buffers.
+            long estimatedBytes = SaturatingAdd(
+                SaturatingMultiply(totalVertices, 64),
+                SaturatingAdd(SaturatingMultiply(totalTriangles, 80),
+                    SaturatingMultiply(targetVertices, 44)));
+            long workItems = SaturatingMultiply(targetVertices, samples);
+            if (includeFaceAreaCorrection)
+                workItems = SaturatingAdd(workItems,
+                    SaturatingMultiply(SaturatingMultiply(totalTriangles, samples), 4));
+
+            if (totalVertices > MaxBakeVertices || totalTriangles > MaxBakeTriangles ||
+                totalSubMeshes > MaxBakeSubMeshes || estimatedBytes > MaxBakeEstimatedBytes ||
+                workItems > MaxBakeWorkItems)
+            {
+                error = $"resource budget exceeded (vertices {totalVertices:N0}/{MaxBakeVertices:N0}, " +
+                        $"triangles {totalTriangles:N0}/{MaxBakeTriangles:N0}, " +
+                        $"submeshes {totalSubMeshes:N0}/{MaxBakeSubMeshes:N0}, " +
+                        $"estimated memory {estimatedBytes / (1024 * 1024):N0}/{MaxBakeEstimatedBytes / (1024 * 1024):N0} MiB, " +
+                        $"work {workItems:N0}/{MaxBakeWorkItems:N0}). Reduce mesh complexity or sample count.";
+                return false;
+            }
+
+            error = null;
+            return true;
+        }
+
+        static bool AccumulateMeshBudget(
+            List<(Mesh mesh, Matrix4x4 transform)> meshes,
+            bool targets,
+            ref long targetVertices,
+            ref long totalVertices,
+            ref long totalTriangles,
+            ref long totalSubMeshes,
+            out string error)
+        {
+            error = null;
+            if (meshes == null) return true;
+
+            foreach (var (mesh, _) in meshes)
+            {
+                if (mesh == null) continue;
+                long vertices = mesh.vertexCount;
+                totalVertices = SaturatingAdd(totalVertices, vertices);
+                if (targets) targetVertices = SaturatingAdd(targetVertices, vertices);
+                totalSubMeshes = SaturatingAdd(totalSubMeshes, mesh.subMeshCount);
+                if (totalSubMeshes > MaxBakeSubMeshes)
+                {
+                    error = $"mesh totals exceed the structural limits ({MaxBakeVertices:N0} vertices, " +
+                            $"{MaxBakeTriangles:N0} triangles, {MaxBakeSubMeshes:N0} submeshes).";
+                    return false;
+                }
+
+                for (int sub = 0; sub < mesh.subMeshCount; sub++)
+                {
+                    if (mesh.GetTopology(sub) == MeshTopology.Triangles)
+                        totalTriangles = SaturatingAdd(totalTriangles, (long)mesh.GetIndexCount(sub) / 3);
+                }
+
+                // Stop inspecting submeshes as soon as a cheap structural ceiling is hit.
+                if (totalVertices > MaxBakeVertices || totalTriangles > MaxBakeTriangles ||
+                    totalSubMeshes > MaxBakeSubMeshes)
+                {
+                    error = $"mesh totals exceed the structural limits ({MaxBakeVertices:N0} vertices, " +
+                            $"{MaxBakeTriangles:N0} triangles, {MaxBakeSubMeshes:N0} submeshes).";
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        static long SaturatingMultiply(long a, long b)
+        {
+            if (a <= 0 || b <= 0) return 0;
+            return a > long.MaxValue / b ? long.MaxValue : a * b;
+        }
+
+        static long SaturatingAdd(long a, long b)
+            => a > long.MaxValue - b ? long.MaxValue : a + b;
 
         public static void WriteToChannel(Mesh mesh, float[] aoValues, AOTargetChannel channel)
         {

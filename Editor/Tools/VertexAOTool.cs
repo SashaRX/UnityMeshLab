@@ -512,6 +512,18 @@ namespace SashaRX.UnityMeshLab
             }
             StoreBatchStats(batches);
 
+            foreach (var batch in batches)
+            {
+                if (VertexAOBaker.TryValidateBakeBudget(
+                        batch.targetMeshes, batch.occluderMeshes, settings, true, out var budgetError))
+                    continue;
+
+                UvtLog.Error($"[Vertex AO] Bake refused for LOD{batch.lodIndex}: {budgetError}");
+                foreach (var pendingBatch in batches)
+                    DisposeBatchTemporaryMeshes(pendingBatch);
+                return;
+            }
+
             bakeStopwatch = Stopwatch.StartNew();
 
             if (settings.useGPU && SystemInfo.supportsComputeShaders)

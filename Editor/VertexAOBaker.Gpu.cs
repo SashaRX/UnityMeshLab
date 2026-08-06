@@ -28,6 +28,14 @@ namespace SashaRX.UnityMeshLab
             Action<Dictionary<Mesh, float[]>> onComplete,
             Action<string> onError)
         {
+            if (!TryValidateBakeBudget(targets, occluders, settings, false, out var budgetError))
+            {
+                string message = $"GPU bake refused: {budgetError}";
+                UvtLog.Error($"[Vertex AO] {message}");
+                onError?.Invoke(message);
+                return null;
+            }
+
             var computeShader = FindComputeShader("VertexAORayTrace");
             if (computeShader == null)
             {
