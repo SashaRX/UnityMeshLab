@@ -344,6 +344,11 @@ namespace SashaRX.UnityMeshLab
             var lods = ctx.LodGroup.GetLODs();
             var newLods = new List<LOD>(lods);
 
+            // A group created from unlabelled renderers uses a low value so its only
+            // LOD is not culled early. Restore the normal LOD0 transition before
+            // appending generated levels; otherwise they start at 0.005 and below.
+            NormalizeSingleLodTransitionForGeneration(newLods, startLod);
+
             UvProgress.Begin($"Generate LODs ({generateLodCount} levels)", cancelable: true);
             try
             {
@@ -612,6 +617,15 @@ namespace SashaRX.UnityMeshLab
             lodGroup.RecalculateBounds();
 
             return lodGroup;
+        }
+
+        internal static void NormalizeSingleLodTransitionForGeneration(List<LOD> lods, int startLod)
+        {
+            if (startLod != 1 || lods.Count != 1 ||
+                !Mathf.Approximately(lods[0].screenRelativeTransitionHeight, 0.01f))
+                return;
+
+            lods[0] = new LOD(0.5f, lods[0].renderers);
         }
 
         internal static LODGroup CreateLodGroupFromRenderers(GameObject root)
