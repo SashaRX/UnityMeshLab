@@ -3485,6 +3485,10 @@ namespace SashaRX.UnityMeshLab
                     int collisionMeshCount = 0;
                     foreach (var (colMeshName, colMeshes, isConvex) in collisionData)
                     {
+                        // GetCollisionMeshesFromSidecar builds every one of these from the
+                        // sidecar's serialized arrays — they are never FBX sub-assets, and
+                        // the caller owns them. Destroyed after the export.
+                        tempMeshes.AddRange(colMeshes);
                         if (colMeshes.Count == 1 && !isConvex)
                         {
                             // Simplified: single _COL child (no MeshRenderer — avoids stale material)
