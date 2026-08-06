@@ -179,10 +179,18 @@ namespace SashaRX.UnityMeshLab
         // ── Transfer cache ──
         Dictionary<int, GroupedShellTransfer.SourceShellInfo[]> shellTransformCache =
             new Dictionary<int, GroupedShellTransfer.SourceShellInfo[]>();
-        List<GroupedShellTransfer.OverlapSourceHint> accumulatedOverlapHints =
-            new List<GroupedShellTransfer.OverlapSourceHint>();
-        List<GroupedShellTransfer.CrossLodMatchHint> accumulatedMatchHints =
-            new List<GroupedShellTransfer.CrossLodMatchHint>();
+        sealed class CrossLodHintState
+        {
+            public readonly List<GroupedShellTransfer.OverlapSourceHint> overlapHints =
+                new List<GroupedShellTransfer.OverlapSourceHint>();
+            public readonly List<GroupedShellTransfer.CrossLodMatchHint> matchHints =
+                new List<GroupedShellTransfer.CrossLodMatchHint>();
+        }
+
+        // Shell indices are local to a source mesh. Keep cross-LOD hints isolated
+        // to the source/mesh-group pair that produced them.
+        readonly Dictionary<(MeshEntry source, string meshGroupKey), CrossLodHintState> crossLodHints =
+            new Dictionary<(MeshEntry, string), CrossLodHintState>();
 
         // ── Preview ──
         // Three mutually-exclusive preview modes. Only one should be active at a time.
@@ -1807,7 +1815,7 @@ namespace SashaRX.UnityMeshLab
                             kv.Key.shellTransferResult = null;
                         }
                         ctx.ClearAllCaches();
-                        accumulatedOverlapHints.Clear();
+                        crossLodHints.Clear();
                         shellTransformCache.Clear();
                         ctx.HasRepack = false;
                         ctx.HasTransfer = false;
@@ -2121,8 +2129,7 @@ namespace SashaRX.UnityMeshLab
                     return;
                 }
 
-                accumulatedOverlapHints.Clear();
-                accumulatedMatchHints.Clear();
+                crossLodHints.Clear();
                 int processed = 0;
                 for (int li = 0; li < ctx.LodCount; li++)
                 {
@@ -2191,6 +2198,14 @@ namespace SashaRX.UnityMeshLab
                 Mesh tgtMesh = tgt.originalMesh;
                 if (srcMesh == null || tgtMesh == null) continue;
 
+                string meshGroupKey = tgt.meshGroupKey ?? tgt.renderer.name;
+                var hintKey = (source: srcEntry, meshGroupKey: meshGroupKey);
+                if (!crossLodHints.TryGetValue(hintKey, out var hintState))
+                {
+                    hintState = new CrossLodHintState();
+                    crossLodHints.Add(hintKey, hintState);
+                }
+
                 int srcId = srcMesh.GetInstanceID();
                 if (!shellTransformCache.TryGetValue(srcId, out var srcInfos))
                 {
@@ -2202,26 +2217,26 @@ namespace SashaRX.UnityMeshLab
                 UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
                 var tr = useAsync
                     ? await GroupedShellTransfer.TransferAsync(tgtMesh, srcMesh,
-                        accumulatedOverlapHints.Count > 0 ? accumulatedOverlapHints : null,
-                        accumulatedMatchHints.Count > 0 ? accumulatedMatchHints : null,
+                        hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
+                        hintState.matchHints.Count > 0 ? hintState.matchHints : null,
                         srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
                         srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0)
                     : GroupedShellTransfer.Transfer(tgtMesh, srcMesh,
-                        accumulatedOverlapHints.Count > 0 ? accumulatedOverlapHints : null,
-                        accumulatedMatchHints.Count > 0 ? accumulatedMatchHints : null,
+                        hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
+                        hintState.matchHints.Count > 0 ? hintState.matchHints : null,
                         srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
                         srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0);
                 if (tr.uv2 == null) { UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); continue; }
 
                 // Accumulate overlap hints for subsequent LODs
                 if (tr.overlapHints != null && tr.overlapHints.Count > 0)
-                    accumulatedOverlapHints.AddRange(tr.overlapHints);
+                    hintState.overlapHints.AddRange(tr.overlapHints);
                 // Replace match hints with this LOD's matches (latest LOD drives
                 // next LOD's hint-guided matching; stale hints from older LODs
                 // could conflict with changing geometry)
-                accumulatedMatchHints.Clear();
+                hintState.matchHints.Clear();
                 if (tr.matchHints != null && tr.matchHints.Count > 0)
-                    accumulatedMatchHints.AddRange(tr.matchHints);
+                    hintState.matchHints.AddRange(tr.matchHints);
 
                 // Build output mesh with UV2 applied
                 var om = UnityEngine.Object.Instantiate(tgtMesh);
