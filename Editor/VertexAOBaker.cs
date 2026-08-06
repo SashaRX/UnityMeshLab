@@ -315,7 +315,8 @@ namespace SashaRX.UnityMeshLab
                 initial = location;
                 computed = initial + value;
             }
-            while (initial != Interlocked.CompareExchange(ref location, computed, initial));
+            while (BitConverter.DoubleToInt64Bits(initial) !=
+                   BitConverter.DoubleToInt64Bits(Interlocked.CompareExchange(ref location, computed, initial)));
         }
 
         static float ComputeMedianTriArea(Vector3[] verts, int[] tris, Matrix4x4 xform)
