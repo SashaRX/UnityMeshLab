@@ -551,8 +551,10 @@ namespace SashaRX.UnityMeshLab
                 {
                     var child = parent.GetChild(i).gameObject;
                     var cm = Regex.Match(child.name, @"^(.+?)[_\-\s]*LOD(\d+)$", RegexOptions.IgnoreCase);
-                    if (cm.Success && string.Equals(cm.Groups[1].Value, baseName, System.StringComparison.OrdinalIgnoreCase))
-                        results.Add((child, int.Parse(cm.Groups[2].Value)));
+                    if (cm.Success
+                        && int.TryParse(cm.Groups[2].Value, out int lodIndex)
+                        && string.Equals(cm.Groups[1].Value, baseName, System.StringComparison.OrdinalIgnoreCase))
+                        results.Add((child, lodIndex));
                 }
 
                 results.Sort((a, b) => a.Item2.CompareTo(b.Item2));
@@ -566,8 +568,8 @@ namespace SashaRX.UnityMeshLab
             {
                 var child = go.transform.GetChild(i).gameObject;
                 var cm = Regex.Match(child.name, @"^(.+?)[_\-\s]*LOD(\d+)$", RegexOptions.IgnoreCase);
-                if (cm.Success)
-                    childResults.Add((child, int.Parse(cm.Groups[2].Value)));
+                if (cm.Success && int.TryParse(cm.Groups[2].Value, out int lodIndex))
+                    childResults.Add((child, lodIndex));
             }
 
             if (childResults.Count > 0)
