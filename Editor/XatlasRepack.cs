@@ -184,6 +184,23 @@ namespace SashaRX.UnityMeshLab
 
     public static class XatlasRepack
     {
+        // The native bridge owns a single process-global atlas pointer. Keep
+        // every managed xatlas session exclusive: async packing yields back
+        // to the editor, so UI or API callers can otherwise destroy an atlas
+        // while a background pack is still using it.
+        static int s_nativeSessionInFlight;
+
+        static void AcquireNativeSession()
+        {
+            if (System.Threading.Interlocked.CompareExchange(
+                    ref s_nativeSessionInFlight, 1, 0) != 0)
+                throw new InvalidOperationException(
+                    "An xatlas repack operation is already in progress.");
+        }
+
+        static void ReleaseNativeSession()
+            => System.Threading.Volatile.Write(ref s_nativeSessionInFlight, 0);
+
         const uint ORPHAN_CHART = uint.MaxValue;
         const long kBruteCostBudget = 500_000_000L;        // ~5-10s wall
         const long kHeuristicCostBudget = 20_000_000_000L; // ~30-60s wall
@@ -1117,10 +1134,10 @@ namespace SashaRX.UnityMeshLab
             uint   xatlasFaceCount    = (uint)faceCount;
 
             // ── xatlas pipeline ──
-            XatlasNative.xatlasCreate();
-
+            AcquireNativeSession();
             try
             {
+                XatlasNative.xatlasCreate();
                 int addErr = XatlasNative.xatlasAddUvMesh(
                     uvFlat, (uint)vertCount,
                     indices, (uint)indices.Length,
@@ -1274,7 +1291,8 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                XatlasNative.xatlasDestroy();
+                try { XatlasNative.xatlasDestroy(); }
+                finally { ReleaseNativeSession(); }
             }
 
             return result;
@@ -1381,9 +1399,10 @@ namespace SashaRX.UnityMeshLab
             var allUvFlat = new float[meshCount][];
 
             // ── Single xatlas session for all meshes ──
-            XatlasNative.xatlasCreate();
+            AcquireNativeSession();
             try
             {
+                XatlasNative.xatlasCreate();
                 // Add all meshes
                 for (int m = 0; m < meshCount; m++)
                 {
@@ -1611,7 +1630,8 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                XatlasNative.xatlasDestroy();
+                try { XatlasNative.xatlasDestroy(); }
+                finally { ReleaseNativeSession(); }
             }
 
             return results;
