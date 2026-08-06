@@ -14,6 +14,7 @@ namespace SashaRX.UnityMeshLab
     {
         // Run well after Bakery and other postprocessors (default order = 0).
         public override int GetPostprocessOrder() => 10000;
+        public override uint GetVersion() => 1;
 
         /// <summary>
         /// Paths to bypass during the next reimport. When ApplyUv2ToFbx needs the
@@ -647,6 +648,19 @@ namespace SashaRX.UnityMeshLab
                 return false;
             }
 
+            // Every replay vertex must originate from either the imported mesh or the
+            // explicitly stored orphan list (for example, symmetry-split vertices).
+            // Keep this check independent of the serialized UV/geometry arrays so a
+            // forged count cannot amplify a small sidecar into huge managed allocations.
+            int orphanCount = entry.orphanIndices?.Length ?? 0;
+            long maxReplayVertexCount = (long)rawCount + orphanCount;
+            if (optCount > maxReplayVertexCount)
+            {
+                UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': optimizedVertexCount ({optCount}) exceeds " +
+                            $"the replay source limit ({maxReplayVertexCount}) — replay aborted.");
+                return false;
+            }
+
             // Check UV2 length matches optimized vertex count
             if (entry.uv2.Length != optCount)
             {
@@ -655,9 +669,26 @@ namespace SashaRX.UnityMeshLab
                 return false;
             }
 
-            // Check sum of submesh tri counts matches optimizedTriangles length
-            int totalTriIndices = 0;
-            foreach (int c in entry.submeshTriangleCounts) totalTriIndices += c;
+            // Validate each submesh count before it is used for allocation/copying.
+            // Accumulate as long so crafted counts cannot wrap around to a valid total.
+            long totalTriIndices = 0;
+            foreach (int c in entry.submeshTriangleCounts)
+            {
+                if (c < 0 || c % 3 != 0)
+                {
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': invalid submesh triangle-index count " +
+                                $"({c}) — replay aborted.");
+                    return false;
+                }
+
+                totalTriIndices += c;
+                if (totalTriIndices > entry.optimizedTriangles.Length)
+                {
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': submesh triangle-index counts exceed " +
+                                $"optimizedTriangles.Length ({entry.optimizedTriangles.Length}) — replay aborted.");
+                    return false;
+                }
+            }
             if (totalTriIndices != entry.optimizedTriangles.Length)
             {
                 UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': sum(submeshTriCounts)={totalTriIndices} != " +
