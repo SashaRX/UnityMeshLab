@@ -9,8 +9,8 @@ include(FetchContent)
 FetchContent_Declare(
     xatlas
     GIT_REPOSITORY https://github.com/jpcy/xatlas.git
-    GIT_TAG        master
-    GIT_SHALLOW    TRUE
+    # Pin the reviewed upstream revision; never build native plugins from a mutable ref.
+    GIT_TAG        f7528d4
 )
 FetchContent_Declare(
     meshoptimizer
