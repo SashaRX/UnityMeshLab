@@ -47,8 +47,13 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public static bool Render(string path, Vector2[] uv, int[] tris, int size = DefaultSize)
         {
+            // tris.Length % 3: an index list that is not a whole number of
+            // triangles is malformed input. Every consumer here (shell
+            // extraction, the fill pass, the wire pass) silently truncates it
+            // with tris.Length / 3, so the PNG would misrepresent the mesh it
+            // claims to diagnose. Reject it like the other sanity limits.
             if (string.IsNullOrEmpty(path) || uv == null || tris == null ||
-                uv.Length > MaxUvCount || tris.Length < 3 ||
+                uv.Length > MaxUvCount || tris.Length < 3 || tris.Length % 3 != 0 ||
                 tris.Length > MaxTriangleIndexCount || size <= 0 || size > MaxSize)
                 return false;
             var mat = GetMat();
