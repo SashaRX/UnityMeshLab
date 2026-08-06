@@ -44,6 +44,87 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
+        const int MaxSweepValuesPerDimension = 16;
+        const int MaxSweepCells = 256;
+
+        static bool TryValidateSweep(TestSuiteAsset.SweepMatrix sm, UvToolContext context,
+                                     out int cellCount, out string error)
+        {
+            cellCount = 0;
+            error = null;
+            if (sm == null || context == null)
+            {
+                error = "Sweep configuration is missing.";
+                return false;
+            }
+
+            var resolutions = sm.atlasResolutions?.Length > 0
+                ? sm.atlasResolutions : new[] { context.AtlasResolution };
+            var shellPaddings = sm.shellPaddingPxVariants?.Length > 0
+                ? sm.shellPaddingPxVariants : new[] { context.ShellPaddingPx };
+            var borderPaddings = sm.borderPaddingPxVariants?.Length > 0
+                ? sm.borderPaddingPxVariants : new[] { context.BorderPaddingPx };
+            var arapIterations = sm.arapIterationsVariants?.Length > 0
+                ? sm.arapIterationsVariants
+                : new[] { context.ReparameterizeStretchedShells ? context.ArapIterations : 0 };
+            var stretchThresholds = sm.stretchThresholdVariants?.Length > 0
+                ? sm.stretchThresholdVariants : new[] { context.StretchThreshold };
+
+            if (!ValidateSweepDimension(resolutions, 64, 4096, "atlas resolution", out error) ||
+                !ValidateSweepDimension(shellPaddings, 0, 64, "shell padding", out error) ||
+                !ValidateSweepDimension(borderPaddings, 0, 64, "border padding", out error) ||
+                !ValidateSweepDimension(arapIterations, 0, 200, "ARAP iterations", out error) ||
+                !ValidateSweepDimension(stretchThresholds, 1f, 3f, "stretch threshold", out error))
+                return false;
+
+            long total = (long)resolutions.Length * shellPaddings.Length * borderPaddings.Length
+                       * arapIterations.Length * stretchThresholds.Length;
+            if (total > MaxSweepCells)
+            {
+                error = $"Sweep has {total} cells; the maximum is {MaxSweepCells}.";
+                return false;
+            }
+
+            cellCount = (int)total;
+            return true;
+        }
+
+        static bool ValidateSweepDimension(int[] values, int min, int max, string label,
+                                           out string error)
+        {
+            if (values.Length > MaxSweepValuesPerDimension)
+            {
+                error = $"{label} has {values.Length} values; the maximum is {MaxSweepValuesPerDimension}.";
+                return false;
+            }
+            foreach (int value in values)
+                if (value < min || value > max)
+                {
+                    error = $"Invalid {label} {value}; allowed range is {min}..{max}.";
+                    return false;
+                }
+            error = null;
+            return true;
+        }
+
+        static bool ValidateSweepDimension(float[] values, float min, float max, string label,
+                                           out string error)
+        {
+            if (values.Length > MaxSweepValuesPerDimension)
+            {
+                error = $"{label} has {values.Length} values; the maximum is {MaxSweepValuesPerDimension}.";
+                return false;
+            }
+            foreach (float value in values)
+                if (float.IsNaN(value) || float.IsInfinity(value) || value < min || value > max)
+                {
+                    error = $"Invalid {label} {value}; allowed range is {min}..{max}.";
+                    return false;
+                }
+            error = null;
+            return true;
+        }
+
         // ── Internal tab ──
         enum Tab { Setup, Repack, Transfer }
         Tab tab = Tab.Setup;
@@ -491,17 +572,11 @@ namespace SashaRX.UnityMeshLab
             sweepSuite = (TestSuiteAsset)EditorGUILayout.ObjectField(
                 "Sweep suite", sweepSuite, typeof(TestSuiteAsset), false);
             int cells = 0;
+            string sweepError = null;
             if (sweepSuite != null && sweepSuite.sweep != null)
-            {
-                var sm = sweepSuite.sweep;
-                int rL  = sm.atlasResolutions?.Length              ?? 0;
-                int pL  = sm.shellPaddingPxVariants?.Length        ?? 0;
-                int bL  = sm.borderPaddingPxVariants?.Length       ?? 0;
-                int arL = sm.arapIterationsVariants?.Length        ?? 0;
-                int stL = sm.stretchThresholdVariants?.Length      ?? 0;
-                cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL)
-                      * Mathf.Max(1, arL) * Mathf.Max(1, stL);
-            }
+                TryValidateSweep(sweepSuite.sweep, ctx, out cells, out sweepError);
+            if (!string.IsNullOrEmpty(sweepError))
+                EditorGUILayout.HelpBox(sweepError, MessageType.Error);
             using (new EditorGUILayout.HorizontalScope())
             {
                 using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0))
@@ -1456,6 +1531,12 @@ namespace SashaRX.UnityMeshLab
         void ExecSweep(TestSuiteAsset.SweepMatrix sm)
         {
             if (ctx.LodGroup == null || sm == null) return;
+            if (!TryValidateSweep(sm, ctx, out int total, out string validationError))
+            {
+                UvtLog.Error(UvtLog.Category.Benchmark, $"[Sweep] {validationError}");
+                EditorUtility.DisplayDialog("Invalid sweep", validationError, "OK");
+                return;
+            }
             var resArr = (sm.atlasResolutions != null && sm.atlasResolutions.Length > 0)
                 ? sm.atlasResolutions : new[] { ctx.AtlasResolution };
             var padArr = (sm.shellPaddingPxVariants != null && sm.shellPaddingPxVariants.Length > 0)
@@ -1467,9 +1548,6 @@ namespace SashaRX.UnityMeshLab
                 : new[] { ctx.ReparameterizeStretchedShells ? ctx.ArapIterations : 0 };
             var stretchArr = (sm.stretchThresholdVariants != null && sm.stretchThresholdVariants.Length > 0)
                 ? sm.stretchThresholdVariants : new[] { ctx.StretchThreshold };
-
-            int total = resArr.Length * padArr.Length * bdrArr.Length
-                      * arapItersArr.Length * stretchArr.Length;
 
             // Snapshot ctx fields we mutate — restored unconditionally below.
             int   origRes         = ctx.AtlasResolution;

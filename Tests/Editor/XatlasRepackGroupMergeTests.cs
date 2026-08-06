@@ -182,6 +182,56 @@ namespace SashaRX.UnityMeshLab.Tests
 
     public class LightmapTransferToolUiTests
     {
+        static bool ValidateSweep(TestSuiteAsset.SweepMatrix sweep, out int cells, out string error)
+        {
+            var method = typeof(LightmapTransferTool).GetMethod(
+                "TryValidateSweep",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "Sweep validation should remain available as a testable preflight");
+
+            object[] args = { sweep, new UvToolContext(), 0, null };
+            bool valid = (bool)method.Invoke(null, args);
+            cells = (int)args[2];
+            error = (string)args[3];
+            return valid;
+        }
+
+        [Test]
+        public void SweepValidation_RejectsUnsafeNativePackingValues()
+        {
+            var sweep = new TestSuiteAsset.SweepMatrix
+            {
+                shellPaddingPxVariants = new[] { -1 },
+            };
+
+            Assert.IsFalse(ValidateSweep(sweep, out int cells, out string error));
+            Assert.AreEqual(0, cells);
+            StringAssert.Contains("shell padding", error);
+        }
+
+        [Test]
+        public void SweepValidation_RejectsExcessiveCartesianProduct()
+        {
+            var sweep = new TestSuiteAsset.SweepMatrix
+            {
+                atlasResolutions = new[] { 64, 128, 256, 512, 1024, 2048, 4096 },
+                shellPaddingPxVariants = new[] { 0, 1, 2, 3, 4, 5, 6 },
+                borderPaddingPxVariants = new[] { 0, 1, 2, 3, 4, 5 },
+            };
+
+            Assert.IsFalse(ValidateSweep(sweep, out int cells, out string error));
+            Assert.AreEqual(0, cells);
+            StringAssert.Contains("maximum is 256", error);
+        }
+
+        [Test]
+        public void SweepValidation_AcceptsDefaultsAndCountsCellsSafely()
+        {
+            Assert.IsTrue(ValidateSweep(new TestSuiteAsset.SweepMatrix(),
+                out int cells, out string error), error);
+            Assert.AreEqual(24, cells);
+        }
+
         [Test]
         public void BruteForceOption_IsUnavailable_WhenInternalOversampleIsAboveOne()
         {
