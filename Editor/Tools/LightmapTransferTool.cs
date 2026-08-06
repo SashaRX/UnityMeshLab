@@ -1997,7 +1997,7 @@ namespace SashaRX.UnityMeshLab
 
         async Task ExecRepackCoreImpl(List<MeshEntry> entries, bool useAsync)
         {
-            uint resolvedResolution = (uint)ctx.AtlasResolution;
+            uint resolvedResolution = (uint)SanitizeAtlasResolution(ctx.AtlasResolution);
             if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
             {
                 double area = MeshAreaHelper.ComputeTotal3DAreaMeters(
@@ -2013,7 +2013,9 @@ namespace SashaRX.UnityMeshLab
             // where the resolved value can differ by an octave from the user
             // setting.
             BenchmarkRecorder.Current?.SetResolvedAtlasResolution((int)resolvedResolution);
-            UvtLog.Info($"[Repack] {entries.Count} meshes, res={resolvedResolution}, pad={ctx.ShellPaddingPx}, bdr={ctx.BorderPaddingPx}");
+            int safeShellPadding = SanitizePadding(ctx.ShellPaddingPx);
+            int safeBorderPadding = SanitizePadding(ctx.BorderPaddingPx);
+            UvtLog.Info($"[Repack] {entries.Count} meshes, res={resolvedResolution}, pad={safeShellPadding}, bdr={safeBorderPadding}");
             var validEntries = new List<MeshEntry>();
             var meshCopies = new List<Mesh>();
             foreach (var e in entries)
@@ -2030,8 +2032,8 @@ namespace SashaRX.UnityMeshLab
 
             var opts = RepackOptions.Default;
             opts.resolution = resolvedResolution;
-            opts.padding = (uint)ctx.ShellPaddingPx;
-            opts.borderPadding = (uint)ctx.BorderPaddingPx;
+            opts.padding = (uint)safeShellPadding;
+            opts.borderPadding = (uint)safeBorderPadding;
             opts.bruteForce = ctx.XatlasBruteForce;
             opts.rotateCharts = ctx.XatlasRotateCharts;
             opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
@@ -4462,9 +4464,9 @@ namespace SashaRX.UnityMeshLab
             var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(selectedSidecarPath);
             if (data?.toolSettings == null) return;
             var s = data.toolSettings;
-            ctx.AtlasResolution = s.atlasResolution;
-            ctx.ShellPaddingPx = s.shellPaddingPx;
-            ctx.BorderPaddingPx = s.borderPaddingPx;
+            ctx.AtlasResolution = SanitizeAtlasResolution(s.atlasResolution);
+            ctx.ShellPaddingPx = SanitizePadding(s.shellPaddingPx);
+            ctx.BorderPaddingPx = SanitizePadding(s.borderPaddingPx);
             ctx.RepackPerMesh = s.repackPerMesh;
             symSplitThresholdMode = Enum.IsDefined(typeof(SymmetrySplitShells.ThresholdMode), s.symmetrySplitThresholdMode)
                 ? (SymmetrySplitShells.ThresholdMode)s.symmetrySplitThresholdMode
@@ -4472,7 +4474,28 @@ namespace SashaRX.UnityMeshLab
             SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
             ctx.SourceLodIndex = Mathf.Clamp(s.sourceLodIndex, 0, Mathf.Max(0, ctx.LodCount - 1));
             ctx.PipeSettings.saveNewMeshAssets = s.saveNewMeshAssets;
-            if (!string.IsNullOrEmpty(s.savePath)) ctx.PipeSettings.savePath = s.savePath;
+            if (IsSafeAssetFolderPath(s.savePath)) ctx.PipeSettings.savePath = s.savePath;
+        }
+
+        // The UI exposes atlas resolution as a free IntField, so the ceiling is
+        // only here to keep a forged sidecar (or a typo) from turning into an
+        // absurd xatlas allocation. It is deliberately far above the 4096 the
+        // presets offer so manually typed values are never silently reduced.
+        static int SanitizeAtlasResolution(int resolution) => Mathf.Clamp(resolution, 64, 16384);
+
+        static int SanitizePadding(int padding) => Mathf.Clamp(padding, 0, 16);
+
+        static bool IsSafeAssetFolderPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            string normalized = path.Replace('\\', '/').TrimEnd('/');
+            if (normalized != "Assets" && !normalized.StartsWith("Assets/", StringComparison.Ordinal))
+                return false;
+
+            var segments = normalized.Split('/');
+            foreach (string segment in segments)
+                if (segment.Length == 0 || segment == "." || segment == "..") return false;
+            return true;
         }
 
         void SaveSettingsToSidecar()
