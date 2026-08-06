@@ -199,6 +199,7 @@ namespace SashaRX.UnityMeshLab
         // ── Scene ──
         double sceneSpotLastRaycastTime;
         const double sceneSpotThrottleSec = 0.033;
+        const int sceneSpotTriangleBudget = 12000;
 
         // ════════════════════════════════════════════════════════════
         //  Lifecycle
@@ -4710,6 +4711,7 @@ namespace SashaRX.UnityMeshLab
             bestHit = default;
             bestHit.distance = float.PositiveInfinity;
             bool found = false;
+            int remainingTriangleBudget = sceneSpotTriangleBudget;
 
             foreach (var entry in ctx.ForLod(ctx.PreviewLod))
             {
@@ -4720,10 +4722,28 @@ namespace SashaRX.UnityMeshLab
                 Bounds wb = TransformBounds(mesh.bounds, l2w);
                 if (!wb.IntersectRay(ray, out float aabbDist) || aabbDist > bestHit.distance) continue;
 
+                // Inspect index metadata before reading mesh arrays: those properties make
+                // full managed copies and shell extraction is linear in the face count.
+                // Skip a mesh rather than partially testing it, which could report a false hit.
+                ulong meshIndexCount = 0;
+                for (int subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
+                {
+                    ulong indexCount = mesh.GetIndexCount(subMesh);
+                    if (indexCount > (ulong)remainingTriangleBudget * 3UL - meshIndexCount)
+                    {
+                        meshIndexCount = ulong.MaxValue;
+                        break;
+                    }
+                    meshIndexCount += indexCount;
+                }
+                if (meshIndexCount == ulong.MaxValue) continue;
+
                 var v = mesh.vertices;
                 var tri = canvas.GetTrianglesCached(mesh);
                 var uv = canvas.RdUvCached(mesh, ctx.PreviewUvChannel);
                 if (v == null || tri == null || uv == null) continue;
+                if (tri.Length / 3 > remainingTriangleBudget) continue;
+                remainingTriangleBudget -= tri.Length / 3;
                 int[] faceToShell = ctx.UvPreviewShellCache.GetFaceToShell(mesh, ctx.PreviewUvChannel, uv, tri);
 
                 for (int f = 0; f + 2 < tri.Length; f += 3)
