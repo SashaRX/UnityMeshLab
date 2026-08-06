@@ -42,6 +42,27 @@ namespace SashaRX.UnityMeshLab.Tests
                 "A face sharing grid cells but no vertex must be treated as UV overlap");
         }
 
+        [Test]
+        public void PartitionShells_DegenerateTriangleSharingVertex_DoesNotOverlap()
+        {
+            var uv = BuildFullBoundsUvs(4);
+            var triangles = new[]
+            {
+                0, 1, 2,
+                0, 3, 4,
+                0, 5, 6,
+                0, 7, 7  // degenerate: two of its edges are the same vertex pair
+            };
+
+            var result = PartitionSingleShell(uv, triangles);
+
+            // The degenerate face shares vertex 0 with every other face. If its
+            // repeated pair key is counted twice, inclusion-exclusion subtracts
+            // the intersection twice and the face is falsely reported as overlap.
+            Assert.IsFalse(result.hasOverlap,
+                "A degenerate triangle must not inflate the shared-vertex pair counts");
+        }
+
         static Vector2[] BuildFullBoundsUvs(int faceCount)
         {
             var uv = new Vector2[faceCount * 2 + 2];

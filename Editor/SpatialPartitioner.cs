@@ -325,9 +325,18 @@ namespace SashaRX.UnityMeshLab
                     if (i1 != i0) IncrementCount(vertexCounts, i1);
                     if (i2 != i0 && i2 != i1) IncrementCount(vertexCounts, i2);
 
-                    if (i0 != i1) IncrementCount(pairCounts, VertexPairKey(i0, i1));
-                    if (i0 != i2) IncrementCount(pairCounts, VertexPairKey(i0, i2));
-                    if (i1 != i2) IncrementCount(pairCounts, VertexPairKey(i1, i2));
+                    // A degenerate face repeats a vertex index, so two of its three
+                    // edges collapse onto the same unordered pair (e.g. (0,1,1)
+                    // yields key(0,1) twice). Counting that pair twice inflates the
+                    // subtracted intersection term and makes the face look less
+                    // shared than it is. Keys are order-independent and never
+                    // negative, so -1 is a safe "no such pair" marker.
+                    long k01 = i0 != i1 ? VertexPairKey(i0, i1) : -1L;
+                    long k02 = i0 != i2 ? VertexPairKey(i0, i2) : -1L;
+                    long k12 = i1 != i2 ? VertexPairKey(i1, i2) : -1L;
+                    if (k01 >= 0) IncrementCount(pairCounts, k01);
+                    if (k02 >= 0 && k02 != k01) IncrementCount(pairCounts, k02);
+                    if (k12 >= 0 && k12 != k01 && k12 != k02) IncrementCount(pairCounts, k12);
                     if (i0 != i1 && i0 != i2 && i1 != i2)
                         IncrementCount(tripleCounts, new FaceVertexKey(i0, i1, i2));
                 }
