@@ -4053,7 +4053,15 @@ namespace SashaRX.UnityMeshLab
                 var mesh = childMf.sharedMesh;
                 if (!mesh.isReadable) continue;
 
-                BakeTransformIntoMesh(mesh, t);
+                // A cloned FBX hierarchy can contain several nodes that instance
+                // the same Mesh. Baking into sharedMesh directly would apply each
+                // node's transform cumulatively to that one object. Give every
+                // transformed node its own copy before mutating the vertex data.
+                var bakedMesh = UnityEngine.Object.Instantiate(mesh);
+                bakedMesh.name = mesh.name;
+                childMf.sharedMesh = bakedMesh;
+
+                BakeTransformIntoMesh(bakedMesh, t);
 
                 // Reset transform to identity
                 t.localPosition = Vector3.zero;
