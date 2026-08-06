@@ -1,5 +1,10 @@
 name: Build Native Libraries
 
+# This workflow deliberately has no repository write permission. Native artifacts
+# must be reviewed and committed by a maintainer rather than published by CI.
+permissions:
+  contents: read
+
 on:
   push:
     paths:
@@ -33,7 +38,7 @@ jobs:
     name: Build (${{ matrix.os }})
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Configure CMake
         run: cmake -S 'Native~' -B build ${{ matrix.cmake_args }} -DCMAKE_BUILD_TYPE=Release
@@ -42,50 +47,8 @@ jobs:
         run: cmake --build build --config Release
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-${{ matrix.os }}
           path: ${{ matrix.plugin_dir }}/${{ matrix.artifact }}
           if-no-files-found: error
-
-  commit:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref }}
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Copy binaries to plugin directories
-        run: |
-          # Windows
-          mkdir -p Plugins/x86_64
-          cp artifacts/native-windows-latest/xatlas-unity.dll Plugins/x86_64/
-
-          # Linux
-          cp artifacts/native-ubuntu-latest/libxatlas-unity.so Plugins/x86_64/
-
-          # macOS (universal binary: x86_64 + arm64)
-          mkdir -p Plugins/macOS
-          cp artifacts/native-macos-latest/libxatlas-unity.dylib Plugins/macOS/
-
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Plugins/
-          if git diff --cached --quiet; then
-            echo "No changes to native libraries"
-          else
-            git commit -m "Build native libraries (auto) [skip ci]"
-            git push
-          fi
