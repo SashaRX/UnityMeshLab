@@ -884,18 +884,9 @@ namespace SashaRX.UnityMeshLab
         const double kRecoveryGapSeconds = 300.0;
 
         // ── Helpers ──
-        static string Csv(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            // Spreadsheet applications can execute cells that begin with one
-            // of these characters as formulas. Prefix such values with an
-            // apostrophe so recovered, user-controlled filenames stay text.
-            if (s[0] == '=' || s[0] == '+' || s[0] == '-' || s[0] == '@')
-                s = "'" + s;
-            bool needQuote = s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0;
-            if (!needQuote) return s;
-            return "\"" + s.Replace("\"", "\"\"") + "\"";
-        }
+        // Recovered, user-controlled filenames land in these cells, so escaping
+        // covers both RFC 4180 quoting and spreadsheet formula neutralisation.
+        static string Csv(string s) => CsvUtil.Escape(s);
 
         /// <summary>
         /// Minimal HTML escape covering the four characters that can break

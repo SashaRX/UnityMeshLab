@@ -494,21 +494,9 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static string Csv(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-
-            // Spreadsheet applications can evaluate cells beginning with these
-            // characters as formulas. Prefix untrusted text with an apostrophe so
-            // imported asset names remain data when the report is opened.
-            if (s[0] == '=' || s[0] == '+' || s[0] == '-' || s[0] == '@' ||
-                s[0] == '\t' || s[0] == '\r' || s[0] == '\n')
-                s = "'" + s;
-
-            bool needQuote = s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0;
-            if (!needQuote) return s;
-            return "\"" + s.Replace("\"", "\"\"") + "\"";
-        }
+        // Imported asset names are user-controlled, so escaping covers both
+        // RFC 4180 quoting and spreadsheet formula neutralisation.
+        static string Csv(string s) => CsvUtil.Escape(s);
 
         static string Sanitize(string s)
         {
