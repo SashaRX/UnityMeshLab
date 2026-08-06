@@ -2649,12 +2649,157 @@ namespace SashaRX.UnityMeshLab
                     stepRepack = (entry.lodIndex == ctx.SourceLodIndex),
                     stepTransfer = (entry.lodIndex != ctx.SourceLodIndex),
                 };
+
+                bool topologyModified = entry.wasWelded || entry.wasEdgeWelded || entry.wasSymmetrySplit;
+                if (topologyModified && entry.fbxMesh != null)
+                {
+                    sidecarEntry.vertexRemap = BuildVertexRemap(entry.fbxMesh, sidecarMesh);
+                    sidecarEntry.optimizedVertexCount = sidecarMesh.vertexCount;
+                    BuildTriangleData(sidecarMesh, out sidecarEntry.optimizedTriangles,
+                        out sidecarEntry.submeshTriangleCounts);
+                    sidecarEntry.hasReplayData = sidecarEntry.vertexRemap != null;
+
+                    sidecarEntry.optimizedPositions = sidecarMesh.vertices;
+                    sidecarEntry.optimizedNormals = sidecarMesh.normals;
+                    sidecarEntry.optimizedTangents = sidecarMesh.tangents;
+                    StoreOrphanVertexData(sidecarMesh, sidecarEntry);
+
+                    // Replay starts from the raw import, so stale-sidecar recovery data
+                    // must describe that mesh rather than the processed working copy.
+                    sidecarEntry.vertPositions = entry.fbxMesh.vertices;
+                    sidecarEntry.vertNormals = entry.fbxMesh.normals;
+                    var rawUv0 = new List<Vector2>();
+                    entry.fbxMesh.GetUVs(0, rawUv0);
+                    sidecarEntry.vertUv0 = rawUv0.Count == entry.fbxMesh.vertexCount
+                        ? rawUv0.ToArray()
+                        : null;
+                }
                 return true;
             }
             finally
             {
                 UnityEngine.Object.DestroyImmediate(sidecarMesh);
             }
+        }
+
+        static int[] BuildVertexRemap(Mesh rawFbx, Mesh optimized)
+        {
+            var rawPositions = rawFbx.vertices;
+            var optimizedPositions = optimized.vertices;
+            var rawUv0 = new List<Vector2>();
+            var optimizedUv0 = new List<Vector2>();
+            rawFbx.GetUVs(0, rawUv0);
+            optimized.GetUVs(0, optimizedUv0);
+            bool hasUv0 = rawUv0.Count == rawPositions.Length &&
+                          optimizedUv0.Count == optimizedPositions.Length;
+
+            var lookup = new Dictionary<(int, int, int), List<int>>();
+            for (int i = 0; i < optimizedPositions.Length; i++)
+            {
+                var key = QuantizePosition(optimizedPositions[i]);
+                if (!lookup.TryGetValue(key, out var candidates))
+                    lookup[key] = candidates = new List<int>(2);
+                candidates.Add(i);
+            }
+
+            var remap = new int[rawPositions.Length];
+            for (int i = 0; i < remap.Length; i++) remap[i] = -1;
+            var covered = new bool[optimizedPositions.Length];
+            int matched = 0;
+
+            for (int i = 0; i < rawPositions.Length; i++)
+            {
+                if (!lookup.TryGetValue(QuantizePosition(rawPositions[i]), out var candidates))
+                    continue;
+
+                int best = candidates[0];
+                if (hasUv0 && candidates.Count > 1)
+                {
+                    float bestDistance = float.MaxValue;
+                    foreach (int candidate in candidates)
+                    {
+                        float distance = Vector2.SqrMagnitude(rawUv0[i] - optimizedUv0[candidate]);
+                        if (distance < bestDistance)
+                        {
+                            bestDistance = distance;
+                            best = candidate;
+                        }
+                    }
+                }
+                remap[i] = best;
+                covered[best] = true;
+                matched++;
+            }
+
+            for (int i = 0; i < rawPositions.Length && matched < rawPositions.Length; i++)
+            {
+                if (remap[i] >= 0) continue;
+                float bestDistance = float.MaxValue;
+                int best = -1;
+                for (int j = 0; j < optimizedPositions.Length; j++)
+                {
+                    if (covered[j]) continue;
+                    float distance = Vector3.SqrMagnitude(rawPositions[i] - optimizedPositions[j]);
+                    if (distance < bestDistance) { bestDistance = distance; best = j; }
+                }
+                if (best >= 0 && bestDistance < 1e-2f)
+                {
+                    remap[i] = best;
+                    covered[best] = true;
+                    matched++;
+                }
+            }
+
+            if (matched < rawPositions.Length)
+                UvtLog.Warn($"[Apply] BuildVertexRemap: {matched}/{rawPositions.Length} mapped " +
+                            $"({rawPositions.Length - matched} unmapped)");
+            return remap;
+        }
+
+        static void BuildTriangleData(Mesh mesh, out int[] triangles, out int[] submeshTriangleCounts)
+        {
+            submeshTriangleCounts = new int[mesh.subMeshCount];
+            var combined = new List<int>();
+            for (int submesh = 0; submesh < mesh.subMeshCount; submesh++)
+            {
+                var submeshTriangles = mesh.GetTriangles(submesh);
+                submeshTriangleCounts[submesh] = submeshTriangles.Length;
+                combined.AddRange(submeshTriangles);
+            }
+            triangles = combined.ToArray();
+        }
+
+        static void StoreOrphanVertexData(Mesh optimized, MeshUv2Entry sidecarEntry)
+        {
+            var covered = new bool[sidecarEntry.optimizedVertexCount];
+            foreach (int target in sidecarEntry.vertexRemap)
+                if (target >= 0 && target < covered.Length) covered[target] = true;
+
+            var orphanIndices = new List<int>();
+            for (int i = 0; i < covered.Length; i++)
+                if (!covered[i]) orphanIndices.Add(i);
+            if (orphanIndices.Count == 0) return;
+
+            var positions = optimized.vertices;
+            var normals = optimized.normals;
+            var tangents = optimized.tangents;
+            var uv0 = new List<Vector2>();
+            optimized.GetUVs(0, uv0);
+            sidecarEntry.orphanIndices = orphanIndices.ToArray();
+            sidecarEntry.orphanPositions = orphanIndices.Select(i => positions[i]).ToArray();
+            if (normals.Length == optimized.vertexCount)
+                sidecarEntry.orphanNormals = orphanIndices.Select(i => normals[i]).ToArray();
+            if (tangents.Length == optimized.vertexCount)
+                sidecarEntry.orphanTangents = orphanIndices.Select(i => tangents[i]).ToArray();
+            if (uv0.Count == optimized.vertexCount)
+                sidecarEntry.orphanUv0 = orphanIndices.Select(i => uv0[i]).ToArray();
+        }
+
+        static (int, int, int) QuantizePosition(Vector3 position)
+        {
+            return (Mathf.RoundToInt(position.x * 10000f),
+                    Mathf.RoundToInt(position.y * 10000f),
+                    Mathf.RoundToInt(position.z * 10000f));
         }
 
         public void ExportFbxPublic(bool overwriteSource) => ExportFbx(overwriteSource);
