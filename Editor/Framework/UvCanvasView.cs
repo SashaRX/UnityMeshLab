@@ -620,7 +620,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if (tot>=MAX_TRI) break;
                 int colorKey = GetShellColorKey(ctx, s, entry);
-                Color c = pal[colorKey % pal.Length];
+                Color c = pal[NonNegativeColorKey(colorKey) % pal.Length];
                 if (s.shellId == selectedShellId)
                     c = Color.Lerp(c, Color.white, 0.45f);
                 c.a = s.shellId == selectedShellId ? Mathf.Clamp01(FillAlpha * 1.85f) : FillAlpha;
@@ -907,7 +907,13 @@ namespace SashaRX.UnityMeshLab
             // Include bbox size to distinguish overlapping shells of different sizes
             int qw = Mathf.RoundToInt((mx.x - mn.x) * 100f);
             int qh = Mathf.RoundToInt((mx.y - mn.y) * 100f);
-            return Mathf.Abs((qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381));
+            int hash = unchecked((qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381));
+            return NonNegativeColorKey(hash);
+        }
+
+        static int NonNegativeColorKey(int colorKey)
+        {
+            return colorKey == int.MinValue ? int.MaxValue : Mathf.Abs(colorKey);
         }
 
         public int GetShellColorKey(UvToolContext ctx, UvShell shell, MeshEntry entry)
