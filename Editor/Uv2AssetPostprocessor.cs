@@ -12,6 +12,9 @@ namespace SashaRX.UnityMeshLab
 {
     public class Uv2AssetPostprocessor : AssetPostprocessor
     {
+        const int MinReplayUvChannel = 1;
+        const int MaxReplayUvChannel = 7;
+
         // Run well after Bakery and other postprocessors (default order = 0).
         public override int GetPostprocessOrder() => 10000;
 
@@ -544,7 +547,7 @@ namespace SashaRX.UnityMeshLab
 
             bool didRemap;
             int nearestFallback, nearestAnyReuse, unmatched;
-            int primaryTargetUvChannel = entry.targetUvChannel >= 0 ? entry.targetUvChannel : 1;
+            int primaryTargetUvChannel = ResolvePrimaryTargetUvChannel(entry.targetUvChannel, mesh.name);
             string primaryLabel = $"channel {primaryTargetUvChannel}";
             var uv2 = RemapUvSetIfNeeded(entry, entry.uv2, mesh, primaryLabel, out didRemap, out nearestFallback, out nearestAnyReuse, out unmatched);
             stats.remapped = didRemap;
@@ -552,7 +555,8 @@ namespace SashaRX.UnityMeshLab
             stats.nearestAnyReuseCount = nearestAnyReuse;
             stats.unmatchedVerts = unmatched;
             mesh.SetUVs(primaryTargetUvChannel, uv2);
-            if (entry.auxiliaryUv != null && entry.auxiliaryTargetUvChannel >= 0)
+            if (entry.auxiliaryUv != null &&
+                IsValidReplayUvChannel(entry.auxiliaryTargetUvChannel, mesh.name, "auxiliary"))
             {
                 bool auxDidRemap;
                 int auxNearestFallback, auxNearestAnyReuse, auxUnmatched;
@@ -575,7 +579,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (mesh == null || entry?.uv2 == null) return;
 
-            int primaryTargetUvChannel = entry.targetUvChannel >= 0 ? entry.targetUvChannel : 1;
+            int primaryTargetUvChannel = ResolvePrimaryTargetUvChannel(entry.targetUvChannel, mesh.name);
             if (entry.uv2.Length == mesh.vertexCount)
                 mesh.SetUVs(primaryTargetUvChannel, entry.uv2);
 
@@ -586,8 +590,28 @@ namespace SashaRX.UnityMeshLab
         {
             if (mesh == null || entry?.auxiliaryUv == null) return;
             if (entry.auxiliaryTargetUvChannel < 0) return;
+            if (!IsValidReplayUvChannel(entry.auxiliaryTargetUvChannel, mesh.name, "auxiliary")) return;
             if (entry.auxiliaryUv.Length != mesh.vertexCount) return;
             mesh.SetUVs(entry.auxiliaryTargetUvChannel, entry.auxiliaryUv);
+        }
+
+        static int ResolvePrimaryTargetUvChannel(int channel, string meshName)
+        {
+            if (channel >= MinReplayUvChannel && channel <= MaxReplayUvChannel)
+                return channel;
+
+            UvtLog.Warn($"[UV2 Postprocess] '{meshName}': sidecar primary UV channel {channel} is invalid; " +
+                        "using channel 1 (UV2) instead.");
+            return MinReplayUvChannel;
+        }
+
+        static bool IsValidReplayUvChannel(int channel, string meshName, string label)
+        {
+            if (channel >= MinReplayUvChannel && channel <= MaxReplayUvChannel)
+                return true;
+
+            UvtLog.Warn($"[UV2 Postprocess] '{meshName}': sidecar {label} UV channel {channel} is invalid; skipped.");
+            return false;
         }
 
         static bool ResolveSymmetrySplitStep(MeshUv2Entry entry)
