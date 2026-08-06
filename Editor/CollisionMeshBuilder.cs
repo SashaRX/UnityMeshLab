@@ -235,7 +235,7 @@ namespace SashaRX.UnityMeshLab
             var positions = mesh.vertices;
             var triangles = mesh.triangles;
 
-            mesh.Clear();
+            mesh.Clear(false);
             mesh.SetVertices(positions);
             mesh.SetTriangles(triangles, 0);
             mesh.RecalculateBounds();
