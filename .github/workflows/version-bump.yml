@@ -27,12 +27,27 @@ jobs:
       - name: Bump patch version in package.json
         id: bump
         run: |
+          # A file with several root values ("{...}{...}") passes `jq empty` but
+          # makes `jq -er .version` emit one line per document — validate the
+          # single-object root before anything reads or rewrites the manifest.
+          if ! jq -e -s 'length == 1 and (.[0] | type == "object")' package.json > /dev/null; then
+            echo "::error::package.json is not a single JSON object"
+            exit 1
+          fi
           CURRENT=$(jq -er '.version | select(type == "string")' package.json)
-          if [[ ! "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ! "$CURRENT" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "::error::Invalid version format: $CURRENT (expected semver X.Y.Z)"
             exit 1
           fi
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          # $((PATCH + 1)) wraps silently at the 64-bit boundary (it would turn
+          # 9223372036854775807 into a negative patch), so bound the input
+          # first. Compare digit count, not value: a numeric [ -ge ] test on a
+          # 20-digit patch is itself an "integer expression expected" error.
+          if [ "${#PATCH}" -gt 9 ]; then
+            echo "::error::Patch component out of range: $PATCH (expected < 1000000000)"
+            exit 1
+          fi
           NEW_PATCH=$((PATCH + 1))
           NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
           TEMP_FILE=$(mktemp)
