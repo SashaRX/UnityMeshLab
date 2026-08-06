@@ -86,7 +86,8 @@ namespace SashaRX.UnityMeshLab
                     int qy = Mathf.RoundToInt(center.y * 100f);
                     int qw = Mathf.RoundToInt((mx.x - mn.x) * 100f);
                     int qh = Mathf.RoundToInt((mx.y - mn.y) * 100f);
-                    int stableKey = Mathf.Abs((qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381));
+                    int hash = (qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381);
+                    int stableKey = hash == int.MinValue ? 0 : Mathf.Abs(hash);
 
                     foreach (int faceIndex in shell.faceIndices)
                         if (faceIndex >= 0 && faceIndex < triangleToShell.Length)
@@ -259,7 +260,7 @@ namespace SashaRX.UnityMeshLab
             {
                 int shellId = shellIds[face];
                 Color32 color = palette != null && palette.Length > 0
-                    ? palette[Mathf.Abs(shellId) % palette.Length]
+                    ? palette[(shellId == int.MinValue ? 0 : Mathf.Abs(shellId)) % palette.Length]
                     : new Color32(255, 255, 255, 255);
 
                 int triBase = face * 3;

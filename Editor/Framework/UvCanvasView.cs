@@ -907,7 +907,8 @@ namespace SashaRX.UnityMeshLab
             // Include bbox size to distinguish overlapping shells of different sizes
             int qw = Mathf.RoundToInt((mx.x - mn.x) * 100f);
             int qh = Mathf.RoundToInt((mx.y - mn.y) * 100f);
-            return Mathf.Abs((qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381));
+            int hash = (qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381);
+            return hash == int.MinValue ? 0 : Mathf.Abs(hash);
         }
 
         public int GetShellColorKey(UvToolContext ctx, UvShell shell, MeshEntry entry)
