@@ -229,8 +229,8 @@ namespace SashaRX.UnityMeshLab
                 new GUIContent("Fill Mode", "How to determine inside vs outside.\n\nFlood Fill: default, works for closed meshes.\nSurface Only: hollow result, for thin shells.\nRaycast Fill: better for meshes with holes."),
                 convexFillMode, fillModeNames);
             convexMaxRecursionDepth = EditorGUILayout.IntSlider(
-                new GUIContent("Max Recursion", "Maximum depth of recursive splitting. Higher = finer decomposition, slower. Default: 10."),
-                convexMaxRecursionDepth, 1, 25);
+                new GUIContent("Max Recursion", "Maximum depth of recursive splitting. Higher = finer decomposition, slower. Capped at 10 to bound memory and CPU use."),
+                convexMaxRecursionDepth, 1, CollisionMeshBuilder.MaxConvexRecursionDepth);
             convexMinEdgeLength = EditorGUILayout.IntSlider(
                 new GUIContent("Min Edge Length", "Stop recursing when voxel patch edge is below this length. Lower = more detail. Default: 2."),
                 convexMinEdgeLength, 1, 8);
