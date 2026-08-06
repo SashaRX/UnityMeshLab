@@ -2623,6 +2623,7 @@ namespace SashaRX.UnityMeshLab
                     return false;
 
                 var positions = sidecarMesh.vertices;
+                var colors = sidecarMesh.colors32;
                 var uv0List = new List<Vector2>();
                 (entry.originalMesh ?? resultMesh).GetUVs(0, uv0List);
 
@@ -2639,6 +2640,7 @@ namespace SashaRX.UnityMeshLab
                     edgeWelded = entry.wasEdgeWelded,
                     vertPositions = positions,
                     vertUv0 = uv0List.ToArray(),
+                    optimizedColors = colors.Length == sidecarMesh.vertexCount ? colors : null,
                     schemaVersion = Uv2DataAsset.CurrentSchemaVersion,
                     toolVersion = Uv2DataAsset.ToolVersionStr,
                     sourceFingerprint = fp,

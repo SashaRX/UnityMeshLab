@@ -723,7 +723,7 @@ namespace SashaRX.UnityMeshLab
             // ── Build optimized arrays via remap ──
             // If ground-truth vertex data is available, use it DIRECTLY for positions/normals/tangents.
             // This completely bypasses the remap for geometry, eliminating all remap-related vertex errors.
-            // The remap is only used for UV channels and colors (which aren't stored in ground truth).
+            // The remap is only used for UV channels and as a fallback for legacy color data.
             bool hasGroundTruth = entry.optimizedPositions != null && entry.optimizedPositions.Length == optCount;
 
             var optPos = new Vector3[optCount];
@@ -750,13 +750,19 @@ namespace SashaRX.UnityMeshLab
                     System.Array.Copy(entry.optimizedNormals, optNormals, optCount);
                 if (optTangents != null && entry.optimizedTangents != null && entry.optimizedTangents.Length == optCount)
                     System.Array.Copy(entry.optimizedTangents, optTangents, optCount);
+                if (optColors != null && entry.optimizedColors != null && entry.optimizedColors.Length == optCount)
+                    System.Array.Copy(entry.optimizedColors, optColors, optCount);
 
-                // UV channels, colors — from remap (UV0 is modified by weld, must come from raw FBX)
+                // UV channels and legacy colors — from remap (UV0 is modified by weld,
+                // so it must come from the raw FBX). Optimized colors remain authoritative
+                // because merged and orphan vertices cannot always be reconstructed by remap.
+                bool remapColors = optColors != null &&
+                    (entry.optimizedColors == null || entry.optimizedColors.Length != optCount);
                 for (int i = 0; i < rawCount; i++)
                 {
                     int dst = remap[i];
                     if (dst < 0) continue;
-                    if (optColors != null) optColors[dst] = rawColors[i];
+                    if (remapColors) optColors[dst] = rawColors[i];
                     for (int ch = 0; ch < 8; ch++)
                     {
                         if (ch == 1 || optUvs[ch] == null) continue;
