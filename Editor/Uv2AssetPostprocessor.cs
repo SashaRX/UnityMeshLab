@@ -1,6 +1,7 @@
 // Uv2AssetPostprocessor.cs — Injects UV2 into imported meshes from sidecar data.
-// Triggers on every FBX/model import. If a "_uv2data.asset" sidecar exists next
-// to the model file, reads it and applies stored UV2 arrays to matching meshes.
+// Triggers on explicitly tool-managed FBX/model imports. If a "_uv2data.asset"
+// sidecar exists next to the model file, reads it and applies stored UV2 arrays
+// to matching meshes.
 // This mirrors Unity's built-in "Generate Lightmap UVs" approach: the FBX stays
 // untouched on disk; UV2 lives only in the imported mesh inside Library/.
 
@@ -199,14 +200,15 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            bool persistentMode = PostprocessorDefineManager.IsEnabled();
             bool isManaged = managedImportPaths.Contains(modelPath);
             bool transientReplay = transientReplayPaths.Remove(modelPath);
             transientReplayEntries.TryGetValue(modelPath, out var transientEntries);
             if (transientReplay)
                 transientReplayEntries.Remove(modelPath);
 
-            if (!persistentMode && !isManaged && !transientReplay)
+            // Sidecars are serialized project assets and must not authorize their own replay.
+            // Only imports explicitly registered by the tool may reach mesh mutation/remapping.
+            if (!isManaged && !transientReplay)
                 return;
 
             string sidecarPath = Uv2DataAsset.GetSidecarPath(modelPath);
@@ -261,10 +263,8 @@ namespace SashaRX.UnityMeshLab
             if (data.entries == null || data.entries.Count == 0)
                 return;
 
-            // Always apply UV2 from sidecar if entries exist — ensures persistence
-            // across Unity restarts even when third-party postprocessors (e.g. Bakery
-            // auto-unwrap) overwrite UV2 on every reimport. Our high postprocess order
-            // (10000) guarantees we run last and our UV2 data wins.
+            // Apply UV2 only for the explicitly authorized import. Our high postprocess
+            // order (10000) guarantees the registered replay runs after other processors.
 
             var filters = root.GetComponentsInChildren<MeshFilter>(true);
             var skinned = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
