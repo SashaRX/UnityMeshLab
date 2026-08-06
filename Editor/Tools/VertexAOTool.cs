@@ -1446,6 +1446,7 @@ namespace SashaRX.UnityMeshLab
                 previewMaterial.SetInt("_ZWrite", 1);
             }
 
+            var previewedMeshFilters = new HashSet<MeshFilter>();
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include || e.renderer == null) continue;
@@ -1455,7 +1456,7 @@ namespace SashaRX.UnityMeshLab
                 if (mesh == null || !bakedFinalAO.ContainsKey(mesh)) continue;
 
                 var mr = e.renderer as MeshRenderer;
-                if (mr == null) continue;
+                if (mr == null || !previewedMeshFilters.Add(mf)) continue;
 
                 // Backup
                 previewBackups.Add((mf, mf.sharedMesh, mr.sharedMaterials));
