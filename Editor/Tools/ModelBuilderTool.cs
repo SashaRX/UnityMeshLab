@@ -10,6 +10,8 @@ namespace SashaRX.UnityMeshLab
 {
     public class ModelBuilderTool : IUvTool
     {
+        const int MaxLodLevels = 8;
+
         UvToolContext ctx;
         UvCanvasView canvas;
         System.Action requestRepaint;
@@ -365,7 +367,21 @@ namespace SashaRX.UnityMeshLab
             var match = System.Text.RegularExpressions.Regex.Match(
                 name, @"_LOD(\d+)$",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            return match.Success ? int.Parse(match.Groups[1].Value) : -1;
+            return match.Success && int.TryParse(match.Groups[1].Value, out int lodIdx) ? lodIdx : -1;
+        }
+
+        // LODGroup supports at most eight levels; reject name-derived indices
+        // outside that range (also guards int.Parse against overflowing digits).
+        static bool TryParseLodIndex(string name, out int lodIndex)
+        {
+            lodIndex = 0;
+            var match = System.Text.RegularExpressions.Regex.Match(
+                name, @"_LOD(\d+)$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            return match.Success
+                && int.TryParse(match.Groups[1].Value, out lodIndex)
+                && lodIndex < MaxLodLevels;
         }
 
         void DrawEditableName(GameObject go, string suffix, int indent)
@@ -785,12 +801,7 @@ namespace SashaRX.UnityMeshLab
                 if (r == null || r.transform == root) continue;
                 if (colSet.Contains(r.gameObject)) continue;
 
-                var match = System.Text.RegularExpressions.Regex.Match(
-                    r.gameObject.name, @"_LOD(\d+)$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (!match.Success) continue;
-
-                int lodIdx = int.Parse(match.Groups[1].Value);
+                if (!TryParseLodIndex(r.gameObject.name, out int lodIdx)) continue;
 
                 if (!lodChildren.ContainsKey(lodIdx))
                     lodChildren[lodIdx] = new List<Renderer>();
