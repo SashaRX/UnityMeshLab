@@ -19,6 +19,14 @@ namespace SashaRX.UnityMeshLab
         UvCanvasView canvas;
         Action requestRepaint;
 
+        // Surface-area scans materialize mesh vertex/index data and are far too
+        // expensive to run on every OnGUI repaint. Cache the result keyed by the
+        // exact mesh references it was computed from, and recompute only when
+        // that set changes (or when an actual repack refreshes it).
+        readonly List<Mesh> _areaPreviewMeshes = new List<Mesh>();
+        double _areaPreview;
+        bool _hasAreaPreview;
+
         public string ToolName  => "UV2 Transfer";
         public string ToolId    => "uv2_transfer";
         public int    ToolOrder => 0;
@@ -42,6 +50,46 @@ namespace SashaRX.UnityMeshLab
                 return true;
             }
             return false;
+        }
+
+        List<Mesh> GetRepackSourceMeshes()
+        {
+            return ctx.ForLod(ctx.SourceLodIndex)
+                .Where(e => e.originalMesh != null)
+                .Select(e => e.originalMesh)
+                .ToList();
+        }
+
+        bool TryGetAreaPreview(List<Mesh> meshes, out double area)
+        {
+            bool sameMeshes = _hasAreaPreview && meshes.Count == _areaPreviewMeshes.Count;
+            for (int i = 0; sameMeshes && i < meshes.Count; i++)
+                sameMeshes = ReferenceEquals(meshes[i], _areaPreviewMeshes[i]);
+
+            area = sameMeshes ? _areaPreview : 0.0;
+            return sameMeshes;
+        }
+
+        double CacheAreaPreview(List<Mesh> meshes, double area)
+        {
+            _areaPreview = area;
+            _areaPreviewMeshes.Clear();
+            _areaPreviewMeshes.AddRange(meshes);
+            _hasAreaPreview = true;
+            return _areaPreview;
+        }
+
+        /// <summary>
+        /// Cached total 3D surface area of the source-LOD meshes. Recomputed only
+        /// when the mesh set changes, so a repaint no longer copies every vertex
+        /// and index array. Draws no controls — the IMGUI control count must not
+        /// depend on cache state.
+        /// </summary>
+        double GetSourceAreaPreview()
+        {
+            var meshes = GetRepackSourceMeshes();
+            if (TryGetAreaPreview(meshes, out double area)) return area;
+            return CacheAreaPreview(meshes, MeshAreaHelper.ComputeTotal3DAreaMeters(meshes));
         }
 
         const int MaxSweepValuesPerDimension = 16;
@@ -754,10 +802,7 @@ namespace SashaRX.UnityMeshLab
                     // Texel density preview — live summary of the resolved
                     // atlas size so the user sees what xatlas will actually
                     // pack into without having to switch to the Repack tab.
-                    double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
-                        ctx.ForLod(ctx.SourceLodIndex)
-                            .Where(e => e.originalMesh != null)
-                            .Select(e => e.originalMesh));
+                    double total3DArea = GetSourceAreaPreview();
                     string previewLine;
                     if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
                     {
@@ -1019,10 +1064,7 @@ namespace SashaRX.UnityMeshLab
                 ? ResolutionMode.AutoFromTexelDensity
                 : ResolutionMode.Manual;
 
-            double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
-                ctx.ForLod(ctx.SourceLodIndex)
-                    .Where(e => e.originalMesh != null)
-                    .Select(e => e.originalMesh));
+            double total3DArea = GetSourceAreaPreview();
 
             if (ctx.RepackResolutionMode == ResolutionMode.Manual)
             {
@@ -2078,8 +2120,10 @@ namespace SashaRX.UnityMeshLab
             uint resolvedResolution = (uint)SanitizeAtlasResolution(ctx.AtlasResolution);
             if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
             {
-                double area = MeshAreaHelper.ComputeTotal3DAreaMeters(
-                    entries.Where(e => e.originalMesh != null).Select(e => e.originalMesh));
+                var areaMeshes = entries.Where(e => e.originalMesh != null)
+                                        .Select(e => e.originalMesh).ToList();
+                double area = CacheAreaPreview(
+                    areaMeshes, MeshAreaHelper.ComputeTotal3DAreaMeters(areaMeshes));
                 resolvedResolution = MeshAreaHelper.ComputeAutoResolution(
                     area, ctx.LightmapDensity, ctx.TargetUvCoverage);
                 UvtLog.Info(
