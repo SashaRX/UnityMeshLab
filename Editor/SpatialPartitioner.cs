@@ -70,13 +70,12 @@ namespace SashaRX.UnityMeshLab
                     continue;
                 }
 
-                // Step 1: Build face adjacency (needed for both overlap detection and flood-fill)
-                var faceVerts = BuildFaceVertexSets(shell.faceIndices, triangles);
+                // Step 1: Build face adjacency for flood-fill
                 var adjacency = BuildFaceAdjacency(shell.faceIndices, triangles);
 
                 // Step 2: Overlap detection — only flag faces sharing a grid cell
                 // with a NON-ADJACENT face (no shared vertex)
-                var overlappingFaces = DetectOverlap(shell, uv0, triangles, faceVerts);
+                var overlappingFaces = DetectOverlap(shell, uv0, triangles);
                 r.hasOverlap = overlappingFaces.Count > 0;
 
                 if (!r.hasOverlap)
@@ -218,31 +217,38 @@ namespace SashaRX.UnityMeshLab
             return faces.ToArray();
         }
 
-        // ════════════════════════════════════════════════════════════
-        //  Per-face vertex set (for fast adjacency check in overlap detection)
-        // ════════════════════════════════════════════════════════════
-
-        static Dictionary<int, HashSet<int>> BuildFaceVertexSets(List<int> faceIndices, int[] triangles)
+        readonly struct FaceVertexKey : System.IEquatable<FaceVertexKey>
         {
-            var result = new Dictionary<int, HashSet<int>>(faceIndices.Count);
-            foreach (int f in faceIndices)
+            public readonly int a;
+            public readonly int b;
+            public readonly int c;
+
+            public FaceVertexKey(int v0, int v1, int v2)
             {
-                var set = new HashSet<int>();
-                set.Add(triangles[f * 3]);
-                set.Add(triangles[f * 3 + 1]);
-                set.Add(triangles[f * 3 + 2]);
-                result[f] = set;
+                if (v0 > v1) { int t = v0; v0 = v1; v1 = t; }
+                if (v1 > v2) { int t = v1; v1 = v2; v2 = t; }
+                if (v0 > v1) { int t = v0; v0 = v1; v1 = t; }
+                a = v0;
+                b = v1;
+                c = v2;
             }
-            return result;
-        }
 
-        static bool FacesShareVertex(Dictionary<int, HashSet<int>> faceVerts, int fA, int fB)
-        {
-            if (!faceVerts.TryGetValue(fA, out var setA)) return false;
-            if (!faceVerts.TryGetValue(fB, out var setB)) return false;
-            foreach (int v in setA)
-                if (setB.Contains(v)) return true;
-            return false;
+            public bool Equals(FaceVertexKey other)
+            {
+                return a == other.a && b == other.b && c == other.c;
+            }
+
+            public override bool Equals(object obj) => obj is FaceVertexKey other && Equals(other);
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    int hash = a;
+                    hash = (hash * 397) ^ b;
+                    return (hash * 397) ^ c;
+                }
+            }
         }
 
         // ════════════════════════════════════════════════════════════
@@ -250,8 +256,7 @@ namespace SashaRX.UnityMeshLab
         // ════════════════════════════════════════════════════════════
 
         static HashSet<int> DetectOverlap(
-            UvShell shell, Vector2[] uv0, int[] triangles,
-            Dictionary<int, HashSet<int>> faceVerts)
+            UvShell shell, Vector2[] uv0, int[] triangles)
         {
             var overlapping = new HashSet<int>();
 
@@ -294,25 +299,74 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            // Count incidences instead of comparing every pair in a cell. For a
+            // face, inclusion-exclusion gives the number of cell faces sharing
+            // at least one of its vertices. Any remaining face is non-adjacent.
+            // This keeps detection linear in face-cell memberships even when a
+            // crafted mesh makes every face cover every grid cell.
+            var vertexCounts = new Dictionary<int, int>();
+            var pairCounts = new Dictionary<long, int>();
+            var tripleCounts = new Dictionary<FaceVertexKey, int>();
+
             foreach (var kv in cellFaces)
             {
                 var list = kv.Value;
                 if (list.Count < 2) continue;
 
+                vertexCounts.Clear();
+                pairCounts.Clear();
+                tripleCounts.Clear();
+
                 for (int i = 0; i < list.Count; i++)
                 {
-                    for (int j = i + 1; j < list.Count; j++)
+                    int f = list[i];
+                    int i0 = triangles[f * 3], i1 = triangles[f * 3 + 1], i2 = triangles[f * 3 + 2];
+                    IncrementCount(vertexCounts, i0);
+                    if (i1 != i0) IncrementCount(vertexCounts, i1);
+                    if (i2 != i0 && i2 != i1) IncrementCount(vertexCounts, i2);
+
+                    if (i0 != i1) IncrementCount(pairCounts, VertexPairKey(i0, i1));
+                    if (i0 != i2) IncrementCount(pairCounts, VertexPairKey(i0, i2));
+                    if (i1 != i2) IncrementCount(pairCounts, VertexPairKey(i1, i2));
+                    if (i0 != i1 && i0 != i2 && i1 != i2)
+                        IncrementCount(tripleCounts, new FaceVertexKey(i0, i1, i2));
+                }
+
+                for (int i = 0; i < list.Count; i++)
+                {
+                    int f = list[i];
+                    int i0 = triangles[f * 3], i1 = triangles[f * 3 + 1], i2 = triangles[f * 3 + 2];
+                    int sharedCount = vertexCounts[i0];
+
+                    if (i1 != i0)
+                        sharedCount += vertexCounts[i1] - pairCounts[VertexPairKey(i0, i1)];
+                    if (i2 != i0 && i2 != i1)
                     {
-                        if (!FacesShareVertex(faceVerts, list[i], list[j]))
+                        sharedCount += vertexCounts[i2] - pairCounts[VertexPairKey(i0, i2)];
+                        if (i1 != i0)
                         {
-                            overlapping.Add(list[i]);
-                            overlapping.Add(list[j]);
+                            sharedCount -= pairCounts[VertexPairKey(i1, i2)];
+                            sharedCount += tripleCounts[new FaceVertexKey(i0, i1, i2)];
                         }
                     }
+
+                    if (sharedCount < list.Count)
+                        overlapping.Add(f);
                 }
             }
 
             return overlapping;
+        }
+
+        static long VertexPairKey(int v0, int v1)
+        {
+            return v0 < v1 ? ((long)v0 << 32) | (uint)v1 : ((long)v1 << 32) | (uint)v0;
+        }
+
+        static void IncrementCount<TKey>(Dictionary<TKey, int> counts, TKey key)
+        {
+            counts.TryGetValue(key, out int count);
+            counts[key] = count + 1;
         }
 
         // ════════════════════════════════════════════════════════════
