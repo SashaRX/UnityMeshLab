@@ -6,6 +6,10 @@ namespace SashaRX.UnityMeshLab
 {
     public static partial class VertexAOBaker
     {
+        // Keeps editor-triggered spatial blur bounded even for adversarial dense meshes.
+        const int MaxSpatialBlurChecks = 8 * 1024 * 1024;
+        const int MaxSpatialNeighborsPerVertex = 256;
+
         public static float[] BlurAO(float[] ao, int[] triangles, int vertexCount, int iterations, float strength,
             Vector3[] positions = null, Vector3[] normals = null, Vector2[] uv0 = null,
             bool crossHardEdges = true, bool crossUvSeams = true)
@@ -120,6 +124,13 @@ namespace SashaRX.UnityMeshLab
         {
             if (ao == null || positions == null || iterations <= 0 || radius <= 0) return ao;
             int count = ao.Length;
+            if (positions.Length != count) return ao;
+
+            long vertexIterations = (long)count * iterations;
+            int maxChecksPerVertex = vertexIterations > 0
+                ? (int)System.Math.Max(1L, System.Math.Min(
+                    MaxSpatialNeighborsPerVertex, MaxSpatialBlurChecks / vertexIterations))
+                : MaxSpatialNeighborsPerVertex;
 
             // Build spatial grid for fast neighbor lookup
             float cellSize = radius;
@@ -150,18 +161,24 @@ namespace SashaRX.UnityMeshLab
 
                     float weightSum = 1f; // self weight
                     float aoSum = src[v];
+                    int checks = 0;
 
-                    // 27-cell neighborhood
-                    for (int dx = -1; dx <= 1; dx++)
-                    for (int dy = -1; dy <= 1; dy++)
-                    for (int dz = -1; dz <= 1; dz++)
+                    // Bound candidate checks so dense cells cannot turn this into O(n²).
+                    for (int dx = -1; dx <= 1 && checks < maxChecksPerVertex; dx++)
+                    for (int dy = -1; dy <= 1 && checks < maxChecksPerVertex; dy++)
+                    for (int dz = -1; dz <= 1 && checks < maxChecksPerVertex; dz++)
                     {
                         long nkey = PackKey(cx + dx, cy + dy, cz + dz);
                         if (!grid.TryGetValue(nkey, out var cell)) continue;
-                        for (int ci = 0; ci < cell.Count; ci++)
+                        // Rotate the sample per vertex to avoid favoring low indices
+                        // when a dense cell exceeds the per-vertex budget.
+                        int start = cell.Count > 0 ? v % cell.Count : 0;
+                        for (int offset = 0; offset < cell.Count && checks < maxChecksPerVertex; offset++)
                         {
+                            int ci = (start + offset) % cell.Count;
                             int ni = cell[ci];
                             if (ni == v) continue;
+                            checks++;
                             float distSq = (positions[ni] - p).sqrMagnitude;
                             if (distSq >= radiusSq) continue;
 
