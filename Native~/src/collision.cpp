@@ -63,6 +63,18 @@ EXPORT void* ConvexDecomp_Compute(
             return nullptr;
     }
 
+    // The remaining tunables are handed to V-HACD as uint32_t or as an enum.
+    // A negative int wraps to a huge unsigned value there — a negative
+    // resolution becomes a multi-billion-voxel grid, a negative maxHulls an
+    // effectively unbounded hull budget — and a fillMode outside the enum
+    // selects no case at all. Reject them at the ABI boundary; the editor-side
+    // ranges (maxHulls 1..64, resolution 10000..1000000, maxVertsPerHull
+    // 8..255, minEdgeLength 1..8, fillMode 0..2) all stay valid.
+    if (maxHulls <= 0 || resolution <= 0 || maxVertsPerHull <= 0 || minEdgeLength <= 0)
+        return nullptr;
+    if (fillMode < 0 || fillMode > 2)
+        return nullptr;
+
     // Recursive splitting can create 2^depth intermediate hulls, followed by an
     // O(n²) merge-cost allocation. Treat the native ABI as a trust boundary so
     // callers cannot bypass the editor-side work-budget limit.
