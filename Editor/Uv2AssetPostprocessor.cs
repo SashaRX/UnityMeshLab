@@ -1103,45 +1103,25 @@ namespace SashaRX.UnityMeshLab
                 if (bestOld >= 0)
                 {
                     newRemap[i] = origRemap[bestOld];
+                    matched++;
                     if (origRemap[bestOld] >= 0)
                     {
                         coveredOpt[origRemap[bestOld]] = true;
-                        matched++;
                     }
                 }
             }
 
-            // Pass 2: nearest-neighbor fallback for bucket boundary misses.
-            // Allow reuse of already-used stored vertices here — these are rare
-            // boundary cases where the quantization rounded differently, and the
-            // nearest stored vertex (same position) should have the same origRemap.
+            // A partial remap is unsafe: replay would leave optimized vertices at
+            // their default values while still restoring triangles that reference
+            // them. Abort instead of applying corrupt geometry. Do not fall back to
+            // an all-pairs nearest-neighbor scan here; sidecars are imported
+            // automatically, so that quadratic work can stall the Editor.
             if (matched < newCount)
             {
-                for (int i = 0; i < newCount; i++)
-                {
-                    if (newRemap[i] >= 0) continue;
-                    float bestDist = float.MaxValue;
-                    int bestOld = -1;
-                    for (int j = 0; j < storedCount; j++)
-                    {
-                        float d = Vector3.SqrMagnitude(newPos[i] - storedPos[j]);
-                        if (d < bestDist) { bestDist = d; bestOld = j; }
-                    }
-                    if (bestOld >= 0 && bestDist < 1e-4f)
-                    {
-                        newRemap[i] = origRemap[bestOld];
-                        if (origRemap[bestOld] >= 0)
-                        {
-                            coveredOpt[origRemap[bestOld]] = true;
-                            matched++;
-                        }
-                    }
-                }
-            }
-
-            if (matched < newCount)
                 UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': remap rebuild matched {matched}/{newCount} " +
-                            $"({newCount - matched} unmapped)");
+                            $"({newCount - matched} unmapped) — replay aborted.");
+                return null;
+            }
 
             // Coverage diagnostic: count how many referenced opt indices are still uncovered
             int uncoveredCount = 0;
