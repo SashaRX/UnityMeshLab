@@ -55,6 +55,15 @@ EXPORT void* ConvexDecomp_Compute(
     if (!vertices || !indices || vertexCount <= 0 || indexCount < 3)
         return nullptr;
 
+    // Recursive splitting can create 2^depth intermediate hulls, followed by an
+    // O(n²) merge-cost allocation. Treat the native ABI as a trust boundary so
+    // callers cannot bypass the editor-side work-budget limit.
+    constexpr int kMaxSafeRecursionDepth = 10;
+    if (maxRecursionDepth < 1)
+        maxRecursionDepth = 1;
+    else if (maxRecursionDepth > kMaxSafeRecursionDepth)
+        maxRecursionDepth = kMaxSafeRecursionDepth;
+
     VHACD::IVHACD* vhacd = VHACD::CreateVHACD();
     if (!vhacd)
         return nullptr;
