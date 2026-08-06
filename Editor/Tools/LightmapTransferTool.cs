@@ -1246,8 +1246,8 @@ namespace SashaRX.UnityMeshLab
         {
             ctx.PostPackDensityCorrection = EditorGUILayout.ToggleLeft(
                 new GUIContent("Post-pack density correction (experimental)",
-                    "After pack, shrink over-dense shells toward the median around their UV2 centroid. "
-                    + "Compensates xatlas's per-chart ceil(extents) stretch. Shrink-only; leaves gaps."),
+                    "After pack, shrink over-dense shells toward the median around each packed chart's UV2 centroid. "
+                    + "Each chart stays inside its packed bounds. Shrink-only; leaves gaps."),
                 ctx.PostPackDensityCorrection);
             ctx.XatlasTexelsPerUnit = EditorGUILayout.FloatField(
                 new GUIContent("Texels per UV unit (manual)",

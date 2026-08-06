@@ -339,5 +339,46 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue((bool)method.Invoke(null, new object[] { false, true }));
             Assert.IsFalse((bool)method.Invoke(null, new object[] { false, false }));
         }
+
+        [Test]
+        public void PostPackDensityCorrection_KeepsEachSplitChartCentroidFixed()
+        {
+            var method = typeof(XatlasRepack).GetMethod(
+                "ApplyPostPackDensityCorrection",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method);
+
+            var uv2 = new[]
+            {
+                new Vector2(0, 0), new Vector2(1, 0), new Vector2(0, 1),
+                new Vector2(10, 0), new Vector2(11, 0), new Vector2(10, 1),
+                new Vector2(4, 0), new Vector2(4.2f, 0), new Vector2(4, 0.2f),
+                new Vector2(7, 0), new Vector2(7.2f, 0), new Vector2(7, 0.2f)
+            };
+            var positions = new Vector3[uv2.Length];
+            for (int i = 0; i < positions.Length; i += 3)
+            {
+                positions[i] = Vector3.zero;
+                positions[i + 1] = Vector3.right;
+                positions[i + 2] = Vector3.up;
+            }
+            var tris = new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+            var shells = new List<UvShell>
+            {
+                new UvShell { faceIndices = new List<int> { 0, 1 }, vertexIndices = new HashSet<int> { 0, 1, 2, 3, 4, 5 } },
+                new UvShell { faceIndices = new List<int> { 2 }, vertexIndices = new HashSet<int> { 6, 7, 8 } },
+                new UvShell { faceIndices = new List<int> { 3 }, vertexIndices = new HashSet<int> { 9, 10, 11 } }
+            };
+            var chartIds = new uint[] { 10, 10, 10, 20, 20, 20, 30, 30, 30, 40, 40, 40 };
+            Vector2 firstCentroid = (uv2[0] + uv2[1] + uv2[2]) / 3f;
+            Vector2 secondCentroid = (uv2[3] + uv2[4] + uv2[5]) / 3f;
+
+            int modified = (int)method.Invoke(null,
+                new object[] { uv2, tris, positions, shells, chartIds, "split-chart-test" });
+
+            Assert.AreEqual(1, modified);
+            Assert.That(Vector2.Distance(firstCentroid, (uv2[0] + uv2[1] + uv2[2]) / 3f), Is.LessThan(1e-5f));
+            Assert.That(Vector2.Distance(secondCentroid, (uv2[3] + uv2[4] + uv2[5]) / 3f), Is.LessThan(1e-5f));
+        }
     }
 }

@@ -474,17 +474,18 @@ namespace SashaRX.UnityMeshLab
         /// 8362) amplifies thin/anisotropic shells more than fat ones, breaking
         /// the uniform density we set up in TexelDensityNormalizer. This pass
         /// measures per-shell au2/a3 and shrinks shells whose density is above
-        /// the median toward it, keeping each shell anchored on its UV2
-        /// centroid. Shrink only — never expand — so the layout stays valid
-        /// (shells can't collide into neighbours). The atlas ends up with some
+        /// the median toward it. Each packed xatlas chart is shrunk around its
+        /// own UV2 centroid, so it remains inside its packed bounds. The atlas
+        /// ends up with some
         /// gaps where shrunk shells used to be; this trades coverage for density
         /// uniformity, which is the correct trade for lightmap bake quality.
         /// </summary>
         static int ApplyPostPackDensityCorrection(
             Vector2[] uv2, int[] tris, Vector3[] positions,
-            List<UvShell> shells, string meshLabel)
+            List<UvShell> shells, uint[] vertexChartIds, string meshLabel)
         {
-            if (uv2 == null || tris == null || positions == null || shells == null) return 0;
+            if (uv2 == null || tris == null || positions == null || shells == null ||
+                vertexChartIds == null || vertexChartIds.Length < uv2.Length) return 0;
             int uvLen = uv2.Length;
             int posLen = positions.Length;
             int n = shells.Count;
@@ -542,38 +543,42 @@ namespace SashaRX.UnityMeshLab
                 if (!IsFiniteD(scaleD) || scaleD <= 0.0) continue;
                 if (scaleD >= 0.999) continue; // basically no-op
                 float scale = (float)scaleD;
-                if (scale < appliedScaleMin) appliedScaleMin = scale;
-                if (scale > appliedScaleMax) appliedScaleMax = scale;
-
                 var shell = shells[si];
                 if (shell.vertexIndices == null || shell.vertexIndices.Count == 0) continue;
 
-                // UV2 centroid (uniform shrink leaves the centroid fixed → the
-                // shell stays where xatlas put it; only the bbox contracts
-                // inward, so neighbours stay outside the shrunken bbox).
-                Vector2 c = Vector2.zero;
-                int cn = 0;
+                // A shell may contain several separately packed xatlas charts.
+                // Contract each chart independently; a shell-wide centroid
+                // could translate separated charts through occupied space.
+                var chartVertices = new Dictionary<uint, List<int>>();
+                bool hasOrphan = false;
                 foreach (int v in shell.vertexIndices)
                 {
                     int idx = v;
                     if ((uint)idx >= (uint)uvLen) continue;
-                    c.x += uv2[idx].x;
-                    c.y += uv2[idx].y;
-                    cn++;
+                    uint chartId = vertexChartIds[idx];
+                    if (chartId == ORPHAN_CHART) { hasOrphan = true; break; }
+                    if (!chartVertices.TryGetValue(chartId, out var vertices))
+                    {
+                        vertices = new List<int>();
+                        chartVertices.Add(chartId, vertices);
+                    }
+                    vertices.Add(idx);
                 }
-                if (cn == 0) continue;
-                c.x /= cn;
-                c.y /= cn;
+                // Without a chart ID there is no packed region whose bounds we
+                // can preserve, so leave the complete shell unchanged.
+                if (hasOrphan || chartVertices.Count == 0) continue;
 
-                foreach (int v in shell.vertexIndices)
+                foreach (var pair in chartVertices)
                 {
-                    int idx = v;
-                    if ((uint)idx >= (uint)uvLen) continue;
-                    Vector2 uv = uv2[idx];
-                    uv2[idx] = new Vector2(
-                        c.x + (uv.x - c.x) * scale,
-                        c.y + (uv.y - c.y) * scale);
+                    var vertices = pair.Value;
+                    Vector2 c = Vector2.zero;
+                    foreach (int idx in vertices) c += uv2[idx];
+                    c /= vertices.Count;
+                    foreach (int idx in vertices)
+                        uv2[idx] = c + (uv2[idx] - c) * scale;
                 }
+                if (scale < appliedScaleMin) appliedScaleMin = scale;
+                if (scale > appliedScaleMax) appliedScaleMax = scale;
                 modified++;
             }
 
@@ -1238,7 +1243,7 @@ namespace SashaRX.UnityMeshLab
 
                 if (opts.postPackDensityCorrection)
                 {
-                    ApplyPostPackDensityCorrection(uv2, tris, positions, shells, mesh.name);
+                    ApplyPostPackDensityCorrection(uv2, tris, positions, shells, vertChartId, mesh.name);
                     LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postCorrection]");
                 }
 
@@ -1590,7 +1595,7 @@ namespace SashaRX.UnityMeshLab
 
                     if (opts.postPackDensityCorrection)
                     {
-                        ApplyPostPackDensityCorrection(uv2, allTris[m], allPositions[m], allShells[m], meshes[m].name);
+                        ApplyPostPackDensityCorrection(uv2, allTris[m], allPositions[m], allShells[m], vertChartId, meshes[m].name);
                         LogPostPackDensity(uv2, allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postCorrection]");
                     }
 
