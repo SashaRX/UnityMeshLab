@@ -245,6 +245,13 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
+        static TransferResult CancelTransfer(TransferResult result)
+        {
+            // A null UV2 array is the existing failure contract consumed by transfer callers.
+            result.uv2 = null;
+            return result;
+        }
+
         // ═══════════════════════════════════════════════════════════
         //  AnalyzeSource — extract UV0 shells for UI display
         // ═══════════════════════════════════════════════════════════
@@ -912,7 +919,7 @@ namespace SashaRX.UnityMeshLab
 
             // ── Phase 1: Extract shells ──
             UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 1 — extract shells");
-            if (UvProgress.CancelRequested) return result;
+            if (UvProgress.CancelRequested) return CancelTransfer(result);
             var srcShells = UvShellExtractor.Extract(srcUv0, srcTris);
             var tgtShells = UvShellExtractor.Extract(tUv0, tgtTris);
 
@@ -1020,7 +1027,7 @@ namespace SashaRX.UnityMeshLab
 
             // ── Phase 1b: Precompute similarity transform per source shell ──
             UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 1b — transforms ({srcShells.Count} src)");
-            if (UvProgress.CancelRequested) return result;
+            if (UvProgress.CancelRequested) return CancelTransfer(result);
             var srcTransforms = new SimilarityTransform[srcShells.Count];
             for (int si = 0; si < srcShells.Count; si++)
             {
@@ -1200,7 +1207,7 @@ namespace SashaRX.UnityMeshLab
 
             // ── Phase 2a: Match each target shell → best source shell ──
             UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 2a — match {tgtShells.Count} targets");
-            if (UvProgress.CancelRequested) return result;
+            if (UvProgress.CancelRequested) return CancelTransfer(result);
             result.targetShellToSourceShell = new int[tgtShells.Count];
             result.targetShellMethod = new int[tgtShells.Count]; // 0=interp, 1=xform, 2=merged
             result.targetShellCentroids = new Vector3[tgtShells.Count];
@@ -1406,7 +1413,7 @@ namespace SashaRX.UnityMeshLab
 
             // ── Phase 2b: Deduplicate — resolve same-source conflicts ──
             UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 2b — dedup");
-            if (UvProgress.CancelRequested) return result;
+            if (UvProgress.CancelRequested) return CancelTransfer(result);
             // When multiple non-merged target shells claim the same source shell
             // (common with overlapping/tiling UV0), keep the best match and
             // reassign others to different source shells at the same 3D location.
@@ -1918,7 +1925,7 @@ namespace SashaRX.UnityMeshLab
 
             // ── Phase 3: Transfer UV2 using final source assignments ──
             UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 3 — transfer {vertCount} verts");
-            if (UvProgress.CancelRequested) return result;
+            if (UvProgress.CancelRequested) return CancelTransfer(result);
             // Verbose: dump per-shell matching for diagnostics
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
             {

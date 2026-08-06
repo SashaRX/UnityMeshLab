@@ -164,6 +164,26 @@ namespace SashaRX.UnityMeshLab.Tests
     public class GroupedShellTransferTests
     {
         [Test]
+        public void CancelTransfer_InvalidatesPartialUv2Result()
+        {
+            var method = typeof(GroupedShellTransfer).GetMethod(
+                "CancelTransfer",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "GroupedShellTransfer should invalidate partial results on cancellation");
+
+            var partial = new GroupedShellTransfer.TransferResult
+            {
+                uv2 = new Vector2[4],
+                verticesTotal = 4
+            };
+            var cancelled = (GroupedShellTransfer.TransferResult)method.Invoke(null, new object[] { partial });
+
+            Assert.AreSame(partial, cancelled);
+            Assert.IsNull(cancelled.uv2,
+                "Cancelled transfers must use the null-UV2 failure contract expected by transfer callers.");
+        }
+
+        [Test]
         public void Uv2PixelMargin_ScalesFromResolvedAtlasSize()
         {
             var method = typeof(GroupedShellTransfer).GetMethod(
