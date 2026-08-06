@@ -1070,12 +1070,12 @@ namespace SashaRX.UnityMeshLab
                         "Fraction of [0,1]² normalized UVs sum to. Lower → safer fit, smaller charts; "
                         + "higher → tighter pack but risk of overflow + downscale."),
                     ctx.TargetUvCoverage, 0.3f, 0.95f);
-                ctx.ClampLightmapToUnit = EditorGUILayout.ToggleLeft(
-                    new GUIContent("Clamp UV2 to [0,1]",
-                        "Cheap safety net against verts pushed a fraction of a texel outside the unit square."),
-                    ctx.ClampLightmapToUnit);
                 EditorGUI.indentLevel--;
             }
+            ctx.ClampLightmapToUnit = EditorGUILayout.ToggleLeft(
+                new GUIContent("Clamp UV2 to [0,1]",
+                    "Cheap safety net against verts pushed a fraction of a texel outside the unit square."),
+                ctx.ClampLightmapToUnit);
         }
 
         void DrawRepackCompressionControls()
