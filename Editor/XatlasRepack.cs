@@ -151,7 +151,7 @@ namespace SashaRX.UnityMeshLab
             perturbStrength = 0f,             // adaptive
             normalizeTexelDensity = true,
             targetUvCoverage = 0.75f,
-            reparameterizeStretchedShells = true,
+            reparameterizeStretchedShells = false,
             stretchThreshold = 1.5f,
             arapIterations = 50,
             clampLightmapToUnit = true,

@@ -113,7 +113,7 @@ namespace SashaRX.UnityMeshLab
         /// shells get cleaned up at the parameterization level instead of via
         /// downstream affine hacks.
         /// </summary>
-        public bool ReparameterizeStretchedShells = true;  // DEFAULT ON
+        public bool ReparameterizeStretchedShells = false;
 
         /// <summary>
         /// Sander L² stretch above which a shell triggers ARAP re-parameterization.

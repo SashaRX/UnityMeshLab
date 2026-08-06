@@ -72,6 +72,15 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ArapReparameterization_IsOptInByDefault()
+        {
+            Assert.IsFalse(new UvToolContext().ReparameterizeStretchedShells,
+                "The editor workflow must not run unbounded per-shell ARAP work by default.");
+            Assert.IsFalse(RepackOptions.Default.reparameterizeStretchedShells,
+                "Programmatic repack callers must explicitly opt in to per-shell ARAP work.");
+        }
+
+        [Test]
         public void Tiles_GetDistinctUv2Regions()
         {
             if (!NativeAvailable()) Assert.Ignore("xatlas native plugin not available");
