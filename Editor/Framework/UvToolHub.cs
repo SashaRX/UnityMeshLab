@@ -276,6 +276,13 @@ namespace SashaRX.UnityMeshLab
         {
             if (ctx == null) return;
 
+            // Preview modes can temporarily replace MeshFilter.sharedMesh. Restore
+            // those swaps and the imported meshes before rebuilding MeshEntries,
+            // otherwise Refresh can cache a preview mesh as the new baseline.
+            if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
+                ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
+            RestoreWorkingMeshes();
+
             if (ctx.LodGroup != null)
             {
                 ctx.Refresh(ctx.LodGroup);
