@@ -3263,8 +3263,10 @@ namespace SashaRX.UnityMeshLab
                 tempRoot.name = fbxPrefab.name;
                 PromoteRootMeshToLod0Child(tempRoot);
 
-                // Mesh copies created while baking node transforms — destroyed after export.
-                var bakedMeshes = new List<Mesh>();
+                // Temporary mesh copies built for this export group — export clones,
+                // transform-baked copies and stripped collision meshes. They only ever
+                // live on tempRoot, so they are destroyed once the export finished.
+                var tempMeshes = new List<Mesh>();
                 try
                 {
                     var lastLodRendererTemplate = FindLastLodRenderer(entries);
@@ -3275,6 +3277,8 @@ namespace SashaRX.UnityMeshLab
                     foreach (var (entry, resultMesh) in entries)
                     {
                         var exportMesh = UnityEngine.Object.Instantiate(resultMesh);
+                        // Temporary copy — destroyed after the FBX export.
+                        tempMeshes.Add(exportMesh);
                         // Copy UV channels from fbxMesh first (base UVs),
                         // then from originalMesh (has AO and other tool modifications).
                         if (entry.fbxMesh != null)
@@ -3353,6 +3357,8 @@ namespace SashaRX.UnityMeshLab
                         }
                         var newMf = child.AddComponent<MeshFilter>();
                         var exportMesh = UnityEngine.Object.Instantiate(resultMesh);
+                        // Temporary copy — destroyed after the FBX export.
+                        tempMeshes.Add(exportMesh);
                         if (entry.fbxMesh != null)
                             PreserveUvChannels(exportMesh, entry.fbxMesh);
                         if (entry.originalMesh != null && entry.originalMesh != entry.fbxMesh)
@@ -3459,7 +3465,7 @@ namespace SashaRX.UnityMeshLab
                     // Ensure root is a clean pivot (identity transform, no mesh)
                     // and LOD0 child named same as root gets _LOD0 suffix.
                     // Returns a map of oldNodeName → newNodeName for mesh re-linking.
-                    var nodeRenameMap = NormalizeExportHierarchy(tempRoot, bakedMeshes);
+                    var nodeRenameMap = NormalizeExportHierarchy(tempRoot, tempMeshes);
                     if (nodeRenameMap.Count > 0)
                         meshRenamesByFbx[sourceFbxPath] = nodeRenameMap;
 
@@ -3543,7 +3549,10 @@ namespace SashaRX.UnityMeshLab
                         var srcCol = colMf.sharedMesh;
                         if (srcCol.isReadable)
                         {
+                            // Owns copies of srcCol's data (SetVertices/SetTriangles copy),
+                            // so it can be destroyed after the export without touching srcCol.
                             var stripped = new Mesh { name = srcCol.name };
+                            tempMeshes.Add(stripped);
                             stripped.SetVertices(srcCol.vertices);
                             for (int s = 0; s < srcCol.subMeshCount; s++)
                                 stripped.SetTriangles(srcCol.GetTriangles(s), s);
@@ -3622,7 +3631,7 @@ namespace SashaRX.UnityMeshLab
                 finally
                 {
                     UnityEngine.Object.DestroyImmediate(tempRoot);
-                    DestroyTempMeshes(bakedMeshes);
+                    DestroyTempMeshes(tempMeshes);
                 }
 
                 // Restore isReadable if we changed it (non-overwrite path only;
