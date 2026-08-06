@@ -144,6 +144,74 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [TestCase(4096u, 4, "8192")]
+        [TestCase(uint.MaxValue, 16, "8192")]
+        public void RepackSingle_RejectsUnsafeInternalResolution(
+            uint resolution, int oversample, string expectedLimit)
+        {
+            var mesh = BuildTiledMesh(1);
+            try
+            {
+                var opts = RepackOptions.Default;
+                opts.resolution = resolution;
+                opts.internalOversample = oversample;
+
+                var result = XatlasRepack.RepackSingle(mesh, opts);
+
+                Assert.IsFalse(result.ok);
+                StringAssert.Contains(expectedLimit, result.error);
+                Assert.AreEqual(0, mesh.uv2.Length,
+                    "Rejected input must not reach xatlas or modify the mesh");
+            }
+            finally
+            {
+                Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [Test]
+        public void RepackSingle_RejectsUnsupportedOversample()
+        {
+            var mesh = BuildTiledMesh(1);
+            try
+            {
+                var opts = RepackOptions.Default;
+                opts.resolution = 1;
+                opts.internalOversample = 17;
+
+                var result = XatlasRepack.RepackSingle(mesh, opts);
+
+                Assert.IsFalse(result.ok);
+                StringAssert.Contains("maximum of 16", result.error);
+            }
+            finally
+            {
+                Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [Test]
+        public void RepackSingle_RejectsOverflowingInternalPadding()
+        {
+            var mesh = BuildTiledMesh(1);
+            try
+            {
+                var opts = RepackOptions.Default;
+                opts.resolution = 256;
+                opts.padding = uint.MaxValue;
+                opts.internalOversample = 16;
+
+                var result = XatlasRepack.RepackSingle(mesh, opts);
+
+                Assert.IsFalse(result.ok);
+                StringAssert.Contains("padding exceeds 256", result.error);
+            }
+            finally
+            {
+                Object.DestroyImmediate(mesh);
+            }
+        }
+
         [Test]
         public void PackPreflight_DisablesBruteForce_WhenInternalOversampleIsAboveOne()
         {

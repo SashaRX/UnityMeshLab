@@ -184,6 +184,47 @@ namespace SashaRX.UnityMeshLab
 
     public static class XatlasRepack
     {
+        // Keep xatlas's pixel-sized occupancy buffers within a bounded size.
+        // This is deliberately enforced at the managed/native boundary as
+        // RepackOptions is public and can be populated without using the UI.
+        const uint MaxInternalPackResolution = 8192;
+        const uint MaxInternalPackPadding = 256;
+        const int MaxInternalOversample = 16;
+
+        static bool TryGetInternalPackDimensions(
+            RepackOptions opts, out int oversample, out uint resolution,
+            out uint padding, out string error)
+        {
+            oversample = opts.internalOversample > 0 ? opts.internalOversample : 1;
+            resolution = 0;
+            padding = 0;
+            error = null;
+
+            if (oversample > MaxInternalOversample)
+            {
+                error = $"Internal pack oversample {oversample} exceeds the supported maximum of {MaxInternalOversample}";
+                return false;
+            }
+
+            ulong internalResolution = (ulong)opts.resolution * (uint)oversample;
+            ulong internalPadding = (ulong)opts.padding * (uint)oversample;
+            if (internalResolution > MaxInternalPackResolution)
+            {
+                error = $"Internal pack resolution must not exceed {MaxInternalPackResolution} pixels " +
+                        $"(requested {opts.resolution} × {oversample})";
+                return false;
+            }
+            if (internalPadding > MaxInternalPackPadding)
+            {
+                error = $"Internal pack padding exceeds {MaxInternalPackPadding} pixels " +
+                        $"(requested {opts.padding} × {oversample})";
+                return false;
+            }
+
+            resolution = (uint)internalResolution;
+            padding = (uint)internalPadding;
+            return true;
+        }
         const uint ORPHAN_CHART = uint.MaxValue;
         const long kBruteCostBudget = 500_000_000L;        // ~5-10s wall
         const long kHeuristicCostBudget = 20_000_000_000L; // ~30-60s wall
@@ -953,6 +994,14 @@ namespace SashaRX.UnityMeshLab
         {
             var result = new RepackResult();
 
+            if (!TryGetInternalPackDimensions(
+                    opts, out int oversample, out uint internalRes,
+                    out uint internalPad, out string dimensionError))
+            {
+                result.error = dimensionError;
+                return result;
+            }
+
             // ── Read mesh data ──
             Vector2[] uv0 = mesh.uv;
             if (uv0 == null || uv0.Length == 0)
@@ -1055,9 +1104,7 @@ namespace SashaRX.UnityMeshLab
             // pack — so we know whether the remaining density spread is
             // legitimate (real sub-pixel ribbons) or our own doing.
             {
-                int oversamplePre = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                uint internalResPre = opts.resolution * (uint)oversamplePre;
-                LogStageBRisk(uvFlat, shells, tris, internalResPre, opts.texelsPerUnit, mesh.name, "prePack");
+                LogStageBRisk(uvFlat, shells, tris, internalRes, opts.texelsPerUnit, mesh.name, "prePack");
             }
 
             // NOTE: PerturbOverlapShellsUv0 was a no-op for AddUvMesh paths
@@ -1113,10 +1160,6 @@ namespace SashaRX.UnityMeshLab
                 // resolution makes every chart's extent oversample× larger, so
                 // ceil rounding becomes fractional. Padding scales by the same
                 // factor to keep the gap fraction in UV space constant.
-                int oversample = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                uint internalRes = opts.resolution * (uint)oversample;
-                uint internalPad = opts.padding    * (uint)oversample;
-
                 bool packed = RunPackCancelable(
                     mesh.name, shells.Count, internalRes, oversample,
                     opts.maxChartSize, internalPad, opts.texelsPerUnit, internalRes,
@@ -1305,6 +1348,15 @@ namespace SashaRX.UnityMeshLab
             int meshCount = meshes.Length;
             var results = new RepackResult[meshCount];
 
+            if (!TryGetInternalPackDimensions(
+                    opts, out int oversample, out uint internalRes,
+                    out uint internalPad, out string dimensionError))
+            {
+                for (int m = 0; m < meshCount; m++)
+                    results[m].error = dimensionError;
+                return results;
+            }
+
             // ── Per-mesh pre-processing data ──
             var allUv0        = new Vector2[meshCount][];
             var allTris       = new int[meshCount][];
@@ -1412,9 +1464,7 @@ namespace SashaRX.UnityMeshLab
                     // the actual UVs we hand xatlas. See RepackSingle for
                     // the rationale on removing the previous Perturb call.
                     {
-                        int oversamplePreM = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                        uint internalResPreM = opts.resolution * (uint)oversamplePreM;
-                        LogStageBRisk(uvFlat, allShells[m], allTris[m], internalResPreM, opts.texelsPerUnit, meshes[m]?.name ?? $"mesh#{m}", "prePack");
+                        LogStageBRisk(uvFlat, allShells[m], allTris[m], internalRes, opts.texelsPerUnit, meshes[m]?.name ?? $"mesh#{m}", "prePack");
                     }
 
                     // Every shell is fed to xatlas as its own chart (UV2 is
@@ -1442,17 +1492,13 @@ namespace SashaRX.UnityMeshLab
                 // Pack all charts together into one atlas
                 // See RepackSingle for oversample rationale (ceil-stretch fix)
                 // and RunPackCancelable for cost-budget + cancel handling.
-                int oversampleM = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                uint internalResM = opts.resolution * (uint)oversampleM;
-                uint internalPadM = opts.padding    * (uint)oversampleM;
-
                 int totalShellsM = 0;
                 for (int m = 0; m < meshCount; m++)
                     if (allShells[m] != null) totalShellsM += allShells[m].Count;
 
                 bool packedM = await packFn(
-                    "MultiMesh", totalShellsM, internalResM, oversampleM,
-                    opts.maxChartSize, internalPadM, opts.texelsPerUnit, internalResM,
+                    "MultiMesh", totalShellsM, internalRes, oversample,
+                    opts.maxChartSize, internalPad, opts.texelsPerUnit, internalRes,
                     opts.bilinear  ? 1 : 0,
                     opts.blockAlign ? 1 : 0,
                     opts.bruteForce ? 1 : 0,
