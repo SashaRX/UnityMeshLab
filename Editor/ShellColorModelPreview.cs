@@ -87,7 +87,7 @@ namespace SashaRX.UnityMeshLab
                     int qw = Mathf.RoundToInt((mx.x - mn.x) * 100f);
                     int qh = Mathf.RoundToInt((mx.y - mn.y) * 100f);
                     int hash = unchecked((qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381));
-                    int stableKey = NonNegativeColorKey(hash);
+                    int stableKey = UvHashUtil.NonNegativeColorKey(hash);
 
                     foreach (int faceIndex in shell.faceIndices)
                         if (faceIndex >= 0 && faceIndex < triangleToShell.Length)
@@ -103,11 +103,6 @@ namespace SashaRX.UnityMeshLab
         static bool isActive;
 
         public static bool IsActive => isActive;
-
-        static int NonNegativeColorKey(int colorKey)
-        {
-            return colorKey == int.MinValue ? int.MaxValue : Mathf.Abs(colorKey);
-        }
 
         /// <summary>
         /// Apply with pre-computed face color keys (same logic as 2D preview).
@@ -224,7 +219,7 @@ namespace SashaRX.UnityMeshLab
                 int colorKey = (faceColorKeys != null && face < faceColorKeys.Length)
                     ? faceColorKeys[face] : face;
                 Color32 color = palette != null && palette.Length > 0
-                    ? palette[NonNegativeColorKey(colorKey) % palette.Length]
+                    ? palette[UvHashUtil.NonNegativeColorKey(colorKey) % palette.Length]
                     : new Color32(255, 255, 255, 255);
 
                 int triBase = face * 3;
@@ -265,7 +260,7 @@ namespace SashaRX.UnityMeshLab
             {
                 int shellId = shellIds[face];
                 Color32 color = palette != null && palette.Length > 0
-                    ? palette[NonNegativeColorKey(shellId) % palette.Length]
+                    ? palette[UvHashUtil.NonNegativeColorKey(shellId) % palette.Length]
                     : new Color32(255, 255, 255, 255);
 
                 int triBase = face * 3;
