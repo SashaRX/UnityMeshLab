@@ -12,6 +12,12 @@ namespace SashaRX.UnityMeshLab
         {
             if (ao == null || iterations <= 0) return ao;
 
+            // Mesh attributes are optional and Unity may return empty arrays when they
+            // are not stored. Treat incomplete attributes as unavailable so seam
+            // comparisons never index past their bounds.
+            if (normals != null && normals.Length != vertexCount) normals = null;
+            if (uv0 != null && uv0.Length != vertexCount) uv0 = null;
+
             // Build adjacency: vertex → set of neighbor vertices
             var neighbors = new List<int>[vertexCount];
             for (int i = 0; i < vertexCount; i++)
