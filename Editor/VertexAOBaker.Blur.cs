@@ -6,6 +6,11 @@ namespace SashaRX.UnityMeshLab
 {
     public static partial class VertexAOBaker
     {
+        // Seam matching is a best-effort supplement to triangle adjacency. Bounding the
+        // candidates per vertex prevents dense or degenerate meshes from creating a
+        // quadratic number of comparisons and neighbor entries.
+        const int MaxSeamCandidatesPerVertex = 64;
+
         public static float[] BlurAO(float[] ao, int[] triangles, int vertexCount, int iterations, float strength,
             Vector3[] positions = null, Vector3[] normals = null, Vector2[] uv0 = null,
             bool crossHardEdges = true, bool crossUvSeams = true)
@@ -35,14 +40,14 @@ namespace SashaRX.UnityMeshLab
                 const float uvEps = 1e-4f;
                 float cellSize = posEps * 10f;  // grid cell larger than epsilon
 
-                var posMap = new Dictionary<long, List<int>>();
+                var posMap = new Dictionary<Vector3Int, List<int>>();
                 for (int i = 0; i < vertexCount; i++)
                 {
                     // Use RoundToInt for stable bucketing at cell boundaries
                     int cx = Mathf.RoundToInt(positions[i].x / cellSize);
                     int cy = Mathf.RoundToInt(positions[i].y / cellSize);
                     int cz = Mathf.RoundToInt(positions[i].z / cellSize);
-                    long key = ((long)cx * 73856093L) ^ ((long)cy * 19349663L) ^ ((long)cz * 83492791L);
+                    var key = new Vector3Int(cx, cy, cz);
                     if (!posMap.TryGetValue(key, out var list))
                     {
                         list = new List<int>();
@@ -51,43 +56,36 @@ namespace SashaRX.UnityMeshLab
                     list.Add(i);
                 }
 
-                // Check each vertex against same cell + 26 neighbors
-                var processed = new HashSet<long>();
-                foreach (var kvp in posMap)
+                // Check a bounded number of candidates in the same cell and its 26
+                // neighbors. Pairs are considered only once (at their lower index).
+                for (int vi = 0; vi < vertexCount; vi++)
                 {
-                    var group = kvp.Value;
-                    // Match within same cell
-                    for (int i = 0; i < group.Count; i++)
-                        for (int j = i + 1; j < group.Count; j++)
-                            TryConnectSeamVerts(neighbors, positions, normals, uv0,
-                                group[i], group[j], posEpsSq, normThresh, uvEps,
-                                crossHardEdges, crossUvSeams);
-                }
-
-                // Also check across adjacent cells
-                var keys = new List<long>(posMap.Keys);
-                foreach (var key in keys)
-                {
-                    var group = posMap[key];
-                    // Reconstruct cell coords from first vertex
-                    var p0 = positions[group[0]];
-                    int bx = Mathf.RoundToInt(p0.x / cellSize);
-                    int by = Mathf.RoundToInt(p0.y / cellSize);
-                    int bz = Mathf.RoundToInt(p0.z / cellSize);
+                    var p = positions[vi];
+                    int bx = Mathf.RoundToInt(p.x / cellSize);
+                    int by = Mathf.RoundToInt(p.y / cellSize);
+                    int bz = Mathf.RoundToInt(p.z / cellSize);
+                    int candidatesChecked = 0;
 
                     for (int dx = -1; dx <= 1; dx++)
                     for (int dy = -1; dy <= 1; dy++)
                     for (int dz = -1; dz <= 1; dz++)
                     {
-                        if (dx == 0 && dy == 0 && dz == 0) continue;
-                        long nkey = ((long)(bx+dx) * 73856093L) ^ ((long)(by+dy) * 19349663L) ^ ((long)(bz+dz) * 83492791L);
-                        if (!posMap.TryGetValue(nkey, out var ngroup)) continue;
+                        var nkey = new Vector3Int(bx + dx, by + dy, bz + dz);
+                        if (!posMap.TryGetValue(nkey, out var group)) continue;
 
-                        foreach (int vi in group)
-                            foreach (int vj in ngroup)
-                                TryConnectSeamVerts(neighbors, positions, normals, uv0,
-                                    vi, vj, posEpsSq, normThresh, uvEps,
-                                    crossHardEdges, crossUvSeams);
+                        for (int i = 0; i < group.Count && candidatesChecked < MaxSeamCandidatesPerVertex; i++)
+                        {
+                            int vj = group[i];
+                            candidatesChecked++;
+                            if (vj <= vi) continue;
+
+                            TryConnectSeamVerts(neighbors, positions, normals, uv0,
+                                vi, vj, posEpsSq, normThresh, uvEps,
+                                crossHardEdges, crossUvSeams);
+                        }
+
+                        if (candidatesChecked >= MaxSeamCandidatesPerVertex)
+                            break;
                     }
                 }
             }
