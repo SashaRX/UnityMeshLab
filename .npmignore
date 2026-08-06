@@ -5,6 +5,12 @@ CLAUDE.md
 CLAUDE.md.meta
 REVIEW.md
 REVIEW.md.meta
+.claude/
+.codex/
+
+# Editor/workspace config — git only
+.vscode/
+.prettierignore
 
 # CI/CD & GitHub
 .github/
