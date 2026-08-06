@@ -2155,6 +2155,18 @@ namespace SashaRX.UnityMeshLab
             var meshCopies = new List<Mesh>();
             foreach (var e in entries)
             {
+                // Drop the previous run's output before producing a new one:
+                // otherwise a failed re-run leaves a stale repackedMesh that
+                // Apply UV2 would happily write to the FBX (and the successful
+                // path used to overwrite the reference, leaking the old mesh).
+                if (e.repackedMesh != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(e.repackedMesh);
+                    e.repackedMesh = null;
+                }
+                e.repackedAtlasWidth = 0;
+                e.repackedAtlasHeight = 0;
+
                 if (e.originalMesh == null) continue;
                 var uv0 = e.originalMesh.uv;
                 if (uv0 == null || uv0.Length == 0) { UvtLog.Warn("[Repack] " + e.renderer.name + ": no UV0"); continue; }
@@ -2163,7 +2175,11 @@ namespace SashaRX.UnityMeshLab
                 validEntries.Add(e);
                 meshCopies.Add(cp);
             }
-            if (meshCopies.Count == 0) return;
+            if (meshCopies.Count == 0)
+            {
+                ctx.HasRepack = ctx.MeshEntries.Any(e => e.repackedMesh != null);
+                return;
+            }
 
             var opts = RepackOptions.Default;
             opts.resolution = resolvedResolution;
@@ -2204,7 +2220,13 @@ namespace SashaRX.UnityMeshLab
                 validEntries[i].repackedAtlasHeight = results[i].atlasHeight;
             }
 
-            ctx.HasRepack = true;
+            // HasRepack gates the Apply UV2 UI, so it must mean "a repacked mesh
+            // exists right now", not "a repack was attempted". Setting it
+            // unconditionally let a failed or cancelled run leave the button
+            // enabled, applying the original UV2 to the FBX. Derive it from the
+            // entries instead — per-mesh grouping calls this once per group, so a
+            // later failing group must not erase an earlier group's success.
+            ctx.HasRepack = ctx.MeshEntries.Any(e => e.repackedMesh != null);
             ctx.ClearAllCaches();
             requestRepaint?.Invoke();
         }
