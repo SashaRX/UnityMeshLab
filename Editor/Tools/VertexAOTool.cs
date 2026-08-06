@@ -1166,6 +1166,7 @@ namespace SashaRX.UnityMeshLab
         void LoadFromMesh()
         {
             RestorePreview();
+            ClearResults();
 
             var entries = ctx.MeshEntries
                 .Where(e => e.include && e.renderer != null)
