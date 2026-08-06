@@ -2891,6 +2891,8 @@ namespace SashaRX.UnityMeshLab
 
             int updated = 0;
             Dictionary<string, string> renameMap = null;
+            // Mesh copies created while baking node transforms — destroyed after export.
+            var bakedMeshes = new List<Mesh>();
             try
             {
                 updated = CopyVertexDataToClone(tempRoot);
@@ -2900,7 +2902,7 @@ namespace SashaRX.UnityMeshLab
                     return;
                 }
 
-                renameMap = NormalizeExportHierarchy(tempRoot);
+                renameMap = NormalizeExportHierarchy(tempRoot, bakedMeshes);
                 PrepareCollisionMaterials(tempRoot);
                 TrimMaterialArrays(tempRoot);
 
@@ -2937,6 +2939,7 @@ namespace SashaRX.UnityMeshLab
             finally
             {
                 UnityEngine.Object.DestroyImmediate(tempRoot);
+                DestroyTempMeshes(bakedMeshes);
             }
 
             // ── Phase 4: Reimport (single refresh) ──
@@ -3238,6 +3241,8 @@ namespace SashaRX.UnityMeshLab
                 tempRoot.name = fbxPrefab.name;
                 PromoteRootMeshToLod0Child(tempRoot);
 
+                // Mesh copies created while baking node transforms — destroyed after export.
+                var bakedMeshes = new List<Mesh>();
                 try
                 {
                     var lastLodRendererTemplate = FindLastLodRenderer(entries);
@@ -3432,7 +3437,7 @@ namespace SashaRX.UnityMeshLab
                     // Ensure root is a clean pivot (identity transform, no mesh)
                     // and LOD0 child named same as root gets _LOD0 suffix.
                     // Returns a map of oldNodeName → newNodeName for mesh re-linking.
-                    var nodeRenameMap = NormalizeExportHierarchy(tempRoot);
+                    var nodeRenameMap = NormalizeExportHierarchy(tempRoot, bakedMeshes);
                     if (nodeRenameMap.Count > 0)
                         meshRenamesByFbx[sourceFbxPath] = nodeRenameMap;
 
@@ -3592,7 +3597,11 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
                 catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); allGroupsSucceeded = false; }
-                finally { UnityEngine.Object.DestroyImmediate(tempRoot); }
+                finally
+                {
+                    UnityEngine.Object.DestroyImmediate(tempRoot);
+                    DestroyTempMeshes(bakedMeshes);
+                }
 
                 // Restore isReadable if we changed it (non-overwrite path only;
                 // overwrite path restores .meta from backup automatically).
@@ -3956,8 +3965,13 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Returns a dictionary of oldNodeName → newNodeName for nodes that were renamed.
         /// Used to re-link scene mesh references after FBX reimport.
+        /// <paramref name="bakedMeshSink"/> is optional — when provided, every mesh copy
+        /// created here is appended to it so the caller can destroy the copies once the
+        /// FBX export has finished (see <see cref="DestroyTempMeshes"/>).
         /// </summary>
-        static Dictionary<string, string> NormalizeExportHierarchy(GameObject root)
+        static Dictionary<string, string> NormalizeExportHierarchy(
+            GameObject root,
+            List<Mesh> bakedMeshSink = null)
         {
             var renameMap = new Dictionary<string, string>();
             string baseName = root.name;
@@ -4060,6 +4074,9 @@ namespace SashaRX.UnityMeshLab
                 var bakedMesh = UnityEngine.Object.Instantiate(mesh);
                 bakedMesh.name = mesh.name;
                 childMf.sharedMesh = bakedMesh;
+                // Temporary copy — the caller destroys it after the FBX export.
+                if (bakedMeshSink != null)
+                    bakedMeshSink.Add(bakedMesh);
 
                 BakeTransformIntoMesh(bakedMesh, t);
 
@@ -4070,6 +4087,23 @@ namespace SashaRX.UnityMeshLab
             }
 
             return renameMap;
+        }
+
+        /// <summary>
+        /// Destroys temporary mesh copies collected during export hierarchy setup.
+        /// DestroyImmediate on the temp root only frees GameObjects, so the mesh
+        /// copies have to be released explicitly. Call only AFTER the FBX export
+        /// finished — the exporter reads vertex data straight from these meshes.
+        /// </summary>
+        static void DestroyTempMeshes(List<Mesh> meshes)
+        {
+            if (meshes == null) return;
+            foreach (var mesh in meshes)
+            {
+                if (mesh != null)
+                    UnityEngine.Object.DestroyImmediate(mesh);
+            }
+            meshes.Clear();
         }
 
         /// <summary>
