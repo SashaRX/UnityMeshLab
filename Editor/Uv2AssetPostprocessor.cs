@@ -22,6 +22,11 @@ namespace SashaRX.UnityMeshLab
         // Run well after Bakery and other postprocessors (default order = 0).
         public override int GetPostprocessOrder() => 10000;
 
+        // Bump whenever replay behaviour changes so Unity reimports models that
+        // were processed by an older version of this postprocessor. Each bump
+        // forces a full reimport, so change it at most once per release.
+        public override uint GetVersion() => 2;
+
         /// <summary>
         /// Paths to bypass during the next reimport. When ApplyUv2ToFbx needs the
         /// raw FBX mesh (before any postprocessor modifications), it adds the FBX
@@ -682,9 +687,26 @@ namespace SashaRX.UnityMeshLab
                 return false;
             }
 
-            // Check sum of submesh tri counts matches optimizedTriangles length
-            int totalTriIndices = 0;
-            foreach (int c in entry.submeshTriangleCounts) totalTriIndices += c;
+            // Validate each submesh count before it is used for allocation/copying.
+            // Accumulate as long so crafted counts cannot wrap around to a valid total.
+            long totalTriIndices = 0;
+            foreach (int c in entry.submeshTriangleCounts)
+            {
+                if (c < 0 || c % 3 != 0)
+                {
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': invalid submesh triangle-index count " +
+                                $"({c}) — replay aborted.");
+                    return false;
+                }
+
+                totalTriIndices += c;
+                if (totalTriIndices > entry.optimizedTriangles.Length)
+                {
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': submesh triangle-index counts exceed " +
+                                $"optimizedTriangles.Length ({entry.optimizedTriangles.Length}) — replay aborted.");
+                    return false;
+                }
+            }
             if (totalTriIndices != entry.optimizedTriangles.Length)
             {
                 UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': sum(submeshTriCounts)={totalTriIndices} != " +
