@@ -325,5 +325,19 @@ namespace SashaRX.UnityMeshLab.Tests
                     Object.DestroyImmediate(e.originalMesh);
             }
         }
+
+        [Test]
+        public void ApplyUv2_IsAvailable_AfterSourceOnlyRepack()
+        {
+            var method = typeof(LightmapTransferTool).GetMethod(
+                "CanApplyUv2",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "LightmapTransferTool should expose the Apply UV2 availability rule as a testable helper");
+
+            Assert.IsTrue((bool)method.Invoke(null, new object[] { true, false }),
+                "A source-only repack must remain applyable when transfer is skipped.");
+            Assert.IsTrue((bool)method.Invoke(null, new object[] { false, true }));
+            Assert.IsFalse((bool)method.Invoke(null, new object[] { false, false }));
+        }
     }
 }

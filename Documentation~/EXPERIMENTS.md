@@ -396,3 +396,11 @@
 - EditMode red/green: `TransferTargetDetection_IgnoresSourceOnlySelection`.
 - EditMode red/green: `Uv2PixelMargin_ScalesFromResolvedAtlasSize`.
 - Full model benchmark (Carousel/Playground/WateringCan) в этом checkout не прогнан: тестовые FBX/`BenchmarkReports/` отсутствуют в репозитории. Нужен ручной Unity прогон на suite для финального сравнения `repackMs`, `density spread`, `overlapShellPairs`, `invertedCount`, `texelDensityBadCount`.
+
+## Эксперимент 2026-08-06 — Apply UV2 после source-only repack
+
+**Проблема:** оптимизация source-only pipeline корректно пропускала transfer, но оставляла `HasTransfer = false`. Из-за общего UI-gate результат repack нельзя было применить к FBX.
+
+**Изменение:** Quality Report и Validation Overlay по-прежнему требуют завершённого transfer, а Apply/Reset actions теперь доступны после repack или transfer. Transfer и auto-tune для source-only workflow остаются пропущенными.
+
+**Проверка:** EditMode-тест `ApplyUv2_IsAvailable_AfterSourceOnlyRepack` фиксирует доступность Apply при `HasRepack = true` и `HasTransfer = false`.

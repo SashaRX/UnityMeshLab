@@ -52,6 +52,11 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
+        static bool CanApplyUv2(bool hasRepack, bool hasTransfer)
+        {
+            return hasRepack || hasTransfer;
+        }
+
         List<Mesh> GetRepackSourceMeshes()
         {
             return ctx.ForLod(ctx.SourceLodIndex)
@@ -1390,19 +1395,13 @@ namespace SashaRX.UnityMeshLab
                         EditorStyles.miniLabel);
                     EditorGUI.indentLevel--;
                 }
+            }
 
+            if (CanApplyUv2(ctx.HasRepack, ctx.HasTransfer))
+            {
                 EditorGUILayout.Space(6);
-                // Post-transfer actions — what you do immediately after a
-                // successful UV2 transfer (apply to FBX / reset).
-                //
-                // FBX export ("Overwrite FBX" / "Export New FBX" /
-                // "Backup from main") and "Save Mesh Assets" live in the
-                // sidebar footer for any tab; duplicating them here was
-                // confusing redundancy.
-                //
-                // "Generate LODs" was rendered here too, but LOD generation
-                // is the job of the dedicated LOD Gen tab — keeping it on
-                // Transfer made the tab feel scope-creepy.
+                // The source LOD can be applied immediately after repack,
+                // even when there are no included target LODs to transfer.
                 H("Apply UV2");
                 ColorBtn(new Color(.3f,.85f,.4f), "Apply UV2 to FBX", 26, ApplyUv2ToFbx);
                 EditorGUILayout.Space(2);
