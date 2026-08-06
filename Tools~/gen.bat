@@ -8,11 +8,32 @@ rem
 rem Example:
 rem   Tools\gen.bat "_results~/noSymSplit_2026-04-28" --gallery-id "noSymSplit_2026-04-28"
 
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 set "SCRIPT=%~dp0build_gallery.py"
 if not exist "%SCRIPT%" (
   echo [gen.bat] Cannot find "%SCRIPT%"
   exit /b 1
+)
+
+rem ── Validate the forwarded values ──────────────────────────────────────
+rem The option whitelist below constrains only the option NAMES (%~2, %~4).
+rem The values — %~1 (data folder), %~3 and %~5 (option arguments) — were
+rem forwarded untouched, and cmd.exe substitutes them into the python line
+rem before it parses that line, so a value carrying a double quote could
+rem close the quoting and turn the rest into commands.
+rem
+rem Check each value against a strict charset: letters, digits, underscore,
+rem dash, dot, tilde, colon, both path separators and space. Quotes and cmd
+rem metacharacters (& | < > ^ % ! ( ) ; ,) are rejected. The test runs through
+rem delayed expansion (!VAR!), which substitutes after the line has been
+rem parsed, so the value under test cannot be read as syntax.
+set "ARG1=%~1"
+set "ARG3=%~3"
+set "ARG5=%~5"
+for %%V in (ARG1 ARG3 ARG5) do (
+  if defined %%V (
+    echo(!%%V!| findstr /r /c:"^[A-Za-z0-9_.~:/\\ -][A-Za-z0-9_.~:/\\ -]*$" >nul || goto badarg
+  )
 )
 
 rem Forward only the argument forms supported by build_gallery.py.  Expanding
@@ -45,6 +66,11 @@ goto usage
 :run_basic
 python "%SCRIPT%" "%~1"
 goto end
+
+:badarg
+echo [gen.bat] Rejected argument. The data folder and the --out / --gallery-id
+echo [gen.bat] values may contain only letters, digits and _ - . ~ : \ / space.
+exit /b 3
 
 :usage
 echo [gen.bat] Usage: gen.bat "data-folder" [--out "output-folder"] [--gallery-id "id"]
