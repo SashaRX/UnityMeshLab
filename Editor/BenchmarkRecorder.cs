@@ -72,6 +72,9 @@ namespace SashaRX.UnityMeshLab
 
         // Per-mesh records (one row per recorded mesh)
         readonly List<RunRecord> records = new List<RunRecord>();
+        const int MaxPngSnapshots = 32;
+        int pngSnapshotsCaptured;
+        int pngSnapshotsSkipped;
 
         BenchmarkRecorder(UvToolContext ctx, string label, bool splitTargetsFlag,
             SymmetrySplitShells.ThresholdMode symMode)
@@ -168,8 +171,12 @@ namespace SashaRX.UnityMeshLab
 
             Vector2[] uv2Snap = null;
             int[] trisSnap = null;
-            if (snapshotMesh != null)
+            if (snapshotMesh != null && pngSnapshotsCaptured < MaxPngSnapshots &&
+                IsPngSnapshotWithinLimits(snapshotMesh))
             {
+                // Count attempts as well as successful snapshots so meshes without
+                // UV2 cannot cause unbounded repeated allocations.
+                pngSnapshotsCaptured++;
                 var list = new System.Collections.Generic.List<Vector2>();
                 snapshotMesh.GetUVs(1, list);
                 if (list.Count > 0)
@@ -177,6 +184,10 @@ namespace SashaRX.UnityMeshLab
                     uv2Snap = list.ToArray();
                     trisSnap = snapshotMesh.triangles;
                 }
+            }
+            else if (snapshotMesh != null)
+            {
+                pngSnapshotsSkipped++;
             }
 
             // Validation report can be stale: a mesh that failed transfer in
@@ -250,6 +261,19 @@ namespace SashaRX.UnityMeshLab
             records.Add(rec);
         }
 
+        static bool IsPngSnapshotWithinLimits(Mesh mesh)
+        {
+            if (mesh.vertexCount > UvPngWriter.MaxUvCount) return false;
+
+            ulong indexCount = 0;
+            for (int subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
+            {
+                indexCount += mesh.GetIndexCount(subMesh);
+                if (indexCount > UvPngWriter.MaxTriangleIndexCount) return false;
+            }
+            return indexCount >= 3;
+        }
+
         // ── Dispose writes artefacts ──
         public void Dispose()
         {
@@ -307,7 +331,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             UvtLog.Info(UvtLog.Category.Benchmark,
-                $"saved {records.Count} rec(s){(pngCount > 0 ? $" + {pngCount} PNG" : "")} → {csvPath}");
+                $"saved {records.Count} rec(s){(pngCount > 0 ? $" + {pngCount} PNG" : "")}" +
+                $"{(pngSnapshotsSkipped > 0 ? $" ({pngSnapshotsSkipped} PNG skipped by safety limits)" : "")} → {csvPath}");
         }
 
         string BuildCsv()

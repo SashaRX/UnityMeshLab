@@ -148,7 +148,10 @@ product (N = product of array lengths). Each cell:
    column. BenchmarkRecorder additionally dumps one PNG per recorded mesh
    into a sibling `{fileBase}_png/` folder, showing the result UV2
    (repacked mesh on source LOD, transferred mesh on target LODs) with
-   per-shell coloring — so visual diffs between cells are immediate.
+   per-shell coloring — so visual diffs between cells are immediate. To keep
+   diagnostic output from exhausting Editor resources, each run writes at most
+   32 snapshots and skips meshes above 200,000 UV vertices or 600,000 triangle
+   indices.
 
 Original atlas/padding values are restored when the sweep finishes or is
 cancelled. A progress bar with **Cancel** is shown during the sweep.
