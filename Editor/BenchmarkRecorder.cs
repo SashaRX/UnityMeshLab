@@ -169,27 +169,34 @@ namespace SashaRX.UnityMeshLab
                 (entry.lodIndex == sourceLodIndex ? entry.repackedMesh : entry.transferredMesh)
                 ?? entry.originalMesh;
 
-            Vector2[] uv2Snap = null;
-            int[] trisSnap = null;
-            if (snapshotMesh != null && pngSnapshotsCaptured < MaxPngSnapshots &&
-                IsPngSnapshotWithinLimits(snapshotMesh))
+            // UV2 + triangles feed two consumers with different budgets:
+            //   * atlasUtilization, a scored metric — must be read for every row,
+            //     otherwise rows past the PNG cap record 0 and BenchmarkSweep
+            //     (which weights utilization x100) picks a winner based on which
+            //     meshes happened to be recorded first.
+            //   * the per-mesh PNG dump, which is diagnostic and stays capped.
+            // Reading is bounded by the same mesh-size sanity limits either way.
+            bool withinPngLimits = snapshotMesh != null && IsPngSnapshotWithinLimits(snapshotMesh);
+            Vector2[] uv2Data = null;
+            int[] trisData = null;
+            if (withinPngLimits)
             {
                 var list = new System.Collections.Generic.List<Vector2>();
                 snapshotMesh.GetUVs(1, list);
                 if (list.Count > 0)
                 {
-                    // Only a mesh that actually yielded UV2 data consumes the
-                    // snapshot budget; GetUVs on a mesh without UV2 is cheap and
-                    // must not starve later meshes that do have UV2.
-                    pngSnapshotsCaptured++;
-                    uv2Snap = list.ToArray();
-                    trisSnap = snapshotMesh.triangles;
+                    uv2Data = list.ToArray();
+                    trisData = snapshotMesh.triangles;
                 }
             }
-            else if (snapshotMesh != null)
-            {
-                pngSnapshotsSkipped++;
-            }
+
+            // Only a mesh that actually yielded UV2 data consumes the snapshot
+            // budget; a mesh without UV2 has no PNG to draw and must not starve
+            // later meshes that do. "Skipped" keeps its old meaning: rejected by
+            // the size limits, or denied a PNG slot despite having UV2.
+            bool retainPng = uv2Data != null && pngSnapshotsCaptured < MaxPngSnapshots;
+            if (retainPng) pngSnapshotsCaptured++;
+            else if (snapshotMesh != null && (uv2Data != null || !withinPngLimits)) pngSnapshotsSkipped++;
 
             // Validation report can be stale: a mesh that failed transfer in
             // a later sweep cell would otherwise carry the previous cell's
@@ -243,8 +250,8 @@ namespace SashaRX.UnityMeshLab
                 topologyFixed         = tr?.topologyFixed      ?? 0,
                 topologyCapHit        = tr?.topologyCapHit     ?? false,
 
-                uv2Snapshot       = uv2Snap,
-                trianglesSnapshot = trisSnap,
+                uv2Snapshot       = retainPng ? uv2Data : null,
+                trianglesSnapshot = retainPng ? trisData : null,
             };
 
             // atlasUtilization = sum of |triangle area| in UV2 space — true
@@ -255,9 +262,9 @@ namespace SashaRX.UnityMeshLab
             // any UV with sqrMagnitude near zero (excluding legitimate verts
             // at the atlas origin) and reported bbox area instead of true
             // coverage, so layouts touching (0,0) under-reported.
-            if (uv2Snap != null && uv2Snap.Length > 0 && trisSnap != null)
+            if (uv2Data != null && uv2Data.Length > 0 && trisData != null)
             {
-                rec.atlasUtilization = (float)XatlasRepack.ComputeUv2CoverageFraction(uv2Snap, trisSnap);
+                rec.atlasUtilization = (float)XatlasRepack.ComputeUv2CoverageFraction(uv2Data, trisData);
             }
             records.Add(rec);
         }
