@@ -17,9 +17,6 @@ namespace SashaRX.UnityMeshLab
         // ── Output ──
         public string savePath = "Assets/LightmapUvTool_Output";
 
-        // ── UV2 pipeline ──
-        public bool sidecarMode;
-
         // ── Vertex AO defaults ──
         public int aoChannelType;   // 0=VertexColor, 1-5=UV0-UV4
         public int aoChannelComp;   // 0=R/X, 1=G/Y, 2=B, 3=A
@@ -115,8 +112,14 @@ namespace SashaRX.UnityMeshLab
 
             EditorGUILayout.Space(12);
             EditorGUILayout.LabelField("UV2 Pipeline", EditorStyles.boldLabel);
-            inst.sidecarMode = EditorGUILayout.Toggle("Sidecar UV2 Mode", inst.sidecarMode);
-            if (!inst.sidecarMode)
+            bool sidecarMode = PostprocessorDefineManager.IsEnabled();
+            bool requestedSidecarMode = EditorGUILayout.Toggle(
+                new GUIContent("Sidecar UV2 Mode",
+                    "Stored as a local Editor preference. Projects cannot enable persistent replay."),
+                sidecarMode);
+            if (requestedSidecarMode != sidecarMode)
+                PostprocessorDefineManager.SetEnabled(requestedSidecarMode);
+            if (!requestedSidecarMode)
                 EditorGUILayout.HelpBox(
                     "Persistent replay is OFF. FBX overwrite will use one-shot replay only.",
                     MessageType.None);
@@ -186,7 +189,7 @@ namespace SashaRX.UnityMeshLab
                 inst.borderPaddingPx = fresh.borderPaddingPx;
                 inst.repackPerMesh   = fresh.repackPerMesh;
                 inst.savePath        = fresh.savePath;
-                inst.sidecarMode     = fresh.sidecarMode;
+                PostprocessorDefineManager.SetEnabled(false);
                 inst.aoChannelType   = fresh.aoChannelType;
                 inst.aoChannelComp   = fresh.aoChannelComp;
                 inst.showDebugUI     = fresh.showDebugUI;
