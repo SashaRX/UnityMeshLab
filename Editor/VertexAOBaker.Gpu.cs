@@ -56,7 +56,7 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         internal class GpuAOBakeJob
         {
-            enum Phase { Dispatching, ReadingBack, Done, Cancelled }
+            enum Phase { Dispatching, ReadingBack, Cancelling, Done, Cancelled }
 
             Phase phase = Phase.Done;
             readonly ComputeShader cs;
@@ -81,6 +81,8 @@ namespace SashaRX.UnityMeshLab
 
             // Readback requests (one per mesh)
             AsyncGPUReadbackRequest[] readbackRequests;
+            AsyncGPUReadbackRequest cancellationBarrier;
+            bool hasCancellationBarrier;
 
             // Direction batching
             int dirCount;
@@ -101,7 +103,9 @@ namespace SashaRX.UnityMeshLab
                 totalDispatches > 0 ? (float)completedDispatches / totalDispatches : 0f;
 
             /// <summary>True while the job is actively running.</summary>
-            public bool IsRunning => phase == Phase.Dispatching || phase == Phase.ReadingBack;
+            public bool IsRunning => phase == Phase.Dispatching ||
+                                     phase == Phase.ReadingBack ||
+                                     phase == Phase.Cancelling;
 
             public string StatusText
             {
@@ -114,6 +118,8 @@ namespace SashaRX.UnityMeshLab
                                    $"batch {curBatch + 1}/{totalBatches}";
                         case Phase.ReadingBack:
                             return "Reading back results...";
+                        case Phase.Cancelling:
+                            return "Cancelling...";
                         default:
                             return "";
                     }
@@ -281,8 +287,21 @@ namespace SashaRX.UnityMeshLab
             public void Cancel()
             {
                 if (!IsRunning) return;
-                phase = Phase.Cancelled;
-                Cleanup();
+
+                if (phase == Phase.Cancelling)
+                    return;
+
+                // Do not release buffers while previously queued dispatches or readbacks
+                // may still reference them. A readback queued after the dispatches acts as
+                // a completion barrier; existing final readbacks provide the same guarantee.
+                if (phase == Phase.Dispatching && completedDispatches > 0)
+                {
+                    int barrierMesh = Mathf.Clamp(curMesh, 0, slots.Length - 1);
+                    cancellationBarrier = AsyncGPUReadback.Request(slots[barrierMesh].counterBuf);
+                    hasCancellationBarrier = true;
+                }
+
+                phase = Phase.Cancelling;
             }
 
             void Tick()
@@ -296,6 +315,9 @@ namespace SashaRX.UnityMeshLab
                             break;
                         case Phase.ReadingBack:
                             TickReadback();
+                            break;
+                        case Phase.Cancelling:
+                            TickCancelling();
                             break;
                         default:
                             EditorApplication.update -= Tick;
@@ -397,6 +419,24 @@ namespace SashaRX.UnityMeshLab
                     onError?.Invoke("AsyncGPUReadback failed.");
                 else
                     onComplete?.Invoke(result);
+            }
+
+            void TickCancelling()
+            {
+                if (hasCancellationBarrier && !cancellationBarrier.done)
+                    return;
+
+                if (readbackRequests != null)
+                {
+                    for (int i = 0; i < readbackRequests.Length; i++)
+                    {
+                        if (!readbackRequests[i].done)
+                            return;
+                    }
+                }
+
+                phase = Phase.Cancelled;
+                Cleanup();
             }
 
             void Cleanup()
