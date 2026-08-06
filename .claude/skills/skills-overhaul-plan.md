@@ -522,19 +522,15 @@ if [ -n "$NAMESPACE" ] && ! echo "$NAMESPACE" | grep -qE '^SashaRX\.'; then
   echo "WARN: namespace '$NAMESPACE' does not match SashaRX.<Package> — migration required in Phase 2."
 fi
 
-# 0.7 Write the parameter file used by later phases
-cat > /tmp/skills-overhaul.env <<EOF
-REPO_NAME=$REPO_NAME
-PACKAGE_ID=$PACKAGE_ID
-DISPLAY_NAME=$DISPLAY_NAME
-NAMESPACE=$NAMESPACE
-UNITY_MIN=$UNITY_MIN
-DEFAULT_BRANCH=$DEFAULT_BRANCH
-EOF
+# 0.7 Write shell-escaped parameters used by later phases.
+# `declare -p` produces Bash syntax that cannot reinterpret repository values
+# (for example, command substitutions in package.json) when the file is sourced.
+declare -p REPO_NAME PACKAGE_ID DISPLAY_NAME NAMESPACE UNITY_MIN DEFAULT_BRANCH \
+  > /tmp/skills-overhaul.env
 cat /tmp/skills-overhaul.env
 ```
 
-**Verification:** `/tmp/skills-overhaul.env` is non-empty; working tree either clean or known-dirty; git tag created.
+**Verification:** `/tmp/skills-overhaul.env` is non-empty and contains only `declare -- NAME=...` records; working tree either clean or known-dirty; git tag created.
 
 **Rollback:** `git reset --hard <pre-overhaul-sha>` (SHA saved in `/tmp/pre-overhaul-sha.txt`), and `git tag -d pre-skills-overhaul-<date>`.
 
