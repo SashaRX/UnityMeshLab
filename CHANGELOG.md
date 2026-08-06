@@ -5,6 +5,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- Bounded the source-shell overlap scan used by grouped UV transfer so highly fragmented, attacker-controlled meshes cannot trigger an unbounded quadratic pre-transfer pass and stall the Unity Editor.
+
 ### Added
 - **`UvProgress` service** (`Editor/Framework/UvProgress.cs`) — central non-modal progress reporting. Routes status to `UnityEditor.Progress` (Background Tasks panel) plus an inline strip drawn at the bottom of the hub window. Supports nested scopes, phase labels, indeterminate/determinate fractions, cooperative cancellation via `UvProgress.CancelRequested` (`Volatile.Read`-backed `_cancelFlag` so background `Task.Run` work observes user-cancel reliably across the memory barrier), a thread-safe `ReportFromBackground` for `Task.Run` callers (with `Interlocked.Exchange`-guarded snapshot/clear so a racing writer can't lose an update; the `EditorApplication.update` pump is hooked once on assembly load from the main thread via `[InitializeOnLoadMethod]`), and a `Last` outcome shown while idle.
 - **Inline progress strip in `UvToolHub`** — sits at the bottom of the window as a status bar. Reserves fixed height unconditionally so toggling active state doesn't displace any layout. Shows title · phase · detail · elapsed in distinct columns with a Cancel button pinned to the right; while idle displays `✓ / ✗ Last-operation · 12.3s`. Marquee animation for indeterminate fractions; orange tint while cancelling.
