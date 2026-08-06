@@ -57,6 +57,38 @@ namespace SashaRX.UnityMeshLab
                 @"_+",
                 System.Text.RegularExpressions.RegexOptions.Compiled);
 
+        static readonly System.Text.RegularExpressions.Regex lodIndexSuffixRegex =
+            new System.Text.RegularExpressions.Regex(
+                @"_LOD(\d+)$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        // ── LOD naming ──
+
+        /// <summary>
+        /// Highest number of LOD levels a Unity LODGroup supports. Name-derived
+        /// indices at or above this are rejected rather than silently clamped.
+        /// </summary>
+        internal const int MaxLodLevels = 8;
+
+        /// <summary>
+        /// Parses the trailing <c>_LOD{N}</c> suffix of a node name.
+        /// Returns false when the suffix is missing, when the digits overflow
+        /// <see cref="int"/>, or when the index is outside the LODGroup range
+        /// (also guards int.Parse against arbitrarily long digit runs).
+        /// </summary>
+        internal static bool TryParseLodIndex(string name, out int lodIndex)
+        {
+            lodIndex = 0;
+            if (string.IsNullOrEmpty(name)) return false;
+
+            var match = lodIndexSuffixRegex.Match(name);
+
+            return match.Success
+                && int.TryParse(match.Groups[1].Value, out lodIndex)
+                && lodIndex < MaxLodLevels;
+        }
+
         // ── Name helpers ──
 
         /// <summary>

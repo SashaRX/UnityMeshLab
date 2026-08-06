@@ -11,8 +11,6 @@ namespace SashaRX.UnityMeshLab
 {
     public class CleanupTool : IUvTool
     {
-        const int MaxLodLevels = 8;
-
         UvToolContext ctx;
         UvCanvasView canvas;
         Action requestRepaint;
@@ -1230,7 +1228,7 @@ namespace SashaRX.UnityMeshLab
                 var child = root.GetChild(i);
                 if (colSet.Contains(child.gameObject)) continue;
 
-                if (!TryParseLodIndex(child.name, out int lodIdx)) continue;
+                if (!MeshHygieneUtility.TryParseLodIndex(child.name, out int lodIdx)) continue;
                 var r = child.GetComponent<Renderer>();
                 if (r == null) continue;
 
@@ -1497,7 +1495,7 @@ namespace SashaRX.UnityMeshLab
                 var child = root.GetChild(i);
                 if (colSet.Contains(child.gameObject)) continue;
 
-                if (!TryParseLodIndex(child.name, out int lodIdx)) continue;
+                if (!MeshHygieneUtility.TryParseLodIndex(child.name, out int lodIdx)) continue;
                 var r = child.GetComponent<Renderer>();
                 if (r == null) continue;
 
@@ -1526,18 +1524,6 @@ namespace SashaRX.UnityMeshLab
             ctx.LodGroup.SetLODs(newLods);
             ctx.LodGroup.RecalculateBounds();
             UvtLog.Info($"Rebuilt LODGroup with {maxLod} LOD level(s).");
-        }
-
-        static bool TryParseLodIndex(string name, out int lodIndex)
-        {
-            lodIndex = 0;
-            var match = System.Text.RegularExpressions.Regex.Match(
-                name, @"_LOD(\d+)$",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-            return match.Success
-                && int.TryParse(match.Groups[1].Value, out lodIndex)
-                && lodIndex < MaxLodLevels;
         }
 
         // ═══════════════════════════════════════════════════════════════
