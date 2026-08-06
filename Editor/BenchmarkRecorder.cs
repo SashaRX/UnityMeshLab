@@ -497,6 +497,15 @@ namespace SashaRX.UnityMeshLab
         static string Csv(string s)
         {
             if (string.IsNullOrEmpty(s)) return "";
+
+            // Spreadsheet applications may interpret cells beginning with these
+            // characters as formulas. Preserve the text value while forcing the
+            // cell to be treated as literal input.
+            char first = s[0];
+            if (first == '=' || first == '+' || first == '-' || first == '@' ||
+                first == '\t' || first == '\r' || first == '\n')
+                s = "'" + s;
+
             bool needQuote = s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0;
             if (!needQuote) return s;
             return "\"" + s.Replace("\"", "\"\"") + "\"";
