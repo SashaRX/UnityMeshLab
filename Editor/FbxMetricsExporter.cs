@@ -392,6 +392,10 @@ namespace SashaRX.UnityMeshLab
         static string Csv(string s)
         {
             if (string.IsNullOrEmpty(s)) return "";
+            // Spreadsheet applications may interpret these prefixes as formulas.
+            // A leading apostrophe forces the exported cell to remain plain text.
+            if (s[0] == '=' || s[0] == '+' || s[0] == '-' || s[0] == '@')
+                s = "'" + s;
             bool q = s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0;
             return q ? "\"" + s.Replace("\"", "\"\"") + "\"" : s;
         }
