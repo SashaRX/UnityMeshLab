@@ -3623,11 +3623,17 @@ namespace SashaRX.UnityMeshLab
             return snap;
         }
 
+        // tempSink is required, not optional: every mesh this method instantiates
+        // is owned by the caller's scratch list and destroyed by DestroyTempMeshes
+        // once the FBX is written. A null sink would leak one mesh per matched
+        // MeshFilter for the lifetime of the editor session, so the parameter
+        // carries no default and null is rejected outright.
         static int CopyIsolatedSnapshotsToClone(
             GameObject tempRoot,
             Dictionary<string, IsolatedExportSnapshot> snapshots,
-            List<Mesh> tempSink = null)
+            List<Mesh> tempSink)
         {
+            if (tempSink == null) throw new ArgumentNullException(nameof(tempSink));
             if (snapshots == null) return 0;
             int updated = 0;
             int visited = 0;
@@ -3655,7 +3661,7 @@ namespace SashaRX.UnityMeshLab
                 cloneMesh.name = cloneMf.sharedMesh.name;
                 // Temporary copy — destroyed with the rest of the export scratch
                 // meshes once the FBX is written.
-                tempSink?.Add(cloneMesh);
+                tempSink.Add(cloneMesh);
 
                 if (snap.colors32 != null) { cloneMesh.colors32 = snap.colors32; updated++; }
                 else if (snap.colors != null) { cloneMesh.colors = snap.colors; updated++; }
