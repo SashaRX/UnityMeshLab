@@ -145,6 +145,36 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void RepackSingle_NormalizesMirroredShellWithoutModifyingUv0()
+        {
+            if (!NativeAvailable()) Assert.Ignore("xatlas native plugin not available");
+
+            var mesh = BuildTiledMesh(1);
+            try
+            {
+                var mirroredUv0 = mesh.uv;
+                for (int i = 0; i < mirroredUv0.Length; i++)
+                    mirroredUv0[i].x = 0.5f - mirroredUv0[i].x;
+                mesh.uv = mirroredUv0;
+
+                var opts = RepackOptions.Default;
+                opts.resolution = 256;
+                opts.padding = 2;
+                var result = XatlasRepack.RepackSingle(mesh, opts);
+
+                Assert.IsTrue(result.ok, $"Repack failed: {result.error}");
+                Assert.AreEqual(1, result.flippedShells,
+                    "Standalone repack must normalize mirrored shells even when Weld was not run");
+                CollectionAssert.AreEqual(mirroredUv0, mesh.uv,
+                    "Repack normalization must only modify its local UV0 copy");
+            }
+            finally
+            {
+                Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [Test]
         public void PackPreflight_DisablesBruteForce_WhenInternalOversampleIsAboveOne()
         {
             var method = typeof(XatlasRepack).GetMethod(
@@ -159,10 +189,61 @@ namespace SashaRX.UnityMeshLab.Tests
                 "Oversampled packs should use the xatlas heuristic packer even when the UI brute-force toggle is enabled.");
             StringAssert.Contains("oversample", (string)args[4]);
         }
+
+        [Test]
+        public void PackPreflight_RejectsOverflowingOversampledDimensions()
+        {
+            var method = typeof(XatlasRepack).GetMethod(
+                "TryResolveInternalPackDimensions",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "XatlasRepack should validate oversampled dimensions before native packing");
+
+            var opts = RepackOptions.Default;
+            opts.resolution = (uint)int.MaxValue;
+            opts.internalOversample = 4;
+            object[] args = { opts, 0, (uint)0, (uint)0 };
+
+            Assert.IsFalse((bool)method.Invoke(null, args));
+            Assert.AreEqual(0u, (uint)args[2]);
+            Assert.AreEqual(0u, (uint)args[3]);
+        }
+
+        [Test]
+        public void PackCost_SaturatesInsteadOfOverflowing()
+        {
+            var method = typeof(XatlasRepack).GetMethod(
+                "ComputePackCost",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "XatlasRepack should expose pack cost calculation as a testable helper");
+
+            long cost = (long)method.Invoke(null, new object[] { 1, uint.MaxValue });
+
+            Assert.AreEqual(long.MaxValue, cost);
+        }
     }
 
     public class GroupedShellTransferTests
     {
+        [Test]
+        public void CancelTransfer_InvalidatesPartialUv2Result()
+        {
+            var method = typeof(GroupedShellTransfer).GetMethod(
+                "CancelTransfer",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "GroupedShellTransfer should invalidate partial results on cancellation");
+
+            var partial = new GroupedShellTransfer.TransferResult
+            {
+                uv2 = new Vector2[4],
+                verticesTotal = 4
+            };
+            var cancelled = (GroupedShellTransfer.TransferResult)method.Invoke(null, new object[] { partial });
+
+            Assert.AreSame(partial, cancelled);
+            Assert.IsNull(cancelled.uv2,
+                "Cancelled transfers must use the null-UV2 failure contract expected by transfer callers.");
+        }
+
         [Test]
         public void Uv2PixelMargin_ScalesFromResolvedAtlasSize()
         {
@@ -182,6 +263,56 @@ namespace SashaRX.UnityMeshLab.Tests
 
     public class LightmapTransferToolUiTests
     {
+        static bool ValidateSweep(TestSuiteAsset.SweepMatrix sweep, out int cells, out string error)
+        {
+            var method = typeof(LightmapTransferTool).GetMethod(
+                "TryValidateSweep",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "Sweep validation should remain available as a testable preflight");
+
+            object[] args = { sweep, new UvToolContext(), 0, null };
+            bool valid = (bool)method.Invoke(null, args);
+            cells = (int)args[2];
+            error = (string)args[3];
+            return valid;
+        }
+
+        [Test]
+        public void SweepValidation_RejectsUnsafeNativePackingValues()
+        {
+            var sweep = new TestSuiteAsset.SweepMatrix
+            {
+                shellPaddingPxVariants = new[] { -1 },
+            };
+
+            Assert.IsFalse(ValidateSweep(sweep, out int cells, out string error));
+            Assert.AreEqual(0, cells);
+            StringAssert.Contains("shell padding", error);
+        }
+
+        [Test]
+        public void SweepValidation_RejectsExcessiveCartesianProduct()
+        {
+            var sweep = new TestSuiteAsset.SweepMatrix
+            {
+                atlasResolutions = new[] { 64, 128, 256, 512, 1024, 2048, 4096 },
+                shellPaddingPxVariants = new[] { 0, 1, 2, 3, 4, 5, 6 },
+                borderPaddingPxVariants = new[] { 0, 1, 2, 3, 4, 5 },
+            };
+
+            Assert.IsFalse(ValidateSweep(sweep, out int cells, out string error));
+            Assert.AreEqual(0, cells);
+            StringAssert.Contains("maximum is 256", error);
+        }
+
+        [Test]
+        public void SweepValidation_AcceptsDefaultsAndCountsCellsSafely()
+        {
+            Assert.IsTrue(ValidateSweep(new TestSuiteAsset.SweepMatrix(),
+                out int cells, out string error), error);
+            Assert.AreEqual(24, cells);
+        }
+
         [Test]
         public void BruteForceOption_IsUnavailable_WhenInternalOversampleIsAboveOne()
         {
@@ -223,6 +354,61 @@ namespace SashaRX.UnityMeshLab.Tests
                 foreach (var e in sourceOnly)
                     Object.DestroyImmediate(e.originalMesh);
             }
+        }
+
+        [Test]
+        public void ApplyUv2_IsAvailable_AfterSourceOnlyRepack()
+        {
+            var method = typeof(LightmapTransferTool).GetMethod(
+                "CanApplyUv2",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method, "LightmapTransferTool should expose the Apply UV2 availability rule as a testable helper");
+
+            Assert.IsTrue((bool)method.Invoke(null, new object[] { true, false }),
+                "A source-only repack must remain applyable when transfer is skipped.");
+            Assert.IsTrue((bool)method.Invoke(null, new object[] { false, true }));
+            Assert.IsFalse((bool)method.Invoke(null, new object[] { false, false }));
+        }
+
+        [Test]
+        public void PostPackDensityCorrection_KeepsEachSplitChartCentroidFixed()
+        {
+            var method = typeof(XatlasRepack).GetMethod(
+                "ApplyPostPackDensityCorrection",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.IsNotNull(method);
+
+            var uv2 = new[]
+            {
+                new Vector2(0, 0), new Vector2(1, 0), new Vector2(0, 1),
+                new Vector2(10, 0), new Vector2(11, 0), new Vector2(10, 1),
+                new Vector2(4, 0), new Vector2(4.2f, 0), new Vector2(4, 0.2f),
+                new Vector2(7, 0), new Vector2(7.2f, 0), new Vector2(7, 0.2f)
+            };
+            var positions = new Vector3[uv2.Length];
+            for (int i = 0; i < positions.Length; i += 3)
+            {
+                positions[i] = Vector3.zero;
+                positions[i + 1] = Vector3.right;
+                positions[i + 2] = Vector3.up;
+            }
+            var tris = new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+            var shells = new List<UvShell>
+            {
+                new UvShell { faceIndices = new List<int> { 0, 1 }, vertexIndices = new HashSet<int> { 0, 1, 2, 3, 4, 5 } },
+                new UvShell { faceIndices = new List<int> { 2 }, vertexIndices = new HashSet<int> { 6, 7, 8 } },
+                new UvShell { faceIndices = new List<int> { 3 }, vertexIndices = new HashSet<int> { 9, 10, 11 } }
+            };
+            var chartIds = new uint[] { 10, 10, 10, 20, 20, 20, 30, 30, 30, 40, 40, 40 };
+            Vector2 firstCentroid = (uv2[0] + uv2[1] + uv2[2]) / 3f;
+            Vector2 secondCentroid = (uv2[3] + uv2[4] + uv2[5]) / 3f;
+
+            int modified = (int)method.Invoke(null,
+                new object[] { uv2, tris, positions, shells, chartIds, "split-chart-test" });
+
+            Assert.AreEqual(1, modified);
+            Assert.That(Vector2.Distance(firstCentroid, (uv2[0] + uv2[1] + uv2[2]) / 3f), Is.LessThan(1e-5f));
+            Assert.That(Vector2.Distance(secondCentroid, (uv2[3] + uv2[4] + uv2[5]) / 3f), Is.LessThan(1e-5f));
         }
     }
 }

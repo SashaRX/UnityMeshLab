@@ -19,6 +19,14 @@ namespace SashaRX.UnityMeshLab
         UvCanvasView canvas;
         Action requestRepaint;
 
+        // Surface-area scans materialize mesh vertex/index data and are far too
+        // expensive to run on every OnGUI repaint. Cache the result keyed by the
+        // exact mesh references it was computed from, and recompute only when
+        // that set changes (or when an actual repack refreshes it).
+        readonly List<Mesh> _areaPreviewMeshes = new List<Mesh>();
+        double _areaPreview;
+        bool _hasAreaPreview;
+
         public string ToolName  => "UV2 Transfer";
         public string ToolId    => "uv2_transfer";
         public int    ToolOrder => 0;
@@ -42,6 +50,132 @@ namespace SashaRX.UnityMeshLab
                 return true;
             }
             return false;
+        }
+
+        static bool CanApplyUv2(bool hasRepack, bool hasTransfer)
+        {
+            return hasRepack || hasTransfer;
+        }
+
+        List<Mesh> GetRepackSourceMeshes()
+        {
+            return ctx.ForLod(ctx.SourceLodIndex)
+                .Where(e => e.originalMesh != null)
+                .Select(e => e.originalMesh)
+                .ToList();
+        }
+
+        bool TryGetAreaPreview(List<Mesh> meshes, out double area)
+        {
+            bool sameMeshes = _hasAreaPreview && meshes.Count == _areaPreviewMeshes.Count;
+            for (int i = 0; sameMeshes && i < meshes.Count; i++)
+                sameMeshes = ReferenceEquals(meshes[i], _areaPreviewMeshes[i]);
+
+            area = sameMeshes ? _areaPreview : 0.0;
+            return sameMeshes;
+        }
+
+        double CacheAreaPreview(List<Mesh> meshes, double area)
+        {
+            _areaPreview = area;
+            _areaPreviewMeshes.Clear();
+            _areaPreviewMeshes.AddRange(meshes);
+            _hasAreaPreview = true;
+            return _areaPreview;
+        }
+
+        /// <summary>
+        /// Cached total 3D surface area of the source-LOD meshes. Recomputed only
+        /// when the mesh set changes, so a repaint no longer copies every vertex
+        /// and index array. Draws no controls — the IMGUI control count must not
+        /// depend on cache state.
+        /// </summary>
+        double GetSourceAreaPreview()
+        {
+            var meshes = GetRepackSourceMeshes();
+            if (TryGetAreaPreview(meshes, out double area)) return area;
+            return CacheAreaPreview(meshes, MeshAreaHelper.ComputeTotal3DAreaMeters(meshes));
+        }
+
+        const int MaxSweepValuesPerDimension = 16;
+        const int MaxSweepCells = 256;
+
+        static bool TryValidateSweep(TestSuiteAsset.SweepMatrix sm, UvToolContext context,
+                                     out int cellCount, out string error)
+        {
+            cellCount = 0;
+            error = null;
+            if (sm == null || context == null)
+            {
+                error = "Sweep configuration is missing.";
+                return false;
+            }
+
+            var resolutions = sm.atlasResolutions?.Length > 0
+                ? sm.atlasResolutions : new[] { context.AtlasResolution };
+            var shellPaddings = sm.shellPaddingPxVariants?.Length > 0
+                ? sm.shellPaddingPxVariants : new[] { context.ShellPaddingPx };
+            var borderPaddings = sm.borderPaddingPxVariants?.Length > 0
+                ? sm.borderPaddingPxVariants : new[] { context.BorderPaddingPx };
+            var arapIterations = sm.arapIterationsVariants?.Length > 0
+                ? sm.arapIterationsVariants
+                : new[] { context.ReparameterizeStretchedShells ? context.ArapIterations : 0 };
+            var stretchThresholds = sm.stretchThresholdVariants?.Length > 0
+                ? sm.stretchThresholdVariants : new[] { context.StretchThreshold };
+
+            if (!ValidateSweepDimension(resolutions, 64, 4096, "atlas resolution", out error) ||
+                !ValidateSweepDimension(shellPaddings, 0, 64, "shell padding", out error) ||
+                !ValidateSweepDimension(borderPaddings, 0, 64, "border padding", out error) ||
+                !ValidateSweepDimension(arapIterations, 0, 200, "ARAP iterations", out error) ||
+                !ValidateSweepDimension(stretchThresholds, 1f, 3f, "stretch threshold", out error))
+                return false;
+
+            long total = (long)resolutions.Length * shellPaddings.Length * borderPaddings.Length
+                       * arapIterations.Length * stretchThresholds.Length;
+            if (total > MaxSweepCells)
+            {
+                error = $"Sweep has {total} cells; the maximum is {MaxSweepCells}.";
+                return false;
+            }
+
+            cellCount = (int)total;
+            return true;
+        }
+
+        static bool ValidateSweepDimension(int[] values, int min, int max, string label,
+                                           out string error)
+        {
+            if (values.Length > MaxSweepValuesPerDimension)
+            {
+                error = $"{label} has {values.Length} values; the maximum is {MaxSweepValuesPerDimension}.";
+                return false;
+            }
+            foreach (int value in values)
+                if (value < min || value > max)
+                {
+                    error = $"Invalid {label} {value}; allowed range is {min}..{max}.";
+                    return false;
+                }
+            error = null;
+            return true;
+        }
+
+        static bool ValidateSweepDimension(float[] values, float min, float max, string label,
+                                           out string error)
+        {
+            if (values.Length > MaxSweepValuesPerDimension)
+            {
+                error = $"{label} has {values.Length} values; the maximum is {MaxSweepValuesPerDimension}.";
+                return false;
+            }
+            foreach (float value in values)
+                if (float.IsNaN(value) || float.IsInfinity(value) || value < min || value > max)
+                {
+                    error = $"Invalid {label} {value}; allowed range is {min}..{max}.";
+                    return false;
+                }
+            error = null;
+            return true;
         }
 
         // ── Internal tab ──
@@ -179,10 +313,18 @@ namespace SashaRX.UnityMeshLab
         // ── Transfer cache ──
         Dictionary<int, GroupedShellTransfer.SourceShellInfo[]> shellTransformCache =
             new Dictionary<int, GroupedShellTransfer.SourceShellInfo[]>();
-        List<GroupedShellTransfer.OverlapSourceHint> accumulatedOverlapHints =
-            new List<GroupedShellTransfer.OverlapSourceHint>();
-        List<GroupedShellTransfer.CrossLodMatchHint> accumulatedMatchHints =
-            new List<GroupedShellTransfer.CrossLodMatchHint>();
+        sealed class CrossLodHintState
+        {
+            public readonly List<GroupedShellTransfer.OverlapSourceHint> overlapHints =
+                new List<GroupedShellTransfer.OverlapSourceHint>();
+            public readonly List<GroupedShellTransfer.CrossLodMatchHint> matchHints =
+                new List<GroupedShellTransfer.CrossLodMatchHint>();
+        }
+
+        // Shell indices are local to a source mesh. Keep cross-LOD hints isolated
+        // to the source/mesh-group pair that produced them.
+        readonly Dictionary<(MeshEntry source, string meshGroupKey), CrossLodHintState> crossLodHints =
+            new Dictionary<(MeshEntry, string), CrossLodHintState>();
 
         // ── Preview ──
         // Three mutually-exclusive preview modes. Only one should be active at a time.
@@ -199,6 +341,12 @@ namespace SashaRX.UnityMeshLab
         // ── Scene ──
         double sceneSpotLastRaycastTime;
         const double sceneSpotThrottleSec = 0.033;
+        // Per-hover triangle budget for the SceneView pick. Sized to cover a typical
+        // 20-50k tri LOD0 game mesh (and a few of them) so hover keeps working on
+        // real assets, while still bounding the per-mousemove cost.
+        const int sceneSpotTriangleBudget = 100000;
+        double sceneSpotLastBudgetWarnTime;
+        const double sceneSpotBudgetWarnIntervalSec = 5.0;
 
         // ════════════════════════════════════════════════════════════
         //  Lifecycle
@@ -491,17 +639,11 @@ namespace SashaRX.UnityMeshLab
             sweepSuite = (TestSuiteAsset)EditorGUILayout.ObjectField(
                 "Sweep suite", sweepSuite, typeof(TestSuiteAsset), false);
             int cells = 0;
+            string sweepError = null;
             if (sweepSuite != null && sweepSuite.sweep != null)
-            {
-                var sm = sweepSuite.sweep;
-                int rL  = sm.atlasResolutions?.Length              ?? 0;
-                int pL  = sm.shellPaddingPxVariants?.Length        ?? 0;
-                int bL  = sm.borderPaddingPxVariants?.Length       ?? 0;
-                int arL = sm.arapIterationsVariants?.Length        ?? 0;
-                int stL = sm.stretchThresholdVariants?.Length      ?? 0;
-                cells = Mathf.Max(1, rL) * Mathf.Max(1, pL) * Mathf.Max(1, bL)
-                      * Mathf.Max(1, arL) * Mathf.Max(1, stL);
-            }
+                TryValidateSweep(sweepSuite.sweep, ctx, out cells, out sweepError);
+            if (!string.IsNullOrEmpty(sweepError))
+                EditorGUILayout.HelpBox(sweepError, MessageType.Error);
             using (new EditorGUILayout.HorizontalScope())
             {
                 using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0))
@@ -679,10 +821,7 @@ namespace SashaRX.UnityMeshLab
                     // Texel density preview — live summary of the resolved
                     // atlas size so the user sees what xatlas will actually
                     // pack into without having to switch to the Repack tab.
-                    double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
-                        ctx.ForLod(ctx.SourceLodIndex)
-                            .Where(e => e.originalMesh != null)
-                            .Select(e => e.originalMesh));
+                    double total3DArea = GetSourceAreaPreview();
                     string previewLine;
                     if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
                     {
@@ -944,10 +1083,7 @@ namespace SashaRX.UnityMeshLab
                 ? ResolutionMode.AutoFromTexelDensity
                 : ResolutionMode.Manual;
 
-            double total3DArea = MeshAreaHelper.ComputeTotal3DAreaMeters(
-                ctx.ForLod(ctx.SourceLodIndex)
-                    .Where(e => e.originalMesh != null)
-                    .Select(e => e.originalMesh));
+            double total3DArea = GetSourceAreaPreview();
 
             if (ctx.RepackResolutionMode == ResolutionMode.Manual)
             {
@@ -1070,12 +1206,12 @@ namespace SashaRX.UnityMeshLab
                         "Fraction of [0,1]² normalized UVs sum to. Lower → safer fit, smaller charts; "
                         + "higher → tighter pack but risk of overflow + downscale."),
                     ctx.TargetUvCoverage, 0.3f, 0.95f);
-                ctx.ClampLightmapToUnit = EditorGUILayout.ToggleLeft(
-                    new GUIContent("Clamp UV2 to [0,1]",
-                        "Cheap safety net against verts pushed a fraction of a texel outside the unit square."),
-                    ctx.ClampLightmapToUnit);
                 EditorGUI.indentLevel--;
             }
+            ctx.ClampLightmapToUnit = EditorGUILayout.ToggleLeft(
+                new GUIContent("Clamp UV2 to [0,1]",
+                    "Cheap safety net against verts pushed a fraction of a texel outside the unit square."),
+                ctx.ClampLightmapToUnit);
         }
 
         void DrawRepackCompressionControls()
@@ -1110,8 +1246,8 @@ namespace SashaRX.UnityMeshLab
         {
             ctx.PostPackDensityCorrection = EditorGUILayout.ToggleLeft(
                 new GUIContent("Post-pack density correction (experimental)",
-                    "After pack, shrink over-dense shells toward the median around their UV2 centroid. "
-                    + "Compensates xatlas's per-chart ceil(extents) stretch. Shrink-only; leaves gaps."),
+                    "After pack, shrink over-dense shells toward the median around each packed chart's UV2 centroid. "
+                    + "Each chart stays inside its packed bounds. Shrink-only; leaves gaps."),
                 ctx.PostPackDensityCorrection);
             ctx.XatlasTexelsPerUnit = EditorGUILayout.FloatField(
                 new GUIContent("Texels per UV unit (manual)",
@@ -1259,19 +1395,13 @@ namespace SashaRX.UnityMeshLab
                         EditorStyles.miniLabel);
                     EditorGUI.indentLevel--;
                 }
+            }
 
+            if (CanApplyUv2(ctx.HasRepack, ctx.HasTransfer))
+            {
                 EditorGUILayout.Space(6);
-                // Post-transfer actions — what you do immediately after a
-                // successful UV2 transfer (apply to FBX / reset).
-                //
-                // FBX export ("Overwrite FBX" / "Export New FBX" /
-                // "Backup from main") and "Save Mesh Assets" live in the
-                // sidebar footer for any tab; duplicating them here was
-                // confusing redundancy.
-                //
-                // "Generate LODs" was rendered here too, but LOD generation
-                // is the job of the dedicated LOD Gen tab — keeping it on
-                // Transfer made the tab feel scope-creepy.
+                // The source LOD can be applied immediately after repack,
+                // even when there are no included target LODs to transfer.
                 H("Apply UV2");
                 ColorBtn(new Color(.3f,.85f,.4f), "Apply UV2 to FBX", 26, ApplyUv2ToFbx);
                 EditorGUILayout.Space(2);
@@ -1456,6 +1586,12 @@ namespace SashaRX.UnityMeshLab
         void ExecSweep(TestSuiteAsset.SweepMatrix sm)
         {
             if (ctx.LodGroup == null || sm == null) return;
+            if (!TryValidateSweep(sm, ctx, out int total, out string validationError))
+            {
+                UvtLog.Error(UvtLog.Category.Benchmark, $"[Sweep] {validationError}");
+                EditorUtility.DisplayDialog("Invalid sweep", validationError, "OK");
+                return;
+            }
             var resArr = (sm.atlasResolutions != null && sm.atlasResolutions.Length > 0)
                 ? sm.atlasResolutions : new[] { ctx.AtlasResolution };
             var padArr = (sm.shellPaddingPxVariants != null && sm.shellPaddingPxVariants.Length > 0)
@@ -1467,9 +1603,6 @@ namespace SashaRX.UnityMeshLab
                 : new[] { ctx.ReparameterizeStretchedShells ? ctx.ArapIterations : 0 };
             var stretchArr = (sm.stretchThresholdVariants != null && sm.stretchThresholdVariants.Length > 0)
                 ? sm.stretchThresholdVariants : new[] { ctx.StretchThreshold };
-
-            int total = resArr.Length * padArr.Length * bdrArr.Length
-                      * arapItersArr.Length * stretchArr.Length;
 
             // Snapshot ctx fields we mutate — restored unconditionally below.
             int   origRes         = ctx.AtlasResolution;
@@ -1807,7 +1940,7 @@ namespace SashaRX.UnityMeshLab
                             kv.Key.shellTransferResult = null;
                         }
                         ctx.ClearAllCaches();
-                        accumulatedOverlapHints.Clear();
+                        crossLodHints.Clear();
                         shellTransformCache.Clear();
                         ctx.HasRepack = false;
                         ctx.HasTransfer = false;
@@ -1997,11 +2130,13 @@ namespace SashaRX.UnityMeshLab
 
         async Task ExecRepackCoreImpl(List<MeshEntry> entries, bool useAsync)
         {
-            uint resolvedResolution = (uint)ctx.AtlasResolution;
+            uint resolvedResolution = (uint)SanitizeAtlasResolution(ctx.AtlasResolution);
             if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
             {
-                double area = MeshAreaHelper.ComputeTotal3DAreaMeters(
-                    entries.Where(e => e.originalMesh != null).Select(e => e.originalMesh));
+                var areaMeshes = entries.Where(e => e.originalMesh != null)
+                                        .Select(e => e.originalMesh).ToList();
+                double area = CacheAreaPreview(
+                    areaMeshes, MeshAreaHelper.ComputeTotal3DAreaMeters(areaMeshes));
                 resolvedResolution = MeshAreaHelper.ComputeAutoResolution(
                     area, ctx.LightmapDensity, ctx.TargetUvCoverage);
                 UvtLog.Info(
@@ -2013,11 +2148,25 @@ namespace SashaRX.UnityMeshLab
             // where the resolved value can differ by an octave from the user
             // setting.
             BenchmarkRecorder.Current?.SetResolvedAtlasResolution((int)resolvedResolution);
-            UvtLog.Info($"[Repack] {entries.Count} meshes, res={resolvedResolution}, pad={ctx.ShellPaddingPx}, bdr={ctx.BorderPaddingPx}");
+            int safeShellPadding = SanitizePadding(ctx.ShellPaddingPx);
+            int safeBorderPadding = SanitizePadding(ctx.BorderPaddingPx);
+            UvtLog.Info($"[Repack] {entries.Count} meshes, res={resolvedResolution}, pad={safeShellPadding}, bdr={safeBorderPadding}");
             var validEntries = new List<MeshEntry>();
             var meshCopies = new List<Mesh>();
             foreach (var e in entries)
             {
+                // Drop the previous run's output before producing a new one:
+                // otherwise a failed re-run leaves a stale repackedMesh that
+                // Apply UV2 would happily write to the FBX (and the successful
+                // path used to overwrite the reference, leaking the old mesh).
+                if (e.repackedMesh != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(e.repackedMesh);
+                    e.repackedMesh = null;
+                }
+                e.repackedAtlasWidth = 0;
+                e.repackedAtlasHeight = 0;
+
                 if (e.originalMesh == null) continue;
                 var uv0 = e.originalMesh.uv;
                 if (uv0 == null || uv0.Length == 0) { UvtLog.Warn("[Repack] " + e.renderer.name + ": no UV0"); continue; }
@@ -2026,12 +2175,16 @@ namespace SashaRX.UnityMeshLab
                 validEntries.Add(e);
                 meshCopies.Add(cp);
             }
-            if (meshCopies.Count == 0) return;
+            if (meshCopies.Count == 0)
+            {
+                ctx.HasRepack = ctx.MeshEntries.Any(e => e.repackedMesh != null);
+                return;
+            }
 
             var opts = RepackOptions.Default;
             opts.resolution = resolvedResolution;
-            opts.padding = (uint)ctx.ShellPaddingPx;
-            opts.borderPadding = (uint)ctx.BorderPaddingPx;
+            opts.padding = (uint)safeShellPadding;
+            opts.borderPadding = (uint)safeBorderPadding;
             opts.bruteForce = ctx.XatlasBruteForce;
             opts.rotateCharts = ctx.XatlasRotateCharts;
             opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
@@ -2067,7 +2220,13 @@ namespace SashaRX.UnityMeshLab
                 validEntries[i].repackedAtlasHeight = results[i].atlasHeight;
             }
 
-            ctx.HasRepack = true;
+            // HasRepack gates the Apply UV2 UI, so it must mean "a repacked mesh
+            // exists right now", not "a repack was attempted". Setting it
+            // unconditionally let a failed or cancelled run leave the button
+            // enabled, applying the original UV2 to the FBX. Derive it from the
+            // entries instead — per-mesh grouping calls this once per group, so a
+            // later failing group must not erase an earlier group's success.
+            ctx.HasRepack = ctx.MeshEntries.Any(e => e.repackedMesh != null);
             ctx.ClearAllCaches();
             requestRepaint?.Invoke();
         }
@@ -2121,8 +2280,7 @@ namespace SashaRX.UnityMeshLab
                     return;
                 }
 
-                accumulatedOverlapHints.Clear();
-                accumulatedMatchHints.Clear();
+                crossLodHints.Clear();
                 int processed = 0;
                 for (int li = 0; li < ctx.LodCount; li++)
                 {
@@ -2191,6 +2349,14 @@ namespace SashaRX.UnityMeshLab
                 Mesh tgtMesh = tgt.originalMesh;
                 if (srcMesh == null || tgtMesh == null) continue;
 
+                string meshGroupKey = tgt.meshGroupKey ?? tgt.renderer.name;
+                var hintKey = (source: srcEntry, meshGroupKey: meshGroupKey);
+                if (!crossLodHints.TryGetValue(hintKey, out var hintState))
+                {
+                    hintState = new CrossLodHintState();
+                    crossLodHints.Add(hintKey, hintState);
+                }
+
                 int srcId = srcMesh.GetInstanceID();
                 if (!shellTransformCache.TryGetValue(srcId, out var srcInfos))
                 {
@@ -2202,26 +2368,26 @@ namespace SashaRX.UnityMeshLab
                 UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
                 var tr = useAsync
                     ? await GroupedShellTransfer.TransferAsync(tgtMesh, srcMesh,
-                        accumulatedOverlapHints.Count > 0 ? accumulatedOverlapHints : null,
-                        accumulatedMatchHints.Count > 0 ? accumulatedMatchHints : null,
+                        hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
+                        hintState.matchHints.Count > 0 ? hintState.matchHints : null,
                         srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
                         srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0)
                     : GroupedShellTransfer.Transfer(tgtMesh, srcMesh,
-                        accumulatedOverlapHints.Count > 0 ? accumulatedOverlapHints : null,
-                        accumulatedMatchHints.Count > 0 ? accumulatedMatchHints : null,
+                        hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
+                        hintState.matchHints.Count > 0 ? hintState.matchHints : null,
                         srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
                         srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0);
                 if (tr.uv2 == null) { UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); continue; }
 
                 // Accumulate overlap hints for subsequent LODs
                 if (tr.overlapHints != null && tr.overlapHints.Count > 0)
-                    accumulatedOverlapHints.AddRange(tr.overlapHints);
+                    hintState.overlapHints.AddRange(tr.overlapHints);
                 // Replace match hints with this LOD's matches (latest LOD drives
                 // next LOD's hint-guided matching; stale hints from older LODs
                 // could conflict with changing geometry)
-                accumulatedMatchHints.Clear();
+                hintState.matchHints.Clear();
                 if (tr.matchHints != null && tr.matchHints.Count > 0)
-                    accumulatedMatchHints.AddRange(tr.matchHints);
+                    hintState.matchHints.AddRange(tr.matchHints);
 
                 // Build output mesh with UV2 applied
                 var om = UnityEngine.Object.Instantiate(tgtMesh);
@@ -2621,6 +2787,7 @@ namespace SashaRX.UnityMeshLab
                     return false;
 
                 var positions = sidecarMesh.vertices;
+                var colors = sidecarMesh.colors32;
                 var uv0List = new List<Vector2>();
                 (entry.originalMesh ?? resultMesh).GetUVs(0, uv0List);
 
@@ -2637,6 +2804,7 @@ namespace SashaRX.UnityMeshLab
                     edgeWelded = entry.wasEdgeWelded,
                     vertPositions = positions,
                     vertUv0 = uv0List.ToArray(),
+                    optimizedColors = colors.Length == sidecarMesh.vertexCount ? colors : null,
                     schemaVersion = Uv2DataAsset.CurrentSchemaVersion,
                     toolVersion = Uv2DataAsset.ToolVersionStr,
                     sourceFingerprint = fp,
@@ -2745,6 +2913,8 @@ namespace SashaRX.UnityMeshLab
 
             int updated = 0;
             Dictionary<string, string> renameMap = null;
+            // Mesh copies created while baking node transforms — destroyed after export.
+            var bakedMeshes = new List<Mesh>();
             try
             {
                 updated = CopyVertexDataToClone(tempRoot);
@@ -2754,7 +2924,7 @@ namespace SashaRX.UnityMeshLab
                     return;
                 }
 
-                renameMap = NormalizeExportHierarchy(tempRoot);
+                renameMap = NormalizeExportHierarchy(tempRoot, bakedMeshes);
                 PrepareCollisionMaterials(tempRoot);
                 TrimMaterialArrays(tempRoot);
 
@@ -2763,7 +2933,7 @@ namespace SashaRX.UnityMeshLab
                 // Hash the full path so two FBX files with the same filename
                 // (e.g. Assets/A/Chair.fbx and Assets/B/Chair.fbx) get distinct
                 // backup names and never overwrite each other.
-                string pathHash = Math.Abs(fullPath.GetHashCode()).ToString("X8");
+                string pathHash = unchecked((uint)fullPath.GetHashCode()).ToString("X8");
                 string metaBak = System.IO.Path.Combine(
                     System.IO.Path.GetTempPath(),
                     System.IO.Path.GetFileName(fullPath) + "." + pathHash + ".meta.bak");
@@ -2791,6 +2961,7 @@ namespace SashaRX.UnityMeshLab
             finally
             {
                 UnityEngine.Object.DestroyImmediate(tempRoot);
+                DestroyTempMeshes(bakedMeshes);
             }
 
             // ── Phase 4: Reimport (single refresh) ──
@@ -3028,7 +3199,7 @@ namespace SashaRX.UnityMeshLab
                 // backup names and never overwrite each other.
                 string fullSourcePath = System.IO.Path.GetFullPath(sourceFbxPath);
                 string fbxBakName = System.IO.Path.GetFileName(fullSourcePath) + "." +
-                    Math.Abs(fullSourcePath.GetHashCode()).ToString("X8");
+                    unchecked((uint)fullSourcePath.GetHashCode()).ToString("X8");
                 if (overwriteSource)
                 {
                     if (!EditorUtility.DisplayDialog("Overwrite Source FBX",
@@ -3092,6 +3263,10 @@ namespace SashaRX.UnityMeshLab
                 tempRoot.name = fbxPrefab.name;
                 PromoteRootMeshToLod0Child(tempRoot);
 
+                // Temporary mesh copies built for this export group — export clones,
+                // transform-baked copies and stripped collision meshes. They only ever
+                // live on tempRoot, so they are destroyed once the export finished.
+                var tempMeshes = new List<Mesh>();
                 try
                 {
                     var lastLodRendererTemplate = FindLastLodRenderer(entries);
@@ -3102,6 +3277,8 @@ namespace SashaRX.UnityMeshLab
                     foreach (var (entry, resultMesh) in entries)
                     {
                         var exportMesh = UnityEngine.Object.Instantiate(resultMesh);
+                        // Temporary copy — destroyed after the FBX export.
+                        tempMeshes.Add(exportMesh);
                         // Copy UV channels from fbxMesh first (base UVs),
                         // then from originalMesh (has AO and other tool modifications).
                         if (entry.fbxMesh != null)
@@ -3180,6 +3357,8 @@ namespace SashaRX.UnityMeshLab
                         }
                         var newMf = child.AddComponent<MeshFilter>();
                         var exportMesh = UnityEngine.Object.Instantiate(resultMesh);
+                        // Temporary copy — destroyed after the FBX export.
+                        tempMeshes.Add(exportMesh);
                         if (entry.fbxMesh != null)
                             PreserveUvChannels(exportMesh, entry.fbxMesh);
                         if (entry.originalMesh != null && entry.originalMesh != entry.fbxMesh)
@@ -3286,7 +3465,7 @@ namespace SashaRX.UnityMeshLab
                     // Ensure root is a clean pivot (identity transform, no mesh)
                     // and LOD0 child named same as root gets _LOD0 suffix.
                     // Returns a map of oldNodeName → newNodeName for mesh re-linking.
-                    var nodeRenameMap = NormalizeExportHierarchy(tempRoot);
+                    var nodeRenameMap = NormalizeExportHierarchy(tempRoot, tempMeshes);
                     if (nodeRenameMap.Count > 0)
                         meshRenamesByFbx[sourceFbxPath] = nodeRenameMap;
 
@@ -3306,6 +3485,10 @@ namespace SashaRX.UnityMeshLab
                     int collisionMeshCount = 0;
                     foreach (var (colMeshName, colMeshes, isConvex) in collisionData)
                     {
+                        // GetCollisionMeshesFromSidecar builds every one of these from the
+                        // sidecar's serialized arrays — they are never FBX sub-assets, and
+                        // the caller owns them. Destroyed after the export.
+                        tempMeshes.AddRange(colMeshes);
                         if (colMeshes.Count == 1 && !isConvex)
                         {
                             // Simplified: single _COL child (no MeshRenderer — avoids stale material)
@@ -3370,7 +3553,10 @@ namespace SashaRX.UnityMeshLab
                         var srcCol = colMf.sharedMesh;
                         if (srcCol.isReadable)
                         {
+                            // Owns copies of srcCol's data (SetVertices/SetTriangles copy),
+                            // so it can be destroyed after the export without touching srcCol.
                             var stripped = new Mesh { name = srcCol.name };
+                            tempMeshes.Add(stripped);
                             stripped.SetVertices(srcCol.vertices);
                             for (int s = 0; s < srcCol.subMeshCount; s++)
                                 stripped.SetTriangles(srcCol.GetTriangles(s), s);
@@ -3446,7 +3632,11 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
                 catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); allGroupsSucceeded = false; }
-                finally { UnityEngine.Object.DestroyImmediate(tempRoot); }
+                finally
+                {
+                    UnityEngine.Object.DestroyImmediate(tempRoot);
+                    DestroyTempMeshes(tempMeshes);
+                }
 
                 // Restore isReadable if we changed it (non-overwrite path only;
                 // overwrite path restores .meta from backup automatically).
@@ -3810,8 +4000,13 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Returns a dictionary of oldNodeName → newNodeName for nodes that were renamed.
         /// Used to re-link scene mesh references after FBX reimport.
+        /// <paramref name="bakedMeshSink"/> is optional — when provided, every mesh copy
+        /// created here is appended to it so the caller can destroy the copies once the
+        /// FBX export has finished (see <see cref="DestroyTempMeshes"/>).
         /// </summary>
-        static Dictionary<string, string> NormalizeExportHierarchy(GameObject root)
+        static Dictionary<string, string> NormalizeExportHierarchy(
+            GameObject root,
+            List<Mesh> bakedMeshSink = null)
         {
             var renameMap = new Dictionary<string, string>();
             string baseName = root.name;
@@ -3907,7 +4102,18 @@ namespace SashaRX.UnityMeshLab
                 var mesh = childMf.sharedMesh;
                 if (!mesh.isReadable) continue;
 
-                BakeTransformIntoMesh(mesh, t);
+                // A cloned FBX hierarchy can contain several nodes that instance
+                // the same Mesh. Baking into sharedMesh directly would apply each
+                // node's transform cumulatively to that one object. Give every
+                // transformed node its own copy before mutating the vertex data.
+                var bakedMesh = UnityEngine.Object.Instantiate(mesh);
+                bakedMesh.name = mesh.name;
+                childMf.sharedMesh = bakedMesh;
+                // Temporary copy — the caller destroys it after the FBX export.
+                if (bakedMeshSink != null)
+                    bakedMeshSink.Add(bakedMesh);
+
+                BakeTransformIntoMesh(bakedMesh, t);
 
                 // Reset transform to identity
                 t.localPosition = Vector3.zero;
@@ -3916,6 +4122,23 @@ namespace SashaRX.UnityMeshLab
             }
 
             return renameMap;
+        }
+
+        /// <summary>
+        /// Destroys temporary mesh copies collected during export hierarchy setup.
+        /// DestroyImmediate on the temp root only frees GameObjects, so the mesh
+        /// copies have to be released explicitly. Call only AFTER the FBX export
+        /// finished — the exporter reads vertex data straight from these meshes.
+        /// </summary>
+        static void DestroyTempMeshes(List<Mesh> meshes)
+        {
+            if (meshes == null) return;
+            foreach (var mesh in meshes)
+            {
+                if (mesh != null)
+                    UnityEngine.Object.DestroyImmediate(mesh);
+            }
+            meshes.Clear();
         }
 
         /// <summary>
@@ -4462,9 +4685,9 @@ namespace SashaRX.UnityMeshLab
             var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(selectedSidecarPath);
             if (data?.toolSettings == null) return;
             var s = data.toolSettings;
-            ctx.AtlasResolution = s.atlasResolution;
-            ctx.ShellPaddingPx = s.shellPaddingPx;
-            ctx.BorderPaddingPx = s.borderPaddingPx;
+            ctx.AtlasResolution = SanitizeAtlasResolution(s.atlasResolution);
+            ctx.ShellPaddingPx = SanitizePadding(s.shellPaddingPx);
+            ctx.BorderPaddingPx = SanitizePadding(s.borderPaddingPx);
             ctx.RepackPerMesh = s.repackPerMesh;
             symSplitThresholdMode = Enum.IsDefined(typeof(SymmetrySplitShells.ThresholdMode), s.symmetrySplitThresholdMode)
                 ? (SymmetrySplitShells.ThresholdMode)s.symmetrySplitThresholdMode
@@ -4472,7 +4695,28 @@ namespace SashaRX.UnityMeshLab
             SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
             ctx.SourceLodIndex = Mathf.Clamp(s.sourceLodIndex, 0, Mathf.Max(0, ctx.LodCount - 1));
             ctx.PipeSettings.saveNewMeshAssets = s.saveNewMeshAssets;
-            if (!string.IsNullOrEmpty(s.savePath)) ctx.PipeSettings.savePath = s.savePath;
+            if (IsSafeAssetFolderPath(s.savePath)) ctx.PipeSettings.savePath = s.savePath;
+        }
+
+        // The UI exposes atlas resolution as a free IntField, so the ceiling is
+        // only here to keep a forged sidecar (or a typo) from turning into an
+        // absurd xatlas allocation. It is deliberately far above the 4096 the
+        // presets offer so manually typed values are never silently reduced.
+        static int SanitizeAtlasResolution(int resolution) => Mathf.Clamp(resolution, 64, 16384);
+
+        static int SanitizePadding(int padding) => Mathf.Clamp(padding, 0, 16);
+
+        static bool IsSafeAssetFolderPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            string normalized = path.Replace('\\', '/').TrimEnd('/');
+            if (normalized != "Assets" && !normalized.StartsWith("Assets/", StringComparison.Ordinal))
+                return false;
+
+            var segments = normalized.Split('/');
+            foreach (string segment in segments)
+                if (segment.Length == 0 || segment == "." || segment == "..") return false;
+            return true;
         }
 
         void SaveSettingsToSidecar()
@@ -4705,11 +4949,24 @@ namespace SashaRX.UnityMeshLab
             public MeshEntry meshEntry;
         }
 
+        // Hover runs every ~33 ms, so the skip notice is rate-limited — but it must
+        // not be silent: a skipped mesh simply stops responding to SceneView hover.
+        void WarnHoverBudgetSkip(Mesh mesh)
+        {
+            double now = EditorApplication.timeSinceStartup;
+            if (now - sceneSpotLastBudgetWarnTime < sceneSpotBudgetWarnIntervalSec) return;
+            sceneSpotLastBudgetWarnTime = now;
+            UvtLog.Warn($"[SceneSpot] Hover pick skipped '{(mesh != null ? mesh.name : "<null>")}' — " +
+                        $"exceeds the {sceneSpotTriangleBudget} triangle budget per hover. " +
+                        "Use the UV canvas or a lower preview LOD to inspect it.");
+        }
+
         bool TryRaycastPreview(Ray ray, out SceneHit bestHit)
         {
             bestHit = default;
             bestHit.distance = float.PositiveInfinity;
             bool found = false;
+            int remainingTriangleBudget = sceneSpotTriangleBudget;
 
             foreach (var entry in ctx.ForLod(ctx.PreviewLod))
             {
@@ -4720,10 +4977,36 @@ namespace SashaRX.UnityMeshLab
                 Bounds wb = TransformBounds(mesh.bounds, l2w);
                 if (!wb.IntersectRay(ray, out float aabbDist) || aabbDist > bestHit.distance) continue;
 
+                // Inspect index metadata before reading mesh arrays: those properties make
+                // full managed copies and shell extraction is linear in the face count.
+                // Skip a mesh rather than partially testing it, which could report a false hit.
+                ulong meshIndexCount = 0;
+                for (int subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
+                {
+                    ulong indexCount = mesh.GetIndexCount(subMesh);
+                    if (indexCount > (ulong)remainingTriangleBudget * 3UL - meshIndexCount)
+                    {
+                        meshIndexCount = ulong.MaxValue;
+                        break;
+                    }
+                    meshIndexCount += indexCount;
+                }
+                if (meshIndexCount == ulong.MaxValue)
+                {
+                    WarnHoverBudgetSkip(mesh);
+                    continue;
+                }
+
                 var v = mesh.vertices;
                 var tri = canvas.GetTrianglesCached(mesh);
                 var uv = canvas.RdUvCached(mesh, ctx.PreviewUvChannel);
                 if (v == null || tri == null || uv == null) continue;
+                if (tri.Length / 3 > remainingTriangleBudget)
+                {
+                    WarnHoverBudgetSkip(mesh);
+                    continue;
+                }
+                remainingTriangleBudget -= tri.Length / 3;
                 int[] faceToShell = ctx.UvPreviewShellCache.GetFaceToShell(mesh, ctx.PreviewUvChannel, uv, tri);
 
                 for (int f = 0; f + 2 < tri.Length; f += 3)

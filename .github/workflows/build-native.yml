@@ -1,5 +1,11 @@
 name: Build Native Libraries
 
+# Default for every job: read-only. The `commit` job below opts into
+# `contents: write` for itself, so only the step that publishes the built
+# binaries carries a writable token — the compile jobs never see one.
+permissions:
+  contents: read
+
 on:
   push:
     paths:
@@ -33,7 +39,9 @@ jobs:
     name: Build (${{ matrix.os }})
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Configure CMake
         run: cmake -S 'Native~' -B build ${{ matrix.cmake_args }} -DCMAKE_BUILD_TYPE=Release
@@ -42,12 +50,17 @@ jobs:
         run: cmake --build build --config Release
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-${{ matrix.os }}
           path: ${{ matrix.plugin_dir }}/${{ matrix.artifact }}
           if-no-files-found: error
 
+  # Publishes the freshly built binaries back into Plugins/ so a native
+  # source change lands in the package without anyone copying files by hand.
+  # Only runs for pushes to this repository (never for pull_request, so a
+  # fork can never reach a writable token), and the commit carries [skip ci]
+  # so it cannot retrigger this workflow.
   commit:
     needs: build
     runs-on: ubuntu-latest
@@ -56,12 +69,12 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.ref }}
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
 

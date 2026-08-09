@@ -344,6 +344,11 @@ namespace SashaRX.UnityMeshLab
             var lods = ctx.LodGroup.GetLODs();
             var newLods = new List<LOD>(lods);
 
+            // A group created from unlabelled renderers uses a low value so its only
+            // LOD is not culled early. Restore the normal LOD0 transition before
+            // appending generated levels; otherwise they start at 0.005 and below.
+            NormalizeSingleLodTransitionForGeneration(newLods, startLod);
+
             UvProgress.Begin($"Generate LODs ({generateLodCount} levels)", cancelable: true);
             try
             {
@@ -527,6 +532,15 @@ namespace SashaRX.UnityMeshLab
 
         // ── Auto-detect LOD siblings ──
 
+        // LODGroup supports at most eight levels; reject name-derived indices outside that range.
+        const int MaxSupportedLodIndex = 7;
+
+        static bool TryGetSupportedLodIndex(Match match, out int lodIndex)
+        {
+            return int.TryParse(match.Groups[2].Value, out lodIndex)
+                && lodIndex <= MaxSupportedLodIndex;
+        }
+
         /// <summary>
         /// Given a GameObject whose name ends with a LOD suffix (e.g. Gazebo_LOD0),
         /// find all sibling GameObjects under the same parent that share the same
@@ -541,6 +555,10 @@ namespace SashaRX.UnityMeshLab
             var m = Regex.Match(go.name, @"^(.+?)([_\-\s]*)LOD(\d+)$", RegexOptions.IgnoreCase);
             if (m.Success)
             {
+                if (!int.TryParse(m.Groups[3].Value, out int selectedLodIndex)
+                    || selectedLodIndex > MaxSupportedLodIndex)
+                    return null;
+
                 // Selected object has LOD suffix — search siblings
                 string baseName = m.Groups[1].Value;
                 var parent = go.transform.parent;
@@ -551,8 +569,10 @@ namespace SashaRX.UnityMeshLab
                 {
                     var child = parent.GetChild(i).gameObject;
                     var cm = Regex.Match(child.name, @"^(.+?)[_\-\s]*LOD(\d+)$", RegexOptions.IgnoreCase);
-                    if (cm.Success && string.Equals(cm.Groups[1].Value, baseName, System.StringComparison.OrdinalIgnoreCase))
-                        results.Add((child, int.Parse(cm.Groups[2].Value)));
+                    if (cm.Success
+                        && string.Equals(cm.Groups[1].Value, baseName, System.StringComparison.OrdinalIgnoreCase)
+                        && TryGetSupportedLodIndex(cm, out int lodIndex))
+                        results.Add((child, lodIndex));
                 }
 
                 results.Sort((a, b) => a.Item2.CompareTo(b.Item2));
@@ -566,8 +586,8 @@ namespace SashaRX.UnityMeshLab
             {
                 var child = go.transform.GetChild(i).gameObject;
                 var cm = Regex.Match(child.name, @"^(.+?)[_\-\s]*LOD(\d+)$", RegexOptions.IgnoreCase);
-                if (cm.Success)
-                    childResults.Add((child, int.Parse(cm.Groups[2].Value)));
+                if (cm.Success && TryGetSupportedLodIndex(cm, out int lodIndex))
+                    childResults.Add((child, lodIndex));
             }
 
             if (childResults.Count > 0)
@@ -597,6 +617,15 @@ namespace SashaRX.UnityMeshLab
             lodGroup.RecalculateBounds();
 
             return lodGroup;
+        }
+
+        internal static void NormalizeSingleLodTransitionForGeneration(List<LOD> lods, int startLod)
+        {
+            if (startLod != 1 || lods.Count != 1 ||
+                !Mathf.Approximately(lods[0].screenRelativeTransitionHeight, 0.01f))
+                return;
+
+            lods[0] = new LOD(0.5f, lods[0].renderers);
         }
 
         internal static LODGroup CreateLodGroupFromRenderers(GameObject root)

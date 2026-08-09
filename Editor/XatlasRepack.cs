@@ -184,6 +184,30 @@ namespace SashaRX.UnityMeshLab
 
     public static class XatlasRepack
     {
+        // The native bridge owns a single process-global atlas pointer. Keep
+        // every managed xatlas session exclusive: async packing yields back
+        // to the editor, so UI or API callers can otherwise destroy an atlas
+        // while a background pack is still using it.
+        static int s_nativeSessionInFlight;
+
+        const string kSessionBusyError =
+            "An xatlas repack operation is already in progress.";
+
+        /// <summary>
+        /// Claims the process-global atlas. Returns false when another repack
+        /// already holds it — the public entry points report that through
+        /// <see cref="RepackResult.error"/> rather than an exception, because
+        /// every caller consumes the result-based contract.
+        /// </summary>
+        static bool TryAcquireNativeSession()
+        {
+            return System.Threading.Interlocked.CompareExchange(
+                ref s_nativeSessionInFlight, 1, 0) == 0;
+        }
+
+        static void ReleaseNativeSession()
+            => System.Threading.Volatile.Write(ref s_nativeSessionInFlight, 0);
+
         const uint ORPHAN_CHART = uint.MaxValue;
         const long kBruteCostBudget = 500_000_000L;        // ~5-10s wall
         const long kHeuristicCostBudget = 20_000_000_000L; // ~30-60s wall
@@ -457,17 +481,18 @@ namespace SashaRX.UnityMeshLab
         /// 8362) amplifies thin/anisotropic shells more than fat ones, breaking
         /// the uniform density we set up in TexelDensityNormalizer. This pass
         /// measures per-shell au2/a3 and shrinks shells whose density is above
-        /// the median toward it, keeping each shell anchored on its UV2
-        /// centroid. Shrink only — never expand — so the layout stays valid
-        /// (shells can't collide into neighbours). The atlas ends up with some
+        /// the median toward it. Each packed xatlas chart is shrunk around its
+        /// own UV2 centroid, so it remains inside its packed bounds. The atlas
+        /// ends up with some
         /// gaps where shrunk shells used to be; this trades coverage for density
         /// uniformity, which is the correct trade for lightmap bake quality.
         /// </summary>
         static int ApplyPostPackDensityCorrection(
             Vector2[] uv2, int[] tris, Vector3[] positions,
-            List<UvShell> shells, string meshLabel)
+            List<UvShell> shells, uint[] vertexChartIds, string meshLabel)
         {
-            if (uv2 == null || tris == null || positions == null || shells == null) return 0;
+            if (uv2 == null || tris == null || positions == null || shells == null ||
+                vertexChartIds == null || vertexChartIds.Length < uv2.Length) return 0;
             int uvLen = uv2.Length;
             int posLen = positions.Length;
             int n = shells.Count;
@@ -525,38 +550,42 @@ namespace SashaRX.UnityMeshLab
                 if (!IsFiniteD(scaleD) || scaleD <= 0.0) continue;
                 if (scaleD >= 0.999) continue; // basically no-op
                 float scale = (float)scaleD;
-                if (scale < appliedScaleMin) appliedScaleMin = scale;
-                if (scale > appliedScaleMax) appliedScaleMax = scale;
-
                 var shell = shells[si];
                 if (shell.vertexIndices == null || shell.vertexIndices.Count == 0) continue;
 
-                // UV2 centroid (uniform shrink leaves the centroid fixed → the
-                // shell stays where xatlas put it; only the bbox contracts
-                // inward, so neighbours stay outside the shrunken bbox).
-                Vector2 c = Vector2.zero;
-                int cn = 0;
+                // A shell may contain several separately packed xatlas charts.
+                // Contract each chart independently; a shell-wide centroid
+                // could translate separated charts through occupied space.
+                var chartVertices = new Dictionary<uint, List<int>>();
+                bool hasOrphan = false;
                 foreach (int v in shell.vertexIndices)
                 {
                     int idx = v;
                     if ((uint)idx >= (uint)uvLen) continue;
-                    c.x += uv2[idx].x;
-                    c.y += uv2[idx].y;
-                    cn++;
+                    uint chartId = vertexChartIds[idx];
+                    if (chartId == ORPHAN_CHART) { hasOrphan = true; break; }
+                    if (!chartVertices.TryGetValue(chartId, out var vertices))
+                    {
+                        vertices = new List<int>();
+                        chartVertices.Add(chartId, vertices);
+                    }
+                    vertices.Add(idx);
                 }
-                if (cn == 0) continue;
-                c.x /= cn;
-                c.y /= cn;
+                // Without a chart ID there is no packed region whose bounds we
+                // can preserve, so leave the complete shell unchanged.
+                if (hasOrphan || chartVertices.Count == 0) continue;
 
-                foreach (int v in shell.vertexIndices)
+                foreach (var pair in chartVertices)
                 {
-                    int idx = v;
-                    if ((uint)idx >= (uint)uvLen) continue;
-                    Vector2 uv = uv2[idx];
-                    uv2[idx] = new Vector2(
-                        c.x + (uv.x - c.x) * scale,
-                        c.y + (uv.y - c.y) * scale);
+                    var vertices = pair.Value;
+                    Vector2 c = Vector2.zero;
+                    foreach (int idx in vertices) c += uv2[idx];
+                    c /= vertices.Count;
+                    foreach (int idx in vertices)
+                        uv2[idx] = c + (uv2[idx] - c) * scale;
                 }
+                if (scale < appliedScaleMin) appliedScaleMin = scale;
+                if (scale > appliedScaleMax) appliedScaleMax = scale;
                 modified++;
             }
 
@@ -692,8 +721,34 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         static long ComputePackCost(int shellCount, uint internalRes)
         {
+            long shells = Math.Max(0, shellCount);
             long res = internalRes;
-            return (long)Math.Max(0, shellCount) * res * res;
+            if (res != 0 && shells > long.MaxValue / res)
+                return long.MaxValue;
+
+            long shellPixels = shells * res;
+            if (res != 0 && shellPixels > long.MaxValue / res)
+                return long.MaxValue;
+
+            return shellPixels * res;
+        }
+
+        static bool TryResolveInternalPackDimensions(
+            RepackOptions opts, out int oversample, out uint resolution, out uint padding)
+        {
+            oversample = opts.internalOversample > 0 ? opts.internalOversample : 1;
+            ulong resolvedResolution = (ulong)opts.resolution * (uint)oversample;
+            ulong resolvedPadding = (ulong)opts.padding * (uint)oversample;
+            if (resolvedResolution > uint.MaxValue || resolvedPadding > uint.MaxValue)
+            {
+                resolution = 0;
+                padding = 0;
+                return false;
+            }
+
+            resolution = (uint)resolvedResolution;
+            padding = (uint)resolvedPadding;
+            return true;
         }
 
         static int ResolvePackBruteForce(
@@ -934,19 +989,25 @@ namespace SashaRX.UnityMeshLab
             var opts = RepackOptions.Default;
             opts.resolution = (uint)resolution;
             opts.padding = (uint)padding;
-            // Work on a temporary copy so original mesh is untouched
+            opts.rotateCharts = rotate;
+            // Work on a temporary copy so original mesh is untouched. The copy is
+            // destroyed in a finally: the early-out path handled a failed result,
+            // but an exception escaping RepackSingle (native bridge, mesh access)
+            // used to leak the mesh into the editor session.
             var tmp = UnityEngine.Object.Instantiate(mesh);
-            tmp.name = mesh.name + "_repack_tmp";
-            var result = RepackSingle(tmp, opts);
-            if (!result.ok)
+            try
+            {
+                tmp.name = mesh.name + "_repack_tmp";
+                var result = RepackSingle(tmp, opts);
+                if (!result.ok) return null;
+                var uvOut = new List<Vector2>();
+                tmp.GetUVs(1, uvOut);
+                return uvOut.ToArray();
+            }
+            finally
             {
                 UnityEngine.Object.DestroyImmediate(tmp);
-                return null;
             }
-            var uvOut = new List<Vector2>();
-            tmp.GetUVs(1, uvOut);
-            UnityEngine.Object.DestroyImmediate(tmp);
-            return uvOut.ToArray();
         }
 
         public static RepackResult RepackSingle(Mesh mesh, RepackOptions opts)
@@ -988,8 +1049,11 @@ namespace SashaRX.UnityMeshLab
             // faceShellIds. A future opt-in will materialise the split.
             LogHardEdgeAnalysis(shells, tris, mesh.vertices, meshLabel: mesh.name);
 
-            // UV0 winding normalized by ExecWeldUv0.
-            result.flippedShells = 0;
+            // Repack is also exposed as a standalone operation, so it cannot
+            // rely on the optional Weld stage having normalized UV0 first.
+            // mesh.uv returns a copy; normalize that working copy so the
+            // caller's UV0 channel remains unchanged.
+            result.flippedShells = NormalizeShellWinding(uv0, tris, shells);
 
             // ── Flatten UV0 ──
             float[] uvFlat = new float[vertCount * 2];
@@ -1091,10 +1155,14 @@ namespace SashaRX.UnityMeshLab
             uint   xatlasFaceCount    = (uint)faceCount;
 
             // ── xatlas pipeline ──
-            XatlasNative.xatlasCreate();
-
+            if (!TryAcquireNativeSession())
+            {
+                result.error = kSessionBusyError;
+                return result;
+            }
             try
             {
+                XatlasNative.xatlasCreate();
                 int addErr = XatlasNative.xatlasAddUvMesh(
                     uvFlat, (uint)vertCount,
                     indices, (uint)indices.Length,
@@ -1113,9 +1181,13 @@ namespace SashaRX.UnityMeshLab
                 // resolution makes every chart's extent oversample× larger, so
                 // ceil rounding becomes fractional. Padding scales by the same
                 // factor to keep the gap fraction in UV space constant.
-                int oversample = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                uint internalRes = opts.resolution * (uint)oversample;
-                uint internalPad = opts.padding    * (uint)oversample;
+                if (!TryResolveInternalPackDimensions(
+                        opts, out int oversample, out uint internalRes, out uint internalPad))
+                {
+                    result.error = "atlas resolution or padding is too large for the internal oversample";
+                    UvtLog.Warn(UvtLog.Category.Repack, $"[xatlas] {result.error} — refusing to start pack.");
+                    return result;
+                }
 
                 bool packed = RunPackCancelable(
                     mesh.name, shells.Count, internalRes, oversample,
@@ -1191,7 +1263,7 @@ namespace SashaRX.UnityMeshLab
 
                 if (opts.postPackDensityCorrection)
                 {
-                    ApplyPostPackDensityCorrection(uv2, tris, positions, shells, mesh.name);
+                    ApplyPostPackDensityCorrection(uv2, tris, positions, shells, vertChartId, mesh.name);
                     LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postCorrection]");
                 }
 
@@ -1244,7 +1316,8 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                XatlasNative.xatlasDestroy();
+                try { XatlasNative.xatlasDestroy(); }
+                finally { ReleaseNativeSession(); }
             }
 
             return result;
@@ -1341,9 +1414,13 @@ namespace SashaRX.UnityMeshLab
                 LogHardEdgeAnalysis(shells, allTris[m], allPositions[m], meshLabel: mesh.name);
             }
 
-            // UV0 winding normalized by ExecWeldUv0.
+            // RepackMulti can be invoked directly from the Repack tab (and
+            // Weld is optional in the full pipeline), so normalize every
+            // local UV0 copy at this API boundary instead of assuming a
+            // previous stage ran.
             for (int m = 0; m < meshCount; m++)
-                results[m].flippedShells = 0;
+                results[m].flippedShells = NormalizeShellWinding(
+                    allUv0[m], allTris[m], allShells[m]);
 
             // Local UV0 copies (flattened) per mesh — fed to xatlas, mutated
             // by pre-pack passes (ARAP + density normalisation + perturbation);
@@ -1351,9 +1428,17 @@ namespace SashaRX.UnityMeshLab
             var allUvFlat = new float[meshCount][];
 
             // ── Single xatlas session for all meshes ──
-            XatlasNative.xatlasCreate();
+            if (!TryAcquireNativeSession())
+            {
+                // Nothing was packed, so every mesh carries the same failure —
+                // the per-mesh loop in the tool logs and skips each of them.
+                for (int m = 0; m < meshCount; m++)
+                    results[m].error = kSessionBusyError;
+                return results;
+            }
             try
             {
+                XatlasNative.xatlasCreate();
                 // Add all meshes
                 for (int m = 0; m < meshCount; m++)
                 {
@@ -1442,9 +1527,15 @@ namespace SashaRX.UnityMeshLab
                 // Pack all charts together into one atlas
                 // See RepackSingle for oversample rationale (ceil-stretch fix)
                 // and RunPackCancelable for cost-budget + cancel handling.
-                int oversampleM = opts.internalOversample > 0 ? opts.internalOversample : 1;
-                uint internalResM = opts.resolution * (uint)oversampleM;
-                uint internalPadM = opts.padding    * (uint)oversampleM;
+                if (!TryResolveInternalPackDimensions(
+                        opts, out int oversampleM, out uint internalResM, out uint internalPadM))
+                {
+                    const string error = "atlas resolution or padding is too large for the internal oversample";
+                    UvtLog.Warn(UvtLog.Category.Repack, $"[xatlas] {error} — refusing to start pack.");
+                    for (int m = 0; m < meshCount; m++)
+                        results[m].error = error;
+                    return results;
+                }
 
                 int totalShellsM = 0;
                 for (int m = 0; m < meshCount; m++)
@@ -1535,7 +1626,7 @@ namespace SashaRX.UnityMeshLab
 
                     if (opts.postPackDensityCorrection)
                     {
-                        ApplyPostPackDensityCorrection(uv2, allTris[m], allPositions[m], allShells[m], meshes[m].name);
+                        ApplyPostPackDensityCorrection(uv2, allTris[m], allPositions[m], allShells[m], vertChartId, meshes[m].name);
                         LogPostPackDensity(uv2, allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postCorrection]");
                     }
 
@@ -1575,7 +1666,8 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                XatlasNative.xatlasDestroy();
+                try { XatlasNative.xatlasDestroy(); }
+                finally { ReleaseNativeSession(); }
             }
 
             return results;

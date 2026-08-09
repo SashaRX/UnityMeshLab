@@ -25,6 +25,12 @@ namespace SashaRX.UnityMeshLab
         // Some channels may store color data, bone weights, etc.
         const int MAX_UV_CHANNELS = 8;
 
+        // Keep user-supplied meshes away from allocations large enough to stall the
+        // editor, and from the unsafe/native packing path if their sizes are invalid.
+        const int MAX_OPTIMIZE_VERTICES = 2_000_000;
+        const int MAX_OPTIMIZE_INDICES = 10_000_000;
+        const int MAX_PACKED_BYTES = 256 * 1024 * 1024;
+
         struct ChannelLayout
         {
             public bool hasNormal;
@@ -79,6 +85,23 @@ namespace SashaRX.UnityMeshLab
 
             var layout = BuildChannelLayout(mesh);
 
+            if (!TryGetPackedByteCount(vertCount, layout.totalStride, out _))
+            {
+                result.error = $"Mesh exceeds optimization budget ({vertCount} vertices, stride {layout.totalStride})";
+                return result;
+            }
+
+            long totalIndexCount = 0;
+            for (int s = 0; s < subCount; s++)
+            {
+                totalIndexCount += mesh.GetIndexCount(s);
+                if (totalIndexCount > MAX_OPTIMIZE_INDICES)
+                {
+                    result.error = $"Mesh exceeds optimization budget ({totalIndexCount} indices)";
+                    return result;
+                }
+            }
+
             // Build UV dim summary for log
             var uvDimStr = new System.Text.StringBuilder();
             for (int ch = 0; ch < MAX_UV_CHANNELS; ch++)
@@ -122,6 +145,7 @@ namespace SashaRX.UnityMeshLab
 
             var submeshTriangles = new List<int[]>();
             int totalOutVerts = 0;
+            int totalLocalVerts = 0;
 
             for (int s = 0; s < subCount; s++)
             {
@@ -144,9 +168,17 @@ namespace SashaRX.UnityMeshLab
                 int localVertCount = globalToLocal.Count;
                 uint localIndexCount = (uint)subTris.Length;
 
+                if (!TryGetPackedByteCount(localVertCount, layout.totalStride, out int packedByteCount) ||
+                    totalLocalVerts > MAX_OPTIMIZE_VERTICES - localVertCount)
+                {
+                    result.error = $"Mesh exceeds optimization budget while processing submesh {s}";
+                    return result;
+                }
+                totalLocalVerts += localVertCount;
+
                 // Pack vertices into interleaved byte buffer
                 byte[] vertexBytes = PackVertices(
-                    globalToLocal, layout,
+                    globalToLocal, layout, packedByteCount,
                     positions, normals, tangents, colors, uvData);
 
                 // Build local index buffer
@@ -155,7 +187,7 @@ namespace SashaRX.UnityMeshLab
                     localIndices[i] = (uint)globalToLocal[subTris[i]];
 
                 // Allocate output buffers
-                byte[] outVertexBytes = new byte[localVertCount * layout.totalStride];
+                byte[] outVertexBytes = new byte[packedByteCount];
                 uint[] outIndices = new uint[localIndexCount];
                 uint   outVertCount;
 
@@ -170,6 +202,12 @@ namespace SashaRX.UnityMeshLab
                 if (err != 0)
                 {
                     result.error = $"meshoptOptimize error {err} on submesh {s}";
+                    return result;
+                }
+
+                if (outVertCount > (uint)localVertCount)
+                {
+                    result.error = $"meshoptOptimize returned an invalid vertex count on submesh {s}";
                     return result;
                 }
 
@@ -309,14 +347,27 @@ namespace SashaRX.UnityMeshLab
 
         // ── Packing ──
 
+        static bool TryGetPackedByteCount(int vertexCount, int stride, out int byteCount)
+        {
+            byteCount = 0;
+            if (vertexCount < 0 || vertexCount > MAX_OPTIMIZE_VERTICES || stride < 12)
+                return false;
+
+            long requiredBytes = (long)vertexCount * stride;
+            if (requiredBytes > MAX_PACKED_BYTES || requiredBytes > int.MaxValue)
+                return false;
+
+            byteCount = (int)requiredBytes;
+            return true;
+        }
+
         static unsafe byte[] PackVertices(
             Dictionary<int, int> globalToLocal,
-            in ChannelLayout layout,
+            in ChannelLayout layout, int packedByteCount,
             Vector3[] positions, Vector3[] normals, Vector4[] tangents,
             Color32[] colors, List<Vector4>[] uvData)
         {
-            int localVertCount = globalToLocal.Count;
-            byte[] bytes = new byte[localVertCount * layout.totalStride];
+            byte[] bytes = new byte[packedByteCount];
 
             fixed (byte* pBytes = bytes)
             {

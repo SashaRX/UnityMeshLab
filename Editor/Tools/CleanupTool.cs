@@ -1228,12 +1228,7 @@ namespace SashaRX.UnityMeshLab
                 var child = root.GetChild(i);
                 if (colSet.Contains(child.gameObject)) continue;
 
-                var match = System.Text.RegularExpressions.Regex.Match(
-                    child.name, @"_LOD(\d+)$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (!match.Success) continue;
-
-                int lodIdx = int.Parse(match.Groups[1].Value);
+                if (!MeshHygieneUtility.TryParseLodIndex(child.name, out int lodIdx)) continue;
                 var r = child.GetComponent<Renderer>();
                 if (r == null) continue;
 
@@ -1500,12 +1495,7 @@ namespace SashaRX.UnityMeshLab
                 var child = root.GetChild(i);
                 if (colSet.Contains(child.gameObject)) continue;
 
-                var match = System.Text.RegularExpressions.Regex.Match(
-                    child.name, @"_LOD(\d+)$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (!match.Success) continue;
-
-                int lodIdx = int.Parse(match.Groups[1].Value);
+                if (!MeshHygieneUtility.TryParseLodIndex(child.name, out int lodIdx)) continue;
                 var r = child.GetComponent<Renderer>();
                 if (r == null) continue;
 

@@ -10,6 +10,11 @@ namespace SashaRX.UnityMeshLab
 {
     public static class CollisionMeshBuilder
     {
+        // V-HACD's intermediate hull count grows exponentially with recursion depth and
+        // its merge phase allocates O(n²) work. Keep the historical V-HACD default as
+        // a hard work-budget boundary; the native bridge enforces the same limit.
+        public const int MaxConvexRecursionDepth = 10;
+
         // ── Simplified mode ──
 
         public struct SimplifiedResult
@@ -149,6 +154,7 @@ namespace SashaRX.UnityMeshLab
 
             // Clamp maxVertsPerHull to PhysX limit
             int maxVPH = Mathf.Clamp(settings.maxVertsPerHull, 8, 255);
+            int maxRecursionDepth = Mathf.Clamp(settings.maxRecursionDepth, 1, MaxConvexRecursionDepth);
 
             IntPtr ctx = IntPtr.Zero;
             try
@@ -160,7 +166,7 @@ namespace SashaRX.UnityMeshLab
                     settings.resolution,
                     maxVPH,
                     settings.minVolumePerHull,
-                    settings.maxRecursionDepth,
+                    maxRecursionDepth,
                     settings.shrinkWrap ? 1 : 0,
                     settings.fillMode,
                     settings.minEdgeLength,
@@ -235,7 +241,7 @@ namespace SashaRX.UnityMeshLab
             var positions = mesh.vertices;
             var triangles = mesh.triangles;
 
-            mesh.Clear();
+            mesh.Clear(false);
             mesh.SetVertices(positions);
             mesh.SetTriangles(triangles, 0);
             mesh.RecalculateBounds();

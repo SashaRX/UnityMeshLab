@@ -21,6 +21,11 @@ namespace SashaRX.UnityMeshLab
 {
     public static class GroupedShellTransfer
     {
+        // Keep overlap detection bounded: FindOverlapGroups compares every shell pair.
+        // Typical production meshes stay well below this limit; pathological meshes
+        // fall back to the original fixed retry count instead of stalling the Editor.
+        const int kMaxShellsForOverlapScan = 512;
+
         // ─── Similarity Transform (4 params: a, b, tx, ty) ───
         public struct SimilarityTransform
         {
@@ -245,6 +250,13 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
+        static TransferResult CancelTransfer(TransferResult result)
+        {
+            // A null UV2 array is the existing failure contract consumed by transfer callers.
+            result.uv2 = null;
+            return result;
+        }
+
         // ═══════════════════════════════════════════════════════════
         //  AnalyzeSource — extract UV0 shells for UI display
         // ═══════════════════════════════════════════════════════════
@@ -255,9 +267,10 @@ namespace SashaRX.UnityMeshLab
             var uv2List = new List<Vector2>();
             sourceMesh.GetUVs(0, uv0List);
             sourceMesh.GetUVs(1, uv2List);
-            if (uv0List.Count == 0 || uv2List.Count == 0)
+            if (uv0List.Count != sourceMesh.vertexCount ||
+                uv2List.Count != sourceMesh.vertexCount)
             {
-                UvtLog.Error("[GroupedTransfer] Source mesh missing UV0 or UV2");
+                UvtLog.Error("[GroupedTransfer] Source mesh has missing or incomplete UV0/UV2");
                 return null;
             }
             var uv0 = uv0List.ToArray();
@@ -870,8 +883,8 @@ namespace SashaRX.UnityMeshLab
                     $"oobMargin={uv2OobMargin:F6}, boundsTol={uv2BoundsTolerance:F6}");
             }
 
-            if (srcUv0.Length == 0 || srcUv2.Length == 0)
-            { UvtLog.Error("[GroupedTransfer] Source missing UV0/UV2"); return result; }
+            if (srcUv0.Length != srcVerts.Length || srcUv2.Length != srcVerts.Length)
+            { UvtLog.Error("[GroupedTransfer] Source has missing or incomplete UV0/UV2"); return result; }
 
             UvProgress.ReportFromBackground($"'{targetMeshName}' ← '{sourceMeshName}'");
 
@@ -912,7 +925,7 @@ namespace SashaRX.UnityMeshLab
 
             // ── Phase 1: Extract shells ──
             UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 1 — extract shells");
-            if (UvProgress.CancelRequested) return result;
+            if (UvProgress.CancelRequested) return CancelTransfer(result);
             var srcShells = UvShellExtractor.Extract(srcUv0, srcTris);
             var tgtShells = UvShellExtractor.Extract(tUv0, tgtTris);
 
@@ -1020,7 +1033,7 @@ namespace SashaRX.UnityMeshLab
 
             // ── Phase 1b: Precompute similarity transform per source shell ──
             UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 1b — transforms ({srcShells.Count} src)");
-            if (UvProgress.CancelRequested) return result;
+            if (UvProgress.CancelRequested) return CancelTransfer(result);
             var srcTransforms = new SimilarityTransform[srcShells.Count];
             for (int si = 0; si < srcShells.Count; si++)
             {
@@ -1180,12 +1193,21 @@ namespace SashaRX.UnityMeshLab
                 : 0.001f;
             float kUv0BadThreshold = Mathf.Max(avgUv0Edge * avgUv0Edge, 0.001f);
 
-            // Adaptive kMaxRetries based on overlap group size
-            var overlapGroups = UvShellExtractor.FindOverlapGroups(srcShells);
+            // Adaptive kMaxRetries based on overlap group size. The overlap detector is
+            // quadratic, so never run it for attacker-controlled, highly fragmented meshes.
+            bool scanOverlapGroups = srcShells.Count <= kMaxShellsForOverlapScan;
+            var overlapGroups = scanOverlapGroups
+                ? UvShellExtractor.FindOverlapGroups(srcShells)
+                : new List<List<int>>();
             int maxOverlapGroupSize = 0;
             foreach (var group in overlapGroups)
                 maxOverlapGroupSize = Mathf.Max(maxOverlapGroupSize, group.Count);
-            int kMaxRetries = Mathf.Clamp(maxOverlapGroupSize + 2, 5, srcShells.Count);
+            int kMaxRetries = scanOverlapGroups
+                ? Mathf.Clamp(maxOverlapGroupSize + 2, 5, srcShells.Count)
+                : Mathf.Min(5, srcShells.Count);
+
+            if (!scanOverlapGroups)
+                UvtLog.Warn($"[GroupedTransfer] Skipping quadratic UV overlap scan for {srcShells.Count} source shells (limit {kMaxShellsForOverlapScan}).");
 
             // Build overlap group membership: srcShell → list of all group members
             var srcShellOverlapMembers = new List<int>[srcShells.Count];
@@ -1200,7 +1222,7 @@ namespace SashaRX.UnityMeshLab
 
             // ── Phase 2a: Match each target shell → best source shell ──
             UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 2a — match {tgtShells.Count} targets");
-            if (UvProgress.CancelRequested) return result;
+            if (UvProgress.CancelRequested) return CancelTransfer(result);
             result.targetShellToSourceShell = new int[tgtShells.Count];
             result.targetShellMethod = new int[tgtShells.Count]; // 0=interp, 1=xform, 2=merged
             result.targetShellCentroids = new Vector3[tgtShells.Count];
@@ -1406,7 +1428,7 @@ namespace SashaRX.UnityMeshLab
 
             // ── Phase 2b: Deduplicate — resolve same-source conflicts ──
             UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 2b — dedup");
-            if (UvProgress.CancelRequested) return result;
+            if (UvProgress.CancelRequested) return CancelTransfer(result);
             // When multiple non-merged target shells claim the same source shell
             // (common with overlapping/tiling UV0), keep the best match and
             // reassign others to different source shells at the same 3D location.
@@ -1918,7 +1940,7 @@ namespace SashaRX.UnityMeshLab
 
             // ── Phase 3: Transfer UV2 using final source assignments ──
             UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 3 — transfer {vertCount} verts");
-            if (UvProgress.CancelRequested) return result;
+            if (UvProgress.CancelRequested) return CancelTransfer(result);
             // Verbose: dump per-shell matching for diagnostics
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
             {

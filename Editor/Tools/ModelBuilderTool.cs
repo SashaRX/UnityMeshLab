@@ -365,7 +365,7 @@ namespace SashaRX.UnityMeshLab
             var match = System.Text.RegularExpressions.Regex.Match(
                 name, @"_LOD(\d+)$",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            return match.Success ? int.Parse(match.Groups[1].Value) : -1;
+            return match.Success && int.TryParse(match.Groups[1].Value, out int lodIdx) ? lodIdx : -1;
         }
 
         void DrawEditableName(GameObject go, string suffix, int indent)
@@ -546,7 +546,13 @@ namespace SashaRX.UnityMeshLab
                 {
                     // Simple case: no existing LOD names. Single mesh per LOD tier.
                     // Rename sequentially: baseName_LOD0, baseName_LOD1, etc.
-                    for (int i = 0; i < meshChildren.Count; i++)
+                    //
+                    // Stop at the LODGroup ceiling: numbering past it produced
+                    // _LOD8+ names that RebuildLodGroupFromNames then rejects,
+                    // so the extra children were dropped from the LODGroup with
+                    // no explanation. Leave their names alone and say so.
+                    int namedLods = Mathf.Min(meshChildren.Count, MeshHygieneUtility.MaxLodLevels);
+                    for (int i = 0; i < namedLods; i++)
                     {
                         string newName = baseName + "_LOD" + i;
                         if (meshChildren[i].t.name != newName)
@@ -555,6 +561,10 @@ namespace SashaRX.UnityMeshLab
                             meshChildren[i].t.name = newName;
                         }
                     }
+                    if (meshChildren.Count > namedLods)
+                        UvtLog.Warn($"{meshChildren.Count} mesh children but a LODGroup holds at most " +
+                                    $"{MeshHygieneUtility.MaxLodLevels} levels — only the {namedLods} " +
+                                    "largest received _LOD suffixes; the rest kept their names.");
                 }
             }
 
@@ -785,12 +795,7 @@ namespace SashaRX.UnityMeshLab
                 if (r == null || r.transform == root) continue;
                 if (colSet.Contains(r.gameObject)) continue;
 
-                var match = System.Text.RegularExpressions.Regex.Match(
-                    r.gameObject.name, @"_LOD(\d+)$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (!match.Success) continue;
-
-                int lodIdx = int.Parse(match.Groups[1].Value);
+                if (!MeshHygieneUtility.TryParseLodIndex(r.gameObject.name, out int lodIdx)) continue;
 
                 if (!lodChildren.ContainsKey(lodIdx))
                     lodChildren[lodIdx] = new List<Renderer>();
@@ -943,8 +948,16 @@ namespace SashaRX.UnityMeshLab
         {
             if (ctx.LodGroup == null) return;
 
-            Undo.RecordObject(ctx.LodGroup, "Add LOD Level");
             var lods = ctx.LodGroup.GetLODs();
+            if (lods.Length >= MeshHygieneUtility.MaxLodLevels)
+            {
+                UvtLog.Warn($"LODGroup already has {lods.Length} levels — " +
+                            $"a LODGroup holds at most {MeshHygieneUtility.MaxLodLevels}, " +
+                            "and _LOD suffixes past that are not recognised.");
+                return;
+            }
+
+            Undo.RecordObject(ctx.LodGroup, "Add LOD Level");
             var newLods = new LOD[lods.Length + 1];
             System.Array.Copy(lods, newLods, lods.Length);
 

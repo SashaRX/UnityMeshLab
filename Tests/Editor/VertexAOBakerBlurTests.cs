@@ -1,0 +1,82 @@
+// VertexAOBakerBlurTests.cs — regression coverage for the AO blur passes:
+// optional mesh attributes and bounded work on dense/degenerate meshes.
+
+using NUnit.Framework;
+using UnityEngine;
+
+namespace SashaRX.UnityMeshLab.Tests
+{
+    public class VertexAOBakerBlurTests
+    {
+        [Test]
+        public void BlurAO_EmptyNormalsWithDuplicatePositions_DoesNotThrow()
+        {
+            var ao = new[] { 0f, 1f, 0.5f };
+            var positions = new[]
+            {
+                Vector3.zero,
+                Vector3.zero,
+                Vector3.right,
+            };
+
+            float[] result = null;
+            Assert.DoesNotThrow(() => result = VertexAOBaker.BlurAO(
+                ao, new int[0], ao.Length, 1, 1f,
+                positions, new Vector3[0], null,
+                false, true));
+
+            // The two coincident vertices are seam-connected (missing normals are
+            // treated as "unavailable", not as a zero vector), so their AO swaps.
+            // The isolated vertex has no neighbors and keeps its value.
+            Assert.That(result[0], Is.EqualTo(1f).Within(0.0001f));
+            Assert.That(result[1], Is.EqualTo(0f).Within(0.0001f));
+            Assert.That(result[2], Is.EqualTo(0.5f).Within(0.0001f));
+        }
+
+        [Test, Timeout(15000)]
+        public void BlurAO_DenseCoincidentVertices_CompletesWithBoundedWork()
+        {
+            const int vertexCount = 2000;
+            var ao = new float[vertexCount];
+            var positions = new Vector3[vertexCount];
+            for (int i = 0; i < vertexCount; i++)
+                ao[i] = i % 2;
+
+            var result = VertexAOBaker.BlurAO(
+                ao, new int[0], vertexCount, 1, 1f, positions);
+
+            Assert.AreEqual(vertexCount, result.Length);
+            Assert.AreNotEqual(ao[0], result[0],
+                "Seam blur should remain functional while bounding dense-mesh work.");
+        }
+
+        [Test]
+        public void BlurAO3D_SmallNeighborhood_AveragesAllVertices()
+        {
+            float[] ao = { 0f, 0.5f, 1f };
+            var positions = new[] { Vector3.zero, Vector3.zero, Vector3.zero };
+
+            float[] result = VertexAOBaker.BlurAO3D(ao, positions, 1, 1f, 1f);
+
+            Assert.That(result[0], Is.EqualTo(0.5f).Within(0.0001f));
+            Assert.That(result[1], Is.EqualTo(0.5f).Within(0.0001f));
+            Assert.That(result[2], Is.EqualTo(0.5f).Within(0.0001f));
+        }
+
+        [Test, Timeout(30000)]
+        public void BlurAO3D_DenseMesh_CompletesWithinWorkBudget()
+        {
+            const int vertexCount = 50000;
+            var ao = new float[vertexCount];
+            var positions = new Vector3[vertexCount];
+            for (int i = 0; i < vertexCount; i++)
+                ao[i] = i % 2;
+
+            // The work budget is enforced by [Timeout] alone: a wall-clock
+            // assertion inside the test measures the CI runner, not the budget.
+            float[] result = VertexAOBaker.BlurAO3D(ao, positions, 10, 1f, 0.01f);
+
+            Assert.That(result, Has.Length.EqualTo(vertexCount));
+        }
+    }
+}

@@ -615,7 +615,9 @@ namespace SashaRX.UnityMeshLab
             {
                 outU[i] = (uLocal[i] - srcCx) * scale + targetCx;
                 outV[i] = (vLocal[i] - srcCy) * scale + targetCy;
-                if (!IsFiniteD(outU[i]) || !IsFiniteD(outV[i])) return false;
+                if (!IsFiniteD(outU[i]) || !IsFiniteD(outV[i]) ||
+                    Math.Abs(outU[i]) > float.MaxValue || Math.Abs(outV[i]) > float.MaxValue)
+                    return false;
             }
             for (int i = 0; i < n; i++)
             {

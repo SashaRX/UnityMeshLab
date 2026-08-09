@@ -72,6 +72,9 @@ namespace SashaRX.UnityMeshLab
 
         // Per-mesh records (one row per recorded mesh)
         readonly List<RunRecord> records = new List<RunRecord>();
+        const int MaxPngSnapshots = 32;
+        int pngSnapshotsCaptured;
+        int pngSnapshotsSkipped;
 
         BenchmarkRecorder(UvToolContext ctx, string label, bool splitTargetsFlag,
             SymmetrySplitShells.ThresholdMode symMode)
@@ -103,9 +106,19 @@ namespace SashaRX.UnityMeshLab
         /// captures everything and the inner caller gets a scope whose Dispose does nothing.
         /// Always call inside `using (BenchmarkRecorder.NewRun(...)) { ... }`.
         /// </summary>
+        /// <remarks>
+        /// Recording is a diagnostic surface, so it is skipped entirely unless
+        /// Project Settings ▸ Mesh Lab ▸ Show Debug UI is on — the same flag that
+        /// gates Parameter Sweep, the FBX metrics menu items and the rest of the
+        /// transfer diagnostics. With the flag off the caller gets a no-op scope,
+        /// <see cref="Current"/> stays null and no BenchmarkReports/ folder (nor its
+        /// per-mesh PNG subfolder) is created for a production transfer run.
+        /// Existing report folders on disk are left untouched.
+        /// </remarks>
         public static IDisposable NewRun(UvToolContext ctx, string label,
             bool splitTargets, SymmetrySplitShells.ThresholdMode symMode)
         {
+            if (!MeshLabProjectSettings.Instance.showDebugUI) return NoOpScope.Instance;
             if (Current != null) return NoOpScope.Instance;
             Current = new BenchmarkRecorder(ctx, label, splitTargets, symMode);
             return Current;
@@ -166,18 +179,34 @@ namespace SashaRX.UnityMeshLab
                 (entry.lodIndex == sourceLodIndex ? entry.repackedMesh : entry.transferredMesh)
                 ?? entry.originalMesh;
 
-            Vector2[] uv2Snap = null;
-            int[] trisSnap = null;
-            if (snapshotMesh != null)
+            // UV2 + triangles feed two consumers with different budgets:
+            //   * atlasUtilization, a scored metric — must be read for every row,
+            //     otherwise rows past the PNG cap record 0 and BenchmarkSweep
+            //     (which weights utilization x100) picks a winner based on which
+            //     meshes happened to be recorded first.
+            //   * the per-mesh PNG dump, which is diagnostic and stays capped.
+            // Reading is bounded by the same mesh-size sanity limits either way.
+            bool withinPngLimits = snapshotMesh != null && IsPngSnapshotWithinLimits(snapshotMesh);
+            Vector2[] uv2Data = null;
+            int[] trisData = null;
+            if (withinPngLimits)
             {
                 var list = new System.Collections.Generic.List<Vector2>();
                 snapshotMesh.GetUVs(1, list);
                 if (list.Count > 0)
                 {
-                    uv2Snap = list.ToArray();
-                    trisSnap = snapshotMesh.triangles;
+                    uv2Data = list.ToArray();
+                    trisData = snapshotMesh.triangles;
                 }
             }
+
+            // Only a mesh that actually yielded UV2 data consumes the snapshot
+            // budget; a mesh without UV2 has no PNG to draw and must not starve
+            // later meshes that do. "Skipped" keeps its old meaning: rejected by
+            // the size limits, or denied a PNG slot despite having UV2.
+            bool retainPng = uv2Data != null && pngSnapshotsCaptured < MaxPngSnapshots;
+            if (retainPng) pngSnapshotsCaptured++;
+            else if (snapshotMesh != null && (uv2Data != null || !withinPngLimits)) pngSnapshotsSkipped++;
 
             // Validation report can be stale: a mesh that failed transfer in
             // a later sweep cell would otherwise carry the previous cell's
@@ -231,8 +260,8 @@ namespace SashaRX.UnityMeshLab
                 topologyFixed         = tr?.topologyFixed      ?? 0,
                 topologyCapHit        = tr?.topologyCapHit     ?? false,
 
-                uv2Snapshot       = uv2Snap,
-                trianglesSnapshot = trisSnap,
+                uv2Snapshot       = retainPng ? uv2Data : null,
+                trianglesSnapshot = retainPng ? trisData : null,
             };
 
             // atlasUtilization = sum of |triangle area| in UV2 space — true
@@ -243,11 +272,24 @@ namespace SashaRX.UnityMeshLab
             // any UV with sqrMagnitude near zero (excluding legitimate verts
             // at the atlas origin) and reported bbox area instead of true
             // coverage, so layouts touching (0,0) under-reported.
-            if (uv2Snap != null && uv2Snap.Length > 0 && trisSnap != null)
+            if (uv2Data != null && uv2Data.Length > 0 && trisData != null)
             {
-                rec.atlasUtilization = (float)XatlasRepack.ComputeUv2CoverageFraction(uv2Snap, trisSnap);
+                rec.atlasUtilization = (float)XatlasRepack.ComputeUv2CoverageFraction(uv2Data, trisData);
             }
             records.Add(rec);
+        }
+
+        static bool IsPngSnapshotWithinLimits(Mesh mesh)
+        {
+            if (mesh.vertexCount > UvPngWriter.MaxUvCount) return false;
+
+            ulong indexCount = 0;
+            for (int subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
+            {
+                indexCount += mesh.GetIndexCount(subMesh);
+                if (indexCount > UvPngWriter.MaxTriangleIndexCount) return false;
+            }
+            return indexCount >= 3;
         }
 
         // ── Dispose writes artefacts ──
@@ -307,7 +349,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             UvtLog.Info(UvtLog.Category.Benchmark,
-                $"saved {records.Count} rec(s){(pngCount > 0 ? $" + {pngCount} PNG" : "")} → {csvPath}");
+                $"saved {records.Count} rec(s){(pngCount > 0 ? $" + {pngCount} PNG" : "")}" +
+                $"{(pngSnapshotsSkipped > 0 ? $" ({pngSnapshotsSkipped} PNG skipped by safety limits)" : "")} → {csvPath}");
         }
 
         string BuildCsv()
@@ -494,13 +537,9 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static string Csv(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            bool needQuote = s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0;
-            if (!needQuote) return s;
-            return "\"" + s.Replace("\"", "\"\"") + "\"";
-        }
+        // Imported asset names are user-controlled, so escaping covers both
+        // RFC 4180 quoting and spreadsheet formula neutralisation.
+        static string Csv(string s) => CsvUtil.Escape(s);
 
         static string Sanitize(string s)
         {

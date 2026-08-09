@@ -412,7 +412,7 @@ def render_model(out_dir, gallery_id, model, all_cells, res_axis, pad_axis, bdr_
             pairs.add((r.get("rendererName"), int(r.get("lodIndex", -1))))
     pairs = sorted(pairs)
 
-    nav = " | ".join(f'<a href="_gallery_{m}.html">{html.escape(m)}</a>' for m in MODELS_ORDER)
+    nav = " | ".join(f'<a href="_gallery_{html.escape(m)}.html">{html.escape(m)}</a>' for m in MODELS_ORDER)
     nav += f' | <a href="_gallery_index.html">index</a>'
 
     parts = [f'<!doctype html><html><head><meta charset="utf-8"><title>UV2 — {html.escape(model)}</title>',

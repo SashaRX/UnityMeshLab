@@ -157,7 +157,7 @@ cmake -S Native -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
-Requirements: CMake 3.20+, C++17 compiler. Dependencies (xatlas, meshoptimizer) are fetched automatically via CMake FetchContent. V-HACD is included as a header-only file in `Native/third_party/`.
+Requirements: CMake 3.20+, C++17 compiler. xatlas and V-HACD are vendored in `Native~/third_party/`; meshoptimizer is fetched automatically via CMake FetchContent.
 
 GitHub Actions CI automatically builds for Windows, Linux, and macOS on changes to `Native/`.
 

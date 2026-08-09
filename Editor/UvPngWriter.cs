@@ -11,6 +11,11 @@ namespace SashaRX.UnityMeshLab
     internal static class UvPngWriter
     {
         public const int DefaultSize = 1024;
+        // Rendering is diagnostic output, so reject inputs large enough to stall the
+        // editor rather than trying to visualise arbitrary asset-sized topology.
+        public const int MaxUvCount = 200000;
+        public const int MaxTriangleIndexCount = 600000;
+        public const int MaxSize = 2048;
         const float UvLo = -0.1f, UvHi = 1.1f; // show OOB verts around the 0-1 box
 
         static readonly Color[] Palette =
@@ -42,7 +47,15 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public static bool Render(string path, Vector2[] uv, int[] tris, int size = DefaultSize)
         {
-            if (string.IsNullOrEmpty(path) || uv == null || tris == null || tris.Length < 3) return false;
+            // tris.Length % 3: an index list that is not a whole number of
+            // triangles is malformed input. Every consumer here (shell
+            // extraction, the fill pass, the wire pass) silently truncates it
+            // with tris.Length / 3, so the PNG would misrepresent the mesh it
+            // claims to diagnose. Reject it like the other sanity limits.
+            if (string.IsNullOrEmpty(path) || uv == null || tris == null ||
+                uv.Length > MaxUvCount || tris.Length < 3 || tris.Length % 3 != 0 ||
+                tris.Length > MaxTriangleIndexCount || size <= 0 || size > MaxSize)
+                return false;
             var mat = GetMat();
             if (mat == null) return false;
 
@@ -75,7 +88,7 @@ namespace SashaRX.UnityMeshLab
                 for (int f = 0; f < fN; f++)
                 {
                     int a = tris[f * 3], b = tris[f * 3 + 1], c = tris[f * 3 + 2];
-                    if (a >= uv.Length || b >= uv.Length || c >= uv.Length) continue;
+                    if (a < 0 || b < 0 || c < 0 || a >= uv.Length || b >= uv.Length || c >= uv.Length) continue;
                     int sid = faceToShell != null ? faceToShell[f] : 0;
                     var col = Palette[Mathf.Abs(sid) % Palette.Length];
                     col.a = 0.5f;
@@ -90,7 +103,7 @@ namespace SashaRX.UnityMeshLab
                 for (int f = 0; f < fN; f++)
                 {
                     int a = tris[f * 3], b = tris[f * 3 + 1], c = tris[f * 3 + 2];
-                    if (a >= uv.Length || b >= uv.Length || c >= uv.Length) continue;
+                    if (a < 0 || b < 0 || c < 0 || a >= uv.Length || b >= uv.Length || c >= uv.Length) continue;
                     Vert(uv[a], size); Vert(uv[b], size);
                     Vert(uv[b], size); Vert(uv[c], size);
                     Vert(uv[c], size); Vert(uv[a], size);

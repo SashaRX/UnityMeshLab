@@ -6,11 +6,33 @@ namespace SashaRX.UnityMeshLab
 {
     public static partial class VertexAOBaker
     {
+        // Seam matching is a best-effort supplement to triangle adjacency. Bounding the
+        // position-matched candidates per vertex prevents dense or degenerate meshes from
+        // creating a quadratic number of comparisons and neighbor entries.
+        const int MaxSeamCandidatesPerVertex = 256;
+
+        // The matched cap above only counts candidates that actually connect, so a
+        // vertex surrounded by thousands of near-but-not-matching candidates still
+        // scanned its whole neighbourhood — the quadratic worst case the cap was
+        // meant to remove. This second, larger cap bounds the candidates *examined*,
+        // whether they match or not.
+        const int MaxSeamComparisonsPerVertex = 4096;
+
+        // Keeps the editor-triggered 3D spatial blur bounded when the grid degenerates
+        // into a single cell (tiny radius on a dense mesh, or fully coincident vertices).
+        const int MaxSpatialNeighborsPerVertex = 256;
+
         public static float[] BlurAO(float[] ao, int[] triangles, int vertexCount, int iterations, float strength,
             Vector3[] positions = null, Vector3[] normals = null, Vector2[] uv0 = null,
             bool crossHardEdges = true, bool crossUvSeams = true)
         {
             if (ao == null || iterations <= 0) return ao;
+
+            // Mesh attributes are optional and Unity may return empty arrays when they
+            // are not stored. Treat incomplete attributes as unavailable so seam
+            // comparisons never index past their bounds.
+            if (normals != null && normals.Length != vertexCount) normals = null;
+            if (uv0 != null && uv0.Length != vertexCount) uv0 = null;
 
             // Build adjacency: vertex → set of neighbor vertices
             var neighbors = new List<int>[vertexCount];
@@ -35,14 +57,14 @@ namespace SashaRX.UnityMeshLab
                 const float uvEps = 1e-4f;
                 float cellSize = posEps * 10f;  // grid cell larger than epsilon
 
-                var posMap = new Dictionary<long, List<int>>();
+                var posMap = new Dictionary<Vector3Int, List<int>>();
                 for (int i = 0; i < vertexCount; i++)
                 {
                     // Use RoundToInt for stable bucketing at cell boundaries
                     int cx = Mathf.RoundToInt(positions[i].x / cellSize);
                     int cy = Mathf.RoundToInt(positions[i].y / cellSize);
                     int cz = Mathf.RoundToInt(positions[i].z / cellSize);
-                    long key = ((long)cx * 73856093L) ^ ((long)cy * 19349663L) ^ ((long)cz * 83492791L);
+                    var key = new Vector3Int(cx, cy, cz);
                     if (!posMap.TryGetValue(key, out var list))
                     {
                         list = new List<int>();
@@ -51,43 +73,40 @@ namespace SashaRX.UnityMeshLab
                     list.Add(i);
                 }
 
-                // Check each vertex against same cell + 26 neighbors
-                var processed = new HashSet<long>();
-                foreach (var kvp in posMap)
+                // Check every vertex against its own cell + the 26 neighbors. Pairs are
+                // considered once (at their lower index); only candidates that actually
+                // sit on top of the vertex consume the per-vertex budget.
+                for (int vi = 0; vi < vertexCount; vi++)
                 {
-                    var group = kvp.Value;
-                    // Match within same cell
-                    for (int i = 0; i < group.Count; i++)
-                        for (int j = i + 1; j < group.Count; j++)
-                            TryConnectSeamVerts(neighbors, positions, normals, uv0,
-                                group[i], group[j], posEpsSq, normThresh, uvEps,
-                                crossHardEdges, crossUvSeams);
-                }
+                    var p = positions[vi];
+                    int bx = Mathf.RoundToInt(p.x / cellSize);
+                    int by = Mathf.RoundToInt(p.y / cellSize);
+                    int bz = Mathf.RoundToInt(p.z / cellSize);
+                    int matched = 0;
+                    int examined = 0;
 
-                // Also check across adjacent cells
-                var keys = new List<long>(posMap.Keys);
-                foreach (var key in keys)
-                {
-                    var group = posMap[key];
-                    // Reconstruct cell coords from first vertex
-                    var p0 = positions[group[0]];
-                    int bx = Mathf.RoundToInt(p0.x / cellSize);
-                    int by = Mathf.RoundToInt(p0.y / cellSize);
-                    int bz = Mathf.RoundToInt(p0.z / cellSize);
-
-                    for (int dx = -1; dx <= 1; dx++)
-                    for (int dy = -1; dy <= 1; dy++)
-                    for (int dz = -1; dz <= 1; dz++)
+                    for (int dx = -1; dx <= 1 && matched < MaxSeamCandidatesPerVertex
+                                             && examined < MaxSeamComparisonsPerVertex; dx++)
+                    for (int dy = -1; dy <= 1 && matched < MaxSeamCandidatesPerVertex
+                                             && examined < MaxSeamComparisonsPerVertex; dy++)
+                    for (int dz = -1; dz <= 1 && matched < MaxSeamCandidatesPerVertex
+                                             && examined < MaxSeamComparisonsPerVertex; dz++)
                     {
-                        if (dx == 0 && dy == 0 && dz == 0) continue;
-                        long nkey = ((long)(bx+dx) * 73856093L) ^ ((long)(by+dy) * 19349663L) ^ ((long)(bz+dz) * 83492791L);
-                        if (!posMap.TryGetValue(nkey, out var ngroup)) continue;
+                        var nkey = new Vector3Int(bx + dx, by + dy, bz + dz);
+                        if (!posMap.TryGetValue(nkey, out var group)) continue;
 
-                        foreach (int vi in group)
-                            foreach (int vj in ngroup)
-                                TryConnectSeamVerts(neighbors, positions, normals, uv0,
+                        for (int i = 0; i < group.Count && matched < MaxSeamCandidatesPerVertex
+                                                        && examined < MaxSeamComparisonsPerVertex; i++)
+                        {
+                            int vj = group[i];
+                            if (vj <= vi) continue;
+
+                            examined++;
+                            if (TryConnectSeamVerts(neighbors, positions, normals, uv0,
                                     vi, vj, posEpsSq, normThresh, uvEps,
-                                    crossHardEdges, crossUvSeams);
+                                    crossHardEdges, crossUvSeams))
+                                matched++;
+                        }
                     }
                 }
             }
@@ -120,6 +139,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (ao == null || positions == null || iterations <= 0 || radius <= 0) return ao;
             int count = ao.Length;
+            if (positions.Length != count) return ao;
 
             // Build spatial grid for fast neighbor lookup
             float cellSize = radius;
@@ -150,18 +170,27 @@ namespace SashaRX.UnityMeshLab
 
                     float weightSum = 1f; // self weight
                     float aoSum = src[v];
+                    int checks = 0;
 
-                    // 27-cell neighborhood
-                    for (int dx = -1; dx <= 1; dx++)
-                    for (int dy = -1; dy <= 1; dy++)
-                    for (int dz = -1; dz <= 1; dz++)
+                    // 27-cell neighborhood, with a per-vertex candidate budget so dense
+                    // cells cannot turn this into O(n²).
+                    for (int dx = -1; dx <= 1 && checks < MaxSpatialNeighborsPerVertex; dx++)
+                    for (int dy = -1; dy <= 1 && checks < MaxSpatialNeighborsPerVertex; dy++)
+                    for (int dz = -1; dz <= 1 && checks < MaxSpatialNeighborsPerVertex; dz++)
                     {
                         long nkey = PackKey(cx + dx, cy + dy, cz + dz);
                         if (!grid.TryGetValue(nkey, out var cell)) continue;
-                        for (int ci = 0; ci < cell.Count; ci++)
+                        // Rotate the sample window per vertex so a cell that exceeds the
+                        // budget does not always contribute its lowest indices.
+                        int start = cell.Count > 0 ? v % cell.Count : 0;
+                        for (int offset = 0;
+                             offset < cell.Count && checks < MaxSpatialNeighborsPerVertex;
+                             offset++)
                         {
+                            int ci = (start + offset) % cell.Count;
                             int ni = cell[ci];
                             if (ni == v) continue;
+                            checks++;
                             float distSq = (positions[ni] - p).sqrMagnitude;
                             if (distSq >= radiusSq) continue;
 
@@ -194,12 +223,17 @@ namespace SashaRX.UnityMeshLab
             return ((long)x * 73856093L) ^ ((long)y * 19349663L) ^ ((long)z * 83492791L);
         }
 
-        static void TryConnectSeamVerts(List<int>[] neighbors,
+        /// <summary>
+        /// Connects two seam candidates when their attributes allow it.
+        /// Returns true when the two vertices share a position (i.e. the candidate was
+        /// a real seam duplicate), regardless of whether it was finally connected.
+        /// </summary>
+        static bool TryConnectSeamVerts(List<int>[] neighbors,
             Vector3[] positions, Vector3[] normals, Vector2[] uv0,
             int vi, int vj, float posEpsSq, float normThresh, float uvEps,
             bool crossHardEdges, bool crossUvSeams)
         {
-            if ((positions[vi] - positions[vj]).sqrMagnitude > posEpsSq) return;
+            if ((positions[vi] - positions[vj]).sqrMagnitude > posEpsSq) return false;
 
             bool normalsMatch = normals == null ||
                 Vector3.Dot(normals[vi], normals[vj]) >= normThresh;
@@ -208,6 +242,8 @@ namespace SashaRX.UnityMeshLab
 
             if ((normalsMatch || crossHardEdges) && (uvsMatch || crossUvSeams))
                 AddNeighbor(neighbors, vi, vj);
+
+            return true;
         }
 
         static void AddNeighbor(List<int>[] neighbors, int a, int b)

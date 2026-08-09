@@ -389,12 +389,9 @@ namespace SashaRX.UnityMeshLab
             File.WriteAllText(Path.Combine(dir, $"FbxMetrics_{stamp}.csv"), sb.ToString(), Encoding.UTF8);
         }
 
-        static string Csv(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            bool q = s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) >= 0;
-            return q ? "\"" + s.Replace("\"", "\"\"") + "\"" : s;
-        }
+        // modelName / lodGroupName / rendererName are user-controlled, so
+        // escaping covers both RFC 4180 quoting and formula neutralisation.
+        static string Csv(string s) => CsvUtil.Escape(s);
 
         static string Sanitize(string s)
         {

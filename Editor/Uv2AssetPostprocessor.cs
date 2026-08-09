@@ -12,8 +12,24 @@ namespace SashaRX.UnityMeshLab
 {
     public class Uv2AssetPostprocessor : AssetPostprocessor
     {
+        // Mesh.SetUVs only accepts channels 0..7. Channel 0 is a legitimate
+        // target (AO bakes can write UV0), so the valid range starts at 0 and
+        // only out-of-range values fall back to the UV2 default.
+        const int MinReplayUvChannel = 0;
+        const int MaxReplayUvChannel = 7;
+        const int DefaultReplayUvChannel = 1;
+
+        // Serialized sidecars are untrusted import inputs. Bound expensive candidate
+        // comparisons so coincident/quantized vertices cannot make imports quadratic.
+        const int MaxRemapCandidateChecks = 1000000;
+
         // Run well after Bakery and other postprocessors (default order = 0).
         public override int GetPostprocessOrder() => 10000;
+
+        // Bump whenever replay behaviour changes so Unity reimports models that
+        // were processed by an older version of this postprocessor. Each bump
+        // forces a full reimport, so change it at most once per release.
+        public override uint GetVersion() => 2;
 
         /// <summary>
         /// Paths to bypass during the next reimport. When ApplyUv2ToFbx needs the
@@ -544,15 +560,21 @@ namespace SashaRX.UnityMeshLab
 
             bool didRemap;
             int nearestFallback, nearestAnyReuse, unmatched;
-            int primaryTargetUvChannel = entry.targetUvChannel >= 0 ? entry.targetUvChannel : 1;
+            int primaryTargetUvChannel = ResolvePrimaryTargetUvChannel(entry.targetUvChannel, mesh.name);
             string primaryLabel = $"channel {primaryTargetUvChannel}";
-            var uv2 = RemapUvSetIfNeeded(entry, entry.uv2, mesh, primaryLabel, out didRemap, out nearestFallback, out nearestAnyReuse, out unmatched);
+            var uv2 = RemapUvSetIfNeeded(entry, entry.uv2, mesh, primaryLabel, out didRemap, out nearestFallback, out nearestAnyReuse, out unmatched, out bool remapAborted);
             stats.remapped = didRemap;
             stats.nearestFallbackCount = nearestFallback;
             stats.nearestAnyReuseCount = nearestAnyReuse;
             stats.unmatchedVerts = unmatched;
+            // A partially resolved remap is worse than no remap: it would flatten
+            // the untouched tail of the channel to (0,0). RemapUvSetIfNeeded has
+            // already logged the reason.
+            if (remapAborted || uv2 == null || uv2.Length != mesh.vertexCount)
+                return false;
             mesh.SetUVs(primaryTargetUvChannel, uv2);
-            if (entry.auxiliaryUv != null && entry.auxiliaryTargetUvChannel >= 0)
+            if (entry.auxiliaryUv != null &&
+                IsValidReplayUvChannel(entry.auxiliaryTargetUvChannel, mesh.name, "auxiliary"))
             {
                 bool auxDidRemap;
                 int auxNearestFallback, auxNearestAnyReuse, auxUnmatched;
@@ -564,8 +586,9 @@ namespace SashaRX.UnityMeshLab
                     out auxDidRemap,
                     out auxNearestFallback,
                     out auxNearestAnyReuse,
-                    out auxUnmatched);
-                if (auxiliaryUv != null && auxiliaryUv.Length == mesh.vertexCount)
+                    out auxUnmatched,
+                    out bool auxRemapAborted);
+                if (!auxRemapAborted && auxiliaryUv != null && auxiliaryUv.Length == mesh.vertexCount)
                     mesh.SetUVs(entry.auxiliaryTargetUvChannel, auxiliaryUv);
             }
             return true;
@@ -575,7 +598,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (mesh == null || entry?.uv2 == null) return;
 
-            int primaryTargetUvChannel = entry.targetUvChannel >= 0 ? entry.targetUvChannel : 1;
+            int primaryTargetUvChannel = ResolvePrimaryTargetUvChannel(entry.targetUvChannel, mesh.name);
             if (entry.uv2.Length == mesh.vertexCount)
                 mesh.SetUVs(primaryTargetUvChannel, entry.uv2);
 
@@ -585,9 +608,28 @@ namespace SashaRX.UnityMeshLab
         static void ApplyAuxiliaryUvChannel(Mesh mesh, MeshUv2Entry entry)
         {
             if (mesh == null || entry?.auxiliaryUv == null) return;
-            if (entry.auxiliaryTargetUvChannel < 0) return;
+            if (!IsValidReplayUvChannel(entry.auxiliaryTargetUvChannel, mesh.name, "auxiliary")) return;
             if (entry.auxiliaryUv.Length != mesh.vertexCount) return;
             mesh.SetUVs(entry.auxiliaryTargetUvChannel, entry.auxiliaryUv);
+        }
+
+        static int ResolvePrimaryTargetUvChannel(int channel, string meshName)
+        {
+            if (channel >= MinReplayUvChannel && channel <= MaxReplayUvChannel)
+                return channel;
+
+            UvtLog.Warn($"[UV2 Postprocess] '{meshName}': sidecar primary UV channel {channel} is invalid; " +
+                        "using channel 1 (UV2) instead.");
+            return DefaultReplayUvChannel;
+        }
+
+        static bool IsValidReplayUvChannel(int channel, string meshName, string label)
+        {
+            if (channel >= MinReplayUvChannel && channel <= MaxReplayUvChannel)
+                return true;
+
+            UvtLog.Warn($"[UV2 Postprocess] '{meshName}': sidecar {label} UV channel {channel} is invalid; skipped.");
+            return false;
         }
 
         static bool ResolveSymmetrySplitStep(MeshUv2Entry entry)
@@ -655,9 +697,26 @@ namespace SashaRX.UnityMeshLab
                 return false;
             }
 
-            // Check sum of submesh tri counts matches optimizedTriangles length
-            int totalTriIndices = 0;
-            foreach (int c in entry.submeshTriangleCounts) totalTriIndices += c;
+            // Validate each submesh count before it is used for allocation/copying.
+            // Accumulate as long so crafted counts cannot wrap around to a valid total.
+            long totalTriIndices = 0;
+            foreach (int c in entry.submeshTriangleCounts)
+            {
+                if (c < 0 || c % 3 != 0)
+                {
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': invalid submesh triangle-index count " +
+                                $"({c}) — replay aborted.");
+                    return false;
+                }
+
+                totalTriIndices += c;
+                if (totalTriIndices > entry.optimizedTriangles.Length)
+                {
+                    UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': submesh triangle-index counts exceed " +
+                                $"optimizedTriangles.Length ({entry.optimizedTriangles.Length}) — replay aborted.");
+                    return false;
+                }
+            }
             if (totalTriIndices != entry.optimizedTriangles.Length)
             {
                 UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': sum(submeshTriCounts)={totalTriIndices} != " +
@@ -723,13 +782,23 @@ namespace SashaRX.UnityMeshLab
             // ── Build optimized arrays via remap ──
             // If ground-truth vertex data is available, use it DIRECTLY for positions/normals/tangents.
             // This completely bypasses the remap for geometry, eliminating all remap-related vertex errors.
-            // The remap is only used for UV channels and colors (which aren't stored in ground truth).
+            // The remap is only used for UV channels and as a fallback for legacy color data.
             bool hasGroundTruth = entry.optimizedPositions != null && entry.optimizedPositions.Length == optCount;
 
             var optPos = new Vector3[optCount];
             var optNormals = rawNormals != null && rawNormals.Length == rawCount ? new Vector3[optCount] : null;
             var optTangents = rawTangents != null && rawTangents.Length == rawCount ? new Vector4[optCount] : null;
-            var optColors = rawColors != null && rawColors.Length == rawCount ? new Color32[optCount] : null;
+            // Colors have two possible sources and the sidecar's optimized colors
+            // are the authoritative one (they survive merges and orphans that the
+            // remap cannot reconstruct). Allocating only when the RAW FBX carries
+            // colors dropped them entirely for the common case of a mesh whose
+            // colors were produced after import — e.g. baked vertex AO — because
+            // the raw mesh has no color channel at all.
+            bool hasRawColors = rawColors != null && rawColors.Length == rawCount;
+            bool hasOptimizedColors = hasGroundTruth &&
+                                      entry.optimizedColors != null &&
+                                      entry.optimizedColors.Length == optCount;
+            var optColors = hasRawColors || hasOptimizedColors ? new Color32[optCount] : null;
 
             var optUvs = new List<Vector2>[8];
             for (int ch = 0; ch < 8; ch++)
@@ -750,13 +819,18 @@ namespace SashaRX.UnityMeshLab
                     System.Array.Copy(entry.optimizedNormals, optNormals, optCount);
                 if (optTangents != null && entry.optimizedTangents != null && entry.optimizedTangents.Length == optCount)
                     System.Array.Copy(entry.optimizedTangents, optTangents, optCount);
+                if (hasOptimizedColors)
+                    System.Array.Copy(entry.optimizedColors, optColors, optCount);
 
-                // UV channels, colors — from remap (UV0 is modified by weld, must come from raw FBX)
+                // UV channels and legacy colors — from remap (UV0 is modified by weld,
+                // so it must come from the raw FBX). Optimized colors remain authoritative
+                // because merged and orphan vertices cannot always be reconstructed by remap.
+                bool remapColors = optColors != null && !hasOptimizedColors && hasRawColors;
                 for (int i = 0; i < rawCount; i++)
                 {
                     int dst = remap[i];
                     if (dst < 0) continue;
-                    if (optColors != null) optColors[dst] = rawColors[i];
+                    if (remapColors) optColors[dst] = rawColors[i];
                     for (int ch = 0; ch < 8; ch++)
                     {
                         if (ch == 1 || optUvs[ch] == null) continue;
@@ -1091,6 +1165,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < newCount; i++) newRemap[i] = -1;
             var coveredOpt = new bool[optCount > 0 ? optCount : 1];
             int matched = 0;
+            int candidateChecksRemaining = MaxRemapCandidateChecks;
 
             for (int i = 0; i < newCount; i++)
             {
@@ -1098,50 +1173,34 @@ namespace SashaRX.UnityMeshLab
                 if (!posLookup.TryGetValue(key, out var candidates)) continue;
 
                 int bestOld = PickBestCandidate(candidates, i, origRemap, coveredOpt,
-                    hasUv0 ? newUv0 : null, storedUv0);
+                    hasUv0 ? newUv0 : null, storedUv0, ref candidateChecksRemaining);
 
                 if (bestOld >= 0)
                 {
                     newRemap[i] = origRemap[bestOld];
+                    matched++;
                     if (origRemap[bestOld] >= 0)
                     {
                         coveredOpt[origRemap[bestOld]] = true;
-                        matched++;
                     }
                 }
             }
 
-            // Pass 2: nearest-neighbor fallback for bucket boundary misses.
-            // Allow reuse of already-used stored vertices here — these are rare
-            // boundary cases where the quantization rounded differently, and the
-            // nearest stored vertex (same position) should have the same origRemap.
+            if (candidateChecksRemaining <= 0)
+                UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': remap rebuild comparison limit reached; " +
+                            "remaining vertices were left unmapped.");
+
+            // A partial remap is unsafe: replay would leave optimized vertices at
+            // their default values while still restoring triangles that reference
+            // them. Abort instead of applying corrupt geometry. Do not fall back to
+            // an all-pairs nearest-neighbor scan here; sidecars are imported
+            // automatically, so that quadratic work can stall the Editor.
             if (matched < newCount)
             {
-                for (int i = 0; i < newCount; i++)
-                {
-                    if (newRemap[i] >= 0) continue;
-                    float bestDist = float.MaxValue;
-                    int bestOld = -1;
-                    for (int j = 0; j < storedCount; j++)
-                    {
-                        float d = Vector3.SqrMagnitude(newPos[i] - storedPos[j]);
-                        if (d < bestDist) { bestDist = d; bestOld = j; }
-                    }
-                    if (bestOld >= 0 && bestDist < 1e-4f)
-                    {
-                        newRemap[i] = origRemap[bestOld];
-                        if (origRemap[bestOld] >= 0)
-                        {
-                            coveredOpt[origRemap[bestOld]] = true;
-                            matched++;
-                        }
-                    }
-                }
-            }
-
-            if (matched < newCount)
                 UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': remap rebuild matched {matched}/{newCount} " +
-                            $"({newCount - matched} unmapped)");
+                            $"({newCount - matched} unmapped) — replay aborted.");
+                return null;
+            }
 
             // Coverage diagnostic: count how many referenced opt indices are still uncovered
             int uncoveredCount = 0;
@@ -1174,7 +1233,8 @@ namespace SashaRX.UnityMeshLab
         /// just because their opt slot is already covered.
         /// </summary>
         static int PickBestCandidate(List<int> candidates, int newIdx, int[] origRemap, bool[] coveredOpt,
-                                      List<Vector2> newUv0, Vector2[] storedUv0)
+                                      List<Vector2> newUv0, Vector2[] storedUv0,
+                                      ref int candidateChecksRemaining)
         {
             if (candidates.Count == 1)
             {
@@ -1189,6 +1249,7 @@ namespace SashaRX.UnityMeshLab
             float bestUv0Dist = float.MaxValue;
             for (int k = 0; k < candidates.Count; k++)
             {
+                if (candidateChecksRemaining-- <= 0) return -1;
                 int ci = candidates[k];
                 if (origRemap[ci] < 0) continue;
                 float d = hasUv ? Vector2.SqrMagnitude(newUv0[newIdx] - storedUv0[ci]) : 0f;
@@ -1209,6 +1270,7 @@ namespace SashaRX.UnityMeshLab
 
             for (int k = 0; k < candidates.Count; k++)
             {
+                if (candidateChecksRemaining-- <= 0) return -1;
                 int ci = candidates[k];
                 int opt = origRemap[ci];
 
@@ -1262,12 +1324,14 @@ namespace SashaRX.UnityMeshLab
             out bool didRemap,
             out int nearestFallbackCount,
             out int nearestAnyReuseCount,
-            out int unmatchedCount)
+            out int unmatchedCount,
+            out bool aborted)
         {
             didRemap = false;
             nearestFallbackCount = 0;
             nearestAnyReuseCount = 0;
             unmatchedCount = 0;
+            aborted = false;
 
             // No position data stored — backward compat, use UV2 as-is
             if (sourceUv == null) return null;
@@ -1304,7 +1368,9 @@ namespace SashaRX.UnityMeshLab
             var result = new Vector2[count];
             var used = new bool[sourceUv.Length];
             var meshMatched = new bool[count];
+            var candidateCursors = new Dictionary<(int, int, int), int>();
             int matched = 0;
+            int candidateChecksRemaining = MaxRemapCandidateChecks;
 
             for (int i = 0; i < count; i++)
             {
@@ -1329,6 +1395,7 @@ namespace SashaRX.UnityMeshLab
                     int bestIdx = -1;
                     foreach (int ci in candidates)
                     {
+                        if (candidateChecksRemaining-- <= 0) break;
                         if (used[ci]) continue;
                         float d = Vector2.SqrMagnitude(meshUv0[i] - entry.vertUv0[ci]);
                         if (d < bestDist)
@@ -1345,11 +1412,15 @@ namespace SashaRX.UnityMeshLab
                         matched++;
                     }
                 }
-                else
+
+                // Missing UV0, or a deliberately huge duplicate bucket: use the
+                // next unused index in this bucket. The cursor makes this linear.
+                if (!meshMatched[i] && (!hasUv0 || candidateChecksRemaining <= 0))
                 {
-                    // No UV0 data — pick first unused candidate
-                    foreach (int ci in candidates)
+                    candidateCursors.TryGetValue(key, out int cursor);
+                    while (cursor < candidates.Count)
                     {
+                        int ci = candidates[cursor++];
                         if (!used[ci])
                         {
                             result[i] = sourceUv[ci];
@@ -1359,6 +1430,7 @@ namespace SashaRX.UnityMeshLab
                             break;
                         }
                     }
+                    candidateCursors[key] = cursor;
                 }
             }
 
@@ -1380,6 +1452,7 @@ namespace SashaRX.UnityMeshLab
                 int fallbackMatched = 0;
                 foreach (int mi in unmatchedMesh)
                 {
+                    if (candidateChecksRemaining <= 0) break;
                     float bestDist = float.MaxValue;
                     int bestIdx = -1;
                     int bestListIdx = -1;
@@ -1387,6 +1460,7 @@ namespace SashaRX.UnityMeshLab
                     // First try: nearest UNUSED sidecar vertex within tight tolerance (1mm)
                     for (int j = 0; j < unusedSidecar.Count; j++)
                     {
+                        if (candidateChecksRemaining-- <= 0) break;
                         int si = unusedSidecar[j];
                         float d = Vector3.SqrMagnitude(meshPos[mi] - entry.vertPositions[si]);
                         if (d < bestDist)
@@ -1401,7 +1475,9 @@ namespace SashaRX.UnityMeshLab
                     {
                         result[mi] = sourceUv[bestIdx];
                         used[bestIdx] = true;
-                        unusedSidecar.RemoveAt(bestListIdx);
+                        int lastListIdx = unusedSidecar.Count - 1;
+                        unusedSidecar[bestListIdx] = unusedSidecar[lastListIdx];
+                        unusedSidecar.RemoveAt(lastListIdx);
                         matched++;
                         fallbackMatched++;
                         nearestFallbackCount++;
@@ -1416,6 +1492,7 @@ namespace SashaRX.UnityMeshLab
                     bestIdx = -1;
                     for (int si = 0; si < entry.vertPositions.Length; si++)
                     {
+                        if (candidateChecksRemaining-- <= 0) break;
                         float d = Vector3.SqrMagnitude(meshPos[mi] - entry.vertPositions[si]);
                         if (d < bestDist) { bestDist = d; bestIdx = si; }
                     }
@@ -1438,8 +1515,22 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            didRemap = true;
             unmatchedCount = count - matched;
+
+            // Running out of comparison budget leaves the tail of `result` at
+            // (0,0). Handing that back would write a half-remapped channel into
+            // the mesh on every auto-reimport, so abort the replay for this entry
+            // instead — same contract as the stale-remap abort.
+            if (candidateChecksRemaining <= 0 && matched < count)
+            {
+                aborted = true;
+                UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': {channelLabel} remap comparison limit reached " +
+                            $"with {count - matched}/{count} vertices unresolved — " +
+                            "replay aborted, mesh left untouched.");
+                return null;
+            }
+
+            didRemap = true;
 
             if (matched < count)
                 UvtLog.Warn($"[UV2 Postprocess] '{mesh.name}': {channelLabel} position remap {matched}/{count} " +

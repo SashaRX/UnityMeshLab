@@ -1,0 +1,21 @@
+xatlas — vendored snapshot
+==========================
+
+Upstream:        https://github.com/jpcy/xatlas
+Upstream commit: f700c77
+License:         MIT (Jonathan Young) — see the header of xatlas.h
+Snapshot taken:  2026-08-06
+Last verified:   2026-08-06
+
+Vendored files
+--------------
+xatlas.h
+xatlas.cpp
+
+Rules
+-----
+These sources are an unmodified upstream snapshot. Do not patch them in place:
+local fixes belong in Native~/xatlas-unity-bridge.cpp, so the snapshot stays
+diffable against upstream. To move to a newer upstream revision, replace both
+files wholesale, update the commit and both dates above, and rebuild the
+binaries through the build-native workflow.
