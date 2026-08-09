@@ -6,7 +6,7 @@ namespace SashaRX.UnityMeshLab.Tests
     public class CleanupToolTests
     {
         // The helper moved out of CleanupTool into the shared MeshHygieneUtility
-        // (CleanupTool and ModelBuilderTool both parse _LOD{N} suffixes). That
+        // (CleanupTool and PrefabBuilderTool both parse _LOD{N} suffixes). That
         // class is internal, so it is reached through the assembly rather than
         // a typeof().
         static bool TryParseLodIndex(string name, out int lodIndex)
