@@ -38,6 +38,11 @@ namespace SashaRX.UnityMeshLab
         float sideW = 300f;
         bool sideDragging;
         Vector2 sideScroll;
+        // Right sidebar — only rendered when ActiveTool implements
+        // IUvToolRightSidebar. Reapportioned by the right-edge resize handle.
+        float rightSideW = 360f;
+        bool rightSideDragging;
+        Vector2 rightSideScroll;
         int _cachedLodCount;
         int _cachedRendererCount;
         int _checkerUvChannel = 1;
@@ -334,6 +339,33 @@ namespace SashaRX.UnityMeshLab
 
             DrawHubToolbar();
 
+            // Pre-compute layout widths so the canvas (middle column) gets an
+            // explicit Width and shrinks first when the window is too narrow,
+            // while the sidebars hold their user-set widths down to their
+            // legibility minimums. Without an explicit canvas width IMGUI
+            // sized the middle column to its content, which pushed the
+            // right sidebar past the window's right edge.
+            const float LeftSidebarMinW  = 220f;
+            const float RightSidebarMinW = 220f;
+            const float RightSidebarMaxW = 700f;
+            const float CanvasMinW       = 120f;
+            const float HandleW          = 4f;
+
+            sideW = Mathf.Max(LeftSidebarMinW, sideW);
+
+            var rightSidebar = ActiveTool as IUvToolRightSidebar;
+            float rightHandleW = rightSidebar != null ? HandleW : 0f;
+            if (rightSidebar != null)
+            {
+                float roomForRight = position.width - sideW - HandleW - rightHandleW - CanvasMinW;
+                float upper = Mathf.Clamp(roomForRight, RightSidebarMinW, RightSidebarMaxW);
+                rightSideW = Mathf.Clamp(rightSideW, RightSidebarMinW, upper);
+            }
+
+            float canvasW = Mathf.Max(0f,
+                position.width - sideW - HandleW
+                - (rightSidebar != null ? (rightSideW + rightHandleW) : 0f));
+
             EditorGUILayout.BeginHorizontal();
 
             // ── Left sidebar ���─
@@ -346,8 +378,9 @@ namespace SashaRX.UnityMeshLab
 
             DrawResizeHandle();
 
-            // ── Right: canvas toolbar + canvas + status ──
-            EditorGUILayout.BeginVertical();
+            // Middle column with explicit Width so it's the first thing to
+            // shrink when the window is too narrow.
+            EditorGUILayout.BeginVertical(GUILayout.Width(canvasW));
             DrawCanvasToolbar();
 
             bool showGroupPanel = ctx.RepackPerMesh && ctx.MeshGroupCount(ctx.PreviewLod) > 1;
@@ -368,6 +401,19 @@ namespace SashaRX.UnityMeshLab
 
             EditorGUILayout.EndVertical();
 
+            // Right sidebar (opt-in via IUvToolRightSidebar). The clamp + width
+            // computation already happened at the top of OnGUI so we just
+            // render at the resolved rightSideW here.
+            if (rightSidebar != null)
+            {
+                DrawRightResizeHandle();
+                EditorGUILayout.BeginVertical(GUILayout.Width(rightSideW));
+                rightSideScroll = EditorGUILayout.BeginScrollView(rightSideScroll);
+                rightSidebar.OnDrawRightSidebar();
+                EditorGUILayout.EndScrollView();
+                EditorGUILayout.EndVertical();
+            }
+
             EditorGUILayout.EndHorizontal();
 
             // Progress strip sits at the very bottom of the window — it is a
@@ -375,6 +421,35 @@ namespace SashaRX.UnityMeshLab
             // layout when the active state toggles. The reserved height is
             // unconditional so appearing / disappearing also doesn't shift.
             DrawProgressStrip();
+        }
+
+        void DrawRightResizeHandle()
+        {
+            var r = GUILayoutUtility.GetRect(4, 4, GUILayout.ExpandHeight(true));
+            EditorGUI.DrawRect(r, new Color(.13f, .13f, .13f));
+            EditorGUIUtility.AddCursorRect(r, MouseCursor.ResizeHorizontal);
+            int id = GUIUtility.GetControlID(FocusType.Passive);
+            if (Event.current.type == EventType.MouseDown && r.Contains(Event.current.mousePosition))
+            { GUIUtility.hotControl = id; rightSideDragging = true; Event.current.Use(); }
+            if (rightSideDragging && Event.current.type == EventType.MouseDrag)
+            {
+                // Mirror the per-frame clamp so dragging can never push the
+                // sidebar off-screen or shrink the canvas past its minimum.
+                // The constants here intentionally match the pre-compute
+                // block at the top of OnGUI.
+                const float RightSidebarMinW = 220f;
+                const float RightSidebarMaxW = 700f;
+                const float CanvasMinW       = 120f;
+                const float HandleW          = 4f;
+                float roomForRight = position.width - sideW - HandleW - HandleW - CanvasMinW;
+                float upper = Mathf.Clamp(roomForRight, RightSidebarMinW, RightSidebarMaxW);
+                rightSideW = Mathf.Clamp(position.width - Event.current.mousePosition.x,
+                    RightSidebarMinW, upper);
+                Event.current.Use();
+                Repaint();
+            }
+            if (Event.current.rawType == EventType.MouseUp && rightSideDragging)
+            { rightSideDragging = false; Event.current.Use(); }
         }
 
         void OnSceneGUI(SceneView sv)
@@ -947,7 +1022,16 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < groupKeys.Count; i++)
             {
                 bool active = ctx.IsolatedMeshGroup == i;
-                if (active) GUI.backgroundColor = new Color(.35f, .85f, .4f);
+                // Tint each group button with the same per-group palette
+                // entry the Prefab Builder hierarchy uses, so the user can
+                // visually correlate the chain they see in the hierarchy
+                // with the group they're selecting here. Active selection
+                // overrides with the green highlight; non-selected buttons
+                // get the group's hue at full strength.
+                Color groupColor = MeshGroupColors.GetColor(groupKeys[i]);
+                GUI.backgroundColor = active
+                    ? new Color(.35f, .85f, .4f)
+                    : groupColor;
                 if (GUILayout.Button(groupKeys[i], EditorStyles.miniButton))
                 {
                     if (active)
@@ -961,7 +1045,7 @@ namespace SashaRX.UnityMeshLab
                         ctx.IsolatedMeshGroupKey = groupKeys[i];
                     }
                 }
-                if (active) GUI.backgroundColor = bg;
+                GUI.backgroundColor = bg;
             }
             EditorGUILayout.EndScrollView();
 
@@ -1205,7 +1289,7 @@ namespace SashaRX.UnityMeshLab
             if (Event.current.type == EventType.MouseDown && r.Contains(Event.current.mousePosition))
             { GUIUtility.hotControl = id; sideDragging = true; Event.current.Use(); }
             if (sideDragging && Event.current.type == EventType.MouseDrag)
-            { sideW = Mathf.Clamp(Event.current.mousePosition.x, 200, 520); Event.current.Use(); Repaint(); }
+            { sideW = Mathf.Clamp(Event.current.mousePosition.x, 200, 900); Event.current.Use(); Repaint(); }
             if (Event.current.rawType == EventType.MouseUp && sideDragging)
             { sideDragging = false; Event.current.Use(); }
         }

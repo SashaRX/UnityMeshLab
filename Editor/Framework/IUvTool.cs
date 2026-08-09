@@ -65,4 +65,15 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Set by the hub. Invoke to trigger an editor window repaint.</summary>
         System.Action RequestRepaint { set; }
     }
+
+    /// <summary>
+    /// Opt-in marker for tools that want a right-side sidebar in addition to
+    /// the standard left sidebar. The hub renders this sidebar to the right
+    /// of the canvas with its own resize handle. Tools that don't implement
+    /// this interface render with the canvas spanning the remaining width.
+    /// </summary>
+    public interface IUvToolRightSidebar
+    {
+        void OnDrawRightSidebar();
+    }
 }
