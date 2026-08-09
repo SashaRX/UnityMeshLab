@@ -8,6 +8,7 @@
 #include <vector>
 #include <cstring>
 #include <cstdint>
+#include <cmath>
 
 #ifdef _WIN32
 #define EXPORT extern "C" __declspec(dllexport)
@@ -73,6 +74,15 @@ EXPORT void* ConvexDecomp_Compute(
     if (maxHulls <= 0 || resolution <= 0 || maxVertsPerHull <= 0 || minEdgeLength <= 0)
         return nullptr;
     if (fillMode < 0 || fillMode > 2)
+        return nullptr;
+
+    // minVolumePerHull feeds m_minimumVolumePercentErrorAllowed, the percentage
+    // V-HACD compares each split's volume error against to decide when to stop
+    // recursing. NaN makes every one of those comparisons false, so the descent
+    // never converges on that criterion; a negative threshold can never be met
+    // either. Both turn a bounded decomposition into a run that only stops when
+    // it hits the hull/depth caps. The editor sends 1.0 (percent).
+    if (!std::isfinite(minVolumePerHull) || minVolumePerHull < 0.0f)
         return nullptr;
 
     // Recursive splitting can create 2^depth intermediate hulls, followed by an
