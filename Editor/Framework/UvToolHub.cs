@@ -52,7 +52,11 @@ namespace SashaRX.UnityMeshLab
         string pendingToolId;
         string windowDebugTag;
 
-        [MenuItem("Tools/Mesh Lab")]
+        // The window opener and the validator submenu must share the same
+        // top-level "Tools/Mesh Lab" namespace, otherwise Unity collapses the
+        // action item into the submenu and the entry to open the window
+        // disappears (only "Validators ▸" remains visible).
+        [MenuItem("Tools/Mesh Lab/Open Mesh Lab", false, 0)]
         static void Open()
         {
             OpenWithTool(null);

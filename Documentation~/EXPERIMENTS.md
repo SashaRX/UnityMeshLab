@@ -330,6 +330,53 @@
 - `FixMeshStripUvs()` — vertex colors `(0,0,0,0)` может быть валидное AO (полная окклюзия). Авто-стрип colors убран.
 - `SaveAndReimport()` в cleanup — добавлять `bypassPaths` чтобы постпроцессор не вмешался.
 
+---
+
+## External MeshLab (desktop) — Settings to Avoid Artifacts
+
+> Обновлено: 2026-05-02
+>
+> Применимо к FBX, прошедшим через десктопный **MeshLab** (https://www.meshlab.net/) перед импортом в Unity. Не путать с пакетом **UnityMeshLab** — это про внешний инструмент.
+>
+> Программная проверка симптомов: `MeshLabArtifactValidator` (`Editor/MeshLabArtifactValidator.cs`),
+> menu **Tools → Mesh Lab → Validators → Check Imported MeshLab Artifacts** (по выделенному GameObject/asset).
+
+### Filters — что ломает геометрию
+
+1. **Merge Close Vertices** — `Distance` ставить очень маленьким (`1e-6`) или отключать filter.
+   - На дефолтном threshold склеивает per-wedge UV-вершины в одну → **UV seams разъезжаются**, текстура «плывёт» по швам.
+   - Симптом в Unity: `mesh.vertexCount == уникальных позиций`, при том что в сцене заметны видимые швы.
+
+2. **Parameterization (UV1)** — выбирать filter с поддержкой существующих UV seams: `Trivial Per-Triangle Parameterization` или `Iso Parametrization`.
+   - Дефолтный `Parameterization: Flat Plane` ломает развёртку UV1 (весь mesh проецируется в одну плоскость).
+   - Симптом: UV1 — degenerate triangles или всё в `(0,0)`.
+
+3. **Remove Duplicate Faces / Remove Duplicate Vertices** — отключать, если есть split UVs.
+   - В 3ds Max split UVs выглядят как «дубликаты» по позиции (но имеют разные UV/normal).
+   - MeshLab их склеивает → теряются UV seams и smoothing groups.
+
+### Export FBX dialog — обязательные настройки
+
+| Опция | Значение | Зачем |
+|-------|----------|-------|
+| `WedgeAllChannels` | **ON** | Сохраняет per-wedge UV / normal (т.е. split UVs / smoothing seams). |
+| `UseExistingNormals` | **ON** | Не пересчитывает нормали (иначе теряются smoothing groups → flat shading). |
+
+### Симптомы плохих настроек в Unity (что ловит валидатор)
+
+- **No UV seams**: `vertexCount` ≈ числу уникальных позиций при наличии нескольких UV-островов → `Merge Close Vertices` или `Remove Duplicate Vertices` склеили wedge.
+- **Flat-shaded normals**: > 90% треугольников имеют 3 одинаковых vertex-нормали, совпадающих с face-normal → нормали пересчитаны без сохранения smoothing.
+- **Degenerate UV1**: > 5% треугольников UV1 с нулевой площадью — broken parameterization.
+- **UV1 all zero**: все UV1 в `(0,0)` — MeshLab стёр UV1 канал.
+- **UV1 out of unit**: > 5% UV1-вершин вне `[0..1]` — Flat Plane / Iso без нормализации.
+
+### Проверка
+
+Перед импортом FBX из MeshLab в Unity:
+1. Прогнать `Tools → Mesh Lab → Validators → Check Imported MeshLab Artifacts` на корне.
+2. Если warning — пересохранить из MeshLab с правильными настройками.
+3. Если повторяется — отключить проблемный filter и переэкспортировать.
+
 ## Эксперимент 2026-05-13 — Pre-pack snap к integer atlas pixels (отклонено)
 
 **Гипотеза:** xatlas `PackCharts` применяет unconditional per-chart `ceil(extents)` rescale (xatlas.cpp:8345-8362) — sub-pixel-thin шеллы амплифицируются и ломают uniform density. Если pre-snap'ить UV extents per-shell к integer pixel grid до xatlas, ceil() становится no-op'ом и density сохраняется без форка xatlas.
