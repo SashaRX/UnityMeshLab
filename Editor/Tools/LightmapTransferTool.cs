@@ -5196,14 +5196,18 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Returns a dictionary of oldNodeName → newNodeName for nodes that were renamed.
         /// Used to re-link scene mesh references after FBX reimport.
-        /// <paramref name="bakedMeshSink"/> is optional — when provided, every mesh copy
-        /// created here is appended to it so the caller can destroy the copies once the
-        /// FBX export has finished (see <see cref="DestroyTempMeshes"/>).
+        /// <paramref name="bakedMeshSink"/> is required — this method instantiates one
+        /// mesh copy per transform-baked node, and the caller destroys them once the FBX
+        /// export has finished (see <see cref="DestroyTempMeshes"/>). The parameter carries
+        /// no default: a caller that omitted it would leak every copy for the rest of the
+        /// editor session, and nothing about that failure is visible at compile time.
         /// </summary>
         static Dictionary<string, string> NormalizeExportHierarchy(
             GameObject root,
-            List<Mesh> bakedMeshSink = null)
+            List<Mesh> bakedMeshSink)
         {
+            if (bakedMeshSink == null) throw new ArgumentNullException(nameof(bakedMeshSink));
+
             var renameMap = new Dictionary<string, string>();
             string baseName = root.name;
             string sanitizedBaseName = MeshHygieneUtility.SanitizeName(baseName);
@@ -5319,8 +5323,7 @@ namespace SashaRX.UnityMeshLab
                 bakedMesh.name = mesh.name;
                 childMf.sharedMesh = bakedMesh;
                 // Temporary copy — the caller destroys it after the FBX export.
-                if (bakedMeshSink != null)
-                    bakedMeshSink.Add(bakedMesh);
+                bakedMeshSink.Add(bakedMesh);
 
                 BakeTransformIntoMesh(bakedMesh, t);
 
