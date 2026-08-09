@@ -122,16 +122,33 @@ namespace SashaRX.UnityMeshLab
                 : new[] { context.ReparameterizeStretchedShells ? context.ArapIterations : 0 };
             var stretchThresholds = sm.stretchThresholdVariants?.Length > 0
                 ? sm.stretchThresholdVariants : new[] { context.StretchThreshold };
+            // ExecSweep iterates these two axes as well (internal oversample and
+            // symmetry-split threshold mode). They must be counted here or the
+            // MaxSweepCells cap is silently bypassed on them and the "Run Sweep (N)"
+            // label undercounts by the oversample x symMode factor.
+            var oversamples = sm.internalOversampleVariants?.Length > 0
+                ? sm.internalOversampleVariants : new[] { context.InternalOversample };
+            int symModeCount = sm.symSplitThresholdModeVariants?.Length > 0
+                ? sm.symSplitThresholdModeVariants.Length : 1;
 
             if (!ValidateSweepDimension(resolutions, 64, 4096, "atlas resolution", out error) ||
                 !ValidateSweepDimension(shellPaddings, 0, 64, "shell padding", out error) ||
                 !ValidateSweepDimension(borderPaddings, 0, 64, "border padding", out error) ||
                 !ValidateSweepDimension(arapIterations, 0, 200, "ARAP iterations", out error) ||
-                !ValidateSweepDimension(stretchThresholds, 1f, 3f, "stretch threshold", out error))
+                !ValidateSweepDimension(stretchThresholds, 1f, 3f, "stretch threshold", out error) ||
+                !ValidateSweepDimension(oversamples, 1, 16, "internal oversample", out error))
                 return false;
 
+            if (symModeCount > MaxSweepValuesPerDimension)
+            {
+                error = $"symmetry-split threshold mode has {symModeCount} values; " +
+                        $"the maximum is {MaxSweepValuesPerDimension}.";
+                return false;
+            }
+
             long total = (long)resolutions.Length * shellPaddings.Length * borderPaddings.Length
-                       * arapIterations.Length * stretchThresholds.Length;
+                       * arapIterations.Length * stretchThresholds.Length
+                       * oversamples.Length * symModeCount;
             if (total > MaxSweepCells)
             {
                 error = $"Sweep has {total} cells; the maximum is {MaxSweepCells}.";
@@ -208,6 +225,17 @@ namespace SashaRX.UnityMeshLab
         bool stageRunWeldUv0    = true;
         bool stageRunRepack     = true;
         bool stageRunTransfer   = true;
+
+        // Weld stage sub-step: meshopt binary-equivalence dedup +
+        // GPU cache/overdraw/fetch reorder. This is NOT a UV weld — it
+        // removes vertices that are byte-identical in position + normal
+        // + uv0 (a GPU optimisation per meshoptimizer's
+        // generateVertexRemap, which the library docs explicitly warn
+        // is unsuitable for attribute-seam handling). The actual UV-aware
+        // seam weld is Uv0Analyzer.UvEdgeWeld. Kept ON by default to
+        // preserve prior behaviour, but now a separate, clearly-labelled
+        // toggle so the operator can run the pure UV weld alone.
+        bool stageWeldRunMeshopt = true;
 
         // Per-stage outcome from the most recent ExecFullPipeline run.
         // Drawn as a small status icon at the right of each stage row.
@@ -644,12 +672,26 @@ namespace SashaRX.UnityMeshLab
                 TryValidateSweep(sweepSuite.sweep, ctx, out cells, out sweepError);
             if (!string.IsNullOrEmpty(sweepError))
                 EditorGUILayout.HelpBox(sweepError, MessageType.Error);
+            int caseCount = (sweepSuite != null && sweepSuite.cases != null) ? sweepSuite.cases.Count : 0;
             using (new EditorGUILayout.HorizontalScope())
             {
                 using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0))
                 {
                     if (GUILayout.Button($"Run Sweep ({cells})", GUILayout.Height(22)))
                         ExecSweep(sweepSuite.sweep);
+                }
+                using (new EditorGUI.DisabledScope(sweepSuite == null || caseCount == 0))
+                {
+                    if (GUILayout.Button(new GUIContent($"Run Benchmark ({caseCount} cases)",
+                            "Iterate every TestSuiteAsset.cases[]; for each model, " +
+                            "spawn its FBX, then run every technique enabled in " +
+                            "suite.techniques (legacyXatlasSweep, hierarchicalProbe, " +
+                            "hierarchicalRepack, stageDSweep). All artefacts land under one directory " +
+                            "BenchmarkReports/bench_<ts>/<idx>_<label>/."),
+                        GUILayout.Height(22)))
+                    {
+                        ExecBenchmark(sweepSuite);
+                    }
                 }
                 if (GUILayout.Button(new GUIContent("Rebuild Report",
                         "Pick a BenchmarkReports/ folder and rebuild summary.csv / winner.json / index.html " +
@@ -696,7 +738,8 @@ namespace SashaRX.UnityMeshLab
                     }
                     bool hasTargetLods = ctx.MeshEntries.Any(e => e.include && e.lodIndex != ctx.SourceLodIndex);
                     if ((anyIssues || hasTargetLods) && !uv0Welded)
-                        ColorBtn(new Color(.9f,.7f,.2f), "Weld (false seams + source-guided)", 22, ExecWeldUv0);
+                        ColorBtn(new Color(.9f,.7f,.2f), "Weld (false seams + source-guided)", 22,
+                            () => ExecWeldUv0(runMeshoptFirst: stageWeldRunMeshopt));
                     else if (uv0Welded)
                         EditorGUILayout.LabelField("UV0 welded", EditorStyles.miniLabel);
                 }
@@ -725,11 +768,23 @@ namespace SashaRX.UnityMeshLab
                 "Diagnose UV0 seams and count shells. Cheap; recommended to leave on.",
                 ref stageRunAnalyzeUv0, hasSettings: false, drawSettings: null);
 
-            // 2. Weld UV0 — merges false-seam vertices using source-guided weld.
+            // 2. Weld UV0 — UV-aware false-seam weld (+ optional meshopt
+            //    GPU dedup as a clearly-separated sub-step).
             DrawStageRow(2, "Weld UV0",
-                "Merge false-seam vertices (UV0 verts that share position but were split). "
-                + "Required for clean shell extraction in Repack and Transfer.",
-                ref stageRunWeldUv0, hasSettings: false, drawSettings: null);
+                "Merge false-seam vertices (UV0 verts that share a 3D edge + matching UV "
+                + "but were split). Instance-pair guard blocks welds across mirror / N-fold "
+                + "shells. Required for clean shell extraction in Repack and Transfer.",
+                ref stageRunWeldUv0, hasSettings: true, drawSettings: () =>
+                {
+                    stageWeldRunMeshopt = EditorGUILayout.ToggleLeft(
+                        new GUIContent("Pre-optimize (meshopt dedup)",
+                            "Run meshoptimizer's binary-equivalence dedup + GPU cache/"
+                            + "overdraw/fetch reorder before the UV weld. This is a GPU "
+                            + "optimisation, NOT a UV weld — it only removes byte-identical "
+                            + "vertices (always safe). Turn OFF to run the pure UV-aware "
+                            + "seam weld in isolation."),
+                        stageWeldRunMeshopt);
+                });
 
             // 3. Symmetry split — uses inverted skipSymmetrySplitStep field
             // so existing diagnostic flag continues to work elsewhere.
@@ -1429,7 +1484,15 @@ namespace SashaRX.UnityMeshLab
             requestRepaint?.Invoke();
         }
 
-        void ExecWeldUv0()
+        /// <summary>meshopt binary-equivalence dedup + GPU cache/overdraw/
+        /// fetch reorder. NOT a UV weld — only removes vertices that are
+        /// byte-identical in position + normal + uv0 (per meshoptimizer's
+        /// generateVertexRemap; the library docs explicitly warn it is
+        /// unsuitable for attribute-seam handling). Exact duplicates are
+        /// always safe to merge, so no chart-awareness is needed here.
+        /// The semantic UV-aware seam weld is <see cref="ExecWeldUv0"/>.
+        /// </summary>
+        void ExecMeshOptimize()
         {
             if (ctx.LodGroup == null) return;
             foreach (var e in ctx.MeshEntries)
@@ -1441,13 +1504,47 @@ namespace SashaRX.UnityMeshLab
                     e.originalMesh.name = e.fbxMesh.name + "_wc";
                 }
                 var optResult = MeshOptimizer.Optimize(e.originalMesh);
-                if (optResult.ok) { e.wasWelded = true; UvtLog.Info($"[Weld] '{e.originalMesh.name}' LOD{e.lodIndex}: meshopt optimized"); }
+                if (optResult.ok)
+                {
+                    e.wasWelded = true;
+                    UvtLog.Info($"[MeshOpt] '{e.originalMesh.name}' LOD{e.lodIndex}: "
+                        + $"meshopt dedup/reorder ({optResult.originalVertexCount} → "
+                        + $"{optResult.optimizedVertexCount} verts)");
+                }
             }
+            ctx.ClearAllCaches();
+            requestRepaint?.Invoke();
+        }
 
-            // UV edge weld for all meshes
+        /// <summary>UV-aware false-seam weld via Uv0Analyzer.UvEdgeWeld.
+        /// Merges vertices that share a 3D edge AND matching UV0 on both
+        /// endpoints (a real chart-interior false seam), with the
+        /// instance-pair guard that blocks welds across mirror / N-fold
+        /// instance shells. This is the actual "weld" — distinct from
+        /// the meshopt GPU dedup in <see cref="ExecMeshOptimize"/>.
+        ///
+        /// When <paramref name="runMeshoptFirst"/> is true (pipeline
+        /// default) the meshopt dedup runs first so exact duplicates are
+        /// gone before the UV weld looks for seams. Set false to run the
+        /// pure UV weld in isolation.</summary>
+        void ExecWeldUv0(bool runMeshoptFirst = true)
+        {
+            if (ctx.LodGroup == null) return;
+
+            if (runMeshoptFirst)
+                ExecMeshOptimize();
+
+            // UV-aware edge weld for all meshes.
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
+                // Materialise a working copy if we skipped meshopt (which
+                // is what normally clones the fbx mesh).
+                if (e.originalMesh == e.fbxMesh)
+                {
+                    e.originalMesh = UvCanvasView.MakeReadableCopy(e.fbxMesh);
+                    e.originalMesh.name = e.fbxMesh.name + "_wc";
+                }
                 var welded = Uv0Analyzer.UvEdgeWeld(e.originalMesh);
                 if (welded != null && welded != e.originalMesh)
                 {
@@ -1583,7 +1680,9 @@ namespace SashaRX.UnityMeshLab
         /// is invoked to score the cells and write a sweep_<timestamp>/summary.csv +
         /// winner.json under BenchmarkReports/. Original ctx values are restored on exit.
         /// </summary>
-        void ExecSweep(TestSuiteAsset.SweepMatrix sm)
+        void ExecSweep(TestSuiteAsset.SweepMatrix sm) => ExecSweep(sm, null);
+
+        void ExecSweep(TestSuiteAsset.SweepMatrix sm, string sweepDirOverride)
         {
             if (ctx.LodGroup == null || sm == null) return;
             if (!TryValidateSweep(sm, ctx, out int total, out string validationError))
@@ -1603,6 +1702,11 @@ namespace SashaRX.UnityMeshLab
                 : new[] { ctx.ReparameterizeStretchedShells ? ctx.ArapIterations : 0 };
             var stretchArr = (sm.stretchThresholdVariants != null && sm.stretchThresholdVariants.Length > 0)
                 ? sm.stretchThresholdVariants : new[] { ctx.StretchThreshold };
+            var osArr = (sm.internalOversampleVariants != null && sm.internalOversampleVariants.Length > 0)
+                ? sm.internalOversampleVariants : new[] { ctx.InternalOversample };
+            var symModeArr = (sm.symSplitThresholdModeVariants != null && sm.symSplitThresholdModeVariants.Length > 0)
+                ? sm.symSplitThresholdModeVariants
+                : new[] { symSplitThresholdMode };
 
             // Snapshot ctx fields we mutate — restored unconditionally below.
             int   origRes         = ctx.AtlasResolution;
@@ -1611,6 +1715,8 @@ namespace SashaRX.UnityMeshLab
             bool  origArapOn      = ctx.ReparameterizeStretchedShells;
             int   origArapIters   = ctx.ArapIterations;
             float origStretchThr  = ctx.StretchThreshold;
+            int   origOversample  = ctx.InternalOversample;
+            var   origSymMode     = symSplitThresholdMode;
             // The sweep iterates an explicit atlasResolutions array. If the
             // user left AutoFromTexelDensity selected, ExecRepackCore would
             // overwrite ctx.AtlasResolution every cell and every row would
@@ -1633,12 +1739,22 @@ namespace SashaRX.UnityMeshLab
             // operator kicked off two sweeps in the same second (scripted
             // runs, quick UI re-clicks). Without ms the second sweep would
             // overwrite the first one's summary.csv / winner.json.
-            string sweepStamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff",
-                System.Globalization.CultureInfo.InvariantCulture);
-            string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
-                                 ?? Application.dataPath;
-            string sweepDir = System.IO.Path.Combine(projectRoot, "BenchmarkReports",
-                $"sweep_{sweepStamp}");
+            string sweepDir;
+            if (!string.IsNullOrEmpty(sweepDirOverride))
+            {
+                sweepDir = sweepDirOverride;
+            }
+            else
+            {
+                // Millisecond suffix prevents back-to-back Run Sweep clicks
+                // from clobbering each other's summary.csv / winner.json.
+                string sweepStamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss-fff",
+                    System.Globalization.CultureInfo.InvariantCulture);
+                string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
+                                     ?? Application.dataPath;
+                sweepDir = System.IO.Path.Combine(projectRoot, "BenchmarkReports",
+                    $"sweep_{sweepStamp}");
+            }
             try { System.IO.Directory.CreateDirectory(sweepDir); }
             catch (Exception ex)
             {
@@ -1646,6 +1762,16 @@ namespace SashaRX.UnityMeshLab
                     $"[Sweep] Could not pre-create sweep dir '{sweepDir}': {ex.Message}");
                 sweepDir = null;
             }
+
+            // Route every per-cell BenchmarkRecorder session into the sweep
+            // dir so the cell CSV/JSON/PNG sit alongside summary.csv etc.
+            // Without this the cells write to BenchmarkReports/run_<stamp>/
+            // (the recorder's default) — orphaned from the aggregate. The
+            // override is restored in the same finally as the sweepDir
+            // cleanup so a thrown cell doesn't leak the redirect.
+            string prevRecorderOverride = BenchmarkRecorder.OutputDirectoryOverride;
+            if (!string.IsNullOrEmpty(sweepDir))
+                BenchmarkRecorder.OutputDirectoryOverride = sweepDir;
 
             int done = 0;
             bool cancelled = false;
@@ -1667,10 +1793,17 @@ namespace SashaRX.UnityMeshLab
                                 foreach (float stretchThr in stretchArr)
                                 {
                                     if (cancelled) break;
+                                    foreach (int oversample in osArr)
+                                    {
+                                        if (cancelled) break;
+                                        foreach (var symMode in symModeArr)
+                                        {
+                                            if (cancelled) break;
                                     UvProgress.Report(
                                         (float)done / Mathf.Max(1, total),
                                         $"cell {done + 1}/{total}: res={r}, shellPad={s}, borderPad={b}, " +
-                                        $"arap={arapIters}, stretch={stretchThr:F2}");
+                                        $"arap={arapIters}, stretch={stretchThr:F2}, " +
+                                        $"oversample={oversample}, symMode={symMode}");
                                     if (UvProgress.CancelRequested)
                                     {
                                         cancelled = true;
@@ -1687,6 +1820,10 @@ namespace SashaRX.UnityMeshLab
                                     ctx.ReparameterizeStretchedShells = arapIters > 0;
                                     if (arapIters > 0) ctx.ArapIterations = arapIters;
                                     ctx.StretchThreshold              = stretchThr;
+                                    int clampedOversample             = oversample > 0 ? oversample : 1;
+                                    ctx.InternalOversample            = clampedOversample;
+                                    symSplitThresholdMode             = symMode;
+                                    SymmetrySplitShells.CurrentThresholdMode = symMode;
 
                                     if (sm.resetBetweenRuns) ResetWorkingCopies();
 
@@ -1694,7 +1831,14 @@ namespace SashaRX.UnityMeshLab
                                     // and that would break the recovery regex's _stretch(\d+p\d+)_ token.
                                     int stretchHundredths = Mathf.RoundToInt(stretchThr * 100f);
                                     string stretchTag = $"{stretchHundredths / 100}p{(stretchHundredths % 100):D2}";
-                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_arap{arapIters}_stretch{stretchTag}";
+                                    string symTag = symMode == SymmetrySplitShells.ThresholdMode.LegacyFixed
+                                        ? "legacy" : "adaptive";
+                                    // Embed the clamped oversample value (not the raw
+                                    // suite entry) so the cell label matches what
+                                    // actually executed — keeps recovery / winner
+                                    // parsing in sync with the run.
+                                    string label = $"sweep_res{r}_pad{s}_bdr{b}_arap{arapIters}_" +
+                                                   $"stretch{stretchTag}_os{clampedOversample}_sym{symTag}";
                                     string csvBefore = BenchmarkRecorder.LastWrittenCsvPath;
                                     try
                                     {
@@ -1713,14 +1857,23 @@ namespace SashaRX.UnityMeshLab
                                         ? csvAfter : null;
 
                                     writtenCsvPaths.Add(csvPath);
+                                    // Record the SAME clamped oversample value
+                                    // used at ctx.InternalOversample for the run
+                                    // (see ≈40 lines above). Storing the raw
+                                    // suite value here would make summary/winner
+                                    // metadata disagree with the actual run
+                                    // configuration whenever a suite contains
+                                    // 0 or negative entries.
                                     cellConfigs.Add(new BenchmarkSweep.CellConfig
                                     {
-                                        atlasRes         = r,
-                                        shellPad         = s,
-                                        borderPad        = b,
-                                        arapEnabled      = arapIters > 0,
-                                        arapIterations   = arapIters,
-                                        stretchThreshold = stretchThr,
+                                        atlasRes           = r,
+                                        shellPad           = s,
+                                        borderPad          = b,
+                                        arapEnabled        = arapIters > 0,
+                                        arapIterations     = arapIters,
+                                        stretchThreshold   = stretchThr,
+                                        internalOversample = oversample > 0 ? oversample : 1,
+                                        symSplitMode       = symMode,
                                     });
                                     done++;
 
@@ -1756,6 +1909,8 @@ namespace SashaRX.UnityMeshLab
                                         UvtLog.Verbose(UvtLog.Category.Benchmark,
                                             $"[Sweep] Between-cell cleanup hiccup: {ex.Message}");
                                     }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1764,6 +1919,11 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
+                // Restore the recorder's output redirect first — covers the
+                // case where the operator cancels mid-sweep and then runs
+                // a single-shot pipeline action that shouldn't write into
+                // this sweep's dir.
+                BenchmarkRecorder.OutputDirectoryOverride = prevRecorderOverride;
                 if (cancelled) UvProgress.Cancel(); else UvProgress.End();
                 ctx.AtlasResolution               = origRes;
                 ctx.ShellPaddingPx                = origPad;
@@ -1771,7 +1931,10 @@ namespace SashaRX.UnityMeshLab
                 ctx.ReparameterizeStretchedShells = origArapOn;
                 ctx.ArapIterations                = origArapIters;
                 ctx.StretchThreshold              = origStretchThr;
+                ctx.InternalOversample            = origOversample;
                 ctx.RepackResolutionMode          = origResMode;
+                symSplitThresholdMode             = origSymMode;
+                SymmetrySplitShells.CurrentThresholdMode = origSymMode;
                 UvtLog.Info(UvtLog.Category.Benchmark,
                     $"Sweep complete: {done}/{total} cells{(cancelled ? " (cancelled)" : "")}");
 
@@ -1794,7 +1957,371 @@ namespace SashaRX.UnityMeshLab
                             $"[Sweep] Aggregate report failed: {ex.Message}");
                     }
                 }
+
+                // Provenance manifest + auto-archive. Failure of either is
+                // logged but never propagates — losing reproducibility metadata
+                // is bad, but it shouldn't take down a completed sweep.
+                if (!string.IsNullOrEmpty(sweepDir) && System.IO.Directory.Exists(sweepDir))
+                {
+                    try
+                    {
+                        var prov = BenchmarkSweep.ResolvePackageProvenance();
+                        string stamp = System.IO.Path.GetFileName(sweepDir);
+                        if (stamp != null && stamp.StartsWith("sweep_", StringComparison.Ordinal))
+                            stamp = stamp.Substring("sweep_".Length);
+                        BenchmarkSweep.WriteManifest(sweepDir, new BenchmarkSweep.SweepManifest
+                        {
+                            sweepDir       = sweepDir,
+                            sweepStamp     = stamp ?? "",
+                            sweepLabel     = ctx.LodGroup != null ? ctx.LodGroup.name : "standalone",
+                            packageName    = prov.pkgName,
+                            packageVersion = prov.pkgVersion,
+                            gitSha         = prov.gitSha,
+                            gitBranch      = prov.gitBranch,
+                            gitDirty       = prov.gitDirty,
+                            unityVersion   = Application.unityVersion,
+                            platform       = Application.platform.ToString(),
+                            hostUser       = System.Environment.UserName,
+                            hostMachine    = System.Environment.MachineName,
+                            hostOs         = System.Environment.OSVersion.VersionString,
+                            processor      = SystemInfo.processorType,
+                            cellCount      = writtenCsvPaths.Count,
+                            caseCount      = 1,
+                            matrix         = sm,
+                            caseLabels     = null,
+                        });
+                        BenchmarkSweep.ArchiveSweep(sweepDir);
+                    }
+                    catch (Exception ex)
+                    {
+                        UvtLog.Warn(UvtLog.Category.Benchmark,
+                            $"[Sweep] manifest/archive step failed: {ex.Message}");
+                    }
+                }
             }
+        }
+
+        /// <summary>
+        /// Unified benchmark — iterates every <see cref="TestSuiteAsset.TestCase"/>
+        /// in the suite, instantiates its <c>fbxAsset</c> into a temporary scene
+        /// root, then runs every technique enabled in
+        /// <see cref="TestSuiteAsset.techniques"/>:
+        ///   • legacyXatlasSweep  → existing parameter grid (atlas res × pad ×
+        ///                          ARAP × stretch × oversample × symSplit),
+        ///                          aggregated into summary/winner artefacts.
+        ///   • hierarchicalProbe  → probe v3 per-face stay/promote diagnostic.
+        ///   • hierarchicalRepack → per-vertex projection classifier + atlas
+        ///                          layout (PR-2.7).
+        ///   • stageDSweep        → cascade-threshold grid (matchFrac × minHits);
+        ///                          per-cell group PNGs + stage_d_sweep.csv.
+        /// All artefacts for a single case land under one directory
+        /// <c>BenchmarkReports/bench_&lt;ts&gt;/&lt;idx&gt;_&lt;label&gt;/</c>
+        /// so comparing techniques across the same model is a directory listing
+        /// and cross-model joins still work via the <c>lodGroup</c> column.
+        ///
+        /// Existing scene state is preserved: the original <c>ctx.LodGroup</c>
+        /// is restored on exit, and every spawned root is destroyed in a
+        /// <c>finally</c> block so a thrown technique or a user cancel doesn't
+        /// leak GameObjects.
+        /// </summary>
+        void ExecBenchmark(TestSuiteAsset suite)
+        {
+            if (suite == null || suite.sweep == null) return;
+            if (suite.cases == null || suite.cases.Count == 0)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    "[Bench] Suite has no cases — nothing to do.");
+                return;
+            }
+            var tech = suite.techniques ?? new TestSuiteAsset.BenchTechniques();
+            if (!tech.legacyXatlasSweep && !tech.hierarchicalProbe
+                && !tech.hierarchicalRepack && !tech.stageDSweep)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    "[Bench] All techniques disabled in suite.techniques — nothing to do.");
+                return;
+            }
+
+            // Snapshot the operator-bound LODGroup so the multi-case loop's
+            // ctx.Refresh calls don't leave the editor pointing at a destroyed
+            // temporary instance when the loop ends or is cancelled.
+            var origLodGroup = ctx.LodGroup;
+            // AGENTS.md LODGroup-lifecycle invariant: restore fbxMesh on every
+            // MeshFilter and destroy temporary working meshes BEFORE ctx.Refresh
+            // wipes MeshEntries. Without this, if the operator had repacked /
+            // transferred meshes live on origLodGroup, those temporary meshes
+            // stay assigned in-scene and the references needed to restore the
+            // FBX baseline are lost; reloading origLodGroup at the end would
+            // then treat the temp meshes as the new baseline.
+            if (origLodGroup != null) ResetWorkingCopies();
+
+            // Human-readable run stamp with ms precision — `yyyy-MM-dd_HH-mm-ss-fff`.
+            // The fff suffix prevents two rapid-fire Run Benchmark clicks
+            // from targeting the same bench_<ts>/ directory (the per-case
+            // paths inside are deterministic, so collisions silently
+            // interleave artefacts and corrupt comparisons). UTC so two
+            // operators in different timezones produce comparable folder names.
+            string runStamp = DateTime.UtcNow.ToString("yyyy-MM-dd_HH-mm-ss-fff",
+                System.Globalization.CultureInfo.InvariantCulture);
+            string projectRoot = System.IO.Directory.GetParent(Application.dataPath)?.FullName
+                                 ?? Application.dataPath;
+            string baseDir = System.IO.Path.Combine(projectRoot, "BenchmarkReports");
+
+            int caseCount = suite.cases.Count;
+            int doneCases = 0;
+            bool overallCancelled = false;
+            string benchRunDir = System.IO.Path.Combine(baseDir, $"bench_{runStamp}");
+            System.IO.Directory.CreateDirectory(benchRunDir);
+            UvProgress.Begin($"Benchmark ({caseCount} models)", cancelable: true);
+            try
+            {
+                for (int ci = 0; ci < caseCount; ci++)
+                {
+                    if (UvProgress.CancelRequested) { overallCancelled = true; break; }
+                    var tc = suite.cases[ci];
+                    if (tc == null || tc.fbxAsset == null)
+                    {
+                        UvtLog.Warn(UvtLog.Category.Benchmark,
+                            $"[Bench] Case {ci}: null FBX, skipping.");
+                        continue;
+                    }
+
+                    string fbxPath = AssetDatabase.GetAssetPath(tc.fbxAsset);
+                    if (string.IsNullOrEmpty(fbxPath))
+                    {
+                        UvtLog.Warn(UvtLog.Category.Benchmark,
+                            $"[Bench] Case {ci} '{tc.label}': asset has no project path, skipping.");
+                        continue;
+                    }
+
+                    var prefabRoot = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
+                    if (prefabRoot == null)
+                    {
+                        UvtLog.Warn(UvtLog.Category.Benchmark,
+                            $"[Bench] Case {ci} '{tc.label}': '{fbxPath}' is not a GameObject prefab, skipping.");
+                        continue;
+                    }
+
+                    UvProgress.Report((float)ci / caseCount,
+                        $"case {ci + 1}/{caseCount}: {tc.label} ({System.IO.Path.GetFileName(fbxPath)})");
+
+                    GameObject spawned = null;
+                    try
+                    {
+                        spawned = (GameObject)PrefabUtility.InstantiatePrefab(prefabRoot);
+                        if (spawned == null)
+                        {
+                            UvtLog.Error(UvtLog.Category.Benchmark,
+                                $"[Bench] Case {ci} '{tc.label}': InstantiatePrefab returned null, skipping.");
+                            continue;
+                        }
+                        spawned.name = $"[Bench] {tc.label}";
+                        // DontSave so the temporary spawn doesn't mark the scene
+                        // dirty and survive into Ctrl+S — the multi-case sweep is
+                        // a transient operation, not an authored edit.
+                        spawned.hideFlags = HideFlags.DontSave;
+
+                        // Resolve LODGroup: explicit path first, then first found.
+                        LODGroup lg = null;
+                        if (!string.IsNullOrEmpty(tc.lodGroupPath))
+                        {
+                            var t = spawned.transform.Find(tc.lodGroupPath);
+                            if (t != null) lg = t.GetComponent<LODGroup>();
+                        }
+                        if (lg == null) lg = spawned.GetComponentInChildren<LODGroup>(true);
+                        if (lg == null)
+                        {
+                            UvtLog.Warn(UvtLog.Category.Benchmark,
+                                $"[Bench] Case {ci} '{tc.label}': no LODGroup found under '{fbxPath}', skipping.");
+                            continue;
+                        }
+
+                        ctx.Refresh(lg);
+                        OnRefresh();
+
+                        // Per-case subdirectory groups every technique's
+                        // artefacts for this model. Each technique lives in
+                        // its own subfolder (hier/, legacy/) so an operator
+                        // comparing techniques for one model just opens the
+                        // matching folder — no mixed naming conventions,
+                        // no top-level clutter. The case index
+                        // is prefixed so two cases that sanitise to the same
+                        // slug (e.g. "Chair A" and "Chair/A" both collapsing
+                        // to "Chair_A") still land in distinct directories
+                        // instead of overwriting each other. lodGroup name is
+                        // also recorded in every CSV row by BenchmarkRecorder,
+                        // so pandas joins still work across cases.
+                        string safeLabel = SanitizeForPath(string.IsNullOrEmpty(tc.label) ? lg.name : tc.label);
+                        string caseDir = System.IO.Path.Combine(benchRunDir,
+                            $"{ci:D2}_{safeLabel}");
+                        System.IO.Directory.CreateDirectory(caseDir);
+
+                        bool didAnything = false;
+
+                        // Split per-technique into subdirectories so the case
+                        // root only contains technique-named folders — no
+                        // mixed naming conventions, no clash between probe's
+                        // probe.csv and legacy's summary.csv.
+                        //   caseDir/hier/    — probe.csv + repack.csv + PNGs
+                        //   caseDir/legacy/  — summary/winner/manifest/index
+                        //                      + per-cell CSV/JSON/PNG/
+                        string hierDir   = System.IO.Path.Combine(caseDir, "hier");
+                        string legacyDir = System.IO.Path.Combine(caseDir, "legacy");
+
+                        // Legacy xatlas parameter sweep — drops its
+                        // summary.csv / winner.json / per-cell artefacts into
+                        // legacyDir. BenchmarkRecorder.WriteArtefacts hardcodes
+                        // top-level BenchmarkReports/ for its per-cell output;
+                        // the override redirects them into legacyDir alongside
+                        // the aggregate. Restored in finally so a throw doesn't
+                        // leak the redirect into unrelated tool invocations.
+                        if (tech.legacyXatlasSweep)
+                        {
+                            System.IO.Directory.CreateDirectory(legacyDir);
+                            string prevOverride = BenchmarkRecorder.OutputDirectoryOverride;
+                            BenchmarkRecorder.OutputDirectoryOverride = legacyDir;
+                            try { ExecSweep(suite.sweep, legacyDir); }
+                            finally { BenchmarkRecorder.OutputDirectoryOverride = prevOverride; }
+                            didAnything = true;
+                        }
+
+                        // Hierarchical probe v3 — probe.csv under hier/.
+                        if (tech.hierarchicalProbe)
+                        {
+                            try
+                            {
+                                System.IO.Directory.CreateDirectory(hierDir);
+                                HierarchicalDiag.ProbeLodGroup(lg, hierDir);
+                                didAnything = true;
+                            }
+                            catch (Exception ex)
+                            {
+                                UvtLog.Error(UvtLog.Category.Benchmark,
+                                    $"[Bench] Case {ci} '{tc.label}' probe threw: {ex.Message}");
+                            }
+                        }
+
+                        // Hierarchical repack dry-run — repack.csv + atlas.png
+                        // + lod{N}.png under hier/.
+                        if (tech.hierarchicalRepack)
+                        {
+                            try
+                            {
+                                System.IO.Directory.CreateDirectory(hierDir);
+                                var hrOpts = HierarchicalRepack.Options.Default;
+                                var hrResult = HierarchicalRepack.BuildAndWriteForCase(lg, hrOpts, hierDir);
+                                if (!string.IsNullOrEmpty(hrResult.error))
+                                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                                        $"[Bench] Case {ci} '{tc.label}' repack: {hrResult.error}");
+                                else
+                                    didAnything = true;
+                            }
+                            catch (Exception ex)
+                            {
+                                UvtLog.Error(UvtLog.Category.Benchmark,
+                                    $"[Bench] Case {ci} '{tc.label}' repack threw: {ex.Message}");
+                            }
+                        }
+
+                        // Stage D cascade-threshold sweep — opt-in comparison
+                        // grid (matchFrac × minHits) over the same case.
+                        // Writes stage_d_sweep.csv under hier/ (the real
+                        // output); per-cell PNGs only when stageDSweepEmitPngs
+                        // is set (off by default — near-identical across cells,
+                        // suppressed as noise). No auto-winner (Stage E /
+                        // lightmap-defect scalar not built yet). Full rebuild
+                        // per cell, so this multiplies the dry-run cost; gated
+                        // behind its own flag.
+                        if (tech.stageDSweep)
+                        {
+                            try
+                            {
+                                System.IO.Directory.CreateDirectory(hierDir);
+                                HierarchicalRepack.BuildStageDSweep(lg,
+                                    HierarchicalRepack.Options.Default,
+                                    tech.cascadeMatchFracVariants,
+                                    tech.cascadeMinHitsVariants, hierDir,
+                                    tech.stageDSweepEmitPngs);
+                                didAnything = true;
+                            }
+                            catch (Exception ex)
+                            {
+                                UvtLog.Error(UvtLog.Category.Benchmark,
+                                    $"[Bench] Case {ci} '{tc.label}' Stage D sweep threw: {ex.Message}");
+                            }
+                        }
+
+                        if (didAnything) doneCases++;
+                    }
+                    catch (Exception ex)
+                    {
+                        UvtLog.Error(UvtLog.Category.Benchmark,
+                            $"[Bench] Case {ci} '{tc.label}' threw: {ex.Message}");
+                    }
+                    finally
+                    {
+                        if (spawned != null)
+                        {
+                            // AGENTS.md LODGroup-lifecycle invariant: ResetWorkingCopies
+                            // BEFORE ctx.Refresh(null). The just-finished ExecSweep
+                            // leaves the last cell's repackedMesh/transferredMesh
+                            // refs on MeshEntries; clearing ctx without resetting
+                            // first drops those refs without DestroyImmediate, and
+                            // the temp meshes (Object.Instantiate clones, not
+                            // children of `spawned`) leak — repeated multi-case
+                            // runs accumulate them and eventually hit editor OOM.
+                            // Use IsChildOf instead of an equality check so the
+                            // guard still triggers when the LODGroup sits on a
+                            // descendant of `spawned` (common prefab layout —
+                            // prefab root holds rendering bounds, LODGroup on
+                            // a child geometry container). Transform.IsChildOf
+                            // returns true for itself, so the root case is
+                            // still covered.
+                            if (ctx.LodGroup != null
+                                && ctx.LodGroup.transform.IsChildOf(spawned.transform))
+                            {
+                                ResetWorkingCopies();
+                                ctx.Refresh(null);
+                            }
+                            UnityEngine.Object.DestroyImmediate(spawned);
+                        }
+                    }
+
+                    if (UvProgress.CancelRequested) { overallCancelled = true; break; }
+                }
+            }
+            finally
+            {
+                if (overallCancelled) UvProgress.Cancel(); else UvProgress.End();
+                // Restore the operator's original wiring.
+                ctx.Refresh(origLodGroup);
+                OnRefresh();
+                string techList = string.Join("+",
+                    new[]
+                    {
+                        tech.legacyXatlasSweep   ? "legacy" : null,
+                        tech.hierarchicalProbe   ? "probe"  : null,
+                        tech.hierarchicalRepack  ? "repack" : null,
+                        tech.stageDSweep         ? "stageDsweep" : null,
+                    }
+                    .Where(s => s != null));
+                UvtLog.Info(UvtLog.Category.Benchmark,
+                    $"[Bench] complete: {doneCases}/{caseCount} cases [{techList}]" +
+                    (overallCancelled ? " (cancelled)" : "") +
+                    $". Per-case dirs: BenchmarkReports/bench_{runStamp}/<idx>_<label>/{{hier,legacy}}/");
+            }
+        }
+
+        /// <summary>Filesystem-safe slug for a path component — letters, digits,
+        /// '-', '_' kept; everything else collapsed to '_'. Falls back to
+        /// "case" for null / empty input so the directory always has a name.</summary>
+        static string SanitizeForPath(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "case";
+            var sb = new System.Text.StringBuilder(s.Length);
+            foreach (char c in s)
+                sb.Append(char.IsLetterOrDigit(c) || c == '-' || c == '_' ? c : '_');
+            return sb.ToString();
         }
 
         /// <summary>
@@ -1853,6 +2380,65 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         bool ExecFullPipelineCore() => ExecFullPipelineCoreImpl(useAsync: false).GetAwaiter().GetResult();
 
+        /// <summary>
+        /// Rewind every entry's working mesh to a pristine state before a
+        /// full-pipeline run so the run is idempotent. Working copies are
+        /// materialised lazily by the individual stages (each does
+        /// <c>if (e.originalMesh == e.fbxMesh) … MakeReadableCopy</c>), so it
+        /// is enough to point <see cref="MeshEntry.originalMesh"/> back at
+        /// <see cref="MeshEntry.fbxMesh"/>, destroy the stale clone, drop the
+        /// derived (repacked / transferred) meshes, and clear the per-step
+        /// flags. Mirrors the per-step reset done between auto-tune configs,
+        /// but covers the whole entry set including non-included entries so
+        /// nothing from a prior run leaks into this one.
+        /// </summary>
+        void ResetWorkingMeshesToFbx()
+        {
+            if (ctx?.MeshEntries == null) return;
+            foreach (var e in ctx.MeshEntries)
+            {
+                if (e == null) continue;
+
+                // Drop derived meshes produced by an earlier run.
+                if (e.transferredMesh != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(e.transferredMesh);
+                    e.transferredMesh = null;
+                }
+                if (e.repackedMesh != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(e.repackedMesh);
+                    e.repackedMesh = null;
+                }
+                e.repackedAtlasWidth = 0;
+                e.repackedAtlasHeight = 0;
+                e.transferState = null;
+                e.shellTransferResult = null;
+                e.validationReport = null;
+
+                // Rewind the working mesh to the imported fbx asset. The stale
+                // working clone (weld / sym-split product) is destroyed — it is
+                // ours, never the asset (fbxMesh is owned by the AssetDatabase).
+                if (e.fbxMesh != null)
+                {
+                    if (e.originalMesh != null && e.originalMesh != e.fbxMesh)
+                        UnityEngine.Object.DestroyImmediate(e.originalMesh);
+                    e.originalMesh = e.fbxMesh;
+                }
+
+                e.wasWelded = false;
+                e.wasEdgeWelded = false;
+                e.wasSymmetrySplit = false;
+            }
+
+            ctx.ClearAllCaches();
+            accumulatedOverlapHints.Clear();
+            shellTransformCache.Clear();
+            ctx.HasRepack = false;
+            ctx.HasTransfer = false;
+            uv0Welded = false;
+        }
+
         async Task<bool> ExecFullPipelineCoreImpl(bool useAsync)
         {
             string version = UnityEditor.PackageManager.PackageInfo
@@ -1861,6 +2447,15 @@ namespace SashaRX.UnityMeshLab
 
             // Reset per-stage outcome state — fresh run, fresh icons.
             for (int i = 0; i < stageOutcome.Length; i++) stageOutcome[i] = StageStatus.Idle;
+
+            // Idempotency: rewind every working mesh to the pristine fbx asset
+            // before stage 1. Without this each re-run welds/sym-splits on top
+            // of the PREVIOUS run's already-mutated working mesh — meshopt
+            // re-dedups, weld re-merges, and sym-split re-cuts an already-cut
+            // shell, so identical settings produce a different (degrading)
+            // result every time. Resetting here makes a full-pipeline run a
+            // pure function of (fbxMesh, settings).
+            ResetWorkingMeshesToFbx();
 
             // 1. Analyze (skipped via Setup stage toggle)
             if (stageRunAnalyzeUv0)
@@ -1879,7 +2474,7 @@ namespace SashaRX.UnityMeshLab
             if (stageRunWeldUv0)
             {
                 stageOutcome[2] = StageStatus.Running;
-                try { ExecWeldUv0(); stageOutcome[2] = StageStatus.Success; }
+                try { ExecWeldUv0(runMeshoptFirst: stageWeldRunMeshopt); stageOutcome[2] = StageStatus.Success; }
                 catch { stageOutcome[2] = StageStatus.Failed; throw; }
             }
             else
@@ -4946,7 +5541,7 @@ namespace SashaRX.UnityMeshLab
             if (sourceMeshes.Count == 0) { UvtLog.Error("[GenerateLOD] No source meshes found."); return; }
 
             string savePath = ctx.PipeSettings.savePath;
-            if (string.IsNullOrEmpty(savePath)) savePath = "Assets/LightmapUvTool_Output";
+            if (string.IsNullOrEmpty(savePath)) savePath = "Assets/UnityMeshLab/Output";
             if (!AssetDatabase.IsValidFolder(savePath))
             {
                 var par = System.IO.Path.GetDirectoryName(savePath);
@@ -5055,7 +5650,7 @@ namespace SashaRX.UnityMeshLab
         void SaveAll()
         {
             string p = ctx.PipeSettings.savePath;
-            if (string.IsNullOrEmpty(p)) p = "Assets/LightmapUvTool_Output";
+            if (string.IsNullOrEmpty(p)) p = "Assets/UnityMeshLab/Output";
             if (!AssetDatabase.IsValidFolder(p))
             {
                 var par = System.IO.Path.GetDirectoryName(p);
@@ -5466,7 +6061,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (spotMat == null)
             {
-                var sh = Shader.Find("Hidden/LightmapUvTool/SpotProjection");
+                var sh = Shader.Find("Hidden/UnityMeshLab/SpotProjection");
                 if (sh != null) spotMat = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };
             }
             if (shellOverlayMat == null)

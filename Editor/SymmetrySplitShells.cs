@@ -176,7 +176,43 @@ namespace SashaRX.UnityMeshLab
                 var shell = shells[si];
                 if (shell.faceIndices.Count < 4) continue;
 
-                int N = DetectFoldCount(shell, uv0C, posC, tris, verts, out int rotAxis, out Vector3 center);
+                int N = DetectFoldCount(shell, uv0C, posC, tris, verts,
+                    out int rotAxis, out Vector3 center, out float voteRatio);
+
+                // N-fold gate: only cut if the rotational evidence is strong AND
+                // the shell's UV genuinely self-overlaps. DetectFoldCount looks at
+                // 3D rotational symmetry, so a cleanly unwrapped cylinder (clean
+                // rectangle, no UV overlap) trips it even though xatlas can pack
+                // the chart as-is — and cutting it into N sawtooth sectors
+                // strictly degrades the unwrap.
+                //
+                //  - voteRatio: fraction of sampled faces that agreed on this N.
+                //    A real N-fold-stacked chart sees most of its faces voting;
+                //    a weak signal (5/50 = 10% in the bug case) is almost always
+                //    noise from a sparse coincidence.
+                //  - UvCoverageRatio = sum(|tri UV area|) / bbox UV area:
+                //    ~1 for a clean wrap, ~N for N stacked instances. 1.5
+                //    cleanly separates the cases regardless of mesh scale or
+                //    triangle count.
+                //
+                // HasUv0Overlap (used by SplitWithParams) is NOT suitable here:
+                // it's a spatial-hash density check on a 0.01 UV grid and
+                // false-positives on any dense chart.
+                if (N >= 3)
+                {
+                    float coverageRatio = UvCoverageRatio(shell, uv0, tris);
+                    bool coverageStacked = coverageRatio >= 1.5f;
+                    bool votesStrong = voteRatio >= 0.30f;
+                    UvtLog.Info($"[SymSplit] Shell {si}: N-fold candidate N={N} " +
+                        $"voteRatio={voteRatio:P0} coverage={coverageRatio:F2} " +
+                        $"(stacked={coverageStacked}, strongVotes={votesStrong})");
+                    if (!(coverageStacked && votesStrong))
+                    {
+                        UvtLog.Info($"[SymSplit] Shell {si}: gating out N-fold cut " +
+                            $"— need both coverage>=1.5 AND voteRatio>=0.30");
+                        N = 1;
+                    }
+                }
 
                 if (N >= 3)
                 {
@@ -788,11 +824,37 @@ namespace SashaRX.UnityMeshLab
         /// Returns N (fold count), rotation axis, and center.
         /// Returns N=1 if no rotational symmetry is found.
         /// </summary>
+        /// <summary>
+        /// DetectFoldCount overload that also returns the modal-vote ratio
+        /// (bestVotes / sampleCount). Used by the N-fold gate in Split to
+        /// distinguish strong rotational evidence from a single accidental
+        /// hit on a sparsely-stacked mesh.
+        /// </summary>
+        static int DetectFoldCount(UvShell shell, Vector2[] uv0C, Vector3[] posC,
+            int[] tris, Vector3[] verts, out int rotAxis, out Vector3 center,
+            out float voteRatio)
+        {
+            int n = DetectFoldCountCore(shell, uv0C, posC, tris, verts,
+                out rotAxis, out center, out int bestVotes, out int sampleCount);
+            voteRatio = sampleCount > 0 ? (float)bestVotes / sampleCount : 0f;
+            return n;
+        }
+
         static int DetectFoldCount(UvShell shell, Vector2[] uv0C, Vector3[] posC,
             int[] tris, Vector3[] verts, out int rotAxis, out Vector3 center)
         {
+            return DetectFoldCountCore(shell, uv0C, posC, tris, verts,
+                out rotAxis, out center, out _, out _);
+        }
+
+        static int DetectFoldCountCore(UvShell shell, Vector2[] uv0C, Vector3[] posC,
+            int[] tris, Vector3[] verts, out int rotAxis, out Vector3 center,
+            out int bestVotes, out int sampleCount)
+        {
             rotAxis = 1; // default Y
             center = Vector3.zero;
+            bestVotes = 0;
+            sampleCount = 0;
 
             var faces = shell.faceIndices;
             if (faces.Count < 6) return 1;
@@ -818,7 +880,6 @@ namespace SashaRX.UnityMeshLab
             Vector3 centerSum = Vector3.zero;
             int centerN = 0;
 
-            int sampleCount = 0;
             const int maxSample = 50;
 
             foreach (int f in faces)
@@ -865,7 +926,8 @@ namespace SashaRX.UnityMeshLab
             if (copyCounts.Count == 0) return 1;
 
             // Find modal N (most common copy count)
-            int bestN = 1, bestVotes = 0;
+            int bestN = 1;
+            bestVotes = 0;
             foreach (var kv in copyCounts)
             {
                 if (kv.Value > bestVotes)
@@ -1143,6 +1205,35 @@ namespace SashaRX.UnityMeshLab
         // ═══════════════════════════════════════════════════════════════
         //  Helpers
         // ═══════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Ratio of summed |triangle UV area| to UV bbox area for a shell.
+        /// A clean non-overlapping unwrap covers a fraction of its bbox so the
+        /// ratio is &lt;= 1.0 (rectangle wrap ≈ 1.0, irregular shapes lower).
+        /// N stacked / mirrored UV instances inside one shell push the ratio
+        /// toward N — this is the "xatlas can't pack as-is" signal that the
+        /// N-fold gate uses to decide whether the rotational cut is needed.
+        /// Returns 0 when the shell or its bbox is degenerate.
+        /// </summary>
+        static float UvCoverageRatio(UvShell shell, Vector2[] uv0, int[] tris)
+        {
+            if (shell == null || shell.faceIndices == null || shell.faceIndices.Count == 0)
+                return 0f;
+            float bboxW = Mathf.Max(shell.boundsMax.x - shell.boundsMin.x, 1e-9f);
+            float bboxH = Mathf.Max(shell.boundsMax.y - shell.boundsMin.y, 1e-9f);
+            float bboxArea = bboxW * bboxH;
+            if (bboxArea < 1e-12f) return 0f;
+
+            float sumAbsArea = 0f;
+            foreach (int f in shell.faceIndices)
+            {
+                int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
+                if (i0 >= uv0.Length || i1 >= uv0.Length || i2 >= uv0.Length) continue;
+                Vector2 a = uv0[i0], b = uv0[i1], c = uv0[i2];
+                sumAbsArea += 0.5f * Mathf.Abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y));
+            }
+            return sumAbsArea / bboxArea;
+        }
 
         /// <summary>
         /// Check if a shell has UV0 overlap (multiple faces sharing the same UV0 space

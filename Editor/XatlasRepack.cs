@@ -137,7 +137,11 @@ namespace SashaRX.UnityMeshLab
             texelsPerUnit = 0f,
             maxChartSize = 0,                 // 0 = unbounded
             bilinear   = true,
-            blockAlign = false,
+            // Snap charts to block boundaries (4×4 by default — DXT/BC
+            // tile size). Stops a chart's right/bottom edge from
+            // straddling a compression block edge, which otherwise eats
+            // 1 texel of leak budget on every compressed lightmap.
+            blockAlign = true,
             blockSize  = 4,                   // BC/ETC/DXT default; ASTC: 4/5/6/8/10/12
             bruteForce = true,
             rotateCharts = true,

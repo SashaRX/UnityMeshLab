@@ -16,21 +16,21 @@ The canonical rule set lives in `.claude/skills/`. This file is the top-level po
 | Zone | Purpose | Sensitivity |
 |------|---------|-------------|
 | `Editor/` | Editor-only tools | High — asmdef, Undo, lifecycle |
-| `Plugins/` | Native binaries (xatlas, V-HACD, meshoptimizer) | Critical — must match `Native/` source |
-| `Native/` | C/C++ source for native plugins | Critical — changes trigger CI rebuild |
+| `Plugins/` | Native binaries (xatlas, V-HACD, meshoptimizer) | Critical — must match `Native~/` source |
+| `Native~/` | C/C++ source for native plugins | Critical — changes trigger CI rebuild |
 | `Shaders/` | Compute/render shaders for GPU tools | Medium — platform compatibility |
 | `package.json` | UPM manifest | High — version, dependencies |
 
 ## Domain-specific hard rules (not covered by skills)
 
-- **Native plugins**: never modify `Plugins/*.dll|*.so|*.dylib|*.bundle` directly — rebuild from `Native/` source via the `build-native.yml` CI workflow.
-- **Transfer pipeline experiments**: read `EXPERIMENTS.md` before modifying `GroupedShellTransfer`, `XatlasRepack`, or `SymmetrySplitShells`. One experiment per PR, documented in `EXPERIMENTS.md`.
+- **Native plugins**: never modify `Plugins/*.dll|*.so|*.dylib|*.bundle` directly — rebuild from `Native~/` source via the `build-native.yml` CI workflow.
+- **Transfer pipeline experiments**: read `Documentation~/EXPERIMENTS.md` before modifying `GroupedShellTransfer`, `XatlasRepack`, or `SymmetrySplitShells`. One experiment per PR, documented in `Documentation~/EXPERIMENTS.md`.
 - **LODGroup lifecycle**: call `RestoreWorkingMeshes()` before clearing or switching LODGroup context.
 - **LOD / collision naming**: `Name_LOD{N}` (e.g., `Chair_LOD0`), `Name_COL` or `Name_COL_Hull{N}`. Group key extracted via `UvToolContext.ExtractGroupKey()`.
 - **Sidecar assets**: `ModelName_uv2data.asset` — persists UV2/collision data alongside FBX.
 - **FBX exporter**: code gated by `#if LIGHTMAP_UV_TOOL_FBX_EXPORTER`.
 - **Regex in `LightmapTransferTool.cs`**: use fully-qualified `System.Text.RegularExpressions.Regex` — no top-level `using`.
-- **Logging**: `UvtLog.Info` / `UvtLog.Warn` / `UvtLog.Error` (prefix `[LightmapUV]`).
+- **Logging**: `UvtLog.Info` / `UvtLog.Warn` / `UvtLog.Error` (prefix `[MeshLab]`).
 
 For mutation safety, package structure, serialization, CI, and release mechanics — consult the relevant skill in `.claude/skills/`, not this file.
 

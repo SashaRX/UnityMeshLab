@@ -77,7 +77,7 @@ namespace SashaRX.UnityMeshLab
     public static class CheckerTexturePreview
     {
         // ── Shader name constants for preview material detection ──
-        internal const string ToolShaderPrefix = "Hidden/LightmapUvTool/";
+        internal const string ToolShaderPrefix = "Hidden/UnityMeshLab/";
         internal const string VertexColorShader = "Hidden/Internal-Colored";
 
         /// <summary>
@@ -201,10 +201,10 @@ namespace SashaRX.UnityMeshLab
 
             if (checkerMat == null)
             {
-                var sh = Shader.Find("Hidden/LightmapUvTool/CheckerUV2");
+                var sh = Shader.Find("Hidden/UnityMeshLab/CheckerUV2");
                 if (sh == null)
                 {
-                    UvtLog.Error("[Checker] Shader 'Hidden/LightmapUvTool/CheckerUV2' not found");
+                    UvtLog.Error("[Checker] Shader 'Hidden/UnityMeshLab/CheckerUV2' not found");
                     return;
                 }
                 checkerMat = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };

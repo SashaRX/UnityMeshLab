@@ -1,4 +1,4 @@
-Shader "Hidden/LightmapUvTool/TintedTexture"
+Shader "Hidden/UnityMeshLab/TintedTexture"
 {
     Properties
     {

@@ -113,6 +113,18 @@ namespace SashaRX.UnityMeshLab
                      "grid size.")]
             public float[] stretchThresholdVariants = { 1.5f };
 
+            [Tooltip("xatlas internal-oversample multiplier. Pack runs at internalRes = resolution × oversample, " +
+                     "then UV2 is scaled back. Higher = fewer sub-pixel shells (less Stage B density amplification, " +
+                     "see EXPERIMENTS.md a218a2b) at the cost of pack time. Defaults match RepackOptions.Default " +
+                     "(4×). Use {1} to disable, {1,2,4} to compare. Each entry multiplies the grid size.")]
+            public int[] internalOversampleVariants = { 4 };
+
+            [Tooltip("SymSplit threshold mode variants. LegacyFixed = compiled constants for UV_NEAR / POS_FAR; " +
+                     "Adaptive = thresholds derived per-shell from mesh / UV scale (proposal in EXPERIMENTS.md " +
+                     "2026-04-15). Keep both entries to A/B them, or use one to pin a baseline.")]
+            public SymmetrySplitShells.ThresholdMode[] symSplitThresholdModeVariants =
+                { SymmetrySplitShells.ThresholdMode.LegacyFixed };
+
             [Tooltip("Call ResetPipelineState between sweep cells so each cell starts from the " +
                      "unmodified FBX meshes. Disable only for debugging a single cell.")]
             public bool resetBetweenRuns = true;
@@ -120,6 +132,53 @@ namespace SashaRX.UnityMeshLab
 
         [Tooltip("Parameter sweep driven by LightmapTransferTool.ExecSweep (Run Sweep button).")]
         public SweepMatrix sweep = new SweepMatrix();
+
+        /// <summary>
+        /// Which analysis techniques to run per case during the unified
+        /// benchmark. Each enabled technique writes its own artefact(s)
+        /// into the per-case directory <c>bench_&lt;ts&gt;/&lt;idx&gt;_&lt;label&gt;/</c>.
+        /// </summary>
+        [System.Serializable]
+        public class BenchTechniques
+        {
+            [Tooltip("Legacy xatlas parameter sweep (atlas res × shell pad × border pad × ARAP × stretch × oversample × symSplit). Output: legacy_sweep/* CSVs + winner/summary aggregate.")]
+            public bool legacyXatlasSweep = true;
+
+            [Tooltip("Probe v3 — per-face stay/promote classification on every fine-LOD face vs the deepest LOD. Output: hier_probe.csv.")]
+            public bool hierarchicalProbe = true;
+
+            [Tooltip("Hierarchical Repack dry-run — per-vertex projection classifier, atlas layout. Output: hier_repack.csv (+ atlas PNG when available).")]
+            public bool hierarchicalRepack = true;
+
+            [Tooltip("Stage D cascade-threshold sweep — rebuilds each case across the " +
+                     "cascadeMatchFrac × cascadeMinHits grid below and emits per-cell group " +
+                     "iso-view PNGs (lod{N}_groups_mf{F}_mh{H}.png) + stage_d_sweep.csv. " +
+                     "Comparison-only (no auto-winner): pick the knee by eyeballing the PNG " +
+                     "grid + join/new ratios. Off by default — opt in; each cell is a full " +
+                     "HierarchicalRepack build so the grid multiplies dry-run time.")]
+            public bool stageDSweep = false;
+
+            [Tooltip("Stage D sweep: cascade matchedFrac values. A finer shell joins its parent " +
+                     "group when the modal deeper-shell hit fraction is >= this. Lower = more " +
+                     "merging; higher = more fresh groups. Each entry × cascadeMinHitsVariants " +
+                     "is one cell.")]
+            public float[] cascadeMatchFracVariants = { 0.35f, 0.5f, 0.65f };
+
+            [Tooltip("Stage D sweep: minimum total sample hits before a finer shell's modal vote " +
+                     "is trusted to join a parent group. Below = fresh group regardless of fraction.")]
+            public int[] cascadeMinHitsVariants = { 2, 4, 8 };
+
+            [Tooltip("Stage D sweep: also write a per-cell group iso-view PNG for every cell × LOD " +
+                     "(lod{N}_groups_mf{F}_mh{H}.png). Off by default — the first sweep showed these " +
+                     "are near-identical across cells on the major surfaces (variation is sub-pixel " +
+                     "trim only), so they're suppressed as noise; stage_d_sweep.csv is the real " +
+                     "output and lod{N}_groups.png (default thresholds) is the canonical visual. " +
+                     "Enable only for a deep visual dive.")]
+            public bool stageDSweepEmitPngs = false;
+        }
+
+        [Tooltip("Techniques to run per case during 'Run Benchmark'. All artefacts land under one bench_<stamp>/<case>/ directory so a single button gives a complete pipeline snapshot.")]
+        public BenchTechniques techniques = new BenchTechniques();
     }
 
 #if UNITY_EDITOR

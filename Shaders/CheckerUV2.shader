@@ -1,4 +1,4 @@
-Shader "Hidden/LightmapUvTool/CheckerUV2"
+Shader "Hidden/UnityMeshLab/CheckerUV2"
 {
     Properties
     {

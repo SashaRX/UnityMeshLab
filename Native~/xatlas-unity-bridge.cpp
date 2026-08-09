@@ -60,6 +60,42 @@ EXPORT int xatlasAddUvMesh(
     return (int)err;
 }
 
+// Raw 3D mesh input for TRUE auto-unwrap. xatlas::ComputeCharts will
+// generate charts from scratch using hard-edge detection on
+// positions + normals; no UV0 hint is needed. Pair with
+// xatlasComputeCharts (default ChartOptions) and xatlasPackCharts.
+//
+// positions: float3 per vertex (xyz)
+// normals:   float3 per vertex (xyz) — may be null; xatlas will derive
+//            face normals from positions in that case
+// indices:   uint32 triangle index buffer
+EXPORT int xatlasAddMesh(
+    const float*    positions,
+    const float*    normals,
+    uint32_t        vertexCount,
+    const uint32_t* indexData,
+    uint32_t        indexCount)
+{
+    if (!s_atlas) return -1;
+
+    xatlas::MeshDecl decl;
+    memset(&decl, 0, sizeof(decl));
+    decl.vertexPositionData   = positions;
+    decl.vertexPositionStride = sizeof(float) * 3;
+    decl.vertexCount          = vertexCount;
+    if (normals)
+    {
+        decl.vertexNormalData   = normals;
+        decl.vertexNormalStride = sizeof(float) * 3;
+    }
+    decl.indexData    = indexData;
+    decl.indexCount   = indexCount;
+    decl.indexFormat  = xatlas::IndexFormat::UInt32;
+
+    xatlas::AddMeshError err = xatlas::AddMesh(s_atlas, decl, 1);
+    return (int)err;
+}
+
 // ── Processing ──
 
 EXPORT void xatlasComputeCharts()

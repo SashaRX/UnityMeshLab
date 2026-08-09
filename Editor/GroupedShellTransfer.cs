@@ -106,6 +106,22 @@ namespace SashaRX.UnityMeshLab
             public int shellsRejected;       // shells where UV2 was not written (too many issues)
             public int shellsOverlapFixed;   // force3D shells relocated due to UV2 overlap
 
+            // ─── Visual-defect counters (added for sweep visibility) ───
+            // Captures failure modes that the existing solid-pipeline metrics
+            // (shellsRejected, overlapShellPairs, coverage) miss but the user
+            // sees on the rendered atlas. See TRANSFER_BENCHMARK.md.
+            /// <summary>Pairs of target shells whose quantised UV2 fingerprint hash matches.
+            /// Non-zero = two distinct 3D instances bake onto the same atlas region
+            /// (lightmap data shared between unrelated geometry).</summary>
+            public int uv2DuplicatePairs;
+            /// <summary>Target shells whose Phase 3 composite UV2 spilled out of the matched
+            /// source UV2 region (compArea &gt; 2× srcArea) and were forced back to a
+            /// single-source fallback. Signals a Phase 2 matching miss.</summary>
+            public int compositeBrokenCount;
+            /// <summary>Target shells whose chosen source is &gt;10% of mesh diagonal away
+            /// in 3D — almost always a wrong-source assignment by Phase 2.</summary>
+            public int severeMismatchCount;
+
             // ─── Topology enforcement snapshot (per-target, captured by Transfer) ───
             // Copied from LastTopology* immediately after EnforceShellTopologyOnUv2
             // so multi-mesh runs don't all read the final target's global values.
@@ -2388,6 +2404,7 @@ namespace SashaRX.UnityMeshLab
                             if (bestSrcUv2Area > 1e-8f && compArea > bestSrcUv2Area * 2.0f)
                             {
                                 compositeSpatiallyBroken = true;
+                                result.compositeBrokenCount++;
                                 UvtLog.Info($"[GroupedTransfer]   t{tsi}: composite spatially broken " +
                                     $"(compArea={compArea:F6} > 2×srcArea={bestSrcUv2Area:F6}), " +
                                     $"falling back to single-source");
@@ -3559,9 +3576,14 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Info(sb.ToString());
             }
 
-            // Per-shell UV2 fingerprint: hash of UV2 values for cross-branch comparison.
-            // Logs centroid + hash so users can diff logs between branches to find
-            // which specific shells produce different UV2.
+            // Per-shell UV2 fingerprint: hash of UV2 values for cross-branch
+            // comparison. Logs centroid + hash so users can diff logs between
+            // branches to find which specific shells produce different UV2.
+            // Computed pre-topology so the values match the raw Phase 3 output;
+            // the post-topology pass below recomputes duplicate-pair counts on
+            // the FINAL UV2 (topology can shift a few verts and break the early
+            // hash, but it preserves the gross shell placement that this log
+            // line is useful for diffing).
             {
                 var fpSb = new System.Text.StringBuilder();
                 fpSb.Append($"[GroupedTransfer] UV2 fingerprint '{targetMeshName}':");
@@ -3599,6 +3621,81 @@ namespace SashaRX.UnityMeshLab
             result.topologyIterations = LastTopologyIterations;
             result.topologyFixed      = LastTopologyFixed;
             result.topologyCapHit     = LastTopologyCapHit;
+
+            // ── Visual-defect counters (computed on the FINAL UV2) ──
+            // Post-topology so duplicate-pair detection runs on the bytes that
+            // will actually be written to mesh.uv2 — topology can nudge verts
+            // and an early hash would be stale. Severe-mismatch also lives
+            // here so all sweep-scoring counters share one consistent snapshot
+            // taken after Phase 2 and Phase 3 are fully done.
+            {
+                // (A) UV2 duplicate-pair count — combinatorial per hash group.
+                //     For a group of k shells with identical hash, the number
+                //     of colliding pairs is k*(k-1)/2. Previously the code
+                //     counted "extras beyond first" (k-1), under-reporting
+                //     groups of 3+ shells. Rejected/Unmatched are excluded
+                //     so the "empty hash" at (0,0) doesn't inflate the count.
+                var hashGroupSize = new Dictionary<uint, int>(tgtShells.Count);
+                for (int tsi2 = 0; tsi2 < tgtShells.Count; tsi2++)
+                {
+                    if (tsi2 < result.targetShellStatus.Length)
+                    {
+                        var status = result.targetShellStatus[tsi2];
+                        if (status == ShellStatus.Rejected || status == ShellStatus.Unmatched)
+                            continue;
+                    }
+                    var shell = tgtShells[tsi2];
+                    // Hash the SET of quantized UV2 positions, not the order
+                    // we happen to visit verts in. vertexIndices was populated
+                    // from a HashSet<int> upstream, so two shells with the
+                    // same UV2 layout but different HashSet iteration order
+                    // would otherwise hash differently and miss the duplicate.
+                    var quantized = new List<(int qx, int qy)>(shell.vertexIndices.Count);
+                    foreach (int vi in shell.vertexIndices)
+                    {
+                        if (vi >= result.uv2.Length) continue;
+                        var uv = result.uv2[vi];
+                        quantized.Add((Mathf.RoundToInt(uv.x * 100000f),
+                                       Mathf.RoundToInt(uv.y * 100000f)));
+                    }
+                    if (quantized.Count == 0) continue;
+                    quantized.Sort((a, b) => a.qx != b.qx ? a.qx.CompareTo(b.qx)
+                                                          : a.qy.CompareTo(b.qy));
+                    uint hash = 2166136261u;
+                    foreach (var p in quantized)
+                    {
+                        unchecked
+                        {
+                            hash = (hash ^ (uint)p.qx) * 16777619u;
+                            hash = (hash ^ (uint)p.qy) * 16777619u;
+                        }
+                    }
+                    hashGroupSize.TryGetValue(hash, out int k);
+                    hashGroupSize[hash] = k + 1;
+                }
+                int dupPairs = 0;
+                foreach (var kv in hashGroupSize)
+                {
+                    int k = kv.Value;
+                    if (k >= 2) dupPairs += k * (k - 1) / 2;
+                }
+                result.uv2DuplicatePairs = dupPairs;
+
+                // (B) Severe-mismatch count — target shells whose chosen source
+                //     is >10% of mesh diagonal away in 3D. Computed late so the
+                //     final post-dedup / post-rematch source assignments and
+                //     match distances are reflected, not a mid-Phase-2 snapshot.
+                float severeThresholdSq = (meshDiagonal * 0.1f) * (meshDiagonal * 0.1f);
+                int severe = 0;
+                for (int tsi = 0; tsi < tgtShells.Count; tsi++)
+                {
+                    if (result.targetShellToSourceShell[tsi] < 0) continue;
+                    float dsq = result.targetShellMatchDistSqr[tsi];
+                    if (dsq >= float.MaxValue || float.IsInfinity(dsq)) continue;
+                    if (dsq > severeThresholdSq) severe++;
+                }
+                result.severeMismatchCount = severe;
+            }
 
             // ── Collapse-to-line diagnostic ──
             // Detect target shells whose UV2 layout has collapsed to a line
@@ -3688,6 +3785,80 @@ namespace SashaRX.UnityMeshLab
                 });
             }
             result.matchHints = matchHints;
+
+            // ── Per-target Transfer summary (TransferDiag category) ──
+            // Single concise line + histogram per target LOD so the user can
+            // run the identity sanity test and per-LOD ratio sweep from
+            // TRANSFER_LOD_QUALITY_PLAN.md without trawling verbose logs.
+            // Emitted at Info level under UvtLog.Category.TransferDiag so the
+            // existing Log filters toggle lets the user gate it independently
+            // of the noisy per-shell Match/Topology output.
+            if (UvtLog.Current >= UvtLog.Level.Info
+                && UvtLog.IsCategoryEnabled(UvtLog.Category.TransferDiag))
+            {
+                int accepted = 0, degraded = 0, poor = 0, rejected = 0, unmatched = 0;
+                if (result.targetShellStatus != null)
+                {
+                    for (int i = 0; i < result.targetShellStatus.Length; i++)
+                    {
+                        switch (result.targetShellStatus[i])
+                        {
+                            case ShellStatus.Accepted:  accepted++;  break;
+                            case ShellStatus.Degraded:  degraded++;  break;
+                            case ShellStatus.Poor:      poor++;      break;
+                            case ShellStatus.Rejected:  rejected++;  break;
+                            case ShellStatus.Unmatched: unmatched++; break;
+                        }
+                    }
+                }
+
+                // Mean / max 3D centroid match distance over matched shells
+                double sumDist = 0; float maxDist = 0; int matchedCount = 0;
+                if (result.targetShellMatchDistSqr != null
+                    && result.targetShellToSourceShell != null)
+                {
+                    for (int i = 0; i < result.targetShellMatchDistSqr.Length; i++)
+                    {
+                        if (result.targetShellToSourceShell[i] < 0) continue;
+                        float dsq = result.targetShellMatchDistSqr[i];
+                        if (float.IsInfinity(dsq) || dsq >= float.MaxValue) continue;
+                        float d = Mathf.Sqrt(Mathf.Max(dsq, 0f));
+                        sumDist += d;
+                        if (d > maxDist) maxDist = d;
+                        matchedCount++;
+                    }
+                }
+                float meanDist = matchedCount > 0 ? (float)(sumDist / matchedCount) : 0f;
+
+                int methodInterp = 0, methodXform = 0, methodMerged = 0;
+                if (result.targetShellMethod != null)
+                {
+                    for (int i = 0; i < result.targetShellMethod.Length; i++)
+                    {
+                        switch (result.targetShellMethod[i])
+                        {
+                            case 0: methodInterp++; break;
+                            case 1: methodXform++;  break;
+                            case 2: methodMerged++; break;
+                        }
+                    }
+                }
+
+                UvtLog.Info(UvtLog.Category.TransferDiag,
+                    $"'{targetMeshName}' ← '{sourceMeshName}': " +
+                    $"shells src={srcShells.Count} tgt={tgtShells.Count} | " +
+                    $"matched={result.shellsMatched} unmatched={unmatched} " +
+                    $"rejected={result.shellsRejected} | " +
+                    $"status A={accepted}/D={degraded}/P={poor}/R={rejected}/U={unmatched} | " +
+                    $"method interp={methodInterp} xform={methodXform} merged={methodMerged} | " +
+                    $"fragMerged={result.fragmentsMerged} dedupConf={result.dedupConflicts} " +
+                    $"overlapFixed={result.shellsOverlapFixed} consistFix={result.consistencyCorrected} | " +
+                    $"DUP={result.uv2DuplicatePairs} COMP={result.compositeBrokenCount} SEVERE={result.severeMismatchCount} | " +
+                    $"matchDist mean={meanDist:F4} max={maxDist:F4} | " +
+                    $"topo iters={result.topologyIterations} fixed={result.topologyFixed} " +
+                    $"capHit={(result.topologyCapHit ? 1 : 0)} | " +
+                    $"verts={result.verticesTransferred}/{result.verticesTotal}");
+            }
 
             return result;
         }

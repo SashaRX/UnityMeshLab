@@ -15,23 +15,24 @@ namespace SashaRX.UnityMeshLab
         [System.Flags]
         public enum Category
         {
-            General    = 1 << 0,
-            SymSplit   = 1 << 1,
-            Repack     = 1 << 2,
-            Match      = 1 << 3,
-            Dedup      = 1 << 4,
-            Overlap    = 1 << 5,
-            Topology   = 1 << 6,
-            Validation = 1 << 7,
-            Export     = 1 << 8,
-            Benchmark  = 1 << 9,
+            General      = 1 << 0,
+            SymSplit     = 1 << 1,
+            Repack       = 1 << 2,
+            Match        = 1 << 3,
+            Dedup        = 1 << 4,
+            Overlap      = 1 << 5,
+            Topology     = 1 << 6,
+            Validation   = 1 << 7,
+            Export       = 1 << 8,
+            Benchmark    = 1 << 9,
+            TransferDiag = 1 << 10,
 
-            All = General | SymSplit | Repack | Match | Dedup | Overlap | Topology | Validation | Export | Benchmark,
+            All = General | SymSplit | Repack | Match | Dedup | Overlap | Topology | Validation | Export | Benchmark | TransferDiag,
         }
 
-        const string LevelPrefKey = "LightmapUvTool_LogLevel";
-        const string MaskPrefKey  = "LightmapUvTool_LogCategoryMask";
-        const string Prefix       = "[LightmapUV]";
+        const string LevelPrefKey = "UnityMeshLab_LogLevel";
+        const string MaskPrefKey  = "UnityMeshLab_LogCategoryMask";
+        const string Prefix       = "[MeshLab]";
 
         static Level? _cachedLevel;
         static int?   _cachedMask;

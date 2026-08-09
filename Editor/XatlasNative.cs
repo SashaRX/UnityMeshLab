@@ -22,6 +22,17 @@ namespace SashaRX.UnityMeshLab
             uint[]   faceMaterialData,
             uint     faceCount);
 
+        // Raw 3D mesh input for true auto-unwrap. Pair with
+        // xatlasComputeCharts (xatlas builds charts from scratch via
+        // hard-edge detection on positions + normals) + xatlasPackCharts.
+        // Pass null for normals to let xatlas derive face normals.
+        [DllImport(DLL)] public static extern int xatlasAddMesh(
+            float[] positions,
+            float[] normals,
+            uint    vertexCount,
+            uint[]  indexData,
+            uint    indexCount);
+
         // ── Processing ──
         [DllImport(DLL)] public static extern void xatlasComputeCharts();
 

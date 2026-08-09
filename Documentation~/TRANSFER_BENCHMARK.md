@@ -71,7 +71,7 @@ strip-parameterization.
 | `SymmetrySplitShells.LastFallbackCount` / `LastTotalSplitCount` | `Editor/SymmetrySplitShells.cs` | Counters read by the recorder. |
 | `GroupedShellTransfer.LastTopologyIterations` / `LastTopologyFixed` / `LastTopologyCapHit` | `Editor/GroupedShellTransfer.cs` | Counters for the Laplacian topology pass. |
 | `UvCanvasView.ValidationFilterMask` | `Editor/Framework/UvCanvasView.cs` | Restricts the validation fill/overlay to selected `TriIssue` bits. |
-| `TestSuiteAsset` | `Editor/Settings/TestSuiteAsset.cs` | ScriptableObject registry of benchmark cases (FBX + LOD path + expected ranges). Create via `Assets → Create → Lightmap UV Tool → Test Suite`. |
+| `TestSuiteAsset` | `Editor/Settings/TestSuiteAsset.cs` | ScriptableObject registry of benchmark cases (FBX + LOD path + expected ranges). Create via `Assets → Create → Mesh Lab → Sweep Test Suite`. |
 
 ## Metrics (one CSV row per mesh × LOD)
 
@@ -91,18 +91,37 @@ Per-row (snapshot of `TransferResult` / `ValidationReport` / static counters):
   `shellsMerged`, `shellsRejected`, `shellsOverlapFixed`
 - `dedupConflicts`, `fragmentsMerged`, `consistencyCorrected`
 - `verticesTransferred`, `verticesTotal`
+- `uv2DuplicatePairs`, `compositeBrokenCount`, `severeMismatchCount`
+  — see *Visual-defect counters* below
 - `invertedCount`, `stretchedCount`, `zeroAreaCount`, `oobCount`, `cleanCount`
 - `overlapShellPairs`, `overlapTriangleCount`, `overlapSameSrcPairs`
 - `texelDensityBadCount`, `texelDensityMedian`
 - `symSplitFallbackCount`, `symSplitTotalCount`
 - `topologyIterations`, `topologyFixed`, `topologyCapHit`
 
+### Visual-defect counters
+
+The original `defectScore = stretched + zeroArea + oob` flagged geometric
+defects, but missed the failure modes where the algorithm produces
+"technically valid" UV2 that bakes wrong:
+
+| Metric | What it catches |
+| --- | --- |
+| `uv2DuplicatePairs` | Pairs of target shells whose quantised UV2 fingerprint hash matches. Non-zero = two distinct 3D instances bake onto the same atlas region (silent lightmap bleeding between symmetric copies). Rejected/Unmatched shells excluded (they legitimately share the empty hash). |
+| `shellsOverlapFixed` (== force3D overlap count) | Force3D-fallback shells whose UV2 AABB overlaps a non-fallback shell's UV2 AABB. Already warned via `[GroupedTransfer] UV2 overlap: ... bleeding likely`; surfaced here as a counter. |
+| `compositeBrokenCount` | Target shells whose Phase 3 composite UV2 spilled out of the matched source UV2 region (`compArea > 2× srcArea`) and were forced back to single-source fallback. Signals a Phase 2 matching miss. |
+| `severeMismatchCount` | Target shells whose chosen source is &gt;10% of mesh diagonal away in 3D. Almost always a wrong-source assignment by Phase 2 — e.g. wedge swapped with a sibling. |
+
+These four feed into the sweep score (`BenchmarkSweep.Score`) with weights
+`-50 / -30 / -10 / -20` respectively, so refactors that drag any of them
+upward lose against the previous winner.
+
 JSON output mirrors the CSV but nests `records[]` inside a run envelope.
 
 ## Protocol
 
 1. **Prepare a suite.**
-   `Assets → Create → Lightmap UV Tool → Test Suite`. Add one `TestCase` per
+   `Assets → Create → Mesh Lab → Sweep Test Suite`. Add one `TestCase` per
    model; set a short `label` (becomes `runLabel` in CSV), point `fbxAsset`
    at the FBX, and list your expected ranges in `expectations` (informational;
    not enforced automatically).
@@ -127,16 +146,96 @@ JSON output mirrors the CSV but nests `records[]` inside a run envelope.
    *Run Full Pipeline* again. Each run produces a separate CSV — diff with
    a spreadsheet / pandas.
 
-### Parameter sweep (atlasRes × shellPad × borderPad)
+### Provenance manifest + auto-archive
 
-For automated sweeps across repack parameters, fill `TestSuiteAsset.sweep`:
+Every sweep run writes a `manifest.json` into `sweep_<ts>/` alongside the
+`summary.csv` / `winner.json` / `index.html`, and copies the whole
+directory into `BenchmarkReports/Archive/<sweepDirName>.zip` so old runs
+stay organised even after many new sweeps. The source directory is left
+in place; the zip is non-destructive.
+
+`manifest.json` records:
+
+- `package.{name, version, gitSha, gitBranch, gitDirty}` — UPM
+  PackageInfo + `git rev-parse` (best-effort; blank when the package was
+  installed via Library/PackageCache without `.git`)
+- `unity.{version, platform}` — `Application.unityVersion` /
+  `Application.platform`
+- `host.{user, machine, os, processor}` — `Environment.*` +
+  `SystemInfo.processorType`
+- `sweep.{cellCount, caseCount, sweepLabel, matrix, scoringWeights}`
+  — a literal mirror of the `SweepMatrix` that drove the run plus a
+  snapshot of the `BenchmarkSweep.Score` weights at the time
+
+Use case: when comparing a sweep run today against one from six months
+ago, the manifest tells you whether the algorithm constants, package
+version, Unity version, or scoring weights changed — so a metric delta
+isn't silently caused by something unrelated to the actual change.
+
+Cross-time tracking: point an external sync target (Google Drive,
+Dropbox, OneDrive) at `BenchmarkReports/Archive/` and every sweep auto-
+mirrors. The zip filename includes the sweep timestamp so chronological
+sort is free.
+
+### Multi-case sweep (all `TestSuiteAsset.cases[]` in one click)
+
+For cross-model regression coverage — running the full sweep matrix on
+every case in the suite without manually switching FBXes — use **Run
+Multi-Case (N × M)**. Located in *Setup → Parameter Sweep*, right of the
+single-model **Run Sweep** button. `N` is the number of `cases`, `M` is
+the cell count.
+
+For each case the runner:
+
+1. Loads the case's `fbxAsset` via `AssetDatabase.LoadAssetAtPath` and
+   instantiates it into the scene with `PrefabUtility.InstantiatePrefab`,
+   marking the root `HideFlags.DontSave` (no scene-dirty leakage).
+2. Resolves the LODGroup: `lodGroupPath` first (if set), otherwise
+   `GetComponentInChildren<LODGroup>`. Skips the case with a warning if
+   none found.
+3. Calls `ctx.Refresh(lg) + OnRefresh()` to wire it into the tool.
+4. Runs `ExecSweep(sweep)` against a per-case subdirectory
+   `BenchmarkReports/sweep_<ts>_<caseLabel>/` so each model gets its own
+   `summary.csv` + `winner.json` + `index.html`.
+5. Destroys the spawned root in a `finally` block and continues to the
+   next case. Cancel via the progress strip stops between cases.
+
+When the loop ends the operator's original `ctx.LodGroup` wiring is
+restored.
+
+Cross-model analysis (pandas):
+
+```python
+import pandas as pd, glob, re
+rows = []
+for csv in glob.glob('BenchmarkReports/sweep_*_*/*.csv'):
+    df = pd.read_csv(csv)
+    df['model'] = re.search(r'sweep_\d+_\d+_\d+_(.+?)/', csv).group(1)
+    rows.append(df)
+all = pd.concat(rows)
+all.groupby(['model','atlasRes','shellPad'])[
+    ['uv2DuplicatePairs','severeMismatchCount','shellsOverlapFixed']
+].sum()
+```
+
+### Parameter sweep (cartesian product of 7 axes)
+
+For automated sweeps, fill `TestSuiteAsset.sweep`. Cells = product of all
+array lengths.
 
 ```
-atlasResolutions      = [256, 512, 2048]
-shellPaddingPxVariants = [2, 4, 8, 32]
-borderPaddingPxVariants = [0]
-resetBetweenRuns      = true
+atlasResolutions              = [256, 512, 2048]      # ctx.AtlasResolution
+shellPaddingPxVariants        = [2, 4, 8, 32]         # ctx.ShellPaddingPx
+borderPaddingPxVariants       = [0]                    # ctx.BorderPaddingPx
+arapIterationsVariants        = [0, 50]                # 0 = ARAP off; >0 = on with N iters
+stretchThresholdVariants      = [1.5]                  # Sander L² gate (only relevant when arap > 0)
+internalOversampleVariants    = [4]                    # xatlas internal pack resolution multiplier
+symSplitThresholdModeVariants = [LegacyFixed]          # LegacyFixed | Adaptive
+resetBetweenRuns              = true
 ```
+
+Per-cell label encodes every axis so the recovery regex can reconstruct
+CellConfigs from filenames: `sweep_res{R}_pad{S}_bdr{B}_arap{A}_stretch{T}_os{O}_sym{legacy|adaptive}`.
 
 In *LightmapTransferTool → Setup tab*, assign the asset to the **Sweep suite**
 field; the neighbouring **Run Sweep (N)** button iterates the cartesian
@@ -198,7 +297,7 @@ When a run is noisy (e.g. Adaptive threshold messages spam the console), open
 *Pipeline Settings → Log filters* and uncheck the offending `UvtLog.Category`.
 Verbosity (`Level`) still controls global threshold; the mask is an additional
 silencer persisted per user in EditorPrefs
-(`LightmapUvTool_LogCategoryMask`).
+(`UnityMeshLab_LogCategoryMask`).
 
 | Category | Typical messages |
 | --- | --- |
@@ -237,6 +336,15 @@ list.
 - **Topology cap hit:** false. If true, either increase
   `kMaxTopologyIterations` or accept residual displacement.
 - **Coverage** (`verticesTransferred / verticesTotal`): >= 0.99.
+- **uv2DuplicatePairs:** 0. Non-zero = silent lightmap bleeding; STOP.
+- **shellsOverlapFixed (force3D overlap):** 0 on source LOD. Up to 1
+  tolerable on target LODs (only on heavily-decimated geometry).
+- **compositeBrokenCount:** 0 on source LOD. Up to ~5% of target shell
+  count tolerable; higher = Phase 2 matching is misassigning to source
+  shells that don't cover the target UV0 region.
+- **severeMismatchCount:** 0 on source LOD. Non-zero on target LODs is a
+  strong signal that a wedge / sibling got swapped — investigate the
+  specific shells (`shellMatchDistSqr` column).
 
 ## Known models
 

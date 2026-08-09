@@ -1,4 +1,4 @@
-Shader "Hidden/LightmapUvTool/VertexAODepth"
+Shader "Hidden/UnityMeshLab/VertexAODepth"
 {
     // Renders mesh geometry outputting linear depth (0=near, 1=far) to an RFloat color target.
     // Depth is computed from view-space Z for platform independence (no reversed-Z dependency).

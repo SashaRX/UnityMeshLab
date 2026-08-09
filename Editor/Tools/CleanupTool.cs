@@ -558,8 +558,14 @@ namespace SashaRX.UnityMeshLab
                     string sourceName = kvp.Key.name;
                     if (string.IsNullOrEmpty(sourceName)) continue;
 
-                    // Check SOURCE name (material name baked into FBX)
-                    bool sourceIsHidden = sourceName.StartsWith("Hidden_LightmapUvTool")
+                    // Check SOURCE name (material name baked into FBX).
+                    // Both naming generations must be matched: these names are baked
+                    // into FBX files already on disk, so assets exported before the
+                    // Hidden/LightmapUvTool -> Hidden/UnityMeshLab rename still carry
+                    // the legacy prefix and must stay cleanable.
+                    bool sourceIsHidden = sourceName.StartsWith("Hidden_UnityMeshLab")
+                                       || sourceName.StartsWith("Hidden/UnityMeshLab")
+                                       || sourceName.StartsWith("Hidden_LightmapUvTool")
                                        || sourceName.StartsWith("Hidden/LightmapUvTool");
                     bool sourceIsDefault = sourceName == "Lit" || sourceName == "Standard"
                                         || sourceName == "No Name";
@@ -588,7 +594,8 @@ namespace SashaRX.UnityMeshLab
                     var mat = asset as Material;
                     if (mat == null) continue;
 
-                    bool isHidden = mat.name.StartsWith("Hidden_LightmapUvTool")
+                    bool isHidden = mat.name.StartsWith("Hidden_UnityMeshLab")
+                                 || mat.name.StartsWith("Hidden_LightmapUvTool")
                                  || mat.shader.name.StartsWith(CheckerTexturePreview.ToolShaderPrefix);
                     bool isDefault = mat.name == "Lit" || mat.name == "No Name"
                                   || (mat.name == "Standard" && mat.shader.name == "Standard");

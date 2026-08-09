@@ -205,7 +205,7 @@ namespace SashaRX.UnityMeshLab
 
         // Pipeline
         public bool saveNewMeshAssets = true;
-        public string savePath = "Assets/LightmapUvTool_Output";
+        public string savePath = "Assets/UnityMeshLab/Output";
     }
 
     /// <summary>
@@ -234,7 +234,7 @@ namespace SashaRX.UnityMeshLab
         public int maxVertsPerHull;
     }
 
-    [CreateAssetMenu(menuName = "LightmapUvTool/UV2 Data (internal)", fileName = "uv2data")]
+    [CreateAssetMenu(menuName = "Mesh Lab/UV2 Data (internal)", fileName = "uv2data")]
     public class Uv2DataAsset : ScriptableObject, ISerializationCallbackReceiver
     {
         public const int CurrentSchemaVersion = 3;

@@ -28,6 +28,14 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public static string LastWrittenCsvPath { get; private set; }
 
+        /// <summary>When non-null, every BenchmarkRecorder session's
+        /// <see cref="WriteArtefacts"/> writes its CSV/JSON/PNG output into
+        /// this directory instead of the default <c>BenchmarkReports/</c>
+        /// top level. ExecBenchmark sets this to the per-case directory so
+        /// every cell's artefacts land alongside hier_repack.csv etc.
+        /// Outside-of-bench callers leave it null.</summary>
+        public static string OutputDirectoryOverride;
+
         // Sentinel for nested calls — caller treats it as a scope that does nothing on Dispose.
         sealed class NoOpScope : IDisposable { public static readonly NoOpScope Instance = new NoOpScope(); public void Dispose() { } }
 
@@ -65,6 +73,7 @@ namespace SashaRX.UnityMeshLab
         readonly bool   arapEnabled;
         readonly int    arapIterations;
         readonly float  stretchThreshold;
+        readonly int    internalOversample;
         // TODO: capture actualAtlasWidth/actualAtlasHeight from RepackResult.
         // Currently RepackResult is consumed inside ExecRepackCore and not
         // surfaced on MeshEntry. Threading it through would require a new
@@ -88,9 +97,10 @@ namespace SashaRX.UnityMeshLab
             shellPad        = ctx?.ShellPaddingPx ?? 0;
             borderPad       = ctx?.BorderPaddingPx ?? 0;
             sourceLodIndex  = ctx?.SourceLodIndex ?? 0;
-            arapEnabled      = ctx?.ReparameterizeStretchedShells ?? false;
-            arapIterations   = ctx?.ArapIterations ?? 0;
-            stretchThreshold = ctx?.StretchThreshold ?? 0f;
+            arapEnabled        = ctx?.ReparameterizeStretchedShells ?? false;
+            arapIterations     = ctx?.ArapIterations ?? 0;
+            stretchThreshold   = ctx?.StretchThreshold ?? 0f;
+            internalOversample = ctx?.InternalOversample ?? 1;
             modeTag         = $"{symSplitMode}{(repackPerMesh ? "-perMesh" : "")}{(splitTargets ? "-splitTgt" : "")}";
             startedAtUtc    = DateTime.UtcNow;
 
@@ -237,6 +247,9 @@ namespace SashaRX.UnityMeshLab
                 consistencyCorrected = tr?.consistencyCorrected ?? 0,
                 verticesTransferred = tr?.verticesTransferred ?? 0,
                 verticesTotal       = tr?.verticesTotal       ?? 0,
+                uv2DuplicatePairs   = tr?.uv2DuplicatePairs   ?? 0,
+                compositeBrokenCount = tr?.compositeBrokenCount ?? 0,
+                severeMismatchCount = tr?.severeMismatchCount ?? 0,
 
                 invertedCount       = v?.invertedCount       ?? 0,
                 stretchedCount      = v?.stretchedCount      ?? 0,
@@ -317,8 +330,27 @@ namespace SashaRX.UnityMeshLab
             // Bare repack/transfer runs without RecordMesh calls aren't worth a file.
             if (records.Count == 0) return;
 
-            string projectRoot = Directory.GetParent(Application.dataPath)?.FullName ?? Application.dataPath;
-            string dir = Path.Combine(projectRoot, "BenchmarkReports");
+            string dir;
+            if (!string.IsNullOrEmpty(OutputDirectoryOverride))
+            {
+                dir = OutputDirectoryOverride;
+            }
+            else
+            {
+                // Default path: ALWAYS in a dated subfolder, never the
+                // BenchmarkReports/ root. Standalone tool actions (Run Full
+                // Pipeline, Run Repack only, Run Transfer only) don't set the
+                // override; without this their CSV/JSON/PNG output would pile
+                // up at the top level, mixed across sessions, and hide any
+                // bench_<ts>/ folder that the unified benchmark produces in
+                // the same directory. One subfolder per BenchmarkRecorder
+                // session, named by the session start time, keeps the top
+                // level clean.
+                string projectRoot = Directory.GetParent(Application.dataPath)?.FullName ?? Application.dataPath;
+                string sessionStamp = startedAtUtc.ToString("yyyy-MM-dd_HH-mm-ss",
+                    System.Globalization.CultureInfo.InvariantCulture);
+                dir = Path.Combine(projectRoot, "BenchmarkReports", $"run_{sessionStamp}");
+            }
             Directory.CreateDirectory(dir);
 
             // Millisecond-precision timestamp — second-level collided when an
@@ -337,8 +369,15 @@ namespace SashaRX.UnityMeshLab
             LastWrittenCsvPath = csvPath;
 
             // Per-mesh UV2 snapshots, one PNG per recorded mesh.
+            // Subfolder is a SHORT fixed name (was fileBase + "_png" but
+            // that drove the full path past Windows MAX_PATH = 260 on
+            // assets with long lodGroup / modeTag combos, e.g.
+            // 02_Wooden_Box_Long/legacy/{long}_png/{file}.png =
+            // ≈290 chars and OS rejects). Parent dir already
+            // discriminates the cell uniquely.
             int pngCount = 0;
-            string pngDir = Path.Combine(dir, fileBase + "_png");
+            string pngDir = Path.Combine(dir, "uv2_png");
+            Directory.CreateDirectory(pngDir);
             foreach (var r in records)
             {
                 if (r.uv2Snapshot == null || r.trianglesSnapshot == null) continue;
@@ -358,12 +397,13 @@ namespace SashaRX.UnityMeshLab
             var sb = new StringBuilder();
             sb.AppendLine("timestamp,runLabel,lodGroup,symSplitMode,repackPerMesh,splitTargets," +
                 "atlasRes,shellPad,borderPad," +
-                "arapEnabled,arapIterations,stretchThreshold," +
+                "arapEnabled,arapIterations,stretchThreshold,internalOversample," +
                 "sourceLod," +
                 "rendererName,meshGroupKey,lodIndex,isSourceLod," +
                 "shellsMatched,shellsUnmatched,shellsTransform,shellsInterpolation,shellsMerged," +
                 "shellsRejected,shellsOverlapFixed,dedupConflicts,fragmentsMerged,consistencyCorrected," +
                 "verticesTransferred,verticesTotal," +
+                "uv2DuplicatePairs,compositeBrokenCount,severeMismatchCount," +
                 "invertedCount,stretchedCount,zeroAreaCount,oobCount,cleanCount," +
                 "overlapShellPairs,overlapTriangleCount,overlapSameSrcPairs," +
                 "texelDensityBadCount,texelDensityMedian," +
@@ -391,6 +431,7 @@ namespace SashaRX.UnityMeshLab
                 sb.Append(arapEnabled ? '1' : '0').Append(',');
                 sb.Append(arapIterations.ToString(inv)).Append(',');
                 sb.Append(stretchThreshold.ToString("R", inv)).Append(',');
+                sb.Append(internalOversample.ToString(inv)).Append(',');
                 sb.Append(sourceLodIndex.ToString(inv)).Append(',');
                 sb.Append(Csv(r.rendererName)).Append(',');
                 sb.Append(Csv(r.meshGroupKey)).Append(',');
@@ -408,6 +449,9 @@ namespace SashaRX.UnityMeshLab
                 sb.Append(r.consistencyCorrected.ToString(inv)).Append(',');
                 sb.Append(r.verticesTransferred.ToString(inv)).Append(',');
                 sb.Append(r.verticesTotal.ToString(inv)).Append(',');
+                sb.Append(r.uv2DuplicatePairs.ToString(inv)).Append(',');
+                sb.Append(r.compositeBrokenCount.ToString(inv)).Append(',');
+                sb.Append(r.severeMismatchCount.ToString(inv)).Append(',');
                 sb.Append(r.invertedCount.ToString(inv)).Append(',');
                 sb.Append(r.stretchedCount.ToString(inv)).Append(',');
                 sb.Append(r.zeroAreaCount.ToString(inv)).Append(',');
@@ -451,9 +495,10 @@ namespace SashaRX.UnityMeshLab
             AppendJsonKv(sb, "atlasResolution", atlasResolution); sb.Append(",\n");
             AppendJsonKv(sb, "shellPad",  shellPad);  sb.Append(",\n");
             AppendJsonKv(sb, "borderPad", borderPad); sb.Append(",\n");
-            AppendJsonKv(sb, "arapEnabled",      arapEnabled);      sb.Append(",\n");
-            AppendJsonKv(sb, "arapIterations",   arapIterations);   sb.Append(",\n");
-            AppendJsonKv(sb, "stretchThreshold", stretchThreshold); sb.Append(",\n");
+            AppendJsonKv(sb, "arapEnabled",        arapEnabled);        sb.Append(",\n");
+            AppendJsonKv(sb, "arapIterations",     arapIterations);     sb.Append(",\n");
+            AppendJsonKv(sb, "stretchThreshold",   stretchThreshold);   sb.Append(",\n");
+            AppendJsonKv(sb, "internalOversample", internalOversample); sb.Append(",\n");
             AppendJsonKv(sb, "sourceLodIndex", sourceLodIndex); sb.Append(",\n");
             AppendJsonKv(sb, "pipelineMs", pipelineMs); sb.Append(",\n");
             AppendJsonKv(sb, "repackMs",   repackMs);   sb.Append(",\n");
@@ -482,6 +527,9 @@ namespace SashaRX.UnityMeshLab
                 AppendJsonKv(sb, "consistencyCorrected", r.consistencyCorrected); sb.Append(", ");
                 AppendJsonKv(sb, "verticesTransferred",  r.verticesTransferred);  sb.Append(", ");
                 AppendJsonKv(sb, "verticesTotal",        r.verticesTotal);        sb.Append(", ");
+                AppendJsonKv(sb, "uv2DuplicatePairs",    r.uv2DuplicatePairs);    sb.Append(", ");
+                AppendJsonKv(sb, "compositeBrokenCount", r.compositeBrokenCount); sb.Append(", ");
+                AppendJsonKv(sb, "severeMismatchCount",  r.severeMismatchCount);  sb.Append(", ");
                 AppendJsonKv(sb, "invertedCount",        r.invertedCount);        sb.Append(", ");
                 AppendJsonKv(sb, "stretchedCount",       r.stretchedCount);       sb.Append(", ");
                 AppendJsonKv(sb, "zeroAreaCount",        r.zeroAreaCount);        sb.Append(", ");
@@ -562,6 +610,10 @@ namespace SashaRX.UnityMeshLab
             public int shellsMatched, shellsUnmatched, shellsTransform, shellsInterpolation, shellsMerged;
             public int shellsRejected, shellsOverlapFixed, dedupConflicts, fragmentsMerged, consistencyCorrected;
             public int verticesTransferred, verticesTotal;
+
+            // Visual-defect counters surfaced for sweep scoring. See
+            // GroupedShellTransfer.TransferResult for field semantics.
+            public int uv2DuplicatePairs, compositeBrokenCount, severeMismatchCount;
 
             public int invertedCount, stretchedCount, zeroAreaCount, oobCount, cleanCount;
             public int overlapShellPairs, overlapTriangleCount, overlapSameSrcPairs;

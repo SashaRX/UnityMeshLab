@@ -132,12 +132,12 @@ namespace SashaRX.UnityMeshLab
             GlMat.SetInt("_Cull", (int)CullMode.Off);
             GlMat.SetInt("_ZWrite", 0);
 
-            var texShader = Shader.Find("Hidden/LightmapUvTool/TintedTexture");
+            var texShader = Shader.Find("Hidden/UnityMeshLab/TintedTexture");
             if (texShader == null) texShader = Shader.Find("Unlit/Transparent");
             if (texShader != null)
                 TexMat = new Material(texShader) { hideFlags = HideFlags.HideAndDontSave };
 
-            var spotShader = Shader.Find("Hidden/LightmapUvTool/SpotProjection");
+            var spotShader = Shader.Find("Hidden/UnityMeshLab/SpotProjection");
             if (spotShader != null)
                 SpotMat = new Material(spotShader) { hideFlags = HideFlags.HideAndDontSave };
 

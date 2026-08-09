@@ -132,7 +132,7 @@ This repository is licensed under **MIT**. All dependencies are MIT/BSD compatib
 3. Enter:
 
 ```text
-https://github.com/SashaRX/UnityLodUvLightmapTransfer.git
+https://github.com/SashaRX/UnityMeshLab.git
 ```
 
 ### Manual installation
@@ -141,7 +141,7 @@ Clone the repository into your project's `Packages/` folder:
 
 ```bash
 cd YourProject/Packages
-git clone https://github.com/SashaRX/UnityLodUvLightmapTransfer.git com.sasharx.lightmap-uv-tool
+git clone https://github.com/SashaRX/UnityMeshLab.git com.sasharx.unitymeshlab
 ```
 
 ## Usage
@@ -167,13 +167,13 @@ git clone https://github.com/SashaRX/UnityLodUvLightmapTransfer.git com.sasharx.
 The repository includes prebuilt native libraries. To rebuild:
 
 ```bash
-cmake -S Native -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S Native~ -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
 Requirements: CMake 3.20+, C++17 compiler. xatlas and V-HACD are vendored in `Native~/third_party/`; meshoptimizer is fetched automatically via CMake FetchContent.
 
-GitHub Actions CI automatically builds for Windows, Linux, and macOS on changes to `Native/`.
+GitHub Actions CI automatically builds for Windows, Linux, and macOS on changes to `Native~/`.
 
 ## License
 

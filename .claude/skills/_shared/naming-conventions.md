@@ -16,7 +16,7 @@ Rationale: Unity's Package Manager is case-sensitive on disk on Linux and inside
 Every namespace block in `.cs` files under `Editor/`, `Runtime/`, and `Tests/` must begin with `SashaRX.<PackageName>`. The `<PackageName>` segment is PascalCase and matches the repository folder name.
 
 - Canonical: `namespace SashaRX.PrefabDoctor`, `namespace SashaRX.UnityMeshLab.Editor`, `namespace SashaRX.UnityMeshLab.Tests`
-- Prohibited: single-segment bare namespaces (`namespace LightmapUvTool`), three-or-more-segment vendor prefixes (`Com.SashaRX.PrefabDoctor`), arbitrary English words as root (`MyTools.PrefabDoctor`)
+- Prohibited: single-segment bare namespaces (`namespace LegacyTool`), three-or-more-segment vendor prefixes (`Com.SashaRX.PrefabDoctor`), arbitrary English words as root (`MyTools.PrefabDoctor`)
 
 Rationale: single-segment namespaces collide with C# type names in IntelliSense, conflict with `using` aliases, and violate the reverse-DNS-analog convention used by every public Unity UPM package (UniTask, R3, NaughtyAttributes, MessagePipe, VContainer). A repository currently using a bare namespace must migrate via `migration-and-refactor-planner` before merging new code.
 

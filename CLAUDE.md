@@ -13,7 +13,7 @@ See `AGENTS.md` for shared rules that apply to all AI agents.
 4. Do NOT bulk-rename/reformat unless explicitly asked
 5. Verify compile locally before proposing PR
 6. Split large tasks into small PRs
-7. Before experimenting with transfer pipeline — read `EXPERIMENTS.md`
+7. Before experimenting with transfer pipeline — read `Documentation~/EXPERIMENTS.md`
 
 ## Code Rules
 
@@ -21,7 +21,7 @@ See `AGENTS.md` for shared rules that apply to all AI agents.
 - No `using System.Text.RegularExpressions` in `LightmapTransferTool.cs` — use fully qualified `System.Text.RegularExpressions.Regex`
 - `internal` visibility for cross-tool helpers (same assembly)
 - `Undo.RecordObject` / `Undo.AddComponent` / `Undo.DestroyObjectImmediate` for all scene modifications
-- Logging via `UvtLog.Info()` / `UvtLog.Warn()` / `UvtLog.Error()` (prefixed `[LightmapUV]`)
+- Logging via `UvtLog.Info()` / `UvtLog.Warn()` / `UvtLog.Error()` (prefixed `[MeshLab]`)
 - FBX code gated by `#if LIGHTMAP_UV_TOOL_FBX_EXPORTER`
 - `RestoreWorkingMeshes()` before clearing/switching LODGroup context
 - Destroy temporary meshes (repacked, transferred, welded) when no longer needed
@@ -31,7 +31,7 @@ See `AGENTS.md` for shared rules that apply to all AI agents.
 - **Entry point:** `Editor/Framework/UvToolHub.cs` — main EditorWindow
 - **Context:** `Editor/Framework/UvToolContext.cs` — shared state
 - **Tools:** `Editor/Tools/` — each implements `IUvTool`
-- **Native:** `Plugins/` binaries, `Native/` C++ source
+- **Native:** `Plugins/` binaries, `Native~/` C++ source
 - **Sidecar:** `Uv2DataAsset` persists UV2/collision data alongside FBX
 
 ## Key Patterns
