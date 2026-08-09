@@ -2432,7 +2432,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             ctx.ClearAllCaches();
-            accumulatedOverlapHints.Clear();
+            crossLodHints.Clear();
             shellTransformCache.Clear();
             ctx.HasRepack = false;
             ctx.HasTransfer = false;
