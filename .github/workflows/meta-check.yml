@@ -1,11 +1,27 @@
 name: Unity Package Checks
 
+# Runs on push as well as pull_request. A pull_request-only trigger cannot see a
+# commit pushed straight to main, which is exactly how a CS0103 in
+# LightmapTransferTool.cs reached main and shipped to a consumer's PackageCache
+# before any check looked at it.
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'Editor/**'
+      - 'Tests/**'
+      - 'Plugins/**'
+      - 'Shaders/**'
+      - 'Tools~/**'
+      - '*.md'
+      - 'package.json'
   pull_request:
     paths:
       - 'Editor/**'
+      - 'Tests/**'
       - 'Plugins/**'
       - 'Shaders/**'
+      - 'Tools~/**'
       - '*.md'
       - 'package.json'
 
@@ -98,3 +114,25 @@ jobs:
             echo "::error::Invalid version format: $VERSION (expected semver X.Y.Z)"
             exit 1
           fi
+
+  csharp-identifiers:
+    name: Guard against undeclared identifiers (CS0103)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      # The Unity test workflow can only compile this package when a Unity
+      # licence secret is configured, and Unity disabled manual Personal-tier
+      # activation in 2024 — so on a free seat nothing type-checks the C# at
+      # all. This check needs no licence and no compiler: it catches the
+      # specific failure that reached main, a declaration renamed with a call
+      # site left behind.
+      # Runs first: if the heuristic itself has been loosened, it must fail
+      # loudly rather than start passing everything.
+      - name: Self-test the heuristic
+        run: python3 'Tools~/check_undeclared_identifiers.py' --self-test
+
+      - name: Check for identifiers used but never declared
+        run: python3 'Tools~/check_undeclared_identifiers.py' Editor Tests
