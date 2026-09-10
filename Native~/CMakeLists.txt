@@ -9,8 +9,7 @@ include(FetchContent)
 FetchContent_Declare(
     meshoptimizer
     GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
-    GIT_TAG        v1.1
-    GIT_SHALLOW    TRUE
+    GIT_TAG        ff4a519a65a555229a202efc7b5409b338ef4b40 # reviewed remesh snapshot (2026-09-10)
 )
 set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 # meshoptimizer static lib must be PIC when linked into our shared lib (Linux/GCC)
@@ -25,6 +24,7 @@ set(XATLAS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xatlas")
 add_library(xatlas-unity SHARED
     xatlas-unity-bridge.cpp
     src/collision.cpp
+    src/remesh.cpp
     ${XATLAS_SOURCE_DIR}/xatlas.cpp
 )
 
@@ -65,3 +65,12 @@ add_custom_command(TARGET xatlas-unity POST_BUILD
         "${UNITY_PLUGINS_DIR}/$<TARGET_FILE_NAME:xatlas-unity>"
     COMMENT "Copying library to ${UNITY_PLUGINS_DIR}"
 )
+
+# Opt-in headless tests; no Unity license needed.
+option(MESHLAB_BUILD_TESTS "Build native remesh tests" OFF)
+if(MESHLAB_BUILD_TESTS)
+    enable_testing()
+    add_executable(meshlab-remesh-test tests/remesh_test.cpp)
+    target_link_libraries(meshlab-remesh-test PRIVATE xatlas-unity)
+    add_test(NAME remesh COMMAND meshlab-remesh-test)
+endif()
