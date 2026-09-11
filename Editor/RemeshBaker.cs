@@ -39,8 +39,10 @@ namespace SashaRX.UnityMeshLab
                             owners[y * size + x] = face;
             }
             for (int i = 0; i < count; ++i) if (owners[i] >= 0) ++result.covered;
+            token.ThrowIfCancellationRequested();
             if (result.covered == 0) throw new InvalidOperationException("UV atlas covers no texels. Increase texture resolution.");
             var bvh = new TriangleBvh(source.positions, source.indices);
+            token.ThrowIfCancellationRequested();
             float distance = source.diagonal * settings.projectionDistance;
             Parallel.For(0, size, new ParallelOptions { CancellationToken = token,
                 MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, y => {
