@@ -38,6 +38,8 @@ namespace SashaRX.UnityMeshLab
                             bary.x >= -1e-6f && bary.y >= -1e-6f && bary.z >= -1e-6f)
                             owners[y * size + x] = face;
             }
+            for (int i = 0; i < count; ++i) if (owners[i] >= 0) ++result.covered;
+            if (result.covered == 0) throw new InvalidOperationException("UV atlas covers no texels. Increase texture resolution.");
             var bvh = new TriangleBvh(source.positions, source.indices);
             float distance = source.diagonal * settings.projectionDistance;
             Parallel.For(0, size, new ParallelOptions { CancellationToken = token,
@@ -46,7 +48,6 @@ namespace SashaRX.UnityMeshLab
                     if ((x & 63) == 0) token.ThrowIfCancellationRequested();
                     int pixel = y * size + x, face = owners[pixel];
                     if (face < 0) continue;
-                    Interlocked.Increment(ref result.covered);
                     int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
                     Barycentric(new Vector2((x + 0.5f) / size, (y + 0.5f) / size), target.uv[a], target.uv[b], target.uv[c], out var w);
                     Vector3 p = target.positions[a] * w.x + target.positions[b] * w.y + target.positions[c] * w.z;
@@ -72,7 +73,6 @@ namespace SashaRX.UnityMeshLab
                     result.metal[pixel] = metal; result.ao[pixel] = ao; result.emission[pixel] = emission;
                 }
             });
-            if (result.covered == 0) throw new InvalidOperationException("UV atlas covers no texels. Increase texture resolution.");
             Dilate(result, owners, settings.padding, token);
             return result;
         }

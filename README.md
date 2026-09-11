@@ -48,8 +48,8 @@ Diagnostic and benchmarking blocks (Parameter Sweep, Log Filters, UV0 Analysis &
 
 Create a new low-poly static model with fresh UV0 and reprojected base color, normal,
 metallic/smoothness, occlusion and emission maps. Available in the **Remesh & Bake**
-tab for opaque Standard and URP/Lit materials. Requires rebuilt native libraries
-from this branch. See [workflow, limitations and validation](Documentation~/REMESH_AND_BAKE.md).
+tab for opaque Standard and URP/Lit materials. Native binaries are produced by the
+**Build Native Libraries** workflow. See [workflow, limitations and validation](Documentation~/REMESH_AND_BAKE.md).
 
 ## LOD Generation
 

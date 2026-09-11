@@ -26,9 +26,18 @@ namespace SashaRX.UnityMeshLab
         string status = "Select a static model root. LODGroups contribute only LOD0.";
         string resultName;
 
-        public void OnActivate(UvToolContext context, UvCanvasView canvas) { if (!source) source = Selection.activeGameObject; }
-        public void OnDeactivate() { cancellation?.Cancel(); Clear(); }
-        public void OnRefresh() { cancellation?.Cancel(); }
+        public void OnActivate(UvToolContext context, UvCanvasView canvas)
+        {
+            if (!source) source = Selection.activeGameObject;
+            // Result/preview carry HideAndDontSave, so they survive scene loads but
+            // would leak across a domain reload once this instance is discarded.
+            AssemblyReloadEvents.beforeAssemblyReload -= Clear;
+            AssemblyReloadEvents.beforeAssemblyReload += Clear;
+        }
+        public void OnDeactivate() { AssemblyReloadEvents.beforeAssemblyReload -= Clear; cancellation?.Cancel(); Clear(); }
+        // Hub context (LODGroup selection, Undo) does not feed this tool: the source
+        // snapshot is captured at Run() start, so a running bake must not be cancelled here.
+        public void OnRefresh() { }
         public void OnDrawToolbarExtra() { }
         public void OnDrawStatusBar() { GUILayout.Label(status, EditorStyles.miniLabel); }
         public IEnumerable<UvCanvasView.FillModeEntry> GetFillModes() => null;
@@ -88,7 +97,7 @@ namespace SashaRX.UnityMeshLab
                 status = "Remeshing, simplifying and unwrapping…"; RequestRepaint?.Invoke();
                 var geometry = await Task.Run(() => RemeshNative.Build(snapshot.positions, snapshot.indices, options, token));
                 token.ThrowIfCancellationRequested();
-                temporary = new Mesh { name = name + "_LOD0", indexFormat = IndexFormat.UInt32 };
+                temporary = new Mesh { name = name + "_LOD0", indexFormat = IndexFormat.UInt32, hideFlags = HideFlags.HideAndDontSave };
                 temporary.vertices = geometry.positions; temporary.normals = geometry.normals;
                 temporary.uv = geometry.uv; temporary.triangles = geometry.indices;
                 temporary.RecalculateBounds(); temporary.RecalculateTangents();
@@ -170,7 +179,7 @@ namespace SashaRX.UnityMeshLab
                         importer.SaveAndReimport();
                     }
                 }
-                mesh = Object.Instantiate(result); mesh.name = clean + "_LOD0";
+                mesh = Object.Instantiate(result); mesh.name = clean + "_LOD0"; mesh.hideFlags = HideFlags.None;
                 material = new Material(shader) { name = clean + "_Remesh" };
                 bool urp = shaderName != "Standard";
                 material.SetTexture(urp ? "_BaseMap" : "_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[0]));
