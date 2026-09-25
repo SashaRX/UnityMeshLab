@@ -27,6 +27,8 @@ EXPORT void meshLabRemeshDestroy(void* handle) { delete static_cast<Result*>(han
 // Returns 0 on success; 1 invalid input, 2 output budget, 3 empty result,
 // 4 unwrap failed, 5 multiple atlases, 6 allocation/internal failure.
 // Output vertex layout is eight float32 values: position, normal, UV0.
+// flags: 1 = meshopt_RemeshSolve, 2 = meshopt_RemeshShell. These bits are this
+// bridge's ABI and are mapped by name; meshoptimizer renumbered its enum in v1.3.
 EXPORT int meshLabRemeshBuild(const float* positions, uint32_t vertexCount,
     const uint32_t* indices, uint32_t indexCount, int resolution,
     uint32_t targetTriangles, float error, float crease, float smoothing,

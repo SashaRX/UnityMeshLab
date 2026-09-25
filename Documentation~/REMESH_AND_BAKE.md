@@ -27,11 +27,14 @@ scene objects and LODGroups are not replaced.
 
 ## Geometry implementation
 
-`Native~/src/remesh.cpp` uses meshoptimizer snapshot
-`ff4a519a65a555229a202efc7b5409b338ef4b40` (2026-09-10), pinned by full commit SHA.
+`Native~/src/remesh.cpp` uses meshoptimizer v1.3
+(`9e1f07b159d3cb777f1c67ed31fc11fd117986f4`, 2026-09-25), pinned by full commit SHA.
 The sequence is voxel remesh, position weld, simplifyWithUpdate with PreserveFolds
 and RegularizeLight, crease-aware normal generation, then xatlas full unwrap.
-There is no Thicken switch: upstream currently treats it as a no-op.
+v1.3 removed the non-functional Thicken flag and renumbered `meshopt_RemeshShell`
+and `meshopt_RemeshSolve`. The bridge keeps its own flag bits (1 = fit source
+surface, 2 = two-sided shell) and maps them by name, so the C# ABI is unchanged;
+the native test pins that mapping.
 
 Each job owns its own xatlas instance and result handle, independently of the
 legacy global repack bridge. C# always destroys the handle, including cancellation
@@ -91,7 +94,10 @@ ctest --test-dir build -C Release --output-on-failure
 The native test runs the complete cube → remesh → simplify → normal → UV pipeline,
 checks finite data, normalized normals/UVs and valid indices, verifies the target
 budget under relaxed error, repeated owned-handle cleanup and invalid input/copy
-capacity rejection. CI runs it on all three native platforms.
+capacity rejection. It also runs every solve/shell flag combination and requires
+the two-sided shell of the closed cube to be larger than the solid remesh, so a
+flag that stops reaching meshoptimizer fails the build. CI runs it on all three
+native platforms.
 
 Unity Test Runner: `RemeshBakeTests` covers UV raster barycentrics, separate material
 channels/HDR emission, source-normal to destination-tangent projection, image

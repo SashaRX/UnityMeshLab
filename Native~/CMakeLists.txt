@@ -9,7 +9,7 @@ include(FetchContent)
 FetchContent_Declare(
     meshoptimizer
     GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
-    GIT_TAG        ff4a519a65a555229a202efc7b5409b338ef4b40 # reviewed remesh snapshot (2026-09-10)
+    GIT_TAG        9e1f07b159d3cb777f1c67ed31fc11fd117986f4 # v1.3 (2026-09-25)
 )
 set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 # meshoptimizer static lib must be PIC when linked into our shared lib (Linux/GCC)

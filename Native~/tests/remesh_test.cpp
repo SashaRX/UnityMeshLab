@@ -41,5 +41,16 @@ int main() {
         meshLabRemeshDestroy(h); h=nullptr;
         std::cout << "cube: " << v << " vertices, " << n/3 << " triangles\n";
     }
+    // Bridge flags: bit 0 = meshopt_RemeshSolve, bit 1 = meshopt_RemeshShell. meshoptimizer
+    // v1.3 renumbered that enum, so pin the mapping: a closed cube remeshed as a two-sided
+    // shell keeps its inner surface as well and must come out larger than the solid remesh.
+    uint32_t tris[4] = {};
+    for (uint32_t flags = 0; flags < 4; ++flags) {
+        check(meshLabRemeshBuild(p,8,t,36,16,100000,0.001f,1,0,256,4,flags,&h,&v,&n)==0 && h, "flag combination");
+        tris[flags] = n/3;
+        meshLabRemeshDestroy(h); h=nullptr;
+    }
+    check(tris[2] > tris[0] && tris[3] > tris[1], "shell flag reaches meshopt");
+    std::cout << "cube solid/shell: " << tris[1] << " / " << tris[3] << " triangles\n";
     meshLabRemeshDestroy(nullptr);
 }
