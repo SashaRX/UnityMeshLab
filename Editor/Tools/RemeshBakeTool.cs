@@ -16,7 +16,7 @@ namespace SashaRX.UnityMeshLab
         public string ToolId => "remesh_bake";
         public int ToolOrder => 35;
         public Action RequestRepaint { private get; set; }
-        GameObject source;
+        GameObject source, lastSelection;
         RemeshSettings settings = new RemeshSettings();
         CancellationTokenSource cancellation;
         static int running;
@@ -25,16 +25,41 @@ namespace SashaRX.UnityMeshLab
         Texture2D preview;
         string status = "Select a static model root. LODGroups contribute only LOD0.";
         string resultName;
+        internal GameObject Source => source;
 
         public void OnActivate(UvToolContext context, UvCanvasView canvas)
         {
-            if (!source) source = Selection.activeGameObject;
+            FollowSelection();
+            Selection.selectionChanged -= FollowSelection;
+            Selection.selectionChanged += FollowSelection;
             // Result/preview carry HideAndDontSave, so they survive scene loads but
             // would leak across a domain reload once this instance is discarded.
             AssemblyReloadEvents.beforeAssemblyReload -= Clear;
             AssemblyReloadEvents.beforeAssemblyReload += Clear;
         }
-        public void OnDeactivate() { AssemblyReloadEvents.beforeAssemblyReload -= Clear; cancellation?.Cancel(); Clear(); }
+        public void OnDeactivate()
+        {
+            Selection.selectionChanged -= FollowSelection;
+            AssemblyReloadEvents.beforeAssemblyReload -= Clear; cancellation?.Cancel(); Clear();
+        }
+
+        // Source root follows the hierarchy selection, as the status text asks. A pick
+        // made in the field holds until the selection changes, also across tab
+        // switches. A LOD child resolves to its LODGroup so the bake keeps the
+        // LOD0-only contract. Selections without MeshRenderers (lights, cameras) and
+        // selections made during a bake leave the source as is.
+        internal void FollowSelection()
+        {
+            var selected = Selection.activeGameObject;
+            if (selected == lastSelection) return;
+            lastSelection = selected;
+            if (!selected || Volatile.Read(ref running) != 0) return;
+            var group = selected.GetComponentInParent<LODGroup>();
+            var root = group ? group.gameObject : selected;
+            if (!root.GetComponentInChildren<MeshRenderer>()) return;
+            source = root;
+            RequestRepaint?.Invoke();
+        }
         // Hub context (LODGroup selection, Undo) does not feed this tool: the source
         // snapshot is captured at Run() start, so a running bake must not be cancelled here.
         public void OnRefresh() { }
@@ -62,18 +87,33 @@ namespace SashaRX.UnityMeshLab
                 settings.projectionDistance = EditorGUILayout.Slider("Projection / bounds", settings.projectionDistance, 0.001f, 0.2f);
                 EditorGUILayout.HelpBox("Experimental voxel remesh. Thin details and small gaps may disappear. Supports opaque Standard and URP/Lit metallic materials.", MessageType.Info);
                 using (new EditorGUI.DisabledScope(!source || UvProgress.IsActive))
-                    if (GUILayout.Button("Generate & Bake", GUILayout.Height(28))) Run();
+                    if (GUILayout.Button("Generate & Bake", GUILayout.Height(28))) {
+                        Run();
+                        // Run() has already swapped the result section for the Cancel
+                        // button; end this event before IMGUI asks for controls the
+                        // layout pass never registered.
+                        GUIUtility.ExitGUI();
+                    }
             }
-            if (cancellation != null && GUILayout.Button("Cancel (after current native phase)")) cancellation.Cancel();
+            if (cancellation != null)
+                using (new EditorGUI.DisabledScope(cancellation.IsCancellationRequested))
+                    if (GUILayout.Button("Cancel (after current native phase)")) {
+                        cancellation.Cancel(); status = "Cancelling after the current phase…";
+                    }
             EditorGUILayout.HelpBox(status, maps != null && maps.misses > 0 ? MessageType.Warning : MessageType.None);
             if (result && maps != null) {
-                EditorGUILayout.LabelField($"{result.vertexCount:N0} vertices · {result.triangles.Length / 3:N0} triangles");
+                EditorGUILayout.LabelField($"{result.vertexCount:N0} vertices · {result.GetIndexCount(0) / 3:N0} triangles");
                 if (preview) {
                     Rect rect = GUILayoutUtility.GetAspectRect(1);
                     EditorGUI.DrawPreviewTexture(rect, preview);
                 }
                 using (new EditorGUI.DisabledScope(cancellation != null))
-                    if (GUILayout.Button("Save mesh, maps & prefab…")) Save();
+                    if (GUILayout.Button("Save mesh, maps & prefab…")) {
+                        Save();
+                        // The folder panel is modal and the export imports assets; both
+                        // leave this event's layout state stale.
+                        GUIUtility.ExitGUI();
+                    }
             }
         }
 

@@ -1,12 +1,15 @@
 # Remesh & Bake (experimental)
 
 Build a new static low-poly mesh, new UV0 atlas, and reproject source materials in
-**Tools → Mesh Lab → Remesh & Bake**. The original meshes, materials, importers,
-scene objects and LODGroups are not replaced.
+the **Remesh & Bake** tab of **Tools → Mesh Lab → Open Mesh Lab**. The original
+meshes, materials, importers, scene objects and LODGroups are not replaced.
 
 ## Workflow
 
-1. Select a static model root. Active/enabled MeshRenderers under it are combined
+1. Select a static model root. **Source root** follows the selection: a LOD child
+   resolves to its LODGroup, and selections without a MeshRenderer (lights,
+   cameras) are ignored. An object dragged into the field holds until the
+   selection changes. Active/enabled MeshRenderers under it are combined
    in root-local coordinates; LODGroups contribute LOD0 only, collision nodes are
    excluded. Skinned renderers are rejected. Every contributing submesh needs UV0
    and an opaque Standard (metallic) or URP/Lit material.

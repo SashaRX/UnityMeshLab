@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab.Tests
@@ -75,6 +76,27 @@ namespace SashaRX.UnityMeshLab.Tests
             using (var cancellation=new CancellationTokenSource()) {
                 cancellation.Cancel();
                 Assert.Throws<OperationCanceledException>(() => RemeshBaker.Bake(source,target,source.tangents,settings,cancellation.Token));
+            }
+        }
+        [Test]
+        public void SourceRootFollowsSelectionAndResolvesLodChildren()
+        {
+            var root=new GameObject("RemeshSelectionRoot");
+            var child=GameObject.CreatePrimitive(PrimitiveType.Cube);
+            child.transform.SetParent(root.transform);
+            root.AddComponent<LODGroup>().SetLODs(new[] { new LOD(0.5f,new Renderer[] { child.GetComponent<Renderer>() }) });
+            var light=new GameObject("RemeshSelectionLight",typeof(Light));
+            var previous=Selection.objects;
+            try {
+                var tool=new RemeshBakeTool();
+                Selection.activeGameObject=child; tool.FollowSelection();
+                Assert.AreSame(root,tool.Source);
+                Selection.activeGameObject=light; tool.FollowSelection();
+                Assert.AreSame(root,tool.Source);
+            }
+            finally {
+                Selection.objects=previous;
+                UnityEngine.Object.DestroyImmediate(root); UnityEngine.Object.DestroyImmediate(light);
             }
         }
         [Test]
