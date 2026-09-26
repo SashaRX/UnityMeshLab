@@ -47,8 +47,11 @@ Diagnostic and benchmarking blocks (Parameter Sweep, Log Filters, UV0 Analysis &
 ## Remesh & Bake
 
 Create a new low-poly static model with fresh UV0 and reprojected base color, normal,
-metallic/smoothness, occlusion and emission maps. Available in the **Remesh & Bake**
-tab for opaque Standard and URP/Lit materials. Native binaries are produced by the
+metallic/smoothness, occlusion and emission maps. The **Remesh & Bake** tab runs voxel
+remesh → adaptive simplification → hard edges & UV unwrap → multisampled bake as
+separate stages, with 3D, UV and map previews and optional vertex color/alpha
+transfer. Standard and URP/Lit materials transfer fully; other shaders bake from
+common property names with a warning. Native binaries are produced by the
 **Build Native Libraries** workflow. See [workflow, limitations and validation](Documentation~/REMESH_AND_BAKE.md).
 
 ## LOD Generation
