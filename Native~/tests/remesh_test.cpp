@@ -41,6 +41,24 @@ int main() {
         meshLabRemeshDestroy(h); h=nullptr;
         std::cout << "cube: " << v << " vertices, " << n/3 << " triangles\n";
     }
+    // xatlas uses absolute float epsilons internally. Before the bridge normalized
+    // unwrap input, a physically small but otherwise valid mesh had every face marked
+    // zero-area and came back as the generic "UV unwrap failed".
+    float tiny[24];
+    for (size_t i = 0; i < 24; ++i) tiny[i] = p[i] * 1e-5f;
+    check(meshLabRemeshBuild(tiny,8,t,36,16,100,0.01f,1,0,256,4,1,&h,&v,&n)==0 && h, "tiny cube unwrap");
+    check(v>0 && n>0 && n%3==0, "tiny cube counts");
+    {
+        std::vector<float> vertices(v*8);
+        std::vector<uint32_t> indices(n);
+        check(meshLabRemeshCopy(h,vertices.data(),v,indices.data(),n)==0, "tiny cube copy");
+        for (uint32_t i=0;i<v;++i) {
+            for (int k=0;k<8;++k) check(std::isfinite(vertices[i*8+k]), "tiny cube finite output");
+            for (int k=6;k<8;++k) check(vertices[i*8+k]>=0 && vertices[i*8+k]<=1, "tiny cube normalized UV");
+        }
+    }
+    meshLabRemeshDestroy(h); h=nullptr;
+
     // Bridge flags: bit 0 = meshopt_RemeshSolve, bit 1 = meshopt_RemeshShell. meshoptimizer
     // v1.3 renumbered that enum, so pin the mapping: a closed cube remeshed as a two-sided
     // shell keeps its inner surface as well and must come out larger than the solid remesh.

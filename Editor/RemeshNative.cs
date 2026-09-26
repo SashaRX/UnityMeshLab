@@ -75,8 +75,10 @@ namespace SashaRX.UnityMeshLab
                 case 1: return "invalid geometry or settings";
                 case 2: return "intermediate mesh exceeds five million triangles; reduce voxel resolution";
                 case 3: return "empty output; increase voxel resolution or reduce simplification";
-                case 4: return "UV unwrap failed";
+                case 4: return "UV unwrap rejected the remeshed geometry";
                 case 5: return "UV unwrap needs multiple atlases; reduce padding or increase texture resolution";
+                case 7: return "UV unwrap produced no usable atlas";
+                case 8: return "UV unwrap returned invalid or unmapped vertices";
                 default: return "native allocation or processing error";
             }
         }
