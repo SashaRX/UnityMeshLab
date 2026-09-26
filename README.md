@@ -4,13 +4,14 @@ Unity Editor tool suite for lightmap UV management, LOD generation, and collisio
 
 ## Overview
 
-Mesh Lab provides six integrated tools accessible via **Tools → Mesh Lab**:
+Mesh Lab provides integrated tools accessible via **Tools → Mesh Lab**:
 
 | Tab | Purpose |
 |-----|---------|
 | **UV2 Transfer** | Generate UV2 lightmap layouts by repacking UV0 shells, then transfer across LODs |
 | **Atlas Pack** | Multi-model atlas packing |
 | **UV0 Optimize** | UV0 analysis and optimization |
+| **Remesh & Bake** | Experimental voxel remesh, new UV0, high-to-low material transfer and prefab export |
 | **LOD Gen** | Generate LOD meshes via meshoptimizer simplification with UV2 preservation |
 | **Collision** | Generate collision meshes — simplified (non-convex) or V-HACD convex decomposition |
 | **Vertex Color Baking** | Vertex AO (GPU hemisphere depth sampling) and Solid Color batch export with FBX + Prefab variants |
@@ -42,6 +43,16 @@ After a run, each stage row shows the outcome with an icon: `…` running, `✓`
 ### Debug surfaces
 
 Diagnostic and benchmarking blocks (Parameter Sweep, Log Filters, UV0 Analysis & Fix, FBX Metrics menus, Sweep Test Suite asset) are hidden by default. Enable them via **Edit → Project Settings → Mesh Lab → Developer → Show Debug UI** when iterating on the pipeline or debugging.
+
+## Remesh & Bake
+
+Create a new low-poly static model with fresh UV0 and reprojected base color, normal,
+metallic/smoothness, occlusion and emission maps. The **Remesh & Bake** tab runs voxel
+remesh → adaptive simplification → hard edges & UV unwrap → multisampled bake as
+separate stages, with 3D, UV and map previews and optional vertex color/alpha
+transfer. Standard and URP/Lit materials transfer fully; other shaders bake from
+common property names with a warning. Native binaries are produced by the
+**Build Native Libraries** workflow. See [workflow, limitations and validation](Documentation~/REMESH_AND_BAKE.md).
 
 ## LOD Generation
 

@@ -52,8 +52,8 @@ namespace SashaRX.UnityMeshLab
 
         // meshopt simplify option flags (match meshoptimizer.h enum)
         public const uint SimplifyLockBorder    = 1;
-        public const uint SimplifyErrorAbsolute = 2;
-        public const uint SimplifySparse        = 4;
+        public const uint SimplifySparse        = 2;
+        public const uint SimplifyErrorAbsolute = 4;
         public const uint SimplifyPrune         = 8;
     }
 }

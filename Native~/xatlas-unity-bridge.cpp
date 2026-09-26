@@ -301,7 +301,7 @@ EXPORT int meshoptOptimize(
 // attributeCount:      number of scalar attributes (max 16)
 // targetRatio:         fraction of triangles to keep (0.0–1.0)
 // targetError:         maximum allowed simplification error
-// options:             meshopt simplify flags (LockBorder=1, ErrorAbsolute=2, Sparse=4, Prune=8)
+// options:             meshopt simplify flags (LockBorder=1, Sparse=2, ErrorAbsolute=4, Prune=8)
 // outIndices:          caller-allocated buffer, indexCount uint32s (only outIndexCount used)
 // outIndexCount:       receives actual output index count
 // outResultError:      receives achieved error (can be NULL)
