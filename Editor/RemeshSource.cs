@@ -12,6 +12,8 @@ namespace SashaRX.UnityMeshLab
         public Vector3[] positions, normals;
         public Vector4[] tangents;
         public Vector2[] uv;
+        public Color[] colors;       // per vertex; white where the source mesh has none
+        public bool hasColors;       // any contributing mesh carried vertex colours
         public int[] indices, faceMaterials;
         public Surface[] materials;
         public float diagonal;
@@ -74,7 +76,8 @@ namespace SashaRX.UnityMeshLab
                     foreach (var r in lods[l].renderers) if (!first.Contains(r)) excluded.Add(r);
             }
             var positions = new List<Vector3>(); var normals = new List<Vector3>();
-            var tangents = new List<Vector4>(); var uv = new List<Vector2>();
+            var tangents = new List<Vector4>(); var uv = new List<Vector2>(); var colors = new List<Color>();
+            bool hasColors = false;
             var indices = new List<int>(); var faces = new List<int>(); var materials = new List<Surface>();
             var materialIds = new Dictionary<Material, int>();
             string[] warnings;
@@ -110,6 +113,9 @@ namespace SashaRX.UnityMeshLab
                             tangents.Add(new Vector4(tt.x, tt.y, tt.z, t[i].w * sign));
                         }
                         uv.AddRange(mesh.uv);
+                        var c = mesh.colors;
+                        if (c.Length == p.Length) { colors.AddRange(c); hasColors = true; }
+                        else for (int i = 0; i < p.Length; ++i) colors.Add(Color.white);
                         var shared = renderer.sharedMaterials;
                         for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
                             if (sub >= shared.Length || !shared[sub]) throw new InvalidOperationException(renderer.name + " has a missing material.");
@@ -135,7 +141,7 @@ namespace SashaRX.UnityMeshLab
             foreach (var p in positions) bounds.Encapsulate(p);
             if (bounds.size.magnitude <= 1e-8f) throw new InvalidOperationException("Source bounds are empty.");
             return new RemeshSource { positions = positions.ToArray(), normals = normals.ToArray(), tangents = tangents.ToArray(),
-                uv = uv.ToArray(), indices = indices.ToArray(), faceMaterials = faces.ToArray(), materials = materials.ToArray(),
+                uv = uv.ToArray(), colors = colors.ToArray(), hasColors = hasColors, indices = indices.ToArray(), faceMaterials = faces.ToArray(), materials = materials.ToArray(),
                 diagonal = bounds.size.magnitude, warnings = warnings };
         }
 
