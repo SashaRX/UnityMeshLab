@@ -134,6 +134,7 @@ namespace SashaRX.UnityMeshLab
                 status = "Reading source geometry and textures…"; RequestRepaint?.Invoke();
                 await Task.Yield(); token.ThrowIfCancellationRequested();
                 var snapshot = RemeshSource.Capture(root);
+                foreach (var warning in snapshot.warnings) UvtLog.Warn("[Remesh] " + warning);
                 status = "Remeshing, simplifying and unwrapping…"; RequestRepaint?.Invoke();
                 var geometry = await Task.Run(() => RemeshNative.Build(snapshot.positions, snapshot.indices, options, token));
                 token.ThrowIfCancellationRequested();
@@ -149,7 +150,8 @@ namespace SashaRX.UnityMeshLab
                 preview.SetPixels32(baked.color); preview.Apply();
                 result = temporary; temporary = null; maps = baked; resultName = name;
                 status = $"{snapshot.indices.Length / 3:N0} → {geometry.indices.Length / 3:N0} triangles. " +
-                    (baked.misses == 0 ? "All covered texels projected." : $"{baked.misses:N0} / {baked.covered:N0} texels missed (magenta). Increase projection distance and rebake.");
+                    (baked.misses == 0 ? "All covered texels projected." : $"{baked.misses:N0} / {baked.covered:N0} texels missed (magenta). Increase projection distance and rebake.") +
+                    (snapshot.warnings.Length > 0 ? $" {snapshot.warnings.Length} material warning(s), see Console." : "");
                 UvtLog.Info("[Remesh] " + status);
             }
             catch (OperationCanceledException) { status = "Cancelled. Source assets were preserved."; }
@@ -179,6 +181,12 @@ namespace SashaRX.UnityMeshLab
                 status = "Choose a folder inside Assets."; return;
             }
             string relative = "Assets" + parent.Substring(assets.Length);
+            // The folder panel can create a directory the AssetDatabase has not imported
+            // yet; GenerateUniqueAssetPath/CreateFolder then fail on the unknown parent.
+            if (!AssetDatabase.IsValidFolder(relative)) AssetDatabase.Refresh();
+            if (!AssetDatabase.IsValidFolder(relative)) {
+                status = relative + " is not an imported asset folder. Refresh the Project window and save again."; return;
+            }
             string clean = resultName;
             foreach (char c in Path.GetInvalidFileNameChars()) clean = clean.Replace(c, '_');
             clean = clean.Replace('/', '_').Replace('\\', '_');
@@ -195,7 +203,7 @@ namespace SashaRX.UnityMeshLab
                 var shader = Shader.Find(shaderName);
                 if (!shader) throw new InvalidOperationException("Result shader is unavailable: " + shaderName);
                 string guid = AssetDatabase.CreateFolder(relative, Path.GetFileName(folder));
-                if (string.IsNullOrEmpty(guid)) throw new IOException("Could not create result folder.");
+                if (string.IsNullOrEmpty(guid)) throw new IOException("Could not create " + folder + ".");
                 createdFolder = true;
                 folder = AssetDatabase.GUIDToAssetPath(guid);
                 string[] names = { "BaseColor", "Normal", "MetallicSmoothness", "Occlusion", "Emission" };

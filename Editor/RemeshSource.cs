@@ -15,6 +15,7 @@ namespace SashaRX.UnityMeshLab
         public int[] indices, faceMaterials;
         public Surface[] materials;
         public float diagonal;
+        public string[] warnings = Array.Empty<string>();
 
         internal sealed class Image
         {
@@ -76,12 +77,18 @@ namespace SashaRX.UnityMeshLab
             var tangents = new List<Vector4>(); var uv = new List<Vector2>();
             var indices = new List<int>(); var faces = new List<int>(); var materials = new List<Surface>();
             var materialIds = new Dictionary<Material, int>();
+            string[] warnings;
             using (var reader = new Reader()) {
                 foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>()) {
                     if (!renderer.enabled || excluded.Contains(renderer) || MeshHygieneUtility.IsCollisionNodeName(renderer.name)) continue;
                     var filter = renderer.GetComponent<MeshFilter>();
                     if (!filter || !filter.sharedMesh) continue;
-                    var mesh = Object.Instantiate(filter.sharedMesh);
+                    var sourceMesh = filter.sharedMesh;
+                    for (int sub = 0; sub < sourceMesh.subMeshCount; ++sub)
+                        if (sourceMesh.GetTopology(sub) != MeshTopology.Triangles) throw new InvalidOperationException(renderer.name + ": only triangle meshes are supported.");
+                    // An Instantiate clone of a Read/Write-disabled import carries no CPU data,
+                    // but editor code can still read the imported asset; copy from that.
+                    var mesh = UvCanvasView.MakeReadableCopy(sourceMesh);
                     try {
                         if (mesh.uv.Length != mesh.vertexCount)
                             throw new InvalidOperationException(renderer.name + " needs source UV0 for material transfer.");
@@ -105,7 +112,6 @@ namespace SashaRX.UnityMeshLab
                         uv.AddRange(mesh.uv);
                         var shared = renderer.sharedMaterials;
                         for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
-                            if (mesh.GetTopology(sub) != MeshTopology.Triangles) throw new InvalidOperationException("Only triangle meshes are supported.");
                             if (sub >= shared.Length || !shared[sub]) throw new InvalidOperationException(renderer.name + " has a missing material.");
                             if (!materialIds.TryGetValue(shared[sub], out int material)) {
                                 material = materials.Count;
@@ -122,6 +128,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     finally { Object.DestroyImmediate(mesh); }
                 }
+                warnings = reader.warnings.ToArray();
             }
             if (indices.Count == 0) throw new InvalidOperationException("No static source triangles found.");
             var bounds = new Bounds(positions[0], Vector3.zero);
@@ -129,7 +136,7 @@ namespace SashaRX.UnityMeshLab
             if (bounds.size.magnitude <= 1e-8f) throw new InvalidOperationException("Source bounds are empty.");
             return new RemeshSource { positions = positions.ToArray(), normals = normals.ToArray(), tangents = tangents.ToArray(),
                 uv = uv.ToArray(), indices = indices.ToArray(), faceMaterials = faces.ToArray(), materials = materials.ToArray(),
-                diagonal = bounds.size.magnitude };
+                diagonal = bounds.size.magnitude, warnings = warnings };
         }
 
         sealed class Reader : IDisposable
@@ -144,32 +151,80 @@ namespace SashaRX.UnityMeshLab
                 blit = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             }
             public void Dispose() { Object.DestroyImmediate(blit); }
+            public readonly List<string> warnings = new List<string>();
             public Surface Capture(Material m)
             {
-                bool urp = m.shader.name == "Universal Render Pipeline/Lit";
-                if (!urp && m.shader.name != "Standard") throw new InvalidOperationException(m.name + ": supported shaders are Standard (metallic) and URP/Lit.");
-                if ((urp && m.GetFloat("_Surface") != 0) || (!urp && m.GetFloat("_Mode") != 0) ||
-                    m.IsKeywordEnabled("_ALPHATEST_ON") || m.IsKeywordEnabled("_DETAIL_MULX2") ||
-                    m.IsKeywordEnabled("_DETAIL_SCALED") || m.IsKeywordEnabled("_PARALLAXMAP") ||
-                    (urp && m.HasProperty("_WorkflowMode") && m.GetFloat("_WorkflowMode") == 0))
-                    throw new InvalidOperationException(m.name + ": use an opaque metallic material without alpha clipping, detail or parallax layers.");
+                string shaderName = m.shader ? m.shader.name : "<missing shader>";
+                bool urp = shaderName == "Universal Render Pipeline/Lit";
+                if (!urp && shaderName != "Standard") return CaptureGeneric(m, shaderName);
+                if ((urp && m.GetFloat("_Surface") != 0) || (!urp && m.GetFloat("_Mode") != 0) || m.IsKeywordEnabled("_ALPHATEST_ON"))
+                    warnings.Add(m.name + ": transparency/alpha clipping is ignored; the result is opaque.");
+                if (m.IsKeywordEnabled("_DETAIL_MULX2") || m.IsKeywordEnabled("_DETAIL_SCALED") || m.IsKeywordEnabled("_PARALLAXMAP"))
+                    warnings.Add(m.name + ": detail and parallax layers are not baked.");
+                bool specular = urp && m.HasProperty("_WorkflowMode") && m.GetFloat("_WorkflowMode") == 0;
+                if (specular) warnings.Add(m.name + ": specular workflow is baked as non-metallic.");
                 string color = urp ? "_BaseMap" : "_MainTex";
-                bool metal = m.IsKeywordEnabled(urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP");
+                bool metal = !specular && m.IsKeywordEnabled(urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP");
                 var surface = new Surface {
                     color = Read(m, color, true), normal = Read(m, "_BumpMap", false, true, m.IsKeywordEnabled("_NORMALMAP")),
                     metal = Read(m, "_MetallicGlossMap", false, false, metal), ao = Read(m, "_OcclusionMap", false),
                     emission = Read(m, "_EmissionMap", true, false, m.IsKeywordEnabled("_EMISSION"), true),
                     tint = m.GetColor(urp ? "_BaseColor" : "_Color").linear,
                     emissionTint = m.IsKeywordEnabled("_EMISSION") ? m.GetColor("_EmissionColor").linear : Color.black,
-                    metallic = m.GetFloat("_Metallic"), smoothness = m.GetFloat(urp ? "_Smoothness" : (metal || m.IsKeywordEnabled("_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A") ? "_GlossMapScale" : "_Glossiness")),
+                    metallic = specular ? 0 : m.GetFloat("_Metallic"),
+                    smoothness = m.GetFloat(urp ? "_Smoothness" : (metal || m.IsKeywordEnabled("_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A") ? "_GlossMapScale" : "_Glossiness")),
                     normalScale = m.GetFloat("_BumpScale"), aoStrength = m.GetFloat("_OcclusionStrength"),
                     smoothnessFromAlbedo = m.IsKeywordEnabled("_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A")
                 };
-                // Standard and URP/Lit sample these maps with the base UV transform.
+                ShareBaseTransform(surface);
+                return surface;
+            }
+
+            // Any other shader: bake what the common property names expose (base colour,
+            // tangent-space normal, scalar metallic/smoothness, occlusion, emission) and
+            // say so, instead of refusing the whole model.
+            Surface CaptureGeneric(Material m, string shaderName)
+            {
+                warnings.Add(m.name + ": shader '" + shaderName + "' is not Standard or URP/Lit; baking base colour, normal, occlusion and emission from common property names.");
+                string color = First(m, "_BaseMap", "_MainTex", "_BaseColorMap", "_AlbedoMap", "_Albedo");
+                string normal = First(m, "_BumpMap", "_NormalMap");
+                bool emissive = m.HasProperty("_EmissionColor") && (m.IsKeywordEnabled("_EMISSION") || m.HasProperty("_EmissionMap") && m.GetTexture("_EmissionMap"));
+                var surface = new Surface {
+                    color = color != null ? Read(m, color, true) : new Map(),
+                    normal = normal != null ? Read(m, normal, false, true) : new Map(),
+                    metal = new Map(), ao = Read(m, "_OcclusionMap", false),
+                    emission = emissive ? Read(m, "_EmissionMap", true, false, true, true) : new Map(),
+                    tint = ColorOr(m, Color.white, "_BaseColor", "_Color").linear,
+                    emissionTint = emissive ? m.GetColor("_EmissionColor").linear : Color.black,
+                    metallic = FloatOr(m, 0, "_Metallic"), smoothness = FloatOr(m, 0.5f, "_Smoothness", "_Glossiness"),
+                    normalScale = FloatOr(m, 1, "_BumpScale", "_NormalScale"), aoStrength = FloatOr(m, 1, "_OcclusionStrength")
+                };
+                ShareBaseTransform(surface);
+                return surface;
+            }
+
+            // Standard and URP/Lit sample these maps with the base UV transform.
+            static void ShareBaseTransform(Surface surface)
+            {
                 foreach (var map in new[] { surface.normal, surface.metal, surface.ao, surface.emission }) {
                     map.scale = surface.color.scale; map.offset = surface.color.offset;
                 }
-                return surface;
+            }
+            static string First(Material m, params string[] names)
+            {
+                foreach (var name in names) if (m.HasProperty(name) && m.GetTexture(name)) return name;
+                foreach (var name in names) if (m.HasProperty(name)) return name;
+                return null;
+            }
+            static Color ColorOr(Material m, Color fallback, params string[] names)
+            {
+                foreach (var name in names) if (m.HasProperty(name)) return m.GetColor(name);
+                return fallback;
+            }
+            static float FloatOr(Material m, float fallback, params string[] names)
+            {
+                foreach (var name in names) if (m.HasProperty(name)) return m.GetFloat(name);
+                return fallback;
             }
             Map Read(Material material, string property, bool color, bool normal = false, bool enabled = true, bool hdr = false)
             {
@@ -177,7 +232,10 @@ namespace SashaRX.UnityMeshLab
                 var texture = enabled && material.HasProperty(property) ? material.GetTexture(property) : null;
                 if (material.HasProperty(property)) { map.scale = material.GetTextureScale(property); map.offset = material.GetTextureOffset(property); }
                 if (!texture) return map;
-                if (!(texture is Texture2D)) throw new InvalidOperationException("Only 2D material textures are supported.");
+                if (!(texture is Texture2D)) {
+                    warnings.Add(material.name + "." + property + ": only 2D textures are baked; '" + texture.name + "' is skipped.");
+                    return map;
+                }
                 map.scale = material.GetTextureScale(property); map.offset = material.GetTextureOffset(property);
                 var key = (texture, color, normal, hdr);
                 if (!cache.TryGetValue(key, out var image)) {
