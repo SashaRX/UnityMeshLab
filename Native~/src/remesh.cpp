@@ -2,6 +2,7 @@
 #include "meshoptimizer.h"
 #include "xatlas.h"
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -25,7 +26,8 @@ EXPORT int meshLabRemeshVersion() { return 1; }
 EXPORT void meshLabRemeshDestroy(void* handle) { delete static_cast<Result*>(handle); }
 
 // Returns 0 on success; 1 invalid input, 2 output budget, 3 empty result,
-// 4 unwrap failed, 5 multiple atlases, 6 allocation/internal failure.
+// 4 xatlas rejected the mesh, 5 multiple atlases, 6 allocation/internal failure,
+// 7 xatlas produced no usable atlas, 8 xatlas returned an invalid vertex mapping.
 // Output vertex layout is eight float32 values: position, normal, UV0.
 // flags: 1 = meshopt_RemeshSolve, 2 = meshopt_RemeshShell. These bits are this
 // bridge's ABI and are mapped by name; meshoptimizer renumbered its enum in v1.3.
@@ -75,8 +77,80 @@ EXPORT int meshLabRemeshBuild(const float* positions, uint32_t vertexCount,
             meshopt_SimplifyPreserveFolds | meshopt_SimplifyRegularizeLight, nullptr);
         if (!simplified) return 3;
         idx.resize(simplified);
+
+        // simplifyWithUpdate is allowed to collapse/move vertices. On real meshes this can
+        // leave duplicate-index, zero-edge or near-zero-area triangles. xatlas keeps such
+        // faces as "invalid geometry" vertices with atlasIndex == -1; treating that as a
+        // generic unwrap failure makes one collapsed triangle abort the whole remesh.
+        // Filter them before normal generation/unwrap using the same relative area scale
+        // that xatlas sees after the normalization below.
+        float remeshLo[3] = {0, 0, 0}, remeshHi[3] = {0, 0, 0};
+        bool haveRemeshBounds = false;
+        for (size_t i = 0; i < idx.size(); ++i) {
+            const unsigned int v = idx[i];
+            if (v >= unique) return 6;
+            const float* p = &pos[size_t(v) * 3];
+            if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2])) return 6;
+            if (!haveRemeshBounds) {
+                for (int k = 0; k < 3; ++k) remeshLo[k] = remeshHi[k] = p[k];
+                haveRemeshBounds = true;
+            } else {
+                for (int k = 0; k < 3; ++k) {
+                    remeshLo[k] = std::min(remeshLo[k], p[k]);
+                    remeshHi[k] = std::max(remeshHi[k], p[k]);
+                }
+            }
+        }
+        if (!haveRemeshBounds) return 3;
+        const double remeshExtent = std::max(double(remeshHi[0] - remeshLo[0]),
+            std::max(double(remeshHi[1] - remeshLo[1]), double(remeshHi[2] - remeshLo[2])));
+        if (!std::isfinite(remeshExtent) || remeshExtent <= 0.0) return 3;
+        const double minTriangleArea = remeshExtent * remeshExtent * double(FLT_EPSILON);
+
+        std::vector<unsigned int> cleaned;
+        cleaned.reserve(idx.size());
+        for (size_t i = 0; i < idx.size(); i += 3) {
+            const unsigned int ia = idx[i + 0], ib = idx[i + 1], ic = idx[i + 2];
+            if (ia == ib || ib == ic || ic == ia) continue;
+            const float* a = &pos[size_t(ia) * 3];
+            const float* b = &pos[size_t(ib) * 3];
+            const float* c = &pos[size_t(ic) * 3];
+            const double abx = double(b[0]) - a[0], aby = double(b[1]) - a[1], abz = double(b[2]) - a[2];
+            const double acx = double(c[0]) - a[0], acy = double(c[1]) - a[1], acz = double(c[2]) - a[2];
+            const double cx = aby * acz - abz * acy;
+            const double cy = abz * acx - abx * acz;
+            const double cz = abx * acy - aby * acx;
+            const double area = 0.5 * std::sqrt(cx * cx + cy * cy + cz * cz);
+            if (!std::isfinite(area)) return 6;
+            if (area <= minTriangleArea) continue;
+            cleaned.push_back(ia); cleaned.push_back(ib); cleaned.push_back(ic);
+        }
+        if (cleaned.empty()) return 3;
+        idx.swap(cleaned);
+        simplified = idx.size();
+
+        // Drop vertices no surviving triangle references. Besides shrinking the xatlas
+        // input this guarantees every output xref points at geometry that can own UVs.
+        std::vector<unsigned int> compactRemap(unique, ~0u);
+        std::vector<float> compactPos;
+        compactPos.reserve(std::min(unique, simplified) * size_t(3));
+        for (size_t i = 0; i < idx.size(); ++i) {
+            const unsigned int old = idx[i];
+            unsigned int mapped = compactRemap[old];
+            if (mapped == ~0u) {
+                mapped = unsigned(compactPos.size() / 3);
+                compactRemap[old] = mapped;
+                const float* p = &pos[size_t(old) * 3];
+                compactPos.push_back(p[0]); compactPos.push_back(p[1]); compactPos.push_back(p[2]);
+            }
+            idx[i] = mapped;
+        }
+        pos.swap(compactPos);
+        unique = pos.size() / 3;
+
         std::vector<float> normals(simplified * 3);
         meshopt_generateNormals(normals.data(), idx.data(), idx.size(), pos.data(), unique, 12, crease, smoothing);
+        for (float n : normals) if (!std::isfinite(n)) return 6;
         std::vector<Vertex> split(simplified);
         for (size_t i = 0; i < simplified; ++i) {
             std::memcpy(split[i].p, &pos[size_t(idx[i]) * 3], 12);
@@ -90,9 +164,33 @@ EXPORT int meshLabRemeshBuild(const float* positions, uint32_t vertexCount,
         meshopt_remapIndexBuffer(idx.data(), nullptr, simplified, remap.data());
         std::unique_ptr<xatlas::Atlas, AtlasDelete> atlas(xatlas::Create());
         if (!atlas) return 6;
+
+        // xatlas uses absolute float epsilons for colocal and zero-area checks. Feed it a
+        // uniformly normalized copy so those tests are scale-relative; the real output
+        // positions remain in verts and are restored through xref after packing.
+        std::vector<Vertex> atlasVerts = verts;
+        float atlasLo[3] = {atlasVerts[0].p[0], atlasVerts[0].p[1], atlasVerts[0].p[2]};
+        float atlasHi[3] = {atlasLo[0], atlasLo[1], atlasLo[2]};
+        for (const Vertex& v : atlasVerts)
+            for (int k = 0; k < 3; ++k) {
+                atlasLo[k] = std::min(atlasLo[k], v.p[k]);
+                atlasHi[k] = std::max(atlasHi[k], v.p[k]);
+            }
+        const float atlasExtent = std::max(atlasHi[0] - atlasLo[0],
+            std::max(atlasHi[1] - atlasLo[1], atlasHi[2] - atlasLo[2]));
+        if (!std::isfinite(atlasExtent) || atlasExtent <= 0) return 3;
+        const float atlasCenter[3] = {
+            (atlasLo[0] + atlasHi[0]) * 0.5f,
+            (atlasLo[1] + atlasHi[1]) * 0.5f,
+            (atlasLo[2] + atlasHi[2]) * 0.5f
+        };
+        for (Vertex& v : atlasVerts)
+            for (int k = 0; k < 3; ++k)
+                v.p[k] = (v.p[k] - atlasCenter[k]) / atlasExtent;
+
         xatlas::MeshDecl decl;
-        decl.vertexPositionData = verts.data(); decl.vertexPositionStride = sizeof(Vertex);
-        decl.vertexNormalData = verts[0].n; decl.vertexNormalStride = sizeof(Vertex);
+        decl.vertexPositionData = atlasVerts.data(); decl.vertexPositionStride = sizeof(Vertex);
+        decl.vertexNormalData = atlasVerts[0].n; decl.vertexNormalStride = sizeof(Vertex);
         decl.vertexCount = uint32_t(unique);
         decl.indexData = idx.data(); decl.indexCount = uint32_t(idx.size());
         decl.indexFormat = xatlas::IndexFormat::UInt32;
@@ -101,14 +199,14 @@ EXPORT int meshLabRemeshBuild(const float* positions, uint32_t vertexCount,
         xatlas::PackOptions pack;
         pack.resolution = textureSize; pack.padding = padding; pack.bilinear = true;
         xatlas::Generate(atlas.get(), charts, pack);
-        if (!atlas->meshCount || !atlas->width || !atlas->height) return 4;
+        if (!atlas->meshCount || !atlas->width || !atlas->height || !atlas->atlasCount) return 7;
         if (atlas->atlasCount != 1) return 5;
         const xatlas::Mesh& mesh = atlas->meshes[0];
         auto result = std::make_unique<Result>();
         result->vertices.resize(mesh.vertexCount);
         for (uint32_t i = 0; i < mesh.vertexCount; ++i) {
             const auto& v = mesh.vertexArray[i];
-            if (v.atlasIndex != 0 || v.xref >= verts.size()) return 4;
+            if (v.atlasIndex != 0 || v.xref >= verts.size()) return 8;
             result->vertices[i] = verts[v.xref];
             result->vertices[i].uv[0] = v.uv[0] / atlas->width;
             result->vertices[i].uv[1] = v.uv[1] / atlas->height;
