@@ -41,7 +41,12 @@ namespace SashaRX.UnityMeshLab
         public bool pruneSmallParts;
 
         // 3 · Normals & UV
-        public RemeshHardEdges hardEdges = RemeshHardEdges.Angle;
+        // UV islands is the bake-oriented default: smooth inside every island,
+        // hard only along island borders, and the normal map carries the detail.
+        // On coarse organic decimations an angle crease reads as fully faceted
+        // and also feeds xatlas crease-split normals as seams, which shatters
+        // the atlas into slivers.
+        public RemeshHardEdges hardEdges = RemeshHardEdges.UvIslands;
         public float normalCrease = 60;
         public float normalSmoothing = 1;
         public float chartMaxCost = 2;

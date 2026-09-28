@@ -37,12 +37,18 @@ settings, marked "settings changed" in its header) and clears everything after i
    alone decide. *Light/Strong* regularization evens out triangle sizes instead.
    *Preserve folds* keeps sharp creases; *Remove small parts* drops tiny
    disconnected pieces. Turn *Simplify* off to unwrap the voxel mesh as is.
-4. **Normals & UV** — *Hard edges*:
+4. **Normals & UV** — *Hard edges* (defaults to *UV islands*):
    - *Smooth* — no hard edges.
-   - *Angle* — edges sharper than *Crease angle*.
+   - *Angle* — edges sharper than *Crease angle*. On coarse organic
+     decimations most edges exceed the crease, which reads as fully faceted
+     and also feeds xatlas the crease-split normals as seams, shattering the
+     atlas into slivers — prefer *UV islands* for baked results.
    - *UV islands* — hard exactly along UV island borders, smooth inside each
      island (the usual choice for baked normal maps).
    - *UV islands + angle* — both.
+
+   Stage settings persist across domain reloads and tab switches (EditorPrefs);
+   *Run all stages* still re-runs everything with the restored values.
 
    *Islands & packing* exposes the xatlas chart options: max cost (lower = more,
    smaller islands), normal deviation, hard-edge seam weight (islands prefer to

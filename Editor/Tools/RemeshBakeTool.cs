@@ -17,6 +17,10 @@ namespace SashaRX.UnityMeshLab
         public int ToolOrder => 35;
         public Action RequestRepaint { private get; set; }
 
+        // Settings survive domain reloads and tab switches so a tuned pipeline
+        // does not silently reset to defaults between runs.
+        const string SettingsKey = "MeshLab.RemeshBake.Settings";
+
         enum Stage { Remesh, Simplify, Unwrap, Bake }
         static readonly string[] StageTitles = { "1 · Voxel remesh", "2 · Simplify", "3 · Normals & UV", "4 · Bake" };
         static readonly string[] SampleNames = { "1 (off)", "4 (2×2)", "9 (3×3)", "16 (4×4)" };
@@ -29,6 +33,16 @@ namespace SashaRX.UnityMeshLab
         string status = "Select a static model root. LODGroups contribute only LOD0.";
         string resultName;
         internal GameObject Source => source;
+
+        public RemeshBakeTool()
+        {
+            string json = EditorPrefs.GetString(SettingsKey, "");
+            if (string.IsNullOrEmpty(json)) return;
+            var restored = JsonUtility.FromJson<RemeshSettings>(json);
+            if (restored != null) settings = restored;
+        }
+
+        internal void SaveSettings() => EditorPrefs.SetString(SettingsKey, JsonUtility.ToJson(settings));
 
         // Stage outputs. Each stage consumes the previous one; re-running a stage clears
         // everything after it. keys[] remember the settings each output was built with.
@@ -54,13 +68,21 @@ namespace SashaRX.UnityMeshLab
             previews.RequestRepaint = () => RequestRepaint?.Invoke();
             // Result/preview objects carry HideAndDontSave, so they survive scene loads but
             // would leak across a domain reload once this instance is discarded.
-            AssemblyReloadEvents.beforeAssemblyReload -= Clear;
-            AssemblyReloadEvents.beforeAssemblyReload += Clear;
+            AssemblyReloadEvents.beforeAssemblyReload -= SaveSettingsAndClear;
+            AssemblyReloadEvents.beforeAssemblyReload += SaveSettingsAndClear;
         }
         public void OnDeactivate()
         {
             Selection.selectionChanged -= FollowSelection;
-            AssemblyReloadEvents.beforeAssemblyReload -= Clear; cancellation?.Cancel(); Clear();
+            AssemblyReloadEvents.beforeAssemblyReload -= SaveSettingsAndClear;
+            SaveSettings();
+            cancellation?.Cancel(); Clear();
+        }
+
+        void SaveSettingsAndClear()
+        {
+            SaveSettings();
+            Clear();
         }
 
         // Source root follows the hierarchy selection, as the status text asks. A pick
