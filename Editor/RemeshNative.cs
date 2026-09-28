@@ -124,6 +124,17 @@ namespace SashaRX.UnityMeshLab
                     result.normals[i] = new Vector3(data[i * 8 + 3], data[i * 8 + 4], data[i * 8 + 5]);
                     result.uv[i] = new Vector2(data[i * 8 + 6], data[i * 8 + 7]);
                 }
+                // A degenerate corner group (zero-area faces) leaves zero normals,
+                // which zero the bake's ray directions and tangent frames; rebuild
+                // every normal from face geometry instead of shipping the holes.
+                int zeroNormals = 0;
+                for (int i = 0; i < vertexCount; ++i)
+                    if (result.normals[i].sqrMagnitude < 1e-12f) ++zeroNormals;
+                if (zeroNormals > 0) {
+                    UvtLog.Warn("[Remesh] " + zeroNormals + " of " + vertexCount +
+                        " unwrap normals came back zero (degenerate faces); rebuilding all from face normals.");
+                    SmoothWithinSplitVertices(result);
+                }
                 if (settings.hardEdges == RemeshHardEdges.UvIslands || settings.hardEdges == RemeshHardEdges.UvIslandsAndAngle)
                     SmoothWithinSplitVertices(result);
                 // Normal smoothing runs after UV generation so it works the same for

@@ -14,7 +14,7 @@ namespace SashaRX.UnityMeshLab
             public Color[] vertexColors; // per result vertex, null unless a transfer was requested
             public int size, misses, covered;
             // Bake health counters surfaced through the RemeshDiag log category.
-            public int rayFallbacks, weldedPositions, splitCopies, oneSidedNormals, loudTexels;
+            public int rayFallbacks, weldedPositions, splitCopies, oneSidedNormals, loudTexels, zeroNormals;
             public float maxOneSidedDeg, meanTiltDeg, maxTiltDeg;
         }
 
@@ -215,8 +215,12 @@ namespace SashaRX.UnityMeshLab
                 welded[slots[a]] += n; welded[slots[b]] += n; welded[slots[c]] += n;
             }
             var cage = new Vector3[target.positions.Length];
-            float maxDev = 0; int oneSided = 0;
+            float maxDev = 0; int oneSided = 0, zeroNormalVerts = 0;
             for (int i = 0; i < cage.Length; ++i) {
+                bool zeroVertexNormal = target.normals[i].sqrMagnitude < 1e-12f;
+                if (zeroVertexNormal) ++zeroNormalVerts;
+                // Fall back to the (possibly zero) vertex normal only when the welded
+                // sum is degenerate; zero cage entries zero the projection ray.
                 cage[i] = welded[slots[i]].sqrMagnitude > 1e-30f ? welded[slots[i]].normalized : target.normals[i];
                 float dev = Mathf.Acos(Mathf.Clamp(Vector3.Dot(cage[i], target.normals[i]), -1f, 1f)) * Mathf.Rad2Deg;
                 if (dev > maxDev) maxDev = dev;
@@ -227,6 +231,7 @@ namespace SashaRX.UnityMeshLab
                 diag.splitCopies = target.positions.Length - map.Count;
                 diag.oneSidedNormals = oneSided;
                 diag.maxOneSidedDeg = maxDev;
+                diag.zeroNormals = zeroNormalVerts;
             }
             return cage;
         }

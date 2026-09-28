@@ -23,9 +23,31 @@ static class Repro
         var diag = Diagonal(source);
         int rowsT = 20, colsT = 36;
 
-        foreach (var mode in new[] { "hardBorders(uvIslands)", "smoothBorders(nativePi)" })
+        var modes = new[] { "hardBorders(uvIslands)", "smoothBorders(nativePi)", "flatFaces(crease0)" };
+        for (int modeIndex = 0; modeIndex < modes.Length; modeIndex++)
         {
-            var target = SplitIntoCharts(targetBase, rowsT, colsT, mode.Contains("hard"));
+            var mode = modes[modeIndex];
+            var target = SplitIntoCharts(targetBase, rowsT, colsT, modeIndex);
+            // Kernel check: apply the SmoothNormals port at several strengths and
+            // measure how far the smoothed normals drift from the geometric truth
+            // (welded cage) and from their pre-smoothing values.
+            foreach (float s in new[] { 0f, 1f, 4f, 10f })
+            {
+                var test = new Mesh { positions = (Vector3[])target.positions.Clone(), normals = (Vector3[])target.normals.Clone(),
+                    uv = (Vector2[])target.uv.Clone(), indices = (int[])target.indices.Clone() };
+                test.cage = (Vector3[])target.cage.Clone();
+                var pre = (Vector3[])test.normals.Clone();
+                SmoothNormalsPort(test, s);
+                double dotCage = 0, dotPre = 0; int nan = 0, deg = 0; int n = Math.Min(test.normals.Length, Math.Min(test.cage.Length, pre.Length));
+                for (int i = 0; i < n; ++i)
+                {
+                    if (float.IsNaN(test.normals[i].X) || test.normals[i].LengthSquared() < 0.5f) { nan++; continue; }
+                    dotCage += Vector3.Dot(test.normals[i], test.cage[i]);
+                    dotPre += Vector3.Dot(test.normals[i], pre[i]);
+                }
+                Console.WriteLine($"[smooth] mode={mode} s={s}: mean dot(normals, cage)={dotCage / Math.Max(1, n - nan):F3}  mean dot(normals, pre)={dotPre / Math.Max(1, n - nan):F3}  nan/zero={nan}");
+                if (s == 0) continue;
+            }
             var tangents = LengyelTangents(target);
             var offsets = SampleOffsets(SampleGrid);
             var owners = Rasterize(target, AtlasSize, offsets);
@@ -96,7 +118,7 @@ static class Repro
             Console.WriteLine($"covered={covered}  misses={misses}  nearestFallbacks={fallbacks}  farSideHits={farHits}");
             Console.WriteLine($"angular error vs truth: n={errN}  mean={errSum / Math.Max(1, errN):F2}deg  max={errMax:F1}deg");
             Console.WriteLine($"buckets deg: <5={errBuckets[0]}  5-20={errBuckets[1]}  20-45={errBuckets[2]}  >45={errBuckets[3]}");
-            WritePpm($"map_{(mode.Contains("hard") ? "hard" : "smooth")}.ppm", map, hitMap);
+            WritePpm($"map_{modeIndex}.ppm", map, hitMap);
         }
         Console.WriteLine("done");
     }
@@ -164,7 +186,7 @@ static class Repro
 
     // Split the grid mesh into ChartCount longitude charts, each in its own atlas
     // rect, duplicating border vertices (xatlas-style). hard=true -> SmoothWithinSplitVertices.
-    static Mesh SplitIntoCharts(Mesh m, int rowsReal, int colsReal, bool hard)
+    static Mesh SplitIntoCharts(Mesh m, int rowsReal, int colsReal, int modeIndex)
     {
         int vcols = colsReal + 1;
         int cw = ChartCount, layout = 3;
@@ -215,23 +237,44 @@ static class Repro
         // Diagnostic: does the C# Cross(b-a, c-a) smoothing agree in direction with
         // the "native" smooth normals (analytic here, meshopt_generateNormals there)?
         var before = (Vector3[])mesh.normals.Clone();
-        if (hard)
+        SmoothAcrossEverything(mesh);
+        mesh.cage = (Vector3[])mesh.normals.Clone();
+        if (modeIndex == 0)
         {
             // production order: smooth welded normals exist first (native crease=pi),
             // then SmoothWithinSplitVertices hardens the chart borders.
-            SmoothAcrossEverything(mesh);
-            mesh.cage = (Vector3[])mesh.normals.Clone();
             SmoothWithinSplitVertices(mesh);
         }
-        else { SmoothAcrossEverything(mesh); mesh.cage = (Vector3[])mesh.normals.Clone(); }
+        else if (modeIndex == 2)
+        {
+            // crease=0 worst case: every corner its own normal group (flat shading),
+            // vertices split per face like the native crease-split output.
+            var fp = new List<Vector3>(); var fn = new List<Vector3>(); var fu = new List<Vector2>();
+            var fc = new List<Vector3>();
+            var fi = new List<int>();
+            for (int i = 0; i < mesh.indices.Length; i += 3)
+            {
+                int a = mesh.indices[i], b = mesh.indices[i + 1], c = mesh.indices[i + 2];
+                var faceN = Vector3.Normalize(Vector3.Cross(mesh.positions[b] - mesh.positions[a], mesh.positions[c] - mesh.positions[a]));
+                int i0 = fp.Count;
+                fp.AddRange(new[] { mesh.positions[a], mesh.positions[b], mesh.positions[c] });
+                fn.AddRange(new[] { faceN, faceN, faceN });
+                fu.AddRange(new[] { mesh.uv[a], mesh.uv[b], mesh.uv[c] });
+                fc.AddRange(new[] { mesh.cage[a], mesh.cage[b], mesh.cage[c] });
+                fi.AddRange(new[] { i0, i0 + 1, i0 + 2 });
+            }
+            mesh.positions = fp.ToArray(); mesh.normals = fn.ToArray(); mesh.uv = fu.ToArray(); mesh.indices = fi.ToArray();
+            mesh.cage = fc.ToArray();
+        }
         float dotSum = 0; int dotN = 0, flipped = 0;
-        for (int i = 0; i < mesh.normals.Length; i++)
+        int diagCount = Math.Min(before.Length, mesh.normals.Length);
+        for (int i = 0; i < diagCount; i++)
         {
             float d = Vector3.Dot(Vector3.Normalize(before[i]), mesh.normals[i]);
             dotSum += d; dotN++;
             if (d < 0) flipped++;
         }
-        Console.WriteLine($"[diag] hard={hard}: mean dot(pre-smooth, post-smooth normals) = {dotSum / Math.Max(1, dotN):F3}  flipped={flipped}/{dotN}");
+        Console.WriteLine($"[diag] modeIndex={modeIndex}: mean dot(pre-smooth, post-smooth normals) = {dotSum / Math.Max(1, dotN):F3}  flipped={flipped}/{dotN}");
         return mesh;
     }
 
@@ -308,6 +351,45 @@ static class Repro
             result[i] = new Vector4(t, w);
         }
         return result;
+    }
+
+    // 1:1 port of RemeshNative.SmoothNormals for kernel verification.
+    static void SmoothNormalsPort(Mesh g, float smoothing)
+    {
+        if (smoothing <= 0) return;
+        int passes = Math.Min(10, (int)Math.Ceiling(smoothing));
+        var normals = g.normals;
+        var indices = g.indices;
+        var delta = new Vector3[normals.Length];
+        var edges = new float[normals.Length];
+        for (int pass = 0; pass < passes; ++pass)
+        {
+            float alpha = 0.5f * MathF.Min(1f, smoothing - pass);
+            Array.Clear(delta, 0, delta.Length);
+            Array.Clear(edges, 0, edges.Length);
+            for (int i = 0; i < indices.Length; i += 3)
+            {
+                SmoothEdgePort(normals, delta, edges, indices[i], indices[i + 1]);
+                SmoothEdgePort(normals, delta, edges, indices[i + 1], indices[i + 2]);
+                SmoothEdgePort(normals, delta, edges, indices[i + 2], indices[i]);
+            }
+            for (int i = 0; i < normals.Length; ++i)
+            {
+                if (edges[i] <= 0) continue;
+                Vector3 n = normals[i] + delta[i] * (alpha / edges[i]);
+                float length = n.Length();
+                if (length > 1e-12f) normals[i] = n / length;
+            }
+        }
+    }
+
+    static void SmoothEdgePort(Vector3[] normals, Vector3[] delta, float[] edges, int a, int b)
+    {
+        float dp = Vector3.Dot(normals[a], normals[b]);
+        float w = dp > 0f ? dp * dp : 0f;
+        Vector3 d = (normals[b] - normals[a]) * w;
+        delta[a] += d; edges[a] += 1f;
+        delta[b] -= d; edges[b] += 1f;
     }
 
     // ── exact bake ports ──

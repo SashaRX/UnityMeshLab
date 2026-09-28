@@ -389,10 +389,18 @@ namespace SashaRX.UnityMeshLab
             if (UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag))
                 UvtLog.Info(UvtLog.Category.RemeshDiag,
                     $"cage: {baked.weldedPositions:N0} welded positions ({baked.splitCopies:N0} split copies), " +
-                    $"{baked.oneSidedNormals:N0} one-sided border normals, max cage deviation {baked.maxOneSidedDeg:F0}°; " +
+                    $"{baked.oneSidedNormals:N0} one-sided border normals, max cage deviation {baked.maxOneSidedDeg:F0}°, {baked.zeroNormals:N0} zero normals; " +
                     $"projection: {baked.rayFallbacks:N0} nearest-fallback samples, {baked.misses:N0} missed texels; " +
                     $"normal map tilt: mean {baked.meanTiltDeg:F1}° / max {baked.maxTiltDeg:F0}°, {baked.loudTexels:N0} texels >45°; " +
                     $"bounds diagonal: source {captured.diagonal:F3} / target {targetDiagonal:F3} (ratio {scaleRatio:F2})");
+            if (baked.zeroNormals > 0)
+                UvtLog.Warn(UvtLog.Category.RemeshDiag,
+                    baked.zeroNormals + " result vertices have zero normals — their texels bake through zeroed ray directions " +
+                    "and tangent frames. Re-run the UV stage; if it repeats, the remesh produced degenerate faces (lower simplification error or raise voxel resolution).");
+            else if (baked.rayFallbacks > baked.covered * 4 / 5 && baked.covered > 0)
+                UvtLog.Warn(UvtLog.Category.RemeshDiag,
+                    baked.rayFallbacks.ToString("N0") + " of the projection samples fell back to nearest-point search — the rays " +
+                    "are not hitting the source. Check the projection distance and the hard-edge mode, and rebake.");
             if (Mathf.Abs(scaleRatio - 1f) > 0.1f)
                 UvtLog.Warn(UvtLog.Category.RemeshDiag,
                     $"target/source bounds diagonal ratio is {scaleRatio:F2} — the remeshed mesh no longer matches the source size. " +
