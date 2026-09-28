@@ -201,6 +201,11 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.HelpBox(status, maps != null && maps.misses > 0 ? MessageType.Warning : MessageType.None);
             if (resultMesh && maps != null) {
                 EditorGUILayout.LabelField($"{resultMesh.vertexCount:N0} vertices · {resultMesh.GetIndexCount(0) / 3:N0} triangles");
+                settings.normalizeSize = EditorGUILayout.Toggle(new GUIContent("Normalize size (saved at scale 1)",
+                    "Bakes the source's world scale into the saved geometry, so the model keeps its real size with a " +
+                    "scale-1 transform regardless of how the source is scaled. Off: the saved transform carries the " +
+                    "source's scale instead."),
+                    settings.normalizeSize);
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
                 settings.embedFbxTextures = EditorGUILayout.Toggle(new GUIContent("Embed textures in FBX",
                     "Self-contained FBX that carries its maps — portable to other machines, but the file grows by the map sizes " +
@@ -440,19 +445,24 @@ namespace SashaRX.UnityMeshLab
 
         void Save()
         {
-            string parent = EditorUtility.OpenFolderPanel("Save Remesh Result", Application.dataPath, "");
-            if (string.IsNullOrEmpty(parent)) return;
-            parent = parent.Replace('\\', '/');
-            string assets = Application.dataPath.Replace('\\', '/');
-            if (parent != assets && !parent.StartsWith(assets + "/", StringComparison.Ordinal)) {
-                status = "Choose a folder inside Assets."; return;
-            }
-            string relative = "Assets" + parent.Substring(assets.Length);
-            // The folder panel can create a directory the AssetDatabase has not imported
-            // yet; GenerateUniqueAssetPath/CreateFolder then fail on the unknown parent.
-            if (!AssetDatabase.IsValidFolder(relative)) AssetDatabase.Refresh();
-            if (!AssetDatabase.IsValidFolder(relative)) {
-                status = relative + " is not an imported asset folder. Refresh the Project window and save again."; return;
+            // Default output: a "remesh" subfolder next to the source model's asset.
+            // Falls back to the folder picker for scene-only objects with no asset.
+            string relative = ResolveSourceRemeshFolder();
+            if (relative == null) {
+                string parent = EditorUtility.OpenFolderPanel("Save Remesh Result", Application.dataPath, "");
+                if (string.IsNullOrEmpty(parent)) return;
+                parent = parent.Replace('\\', '/');
+                string assets = Application.dataPath.Replace('\\', '/');
+                if (parent != assets && !parent.StartsWith(assets + "/", StringComparison.Ordinal)) {
+                    status = "Choose a folder inside Assets."; return;
+                }
+                relative = "Assets" + parent.Substring(assets.Length);
+                // The folder panel can create a directory the AssetDatabase has not imported
+                // yet; GenerateUniqueAssetPath/CreateFolder then fail on the unknown parent.
+                if (!AssetDatabase.IsValidFolder(relative)) AssetDatabase.Refresh();
+                if (!AssetDatabase.IsValidFolder(relative)) {
+                    status = relative + " is not an imported asset folder. Refresh the Project window and save again."; return;
+                }
             }
             string clean = resultName;
             foreach (char c in Path.GetInvalidFileNameChars()) clean = clean.Replace(c, '_');
@@ -495,6 +505,12 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
                 mesh = Object.Instantiate(resultMesh); mesh.name = clean + "_LOD0"; mesh.hideFlags = HideFlags.None;
+                // The result mesh is expressed in the source root's local space. Normalized
+                // saves bake the root's world scale into the vertices so the exported root
+                // sits at scale 1 and the model keeps its real size; otherwise the node
+                // carries the scale (a scaled source would otherwise save at root-local size).
+                Vector3 worldScale = source ? source.transform.lossyScale : Vector3.one;
+                if (settings.normalizeSize) BakeScaleIntoMesh(mesh, worldScale);
                 material = new Material(shader) { name = clean + "_Remesh" };
                 bool urp = shaderName != "Standard";
                 material.SetTexture(urp ? "_BaseMap" : "_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[0]));
@@ -513,11 +529,7 @@ namespace SashaRX.UnityMeshLab
                 temporary.AddComponent<MeshFilter>().sharedMesh = mesh;
                 temporary.AddComponent<MeshRenderer>().sharedMaterial = material;
                 temporary.hideFlags = HideFlags.None;
-                // The result mesh is expressed in the source root's local space, so
-                // carrying the root's lossyScale makes the exported model match the
-                // original's world size; without it a scaled source (FBX file scale,
-                // artist-scaled GameObject) saves at root-local size instead.
-                if (source) temporary.transform.localScale = source.transform.lossyScale;
+                temporary.transform.localScale = settings.normalizeSize ? Vector3.one : worldScale;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
                 // The model ships as an FBX (geometry, split normals, UV0, tangents,
                 // vertex colors); the material stays a curated asset next to it that
@@ -577,6 +589,61 @@ namespace SashaRX.UnityMeshLab
                 if (mesh && !AssetDatabase.Contains(mesh)) Object.DestroyImmediate(mesh);
                 if (material && !AssetDatabase.Contains(material)) Object.DestroyImmediate(material);
             }
+        }
+
+        // "<source asset folder>/remesh" when the source root resolves to an imported
+        // asset (a prefab/model instance, or any mesh asset under it); null when the
+        // source is scene-only and the folder picker is needed instead.
+        string ResolveSourceRemeshFolder()
+        {
+            string assetPath = null;
+            if (source) {
+                assetPath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(source);
+                if (string.IsNullOrEmpty(assetPath)) {
+                    var filter = source.GetComponentInChildren<MeshFilter>();
+                    if (filter && filter.sharedMesh) assetPath = AssetDatabase.GetAssetPath(filter.sharedMesh);
+                }
+            }
+            if (string.IsNullOrEmpty(assetPath)) return null;
+            string dir = Path.GetDirectoryName(assetPath);
+            if (string.IsNullOrEmpty(dir)) return null;
+            dir = dir.Replace('\\', '/');
+            if (!dir.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) || !AssetDatabase.IsValidFolder(dir))
+                return null;
+            string remesh = dir + "/remesh";
+            if (!AssetDatabase.IsValidFolder(remesh)) AssetDatabase.CreateFolder(dir, "remesh");
+            return AssetDatabase.IsValidFolder(remesh) ? remesh : null;
+        }
+
+        // Bakes a world scale into the vertex data so the saved root sits at scale 1:
+        // positions scale component-wise, normals and tangents take the inverse
+        // (inverse-transpose of a diagonal matrix) and renormalize, and a negative
+        // determinant mirrors the mesh, so the triangle winding flips with it.
+        static void BakeScaleIntoMesh(Mesh mesh, Vector3 scale)
+        {
+            if (Mathf.Approximately(scale.x, 1) && Mathf.Approximately(scale.y, 1) && Mathf.Approximately(scale.z, 1)) return;
+            if (Mathf.Abs(scale.x) < 1e-6f || Mathf.Abs(scale.y) < 1e-6f || Mathf.Abs(scale.z) < 1e-6f) return;
+            var vertices = mesh.vertices;
+            for (int i = 0; i < vertices.Length; ++i) vertices[i] = Vector3.Scale(vertices[i], scale);
+            mesh.vertices = vertices;
+            var inv = new Vector3(1f / scale.x, 1f / scale.y, 1f / scale.z);
+            var normals = mesh.normals;
+            for (int i = 0; i < normals.Length; ++i) normals[i] = Vector3.Scale(normals[i], inv).normalized;
+            mesh.normals = normals;
+            var tangents = mesh.tangents;
+            for (int i = 0; i < tangents.Length; ++i) {
+                var t = Vector3.Scale(new Vector3(tangents[i].x, tangents[i].y, tangents[i].z), inv).normalized;
+                tangents[i] = new Vector4(t.x, t.y, t.z, tangents[i].w);
+            }
+            mesh.tangents = tangents;
+            if (scale.x * scale.y * scale.z < 0)
+                for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                    var triangles = mesh.GetTriangles(sub);
+                    for (int i = 0; i < triangles.Length; i += 3) {
+                        int tmp = triangles[i + 1]; triangles[i + 1] = triangles[i + 2]; triangles[i + 2] = tmp;
+                    }
+                    mesh.SetTriangles(triangles, sub);
+                }
         }
 
         byte[] Encode(int index)

@@ -78,14 +78,18 @@ settings, marked "settings changed" in its header) and clears everything after i
    border normals (max cage deviation), nearest-fallback projection samples and
    the normal map's tilt statistics (mean/max angle from flat, texels >45°); a
    map dominated by extreme tilts additionally raises a warning.
-6. **Save** to a folder under Assets. A unique output folder contains the model,
-   material, prefab and BaseColor/Normal/MetallicSmoothness/Occlusion PNGs plus a
-   linear floating-point Emission EXR. Source files are never overwritten. The
-   result geometry is in the source root's local space, and the exported node
-   carries the root's lossyScale, so the saved model matches the original's
-   world size when placed next to it (a scaled source no longer saves at
-   root-local size). The RemeshDiag bake summary also reports the source/target
-   bounds-diagonal ratio and warns when it drifts from 1.
+6. **Save**. The output lands in a `remesh` subfolder next to the source model's
+   asset (its FBX/prefab, or any mesh asset under it), created if missing;
+   scene-only sources fall back to a folder picker. A unique output folder
+   inside it contains the model, material, prefab and
+   BaseColor/Normal/MetallicSmoothness/Occlusion PNGs plus a linear
+   floating-point Emission EXR. Source files are never overwritten.
+   *Normalize size (saved at scale 1)* (default on) bakes the source root's
+   world scale into the saved geometry — real size, identity transform — with
+   normals and tangents taking the inverse scale and the winding flipping on a
+   mirroring determinant; off keeps root-local geometry and carries the scale
+   on the saved transform instead. The RemeshDiag bake summary also reports
+   the source/target bounds-diagonal ratio and warns when it drifts from 1.
    - With **com.unity.formats.fbx** installed the model is exported as a binary
      **FBX** (mesh `Name_LOD0` with the generated normals — including UV-island
      hard edges — UV0, tangents and transferred vertex colors), a prefab that
