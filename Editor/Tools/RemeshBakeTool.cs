@@ -368,6 +368,12 @@ namespace SashaRX.UnityMeshLab
                 (baked.misses == 0 ? "All covered texels projected." : $"{baked.misses:N0} / {baked.covered:N0} texels missed (magenta). Increase projection distance and rebake.") +
                 (captured.warnings.Length > 0 ? $" {captured.warnings.Length} material warning(s), see Console." : "");
             UvtLog.Info("[Remesh] " + status);
+            // Source and target live in the same root-local space by construction; the
+            // diagonal ratio below proves it at a glance and catches scale regressions.
+            Vector3 mn = target.positions[0], mx = target.positions[0];
+            foreach (var pv in target.positions) { mn = Vector3.Min(mn, pv); mx = Vector3.Max(mx, pv); }
+            float targetDiagonal = (mx - mn).magnitude;
+            float scaleRatio = targetDiagonal / Mathf.Max(1e-8f, captured.diagonal);
             // Bake health counters (RemeshDiag log category): cage welding, one-sided
             // border normals, nearest-query fallbacks and normal-map tilt. A loud,
             // strongly-tilted map on a smooth-ish source is the signature of
@@ -377,7 +383,12 @@ namespace SashaRX.UnityMeshLab
                     $"cage: {baked.weldedPositions:N0} welded positions ({baked.splitCopies:N0} split copies), " +
                     $"{baked.oneSidedNormals:N0} one-sided border normals, max cage deviation {baked.maxOneSidedDeg:F0}°; " +
                     $"projection: {baked.rayFallbacks:N0} nearest-fallback samples, {baked.misses:N0} missed texels; " +
-                    $"normal map tilt: mean {baked.meanTiltDeg:F1}° / max {baked.maxTiltDeg:F0}°, {baked.loudTexels:N0} texels >45°");
+                    $"normal map tilt: mean {baked.meanTiltDeg:F1}° / max {baked.maxTiltDeg:F0}°, {baked.loudTexels:N0} texels >45°; " +
+                    $"bounds diagonal: source {captured.diagonal:F3} / target {targetDiagonal:F3} (ratio {scaleRatio:F2})");
+            if (Mathf.Abs(scaleRatio - 1f) > 0.1f)
+                UvtLog.Warn(UvtLog.Category.RemeshDiag,
+                    $"target/source bounds diagonal ratio is {scaleRatio:F2} — the remeshed mesh no longer matches the source size. " +
+                    "Check voxel resolution, small-part pruning and simplification settings, and rebake.");
             if (baked.loudTexels > baked.covered / 20 && baked.meanTiltDeg > 30f)
                 UvtLog.Warn(UvtLog.Category.RemeshDiag,
                     $"{100.0 * baked.loudTexels / Mathf.Max(1, baked.covered):F1}% of texels lean >45° with a {baked.meanTiltDeg:F0}° mean tilt — " +
@@ -502,6 +513,11 @@ namespace SashaRX.UnityMeshLab
                 temporary.AddComponent<MeshFilter>().sharedMesh = mesh;
                 temporary.AddComponent<MeshRenderer>().sharedMaterial = material;
                 temporary.hideFlags = HideFlags.None;
+                // The result mesh is expressed in the source root's local space, so
+                // carrying the root's lossyScale makes the exported model match the
+                // original's world size; without it a scaled source (FBX file scale,
+                // artist-scaled GameObject) saves at root-local size instead.
+                if (source) temporary.transform.localScale = source.transform.lossyScale;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
                 // The model ships as an FBX (geometry, split normals, UV0, tangents,
                 // vertex colors); the material stays a curated asset next to it that
