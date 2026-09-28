@@ -26,8 +26,9 @@ namespace SashaRX.UnityMeshLab
             Export       = 1 << 8,
             Benchmark    = 1 << 9,
             TransferDiag = 1 << 10,
+            RemeshDiag  = 1 << 11,
 
-            All = General | SymSplit | Repack | Match | Dedup | Overlap | Topology | Validation | Export | Benchmark | TransferDiag,
+            All = General | SymSplit | Repack | Match | Dedup | Overlap | Topology | Validation | Export | Benchmark | TransferDiag | RemeshDiag,
         }
 
         const string LevelPrefKey = "UnityMeshLab_LogLevel";

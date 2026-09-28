@@ -13,6 +13,9 @@ namespace SashaRX.UnityMeshLab
             public Color[] emission;
             public Color[] vertexColors; // per result vertex, null unless a transfer was requested
             public int size, misses, covered;
+            // Bake health counters surfaced through the RemeshDiag log category.
+            public int rayFallbacks, weldedPositions, splitCopies, oneSidedNormals, loudTexels;
+            public float maxOneSidedDeg, meanTiltDeg, maxTiltDeg;
         }
 
         // Thread-safe: no UnityEngine.Object access in this method or the BVH.
@@ -37,8 +40,8 @@ namespace SashaRX.UnityMeshLab
             // and casting along them samples a displaced source point, which bakes
             // artifact bands around every island. The tangent frame stays the vertex
             // normal the result mesh shades with, so encode and decode still match.
-            var cage = BuildCageNormals(target);
-            int misses = 0;
+            var cage = BuildCageNormals(target, result);
+            int misses = 0, rayFallbacks = 0;
             Parallel.For(0, size, new ParallelOptions { CancellationToken = token,
                 MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, y => {
                 var candidates = new int[9];
@@ -66,7 +69,8 @@ namespace SashaRX.UnityMeshLab
                             if (Inside(target, candidates[c], uv, out w)) face = candidates[c];
                         if (face < 0) continue;
                     if (!Project(source, target, tangents, cage, bvh, face, w, distance,
-                            out var sc, out var sn, out var sm, out var sa, out var se)) continue;
+                            out var sc, out var sn, out var sm, out var sa, out var se, out var rayFallback)) continue;
+                        if (rayFallback) Interlocked.Increment(ref rayFallbacks);
                         color += sc.linear; metal += sm; ao += sa; emission += se;
                         normal += new Vector3(sn.r * 2 - 1, sn.g * 2 - 1, sn.b * 2 - 1);
                         ++hits;
@@ -88,6 +92,22 @@ namespace SashaRX.UnityMeshLab
                 }
             });
             result.misses = misses;
+            result.rayFallbacks = rayFallbacks;
+            // Normal-map tilt health: how far encoded normals lean away from the
+            // tangent plane's up axis. Loud, strongly-tilted maps on smooth-ish
+            // sources are the visual signature of displaced projection samples.
+            double tiltSum = 0; float tiltMax = 0; int loud = 0, tiltN = 0;
+            for (int i = 0; i < count; ++i) {
+                if (owners[i] < 0) continue;
+                float z = result.normal[i].b * (1f / 127.5f) - 1f;
+                float tilt = Mathf.Acos(Mathf.Clamp(z, -1f, 1f)) * Mathf.Rad2Deg;
+                tiltSum += tilt; ++tiltN;
+                if (tilt > tiltMax) tiltMax = tilt;
+                if (tilt > 45f) ++loud;
+            }
+            result.meanTiltDeg = tiltN > 0 ? (float)(tiltSum / tiltN) : 0;
+            result.maxTiltDeg = tiltMax;
+            result.loudTexels = loud;
             Dilate(result, owners, settings.padding, token);
             if (settings.transferVertexColor || settings.transferVertexAlpha)
                 result.vertexColors = TransferVertexColors(source, target, bvh, settings, token);
@@ -149,7 +169,7 @@ namespace SashaRX.UnityMeshLab
         // the (possibly hard) vertex normal so encode matches how the mesh shades.
         static bool Project(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents, Vector3[] cage,
             TriangleBvh bvh, int face, Vector3 w, float distance,
-            out Color color, out Color normal, out Color metal, out Color ao, out Color emission)
+            out Color color, out Color normal, out Color metal, out Color ao, out Color emission, out bool rayFallback)
         {
             int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
             Vector3 p = target.positions[a] * w.x + target.positions[b] * w.y + target.positions[c] * w.z;
@@ -159,9 +179,11 @@ namespace SashaRX.UnityMeshLab
             var hit = bvh.Raycast(p + rayN * distance, -rayN, distance * 2);
             int sourceFace = hit.triangleIndex;
             Vector3 sw = hit.barycentric;
+            rayFallback = false;
             if (sourceFace < 0) {
                 var nearest = bvh.FindNearest(p, distance);
                 sourceFace = nearest.triangleIndex; sw = nearest.barycentric;
+                rayFallback = true;
             }
             if (sourceFace < 0) {
                 color = normal = metal = ao = emission = default;
@@ -176,7 +198,7 @@ namespace SashaRX.UnityMeshLab
         // each copy's own normal is one-sided there, so rays cast along it land on a
         // displaced source point. Welding by exact position — xatlas copies bit-identical
         // coordinates — averages both sides back into a smooth cage direction.
-        static Vector3[] BuildCageNormals(RemeshNative.Geometry target)
+        static Vector3[] BuildCageNormals(RemeshNative.Geometry target, Maps diag)
         {
             var slots = new int[target.positions.Length];
             var map = new System.Collections.Generic.Dictionary<(int, int, int), int>(target.positions.Length);
@@ -193,8 +215,19 @@ namespace SashaRX.UnityMeshLab
                 welded[slots[a]] += n; welded[slots[b]] += n; welded[slots[c]] += n;
             }
             var cage = new Vector3[target.positions.Length];
-            for (int i = 0; i < cage.Length; ++i)
+            float maxDev = 0; int oneSided = 0;
+            for (int i = 0; i < cage.Length; ++i) {
                 cage[i] = welded[slots[i]].sqrMagnitude > 1e-30f ? welded[slots[i]].normalized : target.normals[i];
+                float dev = Mathf.Acos(Mathf.Clamp(Vector3.Dot(cage[i], target.normals[i]), -1f, 1f)) * Mathf.Rad2Deg;
+                if (dev > maxDev) maxDev = dev;
+                if (dev > 30f) ++oneSided;
+            }
+            if (diag != null) {
+                diag.weldedPositions = map.Count;
+                diag.splitCopies = target.positions.Length - map.Count;
+                diag.oneSidedNormals = oneSided;
+                diag.maxOneSidedDeg = maxDev;
+            }
             return cage;
         }
 

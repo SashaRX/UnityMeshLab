@@ -368,6 +368,21 @@ namespace SashaRX.UnityMeshLab
                 (baked.misses == 0 ? "All covered texels projected." : $"{baked.misses:N0} / {baked.covered:N0} texels missed (magenta). Increase projection distance and rebake.") +
                 (captured.warnings.Length > 0 ? $" {captured.warnings.Length} material warning(s), see Console." : "");
             UvtLog.Info("[Remesh] " + status);
+            // Bake health counters (RemeshDiag log category): cage welding, one-sided
+            // border normals, nearest-query fallbacks and normal-map tilt. A loud,
+            // strongly-tilted map on a smooth-ish source is the signature of
+            // displaced projection samples; loud fraction > 5% also warns on its own.
+            if (UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag))
+                UvtLog.Info(UvtLog.Category.RemeshDiag,
+                    $"cage: {baked.weldedPositions:N0} welded positions ({baked.splitCopies:N0} split copies), " +
+                    $"{baked.oneSidedNormals:N0} one-sided border normals, max cage deviation {baked.maxOneSidedDeg:F0}°; " +
+                    $"projection: {baked.rayFallbacks:N0} nearest-fallback samples, {baked.misses:N0} missed texels; " +
+                    $"normal map tilt: mean {baked.meanTiltDeg:F1}° / max {baked.maxTiltDeg:F0}°, {baked.loudTexels:N0} texels >45°");
+            if (baked.loudTexels > baked.covered / 20 && baked.meanTiltDeg > 30f)
+                UvtLog.Warn(UvtLog.Category.RemeshDiag,
+                    $"{100.0 * baked.loudTexels / Mathf.Max(1, baked.covered):F1}% of texels lean >45° with a {baked.meanTiltDeg:F0}° mean tilt — " +
+                    "the map is dominated by extreme normals. Check the hard-edge mode, projection distance and cage fit, " +
+                    "and compare against the source: fine detail should tilt a map, not saturate it.");
         }
 
         void Report(string message) { status = message; RequestRepaint?.Invoke(); }
