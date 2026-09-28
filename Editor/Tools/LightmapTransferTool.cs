@@ -5734,13 +5734,33 @@ namespace SashaRX.UnityMeshLab
                 var fld = System.IO.Path.GetFileName(p);
                 if (!string.IsNullOrEmpty(par)) AssetDatabase.CreateFolder(par, fld);
             }
+            // CreateFolder only makes one level; a deeper missing savePath or a
+            // locked parent leaves the folder absent and every generated path
+            // invalid — bail out with a readable error instead of throwing
+            // inside OnGUI.
+            if (!AssetDatabase.IsValidFolder(p))
+            {
+                UvtLog.Error("[Save] Output folder does not exist and could not be created: " + p);
+                return;
+            }
             int n = 0;
             foreach (var e in ctx.MeshEntries)
             {
                 Mesh m = GetResultMesh(e);
                 if (m == null) continue;
                 TangentValidator.EnforceTangentsMatchOriginal(m, e.fbxMesh, "SaveAll");
-                string ap = AssetDatabase.GenerateUniqueAssetPath(p + "/" + m.name + ".asset");
+                // Mesh names can carry characters that are invalid in file names
+                // (':', '/', ...). GenerateUniqueAssetPath then returns an empty
+                // string and CreateAsset throws mid-OnGUI ("path is empty").
+                string clean = m.name;
+                foreach (char c in System.IO.Path.GetInvalidFileNameChars()) clean = clean.Replace(c, '_');
+                if (string.IsNullOrWhiteSpace(clean)) clean = "Mesh";
+                string ap = AssetDatabase.GenerateUniqueAssetPath(p + "/" + clean + ".asset");
+                if (string.IsNullOrEmpty(ap))
+                {
+                    UvtLog.Warn("[Save] Skipped '" + m.name + "': no valid asset path under " + p);
+                    continue;
+                }
                 AssetDatabase.CreateAsset(m, ap); n++;
             }
             AssetDatabase.SaveAssets(); AssetDatabase.Refresh();
