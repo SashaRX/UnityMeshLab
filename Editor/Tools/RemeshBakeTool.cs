@@ -154,15 +154,18 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (StageHeader(Stage.Unwrap, geometry != null ? $"{geometry.chartCount:N0} islands" : null)) {
                     settings.hardEdges = (RemeshHardEdges)EditorGUILayout.EnumPopup(new GUIContent("Hard edges",
-                        "Angle: crease angle. UV islands: hard along island borders, smooth inside."), settings.hardEdges);
+                        "Angle: crease angle. UV islands: hard along island borders, smooth inside. The crease choice also feeds xatlas charting."), settings.hardEdges);
                     bool angle = settings.hardEdges == RemeshHardEdges.Angle || settings.hardEdges == RemeshHardEdges.UvIslandsAndAngle;
                     using (new EditorGUI.DisabledScope(!angle))
                         settings.normalCrease = EditorGUILayout.Slider("Crease angle", settings.normalCrease, 0, 180);
-                    using (new EditorGUI.DisabledScope(settings.hardEdges == RemeshHardEdges.UvIslands || settings.hardEdges == RemeshHardEdges.UvIslandsAndAngle))
-                        settings.normalSmoothing = EditorGUILayout.Slider(new GUIContent("Normal smoothing",
-                            "Applied after UV generation, so it works with every hard-edge mode: smoothing flows along the surface " +
-                            "and stops at crease edges and island borders alike."),
-                            settings.normalSmoothing, 0, 10);
+                    settings.normalWeighting = (RemeshNormalWeighting)EditorGUILayout.EnumPopup(new GUIContent("Normal weighting",
+                        "How face normals are weighted when the UV-split vertex normals are regenerated — the Blender Weighted Normal " +
+                        "analog. Face area is meshopt's own accumulation; corner angle pulls sharp corners harder; both multiply them."),
+                        settings.normalWeighting);
+                    settings.normalSmoothing = EditorGUILayout.Slider(new GUIContent("Normal smoothing",
+                        "Applied after UV generation, so it works with every hard-edge mode: smoothing flows along the surface " +
+                        "and stops at crease edges and island borders alike."),
+                        settings.normalSmoothing, 0, 10);
                     settings.textureResolution = EditorGUILayout.IntPopup("Texture size", settings.textureResolution,
                         new[] { "512", "1024", "2048", "4096" }, new[] { 512, 1024, 2048, 4096 });
                     settings.padding = EditorGUILayout.IntSlider("Atlas padding", settings.padding, 1, 32);
@@ -271,7 +274,7 @@ namespace SashaRX.UnityMeshLab
             switch (stage) {
                 case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
-                case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
+                case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
                     $"{s.maxChartArea}|{s.maxChartBoundary}|{s.packRotate}|{s.packBlockAlign}|{s.packBruteForce}";
                 default: return $"{s.projectionDistance}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}";
@@ -356,7 +359,19 @@ namespace SashaRX.UnityMeshLab
             resultMesh = new Mesh { name = resultName + "_LOD0", indexFormat = IndexFormat.UInt32, hideFlags = HideFlags.HideAndDontSave };
             resultMesh.vertices = unwrapped.positions; resultMesh.normals = unwrapped.normals;
             resultMesh.uv = unwrapped.uv; resultMesh.triangles = unwrapped.indices;
-            resultMesh.RecalculateBounds(); resultMesh.RecalculateTangents();
+            resultMesh.RecalculateBounds();
+            // The tangent frame comes from meshoptimizer over the final UV layout
+            // (MikkT-compatible, the same basis the bake encodes against); Unity's
+            // recalculation is only a fallback if the native tangents are missing.
+            bool anyTangent = false;
+            if (unwrapped.tangents != null)
+                for (int i = 0; i < unwrapped.tangents.Length && !anyTangent; ++i)
+                    anyTangent = unwrapped.tangents[i].sqrMagnitude > 1e-12f;
+            if (anyTangent) resultMesh.tangents = unwrapped.tangents;
+            else {
+                resultMesh.RecalculateTangents();
+                UvtLog.Warn("[Remesh] Native tangents missing; fell back to Unity's recalculation. Rebuild the native plugins for this commit.");
+            }
             tangents = resultMesh.tangents;
             status = $"Unwrap: {unwrapped.chartCount:N0} islands, {unwrapped.positions.Length:N0} vertices.";
         }

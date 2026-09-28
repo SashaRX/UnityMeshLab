@@ -24,6 +24,18 @@ namespace SashaRX.UnityMeshLab
         Strong,
     }
 
+    /// <summary>How face normals are weighted when the UV-split vertex normals are
+    /// regenerated — the Blender Weighted Normal modifier analog.</summary>
+    public enum RemeshNormalWeighting
+    {
+        /// <summary>Face-area weighting (meshopt's own accumulation).</summary>
+        FaceArea,
+        /// <summary>Corner-angle weighting: sharp corners pull their normal harder.</summary>
+        CornerAngle,
+        /// <summary>Face area multiplied by corner angle.</summary>
+        FaceAreaAndCornerAngle,
+    }
+
     [Serializable]
     public sealed class RemeshSettings
     {
@@ -49,6 +61,9 @@ namespace SashaRX.UnityMeshLab
         public RemeshHardEdges hardEdges = RemeshHardEdges.UvIslands;
         public float normalCrease = 60;
         public float normalSmoothing = 1;
+        // Regenerated after the UV cut, weighted per this mode (Blender Weighted
+        // Normal analog); smooth inside every split group, hard across every split.
+        public RemeshNormalWeighting normalWeighting = RemeshNormalWeighting.FaceArea;
         public float chartMaxCost = 2;
         public float chartNormalDeviation = 2;
         public float chartRoundness = 0.01f;

@@ -140,11 +140,18 @@ namespace SashaRX.UnityMeshLab.Tests
             // Two faces folded 90° along x. Shared vertices smooth; split vertices stay hard.
             var p=new[] { Vector3.zero, Vector3.right, Vector3.forward, Vector3.up, Vector3.zero, Vector3.right };
             var shared=new RemeshNative.Geometry { positions=p, normals=new Vector3[6], indices=new[] { 0,1,2, 1,0,3 } };
-            RemeshNative.SmoothWithinSplitVertices(shared);
+            RemeshNative.GenerateSplitNormals(shared, RemeshNormalWeighting.FaceArea);
             Assert.That(Vector3.Angle(shared.normals[0], Vector3.Normalize(new Vector3(0,-1,-1))), Is.LessThan(0.01f));
             var split=new RemeshNative.Geometry { positions=p, normals=new Vector3[6], indices=new[] { 0,1,2, 5,4,3 } };
-            RemeshNative.SmoothWithinSplitVertices(split);
+            RemeshNative.GenerateSplitNormals(split, RemeshNormalWeighting.FaceArea);
             Assert.That(Vector3.Angle(split.normals[0], split.normals[4]), Is.EqualTo(90).Within(0.01f));
+            // Corner-angle weighting keeps the same directions on this symmetric fold.
+            var angled=new RemeshNative.Geometry { positions=(Vector3[])p.Clone(), normals=new Vector3[6], indices=new[] { 0,1,2, 1,0,3 } };
+            RemeshNative.GenerateSplitNormals(angled, RemeshNormalWeighting.CornerAngle);
+            Assert.That(Vector3.Angle(angled.normals[0], shared.normals[0]), Is.LessThan(0.01f));
+            var both=new RemeshNative.Geometry { positions=(Vector3[])p.Clone(), normals=new Vector3[6], indices=new[] { 0,1,2, 1,0,3 } };
+            RemeshNative.GenerateSplitNormals(both, RemeshNormalWeighting.FaceAreaAndCornerAngle);
+            Assert.That(Vector3.Angle(both.normals[0], shared.normals[0]), Is.LessThan(0.01f));
         }
         [Test]
         public void ImageSamplingUsesLinearInterpolationAndWrapModes()

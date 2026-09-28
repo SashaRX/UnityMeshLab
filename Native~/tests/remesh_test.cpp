@@ -23,7 +23,7 @@ static void check(bool condition, const char* message) {
 int main() {
     float p[] = {-1,-1,-1, 1,-1,-1, 1,1,-1, -1,1,-1, -1,-1,1, 1,-1,1, 1,1,1, -1,1,1};
     uint32_t t[] = {0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5};
-    check(meshLabRemeshVersion() == 2, "ABI version");
+    check(meshLabRemeshVersion() == 3, "ABI version");
     void* h = nullptr; uint32_t v = 0, n = 0;
     check(meshLabRemeshBuild(p,8,t,36,3,100,0.01f,1,0,256,4,1,&h,&v,&n)==1 && !h, "reject grid resolution");
     t[0]=99;
@@ -36,15 +36,18 @@ int main() {
         check(meshLabRemeshBuild(p,8,t,36,16,100,pass ? 1.0f : 0.01f,1,0,256,4,1,&h,&v,&n)==0 && h, "cube pipeline");
         check(v>0 && n>0 && n%3==0, "valid counts");
         if (pass) check(n/3 <= 100, "target budget with relaxed error");
-        std::vector<float> vertices(v*8); std::vector<uint32_t> indices(n);
+        std::vector<float> vertices(v*16); std::vector<uint32_t> indices(n);
         check(meshLabRemeshCopy(h,vertices.data(),0,indices.data(),n)==1, "copy capacity guard");
         check(meshLabRemeshCopy(h,vertices.data(),v,indices.data(),n)==0, "copy result");
         for (auto i:indices) check(i<v, "valid index");
         for (uint32_t i=0;i<v;++i) {
-            for(int k=0;k<8;++k) check(std::isfinite(vertices[i*8+k]), "finite vertex data");
-            float norm=0; for(int k=3;k<6;++k) norm+=vertices[i*8+k]*vertices[i*8+k];
+            for(int k=0;k<16;++k) check(std::isfinite(vertices[i*16+k]), "finite vertex data");
+            float norm=0; for(int k=3;k<6;++k) norm+=vertices[i*16+k]*vertices[i*16+k];
             check(std::abs(norm-1)<0.01f, "unit normals");
-            for(int k=6;k<8;++k) check(vertices[i*8+k]>=0 && vertices[i*8+k]<=1, "normalized UV");
+            for(int k=6;k<8;++k) check(vertices[i*16+k]>=0 && vertices[i*16+k]<=1, "normalized UV");
+            float tangent=0; for(int k=8;k<11;++k) tangent+=vertices[i*16+k]*vertices[i*16+k];
+            check(std::abs(tangent-1)<0.01f, "unit tangents");
+            check(std::abs(vertices[i*16+11])==1, "tangent handedness");
         }
         meshLabRemeshDestroy(h); h=nullptr;
         std::cout << "cube: " << v << " vertices, " << n/3 << " triangles\n";
@@ -57,12 +60,12 @@ int main() {
     check(meshLabRemeshBuild(tiny,8,t,36,16,100,0.01f,1,0,256,4,1,&h,&v,&n)==0 && h, "tiny cube unwrap");
     check(v>0 && n>0 && n%3==0, "tiny cube counts");
     {
-        std::vector<float> vertices(v*8);
+        std::vector<float> vertices(v*16);
         std::vector<uint32_t> indices(n);
         check(meshLabRemeshCopy(h,vertices.data(),v,indices.data(),n)==0, "tiny cube copy");
         for (uint32_t i=0;i<v;++i) {
-            for (int k=0;k<8;++k) check(std::isfinite(vertices[i*8+k]), "tiny cube finite output");
-            for (int k=6;k<8;++k) check(vertices[i*8+k]>=0 && vertices[i*8+k]<=1, "tiny cube normalized UV");
+            for (int k=0;k<16;++k) check(std::isfinite(vertices[i*16+k]), "tiny cube finite output");
+            for (int k=6;k<8;++k) check(vertices[i*16+k]>=0 && vertices[i*16+k]<=1, "tiny cube normalized UV");
         }
     }
     meshLabRemeshDestroy(h); h=nullptr;
@@ -108,11 +111,16 @@ int main() {
         uint32_t charts = 0;
         check(meshLabUnwrap(sp.data(),sc,sidx.data(),si,1,0,options,17,&h,&v,&n,&charts)==0 && h, "staged: unwrap");
         check(v>0 && n>0 && n%3==0 && charts>0, "staged: unwrap counts");
-        std::vector<float> uv(v*8); std::vector<uint32_t> ui(n); std::vector<int32_t> uc(v);
+        std::vector<float> uv(v*16); std::vector<uint32_t> ui(n); std::vector<int32_t> uc(v);
         check(meshLabUnwrapCopy(h,uv.data(),v,ui.data(),n,uc.data())==0, "staged: unwrap copy");
         for (auto i:ui) check(i<v, "staged: unwrap index range");
         for (auto c:uc) check(c>=0 && uint32_t(c)<charts, "staged: chart index range");
-        for (uint32_t i=0;i<v;++i) for(int k=6;k<8;++k) check(uv[i*8+k]>=0 && uv[i*8+k]<=1, "staged: normalized UV");
+        for (uint32_t i=0;i<v;++i) {
+            for(int k=6;k<8;++k) check(uv[i*16+k]>=0 && uv[i*16+k]<=1, "staged: normalized UV");
+            float tangent=0; for(int k=8;k<11;++k) tangent+=uv[i*16+k]*uv[i*16+k];
+            check(std::abs(tangent-1)<0.01f, "staged: unit tangents");
+            check(std::abs(uv[i*16+11])==1, "staged: tangent handedness");
+        }
         meshLabRemeshDestroy(h); h=nullptr;
         std::cout << "staged: " << ic/3 << " voxel -> " << si/3 << " simplified triangles, " << charts << " charts\n";
     }

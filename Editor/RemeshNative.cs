@@ -8,7 +8,7 @@ namespace SashaRX.UnityMeshLab
     internal static class RemeshNative
     {
         const string Library = "xatlas-unity";
-        const int AbiVersion = 2;
+        const int AbiVersion = 3;
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         static extern int meshLabRemeshVersion();
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
@@ -41,11 +41,12 @@ namespace SashaRX.UnityMeshLab
             public int TriangleCount => indices.Length / 3;
         }
 
-        /// <summary>Unwrapped result: split vertices with normals, UV0 and xatlas chart ids.</summary>
+        /// <summary>Unwrapped result: split vertices with normals, UV0, meshoptimizer tangents and xatlas chart ids.</summary>
         internal sealed class Geometry
         {
             public Vector3[] positions, normals;
             public Vector2[] uv;
+            public Vector4[] tangents;
             public int[] indices, charts;
             public int chartCount;
         }
@@ -114,29 +115,30 @@ namespace SashaRX.UnityMeshLab
                     options, (uint)options.Length, out handle, out uint vertexCount, out uint indexCount, out uint charts);
                 token.ThrowIfCancellationRequested();
                 if (code != 0) throw new InvalidOperationException("UV unwrap failed: " + Error(code));
-                var data = new float[checked((int)vertexCount * 8)];
+                // Vertex layout is sixteen float32: position, normal, UV0, tangent.
+                var data = new float[checked((int)vertexCount * 16)];
                 var result = new Geometry { positions = new Vector3[vertexCount], normals = new Vector3[vertexCount],
-                    uv = new Vector2[vertexCount], indices = new int[indexCount], charts = new int[vertexCount], chartCount = (int)charts };
+                    uv = new Vector2[vertexCount], tangents = new Vector4[vertexCount],
+                    indices = new int[indexCount], charts = new int[vertexCount], chartCount = (int)charts };
                 if (meshLabUnwrapCopy(handle, data, vertexCount, result.indices, indexCount, result.charts) != 0)
                     throw new InvalidOperationException("UV unwrap output copy failed.");
                 for (int i = 0; i < vertexCount; ++i) {
-                    result.positions[i] = new Vector3(data[i * 8], data[i * 8 + 1], data[i * 8 + 2]);
-                    result.normals[i] = new Vector3(data[i * 8 + 3], data[i * 8 + 4], data[i * 8 + 5]);
-                    result.uv[i] = new Vector2(data[i * 8 + 6], data[i * 8 + 7]);
+                    result.positions[i] = new Vector3(data[i * 16], data[i * 16 + 1], data[i * 16 + 2]);
+                    result.normals[i] = new Vector3(data[i * 16 + 3], data[i * 16 + 4], data[i * 16 + 5]);
+                    result.uv[i] = new Vector2(data[i * 16 + 6], data[i * 16 + 7]);
+                    result.tangents[i] = new Vector4(data[i * 16 + 8], data[i * 16 + 9], data[i * 16 + 10], data[i * 16 + 11]);
                 }
-                // A degenerate corner group (zero-area faces) leaves zero normals,
-                // which zero the bake's ray directions and tangent frames; rebuild
-                // every normal from face geometry instead of shipping the holes.
+                // Normals are regenerated from the split geometry after the UV cut, so
+                // every hard-edge source behaves the same: crease splits and chart
+                // borders are already vertex splits, no face crosses one, and the
+                // weighting follows the Blender Weighted Normal analog modes.
+                GenerateSplitNormals(result, settings.normalWeighting);
                 int zeroNormals = 0;
                 for (int i = 0; i < vertexCount; ++i)
                     if (result.normals[i].sqrMagnitude < 1e-12f) ++zeroNormals;
-                if (zeroNormals > 0) {
+                if (zeroNormals > 0)
                     UvtLog.Warn("[Remesh] " + zeroNormals + " of " + vertexCount +
-                        " unwrap normals came back zero (degenerate faces); rebuilding all from face normals.");
-                    SmoothWithinSplitVertices(result);
-                }
-                if (settings.hardEdges == RemeshHardEdges.UvIslands || settings.hardEdges == RemeshHardEdges.UvIslandsAndAngle)
-                    SmoothWithinSplitVertices(result);
+                        " split normals are zero (degenerate faces with no usable corner); their rays fall back to the welded cage.");
                 // Normal smoothing runs after UV generation so it works the same for
                 // every hard-edge source: crease splits and chart borders already
                 // materialized as vertex splits, and mesh edges never cross a split,
@@ -147,20 +149,39 @@ namespace SashaRX.UnityMeshLab
             finally { if (handle != IntPtr.Zero) meshLabRemeshDestroy(handle); }
         }
 
-        // xatlas splits vertices along every chart border (and the native normals split
-        // them along crease edges). Averaging face normals per output vertex therefore
-        // smooths inside each island and leaves its border hard.
-        internal static void SmoothWithinSplitVertices(Geometry geometry)
+        // Regenerates vertex normals from the split geometry after the UV cut.
+        // xatlas splits vertices along every chart border and the native normals
+        // split them along crease edges, so accumulating face normals per output
+        // vertex smooths inside every split group and leaves its border hard —
+        // creases and island borders alike. Weighting follows the Blender
+        // Weighted Normal analog: face area (meshopt's own accumulation),
+        // corner angle, or both multiplied together.
+        internal static void GenerateSplitNormals(Geometry geometry, RemeshNormalWeighting weighting)
         {
             var sum = new Vector3[geometry.positions.Length];
             var p = geometry.positions;
+            bool byArea = weighting != RemeshNormalWeighting.CornerAngle;
+            bool byAngle = weighting != RemeshNormalWeighting.FaceArea;
             for (int i = 0; i < geometry.indices.Length; i += 3) {
                 int a = geometry.indices[i], b = geometry.indices[i + 1], c = geometry.indices[i + 2];
-                Vector3 n = Vector3.Cross(p[b] - p[a], p[c] - p[a]); // area weighted
-                sum[a] += n; sum[b] += n; sum[c] += n;
+                Vector3 ab = p[b] - p[a], ac = p[c] - p[a], bc = p[c] - p[b];
+                Vector3 n = Vector3.Cross(ab, ac); // |n| = 2 * face area
+                if (!byAngle) { sum[a] += n; sum[b] += n; sum[c] += n; continue; }
+                Vector3 face = n.sqrMagnitude > 1e-30f ? n.normalized : Vector3.zero;
+                float angleA = CornerAngle(ab, ac), angleB = CornerAngle(-ab, bc), angleC = CornerAngle(-ac, -bc);
+                if (byArea) { sum[a] += n * angleA; sum[b] += n * angleB; sum[c] += n * angleC; }
+                else { sum[a] += face * angleA; sum[b] += face * angleB; sum[c] += face * angleC; }
             }
             for (int i = 0; i < sum.Length; ++i)
                 if (sum[i].sqrMagnitude > 1e-30f) geometry.normals[i] = sum[i].normalized;
+        }
+
+        // Angle between two edge directions meeting at a corner, in radians.
+        static float CornerAngle(Vector3 u, Vector3 v)
+        {
+            float lengths = u.magnitude * v.magnitude;
+            if (lengths < 1e-20f) return 0;
+            return Mathf.Acos(Mathf.Clamp(Vector3.Dot(u, v) / lengths, -1f, 1f));
         }
 
         // Port of meshopt's generateNormals smoothing pass, run on the split unwrap
