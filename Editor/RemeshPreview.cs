@@ -30,7 +30,7 @@ namespace SashaRX.UnityMeshLab
         View view;
         Stage stage = Stage.Result;
         Channel channel;
-        bool wireframe = true, shaded = true, textured = true, vertexColors, uvTexture = true, uvTint = true;
+        bool wireframe = true, shaded = true, textured = true, bumpMap = true, vertexColors, uvTexture = true, uvTint = true;
         Vector2 orbit = new Vector2(-135, 20);
         float zoom = 1;
         PreviewRenderUtility utility;
@@ -80,6 +80,7 @@ namespace SashaRX.UnityMeshLab
                 wireframe = GUILayout.Toggle(wireframe, "Wire", EditorStyles.miniButtonLeft);
                 shaded = GUILayout.Toggle(shaded, "Shaded", EditorStyles.miniButtonMid);
                 textured = GUILayout.Toggle(textured, "Texture", EditorStyles.miniButtonMid);
+                bumpMap = GUILayout.Toggle(bumpMap, "Bump", EditorStyles.miniButtonMid);
                 vertexColors = GUILayout.Toggle(vertexColors, "Vertex color", EditorStyles.miniButtonRight);
             }
             var mesh = data.meshes[(int)stage];
@@ -108,6 +109,11 @@ namespace SashaRX.UnityMeshLab
                 bool useTexture = textured && stage == Stage.Result && data.baseColor;
                 surface.SetTexture("_MainTex", useTexture ? data.baseColor : null);
                 surface.SetFloat("_UseTexture", useTexture ? 1 : 0);
+                // Only the result stage has tangents; its baked normal map is the same
+                // data the saved material gets, so the preview shows the final shading.
+                var bump = bumpMap && stage == Stage.Result && data.maps != null ? MapTexture(data.maps, Channel.Normal) : null;
+                surface.SetTexture("_BumpMap", bump);
+                surface.SetFloat("_UseBumpMap", bump ? 1 : 0);
                 surface.SetFloat("_UseVertexColor", vertexColors && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
                 for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, Matrix4x4.identity, surface, sub);
             }

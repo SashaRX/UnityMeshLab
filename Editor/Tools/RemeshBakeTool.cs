@@ -510,6 +510,11 @@ namespace SashaRX.UnityMeshLab
                     // The curated material + prefab ship next to the FBX; keep the
                     // importer from generating a duplicate MaterialDescription copy.
                     modelImporter.materialImportMode = ModelImporterMaterialImportMode.None;
+                    // The normal map was baked against the exported tangent frame;
+                    // a recalculation (MikkT default) can flip its handedness per
+                    // vertex, which green-flips chunks of the baked map.
+                    modelImporter.normalImportMode = ModelImporterNormals.Import;
+                    modelImporter.tangentImportMode = ModelImporterTangents.Import;
                     modelImporter.SaveAndReimport();
                 }
                 var fbxRoot = AssetDatabase.LoadMainAssetAtPath(fbxPath) as GameObject;

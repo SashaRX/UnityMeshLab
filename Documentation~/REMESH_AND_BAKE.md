@@ -13,7 +13,12 @@ settings, marked "settings changed" in its header) and clears everything after i
 
 - **3D** — orbitable view (drag to orbit, scroll to zoom) of the source, voxel
   remesh, simplified mesh or final result, with wireframe, shading, baked base
-  color and vertex color toggles.
+  color, baked normal map and vertex color toggles. The **Bump** toggle applies
+  the baked tangent-space normal map to the result stage only (earlier stages
+  have no tangents); with *Hard edges = UV islands* the vertex normals are
+  smooth by design, so this toggle is what shows the transferred detail — the
+  vivid pink/cyan atlas in **Maps ▸ Normal** is that same detail in tangent
+  space, not corruption.
 - **UV** — the final UV layout with islands tinted and the baked base color under
   it; island count, triangle count and texel usage.
 - **Maps** — each baked map (base color, normal, metallic/smoothness, occlusion,
