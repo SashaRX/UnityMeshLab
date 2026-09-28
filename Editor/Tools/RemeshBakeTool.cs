@@ -455,7 +455,7 @@ namespace SashaRX.UnityMeshLab
                 material.EnableKeyword("_NORMALMAP"); material.EnableKeyword("_EMISSION");
                 material.EnableKeyword(urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP");
                 if (urp) material.EnableKeyword("_OCCLUSIONMAP");
-                temporary = new GameObject(clean + "_LOD0") { hideFlags = HideAndDontSave };
+                temporary = new GameObject(clean + "_LOD0") { hideFlags = HideFlags.HideAndDontSave };
                 temporary.AddComponent<MeshFilter>().sharedMesh = mesh;
                 temporary.AddComponent<MeshRenderer>().sharedMaterial = material;
                 temporary.hideFlags = HideFlags.None;
@@ -478,7 +478,7 @@ namespace SashaRX.UnityMeshLab
                 if (modelImporter != null) {
                     // The curated material + prefab ship next to the FBX; keep the
                     // importer from generating a duplicate MaterialDescription copy.
-                    modelImporter.materialImportMode = MaterialImportMode.None;
+                    modelImporter.materialImportMode = ModelImporterMaterialImportMode.None;
                     modelImporter.SaveAndReimport();
                 }
                 var fbxRoot = AssetDatabase.LoadMainAssetAtPath(fbxPath) as GameObject;
