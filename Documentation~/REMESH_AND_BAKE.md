@@ -66,7 +66,13 @@ settings, marked "settings changed" in its header) and clears everything after i
    and vertex color transfer: *Vertex color (RGB)* and *Vertex alpha* copy the
    source vertex colors, interpolated at the nearest source surface point, onto
    the result mesh independently. Missed covered texels are magenta, not silently
-   patched with unrelated material data.
+   patched with unrelated material data. Projection rays are cast along a smooth
+   welded "cage" direction (area-weighted face normals averaged across coincident
+   vertices), not the vertex normal: UV-island hard edges leave chart-border
+   normals one-sided, and rays along them would sample a displaced source point,
+   baking artifact bands around every island. The tangent-space normal map is
+   still encoded against the vertex normal the result mesh shades with, so hard
+   island borders keep their crisp silhouette while the interior stays clean.
 6. **Save** to a folder under Assets. A unique output folder contains the model,
    material, prefab and BaseColor/Normal/MetallicSmoothness/Occlusion PNGs plus a
    linear floating-point Emission EXR. Source files are never overwritten.

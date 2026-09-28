@@ -32,6 +32,12 @@ namespace SashaRX.UnityMeshLab
             var bvh = new TriangleBvh(source.positions, source.indices);
             token.ThrowIfCancellationRequested();
             float distance = source.diagonal * settings.projectionDistance;
+            // Projection rays follow a smooth welded "cage" direction, not the vertex
+            // normal: island hard-edge modes leave chart-border normals one-sided,
+            // and casting along them samples a displaced source point, which bakes
+            // artifact bands around every island. The tangent frame stays the vertex
+            // normal the result mesh shades with, so encode and decode still match.
+            var cage = BuildCageNormals(target);
             int misses = 0;
             Parallel.For(0, size, new ParallelOptions { CancellationToken = token,
                 MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, y => {
@@ -59,8 +65,8 @@ namespace SashaRX.UnityMeshLab
                         for (int c = 0; c < candidateCount && face < 0; ++c)
                             if (Inside(target, candidates[c], uv, out w)) face = candidates[c];
                         if (face < 0) continue;
-                        if (!Project(source, target, tangents, bvh, face, w, distance,
-                                out var sc, out var sn, out var sm, out var sa, out var se)) continue;
+                    if (!Project(source, target, tangents, cage, bvh, face, w, distance,
+                            out var sc, out var sn, out var sm, out var sa, out var se)) continue;
                         color += sc.linear; metal += sm; ao += sa; emission += se;
                         normal += new Vector3(sn.r * 2 - 1, sn.g * 2 - 1, sn.b * 2 - 1);
                         ++hits;
@@ -139,15 +145,18 @@ namespace SashaRX.UnityMeshLab
 
         // Trace from the destination surface point back to the source and evaluate its
         // material there. False when neither the ray nor the bounded nearest query hits.
-        static bool Project(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents, TriangleBvh bvh,
-            int face, Vector3 w, float distance,
+        // The ray direction comes from the welded cage normal; the tangent frame keeps
+        // the (possibly hard) vertex normal so encode matches how the mesh shades.
+        static bool Project(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents, Vector3[] cage,
+            TriangleBvh bvh, int face, Vector3 w, float distance,
             out Color color, out Color normal, out Color metal, out Color ao, out Color emission)
         {
             int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
             Vector3 p = target.positions[a] * w.x + target.positions[b] * w.y + target.positions[c] * w.z;
             Vector3 n = (target.normals[a] * w.x + target.normals[b] * w.y + target.normals[c] * w.z).normalized;
+            Vector3 rayN = (cage[a] * w.x + cage[b] * w.y + cage[c] * w.z).normalized;
             Vector4 tangent = tangents[a] * w.x + tangents[b] * w.y + tangents[c] * w.z;
-            var hit = bvh.Raycast(p + n * distance, -n, distance * 2);
+            var hit = bvh.Raycast(p + rayN * distance, -rayN, distance * 2);
             int sourceFace = hit.triangleIndex;
             Vector3 sw = hit.barycentric;
             if (sourceFace < 0) {
@@ -160,6 +169,33 @@ namespace SashaRX.UnityMeshLab
             }
             Evaluate(source, sourceFace, sw, n, tangent, out color, out normal, out metal, out ao, out emission);
             return true;
+        }
+
+        // Per-vertex raycast directions from area-weighted face normals welded across
+        // coincident vertices: UV chart borders (and crease edges) split vertices, and
+        // each copy's own normal is one-sided there, so rays cast along it land on a
+        // displaced source point. Welding by exact position — xatlas copies bit-identical
+        // coordinates — averages both sides back into a smooth cage direction.
+        static Vector3[] BuildCageNormals(RemeshNative.Geometry target)
+        {
+            var slots = new int[target.positions.Length];
+            var map = new System.Collections.Generic.Dictionary<(int, int, int), int>(target.positions.Length);
+            for (int i = 0; i < target.positions.Length; ++i) {
+                var p = target.positions[i];
+                var key = (BitConverter.SingleToInt32Bits(p.x), BitConverter.SingleToInt32Bits(p.y), BitConverter.SingleToInt32Bits(p.z));
+                if (!map.TryGetValue(key, out int slot)) { slot = map.Count; map[key] = slot; }
+                slots[i] = slot;
+            }
+            var welded = new Vector3[map.Count];
+            for (int i = 0; i < target.indices.Length; i += 3) {
+                int a = target.indices[i], b = target.indices[i + 1], c = target.indices[i + 2];
+                Vector3 n = Vector3.Cross(target.positions[b] - target.positions[a], target.positions[c] - target.positions[a]);
+                welded[slots[a]] += n; welded[slots[b]] += n; welded[slots[c]] += n;
+            }
+            var cage = new Vector3[target.positions.Length];
+            for (int i = 0; i < cage.Length; ++i)
+                cage[i] = welded[slots[i]].sqrMagnitude > 1e-30f ? welded[slots[i]].normalized : target.normals[i];
+            return cage;
         }
 
         // Nearest source surface point per result vertex, interpolating its vertex colours.
