@@ -70,8 +70,10 @@ settings, marked "settings changed" in its header) and clears everything after i
      hard edges — UV0, tangents and transferred vertex colors), a prefab that
      instantiates the FBX with the curated material assigned, and the `.mat` next
      to it. The FBX importer is set to not generate its own material, so the
-     folder stays curated; the FBX itself still carries the material description
-     and relative texture references for use in other DCC tools.
+     folder stays curated. *Embed textures in FBX* (default on) embeds the baked
+     maps into the binary FBX, making it self-contained and portable; turned off,
+     the FBX links the exported maps by absolute path on the exporting machine.
+     Mind the size: the float EXR emission map alone adds 16 bytes per texel.
    - Without the FBX package the mesh is saved as a Unity `.asset` plus the same
      material, prefab and maps.
 

@@ -201,6 +201,12 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.HelpBox(status, maps != null && maps.misses > 0 ? MessageType.Warning : MessageType.None);
             if (resultMesh && maps != null) {
                 EditorGUILayout.LabelField($"{resultMesh.vertexCount:N0} vertices · {resultMesh.GetIndexCount(0) / 3:N0} triangles");
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                settings.embedFbxTextures = EditorGUILayout.Toggle(new GUIContent("Embed textures in FBX",
+                    "Self-contained FBX that carries its maps — portable to other machines, but the file grows by the map sizes " +
+                    "(the float EXR emission map alone is 16 bytes per texel). Off: the FBX links the exported maps by absolute path."),
+                    settings.embedFbxTextures);
+#endif
                 using (new EditorGUI.DisabledScope(cancellation != null))
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
                     if (GUILayout.Button("Save FBX, maps & prefab…")) {
@@ -493,7 +499,10 @@ namespace SashaRX.UnityMeshLab
                 string fbxPath = folder + "/" + clean + ".fbx";
                 UnityEditor.Formats.Fbx.Exporter.ModelExporter.ExportObjects(fbxPath, new Object[] { temporary },
                     new UnityEditor.Formats.Fbx.Exporter.ExportModelOptions {
-                        ExportFormat = UnityEditor.Formats.Fbx.Exporter.ExportFormat.Binary });
+                        ExportFormat = UnityEditor.Formats.Fbx.Exporter.ExportFormat.Binary,
+                        // Embedded maps make the FBX self-contained; a linked FBX
+                        // would reference this machine's absolute paths instead.
+                        EmbedTextures = settings.embedFbxTextures });
                 var fbxInfo = new FileInfo(Path.GetFullPath(fbxPath));
                 if (!fbxInfo.Exists || fbxInfo.Length == 0) throw new IOException("FBX export produced an empty file.");
                 var modelImporter = (ModelImporter)AssetImporter.GetAtPath(fbxPath);

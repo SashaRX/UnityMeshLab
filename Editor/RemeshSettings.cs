@@ -69,6 +69,11 @@ namespace SashaRX.UnityMeshLab
         public bool transferVertexColor;
         public bool transferVertexAlpha;
 
+        // Save (FBX): embed the baked maps into the binary FBX instead of
+        // linking them by absolute path. Portable, but the file grows by the
+        // map sizes — the float EXR emission map alone is 16 bytes per texel.
+        public bool embedFbxTextures = true;
+
         public void Validate()
         {
             if (voxelResolution < 4 || voxelResolution > 256 || targetTriangles < 0 || targetTriangles > 5000000 ||
