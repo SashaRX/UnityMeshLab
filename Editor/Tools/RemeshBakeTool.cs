@@ -159,7 +159,10 @@ namespace SashaRX.UnityMeshLab
                     using (new EditorGUI.DisabledScope(!angle))
                         settings.normalCrease = EditorGUILayout.Slider("Crease angle", settings.normalCrease, 0, 180);
                     using (new EditorGUI.DisabledScope(settings.hardEdges == RemeshHardEdges.UvIslands || settings.hardEdges == RemeshHardEdges.UvIslandsAndAngle))
-                        settings.normalSmoothing = EditorGUILayout.Slider("Normal smoothing", settings.normalSmoothing, 0, 10);
+                        settings.normalSmoothing = EditorGUILayout.Slider(new GUIContent("Normal smoothing",
+                            "Applied after UV generation, so it works with every hard-edge mode: smoothing flows along the surface " +
+                            "and stops at crease edges and island borders alike."),
+                            settings.normalSmoothing, 0, 10);
                     settings.textureResolution = EditorGUILayout.IntPopup("Texture size", settings.textureResolution,
                         new[] { "512", "1024", "2048", "4096" }, new[] { 512, 1024, 2048, 4096 });
                     settings.padding = EditorGUILayout.IntSlider("Atlas padding", settings.padding, 1, 32);

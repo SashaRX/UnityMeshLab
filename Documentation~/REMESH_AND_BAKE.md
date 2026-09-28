@@ -52,6 +52,13 @@ settings, marked "settings changed" in its header) and clears everything after i
      island (the usual choice for baked normal maps).
    - *UV islands + angle* — both.
 
+   *Normal smoothing* (0–10) is applied **after** UV generation, so it behaves
+   the same whichever hard-edge mode is active: smoothing flows along the
+   surface through mesh edges and stops at every hard edge — crease splits and
+   island borders alike (edges never cross a vertex split). With it applied
+   before the unwrap, the island hard-edge rebuild discarded it, leaving the
+   slider dead in the default mode.
+
    Stage settings persist across domain reloads and tab switches (EditorPrefs);
    *Run all stages* still re-runs everything with the restored values.
 

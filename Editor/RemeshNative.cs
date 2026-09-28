@@ -110,7 +110,7 @@ namespace SashaRX.UnityMeshLab
             IntPtr handle = IntPtr.Zero;
             try {
                 int code = meshLabUnwrap(Pack(input.positions), (uint)input.positions.Length, input.indices, (uint)input.indices.Length,
-                    angle ? settings.normalCrease * Mathf.Deg2Rad : Mathf.PI, settings.normalSmoothing,
+                    angle ? settings.normalCrease * Mathf.Deg2Rad : Mathf.PI, 0f,
                     options, (uint)options.Length, out handle, out uint vertexCount, out uint indexCount, out uint charts);
                 token.ThrowIfCancellationRequested();
                 if (code != 0) throw new InvalidOperationException("UV unwrap failed: " + Error(code));
@@ -126,6 +126,11 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (settings.hardEdges == RemeshHardEdges.UvIslands || settings.hardEdges == RemeshHardEdges.UvIslandsAndAngle)
                     SmoothWithinSplitVertices(result);
+                // Normal smoothing runs after UV generation so it works the same for
+                // every hard-edge source: crease splits and chart borders already
+                // materialized as vertex splits, and mesh edges never cross a split,
+                // so the pass stops at hard edges by construction.
+                SmoothNormals(result, settings.normalSmoothing);
                 return result;
             }
             finally { if (handle != IntPtr.Zero) meshLabRemeshDestroy(handle); }
@@ -145,6 +150,46 @@ namespace SashaRX.UnityMeshLab
             }
             for (int i = 0; i < sum.Length; ++i)
                 if (sum[i].sqrMagnitude > 1e-30f) geometry.normals[i] = sum[i].normalized;
+        }
+
+        // Port of meshopt's generateNormals smoothing pass, run on the split unwrap
+        // output where every vertex is its own normal group. Each pass averages the
+        // alignment-weighted normal deltas across mesh edges (aligned neighbours pull
+        // more, opposing ones not at all), so smoothing flows along the surface and
+        // stops at every hard edge — crease splits and UV chart borders alike.
+        internal static void SmoothNormals(Geometry geometry, float smoothing)
+        {
+            if (smoothing <= 0) return;
+            int passes = Math.Min(10, (int)Math.Ceiling(smoothing));
+            var normals = geometry.normals;
+            var indices = geometry.indices;
+            var delta = new Vector3[normals.Length];
+            var edges = new float[normals.Length];
+            for (int pass = 0; pass < passes; ++pass) {
+                float alpha = 0.5f * Mathf.Min(1f, smoothing - pass);
+                Array.Clear(delta, 0, delta.Length);
+                Array.Clear(edges, 0, edges.Length);
+                for (int i = 0; i < indices.Length; i += 3) {
+                    SmoothEdge(normals, delta, edges, indices[i], indices[i + 1]);
+                    SmoothEdge(normals, delta, edges, indices[i + 1], indices[i + 2]);
+                    SmoothEdge(normals, delta, edges, indices[i + 2], indices[i]);
+                }
+                for (int i = 0; i < normals.Length; ++i) {
+                    if (edges[i] <= 0) continue;
+                    Vector3 n = normals[i] + delta[i] * (alpha / edges[i]);
+                    float length = n.magnitude;
+                    if (length > 1e-12f) normals[i] = n / length;
+                }
+            }
+        }
+
+        static void SmoothEdge(Vector3[] normals, Vector3[] delta, float[] edges, int a, int b)
+        {
+            float dp = Vector3.Dot(normals[a], normals[b]);
+            float w = dp > 0f ? dp * dp : 0f;
+            Vector3 d = (normals[b] - normals[a]) * w;
+            delta[a] += d; edges[a] += 1f;
+            delta[b] -= d; edges[b] += 1f;
         }
 
         static float[] Pack(Vector3[] positions)
