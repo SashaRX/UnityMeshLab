@@ -180,12 +180,19 @@ namespace SashaRX.UnityMeshLab
             if (resultMesh && maps != null) {
                 EditorGUILayout.LabelField($"{resultMesh.vertexCount:N0} vertices · {resultMesh.GetIndexCount(0) / 3:N0} triangles");
                 using (new EditorGUI.DisabledScope(cancellation != null))
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                    if (GUILayout.Button("Save FBX, maps & prefab…")) {
+#else
                     if (GUILayout.Button("Save mesh, maps & prefab…")) {
+#endif
                         Save();
                         // The folder panel is modal and the export imports assets; both
                         // leave this event's layout state stale.
                         GUIUtility.ExitGUI();
                     }
+#if !LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                EditorGUILayout.HelpBox("Install com.unity.formats.fbx to save the model as an FBX instead of a mesh asset.", MessageType.None);
+#endif
             }
         }
 
@@ -448,18 +455,51 @@ namespace SashaRX.UnityMeshLab
                 material.EnableKeyword("_NORMALMAP"); material.EnableKeyword("_EMISSION");
                 material.EnableKeyword(urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP");
                 if (urp) material.EnableKeyword("_OCCLUSIONMAP");
+                temporary = new GameObject(clean + "_LOD0") { hideFlags = HideAndDontSave };
+                temporary.AddComponent<MeshFilter>().sharedMesh = mesh;
+                temporary.AddComponent<MeshRenderer>().sharedMaterial = material;
+                temporary.hideFlags = HideFlags.None;
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                // The model ships as an FBX (geometry, split normals, UV0, tangents,
+                // vertex colors); the material stays a curated asset next to it that
+                // the prefab references. This is brand-new geometry in a uniquely
+                // created folder, not a channel re-save of a source FBX, so the
+                // isolated-export core's same-vertex-count snapshot contract does not
+                // apply; a failed export still rolls the whole folder back.
+                using (new AssetDatabase.AssetEditingScope())
+                    AssetDatabase.CreateAsset(material, folder + "/" + clean + ".mat");
+                string fbxPath = folder + "/" + clean + ".fbx";
+                UnityEditor.Formats.Fbx.Exporter.ModelExporter.ExportObjects(fbxPath, new Object[] { temporary },
+                    new UnityEditor.Formats.Fbx.Exporter.ExportModelOptions {
+                        ExportFormat = UnityEditor.Formats.Fbx.Exporter.ExportFormat.Binary });
+                var fbxInfo = new FileInfo(Path.GetFullPath(fbxPath));
+                if (!fbxInfo.Exists || fbxInfo.Length == 0) throw new IOException("FBX export produced an empty file.");
+                var modelImporter = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
+                if (modelImporter != null) {
+                    // The curated material + prefab ship next to the FBX; keep the
+                    // importer from generating a duplicate MaterialDescription copy.
+                    modelImporter.materialImportMode = MaterialImportMode.None;
+                    modelImporter.SaveAndReimport();
+                }
+                var fbxRoot = AssetDatabase.LoadMainAssetAtPath(fbxPath) as GameObject;
+                if (!fbxRoot) throw new IOException("FBX reimport failed.");
+                var instance = (GameObject)PrefabUtility.InstantiatePrefab(fbxRoot);
+                instance.GetComponentInChildren<MeshRenderer>().sharedMaterial = material;
+                PrefabUtility.SaveAsPrefabAsset(instance, folder + "/" + clean + ".prefab", out bool success);
+                Object.DestroyImmediate(instance);
+                if (!success) throw new IOException("Prefab save failed.");
+                AssetDatabase.SaveAssets(); status = "Saved: " + folder;
+                EditorGUIUtility.PingObject(fbxRoot);
+#else
                 using (new AssetDatabase.AssetEditingScope()) {
                     AssetDatabase.CreateAsset(mesh, folder + "/" + clean + "_LOD0.asset");
                     AssetDatabase.CreateAsset(material, folder + "/" + clean + ".mat");
                 }
-                temporary = new GameObject(clean + "_LOD0") { hideFlags = HideFlags.HideAndDontSave };
-                temporary.AddComponent<MeshFilter>().sharedMesh = mesh;
-                temporary.AddComponent<MeshRenderer>().sharedMaterial = material;
-                temporary.hideFlags = HideFlags.None;
                 PrefabUtility.SaveAsPrefabAsset(temporary, folder + "/" + clean + ".prefab", out bool success);
                 if (!success) throw new IOException("Prefab save failed.");
                 AssetDatabase.SaveAssets(); status = "Saved: " + folder;
                 EditorGUIUtility.PingObject(AssetDatabase.LoadAssetAtPath<GameObject>(folder + "/" + clean + ".prefab"));
+#endif
             }
             catch (Exception e) {
                 if (createdFolder && AssetDatabase.IsValidFolder(folder)) AssetDatabase.DeleteAsset(folder);

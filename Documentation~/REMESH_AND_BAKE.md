@@ -56,10 +56,18 @@ settings, marked "settings changed" in its header) and clears everything after i
    source vertex colors, interpolated at the nearest source surface point, onto
    the result mesh independently. Missed covered texels are magenta, not silently
    patched with unrelated material data.
-6. **Save** to a folder under Assets. A unique output folder contains the mesh
-   asset (with transferred vertex colors), material, prefab and
-   BaseColor/Normal/MetallicSmoothness/Occlusion PNGs plus a linear
-   floating-point Emission EXR. Source files are never overwritten.
+6. **Save** to a folder under Assets. A unique output folder contains the model,
+   material, prefab and BaseColor/Normal/MetallicSmoothness/Occlusion PNGs plus a
+   linear floating-point Emission EXR. Source files are never overwritten.
+   - With **com.unity.formats.fbx** installed the model is exported as a binary
+     **FBX** (mesh `Name_LOD0` with the generated normals — including UV-island
+     hard edges — UV0, tangents and transferred vertex colors), a prefab that
+     instantiates the FBX with the curated material assigned, and the `.mat` next
+     to it. The FBX importer is set to not generate its own material, so the
+     folder stays curated; the FBX itself still carries the material description
+     and relative texture references for use in other DCC tools.
+   - Without the FBX package the mesh is saved as a Unity `.asset` plus the same
+     material, prefab and maps.
 
 Native work (remesh, simplify, unwrap) and CPU projection run off the main thread.
 Texture snapshots and Unity mesh/asset APIs stay on the main thread.

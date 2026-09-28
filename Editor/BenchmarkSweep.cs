@@ -1290,15 +1290,17 @@ namespace SashaRX.UnityMeshLab
             // Best-effort git provenance. Runs `git rev-parse HEAD` etc. via
             // System.Diagnostics.Process. Anything that throws → blank field;
             // we never want manifest writing to take down a sweep.
-            string sha = TryRunGit("rev-parse HEAD");
-            string branch = TryRunGit("rev-parse --abbrev-ref HEAD");
-            string status = TryRunGit("status --porcelain");
+            string sha = TryRunGit(GitProbe.Head);
+            string branch = TryRunGit(GitProbe.Branch);
+            string status = TryRunGit(GitProbe.Status);
             bool dirty = !string.IsNullOrEmpty(status);
 
             return (pkgName, pkgVersion, sha, branch, dirty);
         }
 
-        static string TryRunGit(string args)
+        enum GitProbe { Head, Branch, Status }
+
+        static string TryRunGit(GitProbe probe)
         {
             try
             {
@@ -1318,16 +1320,38 @@ namespace SashaRX.UnityMeshLab
                 catch { /* fall through */ }
                 string workDir = !string.IsNullOrEmpty(pkgDir) ? pkgDir : repoRoot;
 
-                var psi = new System.Diagnostics.ProcessStartInfo("git", args)
+                var process = new System.Diagnostics.Process
                 {
-                    WorkingDirectory  = workDir,
-                    UseShellExecute   = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError  = true,
-                    CreateNoWindow    = true,
+                    StartInfo = new System.Diagnostics.ProcessStartInfo("git")
+                    {
+                        WorkingDirectory  = workDir,
+                        UseShellExecute   = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError  = true,
+                        CreateNoWindow    = true,
+                    }
                 };
-                using var p = System.Diagnostics.Process.Start(psi);
-                if (p == null) return "";
+                // Fixed literal tokens per probe — no caller-supplied string
+                // ever reaches the git command line, so there is nothing to
+                // inject.
+                switch (probe)
+                {
+                    case GitProbe.Head:
+                        process.StartInfo.ArgumentList.Add("rev-parse");
+                        process.StartInfo.ArgumentList.Add("HEAD");
+                        break;
+                    case GitProbe.Branch:
+                        process.StartInfo.ArgumentList.Add("rev-parse");
+                        process.StartInfo.ArgumentList.Add("--abbrev-ref");
+                        process.StartInfo.ArgumentList.Add("HEAD");
+                        break;
+                    default:
+                        process.StartInfo.ArgumentList.Add("status");
+                        process.StartInfo.ArgumentList.Add("--porcelain");
+                        break;
+                }
+                using var p = process;
+                process.Start();
                 // Drain stdout/stderr asynchronously into builders BEFORE
                 // WaitForExit — synchronous ReadToEnd() blocks until the
                 // pipe is closed, so a stalled git would deadlock the

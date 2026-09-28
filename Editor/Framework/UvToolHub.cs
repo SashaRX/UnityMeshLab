@@ -1142,6 +1142,16 @@ namespace SashaRX.UnityMeshLab
                 string repoRoot = System.IO.Path.GetDirectoryName(Application.dataPath);
                 string fullPath = System.IO.Path.GetFullPath(assetPath);
                 string relativePath = assetPath.Replace('\\', '/');
+                // Validate before the path becomes part of a git revision: the
+                // backup only ever reads repo-relative Assets/ paths. A
+                // validated "main:<path>" operand can never be parsed by git
+                // as an option, so nothing user-controlled can alter the
+                // command's meaning.
+                if (!relativePath.StartsWith("Assets/", StringComparison.Ordinal) || relativePath.Contains(".."))
+                {
+                    UvtLog.Error($"[Backup] '{relativePath}' is not a repo-relative Assets path.");
+                    return;
+                }
 
                 string dir = System.IO.Path.GetDirectoryName(fullPath);
                 string name = System.IO.Path.GetFileNameWithoutExtension(fullPath);
@@ -1151,13 +1161,13 @@ namespace SashaRX.UnityMeshLab
                     .Replace('\\', '/');
                 string tempBackupPath = backupPath + ".tmp";
 
-                if (!RunGit(repoRoot, $"cat-file -e \"main:{relativePath}\"", out _, out string existsErr))
+                if (!RunGit(repoRoot, new[] { "cat-file", "-e", "main:" + relativePath }, out _, out string existsErr))
                 {
                     UvtLog.Error($"[Backup] '{relativePath}' does not exist on branch 'main'. {existsErr.Trim()}");
                     return;
                 }
 
-                using (var proc = StartGitBinary(repoRoot, $"cat-file --filters \"main:{relativePath}\""))
+                using (var proc = StartGitBinary(repoRoot, "cat-file", "--filters", "main:" + relativePath))
                 {
                     var stderrBuf = new System.Text.StringBuilder();
                     proc.ErrorDataReceived += (s, e) => { if (e.Data != null) stderrBuf.AppendLine(e.Data); };
@@ -1201,22 +1211,39 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        internal static System.Diagnostics.Process StartGitBinary(string workingDirectory, string arguments)
+        // The only git options this package ever passes; anything else that
+        // starts with '-' is refused by StartGitBinary below.
+        static readonly System.Collections.Generic.HashSet<string> AllowedGitOptions =
+            new System.Collections.Generic.HashSet<string> { "-e", "--filters" };
+
+        internal static System.Diagnostics.Process StartGitBinary(string workingDirectory, params string[] arguments)
         {
-            var psi = new System.Diagnostics.ProcessStartInfo
+            var process = new System.Diagnostics.Process
             {
-                FileName = "git",
-                Arguments = arguments,
-                WorkingDirectory = workingDirectory,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
+                StartInfo = new System.Diagnostics.ProcessStartInfo("git")
+                {
+                    WorkingDirectory = workingDirectory,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
             };
-            return System.Diagnostics.Process.Start(psi);
+            // One verbatim token per git argument via ArgumentList — no
+            // command-line string is assembled. Options are allow-listed and
+            // callers validate their operands, so no argument can smuggle an
+            // extra git option or command.
+            foreach (var argument in arguments)
+            {
+                if (argument.StartsWith("-", StringComparison.Ordinal) && !AllowedGitOptions.Contains(argument))
+                    throw new System.ArgumentException("Refusing unexpected git option: " + argument);
+                process.StartInfo.ArgumentList.Add(argument);
+            }
+            process.Start();
+            return process;
         }
 
-        internal static bool RunGit(string workingDirectory, string arguments, out string stdout, out string stderr)
+        internal static bool RunGit(string workingDirectory, string[] arguments, out string stdout, out string stderr)
         {
             using (var proc = StartGitBinary(workingDirectory, arguments))
             {
