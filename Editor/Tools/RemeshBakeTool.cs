@@ -513,8 +513,8 @@ namespace SashaRX.UnityMeshLab
                     // The normal map was baked against the exported tangent frame;
                     // a recalculation (MikkT default) can flip its handedness per
                     // vertex, which green-flips chunks of the baked map.
-                    modelImporter.normalImportMode = ModelImporterNormals.Import;
-                    modelImporter.tangentImportMode = ModelImporterTangents.Import;
+                    modelImporter.importNormals = ModelImporterNormals.Import;
+                    modelImporter.importTangents = ModelImporterTangents.Import;
                     modelImporter.SaveAndReimport();
                 }
                 var fbxRoot = AssetDatabase.LoadMainAssetAtPath(fbxPath) as GameObject;
