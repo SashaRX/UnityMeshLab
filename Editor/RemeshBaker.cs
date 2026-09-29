@@ -234,12 +234,24 @@ namespace SashaRX.UnityMeshLab
         // albedo × GI × baked lights × baked emission, so ambient and material emission
         // are not added again; only realtime/mixed direct light and the probe specular
         // ride on top. Unlightmapped faces get albedo × (direct + ambient) + emission.
+        // Lighting reacts to the source's normal map, exactly as the game shades: the
+        // bump-perturbed normal drives the directional-lightmap half-Lambert, the
+        // realtime N·L terms, the ambient probe and the specular view dot.
         static Color BeautyLight(RemeshBeauty beauty, RemeshSource source, int face, Vector3 w,
             Color albedo, Color metal, Color emission)
         {
             int a = source.indices[face * 3], b = source.indices[face * 3 + 1], c = source.indices[face * 3 + 2];
             Vector3 p = source.positions[a] * w.x + source.positions[b] * w.y + source.positions[c] * w.z;
             Vector3 n = (source.normals[a] * w.x + source.normals[b] * w.y + source.normals[c] * w.z).normalized;
+            Vector4 tangent = source.tangents[a] * w.x + source.tangents[b] * w.y + source.tangents[c] * w.z;
+            Vector2 uv = source.uv[a] * w.x + source.uv[b] * w.y + source.uv[c] * w.z;
+            var surface = source.materials[source.faceMaterials[face]];
+            if (surface.normal.image != null) {
+                var sample = surface.normal.Sample(uv, new Color(0.5f, 0.5f, 1));
+                float nx = (sample.r * 2 - 1) * surface.normalScale, ny = (sample.g * 2 - 1) * surface.normalScale;
+                Basis(n, tangent, out var st, out var sb);
+                n = (st * nx + sb * ny + n * Mathf.Sqrt(Mathf.Max(0, 1 - nx * nx - ny * ny))).normalized;
+            }
             Color albedoLinear = albedo.linear;
             int lightmapId = source.faceLightmaps != null && face < source.faceLightmaps.Length ? source.faceLightmaps[face] : -1;
             Color lit;

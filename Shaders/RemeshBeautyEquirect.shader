@@ -14,12 +14,15 @@ Shader "Hidden/MeshLab/RemeshBeautyEquirect"
             #pragma fragment frag
             #include "UnityCG.cginc"
             samplerCUBE _MainTex;
+            float _Lod;
             float4 frag(v2f_img i) : SV_Target
             {
                 float phi = i.uv.x * 2.0 * UNITY_PI;
                 float theta = i.uv.y * UNITY_PI;
                 float3 dir = float3(sin(theta) * cos(phi), cos(theta), sin(theta) * sin(phi));
-                return float4(texCUBE(_MainTex, dir).rgb, 1);
+                // _Lod samples the probe's own prefiltered mip — the roughness blur the
+                // game sees. The CPU side pairs two levels for the fractional part.
+                return float4(texCUBElod(_MainTex, float4(dir, _Lod)).rgb, 1);
             }
             ENDCG
         }

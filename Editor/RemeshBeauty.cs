@@ -33,12 +33,14 @@ namespace SashaRX.UnityMeshLab
 
         internal sealed class Probe
         {
-            public Color[] pixels;            // linear equirect: u = atan2(z,x)/2π, v = acos(y)/π
-            public int width, height;
-            public Bounds bounds;             // world space
+            public Color[][] mips;             // equirect mip chain, sharpest first
+            public int[] widths, heights;      // per level
+            public int mipCount;
+            public Bounds bounds;              // world space
             public bool bounded;
+            public Vector3 worldPos, boxMin, boxMax;
+            public bool boxProjection;
             public float importance;
-            public Color average;
         }
 
         struct Directional { public Vector3 dir; public Color color; public float shadowStrength; }
@@ -138,20 +140,18 @@ namespace SashaRX.UnityMeshLab
                 if (!rp.enabled || !rp.gameObject.activeInHierarchy) continue;
                 var texture = rp.customBakedTexture ? rp.customBakedTexture : rp.bakedTexture;
                 if (texture == null) continue;
-                var read = ReadEquirect(texture, out int w, out int h);
-                if (read == null) continue;
-                probeList.Add(new Probe { pixels = read, width = w, height = h,
-                    bounds = rp.bounds, bounded = true, importance = rp.importance, average = Average(read) });
+                var probe = ReadProbe(texture, ProbeMips);
+                if (probe == null) continue;
+                probe.bounds = rp.bounds; probe.bounded = true; probe.importance = rp.importance;
+                probe.worldPos = rp.transform.position;
+                probe.boxMin = rp.bounds.min; probe.boxMax = rp.bounds.max;
+                probe.boxProjection = rp.boxProjection;
+                probeList.Add(probe);
             }
             probes = probeList.ToArray();
             // No scene probe applies → the environment's custom reflection (Lighting ▸
             // Environment Reflections) is the fallback Unity would blend to.
-            fallbackProbe = null;
-            if (RenderSettings.customReflection != null) {
-                var read = ReadEquirect(RenderSettings.customReflection, out int w2, out int h2);
-                if (read != null)
-                    fallbackProbe = new Probe { pixels = read, width = w2, height = h2, average = Average(read) };
-            }
+            fallbackProbe = RenderSettings.customReflection != null ? ReadProbe(RenderSettings.customReflection, ProbeMips) : null;
 
             // Specular is view-dependent; bake it for the scene view camera's vantage
             // when one is open, else a three-quarter view of the object.
@@ -217,7 +217,11 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>Probe reflection seen from a source point: V points from the surface
-        /// toward the viewer. A simplified Standard Fresnel scales the probe colour.</summary>
+        /// toward the viewer. Ports the game's specular path: URP's
+        /// BoxProjectedCubemapDirection, the prefiltered-mip remap r(1.7−0.7r)·maxMip
+        /// with the fractional part lerped between two levels, and
+        /// EnvironmentBRDFSpecular (surface reduction 1/(r²+1), grazing term
+        /// saturate(smoothness+reflectivity), Schlick Fresnel on NdotV).</summary>
         internal Color Specular(Vector3 p, Vector3 n, Color albedo, float metallic, float smoothness)
         {
             Probe probe = PickProbe(localToWorld.MultiplyPoint3x4(p));
@@ -225,16 +229,38 @@ namespace SashaRX.UnityMeshLab
             Vector3 v = viewPosition - p;
             if (v.sqrMagnitude < 1e-10f) return Color.black;
             v.Normalize();
+            Vector3 worldP = localToWorld.MultiplyPoint3x4(p);
             Vector3 worldR = localToWorld.MultiplyVector(Vector3.Reflect(-v, n)).normalized;
-            Color sample = SampleBilinear(probe.pixels, probe.width, probe.height, EquirectUV(worldR));
+            Vector3 dir = probe.boxProjection ? BoxProjected(worldR, worldP, probe) : worldR;
             float roughness = Mathf.Clamp01(1f - smoothness);
-            Color color = Color.Lerp(sample, probe.average, roughness * 0.85f);
-            float ndv = Mathf.Clamp01(Vector3.Dot(n, v));
+            float remapped = roughness * (1.7f - 0.7f * roughness);
+            float mipFloat = remapped * (probe.mipCount - 1);
+            int m0 = Mathf.Clamp(Mathf.FloorToInt(mipFloat), 0, probe.mipCount - 1);
+            int m1 = Mathf.Min(m0 + 1, probe.mipCount - 1);
+            Color sample = Color.Lerp(
+                SampleEquirect(probe.mips[m0], probe.widths[m0], probe.heights[m0], dir),
+                SampleEquirect(probe.mips[m1], probe.widths[m1], probe.heights[m1], dir),
+                mipFloat - m0);
+            float surfaceReduction = 1f / (roughness * roughness + 1f);
             Vector3 f0 = Vector3.Lerp(new Vector3(0.04f, 0.04f, 0.04f),
                 new Vector3(albedo.r, albedo.g, albedo.b), metallic);
-            Vector3 fresnel = f0 + (Vector3.one - f0) * Mathf.Pow(1f - ndv, 5f);
-            float energy = 0.25f + 0.75f * smoothness;
-            return new Color(color.r * fresnel.x * energy, color.g * fresnel.y * energy, color.b * fresnel.z * energy, 0f);
+            float grazingComponent = Mathf.Clamp01(smoothness + Mathf.Lerp(0.04f, 1f, metallic));
+            float fresnel = Mathf.Pow(1f - Mathf.Clamp01(Vector3.Dot(n, v)), 5f);
+            Vector3 specular = Vector3.Lerp(f0, new Vector3(grazingComponent, grazingComponent, grazingComponent), fresnel) * surfaceReduction;
+            return new Color(specular.x * sample.r, specular.y * sample.g, specular.z * sample.b, 0f);
+        }
+
+        // URP BoxProjectedCubemapDirection, verbatim: the reflection ray is bent toward
+        // the probe-box faces so reflections localize inside the probe's volume.
+        static Vector3 BoxProjected(Vector3 r, Vector3 p, Probe probe)
+        {
+            var rb = new Vector3(
+                (r.x > 0f ? probe.boxMax.x : probe.boxMin.x) - p.x,
+                (r.y > 0f ? probe.boxMax.y : probe.boxMin.y) - p.y,
+                (r.z > 0f ? probe.boxMax.z : probe.boxMin.z) - p.z);
+            var t = new Vector3(rb.x / r.x, rb.y / r.y, rb.z / r.z);
+            float fa = Mathf.Min(Mathf.Min(t.x, t.y), t.z);
+            return p - probe.worldPos + r * fa;
         }
 
         internal Color SampleLightmap(Lightmap map, Vector2 uv2, Vector3 localNormal)
@@ -284,6 +310,9 @@ namespace SashaRX.UnityMeshLab
             return new Vector2(u, v);
         }
 
+        static Color SampleEquirect(Color[] pixels, int width, int height, Vector3 dir)
+            => SampleBilinear(pixels, width, height, EquirectUV(dir));
+
         static Color SampleBilinear(Color[] pixels, int width, int height, Vector2 uv)
         {
             if (pixels == null || pixels.Length == 0) return Color.black;
@@ -297,13 +326,6 @@ namespace SashaRX.UnityMeshLab
 
         static int Wrap(int v, int size) => v < 0 ? v + size : v >= size ? v - size : v;
 
-        static Color Average(Color[] pixels)
-        {
-            var sum = new Color();
-            for (int i = 0; i < pixels.Length; ++i) sum += pixels[i];
-            return pixels.Length > 0 ? sum / pixels.Length : Color.black;
-        }
-
         static Bounds ComputeWorldBounds(GameObject root)
         {
             bool any = false;
@@ -316,10 +338,10 @@ namespace SashaRX.UnityMeshLab
         }
 
         // Cubemap → equirect readback through Hidden/MeshLab/RemeshBeautyEquirect
-        // (directions in world axes, linear).
-        internal static Color[] ReadEquirect(Texture cube, out int width, out int height)
+        // (directions in world axes, linear). lod samples the probe's own prefiltered
+        // mip — the roughness blur the game samples.
+        internal static Color[] ReadEquirect(Texture cube, int lod, int width, int height)
         {
-            width = 256; height = 128;
             var shader = Shader.Find("Hidden/MeshLab/RemeshBeautyEquirect");
             if (!shader || !cube) return null;
             var material = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
@@ -327,6 +349,7 @@ namespace SashaRX.UnityMeshLab
             var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
             Texture2D copy = null;
             try {
+                material.SetFloat("_Lod", lod);
                 Graphics.Blit(cube, rt, material);
                 RenderTexture.active = rt;
                 copy = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
@@ -341,6 +364,23 @@ namespace SashaRX.UnityMeshLab
                 if (copy) Object.DestroyImmediate(copy);
                 Object.DestroyImmediate(material);
             }
+        }
+
+        // Six-level equirectangular mip chain (256×128 halving down), mirroring the
+        // prefiltered mip chain the game samples with its r(1.7−0.7r)·maxMip remap.
+        const int ProbeMips = 6;
+
+        static Probe ReadProbe(Texture cube, int levels)
+        {
+            var probe = new Probe { mips = new Color[levels][], widths = new int[levels], heights = new int[levels] };
+            for (int lod = 0; lod < levels; ++lod) {
+                int width = Mathf.Max(4, 256 >> lod), height = Mathf.Max(2, 128 >> lod);
+                var read = ReadEquirect(cube, lod, width, height);
+                if (read == null) break;
+                probe.mips[lod] = read; probe.widths[lod] = width; probe.heights[lod] = height;
+                probe.mipCount = lod + 1;
+            }
+            return probe.mipCount > 0 ? probe : null;
         }
 
         // Lightmap readback for the source capture: plain blit into a float RT, then

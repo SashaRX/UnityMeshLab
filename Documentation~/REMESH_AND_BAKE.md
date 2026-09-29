@@ -129,7 +129,11 @@ settings, marked "settings changed" in its header) and clears everything after i
    URP's `SampleDirectionalLightmap`: the encoded dominant direction is dotted
    with the surface's world normal as a half-Lambert and divided by the texel's
    rebalancing coefficient — not a flat colour, so oblique surfaces shade the way
-   they do in play.
+   they do in play. Reflections follow the game's specular path too — URP's
+   box-projected probe direction, the prefiltered probe mips selected by the
+   r(1.7−0.7r)·maxMip remap, and `EnvironmentBRDFSpecular` (surface reduction,
+   grazing term, Schlick Fresnel) — and all lighting, lightmap response and
+   specular alike, reacts to the source's normal map, as it does in play.
    With the **RemeshDiag** log filter enabled, every bake also prints its health
    counters to the Console: welded cage positions and split copies, one-sided
    border normals (max cage deviation), nearest-fallback projection samples,
