@@ -29,10 +29,12 @@ settings, marked "settings changed" in its header) and clears everything after i
    MeshRenderer (lights, cameras) are ignored. An object dragged into the field
    holds until the selection changes. Active/enabled MeshRenderers under it are
    combined in root-local coordinates; LODGroups contribute LOD0 only, collision
-   nodes are excluded. SkinnedMeshRenderers are baked at their current pose
-   (`BakeMesh`, renderer-local space) and then captured like static meshes — pose
-   the model the way you want it baked. Every contributing submesh
-   needs UV0. Read/Write-disabled imports are read from the imported asset.
+   nodes are excluded, and **LOD0 only** (default on) skips meshes named
+   `Name_LOD1` and higher wherever they sit. SkinnedMeshRenderers are baked at
+   their current pose (skinning re-evaluated first — in edit mode it can be stale
+   and bake every part at its authored origin) and then captured like static
+   meshes; pose the model the way you want it baked. Every contributing submesh
+   needs UV0. Read/Write-disabled imports are read through MeshData.
 2. **Voxel remesh** — voxel resolution (4–256), fit to source surface, two-sided
    shell. Higher resolution preserves smaller gaps but produces a denser,
    uniform intermediate mesh.

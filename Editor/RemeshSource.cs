@@ -63,7 +63,7 @@ namespace SashaRX.UnityMeshLab
             public bool smoothnessFromAlbedo;
         }
 
-        public static RemeshSource Capture(GameObject root)
+        public static RemeshSource Capture(GameObject root, bool lod0Only)
         {
             if (!root) throw new ArgumentException("Select a source root.");
             var excluded = new HashSet<Renderer>();
@@ -82,14 +82,25 @@ namespace SashaRX.UnityMeshLab
             using (var reader = new Reader()) {
                 foreach (var renderer in root.GetComponentsInChildren<Renderer>()) {
                     if (!renderer.enabled || excluded.Contains(renderer) || MeshHygieneUtility.IsCollisionNodeName(renderer.name)) continue;
+                    if (lod0Only && IsHigherLodName(renderer.name)) continue;
                     // A skinned source is baked at its current pose into a fresh runtime
-                    // mesh. BakeMesh leaves vertices in the renderer's local space with no
-                    // transform scale, so the shared root-local path below applies the
-                    // transform exactly once, like a static mesh under the same node.
+                    // mesh. BakeMesh bakes the LAST EVALUATED skinning, which in edit mode
+                    // can predate the current bone transforms — every part then lands at
+                    // its authored origin instead of its posed place, so the bone list is
+                    // reassigned first to mark the skinning dirty and force a re-evaluation.
+                    // The result stays in the renderer's local space with no transform
+                    // scale, and the shared root-local path below applies the transform
+                    // exactly once, like a static mesh under the same node.
                     Mesh mesh;
                     if (renderer is SkinnedMeshRenderer skin) {
                         mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
+                        var bones = skin.bones;
+                        skin.bones = Array.Empty<Transform>();
+                        skin.bones = bones;
                         skin.BakeMesh(mesh);
+                        // A baked runtime mesh is nameless; carry the asset name so the
+                        // LOD filter below sees the same _LOD{n} suffix as static meshes.
+                        if (skin.sharedMesh) mesh.name = skin.sharedMesh.name;
                     }
                     else if (renderer is MeshRenderer) {
                         var filter = renderer.GetComponent<MeshFilter>();
@@ -100,6 +111,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     else continue;
                     try {
+                        if (lod0Only && IsHigherLodName(mesh.name)) continue;
                         for (int sub = 0; sub < mesh.subMeshCount; ++sub)
                             if (mesh.GetTopology(sub) != MeshTopology.Triangles) throw new InvalidOperationException(renderer.name + ": only triangle meshes are supported.");
                         if (mesh.uv.Length != mesh.vertexCount)
@@ -152,6 +164,21 @@ namespace SashaRX.UnityMeshLab
             return new RemeshSource { positions = positions.ToArray(), normals = normals.ToArray(), tangents = tangents.ToArray(),
                 uv = uv.ToArray(), colors = colors.ToArray(), hasColors = hasColors, indices = indices.ToArray(), faceMaterials = faces.ToArray(), materials = materials.ToArray(),
                 diagonal = bounds.size.magnitude, warnings = warnings };
+        }
+
+        // Repo LOD naming is Name_LOD{N} (see the LOD/collision naming rule); anything
+        // above LOD0 is a coarser duplicate of what LOD0 already captures.
+        static bool IsHigherLodName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            int at = name.LastIndexOf("_LOD", StringComparison.OrdinalIgnoreCase);
+            if (at < 0 || at + 4 >= name.Length) return false;
+            int level = 0;
+            for (int i = at + 4; i < name.Length; ++i) {
+                if (name[i] < '0' || name[i] > '9') return false;
+                level = level * 10 + (name[i] - '0');
+            }
+            return level > 0;
         }
 
         sealed class Reader : IDisposable

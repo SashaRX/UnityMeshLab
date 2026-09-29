@@ -131,6 +131,8 @@ namespace SashaRX.UnityMeshLab
                     if (GUILayout.Button("Run all stages", GUILayout.Height(26))) Start(Stage.Bake, true);
 
                 if (StageHeader(Stage.Remesh, voxel != null ? $"{voxel.TriangleCount:N0} tris" : null)) {
+                    settings.lod0Only = EditorGUILayout.Toggle(new GUIContent("LOD0 only",
+                        "Capture ignores meshes named Name_LOD1 and higher; LODGroups already contribute LOD0 only."), settings.lod0Only);
                     settings.voxelResolution = EditorGUILayout.IntSlider("Voxel resolution", settings.voxelResolution, 4, 256);
                     settings.solve = EditorGUILayout.Toggle("Fit source surface", settings.solve);
                     settings.shell = EditorGUILayout.Toggle("Two-sided shell", settings.shell);
@@ -272,7 +274,7 @@ namespace SashaRX.UnityMeshLab
         {
             var s = settings;
             switch (stage) {
-                case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}";
+                case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
@@ -320,7 +322,7 @@ namespace SashaRX.UnityMeshLab
             if (!root) throw new InvalidOperationException("Select a source root.");
             Report("Reading source geometry and textures…");
             await Task.Yield(); token.ThrowIfCancellationRequested();
-            var captured = RemeshSource.Capture(root);
+            var captured = RemeshSource.Capture(root, options.lod0Only);
             foreach (var warning in captured.warnings) UvtLog.Warn("[Remesh] " + warning);
             Report("Voxel remeshing…");
             var mesh = await Task.Run(() => RemeshNative.Voxelize(captured.positions, captured.indices, options, token));

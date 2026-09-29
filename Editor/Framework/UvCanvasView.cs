@@ -1215,6 +1215,8 @@ namespace SashaRX.UnityMeshLab
         {
             var dst = new Mesh();
             dst.indexFormat = src.indexFormat;
+            if (!src.isReadable)
+                return MakeReadableCopyFromMeshData(src, dst);
             dst.SetVertices(new List<Vector3>(src.vertices));
             if (src.normals != null && src.normals.Length > 0) dst.SetNormals(new List<Vector3>(src.normals));
             if (src.tangents != null && src.tangents.Length > 0) dst.SetTangents(new List<Vector4>(src.tangents));
@@ -1244,6 +1246,56 @@ namespace SashaRX.UnityMeshLab
             }
             dst.subMeshCount = src.subMeshCount;
             for (int s = 0; s < src.subMeshCount; s++) dst.SetTriangles(src.GetTriangles(s), s);
+            dst.bounds = src.bounds;
+            return dst;
+        }
+
+        // The classic vertex getters log "Not allowed to access" and return EMPTY arrays
+        // on a Read/Write-disabled import (the capture then finds no triangles at all);
+        // MeshData is served by the engine regardless of the readable flag. Bone weights
+        // have no MeshData accessor — skinned capture bakes through the renderer instead.
+        static Mesh MakeReadableCopyFromMeshData(Mesh src, Mesh dst)
+        {
+            using (var dataArray = Mesh.AcquireReadOnlyMeshData(src))
+            {
+                var md = dataArray[0];
+                int count = md.vertexCount;
+                var vertices = new Vector3[count];
+                md.GetVertices(vertices);
+                dst.SetVertices(vertices);
+                if (md.HasVertexAttribute(VertexAttribute.Normal)) { var n = new Vector3[count]; md.GetNormals(n); dst.SetNormals(n); }
+                if (md.HasVertexAttribute(VertexAttribute.Tangent)) { var t = new Vector4[count]; md.GetTangents(t); dst.SetTangents(t); }
+                if (md.HasVertexAttribute(VertexAttribute.Color)) { var c = new Color32[count]; md.GetColors(c); dst.SetColors(c); }
+                for (int ch = 0; ch < 8; ch++)
+                {
+                    var attr = (VertexAttribute)((int)VertexAttribute.TexCoord0 + ch);
+                    if (!md.HasVertexAttribute(attr)) continue;
+                    int dim = md.GetVertexAttributeDimension(attr);
+                    if (dim <= 2)
+                    {
+                        var uv = new List<Vector2>(); md.GetUVs(ch, uv);
+                        if (uv.Count > 0 && !IsAllZero2(uv)) dst.SetUVs(ch, uv);
+                    }
+                    else if (dim == 3)
+                    {
+                        var uv = new List<Vector3>(); md.GetUVs(ch, uv);
+                        if (uv.Count > 0) dst.SetUVs(ch, uv);
+                    }
+                    else
+                    {
+                        var uv = new List<Vector4>(); md.GetUVs(ch, uv);
+                        if (uv.Count > 0) dst.SetUVs(ch, uv);
+                    }
+                }
+                dst.subMeshCount = md.subMeshCount;
+                var indices = new List<int>();
+                for (int s = 0; s < md.subMeshCount; s++)
+                {
+                    md.GetIndices(indices, s);
+                    dst.SetIndices(indices, md.GetTopology(s), s, calculateBounds: false);
+                    indices.Clear();
+                }
+            }
             dst.bounds = src.bounds;
             return dst;
         }

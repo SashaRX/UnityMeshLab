@@ -43,6 +43,9 @@ namespace SashaRX.UnityMeshLab
         public int voxelResolution = 128;
         public bool solve = true;
         public bool shell;
+        // Source capture: skip meshes named Name_LOD1 and higher (LODGroups already
+        // contribute LOD0 only).
+        public bool lod0Only = true;
 
         // 2 · Simplify
         public bool simplify = true;
