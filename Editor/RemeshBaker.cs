@@ -16,6 +16,7 @@ namespace SashaRX.UnityMeshLab
             // Bake health counters surfaced through the RemeshDiag log category.
             public int rayFallbacks, weldedPositions, splitCopies, oneSidedNormals, loudTexels, zeroNormals;
             public float maxOneSidedDeg, meanTiltDeg, maxTiltDeg;
+            public bool facingFilter;
         }
 
         // Thread-safe: no UnityEngine.Object access in this method or the BVH.
@@ -41,6 +42,30 @@ namespace SashaRX.UnityMeshLab
             // artifact bands around every island. The tangent frame stays the vertex
             // normal the result mesh shades with, so encode and decode still match.
             var cage = BuildCageNormals(target, result);
+            // Front-face filter for the projection rays: a plain closest-hit raycast
+            // travels 2×distance THROUGH the target and can pierce a thin wall, sampling
+            // the far side's texture (periodic mirrored/garbled patches). The filter only
+            // accepts source triangles whose normal faces the ray origin. Source winding
+            // is not guaranteed to agree with the target's, so a consensus probe orients
+            // the normals first; without a clear majority (≥70% of ≥8 samples) the filter
+            // stays off and the bake behaves exactly as before.
+            int faces = source.indices.Length / 3;
+            var faceNormals = new Vector3[faces];
+            for (int f = 0; f < faces; ++f) {
+                int a = source.indices[f * 3], b = source.indices[f * 3 + 1], c = source.indices[f * 3 + 2];
+                faceNormals[f] = Vector3.Cross(source.positions[b] - source.positions[a], source.positions[c] - source.positions[a]).normalized;
+            }
+            int agree = 0, conflict = 0, stride = Math.Max(1, target.positions.Length / 128);
+            for (int i = 0; i < target.positions.Length; i += stride) {
+                var nearest = bvh.FindNearest(target.positions[i]);
+                if (nearest.triangleIndex < 0) continue;
+                if (Vector3.Dot(faceNormals[nearest.triangleIndex], cage[i]) >= 0f) ++agree; else ++conflict;
+            }
+            bool facingFilter = agree + conflict >= 8 && Math.Max(agree, conflict) * 10 >= (agree + conflict) * 7;
+            if (facingFilter && conflict > agree)
+                for (int f = 0; f < faces; ++f) faceNormals[f] = -faceNormals[f];
+            result.facingFilter = facingFilter;
+            Vector3[] facing = facingFilter ? faceNormals : null;
             int misses = 0, rayFallbacks = 0;
             Parallel.For(0, size, new ParallelOptions { CancellationToken = token,
                 MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, y => {
@@ -68,7 +93,7 @@ namespace SashaRX.UnityMeshLab
                         for (int c = 0; c < candidateCount && face < 0; ++c)
                             if (Inside(target, candidates[c], uv, out w)) face = candidates[c];
                         if (face < 0) continue;
-                    if (!Project(source, target, tangents, cage, bvh, face, w, distance,
+                    if (!Project(source, target, tangents, cage, bvh, facing, face, w, distance,
                             out var sc, out var sn, out var sm, out var sa, out var se, out var rayFallback)) continue;
                         if (rayFallback) Interlocked.Increment(ref rayFallbacks);
                         color += sc.linear; metal += sm; ao += sa; emission += se;
@@ -167,8 +192,10 @@ namespace SashaRX.UnityMeshLab
         // material there. False when neither the ray nor the bounded nearest query hits.
         // The ray direction comes from the welded cage normal; the tangent frame keeps
         // the (possibly hard) vertex normal so encode matches how the mesh shades.
+        // facing (when non-null) carries the orientation-consensus source face normals
+        // that keep the ray and the fallback on the side of the surface facing the texel.
         static bool Project(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents, Vector3[] cage,
-            TriangleBvh bvh, int face, Vector3 w, float distance,
+            TriangleBvh bvh, Vector3[] facing, int face, Vector3 w, float distance,
             out Color color, out Color normal, out Color metal, out Color ao, out Color emission, out bool rayFallback)
         {
             int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
@@ -176,12 +203,16 @@ namespace SashaRX.UnityMeshLab
             Vector3 n = (target.normals[a] * w.x + target.normals[b] * w.y + target.normals[c] * w.z).normalized;
             Vector3 rayN = (cage[a] * w.x + cage[b] * w.y + cage[c] * w.z).normalized;
             Vector4 tangent = tangents[a] * w.x + tangents[b] * w.y + tangents[c] * w.z;
-            var hit = bvh.Raycast(p + rayN * distance, -rayN, distance * 2);
+            var hit = facing != null
+                ? bvh.RaycastFacingFiltered(p + rayN * distance, -rayN, distance * 2, facing)
+                : bvh.Raycast(p + rayN * distance, -rayN, distance * 2);
             int sourceFace = hit.triangleIndex;
             Vector3 sw = hit.barycentric;
             rayFallback = false;
             if (sourceFace < 0) {
-                var nearest = bvh.FindNearest(p, distance);
+                var nearest = facing != null
+                    ? bvh.FindNearestNormalFiltered(p, rayN, facing, 0f)
+                    : bvh.FindNearest(p, distance);
                 sourceFace = nearest.triangleIndex; sw = nearest.barycentric;
                 rayFallback = true;
             }
@@ -198,7 +229,7 @@ namespace SashaRX.UnityMeshLab
         // each copy's own normal is one-sided there, so rays cast along it land on a
         // displaced source point. Welding by exact position — xatlas copies bit-identical
         // coordinates — averages both sides back into a smooth cage direction.
-        static Vector3[] BuildCageNormals(RemeshNative.Geometry target, Maps diag)
+        internal static Vector3[] BuildCageNormals(RemeshNative.Geometry target, Maps diag)
         {
             var slots = new int[target.positions.Length];
             var map = new System.Collections.Generic.Dictionary<(int, int, int), int>(target.positions.Length);

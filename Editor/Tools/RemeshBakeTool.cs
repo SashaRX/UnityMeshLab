@@ -136,6 +136,9 @@ namespace SashaRX.UnityMeshLab
             previewData.meshes[(int)RemeshPreview.Stage.Simplified] = simplifiedMesh;
             previewData.meshes[(int)RemeshPreview.Stage.Result] = resultMesh;
             previewData.geometry = geometry; previewData.maps = maps; previewData.baseColor = preview;
+            // Live from the current settings so the cage preview reflects projection
+            // distance changes before a re-bake; zero until a source snapshot exists.
+            previewData.cageDistance = snapshot != null ? snapshot.diagonal * settings.projectionDistance : 0;
             previews.Draw(previewData);
         }
 
@@ -572,7 +575,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info(UvtLog.Category.RemeshDiag,
                     $"cage: {baked.weldedPositions:N0} welded positions ({baked.splitCopies:N0} split copies), " +
                     $"{baked.oneSidedNormals:N0} one-sided border normals, max cage deviation {baked.maxOneSidedDeg:F0}°, {baked.zeroNormals:N0} zero normals; " +
-                    $"projection: {baked.rayFallbacks:N0} nearest-fallback samples, {baked.misses:N0} missed texels; " +
+                    $"projection: {baked.rayFallbacks:N0} nearest-fallback samples, {baked.misses:N0} missed texels, front-face filter {(baked.facingFilter ? "on" : "off")}; " +
                     $"normal map tilt: mean {baked.meanTiltDeg:F1}° / max {baked.maxTiltDeg:F0}°, {baked.loudTexels:N0} texels >45°; " +
                     $"bounds diagonal: source {captured.diagonal:F3} / target {targetDiagonal:F3} (ratio {scaleRatio:F2})");
             if (baked.zeroNormals > 0)

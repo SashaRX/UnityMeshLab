@@ -96,6 +96,20 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
+        /// Closest intersection with a triangle whose face normal OPPOSES the ray
+        /// direction (the surfaces the ray can "see"): dot(faceNormal, direction) &lt;= 0.
+        /// Bake-style projection through thin geometry needs this — an unfiltered ray
+        /// pierces the wall and samples the far side's texture.
+        /// faceNormals is indexed by local face index (same as returned triangleIndex).
+        /// </summary>
+        public RayHit RaycastFacingFiltered(Vector3 origin, Vector3 direction, float maxDist, Vector3[] faceNormals)
+        {
+            var best = new RayHit { triangleIndex = -1, t = maxDist };
+            RaycastFacingRecursive(0, origin, direction, faceNormals, ref best);
+            return best;
+        }
+
+        /// <summary>
         /// Ray-along-normal projection: shoots ray in both directions (+normal, -normal).
         /// Always prefers forward hit (along normal = same side of thin geometry).
         /// Backward hit is only used when forward misses entirely.
@@ -319,6 +333,36 @@ namespace SashaRX.UnityMeshLab
             // we could optimize by traversing closer first based on ray direction)
             RaycastRecursive(node.left, origin, dir, ref best);
             RaycastRecursive(node.right, origin, dir, ref best);
+        }
+
+        void RaycastFacingRecursive(int nodeIdx, Vector3 origin, Vector3 dir, Vector3[] fNrm, ref RayHit best)
+        {
+            ref Node node = ref nodes[nodeIdx];
+
+            if (!RayIntersectsAabb(origin, dir, node.bMin, node.bMax, best.t))
+                return;
+
+            if (node.left == -1)
+            {
+                for (int i = node.triStart; i < node.triStart + node.triCount; i++)
+                {
+                    int f = triIndices[i];
+                    if (Vector3.Dot(fNrm[f], dir) > 0f) continue; // facing away from the ray origin
+                    int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
+                    if (RayTriangleIntersect(origin, dir, verts[i0], verts[i1], verts[i2],
+                            out float t, out float u, out float v)
+                        && t >= 0f && t < best.t)
+                    {
+                        best.t = t;
+                        best.triangleIndex = f;
+                        best.barycentric = new Vector3(1f - u - v, u, v);
+                    }
+                }
+                return;
+            }
+
+            RaycastFacingRecursive(node.left, origin, dir, fNrm, ref best);
+            RaycastFacingRecursive(node.right, origin, dir, fNrm, ref best);
         }
 
         // ─── Geometry helpers ───

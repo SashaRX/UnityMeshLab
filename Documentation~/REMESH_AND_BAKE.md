@@ -92,11 +92,21 @@ settings, marked "settings changed" in its header) and clears everything after i
    baking artifact bands around every island. The tangent-space normal map is
    still encoded against the vertex normal the result mesh shades with, so hard
    island borders keep their crisp silhouette while the interior stays clean.
+   Rays only accept source triangles facing them (front-face filter): a plain
+   closest-hit ray travels twice the projection distance through the target and
+   pierces thin walls, sampling the far side's texture as periodic mirrored
+   patches; the filter's orientation is set by a consensus probe, and it stays
+   off when the probe has no clear majority. The 3D preview's **Cage** toggle
+   draws the projection limits — the result mesh inflated by ±the ray travel
+   along the same welded cage normals, orange for the outer (ray origin) shell,
+   blue for the inner (ray end) shell — live from the current projection
+   distance, so the setting can be tuned before re-baking.
    With the **RemeshDiag** log filter enabled, every bake also prints its health
    counters to the Console: welded cage positions and split copies, one-sided
-   border normals (max cage deviation), nearest-fallback projection samples and
-   the normal map's tilt statistics (mean/max angle from flat, texels >45°); a
-   map dominated by extreme tilts additionally raises a warning.
+   border normals (max cage deviation), nearest-fallback projection samples,
+   front-face filter state and the normal map's tilt statistics (mean/max angle
+   from flat, texels >45°); a map dominated by extreme tilts additionally raises
+   a warning.
 6. **Save**. The output lands in a `remesh` subfolder next to the source model's
    asset (its FBX/prefab, or any mesh asset under it), created if missing;
    scene-only sources fall back to a folder picker. A unique output folder
