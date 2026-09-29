@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Unity.Collections;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -70,10 +71,9 @@ namespace SashaRX.UnityMeshLab
             var locList = new List<Local>();
             foreach (var light in Object.FindObjectsByType<Light>(FindObjectsSortMode.None)) {
                 if (!light.enabled || !light.gameObject.activeInHierarchy) continue;
-                var bake = light.bakingOutput;
                 // Baked-only lights live in the lightmap; including them again would
                 // double-count. URP has no subtractive mode, so Mixed direct is realtime.
-                if (bake != null && bake.lightmapBakeType == LightmappingBakeType.Baked) continue;
+                if (light.bakingOutput.lightmapBakeType == LightmapBakeType.Baked) continue;
                 Color color = light.color.linear * light.intensity;
                 if (light.type == LightType.Directional) {
                     dirList.Add(new Directional {
@@ -115,18 +115,19 @@ namespace SashaRX.UnityMeshLab
                 // frequency, so a 32×16 direction grid with worker-side bilinear lookup is
                 // visually exact without porting ShadeSH9's packed constants.
                 ambientGrid = new Color[AmbientW * AmbientH];
-                var directions = new List<Vector3>(ambientGrid.Length);
-                for (int y = 0; y < AmbientH; ++y)
-                    for (int x = 0; x < AmbientW; ++x) {
-                        float phi = (x + 0.5f) / AmbientW * 2f * Mathf.PI;
-                        float theta = (y + 0.5f) / AmbientH * Mathf.PI;
-                        directions.Add(new Vector3(
-                            Mathf.Sin(theta) * Mathf.Cos(phi), Mathf.Cos(theta), Mathf.Sin(theta) * Mathf.Sin(phi)));
-                    }
-                var results = new List<Color>(ambientGrid.Length);
-                for (int i = 0; i < ambientGrid.Length; ++i) results.Add(Color.black);
-                RenderSettings.ambientProbe.Evaluate(directions, results);
-                results.CopyTo(ambientGrid);
+                using (var directions = new NativeArray<Vector3>(ambientGrid.Length, Allocator.TempJob))
+                using (var results = new NativeArray<Color>(ambientGrid.Length, Allocator.TempJob)) {
+                    int i = 0;
+                    for (int y = 0; y < AmbientH; ++y)
+                        for (int x = 0; x < AmbientW; ++x, ++i) {
+                            float phi = (x + 0.5f) / AmbientW * 2f * Mathf.PI;
+                            float theta = (y + 0.5f) / AmbientH * Mathf.PI;
+                            directions[i] = new Vector3(
+                                Mathf.Sin(theta) * Mathf.Cos(phi), Mathf.Cos(theta), Mathf.Sin(theta) * Mathf.Sin(phi));
+                        }
+                    RenderSettings.ambientProbe.Evaluate(directions, results);
+                    for (int j = 0; j < ambientGrid.Length; ++j) ambientGrid[j] = results[j];
+                }
             }
 
             var probeList = new List<Probe>();
@@ -140,9 +141,11 @@ namespace SashaRX.UnityMeshLab
                     bounds = rp.bounds, bounded = true, importance = rp.importance, average = Average(read) });
             }
             probes = probeList.ToArray();
+            // No scene probe applies → the environment's custom reflection (Lighting ▸
+            // Environment Reflections) is the fallback Unity would blend to.
             fallbackProbe = null;
-            if (RenderSettings.defaultReflection != null) {
-                var read = ReadEquirect(RenderSettings.defaultReflection, out int w2, out int h2);
+            if (RenderSettings.customReflection != null) {
+                var read = ReadEquirect(RenderSettings.customReflection, out int w2, out int h2);
                 if (read != null)
                     fallbackProbe = new Probe { pixels = read, width = w2, height = h2, average = Average(read) };
             }
@@ -330,8 +333,7 @@ namespace SashaRX.UnityMeshLab
         internal static Lightmap ReadLightmap(Texture2D lightmap, Vector4 st)
         {
             int width = lightmap.width, height = lightmap.height;
-            bool hdr = lightmap.format == TextureFormat.RGBAFloat || lightmap.format == TextureFormat.ARGBHalf
-                || lightmap.format == TextureFormat.RGBAHalf;
+            bool hdr = lightmap.format == TextureFormat.RGBAFloat || lightmap.format == TextureFormat.RGBAHalf;
             var previous = RenderTexture.active;
             var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
             Texture2D copy = null;

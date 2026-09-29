@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEditor;
@@ -1260,12 +1261,10 @@ namespace SashaRX.UnityMeshLab
             {
                 var md = dataArray[0];
                 int count = md.vertexCount;
-                var vertices = new Vector3[count];
-                md.GetVertices(vertices);
-                dst.SetVertices(vertices);
-                if (md.HasVertexAttribute(VertexAttribute.Normal)) { var n = new Vector3[count]; md.GetNormals(n); dst.SetNormals(n); }
-                if (md.HasVertexAttribute(VertexAttribute.Tangent)) { var t = new Vector4[count]; md.GetTangents(t); dst.SetTangents(t); }
-                if (md.HasVertexAttribute(VertexAttribute.Color)) { var c = new Color32[count]; md.GetColors(c); dst.SetColors(c); }
+                dst.SetVertices(ReadVertices(md, count));
+                if (md.HasVertexAttribute(VertexAttribute.Normal)) dst.SetNormals(ReadVectors3(md, count));
+                if (md.HasVertexAttribute(VertexAttribute.Tangent)) dst.SetTangents(ReadVectors4(md, count));
+                if (md.HasVertexAttribute(VertexAttribute.Color)) dst.SetColors(ReadColors(md, count));
                 for (int ch = 0; ch < 8; ch++)
                 {
                     var attr = (VertexAttribute)((int)VertexAttribute.TexCoord0 + ch);
@@ -1273,31 +1272,102 @@ namespace SashaRX.UnityMeshLab
                     int dim = md.GetVertexAttributeDimension(attr);
                     if (dim <= 2)
                     {
-                        var uv = new List<Vector2>(); md.GetUVs(ch, uv);
-                        if (uv.Count > 0 && !IsAllZero2(uv)) dst.SetUVs(ch, uv);
+                        var uv = ReadUV2(md, ch, count);
+                        if (uv.Length > 0 && !IsAllZero2(new List<Vector2>(uv))) dst.SetUVs(ch, uv);
                     }
                     else if (dim == 3)
                     {
-                        var uv = new List<Vector3>(); md.GetUVs(ch, uv);
-                        if (uv.Count > 0) dst.SetUVs(ch, uv);
+                        var uv = ReadUV3(md, ch, count);
+                        if (uv.Length > 0) dst.SetUVs(ch, uv);
                     }
                     else
                     {
-                        var uv = new List<Vector4>(); md.GetUVs(ch, uv);
-                        if (uv.Count > 0) dst.SetUVs(ch, uv);
+                        var uv = ReadUV4(md, ch, count);
+                        if (uv.Length > 0) dst.SetUVs(ch, uv);
                     }
                 }
                 dst.subMeshCount = md.subMeshCount;
-                var indices = new List<int>();
                 for (int s = 0; s < md.subMeshCount; s++)
-                {
-                    md.GetIndices(indices, s);
-                    dst.SetIndices(indices, md.GetTopology(s), s, calculateBounds: false);
-                    indices.Clear();
-                }
+                    dst.SetIndices(ReadIndices(md, s), md.GetSubMesh(s).topology, s, calculateBounds: false);
             }
             dst.bounds = src.bounds;
             return dst;
+        }
+
+        // MeshData's typed getters all take NativeArray buffers; each helper copies out
+        // to a managed array and disposes the scratch. applyBaseVertex folds the
+        // submesh's base vertex back into the indices, as the classic getters do.
+        static Vector3[] ReadVertices(MeshData md, int count)
+        {
+            using (var buffer = new NativeArray<Vector3>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
+            {
+                md.GetVertices(buffer);
+                return buffer.ToArray();
+            }
+        }
+
+        static Vector3[] ReadVectors3(MeshData md, int count)
+        {
+            using (var buffer = new NativeArray<Vector3>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
+            {
+                md.GetNormals(buffer);
+                return buffer.ToArray();
+            }
+        }
+
+        static Vector4[] ReadVectors4(MeshData md, int count)
+        {
+            using (var buffer = new NativeArray<Vector4>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
+            {
+                md.GetTangents(buffer);
+                return buffer.ToArray();
+            }
+        }
+
+        static Color32[] ReadColors(MeshData md, int count)
+        {
+            using (var buffer = new NativeArray<Color32>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
+            {
+                md.GetColors(buffer);
+                return buffer.ToArray();
+            }
+        }
+
+        static Vector2[] ReadUV2(MeshData md, int channel, int count)
+        {
+            using (var buffer = new NativeArray<Vector2>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
+            {
+                md.GetUVs(channel, buffer);
+                return buffer.ToArray();
+            }
+        }
+
+        static Vector3[] ReadUV3(MeshData md, int channel, int count)
+        {
+            using (var buffer = new NativeArray<Vector3>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
+            {
+                md.GetUVs(channel, buffer);
+                return buffer.ToArray();
+            }
+        }
+
+        static Vector4[] ReadUV4(MeshData md, int channel, int count)
+        {
+            using (var buffer = new NativeArray<Vector4>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
+            {
+                md.GetUVs(channel, buffer);
+                return buffer.ToArray();
+            }
+        }
+
+        static int[] ReadIndices(MeshData md, int submesh)
+        {
+            var sub = md.GetSubMesh(submesh);
+            using (var buffer = new NativeArray<int>(sub.indexCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
+            {
+                md.GetIndices(buffer, submesh, true);
+                return buffer.ToArray();
+            }
         }
 
         static bool IsAllZero2(List<Vector2> uv)

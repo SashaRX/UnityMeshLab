@@ -63,7 +63,7 @@ namespace SashaRX.UnityMeshLab
             public Vector3 localScale = Vector3.one;
             public RemeshSource source;
             public RemeshNative.IndexedMesh voxel;
-            public RemeshNative.Geometry simplified;
+            public RemeshNative.IndexedMesh simplified;
             public RemeshNative.Geometry geometry;
             public Vector4[] tangents;
             public Mesh mesh;
@@ -564,14 +564,14 @@ namespace SashaRX.UnityMeshLab
             }
             var captured = snapshot; var target = geometry; var frame = tangents;
             Report(beauty != null ? "Baking the lit view of the source into the atlas…" : "Projecting source materials into the new UV atlas…");
-            var baked = await Task.Run(() => RemeshBaker.Bake(captured, target, frame, options, token, beauty));
+            var bakedWeld = await Task.Run(() => RemeshBaker.Bake(captured, target, frame, options, token, beauty));
             token.ThrowIfCancellationRequested();
-            preview = new Texture2D(baked.size, baked.size, TextureFormat.RGBA32, false, false) { hideFlags = HideFlags.HideAndDontSave };
-            preview.SetPixels32(baked.color); preview.Apply();
-            maps = baked;
-            if (baked.vertexColors != null) resultMesh.colors = baked.vertexColors;
+            preview = new Texture2D(bakedWeld.size, bakedWeld.size, TextureFormat.RGBA32, false, false) { hideFlags = HideFlags.HideAndDontSave };
+            preview.SetPixels32(bakedWeld.color); preview.Apply();
+            maps = bakedWeld;
+            if (bakedWeld.vertexColors != null) resultMesh.colors = bakedWeld.vertexColors;
             status = $"{captured.indices.Length / 3:N0} → {target.indices.Length / 3:N0} triangles. " +
-                (baked.misses == 0 ? "All covered texels projected." : $"{baked.misses:N0} / {baked.covered:N0} texels missed (magenta). Increase projection distance and rebake.") +
+                (bakedWeld.misses == 0 ? "All covered texels projected." : $"{bakedWeld.misses:N0} / {bakedWeld.covered:N0} texels missed (magenta). Increase projection distance and rebake.") +
                 (captured.warnings.Length > 0 ? $" {captured.warnings.Length} material warning(s), see Console." : "");
             UvtLog.Info("[Remesh] " + status);
             // Source and target live in the same root-local space by construction; the
@@ -586,26 +586,26 @@ namespace SashaRX.UnityMeshLab
             // displaced projection samples; loud fraction > 5% also warns on its own.
             if (UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag))
                 UvtLog.Info(UvtLog.Category.RemeshDiag,
-                    $"cage: {baked.weldedPositions:N0} welded positions ({baked.splitCopies:N0} split copies), " +
-                    $"{baked.oneSidedNormals:N0} one-sided border normals, max cage deviation {baked.maxOneSidedDeg:F0}°, {baked.zeroNormals:N0} zero normals; " +
-                    $"projection: {baked.rayFallbacks:N0} nearest-fallback samples, {baked.misses:N0} missed texels, front-face filter {(baked.facingFilter ? "on" : "off")}; " +
-                    $"normal map tilt: mean {baked.meanTiltDeg:F1}° / max {baked.maxTiltDeg:F0}°, {baked.loudTexels:N0} texels >45°; " +
+                    $"cage: {bakedWeld.weldedPositions:N0} welded positions ({bakedWeld.splitCopies:N0} split copies), " +
+                    $"{bakedWeld.oneSidedNormals:N0} one-sided border normals, max cage deviation {bakedWeld.maxOneSidedDeg:F0}°, {bakedWeld.zeroNormals:N0} zero normals; " +
+                    $"projection: {bakedWeld.rayFallbacks:N0} nearest-fallback samples, {bakedWeld.misses:N0} missed texels, front-face filter {(bakedWeld.facingFilter ? "on" : "off")}; " +
+                    $"normal map tilt: mean {bakedWeld.meanTiltDeg:F1}° / max {bakedWeld.maxTiltDeg:F0}°, {bakedWeld.loudTexels:N0} texels >45°; " +
                     $"bounds diagonal: source {captured.diagonal:F3} / target {targetDiagonal:F3} (ratio {scaleRatio:F2})");
-            if (baked.zeroNormals > 0)
+            if (bakedWeld.zeroNormals > 0)
                 UvtLog.Warn(UvtLog.Category.RemeshDiag,
-                    baked.zeroNormals + " result vertices have zero normals — their texels bake through zeroed ray directions " +
+                    bakedWeld.zeroNormals + " result vertices have zero normals — their texels bake through zeroed ray directions " +
                     "and tangent frames. Re-run the UV stage; if it repeats, the remesh produced degenerate faces (lower simplification error or raise voxel resolution).");
-            else if (baked.rayFallbacks > baked.covered * 4 / 5 && baked.covered > 0)
+            else if (bakedWeld.rayFallbacks > bakedWeld.covered * 4 / 5 && bakedWeld.covered > 0)
                 UvtLog.Warn(UvtLog.Category.RemeshDiag,
-                    baked.rayFallbacks.ToString("N0") + " of the projection samples fell back to nearest-point search — the rays " +
+                    bakedWeld.rayFallbacks.ToString("N0") + " of the projection samples fell back to nearest-point search — the rays " +
                     "are not hitting the source. Check the projection distance and the hard-edge mode, and rebake.");
             if (Mathf.Abs(scaleRatio - 1f) > 0.1f)
                 UvtLog.Warn(UvtLog.Category.RemeshDiag,
                     $"target/source bounds diagonal ratio is {scaleRatio:F2} — the remeshed mesh no longer matches the source size. " +
                     "Check voxel resolution, small-part pruning and simplification settings, and rebake.");
-            if (baked.loudTexels > baked.covered / 20 && baked.meanTiltDeg > 30f)
+            if (bakedWeld.loudTexels > bakedWeld.covered / 20 && bakedWeld.meanTiltDeg > 30f)
                 UvtLog.Warn(UvtLog.Category.RemeshDiag,
-                    $"{100.0 * baked.loudTexels / Mathf.Max(1, baked.covered):F1}% of texels lean >45° with a {baked.meanTiltDeg:F0}° mean tilt — " +
+                    $"{100.0 * bakedWeld.loudTexels / Mathf.Max(1, bakedWeld.covered):F1}% of texels lean >45° with a {bakedWeld.meanTiltDeg:F0}° mean tilt — " +
                     "the map is dominated by extreme normals. Check the hard-edge mode, projection distance and cage fit, " +
                     "and compare against the source: fine detail should tilt a map, not saturate it.");
         }
