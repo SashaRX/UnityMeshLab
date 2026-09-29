@@ -38,6 +38,16 @@ namespace SashaRX.UnityMeshLab
         static Level? _cachedLevel;
         static int?   _cachedMask;
 
+        // EditorPrefs is main-thread-only, but the caches above are filled lazily and the
+        // first log can come from a Task.Run worker (the remesh/bake pipeline). Touch both
+        // getters once on the main thread at load so workers only ever read the cache.
+        [InitializeOnLoadMethod]
+        static void WarmPrefsCaches()
+        {
+            _ = Current;
+            _ = EnabledCategories;
+        }
+
         public static Level Current
         {
             get

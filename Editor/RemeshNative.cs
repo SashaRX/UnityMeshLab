@@ -134,14 +134,29 @@ namespace SashaRX.UnityMeshLab
                 // Normals are regenerated from the split geometry after the UV cut, so
                 // every hard-edge source behaves the same: crease splits and chart
                 // borders are already vertex splits, no face crosses one, and the
-                // weighting follows the Blender Weighted Normal analog modes.
+                // weighting follows the Blender Weighted Normal analog modes. The
+                // native meshopt normals are kept as a fallback: a vertex whose
+                // accumulation degenerates restores them instead of casting zero
+                // rays through the bake (they respect the same crease splits and
+                // are smooth across chart borders — a soft edge beats a dead one).
+                var nativeNormals = new Vector3[vertexCount];
+                for (int i = 0; i < vertexCount; ++i) nativeNormals[i] = result.normals[i];
                 GenerateSplitNormals(result, settings.normalWeighting);
+                int healedNormals = 0;
+                for (int i = 0; i < vertexCount; ++i)
+                    if (result.normals[i].sqrMagnitude < 1e-12f) {
+                        result.normals[i] = nativeNormals[i];
+                        if (nativeNormals[i].sqrMagnitude > 1e-12f) ++healedNormals;
+                    }
                 int zeroNormals = 0;
                 for (int i = 0; i < vertexCount; ++i)
                     if (result.normals[i].sqrMagnitude < 1e-12f) ++zeroNormals;
+                if (healedNormals > 0)
+                    UvtLog.Warn("[Remesh] " + healedNormals + " of " + vertexCount +
+                        " split normals degenerated to zero (cancelling or degenerate faces); restored the native smooth normal on them — hard edges may soften there.");
                 if (zeroNormals > 0)
                     UvtLog.Warn("[Remesh] " + zeroNormals + " of " + vertexCount +
-                        " split normals are zero (degenerate faces with no usable corner); their rays fall back to the welded cage.");
+                        " split normals are still zero (the native output was zero as well); their rays fall back to the welded cage.");
                 // Normal smoothing runs after UV generation so it works the same for
                 // every hard-edge source: crease splits and chart borders already
                 // materialized as vertex splits, and mesh edges never cross a split,
@@ -159,6 +174,10 @@ namespace SashaRX.UnityMeshLab
         // creases and island borders alike. Weighting follows the Blender
         // Weighted Normal analog: face area (meshopt's own accumulation),
         // corner angle, or both multiplied together.
+        // The degeneracy gate is RELATIVE to the strongest accumulation on the
+        // mesh: real captures are ~5 mm models whose raw crosses sit near 1e-7,
+        // and an absolute floor there classified valid smooth vertices as
+        // degenerate (the all-zero-normal regression on face-area weighting).
         internal static void GenerateSplitNormals(Geometry geometry, RemeshNormalWeighting weighting)
         {
             var sum = new Vector3[geometry.positions.Length];
@@ -175,8 +194,14 @@ namespace SashaRX.UnityMeshLab
                 if (byArea) { sum[a] += n * angleA; sum[b] += n * angleB; sum[c] += n * angleC; }
                 else { sum[a] += face * angleA; sum[b] += face * angleB; sum[c] += face * angleC; }
             }
+            float maxSq = 0f;
+            for (int i = 0; i < sum.Length; ++i) {
+                float sq = sum[i].sqrMagnitude;
+                if (sq > maxSq) maxSq = sq;
+            }
+            float floor = maxSq * 1e-12f;
             for (int i = 0; i < sum.Length; ++i)
-                if (sum[i].sqrMagnitude > 1e-30f) geometry.normals[i] = sum[i].normalized;
+                if (sum[i].sqrMagnitude > floor) geometry.normals[i] = sum[i].normalized;
         }
 
         // Angle between two edge directions meeting at a corner, in radians.

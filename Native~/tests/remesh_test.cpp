@@ -70,7 +70,69 @@ int main() {
     }
     meshLabRemeshDestroy(h); h=nullptr;
 
-    // Bridge flags: bit 0 = meshopt_RemeshSolve, bit 1 = meshopt_RemeshShell. meshoptimizer
+    // The editor's island hard-edge modes pass crease = pi (the chart borders carry the
+    // hard edges; the native call makes no crease splits of its own), and real captures
+    // are ~5 mm models remeshed densely — a path the unit-scale cube tests never exercise.
+    // Pin every field of the wire layout on it: all-zero normals shipped here once under
+    // ABI 3 and the bake projected through zeroed ray directions.
+    {
+        std::vector<float> sp; std::vector<uint32_t> si;
+        const int grid = 12;
+        const float radius = 2.5e-3f;
+        const int quads[6][4] = {
+            {0,1,2,3}, {4,5,6,7}, {0,1,5,4}, {3,2,6,7}, {0,3,7,4}, {1,2,6,5},
+        };
+        auto point = [&](int q0, int q1, int q2, int q3, float u, float v, float* out) {
+            for (int k = 0; k < 3; ++k) {
+                float a = p[q0 * 3 + k] * (1 - u) + p[q1 * 3 + k] * u;
+                float b = p[q3 * 3 + k] * (1 - u) + p[q2 * 3 + k] * u;
+                out[k] = (a * (1 - v) + b * v);
+            }
+            float len = std::sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
+            for (int k = 0; k < 3; ++k) out[k] = out[k] / len * radius;
+        };
+        for (auto& q : quads)
+            for (int i = 0; i < grid; ++i)
+                for (int j = 0; j < grid; ++j) {
+                    float a[3], b[3], c[3], d[3];
+                    point(q[0], q[1], q[2], q[3], float(i) / grid, float(j) / grid, a);
+                    point(q[0], q[1], q[2], q[3], float(i + 1) / grid, float(j) / grid, b);
+                    point(q[0], q[1], q[2], q[3], float(i + 1) / grid, float(j + 1) / grid, c);
+                    point(q[0], q[1], q[2], q[3], float(i) / grid, float(j + 1) / grid, d);
+                    // Outward winding is not uniform across the hand-listed quads; the
+                    // sphere is centred at the origin, so cross.centroid signs it.
+                    uint32_t base = uint32_t(sp.size() / 3);
+                    for (float* pv : {a, b, c, d}) { sp.push_back(pv[0]); sp.push_back(pv[1]); sp.push_back(pv[2]); }
+                    float cx = (b[1]-a[1])*(c[2]-a[2]) - (b[2]-a[2])*(c[1]-a[1]);
+                    float cy = (b[2]-a[2])*(c[0]-a[0]) - (b[0]-a[0])*(c[2]-a[2]);
+                    float cz = (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0]);
+                    float centroid[3] = {a[0]+b[0]+c[0], a[1]+b[1]+c[1], a[2]+b[2]+c[2]};
+                    if (cx * centroid[0] + cy * centroid[1] + cz * centroid[2] >= 0) {
+                si.push_back(base); si.push_back(base + 2); si.push_back(base + 1);
+                si.push_back(base); si.push_back(base + 3); si.push_back(base + 2);
+            } else {
+                si.push_back(base); si.push_back(base + 1); si.push_back(base + 2);
+                si.push_back(base); si.push_back(base + 2); si.push_back(base + 3);
+            }
+                }
+        check(meshLabRemeshBuild(sp.data(), uint32_t(sp.size() / 3), si.data(), uint32_t(si.size()),
+            64, 1400, 0.01f, 3.141593f, 0, 1024, 4, 1, &h, &v, &n) == 0 && h, "tiny dense sphere pipeline");
+        check(v > 0 && n > 0 && n % 3 == 0, "tiny dense sphere counts");
+        std::vector<float> vertices(v * 16); std::vector<uint32_t> indices(n);
+        check(meshLabRemeshCopy(h, vertices.data(), v, indices.data(), n) == 0, "tiny dense sphere copy");
+        for (uint32_t i = 0; i < v; ++i) {
+            for (int k = 0; k < 16; ++k) check(std::isfinite(vertices[i * 16 + k]), "tiny dense sphere finite");
+            float norm = 0; for (int k = 3; k < 6; ++k) norm += vertices[i * 16 + k] * vertices[i * 16 + k];
+            check(std::abs(norm - 1) < 0.01f, "tiny dense sphere unit normals");
+            for (int k = 6; k < 8; ++k) check(vertices[i * 16 + k] >= 0 && vertices[i * 16 + k] <= 1, "tiny dense sphere normalized UV");
+            float tangent = 0; for (int k = 8; k < 11; ++k) tangent += vertices[i * 16 + k] * vertices[i * 16 + k];
+            check(std::abs(tangent - 1) < 0.01f, "tiny dense sphere unit tangents");
+            check(std::abs(vertices[i * 16 + 11]) == 1, "tiny dense sphere tangent handedness");
+        }
+        meshLabRemeshDestroy(h); h = nullptr;
+        std::cout << "tiny dense sphere: " << v << " vertices, " << n / 3 << " triangles\n";
+    }
+
     // v1.3 renumbered that enum, so pin the mapping: a closed cube remeshed as a two-sided
     // shell keeps its inner surface as well and must come out larger than the solid remesh.
     uint32_t tris[4] = {};
