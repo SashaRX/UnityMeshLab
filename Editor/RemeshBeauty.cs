@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using Unity.Collections;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -115,19 +114,18 @@ namespace SashaRX.UnityMeshLab
                 // frequency, so a 32×16 direction grid with worker-side bilinear lookup is
                 // visually exact without porting ShadeSH9's packed constants.
                 ambientGrid = new Color[AmbientW * AmbientH];
-                using (var directions = new NativeArray<Vector3>(ambientGrid.Length, Allocator.TempJob))
-                using (var results = new NativeArray<Color>(ambientGrid.Length, Allocator.TempJob)) {
-                    int i = 0;
-                    for (int y = 0; y < AmbientH; ++y)
-                        for (int x = 0; x < AmbientW; ++x, ++i) {
-                            float phi = (x + 0.5f) / AmbientW * 2f * Mathf.PI;
-                            float theta = (y + 0.5f) / AmbientH * Mathf.PI;
-                            directions[i] = new Vector3(
-                                Mathf.Sin(theta) * Mathf.Cos(phi), Mathf.Cos(theta), Mathf.Sin(theta) * Mathf.Sin(phi));
-                        }
-                    RenderSettings.ambientProbe.Evaluate(directions, results);
-                    for (int j = 0; j < ambientGrid.Length; ++j) ambientGrid[j] = results[j];
-                }
+                var directions = new Vector3[ambientGrid.Length];
+                var results = new Color[ambientGrid.Length];
+                int i = 0;
+                for (int y = 0; y < AmbientH; ++y)
+                    for (int x = 0; x < AmbientW; ++x, ++i) {
+                        float phi = (x + 0.5f) / AmbientW * 2f * Mathf.PI;
+                        float theta = (y + 0.5f) / AmbientH * Mathf.PI;
+                        directions[i] = new Vector3(
+                            Mathf.Sin(theta) * Mathf.Cos(phi), Mathf.Cos(theta), Mathf.Sin(theta) * Mathf.Sin(phi));
+                    }
+                RenderSettings.ambientProbe.Evaluate(directions, results);
+                for (int j = 0; j < ambientGrid.Length; ++j) ambientGrid[j] = results[j];
             }
 
             var probeList = new List<Probe>();
