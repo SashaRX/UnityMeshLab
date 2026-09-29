@@ -316,10 +316,16 @@ namespace SashaRX.UnityMeshLab
             cancellation = new CancellationTokenSource();
             var token = cancellation.Token;
             bool locked = false;
+            List<ModelImporter> restoreReadable = null;
             try {
                 settings.Validate(); RemeshNative.CheckAvailable();
                 var options = JsonUtility.FromJson<RemeshSettings>(JsonUtility.ToJson(settings));
                 ClearFrom(from);
+                // The capture reads Read/Write-disabled imports through MeshData, but a
+                // readable import is the fast, friction-free path: flip the source models'
+                // importers on for the run (only when the capture stage executes) and put
+                // each one back to its original off state afterwards.
+                if (from == Stage.Remesh && source) restoreReadable = EnableSourceReadWrite();
                 EditorApplication.LockReloadAssemblies(); locked = true;
                 for (var stage = from; stage <= to; ++stage) {
                     string key = Key(stage);
@@ -337,10 +343,51 @@ namespace SashaRX.UnityMeshLab
             catch (OperationCanceledException) { status = "Cancelled. Source assets were preserved."; }
             catch (Exception e) { status = e.Message; UvtLog.Error("[Remesh] " + e); }
             finally {
+                if (restoreReadable != null) RestoreSourceReadWrite(restoreReadable);
                 cancellation.Dispose(); cancellation = null;
                 if (locked) EditorApplication.UnlockReloadAssemblies();
                 Interlocked.Exchange(ref running, 0); RequestRepaint?.Invoke();
             }
+        }
+
+        // Flips every imported model under the source root to Read/Write enabled and
+        // returns the importers that were changed (all originally off); null when none.
+        List<ModelImporter> EnableSourceReadWrite()
+        {
+            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            CollectMeshAssetPaths(source.transform, paths);
+            var touched = new List<ModelImporter>();
+            foreach (var path in paths) {
+                if (!(AssetImporter.GetAtPath(path) is ModelImporter model) || model.isReadable) continue;
+                model.isReadable = true;
+                model.SaveAndReimport();
+                touched.Add(model);
+            }
+            return touched.Count > 0 ? touched : null;
+        }
+
+        static void RestoreSourceReadWrite(List<ModelImporter> touched)
+        {
+            foreach (var model in touched) {
+                if (model == null) continue;
+                model.isReadable = false;
+                model.SaveAndReimport();
+            }
+        }
+
+        static void CollectMeshAssetPaths(Transform node, HashSet<string> paths)
+        {
+            if (node.TryGetComponent<MeshFilter>(out var filter) && filter.sharedMesh)
+                AddMeshAssetPath(filter.sharedMesh, paths);
+            if (node.TryGetComponent<SkinnedMeshRenderer>(out var skin) && skin.sharedMesh)
+                AddMeshAssetPath(skin.sharedMesh, paths);
+            for (int i = 0; i < node.childCount; ++i) CollectMeshAssetPaths(node.GetChild(i), paths);
+        }
+
+        static void AddMeshAssetPath(Mesh mesh, HashSet<string> paths)
+        {
+            string path = AssetDatabase.GetAssetPath(mesh);
+            if (!string.IsNullOrEmpty(path)) paths.Add(path);
         }
 
         async Task RunRemesh(RemeshSettings options, CancellationToken token)

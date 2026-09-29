@@ -34,7 +34,9 @@ settings, marked "settings changed" in its header) and clears everything after i
    their current pose (skinning re-evaluated first — in edit mode it can be stale
    and bake every part at its authored origin) and then captured like static
    meshes; pose the model the way you want it baked. Every contributing submesh
-   needs UV0. Read/Write-disabled imports are read through MeshData.
+   needs UV0. Read/Write-disabled imports are read through MeshData, and a run
+   that includes the remesh stage additionally flips the source models' importers
+   to Read/Write enabled for the capture and restores each one to off afterwards.
 2. **Voxel remesh** — voxel resolution (4–256), fit to source surface, two-sided
    shell. Higher resolution preserves smaller gaps but produces a denser,
    uniform intermediate mesh.
