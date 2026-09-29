@@ -125,6 +125,11 @@ settings, marked "settings changed" in its header) and clears everything after i
    decode), the separate direction texture is not needed (the colour already is
    that surface's irradiance), and shadowmask lights contribute through their
    realtime component with the bake's own ray shadows standing in for the mask.
+   In directional mode the bake reproduces the game's exact lightmap response —
+   URP's `SampleDirectionalLightmap`: the encoded dominant direction is dotted
+   with the surface's world normal as a half-Lambert and divided by the texel's
+   rebalancing coefficient — not a flat colour, so oblique surfaces shade the way
+   they do in play.
    With the **RemeshDiag** log filter enabled, every bake also prints its health
    counters to the Console: welded cage positions and split copies, one-sided
    border normals (max cage deviation), nearest-fallback projection samples,

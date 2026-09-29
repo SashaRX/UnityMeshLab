@@ -24,6 +24,11 @@ namespace SashaRX.UnityMeshLab
             public Color[] pixels;            // linear, decoded
             public int width, height;
             public Vector4 st;                // renderer.lightmapScaleOffset: uv2 * xy + zw
+            // Directional mode: rgb = dominant direction (encoded, NOT unit length —
+            // its length is the directionality), a = the rebalancing coefficient.
+            public Color[] dirPixels;
+            public int dirWidth, dirHeight;
+            public bool hasDir;
         }
 
         internal sealed class Probe
@@ -232,10 +237,23 @@ namespace SashaRX.UnityMeshLab
             return new Color(color.r * fresnel.x * energy, color.g * fresnel.y * energy, color.b * fresnel.z * energy, 0f);
         }
 
-        internal Color SampleLightmap(Lightmap map, Vector2 uv2)
+        internal Color SampleLightmap(Lightmap map, Vector2 uv2, Vector3 localNormal)
         {
             Vector2 uv = new Vector2(uv2.x * map.st.x + map.st.z, uv2.y * map.st.y + map.st.w);
-            return SampleBilinear(map.pixels, map.width, map.height, uv);
+            Color illuminance = SampleBilinear(map.pixels, map.width, map.height, uv);
+            if (map.hasDir) {
+                // The game's exact directional-lightmap response (URP EntityLighting's
+                // SampleDirectionalLightmap): the encoded dominant direction is dotted
+                // against the WORLD normal as a half-Lambert and the result is divided
+                // by the texel's rebalancing coefficient. A flat colour would overlight
+                // every surface whose normal disagrees with the dominant direction.
+                Color d = SampleBilinear(map.dirPixels, map.dirWidth, map.dirHeight, uv);
+                Vector3 dir = new Vector3(d.r, d.g, d.b) - new Vector3(0.5f, 0.5f, 0.5f);
+                float halfLambert = Vector3.Dot(localToWorld.MultiplyVector(localNormal), dir) + 0.5f;
+                float scale = halfLambert / Mathf.Max(1e-4f, d.a);
+                illuminance = new Color(illuminance.r * scale, illuminance.g * scale, illuminance.b * scale, 1f);
+            }
+            return illuminance;
         }
 
         // ── plumbing ──
@@ -331,8 +349,9 @@ namespace SashaRX.UnityMeshLab
         // (rgb * a * 8); Bakery's 8-bit output is plain linear with alpha pinned at 1,
         // so "alpha ~ 1 everywhere" (a real RGBM scene always has dark texels with
         // alpha < 1) identifies a plain map and skips the decode that would
-        // overbrighten it eightfold.
-        internal static Lightmap ReadLightmap(Texture2D lightmap, Vector4 st)
+        // overbrighten it eightfold. The optional direction texture is linear data and
+        // needs no decode at all.
+        internal static Lightmap ReadLightmap(Texture2D lightmap, Texture2D lightmapDir, Vector4 st)
         {
             int width = lightmap.width, height = lightmap.height;
             bool hdr = lightmap.format == TextureFormat.RGBAFloat || lightmap.format == TextureFormat.RGBAHalf;
@@ -358,8 +377,35 @@ namespace SashaRX.UnityMeshLab
                             pixels[i] = new Color(c.r * scale, c.g * scale, c.b * scale, 1f);
                         }
                 }
-                return new Lightmap { pixels = pixels, width = width, height = height, st = st };
+                var map = new Lightmap { pixels = pixels, width = width, height = height, st = st };
+                if (lightmapDir != null) {
+                    map.dirPixels = ReadPlain(lightmapDir, out map.dirWidth, out map.dirHeight);
+                    map.hasDir = map.dirPixels != null;
+                }
+                return map;
             }
+            finally {
+                RenderTexture.active = previous;
+                RenderTexture.ReleaseTemporary(rt);
+                if (copy) Object.DestroyImmediate(copy);
+            }
+        }
+
+        static Color[] ReadPlain(Texture2D texture, out int width, out int height)
+        {
+            width = texture.width; height = texture.height;
+            var previous = RenderTexture.active;
+            var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
+            Texture2D copy = null;
+            try {
+                Graphics.Blit(texture, rt);
+                RenderTexture.active = rt;
+                copy = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
+                copy.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                copy.Apply();
+                return copy.GetPixels();
+            }
+            catch (Exception) { return null; }
             finally {
                 RenderTexture.active = previous;
                 RenderTexture.ReleaseTemporary(rt);

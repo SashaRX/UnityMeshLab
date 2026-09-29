@@ -245,7 +245,7 @@ namespace SashaRX.UnityMeshLab
             Color lit;
             if (lightmapId >= 0 && source.lightmaps != null && lightmapId < source.lightmaps.Length) {
                 Vector2 uv2 = source.uv2[a] * w.x + source.uv2[b] * w.y + source.uv2[c] * w.z;
-                lit = beauty.SampleLightmap(source.lightmaps[lightmapId], uv2);
+                lit = beauty.SampleLightmap(source.lightmaps[lightmapId], uv2, n);
                 lit += albedoLinear * beauty.Direct(p, n);
             }
             else {

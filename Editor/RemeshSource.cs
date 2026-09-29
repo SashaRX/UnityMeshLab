@@ -84,7 +84,7 @@ namespace SashaRX.UnityMeshLab
             var materialIds = new Dictionary<Material, int>();
             var faceLightmaps = new List<int>();
             var lightmaps = new List<RemeshBeauty.Lightmap>();
-            var lightmapIds = new Dictionary<(Texture2D, Vector4), int>();
+            var lightmapIds = new Dictionary<(Texture2D, Texture2D, Vector4), int>();
             string[] warnings;
             using (var reader = new Reader()) {
                 foreach (var renderer in root.GetComponentsInChildren<Renderer>()) {
@@ -149,13 +149,14 @@ namespace SashaRX.UnityMeshLab
                         int lightmapId = -1;
                         int lightmapIndex = renderer.lightmapIndex;
                         if (lightmapIndex >= 0 && lightmapIndex < LightmapSettings.lightmaps.Length) {
-                            var map = LightmapSettings.lightmaps[lightmapIndex].lightmapColor;
+                            var data = LightmapSettings.lightmaps[lightmapIndex];
+                            var map = data.lightmapColor;
                             var st = renderer.lightmapScaleOffset;
                             if (map != null) {
-                                var key = (map, st);
+                                var key = (map, data.lightmapDir, st);
                                 if (!lightmapIds.TryGetValue(key, out lightmapId)) {
                                     lightmapId = lightmaps.Count;
-                                    lightmaps.Add(RemeshBeauty.ReadLightmap(map, st));
+                                    lightmaps.Add(RemeshBeauty.ReadLightmap(map, data.lightmapDir, st));
                                     lightmapIds.Add(key, lightmapId);
                                 }
                             }
