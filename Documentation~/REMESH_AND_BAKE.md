@@ -100,7 +100,11 @@ settings, marked "settings changed" in its header) and clears everything after i
    draws the projection limits — the result mesh inflated by ±the ray travel
    along the same welded cage normals, orange for the outer (ray origin) shell,
    blue for the inner (ray end) shell — live from the current projection
-   distance, so the setting can be tuned before re-baking.
+   distance, so the setting can be tuned before re-baking. The cage is a proper
+   smooth cage: its directions are area-weighted, welded across UV/crease splits
+   and Laplacian-smoothed over the welded connectivity, and each shell's offset
+   stops short of self-intersection (cast against the surface itself), so a
+   tight concavity shows a pinch instead of folding through to the far side.
    **Bake mode** selects what lands in the maps: *Materials* transfers the source
    maps; *Beauty* bakes the object as the player sees it — realtime/mixed light
    with hard ray shadows, the renderer's lightmaps (sampled at its UV2, RGBM/HDR

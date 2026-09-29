@@ -221,8 +221,12 @@ namespace SashaRX.UnityMeshLab
                 if (cageInner) Object.DestroyImmediate(cageInner);
                 var cageNormals = RemeshBaker.BuildCageNormals(geometry, null);
                 var indices = EdgeIndices(mesh);
-                cageOuter = indices != null ? CageShell(mesh, geometry, cageNormals, distance, "Outer") : null;
-                cageInner = indices != null ? CageShell(mesh, geometry, cageNormals, -distance, "Inner") : null;
+                if (indices != null) {
+                    var folds = new TriangleBvh(geometry.positions, geometry.indices);
+                    cageOuter = CageShell(mesh, geometry, cageNormals, distance, "Outer", folds);
+                    cageInner = CageShell(mesh, geometry, cageNormals, -distance, "Inner", folds);
+                }
+                else cageOuter = cageInner = null;
                 cageMeshId = id; cageDistanceCached = distance;
             }
             wire.SetColor("_Color", new Color(1f, 0.55f, 0.15f, 0.9f));
@@ -231,15 +235,30 @@ namespace SashaRX.UnityMeshLab
             if (cageInner) utility.DrawMesh(cageInner, Matrix4x4.identity, wire, 0);
         }
 
-        static Mesh CageShell(Mesh mesh, RemeshNative.Geometry geometry, Vector3[] cageNormals, float distance, string suffix)
+        static Mesh CageShell(Mesh mesh, RemeshNative.Geometry geometry, Vector3[] cageNormals, float distance, string suffix, TriangleBvh folds)
         {
             var vertices = new Vector3[geometry.positions.Length];
-            for (int i = 0; i < vertices.Length; ++i)
-                vertices[i] = geometry.positions[i] + cageNormals[i] * distance;
+            for (int i = 0; i < vertices.Length; ++i) {
+                Vector3 dir = distance >= 0 ? cageNormals[i] : -cageNormals[i];
+                vertices[i] = geometry.positions[i] + dir * FoldLimitedOffset(folds, geometry.positions[i], dir, Mathf.Abs(distance));
+            }
             var shell = new Mesh { name = mesh.name + "_Cage" + suffix, hideFlags = HideFlags.HideAndDontSave, indexFormat = IndexFormat.UInt32 };
             shell.vertices = vertices;
             shell.SetIndices(EdgeIndices(mesh), MeshTopology.Lines, 0);
             return shell;
+        }
+
+        // A uniform offset folds through itself wherever the surface is tighter than the
+        // ray travel (wheel wells, fender arches) — the shell then crosses to the far
+        // side and reads as noise. The offset stops short of the fold instead: the
+        // segment is cast against the surface itself and keeps 85% of the unobstructed
+        // reach, floored at a quarter of the full distance so the limit stays visible.
+        static float FoldLimitedOffset(TriangleBvh folds, Vector3 p, Vector3 dir, float distance)
+        {
+            float eps = distance * 0.01f;
+            var hit = folds.Raycast(p + dir * eps, dir, distance);
+            if (hit.triangleIndex < 0) return distance;
+            return Mathf.Max(distance * 0.25f, (hit.t + eps) * 0.85f);
         }
 
         static long Triangles(Mesh mesh)

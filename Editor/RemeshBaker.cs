@@ -259,9 +259,14 @@ namespace SashaRX.UnityMeshLab
         // coincident vertices: UV chart borders (and crease edges) split vertices, and
         // each copy's own normal is one-sided there, so rays cast along it land on a
         // displaced source point. Welding by exact position — xatlas copies bit-identical
-        // coordinates — averages both sides back into a smooth cage direction.
+        // coordinates — averages both sides back into a smooth cage direction, and a
+        // Laplacian pass over the WELDED connectivity smooths the sliver noise the
+        // adaptive decimation leaves in those directions (the "fully smooth cage" every
+        // baker prescribes). The pass runs on the welded mesh precisely so it flows
+        // through chart borders and hard edges instead of re-splitting them.
         internal static Vector3[] BuildCageNormals(RemeshNative.Geometry target, Maps diag)
         {
+            const float cageSmoothing = 2f;
             var slots = new int[target.positions.Length];
             var map = new System.Collections.Generic.Dictionary<(int, int, int), int>(target.positions.Length);
             for (int i = 0; i < target.positions.Length; ++i) {
@@ -271,11 +276,17 @@ namespace SashaRX.UnityMeshLab
                 slots[i] = slot;
             }
             var welded = new Vector3[map.Count];
+            var weldedIndices = new int[target.indices.Length];
             for (int i = 0; i < target.indices.Length; i += 3) {
                 int a = target.indices[i], b = target.indices[i + 1], c = target.indices[i + 2];
                 Vector3 n = Vector3.Cross(target.positions[b] - target.positions[a], target.positions[c] - target.positions[a]);
                 welded[slots[a]] += n; welded[slots[b]] += n; welded[slots[c]] += n;
+                weldedIndices[i] = slots[a]; weldedIndices[i + 1] = slots[b]; weldedIndices[i + 2] = slots[c];
             }
+            for (int i = 0; i < welded.Length; ++i)
+                if (welded[i].sqrMagnitude > 1e-30f) welded[i] = welded[i].normalized;
+            var weldedMesh = new RemeshNative.Geometry { normals = welded, indices = weldedIndices };
+            RemeshNative.SmoothNormals(weldedMesh, cageSmoothing);
             var cage = new Vector3[target.positions.Length];
             float maxDev = 0; int oneSided = 0, zeroNormalVerts = 0;
             for (int i = 0; i < cage.Length; ++i) {
