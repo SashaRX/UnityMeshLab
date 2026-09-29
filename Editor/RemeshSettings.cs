@@ -36,6 +36,17 @@ namespace SashaRX.UnityMeshLab
         FaceAreaAndCornerAngle,
     }
 
+    /// <summary>What the bake writes into the maps.</summary>
+    public enum RemeshBakeMode
+    {
+        /// <summary>Transfer the source material maps (albedo, normal, metal, AO, emission).</summary>
+        Materials,
+        /// <summary>Bake the object as the player sees it: realtime/mixed light with ray
+        /// shadows, lightmaps, ambient and reflection probes folded into one lit BaseColor
+        /// texture; the saved material becomes Unlit/Texture.</summary>
+        Beauty,
+    }
+
     [Serializable]
     public sealed class RemeshSettings
     {
@@ -86,6 +97,9 @@ namespace SashaRX.UnityMeshLab
         public int padding = 8;
 
         // 4 · Bake
+        // Materials transfers the source maps; Beauty additionally folds the scene's
+        // lighting into one BaseColor texture and the saved material becomes Unlit.
+        public RemeshBakeMode bakeMode = RemeshBakeMode.Materials;
         public float projectionDistance = 0.02f; // fraction of source bounds diagonal
         public int bakeSamples = 4;              // per texel: 1, 4, 9 or 16
         public bool transferVertexColor;

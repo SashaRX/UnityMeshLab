@@ -213,6 +213,10 @@ namespace SashaRX.UnityMeshLab
                     StageButton(Stage.Unwrap, "Unwrap");
                 }
                 if (StageHeader(Stage.Bake, maps != null ? (maps.misses > 0 ? $"{maps.misses:N0} missed" : "done") : null)) {
+                    settings.bakeMode = (RemeshBakeMode)EditorGUILayout.EnumPopup(new GUIContent("Bake mode",
+                        "Materials transfers the source maps. Beauty bakes the object as the player sees it — realtime/mixed light with ray shadows, " +
+                        "lightmaps, ambient and reflection probes folded into one lit BaseColor texture; the saved material becomes Unlit. " +
+                        "Specular uses the scene view camera's position at bake time."), settings.bakeMode);
                     settings.projectionDistance = EditorGUILayout.Slider("Projection / bounds", settings.projectionDistance, 0.001f, 0.2f);
                     settings.bakeSamples = EditorGUILayout.IntPopup(new GUIContent("Samples per texel", "Supersampling for smoother edges and detail."),
                         settings.bakeSamples, Array.ConvertAll(SampleNames, n => new GUIContent(n)), SampleCounts);
@@ -302,7 +306,7 @@ namespace SashaRX.UnityMeshLab
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
                     $"{s.maxChartArea}|{s.maxChartBoundary}|{s.packRotate}|{s.packBlockAlign}|{s.packBruteForce}";
-                default: return $"{s.projectionDistance}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}";
+                default: return $"{s.bakeMode}|{s.projectionDistance}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}";
             }
         }
 
@@ -527,13 +531,22 @@ namespace SashaRX.UnityMeshLab
         async Task RunBake(RemeshSettings options, CancellationToken token)
         {
             if ((geometry == null || snapshot == null) && nodes == null) throw new InvalidOperationException("Run the UV stage first.");
+            // The beauty environment reads scene state (lights, probes, view), so it is
+            // captured on the main thread before the workers start.
+            RemeshBeauty beauty = null;
+            if (options.bakeMode == RemeshBakeMode.Beauty) {
+                Report("Capturing scene lighting…");
+                if (!source) throw new InvalidOperationException("The source root is gone; reselect it and rerun the remesh stage.");
+                float diagonal = snapshot != null ? snapshot.diagonal : (nodes != null && nodes.Count > 0 ? nodes[0].source.diagonal : 1f);
+                beauty = new RemeshBeauty(source.gameObject, diagonal);
+            }
             if (nodes != null) {
                 long sourceTriangles = 0, targetTriangles = 0, misses = 0, covered = 0;
                 for (int i = 0; i < nodes.Count; ++i) {
                     var node = nodes[i];
                     token.ThrowIfCancellationRequested();
                     Report($"Projecting {node.name} into its UV atlas ({i + 1}/{nodes.Count})…");
-                    var baked = await Task.Run(() => RemeshBaker.Bake(node.source, node.geometry, node.tangents, options, token), token);
+                    var baked = await Task.Run(() => RemeshBaker.Bake(node.source, node.geometry, node.tangents, options, token, beauty), token);
                     node.maps = baked;
                     if (baked.vertexColors != null) node.mesh.colors = baked.vertexColors;
                     sourceTriangles += node.source.indices.Length / 3;
@@ -550,8 +563,8 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
             var captured = snapshot; var target = geometry; var frame = tangents;
-            Report("Projecting source materials into the new UV atlas…");
-            var baked = await Task.Run(() => RemeshBaker.Bake(captured, target, frame, options, token));
+            Report(beauty != null ? "Baking the lit view of the source into the atlas…" : "Projecting source materials into the new UV atlas…");
+            var baked = await Task.Run(() => RemeshBaker.Bake(captured, target, frame, options, token, beauty));
             token.ThrowIfCancellationRequested();
             preview = new Texture2D(baked.size, baked.size, TextureFormat.RGBA32, false, false) { hideFlags = HideFlags.HideAndDontSave };
             preview.SetPixels32(baked.color); preview.Apply();
@@ -673,8 +686,12 @@ namespace SashaRX.UnityMeshLab
             Mesh mesh = null; Material material = null;
             bool createdFolder = false;
             try {
-                string shaderName = GraphicsSettings.currentRenderPipeline == null ? "Standard" : "Universal Render Pipeline/Lit";
-                if (GraphicsSettings.currentRenderPipeline != null &&
+                // Beauty bakes fold the lighting into the BaseColor; the result shades
+                // Unlit (pipeline-agnostic) instead of Standard/URP-Lit.
+                bool unlit = maps != null && maps.beauty;
+                string shaderName = unlit ? "Unlit/Texture"
+                    : (GraphicsSettings.currentRenderPipeline == null ? "Standard" : "Universal Render Pipeline/Lit");
+                if (!unlit && GraphicsSettings.currentRenderPipeline != null &&
                     !GraphicsSettings.currentRenderPipeline.GetType().Name.Contains("Universal"))
                     throw new InvalidOperationException("Result materials support Built-in and URP; HDRP export is not implemented.");
                 var shader = Shader.Find(shaderName);
@@ -721,18 +738,25 @@ namespace SashaRX.UnityMeshLab
                 if (settings.normalizeSize) BakeScaleIntoMesh(mesh, worldScale);
                 material = new Material(shader) { name = clean + "_Remesh" };
                 bool urp = shaderName != "Standard";
-                material.SetTexture(urp ? "_BaseMap" : "_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[0]));
-                material.SetColor(urp ? "_BaseColor" : "_Color", Color.white);
-                material.SetTexture("_BumpMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[1]));
-                material.SetTexture("_MetallicGlossMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[2]));
-                material.SetTexture("_OcclusionMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[3]));
-                material.SetTexture("_EmissionMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[4]));
-                material.SetColor("_EmissionColor", Color.white);
-                material.SetFloat("_Metallic", 1); material.SetFloat(urp ? "_Smoothness" : "_GlossMapScale", 1);
-                material.SetFloat("_BumpScale", 1); material.SetFloat("_OcclusionStrength", 1);
-                material.EnableKeyword("_NORMALMAP"); material.EnableKeyword("_EMISSION");
-                material.EnableKeyword(urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP");
-                if (urp) material.EnableKeyword("_OCCLUSIONMAP");
+                if (unlit) {
+                    // One lit texture in, one texture out — the other maps still export
+                    // alongside for reference, but nothing samples them.
+                    material.SetTexture("_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[0]));
+                }
+                else {
+                    material.SetTexture(urp ? "_BaseMap" : "_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[0]));
+                    material.SetColor(urp ? "_BaseColor" : "_Color", Color.white);
+                    material.SetTexture("_BumpMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[1]));
+                    material.SetTexture("_MetallicGlossMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[2]));
+                    material.SetTexture("_OcclusionMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[3]));
+                    material.SetTexture("_EmissionMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[4]));
+                    material.SetColor("_EmissionColor", Color.white);
+                    material.SetFloat("_Metallic", 1); material.SetFloat(urp ? "_Smoothness" : "_GlossMapScale", 1);
+                    material.SetFloat("_BumpScale", 1); material.SetFloat("_OcclusionStrength", 1);
+                    material.EnableKeyword("_NORMALMAP"); material.EnableKeyword("_EMISSION");
+                    material.EnableKeyword(urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP");
+                    if (urp) material.EnableKeyword("_OCCLUSIONMAP");
+                }
                 temporary = new GameObject(clean + "_LOD0") { hideFlags = HideFlags.HideAndDontSave };
                 temporary.AddComponent<MeshFilter>().sharedMesh = mesh;
                 temporary.AddComponent<MeshRenderer>().sharedMaterial = material;
@@ -844,18 +868,24 @@ namespace SashaRX.UnityMeshLab
                             importer.SaveAndReimport();
                         }
                         var material = new Material(shader) { name = nodeNames[i] + "_Remesh" };
-                        material.SetTexture(urp ? "_BaseMap" : "_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[0]));
-                        material.SetColor(urp ? "_BaseColor" : "_Color", Color.white);
-                        material.SetTexture("_BumpMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[1]));
-                        material.SetTexture("_MetallicGlossMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[2]));
-                        material.SetTexture("_OcclusionMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[3]));
-                        material.SetTexture("_EmissionMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[4]));
-                        material.SetColor("_EmissionColor", Color.white);
-                        material.SetFloat("_Metallic", 1); material.SetFloat(urp ? "_Smoothness" : "_GlossMapScale", 1);
-                        material.SetFloat("_BumpScale", 1); material.SetFloat("_OcclusionStrength", 1);
-                        material.EnableKeyword("_NORMALMAP"); material.EnableKeyword("_EMISSION");
-                        material.EnableKeyword(urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP");
-                        if (urp) material.EnableKeyword("_OCCLUSIONMAP");
+                        bool nodeUnlit = node.maps != null && node.maps.beauty;
+                        if (nodeUnlit) {
+                            material.SetTexture("_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[0]));
+                        }
+                        else {
+                            material.SetTexture(urp ? "_BaseMap" : "_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[0]));
+                            material.SetColor(urp ? "_BaseColor" : "_Color", Color.white);
+                            material.SetTexture("_BumpMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[1]));
+                            material.SetTexture("_MetallicGlossMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[2]));
+                            material.SetTexture("_OcclusionMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[3]));
+                            material.SetTexture("_EmissionMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[4]));
+                            material.SetColor("_EmissionColor", Color.white);
+                            material.SetFloat("_Metallic", 1); material.SetFloat(urp ? "_Smoothness" : "_GlossMapScale", 1);
+                            material.SetFloat("_BumpScale", 1); material.SetFloat("_OcclusionStrength", 1);
+                            material.EnableKeyword("_NORMALMAP"); material.EnableKeyword("_EMISSION");
+                            material.EnableKeyword(urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP");
+                            if (urp) material.EnableKeyword("_OCCLUSIONMAP");
+                        }
                         AssetDatabase.CreateAsset(material, folder + "/" + nodeNames[i] + ".mat");
                         // The mesh asset is a COPY: the runtime node.mesh stays a preview
                         // object owned by the stage outputs (destroyed by ClearFrom).

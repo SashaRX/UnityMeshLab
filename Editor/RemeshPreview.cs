@@ -125,6 +125,9 @@ namespace SashaRX.UnityMeshLab
                 var bump = bumpMap && stage == Stage.Result && data.maps != null ? MapTexture(data.maps, Channel.Normal) : null;
                 surface.SetTexture("_BumpMap", bump);
                 surface.SetFloat("_UseBumpMap", bump ? 1 : 0);
+                // Beauty maps already contain the lighting; shading them again would
+                // double it, so the surface renders unlit exactly like the saved material.
+                surface.SetFloat("_Lit", stage == Stage.Result && data.maps != null && data.maps.beauty ? 0 : 1);
                 surface.SetFloat("_UseVertexColor", vertexColors && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
                 for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, Matrix4x4.identity, surface, sub);
             }

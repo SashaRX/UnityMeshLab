@@ -12,9 +12,12 @@ namespace SashaRX.UnityMeshLab
         public Vector3[] positions, normals;
         public Vector4[] tangents;
         public Vector2[] uv;
+        public Vector2[] uv2;               // lightmap UVs; zero where the source mesh has none
         public Color[] colors;       // per vertex; white where the source mesh has none
         public bool hasColors;       // any contributing mesh carried vertex colours
         public int[] indices, faceMaterials;
+        public int[] faceLightmaps;  // per face: index into lightmaps, -1 when the renderer had none
+        public RemeshBeauty.Lightmap[] lightmaps; // unique (texture, scaleOffset) pairs, decoded linear
         public Surface[] materials;
         public float diagonal;
         public string[] warnings = Array.Empty<string>();
@@ -75,9 +78,13 @@ namespace SashaRX.UnityMeshLab
             }
             var positions = new List<Vector3>(); var normals = new List<Vector3>();
             var tangents = new List<Vector4>(); var uv = new List<Vector2>(); var colors = new List<Color>();
+            var uv2 = new List<Vector2>();
             bool hasColors = false;
             var indices = new List<int>(); var faces = new List<int>(); var materials = new List<Surface>();
             var materialIds = new Dictionary<Material, int>();
+            var faceLightmaps = new List<int>();
+            var lightmaps = new List<RemeshBeauty.Lightmap>();
+            var lightmapIds = new Dictionary<(Texture2D, Vector4), int>();
             string[] warnings;
             using (var reader = new Reader()) {
                 foreach (var renderer in root.GetComponentsInChildren<Renderer>()) {
@@ -134,6 +141,24 @@ namespace SashaRX.UnityMeshLab
                             tangents.Add(new Vector4(tt.x, tt.y, tt.z, t[i].w * sign));
                         }
                         uv.AddRange(mesh.uv);
+                        // Beauty bakes sample the renderer's baked lightmap at its UV2.
+                        var lmUv = mesh.uv2;
+                        if (lmUv.Length == p.Length) uv2.AddRange(lmUv);
+                        else for (int i = 0; i < p.Length; ++i) uv2.Add(Vector2.zero);
+                        int lightmapId = -1;
+                        int lightmapIndex = renderer.lightmapIndex;
+                        if (lightmapIndex >= 0 && lightmapIndex < LightmapSettings.lightmaps.Length) {
+                            var map = LightmapSettings.lightmaps[lightmapIndex].lightmapColor;
+                            var st = renderer.lightmapScaleOffset;
+                            if (map != null) {
+                                var key = (map, st);
+                                if (!lightmapIds.TryGetValue(key, out lightmapId)) {
+                                    lightmapId = lightmaps.Count;
+                                    lightmaps.Add(RemeshBeauty.ReadLightmap(map, st));
+                                    lightmapIds.Add(key, lightmapId);
+                                }
+                            }
+                        }
                         var c = mesh.colors;
                         if (c.Length == p.Length) { colors.AddRange(c); hasColors = true; }
                         else for (int i = 0; i < p.Length; ++i) colors.Add(Color.white);
@@ -150,6 +175,7 @@ namespace SashaRX.UnityMeshLab
                                 indices.Add(first + tri[i + (sign < 0 ? 2 : 1)]);
                                 indices.Add(first + tri[i + (sign < 0 ? 1 : 2)]);
                                 faces.Add(material);
+                                faceLightmaps.Add(lightmapId);
                             }
                         }
                     }
@@ -162,7 +188,8 @@ namespace SashaRX.UnityMeshLab
             foreach (var p in positions) bounds.Encapsulate(p);
             if (bounds.size.magnitude <= 1e-8f) throw new InvalidOperationException("Source bounds are empty.");
             return new RemeshSource { positions = positions.ToArray(), normals = normals.ToArray(), tangents = tangents.ToArray(),
-                uv = uv.ToArray(), colors = colors.ToArray(), hasColors = hasColors, indices = indices.ToArray(), faceMaterials = faces.ToArray(), materials = materials.ToArray(),
+                uv = uv.ToArray(), uv2 = uv2.ToArray(), colors = colors.ToArray(), hasColors = hasColors, indices = indices.ToArray(), faceMaterials = faces.ToArray(),
+                faceLightmaps = faceLightmaps.ToArray(), lightmaps = lightmaps.ToArray(), materials = materials.ToArray(),
                 diagonal = bounds.size.magnitude, warnings = warnings };
         }
 

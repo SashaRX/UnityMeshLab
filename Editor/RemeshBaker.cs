@@ -17,11 +17,13 @@ namespace SashaRX.UnityMeshLab
             public int rayFallbacks, weldedPositions, splitCopies, oneSidedNormals, loudTexels, zeroNormals;
             public float maxOneSidedDeg, meanTiltDeg, maxTiltDeg;
             public bool facingFilter;
+            public bool beauty;
         }
 
         // Thread-safe: no UnityEngine.Object access in this method or the BVH.
+        // beauty (optional) folds the scene lighting into the transferred albedo.
         public static Maps Bake(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents,
-            RemeshSettings settings, CancellationToken token)
+            RemeshSettings settings, CancellationToken token, RemeshBeauty beauty = null)
         {
             int size = settings.textureResolution;
             int count = checked(size * size);
@@ -35,6 +37,8 @@ namespace SashaRX.UnityMeshLab
             if (result.covered == 0) throw new InvalidOperationException("UV atlas covers no texels. Increase texture resolution.");
             var bvh = new TriangleBvh(source.positions, source.indices);
             token.ThrowIfCancellationRequested();
+            result.beauty = beauty != null;
+            if (beauty != null) beauty.BindShadows(bvh);
             float distance = source.diagonal * settings.projectionDistance;
             // Projection rays follow a smooth welded "cage" direction, not the vertex
             // normal: island hard-edge modes leave chart-border normals one-sided,
@@ -93,7 +97,7 @@ namespace SashaRX.UnityMeshLab
                         for (int c = 0; c < candidateCount && face < 0; ++c)
                             if (Inside(target, candidates[c], uv, out w)) face = candidates[c];
                         if (face < 0) continue;
-                    if (!Project(source, target, tangents, cage, bvh, facing, face, w, distance,
+                    if (!Project(source, target, tangents, cage, bvh, facing, beauty, face, w, distance,
                             out var sc, out var sn, out var sm, out var sa, out var se, out var rayFallback)) continue;
                         if (rayFallback) Interlocked.Increment(ref rayFallbacks);
                         color += sc.linear; metal += sm; ao += sa; emission += se;
@@ -195,7 +199,7 @@ namespace SashaRX.UnityMeshLab
         // facing (when non-null) carries the orientation-consensus source face normals
         // that keep the ray and the fallback on the side of the surface facing the texel.
         static bool Project(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents, Vector3[] cage,
-            TriangleBvh bvh, Vector3[] facing, int face, Vector3 w, float distance,
+            TriangleBvh bvh, Vector3[] facing, RemeshBeauty beauty, int face, Vector3 w, float distance,
             out Color color, out Color normal, out Color metal, out Color ao, out Color emission, out bool rayFallback)
         {
             int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
@@ -221,7 +225,34 @@ namespace SashaRX.UnityMeshLab
                 return false;
             }
             Evaluate(source, sourceFace, sw, n, tangent, out color, out normal, out metal, out ao, out emission);
+            if (beauty != null) color = BeautyLight(beauty, source, sourceFace, sw, color, metal, emission).gamma;
             return true;
+        }
+
+        // Folds the captured scene lighting into the transferred albedo (all linear).
+        // A lightmapped face uses its lightmap as the base — the lightmap already holds
+        // albedo × GI × baked lights × baked emission, so ambient and material emission
+        // are not added again; only realtime/mixed direct light and the probe specular
+        // ride on top. Unlightmapped faces get albedo × (direct + ambient) + emission.
+        static Color BeautyLight(RemeshBeauty beauty, RemeshSource source, int face, Vector3 w,
+            Color albedo, Color metal, Color emission)
+        {
+            int a = source.indices[face * 3], b = source.indices[face * 3 + 1], c = source.indices[face * 3 + 2];
+            Vector3 p = source.positions[a] * w.x + source.positions[b] * w.y + source.positions[c] * w.z;
+            Vector3 n = (source.normals[a] * w.x + source.normals[b] * w.y + source.normals[c] * w.z).normalized;
+            Color albedoLinear = albedo.linear;
+            int lightmapId = source.faceLightmaps != null && face < source.faceLightmaps.Length ? source.faceLightmaps[face] : -1;
+            Color lit;
+            if (lightmapId >= 0 && source.lightmaps != null && lightmapId < source.lightmaps.Length) {
+                Vector2 uv2 = source.uv2[a] * w.x + source.uv2[b] * w.y + source.uv2[c] * w.z;
+                lit = beauty.SampleLightmap(source.lightmaps[lightmapId], uv2);
+                lit += albedoLinear * beauty.Direct(p, n);
+            }
+            else {
+                lit = albedoLinear * (beauty.Direct(p, n) + beauty.Ambient(n)) + emission;
+            }
+            lit += beauty.Specular(p, n, albedoLinear, metal.r, metal.a);
+            return lit;
         }
 
         // Per-vertex raycast directions from area-weighted face normals welded across

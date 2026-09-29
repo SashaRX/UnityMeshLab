@@ -101,6 +101,19 @@ settings, marked "settings changed" in its header) and clears everything after i
    along the same welded cage normals, orange for the outer (ray origin) shell,
    blue for the inner (ray end) shell — live from the current projection
    distance, so the setting can be tuned before re-baking.
+   **Bake mode** selects what lands in the maps: *Materials* transfers the source
+   maps; *Beauty* bakes the object as the player sees it — realtime/mixed light
+   with hard ray shadows, the renderer's lightmaps (sampled at its UV2, RGBM/HDR
+   decoded), ambient (flat, trilight or the ambient probe) and reflection probes
+   (equirectangular readbacks, roughness-lerped) all folded into one lit
+   **BaseColor** texture. Baked-only lights are skipped for lightmapped faces, so
+   nothing is counted twice; unlightmapped faces get albedo × (direct + ambient) +
+   emission, lightmapped faces use the lightmap as the base (it already contains
+   albedo × GI × baked emission) with realtime direct on top. Specular is
+   view-dependent and is baked for the scene view camera's position at bake time.
+   The saved material becomes **Unlit/Texture** with that one map (the other maps
+   still export alongside); the 3D preview renders beauty results unlit, exactly
+   like the saved material.
    With the **RemeshDiag** log filter enabled, every bake also prints its health
    counters to the Console: welded cage positions and split copies, one-sided
    border normals (max cage deviation), nearest-fallback projection samples,
