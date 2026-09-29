@@ -52,6 +52,24 @@ namespace SashaRX.UnityMeshLab
         RemeshNative.Geometry geometry;
         Vector4[] tangents;
         RemeshBaker.Maps maps;
+        // Keep-hierarchy mode (settings.keepHierarchy): per-node stage outputs. Each entry
+        // carries its own capture → voxel → simplified → unwrapped → baked chain; the node's
+        // transform is kept relative to the source root so Save can rebuild the hierarchy.
+        internal sealed class RemeshNode
+        {
+            public string name;
+            public Vector3 localPosition = Vector3.zero;
+            public Quaternion localRotation = Quaternion.identity;
+            public Vector3 localScale = Vector3.one;
+            public RemeshSource source;
+            public RemeshNative.IndexedMesh voxel;
+            public RemeshNative.Geometry simplified;
+            public RemeshNative.Geometry geometry;
+            public Vector4[] tangents;
+            public Mesh mesh;
+            public RemeshBaker.Maps maps;
+        }
+        List<RemeshNode> nodes;
         Mesh sourceMesh, voxelMesh, simplifiedMesh, resultMesh;
         Texture2D preview;
         readonly string[] keys = new string[4];
@@ -133,6 +151,8 @@ namespace SashaRX.UnityMeshLab
                 if (StageHeader(Stage.Remesh, voxel != null ? $"{voxel.TriangleCount:N0} tris" : null)) {
                     settings.lod0Only = EditorGUILayout.Toggle(new GUIContent("LOD0 only",
                         "Capture ignores meshes named Name_LOD1 and higher; LODGroups already contribute LOD0 only."), settings.lod0Only);
+                    settings.keepHierarchy = EditorGUILayout.Toggle(new GUIContent("Keep hierarchy",
+                        "Remesh every node SEPARATELY and save the result as a hierarchy of meshes with per-node baked materials under one root, instead of welding everything into one mesh with one material."), settings.keepHierarchy);
                     settings.voxelResolution = EditorGUILayout.IntSlider("Voxel resolution", settings.voxelResolution, 4, 256);
                     settings.solve = EditorGUILayout.Toggle("Fit source surface", settings.solve);
                     settings.shell = EditorGUILayout.Toggle("Two-sided shell", settings.shell);
@@ -274,7 +294,7 @@ namespace SashaRX.UnityMeshLab
         {
             var s = settings;
             switch (stage) {
-                case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}";
+                case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
@@ -322,6 +342,10 @@ namespace SashaRX.UnityMeshLab
             if (!root) throw new InvalidOperationException("Select a source root.");
             Report("Reading source geometry and textures…");
             await Task.Yield(); token.ThrowIfCancellationRequested();
+            if (options.keepHierarchy) {
+                await RunRemeshHierarchy(root, options, token);
+                return;
+            }
             var captured = RemeshSource.Capture(root, options.lod0Only);
             foreach (var warning in captured.warnings) UvtLog.Warn("[Remesh] " + warning);
             Report("Voxel remeshing…");
@@ -334,9 +358,101 @@ namespace SashaRX.UnityMeshLab
                 (captured.warnings.Length > 0 ? $" {captured.warnings.Length} material warning(s), see Console." : "");
         }
 
+        // Keep-hierarchy capture: one node per RENDERER that Capture would have folded into the
+        // weld (same filters: active, non-collision, LOD0), each captured in its own local space
+        // with its own subtree. The node's transform relative to the source root is kept so
+        // Save can rebuild the hierarchy.
+        async Task RunRemeshHierarchy(GameObject root, RemeshSettings options, CancellationToken token)
+        {
+            var renderers = CollectHierarchyRenderers(root, options.lod0Only);
+            if (renderers.Count == 0) throw new InvalidOperationException("No remeshable renderers under the root.");
+            nodes = new List<RemeshNode>(renderers.Count);
+            long sourceTriangles = 0, resultTriangles = 0; int warnings = 0;
+            for (int i = 0; i < renderers.Count; ++i) {
+                var renderer = renderers[i];
+                token.ThrowIfCancellationRequested();
+                Report($"Reading {renderer.name} ({i + 1}/{renderers.Count})…");
+                var captured = RemeshSource.Capture(renderer.gameObject, options.lod0Only);
+                foreach (var warning in captured.warnings) { UvtLog.Warn("[Remesh] " + warning); ++warnings; }
+                if (captured.indices.Length == 0) {
+                    UvtLog.Warn("[Remesh] " + renderer.name + ": nothing to remesh, skipped.");
+                    continue;
+                }
+                Report($"Voxel remeshing {renderer.name} ({i + 1}/{renderers.Count})…");
+                var nodeVoxel = await Task.Run(() => RemeshNative.Voxelize(captured.positions, captured.indices, options, token));
+                var toRoot = root.transform.worldToLocalMatrix * renderer.transform.localToWorldMatrix;
+                nodes.Add(new RemeshNode {
+                    name = renderer.name,
+                    localPosition = toRoot.GetColumn(3),
+                    localRotation = toRoot.rotation,
+                    localScale = toRoot.lossyScale,
+                    source = captured,
+                    voxel = nodeVoxel,
+                });
+                sourceTriangles += captured.indices.Length / 3;
+                resultTriangles += nodeVoxel.TriangleCount;
+            }
+            if (nodes.Count == 0) throw new InvalidOperationException("Every captured node was empty; nothing to remesh.");
+            // Previews come from the largest node so the existing preview panel keeps working;
+            // the single-path snapshot/voxel fields stay null (Save branches on `nodes`).
+            var largest = LargestNode();
+            resultName = root.name;
+            snapshot = null; voxel = null;
+            sourceMesh = BuildMesh(root.name + "_Source", largest.source.positions, largest.source.indices,
+                largest.source.normals, largest.source.hasColors ? largest.source.colors : null);
+            voxelMesh = BuildMesh(root.name + "_Voxel", largest.voxel.positions, largest.voxel.indices);
+            status = $"Remesh: {nodes.Count} node(s), {sourceTriangles:N0} → {resultTriangles:N0} triangles." +
+                (warnings > 0 ? $" {warnings} material warning(s), see Console." : "");
+        }
+
+        internal static List<Renderer> CollectHierarchyRenderers(GameObject root, bool lod0Only)
+        {
+            var excluded = new HashSet<Renderer>();
+            foreach (var group in root.GetComponentsInChildren<LODGroup>()) {
+                var lods = group.GetLODs();
+                var first = new HashSet<Renderer>(lods.Length > 0 ? lods[0].renderers : Array.Empty<Renderer>());
+                for (int l = 1; l < lods.Length; ++l)
+                    foreach (var r in lods[l].renderers) if (!first.Contains(r)) excluded.Add(r);
+            }
+            var result = new List<Renderer>();
+            foreach (var renderer in root.GetComponentsInChildren<Renderer>()) {
+                if (!renderer.enabled || excluded.Contains(renderer) || MeshHygieneUtility.IsCollisionNodeName(renderer.name)) continue;
+                if (lod0Only && RemeshSource.IsHigherLodName(renderer.name)) continue;
+                if (renderer is SkinnedMeshRenderer || renderer.GetComponent<MeshFilter>()?.sharedMesh != null) result.Add(renderer);
+            }
+            return result;
+        }
+
+        RemeshNode LargestNode()
+        {
+            RemeshNode best = null;
+            foreach (var node in nodes)
+                if (best == null || node.voxel.TriangleCount > best.voxel.TriangleCount) best = node;
+            return best;
+        }
+
         async Task RunSimplify(RemeshSettings options, CancellationToken token)
         {
-            if (voxel == null) throw new InvalidOperationException("Run the remesh stage first.");
+            if (voxel == null && nodes == null) throw new InvalidOperationException("Run the remesh stage first.");
+            if (nodes != null) {
+                long before = 0, after = 0;
+                for (int i = 0; i < nodes.Count; ++i) {
+                    var node = nodes[i];
+                    token.ThrowIfCancellationRequested();
+                    Report($"Simplifying {node.name} ({i + 1}/{nodes.Count})…");
+                    if (options.simplify) {
+                        float error = 0;
+                        node.simplified = await Task.Run(() => RemeshNative.Simplify(node.voxel, options, token, out error), token);
+                        before += node.voxel.TriangleCount; after += node.simplified.TriangleCount;
+                    }
+                    else { node.simplified = node.voxel; before += node.voxel.TriangleCount; after += node.simplified.TriangleCount; }
+                }
+                simplifyError = options.simplify ? options.maximumError : 0;
+                var largest = LargestNode();
+                simplifiedMesh = BuildMesh(resultName + "_Simplified", largest.simplified.positions, largest.simplified.indices);
+                status = $"Simplify: {nodes.Count} node(s), {before:N0} → {after:N0} triangles.";
+                return;
+            }
             var input = voxel;
             if (options.simplify) {
                 Report("Simplifying…");
@@ -352,35 +468,84 @@ namespace SashaRX.UnityMeshLab
 
         async Task RunUnwrap(RemeshSettings options, CancellationToken token)
         {
-            if (simplified == null) throw new InvalidOperationException("Run the simplify stage first.");
+            if (simplified == null && nodes == null) throw new InvalidOperationException("Run the simplify stage first.");
+            if (nodes != null) {
+                int charts = 0, vertices = 0;
+                for (int i = 0; i < nodes.Count; ++i) {
+                    var node = nodes[i];
+                    token.ThrowIfCancellationRequested();
+                    Report($"Generating normals and unwrapping UVs on {node.name} ({i + 1}/{nodes.Count})…");
+                    node.geometry = await Task.Run(() => RemeshNative.Unwrap(node.simplified, options, token), token);
+                    node.mesh = BuildResultMesh(node.name + "_LOD0", node.geometry, out var nativeTangents, out _);
+                    node.tangents = nativeTangents;
+                    charts += node.geometry.chartCount; vertices += node.geometry.positions.Length;
+                }
+                // The result preview shows the largest node; resultMesh is a COPY so clearing
+                // the single-path outputs never destroys a node's own mesh.
+                var largest = LargestNode();
+                resultMesh = Object.Instantiate(largest.mesh);
+                resultMesh.name = resultName + "_LOD0";
+                tangents = null;
+                status = $"Unwrap: {nodes.Count} node(s), {charts:N0} islands, {vertices:N0} vertices.";
+                return;
+            }
             var input = simplified;
             Report("Generating normals and unwrapping UVs…");
             var unwrapped = await Task.Run(() => RemeshNative.Unwrap(input, options, token));
             token.ThrowIfCancellationRequested();
             geometry = unwrapped;
-            resultMesh = new Mesh { name = resultName + "_LOD0", indexFormat = IndexFormat.UInt32, hideFlags = HideFlags.HideAndDontSave };
-            resultMesh.vertices = unwrapped.positions; resultMesh.normals = unwrapped.normals;
-            resultMesh.uv = unwrapped.uv; resultMesh.triangles = unwrapped.indices;
-            resultMesh.RecalculateBounds();
-            // The tangent frame comes from meshoptimizer over the final UV layout
-            // (MikkT-compatible, the same basis the bake encodes against); Unity's
-            // recalculation is only a fallback if the native tangents are missing.
-            bool anyTangent = false;
+            resultMesh = BuildResultMesh(resultName + "_LOD0", unwrapped, out tangents, out _);
+            status = $"Unwrap: {unwrapped.chartCount:N0} islands, {unwrapped.positions.Length:N0} vertices.";
+        }
+
+        // Builds a display/result Mesh from unwrapped geometry. The tangent frame comes from
+        // meshoptimizer over the final UV layout (MikkT-compatible, the same basis the bake
+        // encodes against); Unity's recalculation is only a fallback if the native tangents
+        // are missing.
+        static Mesh BuildResultMesh(string name, RemeshNative.Geometry unwrapped, out Vector4[] tangents, out bool anyTangent)
+        {
+            var mesh = new Mesh { name = name, indexFormat = IndexFormat.UInt32, hideFlags = HideFlags.HideAndDontSave };
+            mesh.vertices = unwrapped.positions; mesh.normals = unwrapped.normals;
+            mesh.uv = unwrapped.uv; mesh.triangles = unwrapped.indices;
+            mesh.RecalculateBounds();
+            anyTangent = false;
             if (unwrapped.tangents != null)
                 for (int i = 0; i < unwrapped.tangents.Length && !anyTangent; ++i)
                     anyTangent = unwrapped.tangents[i].sqrMagnitude > 1e-12f;
-            if (anyTangent) resultMesh.tangents = unwrapped.tangents;
+            if (anyTangent) mesh.tangents = unwrapped.tangents;
             else {
-                resultMesh.RecalculateTangents();
+                mesh.RecalculateTangents();
                 UvtLog.Warn("[Remesh] Native tangents missing; fell back to Unity's recalculation. Rebuild the native plugins for this commit.");
             }
-            tangents = resultMesh.tangents;
-            status = $"Unwrap: {unwrapped.chartCount:N0} islands, {unwrapped.positions.Length:N0} vertices.";
+            tangents = mesh.tangents;
+            return mesh;
         }
 
         async Task RunBake(RemeshSettings options, CancellationToken token)
         {
-            if (geometry == null || snapshot == null) throw new InvalidOperationException("Run the UV stage first.");
+            if ((geometry == null || snapshot == null) && nodes == null) throw new InvalidOperationException("Run the UV stage first.");
+            if (nodes != null) {
+                long sourceTriangles = 0, targetTriangles = 0, misses = 0, covered = 0;
+                for (int i = 0; i < nodes.Count; ++i) {
+                    var node = nodes[i];
+                    token.ThrowIfCancellationRequested();
+                    Report($"Projecting {node.name} into its UV atlas ({i + 1}/{nodes.Count})…");
+                    var baked = await Task.Run(() => RemeshBaker.Bake(node.source, node.geometry, node.tangents, options, token), token);
+                    node.maps = baked;
+                    if (baked.vertexColors != null) node.mesh.colors = baked.vertexColors;
+                    sourceTriangles += node.source.indices.Length / 3;
+                    targetTriangles += node.geometry.indices.Length / 3;
+                    misses += baked.misses; covered += baked.covered;
+                }
+                var largest = LargestNode();
+                preview = new Texture2D(largest.maps.size, largest.maps.size, TextureFormat.RGBA32, false, false) { hideFlags = HideFlags.HideAndDontSave };
+                preview.SetPixels32(largest.maps.color); preview.Apply();
+                maps = largest.maps;
+                status = $"{nodes.Count} node(s): {sourceTriangles:N0} → {targetTriangles:N0} triangles. " +
+                    (misses == 0 ? "All covered texels projected." : $"{misses:N0} / {covered:N0} texels missed (magenta). Increase projection distance and rebake.");
+                UvtLog.Info("[Remesh] " + status);
+                return;
+            }
             var captured = snapshot; var target = geometry; var frame = tangents;
             Report("Projecting source materials into the new UV atlas…");
             var baked = await Task.Run(() => RemeshBaker.Bake(captured, target, frame, options, token));
@@ -462,6 +627,10 @@ namespace SashaRX.UnityMeshLab
                 if (voxelMesh) Object.DestroyImmediate(voxelMesh);
                 if (sourceMesh) Object.DestroyImmediate(sourceMesh);
                 voxelMesh = null; sourceMesh = null; voxel = null; snapshot = null; keys[(int)Stage.Remesh] = null;
+                if (nodes != null) {
+                    foreach (var node in nodes) if (node.mesh) Object.DestroyImmediate(node.mesh);
+                    nodes = null;
+                }
             }
         }
 
@@ -511,6 +680,14 @@ namespace SashaRX.UnityMeshLab
                 if (string.IsNullOrEmpty(guid)) throw new IOException("Could not create " + folder + ".");
                 createdFolder = true;
                 folder = AssetDatabase.GUIDToAssetPath(guid);
+                // Keep-hierarchy results export through their own per-node path: one baked
+                // material + mesh asset per node under a rebuilt root prefab. The FBX lane
+                // stays single-mesh (the weld) — a multi-node FBX round-trip would re-import
+                // per-node normals/mappings for no gain over the native prefab.
+                if (settings.keepHierarchy && nodes != null) {
+                    SaveHierarchy(folder, clean, shader);
+                    return;
+                }
                 string[] names = { "BaseColor", "Normal", "MetallicSmoothness", "Occlusion", "Emission" };
                 var paths = new string[names.Length];
                 using (new AssetDatabase.AssetEditingScope()) {
@@ -619,6 +796,90 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // Keep-hierarchy export (settings.keepHierarchy): per-node baked map sets, materials
+        // and mesh assets under one root prefab that rebuilds the captured local transforms.
+        // The source root's own scale stays ON the prefab root (a hierarchy has no single
+        // vertex space to bake it into), so "Normalized size" does not apply here.
+        void SaveHierarchy(string folder, string clean, Shader shader)
+        {
+            var temporary = new GameObject(clean + "_LOD0") { hideFlags = HideFlags.None };
+            bool urp = shader.name != "Standard";
+            try {
+                if (settings.normalizeSize)
+                    UvtLog.Warn("[Remesh export] Keep-hierarchy saves keep the source root's scale on the prefab root; " +
+                                "'Normalized size' applies to the single-mesh weld only.");
+                temporary.transform.localScale = source ? source.transform.lossyScale : Vector3.one;
+                string[] mapNames = { "BaseColor", "Normal", "MetallicSmoothness", "Occlusion", "Emission" };
+                var nodeNames = new string[nodes.Count];
+                var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < nodes.Count; ++i) {
+                    string nodeClean = nodes[i].name;
+                    foreach (char c in Path.GetInvalidFileNameChars()) nodeClean = nodeClean.Replace(c, '_');
+                    nodeClean = nodeClean.Replace('/', '_').Replace('\\', '_');
+                    if (string.IsNullOrWhiteSpace(nodeClean)) nodeClean = "Node";
+                    var unique = nodeClean;
+                    int suffix = 2;
+                    while (!used.Add(unique)) unique = nodeClean + "_" + suffix++;
+                    nodeNames[i] = unique;
+                }
+                using (new AssetDatabase.AssetEditingScope()) {
+                    for (int i = 0; i < nodes.Count; ++i) {
+                        var node = nodes[i];
+                        var paths = new string[mapNames.Length];
+                        for (int m = 0; m < mapNames.Length; ++m) {
+                            paths[m] = folder + "/" + nodeNames[i] + "_" + mapNames[m] + (m == 4 ? ".exr" : ".png");
+                            File.WriteAllBytes(paths[m], EncodeMaps(node.maps, m));
+                            AssetDatabase.ImportAsset(paths[m]);
+                        }
+                        for (int m = 0; m < mapNames.Length; ++m) {
+                            var importer = (TextureImporter)AssetImporter.GetAtPath(paths[m]);
+                            if (importer == null) throw new IOException("Texture import failed: " + paths[m]);
+                            importer.textureType = m == 1 ? TextureImporterType.NormalMap : TextureImporterType.Default;
+                            importer.sRGBTexture = m == 0; importer.wrapMode = TextureWrapMode.Clamp;
+                            importer.maxTextureSize = node.maps.size; importer.textureCompression = TextureImporterCompression.Uncompressed;
+                            importer.mipmapEnabled = true; importer.alphaSource = TextureImporterAlphaSource.FromInput;
+                            importer.SaveAndReimport();
+                        }
+                        var material = new Material(shader) { name = nodeNames[i] + "_Remesh" };
+                        material.SetTexture(urp ? "_BaseMap" : "_MainTex", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[0]));
+                        material.SetColor(urp ? "_BaseColor" : "_Color", Color.white);
+                        material.SetTexture("_BumpMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[1]));
+                        material.SetTexture("_MetallicGlossMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[2]));
+                        material.SetTexture("_OcclusionMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[3]));
+                        material.SetTexture("_EmissionMap", AssetDatabase.LoadAssetAtPath<Texture2D>(paths[4]));
+                        material.SetColor("_EmissionColor", Color.white);
+                        material.SetFloat("_Metallic", 1); material.SetFloat(urp ? "_Smoothness" : "_GlossMapScale", 1);
+                        material.SetFloat("_BumpScale", 1); material.SetFloat("_OcclusionStrength", 1);
+                        material.EnableKeyword("_NORMALMAP"); material.EnableKeyword("_EMISSION");
+                        material.EnableKeyword(urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP");
+                        if (urp) material.EnableKeyword("_OCCLUSIONMAP");
+                        AssetDatabase.CreateAsset(material, folder + "/" + nodeNames[i] + ".mat");
+                        // The mesh asset is a COPY: the runtime node.mesh stays a preview
+                        // object owned by the stage outputs (destroyed by ClearFrom).
+                        var mesh = Object.Instantiate(node.mesh);
+                        mesh.name = nodeNames[i] + "_LOD0"; mesh.hideFlags = HideFlags.None;
+                        AssetDatabase.CreateAsset(mesh, folder + "/" + nodeNames[i] + "_LOD0.asset");
+                        var go = new GameObject(nodeNames[i]);
+                        go.AddComponent<MeshFilter>().sharedMesh = mesh;
+                        go.AddComponent<MeshRenderer>().sharedMaterial = material;
+                        go.transform.localPosition = node.localPosition;
+                        go.transform.localRotation = node.localRotation;
+                        go.transform.localScale = node.localScale;
+                        go.transform.SetParent(temporary.transform, false);
+                    }
+                }
+                PrefabUtility.SaveAsPrefabAsset(temporary, folder + "/" + clean + ".prefab", out bool success);
+                if (!success) throw new IOException("Prefab save failed.");
+                AssetDatabase.SaveAssets();
+                status = $"Saved: {folder} ({nodes.Count} node(s))";
+                UvtLog.Info("[Remesh export] " + status);
+                EditorGUIUtility.PingObject(AssetDatabase.LoadAssetAtPath<GameObject>(folder + "/" + clean + ".prefab"));
+            }
+            finally {
+                Object.DestroyImmediate(temporary);
+            }
+        }
+
         // "<source asset folder>/remesh" when the source root resolves to an imported
         // asset (a prefab/model instance, or any mesh asset under it); null when the
         // source is scene-only and the folder picker is needed instead.
@@ -674,13 +935,15 @@ namespace SashaRX.UnityMeshLab
                 }
         }
 
-        byte[] Encode(int index)
+        byte[] Encode(int index) => EncodeMaps(maps, index);
+
+        byte[] EncodeMaps(RemeshBaker.Maps source, int index)
         {
-            var texture = new Texture2D(maps.size, maps.size,
+            var texture = new Texture2D(source.size, source.size,
                 index == 4 ? TextureFormat.RGBAFloat : TextureFormat.RGBA32, false, true);
             try {
-                if (index == 4) { texture.SetPixels(maps.emission); texture.Apply(); return texture.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat); }
-                texture.SetPixels32(index == 0 ? maps.color : index == 1 ? maps.normal : index == 2 ? maps.metal : maps.ao);
+                if (index == 4) { texture.SetPixels(source.emission); texture.Apply(); return texture.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat); }
+                texture.SetPixels32(index == 0 ? source.color : index == 1 ? source.normal : index == 2 ? source.metal : source.ao);
                 texture.Apply(); return texture.EncodeToPNG();
             }
             finally { Object.DestroyImmediate(texture); }

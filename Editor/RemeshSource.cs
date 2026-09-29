@@ -168,7 +168,7 @@ namespace SashaRX.UnityMeshLab
 
         // Repo LOD naming is Name_LOD{N} (see the LOD/collision naming rule); anything
         // above LOD0 is a coarser duplicate of what LOD0 already captures.
-        static bool IsHigherLodName(string name)
+        internal static bool IsHigherLodName(string name)
         {
             if (string.IsNullOrEmpty(name)) return false;
             int at = name.LastIndexOf("_LOD", StringComparison.OrdinalIgnoreCase);

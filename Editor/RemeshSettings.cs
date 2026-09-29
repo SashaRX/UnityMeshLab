@@ -46,6 +46,10 @@ namespace SashaRX.UnityMeshLab
         // Source capture: skip meshes named Name_LOD1 and higher (LODGroups already
         // contribute LOD0 only).
         public bool lod0Only = true;
+        // Keep hierarchy: remesh every captured node SEPARATELY and save the result as a
+        // hierarchy of meshes under one root (per-node materials, local transforms kept),
+        // instead of welding everything into one _LOD0 mesh with one baked material.
+        public bool keepHierarchy;
 
         // 2 · Simplify
         public bool simplify = true;

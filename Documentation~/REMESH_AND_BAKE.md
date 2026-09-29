@@ -181,6 +181,16 @@ compression or max-size settings.
 
 - Experimental triangle remeshing, not animation-ready quad retopology. Thin
   sheets, tiny gaps and adjacent disconnected parts can collapse or merge.
+- **Keep hierarchy** (`RemeshSettings.keepHierarchy`) splits the capture at the
+  renderer level: every node the weld would have folded in runs the whole
+  voxel → simplify → unwrap → bake chain in its own local space, and the save
+  rebuilds them as children of one root prefab at their captured root-relative
+  transforms, each with its own baked material and mesh asset. The FBX lane
+  stays weld-only (a multi-node FBX round-trip re-imports per-node normals and
+  mappings for no gain over the native prefab), the source root's scale stays on
+  the prefab root (so *Normalized size* is weld-only and says so), and preview
+  panels show the largest node's stage outputs. Node granularity = the renderers
+  of the capture scope; a node's own subtree merges into that node.
 - No skinning, blend-shape, alpha cutout/transparency, parallax or detail-layer
   transfer. Shaders other than Standard and URP/Lit bake base color, normal,
   occlusion, emission and scalar metallic/smoothness from common property names;
