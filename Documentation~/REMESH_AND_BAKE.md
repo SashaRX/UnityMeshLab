@@ -114,6 +114,11 @@ settings, marked "settings changed" in its header) and clears everything after i
    The saved material becomes **Unlit/Texture** with that one map (the other maps
    still export alongside); the 3D preview renders beauty results unlit, exactly
    like the saved material.
+   Bakery setups work through the same path: its HDR colour map decodes directly
+   (8-bit plain output is auto-detected by its pinned alpha and skips Unity's RGBM
+   decode), the separate direction texture is not needed (the colour already is
+   that surface's irradiance), and shadowmask lights contribute through their
+   realtime component with the bake's own ray shadows standing in for the mask.
    With the **RemeshDiag** log filter enabled, every bake also prints its health
    counters to the Console: welded cage positions and split copies, one-sided
    border normals (max cage deviation), nearest-fallback projection samples,

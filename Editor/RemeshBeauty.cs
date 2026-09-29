@@ -326,8 +326,12 @@ namespace SashaRX.UnityMeshLab
         }
 
         // Lightmap readback for the source capture: plain blit into a float RT, then
-        // decode — desktop RGBA32 lightmaps are RGBM (rgb * a * 8), HDR encodings are
-        // direct. Mirrors Unity's decodeLightmap for the editor platforms.
+        // decode. HDR encodings (Unity "High Quality", Bakery's default .hdr output)
+        // come through linear directly. Unity's own RGBA32 lightmaps are RGBM
+        // (rgb * a * 8); Bakery's 8-bit output is plain linear with alpha pinned at 1,
+        // so "alpha ~ 1 everywhere" (a real RGBM scene always has dark texels with
+        // alpha < 1) identifies a plain map and skips the decode that would
+        // overbrighten it eightfold.
         internal static Lightmap ReadLightmap(Texture2D lightmap, Vector4 st)
         {
             int width = lightmap.width, height = lightmap.height;
@@ -342,12 +346,18 @@ namespace SashaRX.UnityMeshLab
                 copy.ReadPixels(new Rect(0, 0, width, height), 0, 0);
                 copy.Apply();
                 var pixels = copy.GetPixels();
-                if (!hdr)
-                    for (int i = 0; i < pixels.Length; ++i) {
-                        var c = pixels[i];
-                        float scale = c.a * 8f;
-                        pixels[i] = new Color(c.r * scale, c.g * scale, c.b * scale, 1f);
-                    }
+                if (!hdr) {
+                    bool rgbm = false;
+                    int step = Math.Max(1, pixels.Length / 4096);
+                    for (int i = 0; i < pixels.Length; i += step)
+                        if (pixels[i].a < 0.999f) { rgbm = true; break; }
+                    if (rgbm)
+                        for (int i = 0; i < pixels.Length; ++i) {
+                            var c = pixels[i];
+                            float scale = c.a * 8f;
+                            pixels[i] = new Color(c.r * scale, c.g * scale, c.b * scale, 1f);
+                        }
+                }
                 return new Lightmap { pixels = pixels, width = width, height = height, st = st };
             }
             finally {
