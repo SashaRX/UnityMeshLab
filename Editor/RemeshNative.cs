@@ -54,7 +54,10 @@ namespace SashaRX.UnityMeshLab
         public static void CheckAvailable()
         {
             try {
-                if (meshLabRemeshVersion() != AbiVersion) throw new InvalidOperationException("Unsupported remesh native ABI.");
+                int native = meshLabRemeshVersion();
+                if (native != AbiVersion)
+                    throw new InvalidOperationException("Unsupported remesh native ABI: expected " + AbiVersion + ", the loaded plugin reports " + native +
+                        ". Update this package to the commit whose Build Native Libraries run finished, then restart Unity.");
             }
             catch (Exception e) when (e is DllNotFoundException || e is EntryPointNotFoundException || e is BadImageFormatException) {
                 throw new InvalidOperationException("Remesh requires rebuilt native plugins. Install the binaries from Build Native Libraries for this commit, then restart Unity.", e);
