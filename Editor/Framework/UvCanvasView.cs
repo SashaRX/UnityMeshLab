@@ -1297,7 +1297,7 @@ namespace SashaRX.UnityMeshLab
         // MeshData's typed getters all take NativeArray buffers; each helper copies out
         // to a managed array and disposes the scratch. applyBaseVertex folds the
         // submesh's base vertex back into the indices, as the classic getters do.
-        static Vector3[] ReadVertices(MeshData md, int count)
+        static Vector3[] ReadVertices(Mesh.MeshData md, int count)
         {
             using (var buffer = new NativeArray<Vector3>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
             {
@@ -1306,7 +1306,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Vector3[] ReadVectors3(MeshData md, int count)
+        static Vector3[] ReadVectors3(Mesh.MeshData md, int count)
         {
             using (var buffer = new NativeArray<Vector3>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
             {
@@ -1315,7 +1315,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Vector4[] ReadVectors4(MeshData md, int count)
+        static Vector4[] ReadVectors4(Mesh.MeshData md, int count)
         {
             using (var buffer = new NativeArray<Vector4>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
             {
@@ -1324,7 +1324,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Color32[] ReadColors(MeshData md, int count)
+        static Color32[] ReadColors(Mesh.MeshData md, int count)
         {
             using (var buffer = new NativeArray<Color32>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
             {
@@ -1333,7 +1333,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Vector2[] ReadUV2(MeshData md, int channel, int count)
+        static Vector2[] ReadUV2(Mesh.MeshData md, int channel, int count)
         {
             using (var buffer = new NativeArray<Vector2>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
             {
@@ -1342,7 +1342,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Vector3[] ReadUV3(MeshData md, int channel, int count)
+        static Vector3[] ReadUV3(Mesh.MeshData md, int channel, int count)
         {
             using (var buffer = new NativeArray<Vector3>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
             {
@@ -1351,7 +1351,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Vector4[] ReadUV4(MeshData md, int channel, int count)
+        static Vector4[] ReadUV4(Mesh.MeshData md, int channel, int count)
         {
             using (var buffer = new NativeArray<Vector4>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
             {
@@ -1360,7 +1360,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static int[] ReadIndices(MeshData md, int submesh)
+        static int[] ReadIndices(Mesh.MeshData md, int submesh)
         {
             var sub = md.GetSubMesh(submesh);
             using (var buffer = new NativeArray<int>(sub.indexCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
