@@ -119,6 +119,7 @@ namespace SashaRX.UnityMeshLab
                     else continue;
                     try {
                         if (lod0Only && IsHigherLodName(mesh.name)) continue;
+                        if (MeshHygieneUtility.IsCollisionNodeName(mesh.name)) continue;
                         for (int sub = 0; sub < mesh.subMeshCount; ++sub)
                             if (mesh.GetTopology(sub) != MeshTopology.Triangles) throw new InvalidOperationException(renderer.name + ": only triangle meshes are supported.");
                         if (mesh.uv.Length != mesh.vertexCount)

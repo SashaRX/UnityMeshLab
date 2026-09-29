@@ -35,9 +35,12 @@ namespace SashaRX.UnityMeshLab
     {
         // ── Compiled regexes (shared, thread-safe) ──
 
+        // The collision convention is the _COL token: Name_COL, Name_COL_Hull2, and the
+        // suffixed variants assets carry (Name_COL_M, Name_COL_S…). The token rule keeps
+        // ordinary words (_COLOR, _COLLECTION) out of the match.
         static readonly System.Text.RegularExpressions.Regex collisionSuffixRegex =
             new System.Text.RegularExpressions.Regex(
-                @"_COL(?:_Hull\d+)?$",
+                @"_COL(?:_\w+)?$",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase |
                 System.Text.RegularExpressions.RegexOptions.Compiled);
 
