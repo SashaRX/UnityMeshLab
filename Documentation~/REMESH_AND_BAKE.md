@@ -24,12 +24,14 @@ settings, marked "settings changed" in its header) and clears everything after i
 - **Maps** — each baked map (base color, normal, metallic/smoothness, occlusion,
   emission).
 
-1. **Source.** Select a static model root. **Source root** follows the
+1. **Source.** Select a model root. **Source root** follows the
    selection: a LOD child resolves to its LODGroup, and selections without a
    MeshRenderer (lights, cameras) are ignored. An object dragged into the field
    holds until the selection changes. Active/enabled MeshRenderers under it are
    combined in root-local coordinates; LODGroups contribute LOD0 only, collision
-   nodes are excluded. Skinned renderers are rejected. Every contributing submesh
+   nodes are excluded. SkinnedMeshRenderers are baked at their current pose
+   (`BakeMesh`, renderer-local space) and then captured like static meshes — pose
+   the model the way you want it baked. Every contributing submesh
    needs UV0. Read/Write-disabled imports are read from the imported asset.
 2. **Voxel remesh** — voxel resolution (4–256), fit to source surface, two-sided
    shell. Higher resolution preserves smaller gaps but produces a denser,

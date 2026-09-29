@@ -66,8 +66,6 @@ namespace SashaRX.UnityMeshLab
         public static RemeshSource Capture(GameObject root)
         {
             if (!root) throw new ArgumentException("Select a source root.");
-            if (root.GetComponentInChildren<SkinnedMeshRenderer>() != null)
-                throw new InvalidOperationException("Remesh & Bake currently accepts static MeshRenderers. Bake skinned geometry to a static mesh first.");
             var excluded = new HashSet<Renderer>();
             foreach (var group in root.GetComponentsInChildren<LODGroup>()) {
                 var lods = group.GetLODs();
@@ -82,17 +80,28 @@ namespace SashaRX.UnityMeshLab
             var materialIds = new Dictionary<Material, int>();
             string[] warnings;
             using (var reader = new Reader()) {
-                foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>()) {
+                foreach (var renderer in root.GetComponentsInChildren<Renderer>()) {
                     if (!renderer.enabled || excluded.Contains(renderer) || MeshHygieneUtility.IsCollisionNodeName(renderer.name)) continue;
-                    var filter = renderer.GetComponent<MeshFilter>();
-                    if (!filter || !filter.sharedMesh) continue;
-                    var sourceMesh = filter.sharedMesh;
-                    for (int sub = 0; sub < sourceMesh.subMeshCount; ++sub)
-                        if (sourceMesh.GetTopology(sub) != MeshTopology.Triangles) throw new InvalidOperationException(renderer.name + ": only triangle meshes are supported.");
-                    // An Instantiate clone of a Read/Write-disabled import carries no CPU data,
-                    // but editor code can still read the imported asset; copy from that.
-                    var mesh = UvCanvasView.MakeReadableCopy(sourceMesh);
+                    // A skinned source is baked at its current pose into a fresh runtime
+                    // mesh. BakeMesh leaves vertices in the renderer's local space with no
+                    // transform scale, so the shared root-local path below applies the
+                    // transform exactly once, like a static mesh under the same node.
+                    Mesh mesh;
+                    if (renderer is SkinnedMeshRenderer skin) {
+                        mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
+                        skin.BakeMesh(mesh);
+                    }
+                    else if (renderer is MeshRenderer) {
+                        var filter = renderer.GetComponent<MeshFilter>();
+                        if (!filter || !filter.sharedMesh) continue;
+                        // An Instantiate clone of a Read/Write-disabled import carries no CPU data,
+                        // but editor code can still read the imported asset; copy from that.
+                        mesh = UvCanvasView.MakeReadableCopy(filter.sharedMesh);
+                    }
+                    else continue;
                     try {
+                        for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                            if (mesh.GetTopology(sub) != MeshTopology.Triangles) throw new InvalidOperationException(renderer.name + ": only triangle meshes are supported.");
                         if (mesh.uv.Length != mesh.vertexCount)
                             throw new InvalidOperationException(renderer.name + " needs source UV0 for material transfer.");
                         if (mesh.normals.Length != mesh.vertexCount) mesh.RecalculateNormals();
@@ -136,7 +145,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 warnings = reader.warnings.ToArray();
             }
-            if (indices.Count == 0) throw new InvalidOperationException("No static source triangles found.");
+            if (indices.Count == 0) throw new InvalidOperationException("No source triangles found.");
             var bounds = new Bounds(positions[0], Vector3.zero);
             foreach (var p in positions) bounds.Encapsulate(p);
             if (bounds.size.magnitude <= 1e-8f) throw new InvalidOperationException("Source bounds are empty.");
