@@ -1273,17 +1273,17 @@ namespace SashaRX.UnityMeshLab
                     if (dim <= 2)
                     {
                         var uv = ReadUV2(md, ch, count);
-                        if (uv.Length > 0 && !IsAllZero2(new List<Vector2>(uv))) dst.SetUVs(ch, uv);
+                        if (uv.Length > 0 && !IsAllZero2(new List<Vector2>(uv))) dst.SetUVs(ch, new List<Vector2>(uv));
                     }
                     else if (dim == 3)
                     {
                         var uv = ReadUV3(md, ch, count);
-                        if (uv.Length > 0) dst.SetUVs(ch, uv);
+                        if (uv.Length > 0) dst.SetUVs(ch, new List<Vector3>(uv));
                     }
                     else
                     {
                         var uv = ReadUV4(md, ch, count);
-                        if (uv.Length > 0) dst.SetUVs(ch, uv);
+                        if (uv.Length > 0) dst.SetUVs(ch, new List<Vector4>(uv));
                     }
                 }
                 dst.subMeshCount = md.subMeshCount;
