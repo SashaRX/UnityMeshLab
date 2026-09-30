@@ -98,12 +98,14 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// One renderer's vertices in the space whose world→local matrix is worldToSpace —
-        /// the point cloud the box decomposition partitions BY RENDERER, without any
-        /// material readback. Empty when the renderer contributes nothing. Main thread.
+        /// One renderer's vertices AND triangle indices (non-triangle submeshes dropped)
+        /// in the space whose world→local matrix is worldToSpace — the geometry the box
+        /// decomposition partitions BY RENDERER, without any material readback. Null when
+        /// the renderer contributes no triangles. Main thread.
         /// </summary>
-        public static Vector3[] CollectPoints(Matrix4x4 worldToSpace, Renderer renderer)
+        public static void CollectSurface(Matrix4x4 worldToSpace, Renderer renderer, out Vector3[] positions, out int[] triangles)
         {
+            positions = null; triangles = null;
             Mesh mesh;
             if (renderer is SkinnedMeshRenderer skin) {
                 mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
@@ -114,16 +116,22 @@ namespace SashaRX.UnityMeshLab
             }
             else if (renderer is MeshRenderer) {
                 var filter = renderer.GetComponent<MeshFilter>();
-                if (!filter || !filter.sharedMesh) return Array.Empty<Vector3>();
+                if (!filter || !filter.sharedMesh) return;
                 mesh = UvCanvasView.MakeReadableCopy(filter.sharedMesh);
             }
-            else return Array.Empty<Vector3>();
+            else return;
             try {
                 var p = mesh.vertices;
                 var transform = worldToSpace * renderer.localToWorldMatrix;
-                var points = new Vector3[p.Length];
-                for (int i = 0; i < p.Length; ++i) points[i] = transform.MultiplyPoint3x4(p[i]);
-                return points;
+                positions = new Vector3[p.Length];
+                for (int i = 0; i < p.Length; ++i) positions[i] = transform.MultiplyPoint3x4(p[i]);
+                var tris = new List<int>(mesh.triangles.Length);
+                for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                    if (mesh.GetTopology(sub) != MeshTopology.Triangles) continue;
+                    var t = mesh.GetTriangles(sub);
+                    for (int i = 0; i < t.Length; ++i) tris.Add(t[i]);
+                }
+                triangles = tris.ToArray();
             }
             finally { Object.DestroyImmediate(mesh); }
         }

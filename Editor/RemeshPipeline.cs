@@ -227,9 +227,10 @@ namespace SashaRX.UnityMeshLab
                 weldLeaves = new List<Bounds>();
                 foreach (var renderer in renderers) {
                     token.ThrowIfCancellationRequested();
-                    var points = RemeshSource.CollectPoints(worldToRoot, renderer);
-                    if (points.Length == 0) continue;
-                    SplitRecursive(points, 0, points.Length, options.boxSplitGap, weldLeaves);
+                    RemeshSource.CollectSurface(worldToRoot, renderer, out var positions, out var surface);
+                    if (positions == null || surface == null || surface.Length == 0) continue;
+                    var samples = SurfaceSamples(positions, surface);
+                    SplitRecursive(samples, 0, samples.Length, options.boxSplitGap, weldLeaves);
                 }
                 if (weldLeaves.Count == 0) throw new InvalidOperationException("No remeshable renderers under the root.");
             }
@@ -250,7 +251,7 @@ namespace SashaRX.UnityMeshLab
                     shape == RemeshShape.LOD0 ? RemeshNative.Voxelize(captured.positions, captured.indices, options, token)
                     : shape == RemeshShape.BoundingBox ? BoxMesh(captured.positions)
                     : weldLeaves != null ? AssembleBoxes(weldLeaves, stats)
-                    : BoxSetMesh(captured.positions, options.boxSplitGap, stats), token);
+                    : BoxSetMesh(captured.positions, captured.indices, options.boxSplitGap, stats), token);
                 if (stats != null) { boxes += stats.boxCount; boxVolume += stats.volumeFraction; }
                 sourceTriangles += captured.indices.Length / 3;
                 resultTriangles += node.voxel.TriangleCount;
@@ -298,22 +299,62 @@ namespace SashaRX.UnityMeshLab
         // buildings decompose into their arms at the empty notches, a detached canopy
         // splits off on its own — unions of plain boxes, never special primitives, so
         // every leaf is one cube mesh instanced by a transform.
-        internal static RemeshNative.IndexedMesh BoxSetMesh(Vector3[] positions, float minGap, BoxStats stats)
+        internal static RemeshNative.IndexedMesh BoxSetMesh(Vector3[] positions, int[] triangles, float minGap, BoxStats stats)
         {
+            var samples = SurfaceSamples(positions, triangles);
             var leaves = new List<Bounds>();
-            SplitRecursive(positions, 0, positions.Length, minGap, leaves);
+            SplitRecursive(samples, 0, samples.Length, minGap, leaves);
             return AssembleBoxes(leaves, stats);
         }
 
+        // Area-weighted stratified surface samples plus the original vertices. Raw
+        // vertices misrepresent occupancy — the interior of a large flat quad is four
+        // corner points, and the histograms read that emptiness as a gap, splitting
+        // boxes through live geometry. Deterministic (fixed seed).
+        internal static Vector3[] SurfaceSamples(Vector3[] positions, int[] triangles)
+        {
+            int faces = triangles.Length / 3;
+            var areas = new double[faces];
+            double total = 0;
+            for (int f = 0; f < faces; ++f) {
+                int a = triangles[f * 3], b = triangles[f * 3 + 1], c = triangles[f * 3 + 2];
+                areas[f] = (double)(Vector3.Cross(positions[b] - positions[a], positions[c] - positions[a]).magnitude * 0.5f);
+                total += areas[f];
+            }
+            var samples = new List<Vector3>(positions.Length + 4096);
+            samples.AddRange(positions);
+            if (total <= 0 || faces == 0) return samples.ToArray();
+            int target = Mathf.Clamp(faces * 3, 512, 16384);
+            var random = new System.Random(0x5eed);
+            double accumulator = 0; int emitted = 0;
+            for (int f = 0; f < faces && emitted < target; ++f) {
+                accumulator += areas[f];
+                int want = Mathf.Min((int)(accumulator / total * target) - emitted, target - emitted);
+                int a = triangles[f * 3], b = triangles[f * 3 + 1], c = triangles[f * 3 + 2];
+                for (int s = 0; s < want; ++s) {
+                    float r1 = (float)random.NextDouble(), r2 = (float)random.NextDouble();
+                    float q = Mathf.Sqrt(r1);
+                    float u = 1f - q, v = q * (1f - r2), w = q * r2;
+                    samples.Add(positions[a] * u + positions[b] * v + positions[c] * w);
+                }
+                emitted += want;
+            }
+            return samples.ToArray();
+        }
+
         // One merged mesh of the leaf boxes: 8 vertices + 12 triangles per box, indices
-        // offset per leaf — the same shape every other stage consumes. The stats carry
-        // the box count and the covered share of the union bounds' volume (gap splits
-        // never overlap, so Σleaf volumes / union volume is the occupancy).
+        // offset per leaf — the same shape every other stage consumes. Paper-thin
+        // leaves (ground planes, road atlases, decals) get a minimal thickness so they
+        // render as slabs instead of zero-thickness sheets. The stats carry the box
+        // count and the covered share of the union bounds' volume (gap splits never
+        // overlap, so Σleaf volumes / union volume is the occupancy).
         internal static RemeshNative.IndexedMesh AssembleBoxes(List<Bounds> leaves, BoxStats stats)
         {
             double total = 0;
             Bounds initial = leaves[0];
-            foreach (var box in leaves) {
+            for (int i = 0; i < leaves.Count; ++i) {
+                var box = PadThin(leaves[i]);
+                leaves[i] = box;
                 total += Volume(box);
                 initial.Encapsulate(box);
             }
@@ -334,6 +375,22 @@ namespace SashaRX.UnityMeshLab
                 for (int i = 0; i < 36; ++i) indices[f + i] = v + faces[i];
             }
             return new RemeshNative.IndexedMesh { positions = vertices, indices = indices };
+        }
+
+        // Degenerate axes (a flat plaza's height, a decal's depth) become a minimal
+        // visible slab: 0.4% of the leaf's largest side, centred on the true extent.
+        static Bounds PadThin(Bounds box)
+        {
+            var size = box.size;
+            float maxSide = Mathf.Max(size.x, Mathf.Max(size.y, size.z));
+            if (maxSide <= 0f) return box;
+            float minSide = maxSide * 0.004f;
+            if (size.x >= minSide && size.y >= minSide && size.z >= minSide) return box;
+            var center = box.center;
+            if (size.x < minSide) { center.x = (box.min.x + box.max.x) * 0.5f; size.x = minSide; }
+            if (size.y < minSide) { center.y = (box.min.y + box.max.y) * 0.5f; size.y = minSide; }
+            if (size.z < minSide) { center.z = (box.min.z + box.max.z) * 0.5f; size.z = minSide; }
+            return new Bounds { center = center, extents = size * 0.5f };
         }
 
         static double Volume(Bounds box)
