@@ -121,6 +121,11 @@ settings, marked "settings changed" in its header) and clears everything after i
    Scene lighting is captured once in world space and every capture space (the
    weld, or each keep-hierarchy node) converts into it, so light ranges, shadow
    distances and probe bounds stay in world units whatever the source's scale.
+   Lightmaps are read only for a Beauty bake, right before it runs, and only
+   the region each renderer occupies (its lightmap scale/offset rect, one texel
+   of padding); a region above 2048² texels is downsampled to fit, and the
+   float readbacks are released when the bake ends — the capture itself keeps
+   just the texture references, so Materials bakes never touch the lightmaps.
    The saved material becomes **Unlit/Texture** with that one map (the other maps
    still export alongside); the 3D preview renders beauty results unlit, exactly
    like the saved material.
@@ -182,7 +187,8 @@ Texture snapshots and Unity mesh/asset APIs stay on the main thread.
   a stage and everything after it; `Key`/`IsStale` drive the "(settings
   changed)" markers.
 - `Editor/RemeshSource.cs` — `CollectRenderers` (the one filter for both lanes),
-  `Capture` (geometry, materials, textures and lightmaps in a given space) and
+  `Capture` (geometry, materials, textures and lightmap references in a given
+  space; `ReadLightmaps`/`ReleaseLightmaps` around a Beauty bake) and
   `ReadableScope` (Read/Write on for the capture, back off after).
 - `Editor/RemeshNative.cs` — the P/Invoke bridge and the post-unwrap normal /
   tangent regeneration.

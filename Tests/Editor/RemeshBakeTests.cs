@@ -183,6 +183,27 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(-1f, welded.tangents[0].w);
         }
         [Test]
+        public void LightmapRegionCoversTheRendererRectAndRemapsUv2()
+        {
+            // A renderer using the quarter [0.5,1]×[0.25,0.5] of a 1024² lightmap.
+            var st=new Vector4(0.5f,0.25f,0.5f,0.25f);
+            var region=RemeshBeauty.LightmapRegion(st,1024,1024,out var regionSt);
+            float pad=1f/1024;
+            Assert.That(region.xMin,Is.EqualTo(0.5f-pad).Within(1e-6f));
+            Assert.That(region.xMax,Is.EqualTo(1f).Within(1e-6f));
+            Assert.That(region.yMin,Is.EqualTo(0.25f-pad).Within(1e-6f));
+            Assert.That(region.yMax,Is.EqualTo(0.5f+pad).Within(1e-6f));
+            // uv2 (0,0) and (1,1) map to the rect's corners inside the region.
+            Vector2 lo=new Vector2(regionSt.z,regionSt.w), hi=new Vector2(regionSt.x+regionSt.z,regionSt.y+regionSt.w);
+            Assert.That(lo.x*region.width+region.x,Is.EqualTo(0.5f).Within(1e-5f));
+            Assert.That(lo.y*region.height+region.y,Is.EqualTo(0.25f).Within(1e-5f));
+            Assert.That(hi.x*region.width+region.x,Is.EqualTo(1f).Within(1e-5f));
+            Assert.That(hi.y*region.height+region.y,Is.EqualTo(0.5f).Within(1e-5f));
+            // A degenerate rect still yields a readable region.
+            var tiny=RemeshBeauty.LightmapRegion(new Vector4(0,0,0.3f,0.3f),256,256,out _);
+            Assert.That(tiny.width,Is.GreaterThan(0)); Assert.That(tiny.height,Is.GreaterThan(0));
+        }
+        [Test]
         public void ImageSamplingUsesLinearInterpolationAndWrapModes()
         {
             var image=new RemeshSource.Image { width=2,height=1,pixels=new[] { new Color32(0,0,0,255),new Color32(255,255,255,255) },

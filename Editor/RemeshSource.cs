@@ -17,8 +17,31 @@ namespace SashaRX.UnityMeshLab
         public Color[] colors;       // per vertex; white where the source mesh has none
         public bool hasColors;       // any contributing mesh carried vertex colours
         public int[] indices, faceMaterials;
-        public int[] faceLightmaps;  // per face: index into lightmaps, -1 when the renderer had none
-        public RemeshBeauty.Lightmap[] lightmaps; // unique (texture, scaleOffset) pairs, decoded linear
+        public int[] faceLightmaps;  // per face: index into lightmapRefs/lightmaps, -1 when the renderer had none
+        // Unique (texture, direction, scaleOffset) triples the faces reference. The
+        // pixels are NOT read at capture: a Beauty bake calls ReadLightmaps on the
+        // main thread right before it runs and ReleaseLightmaps after, so Materials
+        // bakes never pay for them and the float readbacks live only during the bake.
+        public LightmapRef[] lightmapRefs;
+        public RemeshBeauty.Lightmap[] lightmaps; // decoded linear, null outside a Beauty bake
+
+        internal sealed class LightmapRef
+        {
+            public Texture2D color, direction;
+            public Vector4 scaleOffset;
+        }
+
+        /// <summary>Reads the referenced lightmap regions (main thread). No-op when already read.</summary>
+        public void ReadLightmaps()
+        {
+            if (lightmaps != null || lightmapRefs == null) return;
+            var read = new RemeshBeauty.Lightmap[lightmapRefs.Length];
+            for (int i = 0; i < read.Length; ++i)
+                read[i] = RemeshBeauty.ReadLightmap(lightmapRefs[i].color, lightmapRefs[i].direction, lightmapRefs[i].scaleOffset);
+            lightmaps = read;
+        }
+
+        public void ReleaseLightmaps() { lightmaps = null; }
         public Surface[] materials;
         public float diagonal;
         public string[] warnings = Array.Empty<string>();
@@ -88,7 +111,7 @@ namespace SashaRX.UnityMeshLab
             var indices = new List<int>(); var faces = new List<int>(); var materials = new List<Surface>();
             var materialIds = new Dictionary<Material, int>();
             var faceLightmaps = new List<int>();
-            var lightmaps = new List<RemeshBeauty.Lightmap>();
+            var lightmapRefs = new List<LightmapRef>();
             var lightmapIds = new Dictionary<(Texture2D, Texture2D, Vector4), int>();
             string[] warnings;
             using (var reader = new Reader()) {
@@ -141,7 +164,8 @@ namespace SashaRX.UnityMeshLab
                             tangents.Add(new Vector4(tt.x, tt.y, tt.z, t[i].w * sign));
                         }
                         uv.AddRange(mesh.uv);
-                        // Beauty bakes sample the renderer's baked lightmap at its UV2.
+                        // Beauty bakes sample the renderer's baked lightmap at its UV2;
+                        // only the reference is kept here (see ReadLightmaps).
                         var lmUv = mesh.uv2;
                         if (lmUv.Length == p.Length) uv2.AddRange(lmUv);
                         else for (int i = 0; i < p.Length; ++i) uv2.Add(Vector2.zero);
@@ -154,8 +178,8 @@ namespace SashaRX.UnityMeshLab
                             if (map != null) {
                                 var key = (map, data.lightmapDir, st);
                                 if (!lightmapIds.TryGetValue(key, out lightmapId)) {
-                                    lightmapId = lightmaps.Count;
-                                    lightmaps.Add(RemeshBeauty.ReadLightmap(map, data.lightmapDir, st));
+                                    lightmapId = lightmapRefs.Count;
+                                    lightmapRefs.Add(new LightmapRef { color = map, direction = data.lightmapDir, scaleOffset = st });
                                     lightmapIds.Add(key, lightmapId);
                                 }
                             }
@@ -193,7 +217,7 @@ namespace SashaRX.UnityMeshLab
             if (bounds.size.magnitude <= 1e-8f) throw new InvalidOperationException("Source bounds are empty.");
             return new RemeshSource { positions = positions.ToArray(), normals = normals.ToArray(), tangents = tangents.ToArray(),
                 uv = uv.ToArray(), uv2 = uv2.ToArray(), colors = colors.ToArray(), hasColors = hasColors, indices = indices.ToArray(), faceMaterials = faces.ToArray(),
-                faceLightmaps = faceLightmaps.ToArray(), lightmaps = lightmaps.ToArray(), materials = materials.ToArray(),
+                faceLightmaps = faceLightmaps.ToArray(), lightmapRefs = lightmapRefs.ToArray(), materials = materials.ToArray(),
                 diagonal = bounds.size.magnitude, warnings = warnings };
         }
 

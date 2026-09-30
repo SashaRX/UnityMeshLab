@@ -297,14 +297,14 @@ namespace SashaRX.UnityMeshLab
         internal Color SampleLightmap(Lightmap map, Vector2 uv2, Vector3 localNormal)
         {
             Vector2 uv = new Vector2(uv2.x * map.st.x + map.st.z, uv2.y * map.st.y + map.st.w);
-            Color illuminance = SampleBilinear(map.pixels, map.width, map.height, uv);
+            Color illuminance = SampleBilinear(map.pixels, map.width, map.height, uv, clamp: true);
             if (map.hasDir) {
                 // The game's exact directional-lightmap response (URP EntityLighting's
                 // SampleDirectionalLightmap): the encoded dominant direction is dotted
                 // against the WORLD normal as a half-Lambert and the result is divided
                 // by the texel's rebalancing coefficient. A flat colour would overlight
                 // every surface whose normal disagrees with the dominant direction.
-                Color d = SampleBilinear(map.dirPixels, map.dirWidth, map.dirHeight, uv);
+                Color d = SampleBilinear(map.dirPixels, map.dirWidth, map.dirHeight, uv, clamp: true);
                 Vector3 dir = new Vector3(d.r, d.g, d.b) - new Vector3(0.5f, 0.5f, 0.5f);
                 float halfLambert = Vector3.Dot(WorldNormal(localNormal), dir) + 0.5f;
                 float scale = halfLambert / Mathf.Max(1e-4f, d.a);
@@ -344,13 +344,17 @@ namespace SashaRX.UnityMeshLab
         static Color SampleEquirect(Color[] pixels, int width, int height, Vector3 dir)
             => SampleBilinear(pixels, width, height, EquirectUV(dir));
 
-        static Color SampleBilinear(Color[] pixels, int width, int height, Vector2 uv)
+        // clamp: lightmap regions are sub-rects of the atlas, so their edges clamp
+        // (wrapping would read the far edge); equirect maps wrap.
+        static Color SampleBilinear(Color[] pixels, int width, int height, Vector2 uv, bool clamp = false)
         {
             if (pixels == null || pixels.Length == 0) return Color.black;
             float x = uv.x * width - 0.5f, y = uv.y * height - 0.5f;
             int ix = Mathf.FloorToInt(x), iy = Mathf.FloorToInt(y);
             float fx = x - ix, fy = y - iy;
-            Color At(int xx, int yy) => pixels[Wrap(yy, height) * width + Wrap(xx, width)];
+            Color At(int xx, int yy) => clamp
+                ? pixels[Mathf.Clamp(yy, 0, height - 1) * width + Mathf.Clamp(xx, 0, width - 1)]
+                : pixels[Wrap(yy, height) * width + Wrap(xx, width)];
             Color Row(int yy) => Color.LerpUnclamped(At(ix, yy), At(ix + 1, yy), fx);
             return Color.LerpUnclamped(Row(iy), Row(iy + 1), fy);
         }
@@ -414,69 +418,90 @@ namespace SashaRX.UnityMeshLab
             return probe.mipCount > 0 ? probe : null;
         }
 
-        // Lightmap readback for the source capture: plain blit into a float RT, then
-        // decode. HDR encodings (Unity "High Quality", Bakery's default .hdr output)
-        // come through linear directly. Unity's own RGBA32 lightmaps are RGBM
+        // Lightmap readbacks are float (16 bytes per texel) and a scene lightmap can be
+        // 8K or 16K, so only the REGION a renderer occupies (its scaleOffset rect, one
+        // texel of padding) is read, and a region larger than this many texels is
+        // downsampled to fit. 4M texels = 64 MiB per region.
+        internal const int MaxLightmapPixels = 2048 * 2048;
+
+        // Lightmap readback: the renderer's region of the lightmap blitted into a float
+        // RT, then decoded. HDR encodings (Unity "High Quality", Bakery's default .hdr
+        // output) come through linear directly. Unity's own RGBA32 lightmaps are RGBM
         // (rgb * a * 8); Bakery's 8-bit output is plain linear with alpha pinned at 1,
         // so "alpha ~ 1 everywhere" (a real RGBM scene always has dark texels with
         // alpha < 1) identifies a plain map and skips the decode that would
         // overbrighten it eightfold. The optional direction texture is linear data and
-        // needs no decode at all.
+        // needs no decode at all. The returned st maps uv2 into the region.
         internal static Lightmap ReadLightmap(Texture2D lightmap, Texture2D lightmapDir, Vector4 st)
         {
-            int width = lightmap.width, height = lightmap.height;
+            var region = LightmapRegion(st, lightmap.width, lightmap.height, out Vector4 regionSt);
             bool hdr = lightmap.format == TextureFormat.RGBAFloat || lightmap.format == TextureFormat.RGBAHalf;
-            var previous = RenderTexture.active;
-            var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
-            Texture2D copy = null;
-            try {
-                Graphics.Blit(lightmap, rt);
-                RenderTexture.active = rt;
-                copy = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
-                copy.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-                copy.Apply();
-                var pixels = copy.GetPixels();
-                if (!hdr) {
-                    bool rgbm = false;
-                    int step = Math.Max(1, pixels.Length / 4096);
-                    for (int i = 0; i < pixels.Length; i += step)
-                        if (pixels[i].a < 0.999f) { rgbm = true; break; }
-                    if (rgbm)
-                        for (int i = 0; i < pixels.Length; ++i) {
-                            var c = pixels[i];
-                            float scale = c.a * 8f;
-                            pixels[i] = new Color(c.r * scale, c.g * scale, c.b * scale, 1f);
-                        }
-                }
-                var map = new Lightmap { pixels = pixels, width = width, height = height, st = st };
-                if (lightmapDir != null) {
-                    map.dirPixels = ReadPlain(lightmapDir, out map.dirWidth, out map.dirHeight);
-                    map.hasDir = map.dirPixels != null;
-                }
-                return map;
+            var pixels = ReadRegion(lightmap, region, out int width, out int height);
+            if (!hdr) {
+                bool rgbm = false;
+                int step = Math.Max(1, pixels.Length / 4096);
+                for (int i = 0; i < pixels.Length; i += step)
+                    if (pixels[i].a < 0.999f) { rgbm = true; break; }
+                if (rgbm)
+                    for (int i = 0; i < pixels.Length; ++i) {
+                        var c = pixels[i];
+                        float scale = c.a * 8f;
+                        pixels[i] = new Color(c.r * scale, c.g * scale, c.b * scale, 1f);
+                    }
             }
-            finally {
-                RenderTexture.active = previous;
-                RenderTexture.ReleaseTemporary(rt);
-                if (copy) Object.DestroyImmediate(copy);
+            var map = new Lightmap { pixels = pixels, width = width, height = height, st = regionSt };
+            if (lightmapDir != null) {
+                map.dirPixels = ReadRegion(lightmapDir, region, out map.dirWidth, out map.dirHeight);
+                map.hasDir = map.dirPixels != null;
+            }
+            return map;
+        }
+
+        // The UV rect [x, y, x+width, y+height] of the lightmap that uv2 × st.xy + st.zw
+        // covers, clamped to the texture and padded by one texel for bilinear reads,
+        // plus the st that maps uv2 into that rect instead of the whole map.
+        internal static Rect LightmapRegion(Vector4 st, int texWidth, int texHeight, out Vector4 regionSt)
+        {
+            float u0 = Mathf.Min(st.z, st.z + st.x), u1 = Mathf.Max(st.z, st.z + st.x);
+            float v0 = Mathf.Min(st.w, st.w + st.y), v1 = Mathf.Max(st.w, st.w + st.y);
+            float padU = 1f / Mathf.Max(1, texWidth), padV = 1f / Mathf.Max(1, texHeight);
+            u0 = Mathf.Clamp01(u0 - padU); u1 = Mathf.Clamp01(u1 + padU);
+            v0 = Mathf.Clamp01(v0 - padV); v1 = Mathf.Clamp01(v1 + padV);
+            if (u1 - u0 < padU) { u0 = Mathf.Clamp01(u0 - padU); u1 = Mathf.Clamp01(u0 + 2 * padU); }
+            if (v1 - v0 < padV) { v0 = Mathf.Clamp01(v0 - padV); v1 = Mathf.Clamp01(v0 + 2 * padV); }
+            float w = u1 - u0, h = v1 - v0;
+            regionSt = new Vector4(st.x / w, st.y / h, (st.z - u0) / w, (st.w - v0) / h);
+            return new Rect(u0, v0, w, h);
+        }
+
+        // Region size in texels, downsampled uniformly when it exceeds MaxLightmapPixels.
+        static void RegionSize(Rect region, int texWidth, int texHeight, out int width, out int height)
+        {
+            width = Mathf.Max(1, Mathf.CeilToInt(region.width * texWidth));
+            height = Mathf.Max(1, Mathf.CeilToInt(region.height * texHeight));
+            long pixels = (long)width * height;
+            if (pixels > MaxLightmapPixels) {
+                float scale = Mathf.Sqrt(MaxLightmapPixels / (float)pixels);
+                width = Mathf.Max(1, Mathf.FloorToInt(width * scale));
+                height = Mathf.Max(1, Mathf.FloorToInt(height * scale));
             }
         }
 
-        static Color[] ReadPlain(Texture2D texture, out int width, out int height)
+        static Color[] ReadRegion(Texture2D texture, Rect region, out int width, out int height)
         {
-            width = texture.width; height = texture.height;
+            RegionSize(region, texture.width, texture.height, out width, out height);
             var previous = RenderTexture.active;
             var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
             Texture2D copy = null;
             try {
-                Graphics.Blit(texture, rt);
+                // Blit(scale, offset) samples the source at uv × scale + offset — the region.
+                Graphics.Blit(texture, rt, new Vector2(region.width, region.height), new Vector2(region.x, region.y));
                 RenderTexture.active = rt;
                 copy = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
                 copy.ReadPixels(new Rect(0, 0, width, height), 0, 0);
                 copy.Apply();
                 return copy.GetPixels();
             }
-            catch (Exception) { return null; }
             finally {
                 RenderTexture.active = previous;
                 RenderTexture.ReleaseTemporary(rt);

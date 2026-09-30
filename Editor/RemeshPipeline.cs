@@ -300,7 +300,12 @@ namespace SashaRX.UnityMeshLab
                     : beauty != null ? "Baking the lit view of the source into the atlas…" : "Projecting source materials into the new UV atlas…");
                 var nodeBeauty = beauty?.ForSpace(node.spaceToWorld, node.source.diagonal);
                 var source = node.source; var target = node.geometry; var frame = node.tangents;
-                node.maps = await Task.Run(() => RemeshBaker.Bake(source, target, frame, options, token, nodeBeauty), token);
+                // The lightmap regions this node's faces use are read now, on the main
+                // thread, and dropped again after the bake — they are float readbacks
+                // and only Beauty needs them.
+                if (nodeBeauty != null) { Report($"Reading lightmaps for {node.name}…"); source.ReadLightmaps(); }
+                try { node.maps = await Task.Run(() => RemeshBaker.Bake(source, target, frame, options, token, nodeBeauty), token); }
+                finally { source.ReleaseLightmaps(); }
                 // A re-bake without the transfer must not keep the previous colors.
                 node.mesh.colors = node.maps.vertexColors;
                 sourceTriangles += source.indices.Length / 3; targetTriangles += target.indices.Length / 3;
