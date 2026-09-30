@@ -230,7 +230,10 @@ namespace SashaRX.UnityMeshLab
                     RemeshSource.CollectSurface(worldToRoot, renderer, out var positions, out var surface);
                     if (positions == null || surface == null || surface.Length == 0) continue;
                     var samples = SurfaceSamples(positions, surface);
-                    SplitRecursive(samples, 0, samples.Length, options.boxSplitGap, weldLeaves);
+                    // The unsplit leaf IS Unity's own renderer bbox — no recomputed box
+                    // for a node the game already measures.
+                    SplitRecursive(samples, 0, samples.Length, options.boxSplitGap, weldLeaves,
+                        RemeshSource.RendererBounds(worldToRoot, renderer));
                 }
                 if (weldLeaves.Count == 0) throw new InvalidOperationException("No remeshable renderers under the root.");
             }
@@ -401,7 +404,11 @@ namespace SashaRX.UnityMeshLab
 
         const int BoxHistogramBins = 32;
 
-        static void SplitRecursive(Vector3[] points, int start, int count, float minGap, List<Bounds> leaves)
+        // seed is the leaf used when no split fires — Unity's own renderer bounds for a
+        // whole renderer, so an unsplit node is exactly the bbox the game already has.
+        // Splits stay strictly axis-aligned planes through the centre of the widest
+        // empty slab, so every leaf face lies on a geometry plane.
+        static void SplitRecursive(Vector3[] points, int start, int count, float minGap, List<Bounds> leaves, Bounds? seed = null)
         {
             var mn = points[start];
             var mx = mn;
@@ -435,7 +442,7 @@ namespace SashaRX.UnityMeshLab
                 if (gap > bestGap) { bestGap = gap; bestAxis = axis; bestSplitBin = widestAt + widest / 2; }
             }
             if (bestAxis < 0 || bestGap < minGap) {
-                leaves.Add(new Bounds { center = (mn + mx) * 0.5f, extents = extent * 0.5f });
+                leaves.Add(seed ?? new Bounds { center = (mn + mx) * 0.5f, extents = extent * 0.5f });
                 return;
             }
             float axisSize = bestAxis == 0 ? extent.x : bestAxis == 1 ? extent.y : extent.z;
@@ -449,7 +456,7 @@ namespace SashaRX.UnityMeshLab
             int leftCount = left - start;
             if (leftCount == 0 || leftCount == count) {
                 // Degenerate partition (all points in one bin run) — keep the box tight.
-                leaves.Add(new Bounds { center = (mn + mx) * 0.5f, extents = extent * 0.5f });
+                leaves.Add(seed ?? new Bounds { center = (mn + mx) * 0.5f, extents = extent * 0.5f });
                 return;
             }
             SplitRecursive(points, start, leftCount, minGap, leaves);

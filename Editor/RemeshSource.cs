@@ -98,6 +98,26 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
+        /// The renderer's own world bounds expressed in the space whose world→local
+        /// matrix is worldToSpace (the 8 corners transformed, re-axised) — Unity's
+        /// bbox, not a recomputed one. Main thread.
+        /// </summary>
+        public static Bounds RendererBounds(Matrix4x4 worldToSpace, Renderer renderer)
+        {
+            var b = renderer.bounds;
+            var result = new Bounds(worldToSpace.MultiplyPoint3x4(b.center), Vector3.zero);
+            result.Encapsulate(worldToSpace.MultiplyPoint3x4(b.min));
+            result.Encapsulate(worldToSpace.MultiplyPoint3x4(b.max));
+            result.Encapsulate(worldToSpace.MultiplyPoint3x4(new Vector3(b.min.x, b.min.y, b.max.z)));
+            result.Encapsulate(worldToSpace.MultiplyPoint3x4(new Vector3(b.min.x, b.max.y, b.min.z)));
+            result.Encapsulate(worldToSpace.MultiplyPoint3x4(new Vector3(b.max.x, b.min.y, b.min.z)));
+            result.Encapsulate(worldToSpace.MultiplyPoint3x4(new Vector3(b.min.x, b.max.y, b.max.z)));
+            result.Encapsulate(worldToSpace.MultiplyPoint3x4(new Vector3(b.max.x, b.min.y, b.max.z)));
+            result.Encapsulate(worldToSpace.MultiplyPoint3x4(new Vector3(b.max.x, b.max.y, b.min.z)));
+            return result;
+        }
+
+        /// <summary>
         /// One renderer's vertices AND triangle indices (non-triangle submeshes dropped)
         /// in the space whose world→local matrix is worldToSpace — the geometry the box
         /// decomposition partitions BY RENDERER, without any material readback. Null when
