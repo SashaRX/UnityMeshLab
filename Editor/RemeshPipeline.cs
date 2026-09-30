@@ -215,22 +215,41 @@ namespace SashaRX.UnityMeshLab
             long sourceTriangles = 0, resultTriangles = 0; int warnings = 0;
             var shape = options.sourceShape;
             int boxes = 0; double boxVolume = 0;
+            // Weld + box set: the primary partition is BY RENDERER — every node with a
+            // renderer keeps its own box(es), the recursive gap split running INSIDE
+            // each renderer's points (a courtyard model otherwise fills its bounds so
+            // densely that the split finds no gap and the whole set collapses into one
+            // box). The weld SOURCE stays the full capture, so the bake projects every
+            // renderer's materials onto the merged box set as usual.
+            List<Bounds> weldLeaves = null;
+            if (!hierarchy && shape == RemeshShape.BoxSet) {
+                Report("Decomposing renderers into boxes…");
+                weldLeaves = new List<Bounds>();
+                foreach (var renderer in renderers) {
+                    token.ThrowIfCancellationRequested();
+                    var points = RemeshSource.CollectPoints(worldToRoot, renderer);
+                    if (points.Length == 0) continue;
+                    SplitRecursive(points, 0, points.Length, options.boxSplitGap, weldLeaves);
+                }
+                if (weldLeaves.Count == 0) throw new InvalidOperationException("No remeshable renderers under the root.");
+            }
             for (int i = 0; i < captures.Count; ++i) {
                 var node = captures[i];
                 foreach (var warning in node.source.warnings) { UvtLog.Warn("[Remesh] " + warning); ++warnings; }
                 token.ThrowIfCancellationRequested();
                 Report(hierarchy
                     ? $"{(shape == RemeshShape.LOD0 ? "Voxel remeshing" : "Bounding")} {node.name} ({i + 1}/{captures.Count})…"
-                    : (shape == RemeshShape.LOD0 ? "Voxel remeshing…" : shape == RemeshShape.BoundingBox ? "Building the bounding-box proxy…" : "Decomposing into boxes…"));
+                    : (shape == RemeshShape.LOD0 ? "Voxel remeshing…" : shape == RemeshShape.BoundingBox ? "Building the bounding-box proxy…" : "Assembling the renderer box set…"));
                 var captured = node.source;
                 var stats = shape == RemeshShape.BoxSet ? new BoxStats() : null;
                 // The box shapes replace the voxelizer with the capture's own bounds —
-                // a single AABB, or a recursive gap-split decomposition into a box set;
+                // a single AABB, or the renderer-partitioned gap-split box set;
                 // materials and lighting still bake from the captured geometry,
                 // projected onto the boxes downstream.
                 node.voxel = await Task.Run(() =>
                     shape == RemeshShape.LOD0 ? RemeshNative.Voxelize(captured.positions, captured.indices, options, token)
                     : shape == RemeshShape.BoundingBox ? BoxMesh(captured.positions)
+                    : weldLeaves != null ? AssembleBoxes(weldLeaves, stats)
                     : BoxSetMesh(captured.positions, options.boxSplitGap, stats), token);
                 if (stats != null) { boxes += stats.boxCount; boxVolume += stats.volumeFraction; }
                 sourceTriangles += captured.indices.Length / 3;
@@ -283,6 +302,15 @@ namespace SashaRX.UnityMeshLab
         {
             var leaves = new List<Bounds>();
             SplitRecursive(positions, 0, positions.Length, minGap, leaves);
+            return AssembleBoxes(leaves, stats);
+        }
+
+        // One merged mesh of the leaf boxes: 8 vertices + 12 triangles per box, indices
+        // offset per leaf — the same shape every other stage consumes. The stats carry
+        // the box count and the covered share of the union bounds' volume (gap splits
+        // never overlap, so Σleaf volumes / union volume is the occupancy).
+        internal static RemeshNative.IndexedMesh AssembleBoxes(List<Bounds> leaves, BoxStats stats)
+        {
             double total = 0;
             Bounds initial = leaves[0];
             foreach (var box in leaves) {
@@ -292,8 +320,6 @@ namespace SashaRX.UnityMeshLab
             double whole = Volume(initial);
             stats.boxCount = leaves.Count;
             stats.volumeFraction = whole > 0 ? (float)(total / whole) : 1f;
-            // One merged mesh of all leaves: 8 vertices + 12 triangles per box, indices
-            // offset per leaf — the same shape every other stage consumes.
             var vertices = new Vector3[leaves.Count * 8];
             var indices = new int[leaves.Count * 36];
             int[] faces = { 0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5 };

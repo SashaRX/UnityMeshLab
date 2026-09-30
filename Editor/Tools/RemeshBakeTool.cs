@@ -126,8 +126,8 @@ namespace SashaRX.UnityMeshLab
                 if (StageHeader(RemeshPipeline.Stage.Remesh)) {
                     settings.sourceShape = (RemeshShape)EditorGUILayout.EnumPopup(new GUIContent("Shape",
                         "LOD0: voxelize the captured geometry. Bounding box: replace every captured model with its axis-aligned box — a proxy for far LODs; " +
-                        "materials and lighting still bake from the original geometry, projected onto the box. Box set: recursively split wherever a wide empty " +
-                        "gap separates geometry, decomposing L- and T-shapes into a small union of boxes."), settings.sourceShape);
+                        "materials and lighting still bake from the original geometry, projected onto the box. Box set: one box per renderer node, recursively " +
+                        "split inside wherever a wide empty gap separates that renderer's geometry (L-/T-shapes fall apart into arms)."), settings.sourceShape);
                     if (settings.sourceShape == RemeshShape.BoxSet)
                         settings.boxSplitGap = EditorGUILayout.Slider(new GUIContent("Split gap",
                             "The smallest empty gap (a fraction of a box's extent) that still splits it in two. Lower values chase finer protrusions with more boxes."),

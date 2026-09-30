@@ -98,6 +98,37 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
+        /// One renderer's vertices in the space whose world→local matrix is worldToSpace —
+        /// the point cloud the box decomposition partitions BY RENDERER, without any
+        /// material readback. Empty when the renderer contributes nothing. Main thread.
+        /// </summary>
+        public static Vector3[] CollectPoints(Matrix4x4 worldToSpace, Renderer renderer)
+        {
+            Mesh mesh;
+            if (renderer is SkinnedMeshRenderer skin) {
+                mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
+                var bones = skin.bones;
+                skin.bones = Array.Empty<Transform>();
+                skin.bones = bones;
+                skin.BakeMesh(mesh);
+            }
+            else if (renderer is MeshRenderer) {
+                var filter = renderer.GetComponent<MeshFilter>();
+                if (!filter || !filter.sharedMesh) return Array.Empty<Vector3>();
+                mesh = UvCanvasView.MakeReadableCopy(filter.sharedMesh);
+            }
+            else return Array.Empty<Vector3>();
+            try {
+                var p = mesh.vertices;
+                var transform = worldToSpace * renderer.localToWorldMatrix;
+                var points = new Vector3[p.Length];
+                for (int i = 0; i < p.Length; ++i) points[i] = transform.MultiplyPoint3x4(p[i]);
+                return points;
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
+        /// <summary>
         /// Snapshot of the given renderers expressed in the space whose world→local
         /// matrix is worldToSpace. Returns null when they contribute no triangles and
         /// required is false; throws otherwise.
