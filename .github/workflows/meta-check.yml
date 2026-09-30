@@ -55,10 +55,18 @@ jobs:
               EXIT=1
             fi
           done
-          # Check all tracked files in Editor/, Plugins/, Shaders/ that need .meta.
-          # Native~/ and Documentation~/ are hidden from Unity by the ~ suffix
-          # and do NOT need .meta files.
-          for f in $(find Editor Plugins Shaders -type f \
+          # Any other tracked file at the package root is imported too (a stray
+          # screenshot once shipped this way); dotfiles are the only exception.
+          for f in $(git ls-files | grep -v '/' | grep -v '\.meta$' | grep -v '^\.'); do
+            if [ ! -f "${f}.meta" ]; then
+              echo "::error::Missing .meta file for package-root file: ${f}"
+              EXIT=1
+            fi
+          done
+          # Check all tracked files in Editor/, Plugins/, Shaders/, Tests/ that
+          # need .meta. Native~/, Documentation~/ and Tools~/ are hidden from
+          # Unity by the ~ suffix and do NOT need .meta files.
+          for f in $(find Editor Plugins Shaders Tests -type f \
             ! -name '*.meta' \
             ! -name '.gitkeep' \
             ! -name '.DS_Store' \
@@ -69,7 +77,7 @@ jobs:
             fi
           done
           # Check for orphaned .meta files (no matching file/dir)
-          for m in $(find Editor Plugins Shaders -name '*.meta' 2>/dev/null); do
+          for m in $(find Editor Plugins Shaders Tests -name '*.meta' 2>/dev/null); do
             target="${m%.meta}"
             if [ ! -e "$target" ]; then
               echo "::warning::Orphaned .meta file (no matching file/dir): ${m}"
