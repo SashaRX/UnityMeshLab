@@ -3879,6 +3879,31 @@ namespace SashaRX.UnityMeshLab
 #endif
         }
 
+        // Puts a source ModelImporter back to the state ExportIsolatedChannelsToFbx's
+        // Phase 1 found it in; a no-op when Phase 1 changed nothing. Disposed at the
+        // method's exit whichever way it leaves.
+        sealed class ImporterRestoreScope : IDisposable
+        {
+            readonly ModelImporter importer;
+            readonly string path;
+            readonly bool readable, quads;
+
+            public ImporterRestoreScope(ModelImporter importer, string path, bool restoreReadable, bool restoreQuads)
+            {
+                this.importer = importer; this.path = path;
+                readable = restoreReadable; quads = restoreQuads;
+            }
+
+            public void Dispose()
+            {
+                if (importer == null || (!readable && !quads)) return;
+                if (readable) importer.isReadable = false;
+                if (quads) importer.keepQuads = false;
+                Uv2AssetPostprocessor.bypassPaths.Add(path);
+                importer.SaveAndReimport();
+            }
+        }
+
         /// <param name="entries">Mesh entries supplying source data. Matched
         /// against the FBX clone by sub-asset name.</param>
         /// <param name="intent">Channels the caller is allowed to write.
@@ -4031,6 +4056,13 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            // Importer contract: the source importer ends the export exactly as
+            // Phase 1 found it — on success, on every early return and on failure
+            // alike. A using declaration disposes at method exit, so no later
+            // phase can strand isReadable or the variant keepQuads toggle.
+            using var importerRestore = new ImporterRestoreScope(srcImporter, sourceFbxPath,
+                restoreReadable: madeReadable, restoreQuads: variantQuadsToggle);
+
             // ── Phase 2: Build export hierarchy ──
             var fbxAsset = AssetDatabase.LoadMainAssetAtPath(sourceFbxPath) as GameObject;
             if (fbxAsset == null)
@@ -4177,14 +4209,6 @@ namespace SashaRX.UnityMeshLab
             catch (Exception ex)
             {
                 Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath);
-                // Variant keepQuads toggle must not outlive a failed export —
-                // Phase 5 is unreachable after this return.
-                if (variantQuadsToggle && srcImporter != null)
-                {
-                    srcImporter.keepQuads = false;
-                    Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
-                    srcImporter.SaveAndReimport();
-                }
                 // Best-effort: drop a leftover .tmp so a retry isn't blocked
                 // by the "Strip any leftover tmp" sweep above logging into
                 // a misleading state.
@@ -4233,31 +4257,18 @@ namespace SashaRX.UnityMeshLab
                 ctx.Refresh(ctx.LodGroup);
             }
 
-            // ── Phase 5: Restore importer settings + working copies ──
-            // Only isReadable is restored: Phase 1 no longer touches weld /
+            // ── Phase 5: Restore working copies ──
+            // The importer itself is restored by importerRestore at method exit:
+            // isReadable goes back off; Phase 1 no longer touches weld /
             // compression / optimization, generateSecondaryUV is left disabled
-            // on purpose so the just-authored UV1 is not regenerated, and
-            // keepQuads stays enabled so the re-saved FBX keeps its quads on
-            // every future import (Phase 1 quad-preservation rationale).
+            // on purpose so the just-authored UV1 is not regenerated, and on a
+            // source re-save keepQuads stays enabled so the re-saved FBX keeps
+            // its quads on every future import (Phase 1 quad-preservation
+            // rationale). For a variant export the source FBX and its importer
+            // end exactly as they started — the variant file on disk keeps its
+            // quads regardless of that import setting.
             if (!isVariantExport)
-            {
-                if (srcImporter != null && madeReadable)
-                {
-                    srcImporter.isReadable = false;
-                    Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
-                    srcImporter.SaveAndReimport();
-                }
                 RestoreWorkingCopiesToScene();
-            }
-            else if (variantQuadsToggle && srcImporter != null)
-            {
-                // Variant contract: the source FBX and its importer end the
-                // export exactly as they started. The variant file on disk
-                // keeps its quads regardless of this import setting.
-                srcImporter.keepQuads = false;
-                Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
-                srcImporter.SaveAndReimport();
-            }
             return exported;
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
