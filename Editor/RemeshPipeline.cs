@@ -112,7 +112,7 @@ namespace SashaRX.UnityMeshLab
         public static string Key(Stage stage, RemeshSettings s, GameObject source)
         {
             switch (stage) {
-                case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|{s.sourceShape}";
+                case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|{s.sourceShape}|{s.boxSplitGap:F2}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
@@ -213,21 +213,26 @@ namespace SashaRX.UnityMeshLab
                 if (captures.Count == 0) throw new InvalidOperationException("Every captured node was empty; nothing to remesh.");
             }
             long sourceTriangles = 0, resultTriangles = 0; int warnings = 0;
-            bool box = options.sourceShape == RemeshShape.BoundingBox;
+            var shape = options.sourceShape;
+            int boxes = 0; double boxVolume = 0;
             for (int i = 0; i < captures.Count; ++i) {
                 var node = captures[i];
                 foreach (var warning in node.source.warnings) { UvtLog.Warn("[Remesh] " + warning); ++warnings; }
                 token.ThrowIfCancellationRequested();
                 Report(hierarchy
-                    ? (box ? $"Bounding {node.name} ({i + 1}/{captures.Count})…" : $"Voxel remeshing {node.name} ({i + 1}/{captures.Count})…")
-                    : (box ? "Building the bounding-box proxy…" : "Voxel remeshing…"));
+                    ? $"{(shape == RemeshShape.LOD0 ? "Voxel remeshing" : "Bounding")} {node.name} ({i + 1}/{captures.Count})…"
+                    : (shape == RemeshShape.LOD0 ? "Voxel remeshing…" : shape == RemeshShape.BoundingBox ? "Building the bounding-box proxy…" : "Decomposing into boxes…"));
                 var captured = node.source;
-                // The bounding-box shape replaces the voxelizer with the capture's own
-                // AABB — a far-LOD proxy; materials and lighting still bake from the
-                // captured geometry, projected onto the box downstream.
-                node.voxel = await Task.Run(() => box
-                    ? BoxMesh(captured.positions)
-                    : RemeshNative.Voxelize(captured.positions, captured.indices, options, token), token);
+                var stats = shape == RemeshShape.BoxSet ? new BoxStats() : null;
+                // The box shapes replace the voxelizer with the capture's own bounds —
+                // a single AABB, or a recursive gap-split decomposition into a box set;
+                // materials and lighting still bake from the captured geometry,
+                // projected onto the boxes downstream.
+                node.voxel = await Task.Run(() =>
+                    shape == RemeshShape.LOD0 ? RemeshNative.Voxelize(captured.positions, captured.indices, options, token)
+                    : shape == RemeshShape.BoundingBox ? BoxMesh(captured.positions)
+                    : BoxSetMesh(captured.positions, options.boxSplitGap, stats), token);
+                if (stats != null) { boxes += stats.boxCount; boxVolume += stats.volumeFraction; }
                 sourceTriangles += captured.indices.Length / 3;
                 resultTriangles += node.voxel.TriangleCount;
             }
@@ -238,8 +243,19 @@ namespace SashaRX.UnityMeshLab
                 primary.source.normals, primary.source.hasColors ? primary.source.colors : null);
             voxelMesh = BuildMesh(ResultName + "_Voxel", primary.voxel.positions, primary.voxel.indices);
             Status = (hierarchy ? $"Remesh: {nodes.Count} node(s), " : "Remesh: ") +
-                $"{sourceTriangles:N0} → {resultTriangles:N0} triangles" + (box ? " (bounding box)." : ".") +
+                $"{sourceTriangles:N0} → {resultTriangles:N0} triangles" +
+                (shape == RemeshShape.BoundingBox ? " (bounding box)."
+                    : shape == RemeshShape.BoxSet ? $" — {boxes:N0} boxes, {(boxVolume / Mathf.Max(1, nodes.Count)) * 100:F0}% volume covered."
+                    : ".") +
                 (warnings > 0 ? $" {warnings} material warning(s), see Console." : "");
+        }
+
+        /// <summary>Box-set decomposition stats filled by the worker (out parameters
+        /// cannot cross a lambda; a captured mutable holder can).</summary>
+        internal sealed class BoxStats
+        {
+            public int boxCount;
+            public float volumeFraction;
         }
 
         // Axis-aligned box mesh around a point cloud — the Bounding-box remesh shape.
@@ -254,6 +270,107 @@ namespace SashaRX.UnityMeshLab
             };
             int[] faces = { 0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5 };
             return new RemeshNative.IndexedMesh { positions = corners, indices = faces };
+        }
+
+        // Recursive box approximation — the BoxSet remesh shape. Every box scans a
+        // 32-bin histogram per axis for the widest EMPTY run between geometry; a gap
+        // wider than minGap (a fraction of that axis's extent) splits the point set
+        // there and both halves take their tight box, recursively. L- and T-shaped
+        // buildings decompose into their arms at the empty notches, a detached canopy
+        // splits off on its own — unions of plain boxes, never special primitives, so
+        // every leaf is one cube mesh instanced by a transform.
+        internal static RemeshNative.IndexedMesh BoxSetMesh(Vector3[] positions, float minGap, BoxStats stats)
+        {
+            var leaves = new List<Bounds>();
+            SplitRecursive(positions, 0, positions.Length, minGap, leaves);
+            double total = 0;
+            Bounds initial = leaves[0];
+            foreach (var box in leaves) {
+                total += Volume(box);
+                initial.Encapsulate(box);
+            }
+            double whole = Volume(initial);
+            stats.boxCount = leaves.Count;
+            stats.volumeFraction = whole > 0 ? (float)(total / whole) : 1f;
+            // One merged mesh of all leaves: 8 vertices + 12 triangles per box, indices
+            // offset per leaf — the same shape every other stage consumes.
+            var vertices = new Vector3[leaves.Count * 8];
+            var indices = new int[leaves.Count * 36];
+            int[] faces = { 0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5 };
+            for (int b = 0; b < leaves.Count; ++b) {
+                var box = leaves[b];
+                Vector3 mn = box.min, mx = box.max;
+                int v = b * 8, f = b * 36;
+                vertices[v + 0] = new Vector3(mn.x, mn.y, mn.z); vertices[v + 1] = new Vector3(mx.x, mn.y, mn.z);
+                vertices[v + 2] = new Vector3(mx.x, mx.y, mn.z); vertices[v + 3] = new Vector3(mn.x, mx.y, mn.z);
+                vertices[v + 4] = new Vector3(mn.x, mn.y, mx.z); vertices[v + 5] = new Vector3(mx.x, mn.y, mx.z);
+                vertices[v + 6] = new Vector3(mx.x, mx.y, mx.z); vertices[v + 7] = new Vector3(mn.x, mx.y, mx.z);
+                for (int i = 0; i < 36; ++i) indices[f + i] = v + faces[i];
+            }
+            return new RemeshNative.IndexedMesh { positions = vertices, indices = indices };
+        }
+
+        static double Volume(Bounds box)
+        {
+            var s = box.size;
+            return (double)s.x * s.y * s.z;
+        }
+
+        const int BoxHistogramBins = 32;
+
+        static void SplitRecursive(Vector3[] points, int start, int count, float minGap, List<Bounds> leaves)
+        {
+            var mn = points[start];
+            var mx = mn;
+            for (int i = start + 1; i < start + count; ++i) {
+                mn = Vector3.Min(mn, points[i]);
+                mx = Vector3.Max(mx, points[i]);
+            }
+            var extent = mx - mn;
+            // Widest empty run across the three axes' histograms, in fractions of the
+            // box's own extent on that axis — the split axis is whichever gap wins.
+            float bestGap = 0; int bestAxis = -1, bestSplitBin = 0;
+            var bins = new int[BoxHistogramBins];
+            for (int axis = 0; axis < 3; ++axis) {
+                float size = axis == 0 ? extent.x : axis == 1 ? extent.y : extent.z;
+                if (size <= Mathf.Epsilon) continue;
+                Array.Clear(bins, 0, bins.Length);
+                for (int i = start; i < start + count; ++i) {
+                    float value = axis == 0 ? points[i].x - mn.x : axis == 1 ? points[i].y - mn.y : points[i].z - mn.z;
+                    int bin = Mathf.Clamp((int)(value / size * BoxHistogramBins), 0, BoxHistogramBins - 1);
+                    ++bins[bin];
+                }
+                int run = 0, widest = 0, widestAt = 0;
+                for (int bin = 0; bin < BoxHistogramBins; ++bin) {
+                    if (bins[bin] == 0) { ++run; if (run > widest) { widest = run; widestAt = bin - run + 1; } }
+                    else run = 0;
+                }
+                // Interior runs only: a gap touching either edge is just thin bounds.
+                int gapEnd = widestAt + widest;
+                if (widestAt == 0 || gapEnd == BoxHistogramBins) continue;
+                float gap = widest / (float)BoxHistogramBins;
+                if (gap > bestGap) { bestGap = gap; bestAxis = axis; bestSplitBin = widestAt + widest / 2; }
+            }
+            if (bestAxis < 0 || bestGap < minGap) {
+                leaves.Add(new Bounds { center = (mn + mx) * 0.5f, extents = extent * 0.5f });
+                return;
+            }
+            float axisSize = bestAxis == 0 ? extent.x : bestAxis == 1 ? extent.y : extent.z;
+            float split = (bestAxis == 0 ? mn.x : bestAxis == 1 ? mn.y : mn.z) + axisSize * bestSplitBin / BoxHistogramBins;
+            int left = start, right = start + count - 1;
+            while (left <= right) {
+                float value = bestAxis == 0 ? points[left].x : bestAxis == 1 ? points[left].y : points[left].z;
+                if (value < split) ++left;
+                else { (points[left], points[right]) = (points[right], points[left]); --right; }
+            }
+            int leftCount = left - start;
+            if (leftCount == 0 || leftCount == count) {
+                // Degenerate partition (all points in one bin run) — keep the box tight.
+                leaves.Add(new Bounds { center = (mn + mx) * 0.5f, extents = extent * 0.5f });
+                return;
+            }
+            SplitRecursive(points, start, leftCount, minGap, leaves);
+            SplitRecursive(points, start + leftCount, count - leftCount, minGap, leaves);
         }
 
         async Task RunSimplify(RemeshSettings options, CancellationToken token)

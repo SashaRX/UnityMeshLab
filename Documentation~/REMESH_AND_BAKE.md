@@ -35,7 +35,16 @@ settings, marked "settings changed" in its header) and clears everything after i
    *Bounding box* replace every captured model with its axis-aligned box — a
    far-LOD proxy whose faces still receive the original's materials and baked
    lighting through the normal projection (weld: one box for the whole model;
-   keep-hierarchy: one box per node). SkinnedMeshRenderers are baked at their
+   keep-hierarchy: one box per node), or
+   *Box set* recursively decompose the capture into a union of boxes: every
+   box scans its axes for the widest empty gap between geometry and splits
+   there (a *Split gap* fraction gates the recursion), so L- and T-shaped
+   buildings fall apart into their arms and detached canopies become their
+   own boxes — plain cubes, one mesh instanced by transforms, never special
+   primitives. The stage status reports the box count and the share of the
+   original bounds' volume the boxes cover; the bake projects the original's
+   materials and lighting onto them exactly as onto a single box.
+   SkinnedMeshRenderers are baked at their
    current pose (skinning re-evaluated first — in edit mode it can be stale
    and bake every part at its authored origin) and then captured like static
    meshes; pose the model the way you want it baked. Every contributing submesh

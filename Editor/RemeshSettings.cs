@@ -56,6 +56,10 @@ namespace SashaRX.UnityMeshLab
         /// proxy for far LODs; materials and lighting still bake from the original
         /// geometry, projected onto the box.</summary>
         BoundingBox,
+        /// <summary>Recursive box approximation: split the bounds wherever a wide empty
+        /// gap separates geometry, so L- and T-shapes decompose into a small set of
+        /// boxes (one cube mesh instanced by transforms downstream).</summary>
+        BoxSet,
     }
 
     [Serializable]
@@ -71,6 +75,9 @@ namespace SashaRX.UnityMeshLab
         // What the remesh stage builds from the capture: the voxelized geometry, or a
         // bounding-box proxy per captured model (keep-hierarchy) / for the whole weld.
         public RemeshShape sourceShape = RemeshShape.LOD0;
+        // Box-set shape: the smallest EMPTY gap (fraction of a box's extent) that still
+        // splits it in two; smaller values chase finer protrusions with more boxes.
+        public float boxSplitGap = 0.2f;
         // Keep hierarchy: remesh every captured node SEPARATELY and save the result as a
         // hierarchy of meshes under one root (per-node materials, local transforms kept),
         // instead of welding everything into one _LOD0 mesh with one baked material.

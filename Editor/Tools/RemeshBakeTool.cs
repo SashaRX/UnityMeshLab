@@ -126,12 +126,17 @@ namespace SashaRX.UnityMeshLab
                 if (StageHeader(RemeshPipeline.Stage.Remesh)) {
                     settings.sourceShape = (RemeshShape)EditorGUILayout.EnumPopup(new GUIContent("Shape",
                         "LOD0: voxelize the captured geometry. Bounding box: replace every captured model with its axis-aligned box — a proxy for far LODs; " +
-                        "materials and lighting still bake from the original geometry, projected onto the box."), settings.sourceShape);
+                        "materials and lighting still bake from the original geometry, projected onto the box. Box set: recursively split wherever a wide empty " +
+                        "gap separates geometry, decomposing L- and T-shapes into a small union of boxes."), settings.sourceShape);
+                    if (settings.sourceShape == RemeshShape.BoxSet)
+                        settings.boxSplitGap = EditorGUILayout.Slider(new GUIContent("Split gap",
+                            "The smallest empty gap (a fraction of a box's extent) that still splits it in two. Lower values chase finer protrusions with more boxes."),
+                            settings.boxSplitGap, 0.05f, 0.5f);
                     settings.lod0Only = EditorGUILayout.Toggle(new GUIContent("LOD0 only",
                         "Capture ignores meshes named Name_LOD1 and higher; LODGroups already contribute LOD0 only."), settings.lod0Only);
                     settings.keepHierarchy = EditorGUILayout.Toggle(new GUIContent("Keep hierarchy",
                         "Remesh every renderer SEPARATELY and save the result as a hierarchy of meshes with per-node baked materials under one root, instead of welding everything into one mesh with one material."), settings.keepHierarchy);
-                    using (new EditorGUI.DisabledScope(settings.sourceShape == RemeshShape.BoundingBox)) {
+                    using (new EditorGUI.DisabledScope(settings.sourceShape != RemeshShape.LOD0)) {
                         settings.voxelResolution = EditorGUILayout.IntSlider("Voxel resolution", settings.voxelResolution, 4, 256);
                         settings.solve = EditorGUILayout.Toggle("Fit source surface", settings.solve);
                         settings.shell = EditorGUILayout.Toggle("Two-sided shell", settings.shell);
