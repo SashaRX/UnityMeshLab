@@ -148,7 +148,7 @@ namespace SashaRX.UnityMeshLab
                 probe.bounds = rp.bounds; probe.bounded = true; probe.importance = rp.importance;
                 probe.worldPos = rp.transform.position;
                 probe.boxMin = rp.bounds.min; probe.boxMax = rp.bounds.max;
-                probe.boxProjection = rp.boxProjection != ReflectionProbeBoxProjection.Off;
+                probe.boxProjection = rp.boxProjection;
                 probeList.Add(probe);
             }
             probes = probeList.ToArray();
