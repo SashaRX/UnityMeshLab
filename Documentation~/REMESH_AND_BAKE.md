@@ -34,9 +34,8 @@ settings, marked "settings changed" in its header) and clears everything after i
    their current pose (skinning re-evaluated first — in edit mode it can be stale
    and bake every part at its authored origin) and then captured like static
    meshes; pose the model the way you want it baked. Every contributing submesh
-   needs UV0. Read/Write-disabled imports are read through MeshData, and a run
-   that includes the remesh stage additionally flips the source models' importers
-   to Read/Write enabled for the capture and restores each one to off afterwards.
+   needs UV0. Read/Write-disabled imports are read through MeshData; the source
+   importers are never touched (no reimports).
 2. **Voxel remesh** — voxel resolution (4–256), fit to source surface, two-sided
    shell. Higher resolution preserves smaller gaps but produces a denser,
    uniform intermediate mesh.
@@ -188,8 +187,7 @@ Texture snapshots and Unity mesh/asset APIs stay on the main thread.
   changed)" markers.
 - `Editor/RemeshSource.cs` — `CollectRenderers` (the one filter for both lanes),
   `Capture` (geometry, materials, textures and lightmap references in a given
-  space; `ReadLightmaps`/`ReleaseLightmaps` around a Beauty bake) and
-  `ReadableScope` (Read/Write on for the capture, back off after).
+  space; `ReadLightmaps`/`ReleaseLightmaps` around a Beauty bake).
 - `Editor/RemeshNative.cs` — the P/Invoke bridge and the post-unwrap normal /
   tangent regeneration.
 - `Editor/RemeshBaker.cs` — the CPU projection; `Editor/RemeshBeauty.cs` — the

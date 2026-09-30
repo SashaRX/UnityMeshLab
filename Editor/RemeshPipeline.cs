@@ -148,12 +148,10 @@ namespace SashaRX.UnityMeshLab
             cancellation = new CancellationTokenSource();
             var token = cancellation.Token;
             bool locked = false;
-            RemeshSource.ReadableScope readable = null;
             try {
                 live.Validate(); RemeshNative.CheckAvailable();
                 var options = JsonUtility.FromJson<RemeshSettings>(JsonUtility.ToJson(live));
                 ClearFrom(from);
-                if (from == Stage.Remesh && source) readable = new RemeshSource.ReadableScope(source);
                 EditorApplication.LockReloadAssemblies(); locked = true;
                 for (var stage = from; stage <= to; ++stage) {
                     string key = Key(stage, options, source);
@@ -170,7 +168,6 @@ namespace SashaRX.UnityMeshLab
             catch (OperationCanceledException) { Status = "Cancelled. Source assets were preserved."; return false; }
             catch (Exception e) { Status = e.Message; UvtLog.Error("[Remesh] " + e); return false; }
             finally {
-                readable?.Dispose();
                 cancellation.Dispose(); cancellation = null;
                 if (locked) EditorApplication.UnlockReloadAssemblies();
                 Interlocked.Exchange(ref running, 0); Changed?.Invoke();

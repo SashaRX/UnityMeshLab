@@ -252,44 +252,6 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
-        /// <summary>
-        /// Flips every imported model under root to Read/Write enabled for the capture
-        /// (the fast, friction-free path; non-readable imports would go through MeshData)
-        /// and puts each importer that was off back to off on Dispose — cancel, failure
-        /// and success alike.
-        /// </summary>
-        internal sealed class ReadableScope : IDisposable
-        {
-            readonly List<ModelImporter> touched = new List<ModelImporter>();
-
-            public ReadableScope(GameObject root)
-            {
-                var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var renderer in root.GetComponentsInChildren<Renderer>(true)) {
-                    Mesh mesh = renderer is SkinnedMeshRenderer skin ? skin.sharedMesh
-                        : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
-                    string path = mesh ? AssetDatabase.GetAssetPath(mesh) : null;
-                    if (!string.IsNullOrEmpty(path)) paths.Add(path);
-                }
-                foreach (var path in paths) {
-                    if (!(AssetImporter.GetAtPath(path) is ModelImporter model) || model.isReadable) continue;
-                    model.isReadable = true;
-                    model.SaveAndReimport();
-                    touched.Add(model);
-                }
-            }
-
-            public void Dispose()
-            {
-                foreach (var model in touched) {
-                    if (model == null) continue;
-                    model.isReadable = false;
-                    model.SaveAndReimport();
-                }
-                touched.Clear();
-            }
-        }
-
         // Repo LOD naming is Name_LOD{N} (see the LOD/collision naming rule); anything
         // above LOD0 is a coarser duplicate of what LOD0 already captures.
         internal static bool IsHigherLodName(string name)
