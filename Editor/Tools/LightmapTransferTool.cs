@@ -3880,19 +3880,22 @@ namespace SashaRX.UnityMeshLab
         }
 
         // Puts a source ModelImporter back to the state ExportIsolatedChannelsToFbx's
-        // Phase 1 found it in; a no-op when Phase 1 changed nothing. Disposed at the
-        // method's exit whichever way it leaves.
+        // Phase 1 found it in; a no-op when Phase 1 changed nothing. Created BEFORE
+        // Phase 1 touches the importer and told about each change before the reimport
+        // that applies it, so a throwing SaveAndReimport is covered too. Disposed at
+        // the method's exit whichever way it leaves.
         sealed class ImporterRestoreScope : IDisposable
         {
-            readonly ModelImporter importer;
             readonly string path;
-            readonly bool readable, quads;
+            ModelImporter importer;
+            bool readable, quads;
 
-            public ImporterRestoreScope(ModelImporter importer, string path, bool restoreReadable, bool restoreQuads)
-            {
-                this.importer = importer; this.path = path;
-                readable = restoreReadable; quads = restoreQuads;
-            }
+            public ImporterRestoreScope(string path) { this.path = path; }
+
+            /// <summary>isReadable was flipped on for the export; put it back off.</summary>
+            public void RestoreReadable(ModelImporter source) { importer = source; readable = true; }
+            /// <summary>keepQuads was toggled on for the export; put it back off.</summary>
+            public void RestoreQuads(ModelImporter source) { importer = source; quads = true; }
 
             public void Dispose()
             {
@@ -3978,8 +3981,12 @@ namespace SashaRX.UnityMeshLab
 
             // ── Phase 1: Prepare importer (single reimport, scoped to intent) ──
             ModelImporter srcImporter = null;
-            bool madeReadable = false;
-            bool variantQuadsToggle = false;
+            // Importer contract: the source importer ends the export exactly as
+            // Phase 1 found it — on success, on every early return and on failure
+            // alike, a throwing Phase 1 reimport included. A using declaration
+            // disposes at method exit, so no later phase can strand isReadable or
+            // the variant keepQuads toggle.
+            using var importerRestore = new ImporterRestoreScope(sourceFbxPath);
             if (!isVariantExport)
             {
                 srcImporter = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
@@ -4012,7 +4019,7 @@ namespace SashaRX.UnityMeshLab
                     // the reimport changes nothing about the exported result
                     // except that the authored data now actually lands.
                     if (!srcImporter.isReadable)
-                        { srcImporter.isReadable = true; needsReimport = true; madeReadable = true; }
+                        { srcImporter.isReadable = true; needsReimport = true; importerRestore.RestoreReadable(srcImporter); }
                     // Quad preservation: keepQuads changes only the index-buffer
                     // shape (4 indices per quad instead of two triangles) — the
                     // vertex stream, its order and count, is untouched, so the
@@ -4040,28 +4047,18 @@ namespace SashaRX.UnityMeshLab
                 // importer unchanged (ExportVertexColorsToFbxAs contract). But
                 // the clone serialized in Phase 2 needs the source's quad
                 // topology so the variant FBX does not come out triangulated —
-                // toggle keepQuads on for the clone reimport, restore in Phase 5.
+                // toggle keepQuads on for the clone reimport; importerRestore
+                // puts it back at method exit.
                 srcImporter = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
-                // The main-asset guard keeps the toggle out of the window between
-                // this reimport and the try block below — the early "cannot load
-                // FBX" return in Phase 2 must not strand keepQuads=true on the
-                // source importer with no restore path (Phase 5 is try-scoped).
                 if (srcImporter != null && !srcImporter.keepQuads &&
                     AssetDatabase.LoadMainAssetAtPath(sourceFbxPath) != null)
                 {
                     srcImporter.keepQuads = true;
+                    importerRestore.RestoreQuads(srcImporter);
                     Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
                     srcImporter.SaveAndReimport();
-                    variantQuadsToggle = true;
                 }
             }
-
-            // Importer contract: the source importer ends the export exactly as
-            // Phase 1 found it — on success, on every early return and on failure
-            // alike. A using declaration disposes at method exit, so no later
-            // phase can strand isReadable or the variant keepQuads toggle.
-            using var importerRestore = new ImporterRestoreScope(srcImporter, sourceFbxPath,
-                restoreReadable: madeReadable, restoreQuads: variantQuadsToggle);
 
             // ── Phase 2: Build export hierarchy ──
             var fbxAsset = AssetDatabase.LoadMainAssetAtPath(sourceFbxPath) as GameObject;

@@ -322,8 +322,10 @@ imported with `keepQuads = true`:
 * **Variant exports** (`ExportVertexColorsToFbxAs`) — the source importer
   must end the export unchanged, so `keepQuads` is toggled on only for the
   clone reimport and restored by `ImporterRestoreScope` at method exit —
-  success, every early return and failure alike (the same scope puts
-  `isReadable` back for source re-saves). The new variant file's own importer
+  success, every early return and failure alike, a throwing Phase 1 reimport
+  included: the scope is created before Phase 1 and told about each change
+  before the reimport that applies it (the same scope puts `isReadable` back
+  for source re-saves). The new variant file's own importer
   gets `keepQuads` pinned in Phase 4 so its project view matches the file.
 * **Wide LOD-rebuild path** — already locks `keepQuads` via
   `PrepareImportSettings(lockForFbxOverwrite: true)` before export. Its
