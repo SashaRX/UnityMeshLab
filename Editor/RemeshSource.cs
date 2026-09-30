@@ -147,36 +147,52 @@ namespace SashaRX.UnityMeshLab
             string[] warnings;
             using (var reader = new Reader()) {
                 foreach (var renderer in renderers) {
-                    // A skinned source is baked at its current pose into a fresh runtime
-                    // mesh. BakeMesh bakes the LAST EVALUATED skinning, which in edit mode
-                    // can predate the current bone transforms — every part then lands at
-                    // its authored origin instead of its posed place, so the bone list is
-                    // reassigned first to mark the skinning dirty and force a re-evaluation.
-                    // The result stays in the renderer's local space with no transform
-                    // scale, and the shared path below applies the transform exactly once,
-                    // like a static mesh under the same node.
-                    Mesh mesh;
-                    if (renderer is SkinnedMeshRenderer skin) {
-                        mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
-                        var bones = skin.bones;
-                        skin.bones = Array.Empty<Transform>();
-                        skin.bones = bones;
-                        skin.BakeMesh(mesh);
-                        if (skin.sharedMesh) mesh.name = skin.sharedMesh.name;
-                    }
-                    else if (renderer is MeshRenderer) {
-                        var filter = renderer.GetComponent<MeshFilter>();
-                        if (!filter || !filter.sharedMesh) continue;
-                        // An Instantiate clone of a Read/Write-disabled import carries no CPU data,
-                        // but editor code can still read the imported asset; copy from that.
-                        mesh = UvCanvasView.MakeReadableCopy(filter.sharedMesh);
-                    }
-                    else continue;
+                    // One hostile mesh (line submeshes, no UV0, an unreadable import)
+                    // must cost its own exclusion, never the whole scene-block capture:
+                    // every renderer is isolated, and recoverable offenders degrade to
+                    // a warning + skip.
+                    Mesh mesh = null;
                     try {
+                        // A skinned source is baked at its current pose into a fresh runtime
+                        // mesh. BakeMesh bakes the LAST EVALUATED skinning, which in edit mode
+                        // can predate the current bone transforms — every part then lands at
+                        // its authored origin instead of its posed place, so the bone list is
+                        // reassigned first to mark the skinning dirty and force a re-evaluation.
+                        // The result stays in the renderer's local space with no transform
+                        // scale, and the shared path below applies the transform exactly once,
+                        // like a static mesh under the same node.
+                        if (renderer is SkinnedMeshRenderer skin) {
+                            mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
+                            var bones = skin.bones;
+                            skin.bones = Array.Empty<Transform>();
+                            skin.bones = bones;
+                            skin.BakeMesh(mesh);
+                            if (skin.sharedMesh) mesh.name = skin.sharedMesh.name;
+                        }
+                        else if (renderer is MeshRenderer) {
+                            var filter = renderer.GetComponent<MeshFilter>();
+                            if (!filter || !filter.sharedMesh) continue;
+                            // An Instantiate clone of a Read/Write-disabled import carries no CPU data,
+                            // but editor code can still read the imported asset; copy from that.
+                            mesh = UvCanvasView.MakeReadableCopy(filter.sharedMesh);
+                        }
+                        else continue;
+                        // Non-triangle submeshes (curtain lines, quad exports) drop out of the
+                        // capture; the renderer survives on its triangle submeshes alone and is
+                        // skipped with a warning when none remain.
+                        int triangleSubmeshes = 0;
                         for (int sub = 0; sub < mesh.subMeshCount; ++sub)
-                            if (mesh.GetTopology(sub) != MeshTopology.Triangles) throw new InvalidOperationException(renderer.name + ": only triangle meshes are supported.");
-                        if (mesh.uv.Length != mesh.vertexCount)
-                            throw new InvalidOperationException(renderer.name + " needs source UV0 for material transfer.");
+                            if (mesh.GetTopology(sub) == MeshTopology.Triangles) ++triangleSubmeshes;
+                        if (triangleSubmeshes == 0) {
+                            reader.warnings.Add(renderer.name + ": no triangle submeshes, skipped.");
+                            continue;
+                        }
+                        if (triangleSubmeshes < mesh.subMeshCount)
+                            reader.warnings.Add(renderer.name + ": " + (mesh.subMeshCount - triangleSubmeshes) + " non-triangle submesh(es) skipped.");
+                        if (mesh.uv.Length != mesh.vertexCount) {
+                            reader.warnings.Add(renderer.name + ": no source UV0 for material transfer, skipped.");
+                            continue;
+                        }
                         if (mesh.normals.Length != mesh.vertexCount) mesh.RecalculateNormals();
                         if (mesh.tangents.Length != mesh.vertexCount) mesh.RecalculateTangents();
                         var p = mesh.vertices; var n = mesh.normals; var t = mesh.tangents;
@@ -220,6 +236,7 @@ namespace SashaRX.UnityMeshLab
                         else for (int i = 0; i < p.Length; ++i) colors.Add(Color.white);
                         var shared = renderer.sharedMaterials;
                         for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                            if (mesh.GetTopology(sub) != MeshTopology.Triangles) continue;
                             if (sub >= shared.Length || !shared[sub]) throw new InvalidOperationException(renderer.name + " has a missing material.");
                             if (!materialIds.TryGetValue(shared[sub], out int material)) {
                                 material = materials.Count;
@@ -235,7 +252,10 @@ namespace SashaRX.UnityMeshLab
                             }
                         }
                     }
-                    finally { Object.DestroyImmediate(mesh); }
+                    catch (InvalidOperationException e) {
+                        reader.warnings.Add(renderer.name + ": " + e.Message + " Skipped.");
+                    }
+                    finally { if (mesh) Object.DestroyImmediate(mesh); }
                 }
                 warnings = reader.warnings.ToArray();
             }

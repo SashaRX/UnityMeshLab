@@ -1216,8 +1216,39 @@ namespace SashaRX.UnityMeshLab
         {
             var dst = new Mesh();
             dst.indexFormat = src.indexFormat;
-            if (!src.isReadable)
-                return MakeReadableCopyFromMeshData(src, dst);
+            if (!src.isReadable) {
+                try {
+                    return MakeReadableCopyFromMeshData(src, dst);
+                }
+                catch (Exception e) when (e.Message != null && e.Message.IndexOf("isReadable", StringComparison.OrdinalIgnoreCase) >= 0) {
+                    // Unity 6000.2's read-only MeshData still refuses some Read/Write-disabled
+                    // imports. The only sanctioned read left is through the importer itself:
+                    // flip THIS file's Read/Write for the read and put it back afterwards —
+                    // a reimport pair only for files the MeshData path cannot serve, never
+                    // for the readable or MeshData-served majority.
+                    string path = AssetDatabase.GetAssetPath(src);
+                    if (!(AssetImporter.GetAtPath(path) is ModelImporter model))
+                        throw new InvalidOperationException(src.name + " is Read/Write-disabled with no importer to read it through; enable Read/Write on its import or drop it from the capture.", e);
+                    model.isReadable = true;
+                    model.SaveAndReimport();
+                    try {
+                        FillReadableCopy(src, dst);
+                        return dst;
+                    }
+                    finally {
+                        if (AssetImporter.GetAtPath(path) is ModelImporter restore) {
+                            restore.isReadable = false;
+                            restore.SaveAndReimport();
+                        }
+                    }
+                }
+            }
+            FillReadableCopy(src, dst);
+            return dst;
+        }
+
+        static void FillReadableCopy(Mesh src, Mesh dst)
+        {
             dst.SetVertices(new List<Vector3>(src.vertices));
             if (src.normals != null && src.normals.Length > 0) dst.SetNormals(new List<Vector3>(src.normals));
             if (src.tangents != null && src.tangents.Length > 0) dst.SetTangents(new List<Vector4>(src.tangents));
@@ -1248,7 +1279,6 @@ namespace SashaRX.UnityMeshLab
             dst.subMeshCount = src.subMeshCount;
             for (int s = 0; s < src.subMeshCount; s++) dst.SetTriangles(src.GetTriangles(s), s);
             dst.bounds = src.bounds;
-            return dst;
         }
 
         // The classic vertex getters log "Not allowed to access" and return EMPTY arrays
