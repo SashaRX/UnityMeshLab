@@ -7,6 +7,7 @@ using Object = UnityEngine.Object;
 namespace SashaRX.UnityMeshLab
 {
     // All Unity objects are read on the main thread. Workers only see these snapshots.
+    // Geometry is expressed in the capture space (the source root or a hierarchy node).
     internal sealed class RemeshSource
     {
         public Vector3[] positions, normals;
@@ -66,16 +67,20 @@ namespace SashaRX.UnityMeshLab
             public bool smoothnessFromAlbedo;
         }
 
+        /// <summary>The whole subtree under root welded into one snapshot in root-local space.</summary>
         public static RemeshSource Capture(GameObject root, bool lod0Only)
         {
             if (!root) throw new ArgumentException("Select a source root.");
-            var excluded = new HashSet<Renderer>();
-            foreach (var group in root.GetComponentsInChildren<LODGroup>()) {
-                var lods = group.GetLODs();
-                var first = new HashSet<Renderer>(lods.Length > 0 ? lods[0].renderers : Array.Empty<Renderer>());
-                for (int l = 1; l < lods.Length; ++l)
-                    foreach (var r in lods[l].renderers) if (!first.Contains(r)) excluded.Add(r);
-            }
+            return Capture(root.transform.worldToLocalMatrix, CollectRenderers(root, lod0Only));
+        }
+
+        /// <summary>
+        /// Snapshot of the given renderers expressed in the space whose world→local
+        /// matrix is worldToSpace. Returns null when they contribute no triangles and
+        /// required is false; throws otherwise.
+        /// </summary>
+        public static RemeshSource Capture(Matrix4x4 worldToSpace, IList<Renderer> renderers, bool required = true)
+        {
             var positions = new List<Vector3>(); var normals = new List<Vector3>();
             var tangents = new List<Vector4>(); var uv = new List<Vector2>(); var colors = new List<Color>();
             var uv2 = new List<Vector2>();
@@ -87,17 +92,15 @@ namespace SashaRX.UnityMeshLab
             var lightmapIds = new Dictionary<(Texture2D, Texture2D, Vector4), int>();
             string[] warnings;
             using (var reader = new Reader()) {
-                foreach (var renderer in root.GetComponentsInChildren<Renderer>()) {
-                    if (!renderer.enabled || excluded.Contains(renderer) || MeshHygieneUtility.IsCollisionNodeName(renderer.name)) continue;
-                    if (lod0Only && IsHigherLodName(renderer.name)) continue;
+                foreach (var renderer in renderers) {
                     // A skinned source is baked at its current pose into a fresh runtime
                     // mesh. BakeMesh bakes the LAST EVALUATED skinning, which in edit mode
                     // can predate the current bone transforms — every part then lands at
                     // its authored origin instead of its posed place, so the bone list is
                     // reassigned first to mark the skinning dirty and force a re-evaluation.
                     // The result stays in the renderer's local space with no transform
-                    // scale, and the shared root-local path below applies the transform
-                    // exactly once, like a static mesh under the same node.
+                    // scale, and the shared path below applies the transform exactly once,
+                    // like a static mesh under the same node.
                     Mesh mesh;
                     if (renderer is SkinnedMeshRenderer skin) {
                         mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
@@ -105,8 +108,6 @@ namespace SashaRX.UnityMeshLab
                         skin.bones = Array.Empty<Transform>();
                         skin.bones = bones;
                         skin.BakeMesh(mesh);
-                        // A baked runtime mesh is nameless; carry the asset name so the
-                        // LOD filter below sees the same _LOD{n} suffix as static meshes.
                         if (skin.sharedMesh) mesh.name = skin.sharedMesh.name;
                     }
                     else if (renderer is MeshRenderer) {
@@ -118,8 +119,6 @@ namespace SashaRX.UnityMeshLab
                     }
                     else continue;
                     try {
-                        if (lod0Only && IsHigherLodName(mesh.name)) continue;
-                        if (MeshHygieneUtility.IsCollisionNodeName(mesh.name)) continue;
                         for (int sub = 0; sub < mesh.subMeshCount; ++sub)
                             if (mesh.GetTopology(sub) != MeshTopology.Triangles) throw new InvalidOperationException(renderer.name + ": only triangle meshes are supported.");
                         if (mesh.uv.Length != mesh.vertexCount)
@@ -128,7 +127,7 @@ namespace SashaRX.UnityMeshLab
                         if (mesh.tangents.Length != mesh.vertexCount) mesh.RecalculateTangents();
                         var p = mesh.vertices; var n = mesh.normals; var t = mesh.tangents;
                         if (t.Length != p.Length) throw new InvalidOperationException(renderer.name + " has no valid tangent frame.");
-                        var transform = root.transform.worldToLocalMatrix * renderer.localToWorldMatrix;
+                        var transform = worldToSpace * renderer.localToWorldMatrix;
                         if (Mathf.Abs(transform.determinant) < 1e-12f) throw new InvalidOperationException("Zero-scale source transform.");
                         var normalTransform = transform.inverse.transpose;
                         float sign = transform.determinant < 0 ? -1 : 1;
@@ -185,7 +184,10 @@ namespace SashaRX.UnityMeshLab
                 }
                 warnings = reader.warnings.ToArray();
             }
-            if (indices.Count == 0) throw new InvalidOperationException("No source triangles found.");
+            if (indices.Count == 0) {
+                if (!required) return null;
+                throw new InvalidOperationException("No source triangles found.");
+            }
             var bounds = new Bounds(positions[0], Vector3.zero);
             foreach (var p in positions) bounds.Encapsulate(p);
             if (bounds.size.magnitude <= 1e-8f) throw new InvalidOperationException("Source bounds are empty.");
@@ -193,6 +195,75 @@ namespace SashaRX.UnityMeshLab
                 uv = uv.ToArray(), uv2 = uv2.ToArray(), colors = colors.ToArray(), hasColors = hasColors, indices = indices.ToArray(), faceMaterials = faces.ToArray(),
                 faceLightmaps = faceLightmaps.ToArray(), lightmaps = lightmaps.ToArray(), materials = materials.ToArray(),
                 diagonal = bounds.size.magnitude, warnings = warnings };
+        }
+
+        /// <summary>
+        /// The renderers a capture of root contributes, in hierarchy order: enabled
+        /// MeshRenderers with a mesh and SkinnedMeshRenderers, minus LODGroup levels above
+        /// LOD0, collision nodes (`_COL`, `_COL_Hull{N}`, … on the node or the mesh asset)
+        /// and, with lod0Only, `Name_LOD1`-and-higher names on either. The weld and the
+        /// keep-hierarchy node list both come from here, so they agree by construction.
+        /// </summary>
+        internal static List<Renderer> CollectRenderers(GameObject root, bool lod0Only)
+        {
+            var excluded = new HashSet<Renderer>();
+            foreach (var group in root.GetComponentsInChildren<LODGroup>()) {
+                var lods = group.GetLODs();
+                var first = new HashSet<Renderer>(lods.Length > 0 ? lods[0].renderers : Array.Empty<Renderer>());
+                for (int l = 1; l < lods.Length; ++l)
+                    foreach (var r in lods[l].renderers) if (!first.Contains(r)) excluded.Add(r);
+            }
+            var result = new List<Renderer>();
+            foreach (var renderer in root.GetComponentsInChildren<Renderer>()) {
+                if (!renderer.enabled || excluded.Contains(renderer)) continue;
+                Mesh mesh;
+                if (renderer is SkinnedMeshRenderer skin) mesh = skin.sharedMesh;
+                else if (renderer is MeshRenderer && renderer.TryGetComponent<MeshFilter>(out var filter)) mesh = filter.sharedMesh;
+                else continue;
+                if (!mesh) continue;
+                if (MeshHygieneUtility.IsCollisionNodeName(renderer.name) || MeshHygieneUtility.IsCollisionNodeName(mesh.name)) continue;
+                if (lod0Only && (IsHigherLodName(renderer.name) || IsHigherLodName(mesh.name))) continue;
+                result.Add(renderer);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Flips every imported model under root to Read/Write enabled for the capture
+        /// (the fast, friction-free path; non-readable imports would go through MeshData)
+        /// and puts each importer that was off back to off on Dispose — cancel, failure
+        /// and success alike.
+        /// </summary>
+        internal sealed class ReadableScope : IDisposable
+        {
+            readonly List<ModelImporter> touched = new List<ModelImporter>();
+
+            public ReadableScope(GameObject root)
+            {
+                var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var renderer in root.GetComponentsInChildren<Renderer>(true)) {
+                    Mesh mesh = renderer is SkinnedMeshRenderer skin ? skin.sharedMesh
+                        : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
+                    string path = mesh ? AssetDatabase.GetAssetPath(mesh) : null;
+                    if (!string.IsNullOrEmpty(path)) paths.Add(path);
+                }
+                foreach (var path in paths) {
+                    if (!(AssetImporter.GetAtPath(path) is ModelImporter model) || model.isReadable) continue;
+                    model.isReadable = true;
+                    model.SaveAndReimport();
+                    touched.Add(model);
+                }
+            }
+
+            public void Dispose()
+            {
+                foreach (var model in touched) {
+                    if (model == null) continue;
+                    model.isReadable = false;
+                    model.SaveAndReimport();
+                }
+                touched.Clear();
+            }
         }
 
         // Repo LOD naming is Name_LOD{N} (see the LOD/collision naming rule); anything

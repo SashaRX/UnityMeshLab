@@ -4,8 +4,8 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab.Tests.Editor
 {
-    /// <summary>Keep-hierarchy remesh: the per-node capture scope (RemeshBakeTool's renderer
-    /// collection) and the settings plumbing. Native remeshing itself is covered by the
+    /// <summary>Keep-hierarchy remesh: the renderer collection shared by the weld capture and the
+    /// per-node scope, and the settings plumbing. Native remeshing itself is covered by the
     /// Native~ ctest battery and the DllNotFoundException-skipping stage tests.</summary>
     public sealed class RemeshHierarchyTests
     {
@@ -19,9 +19,10 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
         }
 
         [Test]
-        public void CollectHierarchyRenderers_FollowsTheWeldCaptureFilters()
+        public void CollectRenderers_AppliesTheCaptureFilters()
         {
             var mesh = TriangleMesh();
+            var collisionMesh = TriangleMesh(); collisionMesh.name = "Body_COL";
             var root = new GameObject("Root");
             try {
                 var body = new GameObject("Body");
@@ -45,14 +46,40 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                 var hidden = inactive.AddComponent<MeshRenderer>();
                 hidden.enabled = false;
 
-                var collected = RemeshBakeTool.CollectHierarchyRenderers(root, lod0Only: true);
+                // A normally named object carrying a collision mesh asset is filtered
+                // by the mesh name, exactly like the weld capture does.
+                var hull = new GameObject("Hull");
+                hull.transform.SetParent(root.transform);
+                hull.AddComponent<MeshFilter>().sharedMesh = collisionMesh;
+                hull.AddComponent<MeshRenderer>();
+
+                var collected = RemeshSource.CollectRenderers(root, lod0Only: true);
                 Assert.AreEqual(1, collected.Count, "only the enabled LOD0 non-collision renderer is a node");
                 Assert.AreEqual(body.transform, collected[0].transform);
 
-                var withLods = RemeshBakeTool.CollectHierarchyRenderers(root, lod0Only: false);
-                Assert.AreEqual(2, withLods.Count, "lod0Only=false still excludes the collision node and the disabled renderer");
+                var withLods = RemeshSource.CollectRenderers(root, lod0Only: false);
+                Assert.AreEqual(2, withLods.Count, "lod0Only=false still excludes the collision nodes and the disabled renderer");
             }
-            finally { Object.DestroyImmediate(root); Object.DestroyImmediate(mesh); }
+            finally { Object.DestroyImmediate(root); Object.DestroyImmediate(mesh); Object.DestroyImmediate(collisionMesh); }
+        }
+
+        [Test]
+        public void BakeScaleIntoMesh_MirrorsWindingAndHandednessAndRefreshesBounds()
+        {
+            var mesh = TriangleMesh();
+            mesh.tangents = new[] { new Vector4(1, 0, 0, 1), new Vector4(1, 0, 0, 1), new Vector4(1, 0, 0, 1) };
+            try {
+                RemeshExporter.BakeScaleIntoMesh(mesh, new Vector3(-2, 3, 1));
+                Assert.AreEqual(new Vector3(-2, 0, 0), mesh.vertices[1]);
+                Assert.AreEqual(new Vector3(0, 3, 0), mesh.vertices[2]);
+                Assert.AreEqual(new Vector3(-2, 3, 0) * 0.5f, mesh.bounds.center, "bounds follow the scaled vertices");
+                Assert.AreEqual(new[] { 0, 2, 1 }, mesh.triangles, "a mirroring scale flips the winding");
+                var t = mesh.tangents[0];
+                Assert.AreEqual(-1f, t.x, 1e-5f, "tangents take the forward scale");
+                Assert.AreEqual(-1f, t.w, "and the handedness flips with the mirror");
+                Assert.AreEqual(1f, Mathf.Abs(Vector3.Dot(mesh.normals[0], Vector3.forward)), 1e-5f);
+            }
+            finally { Object.DestroyImmediate(mesh); }
         }
 
         [Test]
