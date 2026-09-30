@@ -47,6 +47,17 @@ namespace SashaRX.UnityMeshLab
         Beauty,
     }
 
+    /// <summary>What the remesh stage builds from the captured source.</summary>
+    public enum RemeshShape
+    {
+        /// <summary>Voxelize the captured geometry (the default remesh).</summary>
+        LOD0,
+        /// <summary>Replace every captured model with its axis-aligned bounding box — a
+        /// proxy for far LODs; materials and lighting still bake from the original
+        /// geometry, projected onto the box.</summary>
+        BoundingBox,
+    }
+
     [Serializable]
     public sealed class RemeshSettings
     {
@@ -57,6 +68,9 @@ namespace SashaRX.UnityMeshLab
         // Source capture: skip meshes named Name_LOD1 and higher (LODGroups already
         // contribute LOD0 only).
         public bool lod0Only = true;
+        // What the remesh stage builds from the capture: the voxelized geometry, or a
+        // bounding-box proxy per captured model (keep-hierarchy) / for the whole weld.
+        public RemeshShape sourceShape = RemeshShape.LOD0;
         // Keep hierarchy: remesh every captured node SEPARATELY and save the result as a
         // hierarchy of meshes under one root (per-node materials, local transforms kept),
         // instead of welding everything into one _LOD0 mesh with one baked material.

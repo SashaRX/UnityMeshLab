@@ -30,8 +30,13 @@ settings, marked "settings changed" in its header) and clears everything after i
    holds until the selection changes. Active/enabled MeshRenderers under it are
    combined in root-local coordinates; LODGroups contribute LOD0 only, collision
    nodes are excluded, and **LOD0 only** (default on) skips meshes named
-   `Name_LOD1` and higher wherever they sit. SkinnedMeshRenderers are baked at
-   their current pose (skinning re-evaluated first — in edit mode it can be stale
+   `Name_LOD1` and higher wherever they sit. **Shape** picks what the remesh
+   stage builds from the capture: *LOD0* voxelize the geometry (the default), or
+   *Bounding box* replace every captured model with its axis-aligned box — a
+   far-LOD proxy whose faces still receive the original's materials and baked
+   lighting through the normal projection (weld: one box for the whole model;
+   keep-hierarchy: one box per node). SkinnedMeshRenderers are baked at their
+   current pose (skinning re-evaluated first — in edit mode it can be stale
    and bake every part at its authored origin) and then captured like static
    meshes; pose the model the way you want it baked. Every contributing submesh
    needs UV0. Read/Write-disabled imports are read through MeshData; the source

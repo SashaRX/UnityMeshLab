@@ -124,13 +124,18 @@ namespace SashaRX.UnityMeshLab
                     if (GUILayout.Button("Run all stages", GUILayout.Height(26))) Start(RemeshPipeline.Stage.Bake, true);
 
                 if (StageHeader(RemeshPipeline.Stage.Remesh)) {
+                    settings.sourceShape = (RemeshShape)EditorGUILayout.EnumPopup(new GUIContent("Shape",
+                        "LOD0: voxelize the captured geometry. Bounding box: replace every captured model with its axis-aligned box — a proxy for far LODs; " +
+                        "materials and lighting still bake from the original geometry, projected onto the box."), settings.sourceShape);
                     settings.lod0Only = EditorGUILayout.Toggle(new GUIContent("LOD0 only",
                         "Capture ignores meshes named Name_LOD1 and higher; LODGroups already contribute LOD0 only."), settings.lod0Only);
                     settings.keepHierarchy = EditorGUILayout.Toggle(new GUIContent("Keep hierarchy",
                         "Remesh every renderer SEPARATELY and save the result as a hierarchy of meshes with per-node baked materials under one root, instead of welding everything into one mesh with one material."), settings.keepHierarchy);
-                    settings.voxelResolution = EditorGUILayout.IntSlider("Voxel resolution", settings.voxelResolution, 4, 256);
-                    settings.solve = EditorGUILayout.Toggle("Fit source surface", settings.solve);
-                    settings.shell = EditorGUILayout.Toggle("Two-sided shell", settings.shell);
+                    using (new EditorGUI.DisabledScope(settings.sourceShape == RemeshShape.BoundingBox)) {
+                        settings.voxelResolution = EditorGUILayout.IntSlider("Voxel resolution", settings.voxelResolution, 4, 256);
+                        settings.solve = EditorGUILayout.Toggle("Fit source surface", settings.solve);
+                        settings.shell = EditorGUILayout.Toggle("Two-sided shell", settings.shell);
+                    }
                     StageButton(RemeshPipeline.Stage.Remesh, "Remesh");
                 }
                 if (StageHeader(RemeshPipeline.Stage.Simplify)) {

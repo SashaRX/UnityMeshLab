@@ -112,7 +112,7 @@ namespace SashaRX.UnityMeshLab
         public static string Key(Stage stage, RemeshSettings s, GameObject source)
         {
             switch (stage) {
-                case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}";
+                case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|{s.sourceShape}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
@@ -213,13 +213,21 @@ namespace SashaRX.UnityMeshLab
                 if (captures.Count == 0) throw new InvalidOperationException("Every captured node was empty; nothing to remesh.");
             }
             long sourceTriangles = 0, resultTriangles = 0; int warnings = 0;
+            bool box = options.sourceShape == RemeshShape.BoundingBox;
             for (int i = 0; i < captures.Count; ++i) {
                 var node = captures[i];
                 foreach (var warning in node.source.warnings) { UvtLog.Warn("[Remesh] " + warning); ++warnings; }
                 token.ThrowIfCancellationRequested();
-                Report(hierarchy ? $"Voxel remeshing {node.name} ({i + 1}/{captures.Count})…" : "Voxel remeshing…");
+                Report(hierarchy
+                    ? (box ? $"Bounding {node.name} ({i + 1}/{captures.Count})…" : $"Voxel remeshing {node.name} ({i + 1}/{captures.Count})…")
+                    : (box ? "Building the bounding-box proxy…" : "Voxel remeshing…"));
                 var captured = node.source;
-                node.voxel = await Task.Run(() => RemeshNative.Voxelize(captured.positions, captured.indices, options, token), token);
+                // The bounding-box shape replaces the voxelizer with the capture's own
+                // AABB — a far-LOD proxy; materials and lighting still bake from the
+                // captured geometry, projected onto the box downstream.
+                node.voxel = await Task.Run(() => box
+                    ? BoxMesh(captured.positions)
+                    : RemeshNative.Voxelize(captured.positions, captured.indices, options, token), token);
                 sourceTriangles += captured.indices.Length / 3;
                 resultTriangles += node.voxel.TriangleCount;
             }
@@ -230,8 +238,22 @@ namespace SashaRX.UnityMeshLab
                 primary.source.normals, primary.source.hasColors ? primary.source.colors : null);
             voxelMesh = BuildMesh(ResultName + "_Voxel", primary.voxel.positions, primary.voxel.indices);
             Status = (hierarchy ? $"Remesh: {nodes.Count} node(s), " : "Remesh: ") +
-                $"{sourceTriangles:N0} → {resultTriangles:N0} triangles." +
+                $"{sourceTriangles:N0} → {resultTriangles:N0} triangles" + (box ? " (bounding box)." : ".") +
                 (warnings > 0 ? $" {warnings} material warning(s), see Console." : "");
+        }
+
+        // Axis-aligned box mesh around a point cloud — the Bounding-box remesh shape.
+        // Outward winding, capture-space in and out.
+        internal static RemeshNative.IndexedMesh BoxMesh(Vector3[] positions)
+        {
+            Vector3 mn = positions[0], mx = positions[0];
+            foreach (var p in positions) { mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p); }
+            var corners = new[] {
+                new Vector3(mn.x, mn.y, mn.z), new Vector3(mx.x, mn.y, mn.z), new Vector3(mx.x, mx.y, mn.z), new Vector3(mn.x, mx.y, mn.z),
+                new Vector3(mn.x, mn.y, mx.z), new Vector3(mx.x, mn.y, mx.z), new Vector3(mx.x, mx.y, mx.z), new Vector3(mn.x, mx.y, mx.z),
+            };
+            int[] faces = { 0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5 };
+            return new RemeshNative.IndexedMesh { positions = corners, indices = faces };
         }
 
         async Task RunSimplify(RemeshSettings options, CancellationToken token)
