@@ -13,8 +13,9 @@ namespace SashaRX.UnityMeshLab
     /// BVH), baked lightmaps (decoded to linear at readback — RGBM on desktop, direct
     /// HDR), the ambient probe (evaluated by Unity itself into a direction grid the
     /// workers interpolate) and reflection probes (equirectangular readbacks).
-    /// Everything is pre-transformed into the source root's local space so workers
-    /// stay in the capture's coordinate system. Baked-only lights are skipped — their
+    /// Scene data stays in world space; queries take capture-space points and normals
+    /// and convert through the bound space matrix, so one snapshot serves the weld and
+    /// every keep-hierarchy node (ForSpace). Baked-only lights are skipped — their
     /// contribution already lives in the lightmap, so nothing is counted twice.
     /// </summary>
     internal sealed class RemeshBeauty
@@ -46,14 +47,18 @@ namespace SashaRX.UnityMeshLab
         struct Directional { public Vector3 dir; public Color color; public float shadowStrength; }
         struct Local
         {
-            public Vector3 pos, axis;         // spot axis in local space (axis used when spot)
+            public Vector3 pos, axis;         // world space (axis used when spot)
             public Color color;
-            public float rangeSqr, range, innerCos, outerCos;
+            public float rangeSqr, range, innerCos, outerCos, shadowStrength;
             public bool spot;
         }
 
         const int AmbientW = 32, AmbientH = 16;
 
+        // Scene data lives in WORLD space; every query converts its capture-space
+        // point/normal through localToWorld first, so one snapshot serves the weld and
+        // every keep-hierarchy node alike (see ForSpace) and light ranges, distances and
+        // attenuation all stay in the same units whatever the source root's scale.
         readonly Directional[] directionals = Array.Empty<Directional>();
         readonly Local[] locals = Array.Empty<Local>();
         readonly Probe[] probes;
@@ -61,17 +66,16 @@ namespace SashaRX.UnityMeshLab
         readonly Color[] ambientGrid;         // evaluated by Unity on the main thread
         readonly bool flatAmbient, trilightAmbient;
         readonly Color ambientFlat, ambientSky, ambientEquator, ambientGround;
-        readonly Vector3 viewPosition;        // local space; specular is baked for this vantage
-        readonly Matrix4x4 localToWorld;
-        TriangleBvh bvh;                      // bound by the bake before workers run
+        readonly Vector3 viewPosition;        // world space; specular is baked for this vantage
+        Matrix4x4 localToWorld, worldToLocal;
+        TriangleBvh bvh;                      // capture-space source BVH, bound by the bake before workers run
         float shadowEpsilon;
 
-        /// <summary>Capture the lighting environment around root. Main thread only.</summary>
+        /// <summary>Capture the lighting environment around root for geometry expressed in
+        /// root-local space. Main thread only.</summary>
         internal RemeshBeauty(GameObject root, float sourceDiagonal)
         {
-            var rootTransform = root.transform;
-            Matrix4x4 worldToLocal = rootTransform.worldToLocalMatrix;
-            localToWorld = rootTransform.localToWorldMatrix;
+            SetSpace(root.transform.localToWorldMatrix, sourceDiagonal);
 
             var dirList = new List<Directional>();
             var locList = new List<Local>();
@@ -81,24 +85,23 @@ namespace SashaRX.UnityMeshLab
                 // double-count. URP has no subtractive mode, so Mixed direct is realtime.
                 if (light.bakingOutput.lightmapBakeType == LightmapBakeType.Baked) continue;
                 Color color = light.color.linear * light.intensity;
+                float shadowStrength = light.shadows == LightShadows.None ? 0f : light.shadowStrength;
                 if (light.type == LightType.Directional) {
                     dirList.Add(new Directional {
-                        dir = worldToLocal.MultiplyVector(-(light.transform.rotation * Vector3.forward)).normalized,
-                        color = color,
-                        shadowStrength = light.shadows == LightShadows.None ? 0f : light.shadowStrength,
+                        dir = -(light.transform.rotation * Vector3.forward).normalized,
+                        color = color, shadowStrength = shadowStrength,
                     });
                 }
                 else if (light.type == LightType.Point) {
-                    locList.Add(new Local { pos = worldToLocal.MultiplyPoint3x4(light.transform.position),
-                        color = color, rangeSqr = light.range * light.range, range = light.range });
+                    locList.Add(new Local { pos = light.transform.position, color = color,
+                        rangeSqr = light.range * light.range, range = light.range, shadowStrength = shadowStrength });
                 }
                 else if (light.type == LightType.Spot) {
                     float outer = light.spotAngle * 0.5f * Mathf.Deg2Rad;
                     float inner = Mathf.Min(light.innerSpotAngle * 0.5f * Mathf.Deg2Rad, outer - 1e-4f);
-                    locList.Add(new Local { pos = worldToLocal.MultiplyPoint3x4(light.transform.position),
-                        axis = worldToLocal.MultiplyVector(light.transform.forward).normalized,
+                    locList.Add(new Local { pos = light.transform.position, axis = light.transform.forward.normalized,
                         color = color, rangeSqr = light.range * light.range, range = light.range,
-                        innerCos = Mathf.Cos(inner), outerCos = Mathf.Cos(outer), spot = true });
+                        innerCos = Mathf.Cos(inner), outerCos = Mathf.Cos(outer), spot = true, shadowStrength = shadowStrength });
                 }
             }
             directionals = dirList.ToArray();
@@ -157,36 +160,56 @@ namespace SashaRX.UnityMeshLab
             // when one is open, else a three-quarter view of the object.
             var sceneCamera = SceneView.lastActiveSceneView != null ? SceneView.lastActiveSceneView.camera : null;
             Bounds world = ComputeWorldBounds(root);
-            Vector3 viewWorld = sceneCamera != null
+            viewPosition = sceneCamera != null
                 ? sceneCamera.transform.position
                 : world.center + new Vector3(0.55f, 0.45f, -0.7f).normalized * (world.extents.magnitude * 2.5f + 1f);
-            viewPosition = worldToLocal.MultiplyPoint3x4(viewWorld);
+        }
+
+        /// <summary>The same scene snapshot for geometry captured in another space (a
+        /// keep-hierarchy node): shares the probe, lightmap and light data, converts
+        /// through the given matrix instead. Bind the node's own BVH before baking.</summary>
+        internal RemeshBeauty ForSpace(Matrix4x4 spaceToWorld, float sourceDiagonal)
+        {
+            var copy = (RemeshBeauty)MemberwiseClone();
+            copy.bvh = null;
+            copy.SetSpace(spaceToWorld, sourceDiagonal);
+            return copy;
+        }
+
+        void SetSpace(Matrix4x4 spaceToWorld, float sourceDiagonal)
+        {
+            localToWorld = spaceToWorld;
+            worldToLocal = spaceToWorld.inverse;
             shadowEpsilon = Mathf.Max(sourceDiagonal * 2e-3f, 1e-5f);
         }
 
-        /// <summary>The bake's source BVH, used for direct-light shadow rays.</summary>
+        /// <summary>The bake's source BVH (capture space), used for direct-light shadow rays.</summary>
         internal void BindShadows(TriangleBvh sourceBvh) => bvh = sourceBvh;
 
-        /// <summary>Direct realtime/mixed light at a source point (local space). Thread-safe.</summary>
+        Vector3 WorldNormal(Vector3 n) => worldToLocal.transpose.MultiplyVector(n).normalized;
+
+        /// <summary>Direct realtime/mixed light at a source point (capture space). Thread-safe.</summary>
         internal Color Direct(Vector3 p, Vector3 n)
         {
             var sum = Color.black;
+            Vector3 pw = localToWorld.MultiplyPoint3x4(p), nw = WorldNormal(n);
+            Vector3 origin = p + n * shadowEpsilon;
             for (int i = 0; i < directionals.Length; ++i) {
                 var d = directionals[i];
-                float ndl = Vector3.Dot(n, d.dir);
+                float ndl = Vector3.Dot(nw, d.dir);
                 if (ndl <= 0f) continue;
-                float shadow = Shadow(p + n * shadowEpsilon, d.dir, float.MaxValue);
-                if (shadow * d.shadowStrength >= 1f) continue;
-                sum += d.color * (ndl * (1f - shadow * d.shadowStrength));
+                float shadow = d.shadowStrength > 0f ? Shadow(origin, worldToLocal.MultiplyVector(d.dir).normalized, float.MaxValue) * d.shadowStrength : 0f;
+                if (shadow >= 1f) continue;
+                sum += d.color * (ndl * (1f - shadow));
             }
             for (int i = 0; i < locals.Length; ++i) {
                 var l = locals[i];
-                Vector3 toLight = l.pos - p;
+                Vector3 toLight = l.pos - pw;
                 float distSq = toLight.sqrMagnitude;
                 if (distSq > l.rangeSqr || distSq < 1e-10f) continue;
                 float dist = Mathf.Sqrt(distSq);
                 Vector3 dir = toLight / dist;
-                float weight = Vector3.Dot(n, dir);
+                float weight = Vector3.Dot(nw, dir);
                 if (weight <= 0f) continue;
                 if (l.spot) {
                     float axis = -Vector3.Dot(dir, l.axis); // receiver looks along -axis toward the spot
@@ -197,40 +220,48 @@ namespace SashaRX.UnityMeshLab
                 float q = dist / l.range;
                 float window = Mathf.Max(0f, 1f - q * q * q * q);
                 float attenuation = window * window / Mathf.Max(distSq, 1e-6f);
-                float shadow = Shadow(p + n * shadowEpsilon, dir, dist);
+                float shadow = 0f;
+                if (l.shadowStrength > 0f) {
+                    // The shadow segment runs in capture space, so its length is the
+                    // capture-space distance to the light, whatever the root's scale.
+                    Vector3 toLightLocal = worldToLocal.MultiplyPoint3x4(l.pos) - p;
+                    shadow = Shadow(origin, toLightLocal.normalized, toLightLocal.magnitude) * l.shadowStrength;
+                }
                 sum += l.color * (weight * attenuation * (1f - shadow));
             }
             return sum;
         }
 
-        /// <summary>Ambient irradiance for a surface direction (local space). Thread-safe.</summary>
+        /// <summary>Ambient irradiance for a surface direction (capture space). Thread-safe.</summary>
         internal Color Ambient(Vector3 n)
         {
+            Vector3 nw = WorldNormal(n);
             if (flatAmbient) return ambientFlat;
             if (trilightAmbient) {
-                float up = n.y * 0.5f + 0.5f;
+                float up = nw.y * 0.5f + 0.5f;
                 return up < 0.5f
                     ? Color.Lerp(ambientGround, ambientEquator, up * 2f)
                     : Color.Lerp(ambientEquator, ambientSky, (up - 0.5f) * 2f);
             }
-            return SampleBilinear(ambientGrid, AmbientW, AmbientH, EquirectUV(localToWorld.MultiplyVector(n)));
+            return SampleBilinear(ambientGrid, AmbientW, AmbientH, EquirectUV(nw));
         }
 
-        /// <summary>Probe reflection seen from a source point: V points from the surface
-        /// toward the viewer. Ports the game's specular path: URP's
+        /// <summary>Probe reflection seen from a source point (capture space): V points from
+        /// the surface toward the viewer. Ports the game's specular path: URP's
         /// BoxProjectedCubemapDirection, the prefiltered-mip remap r(1.7−0.7r)·maxMip
         /// with the fractional part lerped between two levels, and
         /// EnvironmentBRDFSpecular (surface reduction 1/(r²+1), grazing term
         /// saturate(smoothness+reflectivity), Schlick Fresnel on NdotV).</summary>
         internal Color Specular(Vector3 p, Vector3 n, Color albedo, float metallic, float smoothness)
         {
-            Probe probe = PickProbe(localToWorld.MultiplyPoint3x4(p));
+            Vector3 worldP = localToWorld.MultiplyPoint3x4(p);
+            Probe probe = PickProbe(worldP);
             if (probe == null) return Color.black;
-            Vector3 v = viewPosition - p;
+            Vector3 v = viewPosition - worldP;
             if (v.sqrMagnitude < 1e-10f) return Color.black;
             v.Normalize();
-            Vector3 worldP = localToWorld.MultiplyPoint3x4(p);
-            Vector3 worldR = localToWorld.MultiplyVector(Vector3.Reflect(-v, n)).normalized;
+            Vector3 nw = WorldNormal(n);
+            Vector3 worldR = Vector3.Reflect(-v, nw).normalized;
             Vector3 dir = probe.boxProjection ? BoxProjected(worldR, worldP, probe) : worldR;
             float roughness = Mathf.Clamp01(1f - smoothness);
             float remapped = roughness * (1.7f - 0.7f * roughness);
@@ -245,7 +276,7 @@ namespace SashaRX.UnityMeshLab
             Vector3 f0 = Vector3.Lerp(new Vector3(0.04f, 0.04f, 0.04f),
                 new Vector3(albedo.r, albedo.g, albedo.b), metallic);
             float grazingComponent = Mathf.Clamp01(smoothness + Mathf.Lerp(0.04f, 1f, metallic));
-            float fresnel = Mathf.Pow(1f - Mathf.Clamp01(Vector3.Dot(n, v)), 5f);
+            float fresnel = Mathf.Pow(1f - Mathf.Clamp01(Vector3.Dot(nw, v)), 5f);
             Vector3 specular = Vector3.Lerp(f0, new Vector3(grazingComponent, grazingComponent, grazingComponent), fresnel) * surfaceReduction;
             return new Color(specular.x * sample.r, specular.y * sample.g, specular.z * sample.b, 0f);
         }
@@ -275,7 +306,7 @@ namespace SashaRX.UnityMeshLab
                 // every surface whose normal disagrees with the dominant direction.
                 Color d = SampleBilinear(map.dirPixels, map.dirWidth, map.dirHeight, uv);
                 Vector3 dir = new Vector3(d.r, d.g, d.b) - new Vector3(0.5f, 0.5f, 0.5f);
-                float halfLambert = Vector3.Dot(localToWorld.MultiplyVector(localNormal), dir) + 0.5f;
+                float halfLambert = Vector3.Dot(WorldNormal(localNormal), dir) + 0.5f;
                 float scale = halfLambert / Mathf.Max(1e-4f, d.a);
                 illuminance = new Color(illuminance.r * scale, illuminance.g * scale, illuminance.b * scale, 1f);
             }

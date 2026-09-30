@@ -214,8 +214,10 @@ namespace SashaRX.UnityMeshLab
             Vector3 sw = hit.barycentric;
             rayFallback = false;
             if (sourceFace < 0) {
+                // Both fallbacks stay bounded by the projection distance: an unbounded
+                // filtered query would smear an unrelated far part across a gap.
                 var nearest = facing != null
-                    ? bvh.FindNearestNormalFiltered(p, rayN, facing, 0f)
+                    ? bvh.FindNearestNormalFiltered(p, rayN, facing, 0f, distance)
                     : bvh.FindNearest(p, distance);
                 sourceFace = nearest.triangleIndex; sw = nearest.barycentric;
                 rayFallback = true;
@@ -230,10 +232,11 @@ namespace SashaRX.UnityMeshLab
         }
 
         // Folds the captured scene lighting into the transferred albedo (all linear).
-        // A lightmapped face uses its lightmap as the base — the lightmap already holds
-        // albedo × GI × baked lights × baked emission, so ambient and material emission
-        // are not added again; only realtime/mixed direct light and the probe specular
-        // ride on top. Unlightmapped faces get albedo × (direct + ambient) + emission.
+        // Unity lightmaps store incoming irradiance (GI + baked lights), which the Lit
+        // shader multiplies by the material's diffuse response at runtime — so a
+        // lightmapped face shades albedo × (lightmap + realtime/mixed direct) + emission,
+        // with ambient left out (the lightmap already carries it); an unlightmapped face
+        // gets albedo × (direct + ambient) + emission. Probe specular rides on both.
         // Lighting reacts to the source's normal map, exactly as the game shades: the
         // bump-perturbed normal drives the directional-lightmap half-Lambert, the
         // realtime N·L terms, the ambient probe and the specular view dot.
@@ -257,8 +260,7 @@ namespace SashaRX.UnityMeshLab
             Color lit;
             if (lightmapId >= 0 && source.lightmaps != null && lightmapId < source.lightmaps.Length) {
                 Vector2 uv2 = source.uv2[a] * w.x + source.uv2[b] * w.y + source.uv2[c] * w.z;
-                lit = beauty.SampleLightmap(source.lightmaps[lightmapId], uv2, n);
-                lit += albedoLinear * beauty.Direct(p, n);
+                lit = albedoLinear * (beauty.SampleLightmap(source.lightmaps[lightmapId], uv2, n) + beauty.Direct(p, n)) + emission;
             }
             else {
                 lit = albedoLinear * (beauty.Direct(p, n) + beauty.Ambient(n)) + emission;

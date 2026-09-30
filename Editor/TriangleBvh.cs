@@ -69,8 +69,13 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public HitResult FindNearestNormalFiltered(Vector3 queryPoint, Vector3 queryNormal,
             Vector3[] faceNormals, float normalDotMin)
+            => FindNearestNormalFiltered(queryPoint, queryNormal, faceNormals, normalDotMin, float.MaxValue);
+
+        /// <summary>Normal-filtered nearest triangle within maxDist; triangleIndex -1 when none qualifies.</summary>
+        public HitResult FindNearestNormalFiltered(Vector3 queryPoint, Vector3 queryNormal,
+            Vector3[] faceNormals, float normalDotMin, float maxDist)
         {
-            var best = new HitResult { triangleIndex = -1, distSq = float.MaxValue };
+            var best = new HitResult { triangleIndex = -1, distSq = maxDist >= float.MaxValue ? float.MaxValue : maxDist * maxDist };
             FindNearestNormFiltRecursive(0, queryPoint, queryNormal, faceNormals, normalDotMin, ref best);
             return best;
         }

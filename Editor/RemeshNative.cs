@@ -141,7 +141,8 @@ namespace SashaRX.UnityMeshLab
                 // are smooth across chart borders — a soft edge beats a dead one).
                 var nativeNormals = new Vector3[vertexCount];
                 for (int i = 0; i < vertexCount; ++i) nativeNormals[i] = result.normals[i];
-                GenerateSplitNormals(result, settings.normalWeighting);
+                bool islandHardEdges = settings.hardEdges == RemeshHardEdges.UvIslands || settings.hardEdges == RemeshHardEdges.UvIslandsAndAngle;
+                var groups = GenerateSplitNormals(result, settings.normalWeighting, islandHardEdges ? null : nativeNormals);
                 int healedNormals = 0;
                 for (int i = 0; i < vertexCount; ++i)
                     if (result.normals[i].sqrMagnitude < 1e-12f) {
@@ -158,10 +159,14 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Warn("[Remesh] " + zeroNormals + " of " + vertexCount +
                         " split normals are still zero (the native output was zero as well); their rays fall back to the welded cage.");
                 // Normal smoothing runs after UV generation so it works the same for
-                // every hard-edge source: crease splits and chart borders already
-                // materialized as vertex splits, and mesh edges never cross a split,
-                // so the pass stops at hard edges by construction.
-                SmoothNormals(result, settings.normalSmoothing);
+                // every hard-edge source: in the island modes crease splits and chart
+                // borders are vertex splits no edge crosses, so the pass stops at hard
+                // edges by construction; the other modes smooth over the welded groups.
+                SmoothNormals(result, settings.normalSmoothing, groups);
+                // The native tangents were generated against the native normals; the
+                // final normals differ (weighting, island borders, smoothing), so the
+                // saved frame is re-orthogonalized the way the bake's Basis() reads it.
+                OrthogonalizeTangents(result);
                 return result;
             }
             finally { if (handle != IntPtr.Zero) meshLabRemeshDestroy(handle); }
@@ -178,21 +183,47 @@ namespace SashaRX.UnityMeshLab
         // mesh: real captures are ~5 mm models whose raw crosses sit near 1e-7,
         // and an absolute floor there classified valid smooth vertices as
         // degenerate (the all-zero-normal regression on face-area weighting).
+        // Every output vertex is its own group: hard across every split (chart borders
+        // and creases alike) — the UV-island hard-edge modes.
         internal static void GenerateSplitNormals(Geometry geometry, RemeshNormalWeighting weighting)
+            => GenerateSplitNormals(geometry, weighting, null);
+
+        // With smoothAcross given (the native, pre-chart normals), vertices that xatlas
+        // duplicated along chart borders are accumulated together again: copies at one
+        // position whose native normals agree (same crease group) share one normal, so
+        // Smooth stays smooth across islands and Angle hardens only its creases.
+        // Returns the per-vertex normal group (null when every vertex is its own).
+        internal static int[] GenerateSplitNormals(Geometry geometry, RemeshNormalWeighting weighting, Vector3[] smoothAcross)
         {
-            var sum = new Vector3[geometry.positions.Length];
             var p = geometry.positions;
+            int[] group = null;
+            int groups = p.Length;
+            if (smoothAcross != null) {
+                group = new int[p.Length];
+                var map = new System.Collections.Generic.Dictionary<(int, int, int, int, int, int), int>(p.Length);
+                groups = 0;
+                for (int i = 0; i < p.Length; ++i) {
+                    var n = smoothAcross[i];
+                    var key = (BitConverter.SingleToInt32Bits(p[i].x), BitConverter.SingleToInt32Bits(p[i].y), BitConverter.SingleToInt32Bits(p[i].z),
+                        Mathf.RoundToInt(n.x * 1024f), Mathf.RoundToInt(n.y * 1024f), Mathf.RoundToInt(n.z * 1024f));
+                    if (!map.TryGetValue(key, out int g)) { g = groups++; map[key] = g; }
+                    group[i] = g;
+                }
+            }
+            int G(int v) => group == null ? v : group[v];
+            var sum = new Vector3[groups];
             bool byArea = weighting != RemeshNormalWeighting.CornerAngle;
             bool byAngle = weighting != RemeshNormalWeighting.FaceArea;
             for (int i = 0; i < geometry.indices.Length; i += 3) {
                 int a = geometry.indices[i], b = geometry.indices[i + 1], c = geometry.indices[i + 2];
+                int ga = G(a), gb = G(b), gc = G(c);
                 Vector3 ab = p[b] - p[a], ac = p[c] - p[a], bc = p[c] - p[b];
                 Vector3 n = Vector3.Cross(ab, ac); // |n| = 2 * face area
-                if (!byAngle) { sum[a] += n; sum[b] += n; sum[c] += n; continue; }
+                if (!byAngle) { sum[ga] += n; sum[gb] += n; sum[gc] += n; continue; }
                 Vector3 face = n.sqrMagnitude > 1e-30f ? n.normalized : Vector3.zero;
                 float angleA = CornerAngle(ab, ac), angleB = CornerAngle(-ab, bc), angleC = CornerAngle(-ac, -bc);
-                if (byArea) { sum[a] += n * angleA; sum[b] += n * angleB; sum[c] += n * angleC; }
-                else { sum[a] += face * angleA; sum[b] += face * angleB; sum[c] += face * angleC; }
+                if (byArea) { sum[ga] += n * angleA; sum[gb] += n * angleB; sum[gc] += n * angleC; }
+                else { sum[ga] += face * angleA; sum[gb] += face * angleB; sum[gc] += face * angleC; }
             }
             float maxSq = 0f;
             for (int i = 0; i < sum.Length; ++i) {
@@ -200,8 +231,25 @@ namespace SashaRX.UnityMeshLab
                 if (sq > maxSq) maxSq = sq;
             }
             float floor = maxSq * 1e-12f;
-            for (int i = 0; i < sum.Length; ++i)
-                if (sum[i].sqrMagnitude > floor) geometry.normals[i] = sum[i].normalized;
+            for (int i = 0; i < p.Length; ++i)
+                if (sum[G(i)].sqrMagnitude > floor) geometry.normals[i] = sum[G(i)].normalized;
+            return group;
+        }
+
+        // Gram-Schmidt every tangent against the final vertex normal, keeping its
+        // handedness; a tangent that collapses onto the normal is left as generated.
+        internal static void OrthogonalizeTangents(Geometry geometry)
+        {
+            if (geometry.tangents == null) return;
+            for (int i = 0; i < geometry.tangents.Length; ++i) {
+                var t4 = geometry.tangents[i];
+                var n = geometry.normals[i];
+                var t = new Vector3(t4.x, t4.y, t4.z);
+                t -= n * Vector3.Dot(t, n);
+                if (t.sqrMagnitude < 1e-12f) continue;
+                t.Normalize();
+                geometry.tangents[i] = new Vector4(t.x, t.y, t.z, t4.w);
+            }
         }
 
         // Angle between two edge directions meeting at a corner, in radians.
@@ -218,8 +266,25 @@ namespace SashaRX.UnityMeshLab
         // more, opposing ones not at all), so smoothing flows along the surface and
         // stops at every hard edge — crease splits and UV chart borders alike.
         internal static void SmoothNormals(Geometry geometry, float smoothing)
+            => SmoothNormals(geometry, smoothing, null);
+
+        // With a normal group per vertex (see GenerateSplitNormals) the pass runs over
+        // the group-welded connectivity, so it flows through chart borders that are not
+        // hard edges instead of letting the copies drift apart, and every member of a
+        // group ends with the same normal.
+        internal static void SmoothNormals(Geometry geometry, float smoothing, int[] group)
         {
             if (smoothing <= 0) return;
+            if (group != null) {
+                int groups = 0;
+                foreach (int g in group) groups = Math.Max(groups, g + 1);
+                var welded = new Geometry { normals = new Vector3[groups], indices = new int[geometry.indices.Length] };
+                for (int i = 0; i < group.Length; ++i) welded.normals[group[i]] = geometry.normals[i];
+                for (int i = 0; i < geometry.indices.Length; ++i) welded.indices[i] = group[geometry.indices[i]];
+                SmoothNormals(welded, smoothing, null);
+                for (int i = 0; i < group.Length; ++i) geometry.normals[i] = welded.normals[group[i]];
+                return;
+            }
             int passes = Math.Min(10, (int)Math.Ceiling(smoothing));
             var normals = geometry.normals;
             var indices = geometry.indices;

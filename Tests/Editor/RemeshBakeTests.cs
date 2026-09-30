@@ -154,6 +154,35 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(Vector3.Angle(both.normals[0], shared.normals[0]), Is.LessThan(0.01f));
         }
         [Test]
+        public void SmoothModeWeldsChartBorderCopiesByNativeNormalGroup()
+        {
+            // The same 90° fold, split along its shared edge as xatlas splits a chart
+            // border. With the native (smooth) normals as the group key the copies weld
+            // back into one smooth normal; with crease-split native normals they stay hard.
+            var p=new[] { Vector3.zero, Vector3.right, Vector3.forward, Vector3.up, Vector3.zero, Vector3.right };
+            var indices=new[] { 0,1,2, 5,4,3 };
+            var smooth=Vector3.Normalize(new Vector3(0,-1,-1));
+            var welded=new RemeshNative.Geometry { positions=p, normals=new Vector3[6], indices=indices };
+            var groups=RemeshNative.GenerateSplitNormals(welded, RemeshNormalWeighting.FaceArea, new[] { smooth,smooth,smooth,smooth,smooth,smooth });
+            Assert.That(Vector3.Angle(welded.normals[0], welded.normals[4]), Is.LessThan(0.01f));
+            Assert.That(Vector3.Angle(welded.normals[0], smooth), Is.LessThan(0.01f));
+            Assert.AreEqual(groups[0], groups[4], "coincident copies share a normal group");
+            var creased=new RemeshNative.Geometry { positions=p, normals=new Vector3[6], indices=indices };
+            RemeshNative.GenerateSplitNormals(creased, RemeshNormalWeighting.FaceArea,
+                new[] { Vector3.back,Vector3.back,Vector3.back, Vector3.down,Vector3.down,Vector3.down });
+            Assert.That(Vector3.Angle(creased.normals[0], creased.normals[4]), Is.EqualTo(90).Within(0.01f));
+            // Smoothing over the welded groups keeps every member of a group identical.
+            welded.normals[4]=Vector3.up;
+            RemeshNative.SmoothNormals(welded, 1, groups);
+            Assert.That(Vector3.Angle(welded.normals[0], welded.normals[4]), Is.LessThan(0.01f));
+            // Tangents come out orthogonal to the final normal, handedness intact.
+            welded.tangents=new Vector4[6];
+            for (int i=0;i<6;++i) welded.tangents[i]=new Vector4(0,1,1,-1);
+            RemeshNative.OrthogonalizeTangents(welded);
+            Assert.That(Mathf.Abs(Vector3.Dot(welded.tangents[0], welded.normals[0])), Is.LessThan(1e-5f));
+            Assert.AreEqual(-1f, welded.tangents[0].w);
+        }
+        [Test]
         public void ImageSamplingUsesLinearInterpolationAndWrapModes()
         {
             var image=new RemeshSource.Image { width=2,height=1,pixels=new[] { new Color32(0,0,0,255),new Color32(255,255,255,255) },
