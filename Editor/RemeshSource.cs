@@ -107,7 +107,7 @@ namespace SashaRX.UnityMeshLab
         /// matrix is worldToSpace. Returns null when they contribute no triangles and
         /// required is false; throws otherwise.
         /// </summary>
-        public static RemeshSource Capture(Matrix4x4 worldToSpace, IList<Renderer> renderers, bool required = true)
+        public static RemeshSource Capture(Matrix4x4 worldToSpace, IList<Renderer> renderers, bool required = true, bool geometryOnly = false)
         {
             var positions = new List<Vector3>(); var normals = new List<Vector3>();
             var tangents = new List<Vector4>(); var uv = new List<Vector2>(); var colors = new List<Color>();
@@ -195,7 +195,7 @@ namespace SashaRX.UnityMeshLab
                         if (lmUv.Length == p.Length) uv2.AddRange(lmUv);
                         else for (int i = 0; i < p.Length; ++i) uv2.Add(Vector2.zero);
                         int lightmapId = -1;
-                        int lightmapIndex = renderer.lightmapIndex;
+                        int lightmapIndex = geometryOnly ? -1 : renderer.lightmapIndex;
                         if (lightmapIndex >= 0 && lightmapIndex < LightmapSettings.lightmaps.Length) {
                             var data = LightmapSettings.lightmaps[lightmapIndex];
                             var map = data.lightmapColor;
@@ -215,10 +215,18 @@ namespace SashaRX.UnityMeshLab
                         var shared = renderer.sharedMaterials;
                         for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
                             if (mesh.GetTopology(sub) != MeshTopology.Triangles) continue;
-                            if (sub >= shared.Length || !shared[sub]) throw new InvalidOperationException(renderer.name + " has a missing material.");
-                            if (!materialIds.TryGetValue(shared[sub], out int material)) {
-                                material = materials.Count;
-                                materials.Add(reader.Capture(shared[sub])); materialIds.Add(shared[sub], material);
+                            int material = 0;
+                            if (geometryOnly) {
+                                // Geometry-only captures (the Scene highlight) never read materials
+                                // or textures: one placeholder surface for every face.
+                                if (materials.Count == 0) materials.Add(new Surface());
+                            }
+                            else {
+                                if (sub >= shared.Length || !shared[sub]) throw new InvalidOperationException(renderer.name + " has a missing material.");
+                                if (!materialIds.TryGetValue(shared[sub], out material)) {
+                                    material = materials.Count;
+                                    materials.Add(reader.Capture(shared[sub])); materialIds.Add(shared[sub], material);
+                                }
                             }
                             var tri = mesh.GetTriangles(sub);
                             for (int i = 0; i < tri.Length; i += 3) {
@@ -268,52 +276,27 @@ namespace SashaRX.UnityMeshLab
         public bool FilterSmallParts(float minSize, float minRodVoxels, int resolution, out int removedSmall, out int removedThin)
         {
             removedSmall = removedThin = 0;
-            if (minSize <= 0 && minRodVoxels <= 0) return true;
-            int vertexCount = positions.Length, faceCount = indices.Length / 3;
-            if (vertexCount == 0) return true;
-            Vector3 boundsMin = positions[0], boundsMax = positions[0];
-            foreach (var p in positions) { boundsMin = Vector3.Min(boundsMin, p); boundsMax = Vector3.Max(boundsMax, p); }
-            var extent = boundsMax - boundsMin;
-            float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, resolution);
-            float rodLimit = minRodVoxels * cell;
-            // Weld by exact position so split-normal / UV-seam duplicates join their piece.
-            var slot = new int[vertexCount];
-            var slots = new Dictionary<(int, int, int), int>(vertexCount);
-            var unique = new List<Vector3>(vertexCount);
-            for (int i = 0; i < vertexCount; ++i) {
-                var p = positions[i];
-                var key = (BitConverter.SingleToInt32Bits(p.x), BitConverter.SingleToInt32Bits(p.y), BitConverter.SingleToInt32Bits(p.z));
-                if (!slots.TryGetValue(key, out int id)) { id = slots.Count; slots[key] = id; unique.Add(p); }
-                slot[i] = id;
-            }
-            var parent = new int[slots.Count];
-            for (int i = 0; i < parent.Length; ++i) parent[i] = i;
-            int Find(int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
-            void Union(int a, int b) { a = Find(a); b = Find(b); if (a != b) parent[a] = b; }
+            var cls = ClassifyParts(minSize, minRodVoxels, resolution);
+            if (cls == null) return true;
+            int faceCount = indices.Length / 3, vertexCount = positions.Length, dropped = 0;
+            foreach (var c in cls) if (c != PartKept) ++dropped;
+            if (dropped == 0) return true;
+            if (dropped == faceCount) return false;
+            // Pieces are counted once each: a component's faces all carry the same class,
+            // and a component is identified by its root slot below.
+            var slot = WeldSlots(out int slotCount);
+            var parent = ComponentForest(slot, slotCount);
+            var counted = new HashSet<int>();
             for (int f = 0; f < faceCount; ++f) {
-                Union(slot[indices[f * 3]], slot[indices[f * 3 + 1]]);
-                Union(slot[indices[f * 3]], slot[indices[f * 3 + 2]]);
+                if (cls[f] == PartKept) continue;
+                int root = FindRoot(parent, slot[indices[f * 3]]);
+                if (!counted.Add(root)) continue;
+                if (cls[f] == PartSmall) ++removedSmall; else ++removedThin;
             }
-            var members = new Dictionary<int, List<Vector3>>();
-            for (int i = 0; i < unique.Count; ++i) {
-                int root = Find(i);
-                if (!members.TryGetValue(root, out var list)) members[root] = list = new List<Vector3>();
-                list.Add(unique[i]);
-            }
-            var drop = new HashSet<int>();
-            foreach (var pair in members) {
-                var extents = PrincipalExtents(pair.Value);  // descending
-                bool small = minSize > 0 && extents.magnitude < minSize * diagonal;
-                bool rod = !small && rodLimit > 0 && extents.y < rodLimit;
-                if (small) ++removedSmall; else if (rod) ++removedThin;
-                if (small || rod) drop.Add(pair.Key);
-            }
-            if (drop.Count == 0) return true;
-            if (drop.Count == members.Count) { removedSmall = removedThin = 0; return false; }
             // Compact faces, then vertices.
             var keptFaces = new List<int>(faceCount);
             for (int f = 0; f < faceCount; ++f)
-                if (!drop.Contains(Find(slot[indices[f * 3]]))) keptFaces.Add(f);
+                if (cls[f] == PartKept) keptFaces.Add(f);
             var remap = new int[vertexCount];
             for (int i = 0; i < vertexCount; ++i) remap[i] = -1;
             int next = 0;
@@ -340,6 +323,85 @@ namespace SashaRX.UnityMeshLab
             uv = Compact(uv); uv2 = Compact(uv2); colors = Compact(colors); vertexRenderer = Compact(vertexRenderer);
             indices = newIndices; faceMaterials = newFaceMaterials; faceLightmaps = newFaceLightmaps;
             return true;
+        }
+
+        public const byte PartKept = 0, PartSmall = 1, PartRod = 2;
+
+        /// <summary>
+        /// The part filter's verdict per face without changing the capture: PartKept,
+        /// PartSmall (extent under minSize × diagonal) or PartRod (cross-section under
+        /// minRodVoxels cells). Null when both thresholds are 0 or the capture is empty.
+        /// The Scene highlight paints from this; FilterSmallParts compacts by it.
+        /// </summary>
+        public byte[] ClassifyParts(float minSize, float minRodVoxels, int resolution)
+        {
+            if (minSize <= 0 && minRodVoxels <= 0) return null;
+            int vertexCount = positions.Length, faceCount = indices.Length / 3;
+            if (vertexCount == 0 || faceCount == 0) return null;
+            Vector3 boundsMin = positions[0], boundsMax = positions[0];
+            foreach (var p in positions) { boundsMin = Vector3.Min(boundsMin, p); boundsMax = Vector3.Max(boundsMax, p); }
+            var extent = boundsMax - boundsMin;
+            float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, resolution);
+            float rodLimit = minRodVoxels * cell;
+            var slot = WeldSlots(out int slotCount);
+            var parent = ComponentForest(slot, slotCount);
+            var members = new Dictionary<int, List<Vector3>>();
+            var firstOfSlot = new int[slotCount];
+            for (int i = 0; i < slotCount; ++i) firstOfSlot[i] = -1;
+            for (int i = 0; i < vertexCount; ++i) {
+                if (firstOfSlot[slot[i]] >= 0) continue;  // one point per welded position
+                firstOfSlot[slot[i]] = i;
+                int root = FindRoot(parent, slot[i]);
+                if (!members.TryGetValue(root, out var list)) members[root] = list = new List<Vector3>();
+                list.Add(positions[i]);
+            }
+            var verdict = new Dictionary<int, byte>();
+            foreach (var pair in members) {
+                var extents = PrincipalExtents(pair.Value);  // descending
+                bool small = minSize > 0 && extents.magnitude < minSize * diagonal;
+                bool rod = !small && rodLimit > 0 && extents.y < rodLimit;
+                verdict[pair.Key] = small ? PartSmall : rod ? PartRod : PartKept;
+            }
+            var cls = new byte[faceCount];
+            for (int f = 0; f < faceCount; ++f) cls[f] = verdict[FindRoot(parent, slot[indices[f * 3]])];
+            return cls;
+        }
+
+        // Weld by exact position so split-normal / UV-seam duplicates share a slot.
+        int[] WeldSlots(out int slotCount)
+        {
+            var slot = new int[positions.Length];
+            var slots = new Dictionary<(int, int, int), int>(positions.Length);
+            for (int i = 0; i < positions.Length; ++i) {
+                var p = positions[i];
+                var key = (BitConverter.SingleToInt32Bits(p.x), BitConverter.SingleToInt32Bits(p.y), BitConverter.SingleToInt32Bits(p.z));
+                if (!slots.TryGetValue(key, out int id)) { id = slots.Count; slots[key] = id; }
+                slot[i] = id;
+            }
+            slotCount = slots.Count;
+            return slot;
+        }
+
+        // Union-find over the welded slots joined by the triangles.
+        int[] ComponentForest(int[] slot, int slotCount)
+        {
+            var parent = new int[slotCount];
+            for (int i = 0; i < slotCount; ++i) parent[i] = i;
+            for (int f = 0; f * 3 + 2 < indices.Length; ++f) {
+                int a = FindRoot(parent, slot[indices[f * 3]]);
+                int b = FindRoot(parent, slot[indices[f * 3 + 1]]);
+                int c = FindRoot(parent, slot[indices[f * 3 + 2]]);
+                if (a != b) parent[a] = b;
+                a = FindRoot(parent, a);
+                if (a != c) parent[a] = c;
+            }
+            return parent;
+        }
+
+        static int FindRoot(int[] parent, int x)
+        {
+            while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+            return x;
         }
 
         /// <summary>

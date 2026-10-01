@@ -55,7 +55,13 @@ settings, marked "settings changed" in its header) and clears everything after i
    glass pane or a decal has one thin extent and stays; pipes, cables, railings
    and bolts have two and go. The stage status reports how many pieces went,
    and a filter that would remove everything is skipped with a warning instead
-   of producing an empty remesh.
+   of producing an empty remesh. **Highlight capture in Scene** paints the
+   source in the Scene view as the remesh stage will see it, before any stage
+   runs and live with the filter sliders: green = captured, orange = dropped
+   as a small part, red = dropped as a rod, grey = renderer the capture skips
+   (LOD1+, collision, disabled). It is a geometry-only capture (no material or
+   texture reads) drawn over the originals with a depth offset; the sidebar
+   shows the triangle counts per class.
    SkinnedMeshRenderers are baked at their
    current pose (skinning re-evaluated first — in edit mode it can be stale
    and bake every part at its authored origin) and then captured like static
@@ -122,8 +128,11 @@ settings, marked "settings changed" in its header) and clears everything after i
    Rays only accept source triangles facing them (front-face filter): a plain
    closest-hit ray travels twice the projection distance through the target and
    pierces thin walls, sampling the far side's texture as periodic mirrored
-   patches; the filter's orientation is set by a consensus probe, and it stays
-   off when the probe has no clear majority. The 3D preview's **Cage** toggle
+   patches; the filter's orientation comes from a probe that looks at the
+   source from OUTSIDE — rays cast from a sphere around it toward its centre
+   meet an outer surface first, and that triangle's winding against the ray
+   gives the answer whatever the target's density — and it stays off when
+   fewer than 70% of the rays agree (open sheets, mixed winding). The 3D preview's **Cage** toggle
    draws the projection limits — the result mesh inflated by ±the ray travel
    along the same welded cage normals, orange for the outer (ray origin) shell,
    blue for the inner (ray end) shell — live from the current projection

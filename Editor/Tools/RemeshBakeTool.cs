@@ -29,6 +29,8 @@ namespace SashaRX.UnityMeshLab
         GameObject source, lastSelection;
         RemeshSettings settings = new RemeshSettings();
         readonly RemeshPipeline pipeline = new RemeshPipeline();
+        readonly RemeshCaptureHighlight highlight = new RemeshCaptureHighlight();
+        bool highlightCapture;
         readonly bool[] folds = { true, true, true, true };
         bool chartFold;
         readonly RemeshPreview previews = new RemeshPreview();
@@ -71,6 +73,8 @@ namespace SashaRX.UnityMeshLab
             SaveSettings();
             previews.Dispose();
             pipeline.Dispose();
+            highlight.Dispose();
+            EditorApplication.hierarchyChanged -= InvalidateHighlight;
         }
 
         // Source root follows the hierarchy selection, as the status text asks. A pick
@@ -96,10 +100,41 @@ namespace SashaRX.UnityMeshLab
         public void OnDrawToolbarExtra() { }
         public void OnDrawStatusBar() { GUILayout.Label(Status, EditorStyles.miniLabel); }
         public IEnumerable<UvCanvasView.FillModeEntry> GetFillModes() => null;
-        public void OnSceneGUI(SceneView sceneView) { }
+        public void OnSceneGUI(SceneView sceneView)
+        {
+            if (!highlightCapture || !source) return;
+            if (highlight.Key != RemeshCaptureHighlight.KeyFor(source, settings)) { highlight.Build(source, settings); RequestRepaint?.Invoke(); }
+            highlight.Draw();
+        }
         public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float size) { }
 
         string Status => saveStatus ?? pipeline.Status;
+
+        // Scene paint of the capture: what the filters keep and drop, before any stage runs.
+        void DrawHighlightToggle()
+        {
+            bool on = EditorGUILayout.Toggle(new GUIContent("Highlight capture in Scene",
+                "Paint the source in the Scene view as the remesh stage will see it: green = captured, orange = dropped as a small part, " +
+                "red = dropped as a rod, grey = renderer excluded (LOD1+, collision, disabled). Follows the filter sliders live."), highlightCapture);
+            if (on != highlightCapture) {
+                highlightCapture = on;
+                if (on) { EditorApplication.hierarchyChanged -= InvalidateHighlight; EditorApplication.hierarchyChanged += InvalidateHighlight; }
+                else { EditorApplication.hierarchyChanged -= InvalidateHighlight; highlight.Clear(); }
+                SceneView.RepaintAll();
+            }
+            if (!highlightCapture) return;
+            // The paint follows the filter sliders live: a changed key repaints the Scene,
+            // which rebuilds the highlight lazily in OnSceneGUI.
+            if (highlight.Key != RemeshCaptureHighlight.KeyFor(source, settings)) SceneView.RepaintAll();
+            using (new EditorGUI.IndentLevelScope()) {
+                if (highlight.Error != null) EditorGUILayout.HelpBox(highlight.Error, MessageType.Warning);
+                else if (!string.IsNullOrEmpty(highlight.Summary)) EditorGUILayout.LabelField(highlight.Summary, EditorStyles.wordWrappedMiniLabel);
+                EditorGUILayout.LabelField("green captured · orange small part · red rod · grey excluded", EditorStyles.centeredGreyMiniLabel);
+                if (GUILayout.Button("Refresh highlight", EditorStyles.miniButton)) { InvalidateHighlight(); }
+            }
+        }
+
+        void InvalidateHighlight() { highlight.Clear(); SceneView.RepaintAll(); }
 
         public void OnDrawRightSidebar()
         {
@@ -144,6 +179,7 @@ namespace SashaRX.UnityMeshLab
                         "Capture ignores meshes named Name_LOD1 and higher; LODGroups already contribute LOD0 only."), settings.lod0Only);
                     settings.keepHierarchy = EditorGUILayout.Toggle(new GUIContent("Keep hierarchy",
                         "Remesh every renderer SEPARATELY and save the result as a hierarchy of meshes with per-node baked materials under one root, instead of welding everything into one mesh with one material."), settings.keepHierarchy);
+                    DrawHighlightToggle();
                     using (new EditorGUI.DisabledScope(settings.sourceShape != RemeshShape.LOD0)) {
                         settings.voxelResolution = EditorGUILayout.IntSlider("Voxel resolution", settings.voxelResolution, 4, 256);
                         settings.solve = EditorGUILayout.Toggle("Fit source surface", settings.solve);

@@ -274,6 +274,43 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(SheetAndRod(10, false).FilterSmallParts(0, 0, 50, out _, out _));
         }
         [Test]
+        public void ClassifyPartsLabelsFacesWithoutChangingTheCapture()
+        {
+            var source = SheetAndRod(10, false);
+            var cls = source.ClassifyParts(0, 1f, 50);
+            Assert.AreEqual(new[] { RemeshSource.PartKept, RemeshSource.PartKept, RemeshSource.PartRod, RemeshSource.PartRod }, cls);
+            Assert.AreEqual(8, source.positions.Length); Assert.AreEqual(12, source.indices.Length);
+            Assert.AreEqual(RemeshSource.PartSmall, SheetAndRod(10, false).ClassifyParts(0.2f, 0, 50)[0]);
+            Assert.IsNull(SheetAndRod(10, false).ClassifyParts(0, 0, 50));
+        }
+        static void Cube(out Vector3[] positions, out int[] indices, bool inverted)
+        {
+            positions = new[] { new Vector3(0,0,0), new Vector3(1,0,0), new Vector3(1,1,0), new Vector3(0,1,0),
+                new Vector3(0,0,1), new Vector3(1,0,1), new Vector3(1,1,1), new Vector3(0,1,1) };
+            // Unity-style clockwise-from-outside faces, the winding OrientedBoxes emits.
+            int[] faces = { 0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5 };
+            indices = new int[36];
+            for (int i = 0; i < 36; i += 3) { indices[i] = faces[i]; indices[i+1] = faces[inverted ? i+2 : i+1]; indices[i+2] = faces[inverted ? i+1 : i+2]; }
+        }
+        [Test]
+        public void WindingProbeJudgesFromOutsideAndStaysOffOnOpenSheets()
+        {
+            Cube(out var p, out var tri, false);
+            var normals = new Vector3[12];
+            for (int f = 0; f < 12; ++f) normals[f] = Vector3.Cross(p[tri[f*3+1]] - p[tri[f*3]], p[tri[f*3+2]] - p[tri[f*3]]).normalized;
+            int outward = RemeshBaker.ProbeWinding(new TriangleBvh(p, tri), p, normals);
+            Cube(out p, out tri, true);
+            for (int f = 0; f < 12; ++f) normals[f] = Vector3.Cross(p[tri[f*3+1]] - p[tri[f*3]], p[tri[f*3+2]] - p[tri[f*3]]).normalized;
+            int inverted = RemeshBaker.ProbeWinding(new TriangleBvh(p, tri), p, normals);
+            // The two windings are told apart with certainty, whatever the sign convention names them.
+            Assert.AreNotEqual(0, outward); Assert.AreEqual(-outward, inverted);
+            // A single sheet is seen from both sides half the time: no verdict, filter stays off.
+            var sheet = new[] { Vector3.zero, Vector3.right, Vector3.up, new Vector3(1, 1, 0) };
+            var sheetTri = new[] { 0, 1, 2, 1, 3, 2 };
+            var sheetN = new[] { Vector3.back, Vector3.back };
+            Assert.AreEqual(0, RemeshBaker.ProbeWinding(new TriangleBvh(sheet, sheetTri), sheet, sheetN));
+        }
+        [Test]
         public void PrincipalExtentsFollowThePointSetsOwnAxes()
         {
             var pts = new System.Collections.Generic.List<Vector3>();

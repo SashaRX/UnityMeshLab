@@ -66,24 +66,14 @@ namespace SashaRX.UnityMeshLab
             // travels 2×distance THROUGH the target and can pierce a thin wall, sampling
             // the far side's texture (periodic mirrored/garbled patches). The filter only
             // accepts source triangles whose normal faces the ray origin. Source winding
-            // is not guaranteed to agree with the target's, so a consensus probe orients
-            // the normals first; without a clear majority (≥70% of ≥8 samples) the filter
-            // stays off and the bake behaves exactly as before.
-            int faces = source.indices.Length / 3;
-            var faceNormals = new Vector3[faces];
-            for (int f = 0; f < faces; ++f) {
-                int a = source.indices[f * 3], b = source.indices[f * 3 + 1], c = source.indices[f * 3 + 2];
-                faceNormals[f] = Vector3.Cross(source.positions[b] - source.positions[a], source.positions[c] - source.positions[a]).normalized;
-            }
-            int agree = 0, conflict = 0, stride = Math.Max(1, target.positions.Length / 128);
-            for (int i = 0; i < target.positions.Length; i += stride) {
-                var nearest = bvh.FindNearest(target.positions[i]);
-                if (nearest.triangleIndex < 0) continue;
-                if (Vector3.Dot(faceNormals[nearest.triangleIndex], cage[i]) >= 0f) ++agree; else ++conflict;
-            }
-            bool facingFilter = agree + conflict >= 8 && Math.Max(agree, conflict) * 10 >= (agree + conflict) * 7;
-            if (facingFilter && conflict > agree)
-                for (int f = 0; f < faces; ++f) faceNormals[f] = -faceNormals[f];
+            // is not guaranteed to be outward, so a probe orients the normals first;
+            // without a clear majority the filter stays off and the bake behaves exactly
+            // as before.
+            var faceNormals = FaceNormals(source.positions, source.indices);
+            int winding = ProbeWinding(bvh, source.positions, faceNormals);
+            bool facingFilter = winding != 0;
+            if (winding < 0)
+                for (int f = 0; f < faceNormals.Length; ++f) faceNormals[f] = -faceNormals[f];
             result.facingFilter = facingFilter;
             Vector3[] facing = facingFilter ? faceNormals : null;
             int misses = 0, rayFallbacks = 0, empties = 0;
@@ -432,6 +422,40 @@ namespace SashaRX.UnityMeshLab
             t = (t - n * Vector3.Dot(t, n)).normalized;
             if (t.sqrMagnitude < 1e-10f) t = Vector3.Cross(n, Mathf.Abs(n.y) < 0.9f ? Vector3.up : Vector3.right).normalized;
             b = Vector3.Cross(n, t) * (tangent.w < 0 ? -1 : 1);
+        }
+
+        /// <summary>
+        /// Which way the source winds, judged from OUTSIDE: rays from a sphere around the
+        /// source toward its centre always meet an outer surface first, so the sign of
+        /// that triangle's winding normal against the ray is the answer — whatever the
+        /// target looks like (the old probe compared source normals with the target's
+        /// cage, which falls apart once the target is a 100-triangle proxy of a 2000-
+        /// triangle block). +1 outward, -1 inverted, 0 when fewer than 8 rays hit or
+        /// under 70% agree (open sheets, mixed winding): the caller leaves the filter off.
+        /// </summary>
+        internal static int ProbeWinding(TriangleBvh bvh, Vector3[] positions, Vector3[] faceNormals)
+        {
+            if (positions.Length == 0) return 0;
+            Vector3 mn = positions[0], mx = positions[0];
+            foreach (var p in positions) { mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p); }
+            Vector3 centre = (mn + mx) * 0.5f;
+            float radius = Mathf.Max((mx - mn).magnitude * 0.5f, 1e-6f);
+            const int probes = 256;
+            int outward = 0, inward = 0;
+            float golden = Mathf.PI * (3f - Mathf.Sqrt(5f));
+            for (int i = 0; i < probes; ++i) {
+                // Fibonacci sphere: evenly spread directions, deterministic.
+                float y = 1f - 2f * (i + 0.5f) / probes, r = Mathf.Sqrt(Mathf.Max(0f, 1f - y * y)), a = golden * i;
+                var dir = new Vector3(Mathf.Cos(a) * r, y, Mathf.Sin(a) * r);
+                var hit = bvh.Raycast(centre + dir * (radius * 2f), -dir, radius * 4f);
+                if (hit.triangleIndex < 0) continue;
+                // The ray travels along -dir; a triangle facing the ray origin has its
+                // winding normal pointing back along +dir.
+                if (Vector3.Dot(faceNormals[hit.triangleIndex], dir) > 0f) ++outward; else ++inward;
+            }
+            int total = outward + inward;
+            if (total < 8 || Math.Max(outward, inward) * 10 < total * 7) return 0;
+            return outward >= inward ? 1 : -1;
         }
 
         static Vector3[] FaceNormals(Vector3[] positions, int[] indices)
