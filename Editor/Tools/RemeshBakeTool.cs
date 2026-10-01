@@ -152,6 +152,9 @@ namespace SashaRX.UnityMeshLab
             // Live from the current settings so the cage preview reflects projection
             // distance changes before a re-bake; zero until a source snapshot exists.
             previewData.cageDistance = pipeline.SourceDiagonal * settings.projectionDistance;
+            previewData.cageSmoothing = settings.cageSmoothing;
+            previewData.cageFit = settings.cageFit && settings.sourceShape == RemeshShape.LOD0;
+            previewData.source = pipeline.Source;
         }
 
         // The shared 3D canvas shows the selected pipeline stage (in capture space) with
@@ -264,8 +267,17 @@ namespace SashaRX.UnityMeshLab
                         "Materials transfers the source maps. Beauty bakes the object as the player sees it — realtime/mixed light with ray shadows, " +
                         "lightmaps, ambient and reflection probes folded into one lit BaseColor texture; the saved material becomes Unlit. " +
                         "Specular uses the scene view camera's position at bake time."), settings.bakeMode);
-                    if (settings.sourceShape == RemeshShape.LOD0)
-                        settings.projectionDistance = EditorGUILayout.Slider("Projection / bounds", settings.projectionDistance, 0.001f, 0.2f);
+                    if (settings.sourceShape == RemeshShape.LOD0) {
+                        settings.projectionDistance = EditorGUILayout.Slider(new GUIContent("Projection / bounds",
+                            "Ray travel each way from the result surface, as a fraction of the source diagonal. The cage preview in the 3D view shows the shells the rays start and end on."),
+                            settings.projectionDistance, 0.001f, 0.2f);
+                        settings.cageSmoothing = EditorGUILayout.Slider(new GUIContent("Cage smoothing",
+                            "Smoothing passes over the cage directions (welded across UV and crease splits, kept apart on double-sided sheets). 0 casts along the raw averaged normals; more flattens the decimation's sliver noise out of the ray directions."),
+                            settings.cageSmoothing, 0f, 10f);
+                        settings.cageFit = EditorGUILayout.Toggle(new GUIContent("Fit cage to source",
+                            "Measure where the source sits along each cage ray and reach that far (1× to 8× the projection distance), instead of one global distance: fewer missed texels where the decimation drifted, no deep rays where it stayed close."),
+                            settings.cageFit);
+                    }
                     else
                         settings.proxyDepth = EditorGUILayout.Slider(new GUIContent("Proxy search depth",
                             "How deep behind a proxy face a texel looks for the source, as a fraction of the model's diagonal: the ray along the face " +

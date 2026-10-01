@@ -135,6 +135,12 @@ namespace SashaRX.UnityMeshLab
         // lighting into one BaseColor texture and the saved material becomes Unlit.
         public RemeshBakeMode bakeMode = RemeshBakeMode.Materials;
         public float projectionDistance = 0.02f; // fraction of source bounds diagonal
+        // Cage: Laplacian passes over the welded side directions (0 = raw averaged
+        // normals), and whether each side's reach is fitted to where the source sits
+        // along its ray (clamped between 1× and 8× the projection distance) instead of
+        // the one global distance.
+        public float cageSmoothing = 2f;
+        public bool cageFit = true;
         // Proxy shapes (boxes, hull): how deep behind a proxy face a texel looks for the
         // source surface, as a fraction of the capture diagonal — the ray along the face
         // normal, then the nearest surface within the same reach. A full-depth look
@@ -170,6 +176,7 @@ namespace SashaRX.UnityMeshLab
                 chartIterations < 1 || chartIterations > 16 || !NonNegative(maxChartArea) || !NonNegative(maxChartBoundary) ||
                 textureResolution < 64 || textureResolution > 8192 || (textureResolution & (textureResolution - 1)) != 0 ||
                 padding < 1 || padding > 32 || !Finite(projectionDistance) || projectionDistance <= 0 || projectionDistance > 1 ||
+                !Finite(cageSmoothing) || cageSmoothing < 0 || cageSmoothing > 10 ||
                 !Finite(proxyDepth) || proxyDepth < 0.005f || proxyDepth > 1 ||
                 (bakeSamples != 1 && bakeSamples != 4 && bakeSamples != 9 && bakeSamples != 16) ||
                 hullResolution < 4 || hullResolution > 256 || hullTriangles < 12 || hullTriangles > 100000 ||

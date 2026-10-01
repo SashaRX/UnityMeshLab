@@ -86,6 +86,7 @@ namespace SashaRX.UnityMeshLab
         public RemeshBaker.Maps Maps => Primary?.maps;
         public Texture2D BaseColorPreview => baseColorPreview;
         public float SourceDiagonal => Primary?.source != null ? Primary.source.diagonal : 0f;
+        public RemeshSource Source => Primary?.source;
         public bool SourceHasColors { get { foreach (var n in nodes) if (n.source != null && n.source.hasColors) return true; return false; } }
 
         // True only when EVERY node carries the stage's output: a keep-hierarchy run
@@ -127,7 +128,7 @@ namespace SashaRX.UnityMeshLab
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
                     $"{s.maxChartArea}|{s.maxChartBoundary}|{s.packRotate}|{s.packBlockAlign}|{s.packBruteForce}";
-                default: return $"{s.bakeMode}|{s.projectionDistance}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}";
+                default: return $"{s.bakeMode}|{s.projectionDistance}|{s.cageSmoothing:F3}|{s.cageFit}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}";
             }
         }
 
@@ -403,8 +404,9 @@ namespace SashaRX.UnityMeshLab
             string prefix = "[" + node.name + "] ";
             if (UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag))
                 UvtLog.Info(UvtLog.Category.RemeshDiag, prefix +
-                    $"cage: {baked.weldedPositions:N0} welded positions ({baked.splitCopies:N0} split copies), " +
-                    $"{baked.oneSidedNormals:N0} one-sided border normals, max cage deviation {baked.maxOneSidedDeg:F0}°, {baked.zeroNormals:N0} zero normals; " +
+                    $"cage: {baked.weldedPositions:N0} welded positions ({baked.splitCopies:N0} split copies), {baked.cageSides:N0} sides " +
+                    $"({baked.foldedPositions:N0} double-sided positions), {baked.oneSidedNormals:N0} vertices off their cage by >30° (max {baked.maxOneSidedDeg:F0}°), " +
+                    $"reach up to {baked.maxReachRatio:F1}× the projection distance, {baked.zeroNormals:N0} zero normals; " +
                     $"projection: {baked.rayFallbacks:N0} nearest-fallback samples, {baked.misses:N0} missed texels, front-face filter {(baked.facingFilter ? "on" : "off")}; " +
                     $"normal map tilt: mean {baked.meanTiltDeg:F1}° / max {baked.maxTiltDeg:F0}°, {baked.loudTexels:N0} texels >45°; " +
                     $"bounds diagonal: source {captured.diagonal:F3} / target {targetDiagonal:F3} (ratio {scaleRatio:F2})");

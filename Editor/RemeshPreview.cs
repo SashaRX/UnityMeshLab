@@ -26,8 +26,11 @@ namespace SashaRX.UnityMeshLab
             public Texture2D baseColor;
             // Ray travel of the bake projection (source diagonal × projection distance);
             // the Cage toggle draws the result mesh inflated by ±this along the cage
-            // normals, i.e. the exact shells the projection rays start and end on.
-            public float cageDistance;
+            // directions, i.e. the exact shells the projection rays start and end on.
+            // Smoothing and fit mirror the bake settings; the source feeds the fit.
+            public float cageDistance, cageSmoothing;
+            public bool cageFit;
+            public RemeshSource source;
         }
 
         static readonly string[] ViewNames = { "3D", "UV", "Maps" };
@@ -37,7 +40,8 @@ namespace SashaRX.UnityMeshLab
         Channel channel;
         bool wireframe = true, shaded = true, textured = true, bumpMap = true, vertexColors, cageView, uvTexture = true, uvTint = true;
         Material surface, wire, lines;
-        Mesh cageOuter, cageInner; int cageMeshId; float cageDistanceCached = -1;
+        Mesh cageOuter, cageInner; int cageMeshId; string cageKey;
+        RemeshSource cageSourceRef; TriangleBvh cageSourceBvh;
         RemeshBaker.Maps mapSource;
         readonly Texture2D[] mapTextures = new Texture2D[5];
 
@@ -59,7 +63,8 @@ namespace SashaRX.UnityMeshLab
         {
             if (cageOuter) Object.DestroyImmediate(cageOuter);
             if (cageInner) Object.DestroyImmediate(cageInner);
-            cageOuter = cageInner = null; cageMeshId = 0; cageDistanceCached = -1;
+            cageOuter = cageInner = null; cageMeshId = 0; cageKey = null;
+            cageSourceRef = null; cageSourceBvh = null;
             foreach (var texture in mapTextures) if (texture) Object.DestroyImmediate(texture);
             Array.Clear(mapTextures, 0, mapTextures.Length);
             mapSource = null;
@@ -132,7 +137,7 @@ namespace SashaRX.UnityMeshLab
             if (!mesh || !EnsureResources()) return;
             if (wireframe) view.DrawWire(mesh, Matrix4x4.identity, shaded ? new Color(0.05f, 0.05f, 0.05f, 1) : new Color(0.4f, 0.85f, 1f, 1));
             if (cageView && stage == Stage.Result && data.geometry != null && data.cageDistance > 0)
-                DrawCage(view, mesh, data.geometry, data.cageDistance);
+                DrawCage(view, mesh, data);
         }
 
         bool EnsureResources()
@@ -146,40 +151,62 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
-        // The projection cage, drawn as its two limit shells: the result mesh inflated
-        // by ±cageDistance along the same welded cage normals the bake rays follow
-        // (outer = ray origins, inner = ray ends). Rebuilt when the mesh or the
-        // distance changes; turn the surface Wire off to read a shell alone.
-        void DrawCage(MeshViewport3D view, Mesh mesh, RemeshNative.Geometry geometry, float distance)
+        // The projection cage, drawn as its two limit shells: every face corner pushed
+        // ±its reach along its cage direction (outer = ray origins, inner = ray ends),
+        // with one line per welded side pair so a double-sided sheet shows both of its
+        // shells. Rebuilt when the mesh, the distance, the smoothing, the fit or the
+        // source changes; turn the surface Wire off to read a shell alone.
+        void DrawCage(MeshViewport3D view, Mesh mesh, Data data)
         {
+            var geometry = data.geometry;
             int id = mesh.GetInstanceID();
-            if (id != cageMeshId || Mathf.Abs(distance - cageDistanceCached) > 1e-6f) {
+            string key = $"{data.cageDistance:R}|{data.cageSmoothing:R}|{data.cageFit}|{(data.source != null ? data.source.GetHashCode() : 0)}";
+            if (id != cageMeshId || key != cageKey) {
                 if (cageOuter) Object.DestroyImmediate(cageOuter);
                 if (cageInner) Object.DestroyImmediate(cageInner);
-                var cageNormals = RemeshBaker.BuildCageNormals(geometry, null);
-                var indices = MeshViewport3D.EdgeIndices(mesh);
-                if (indices != null) {
-                    var folds = new TriangleBvh(geometry.positions, geometry.indices);
-                    cageOuter = CageShell(mesh, geometry, cageNormals, distance, "Outer", folds);
-                    cageInner = CageShell(mesh, geometry, cageNormals, -distance, "Inner", folds);
+                TriangleBvh source = null;
+                if (data.cageFit && data.source != null && data.source.indices != null && data.source.indices.Length > 0) {
+                    if (!ReferenceEquals(cageSourceRef, data.source) || cageSourceBvh == null) {
+                        cageSourceBvh = new TriangleBvh(data.source.positions, data.source.indices);
+                        cageSourceRef = data.source;
+                    }
+                    source = cageSourceBvh;
                 }
-                else cageOuter = cageInner = null;
-                cageMeshId = id; cageDistanceCached = distance;
+                var cage = RemeshBaker.BuildCage(geometry, data.cageDistance, data.cageSmoothing, source);
+                var folds = new TriangleBvh(geometry.positions, geometry.indices);
+                cageOuter = CageShell(mesh, geometry, cage, 1f, "Outer", folds);
+                cageInner = CageShell(mesh, geometry, cage, -1f, "Inner", folds);
+                cageMeshId = id; cageKey = key;
             }
             if (cageOuter) view.DrawLineMesh(cageOuter, Matrix4x4.identity, new Color(1f, 0.55f, 0.15f, 0.9f));
             if (cageInner) view.DrawLineMesh(cageInner, Matrix4x4.identity, new Color(0.35f, 0.6f, 1f, 0.45f));
         }
 
-        static Mesh CageShell(Mesh mesh, RemeshNative.Geometry geometry, Vector3[] cageNormals, float distance, string suffix, TriangleBvh folds)
+        static Mesh CageShell(Mesh mesh, RemeshNative.Geometry geometry, RemeshBaker.Cage cage, float sign, string suffix, TriangleBvh folds)
         {
-            var vertices = new Vector3[geometry.positions.Length];
-            for (int i = 0; i < vertices.Length; ++i) {
-                Vector3 dir = distance >= 0 ? cageNormals[i] : -cageNormals[i];
-                vertices[i] = geometry.positions[i] + dir * FoldLimitedOffset(folds, geometry.positions[i], dir, Mathf.Abs(distance));
+            int corners = geometry.indices.Length;
+            if (corners == 0) return null;
+            var vertices = new Vector3[corners];
+            for (int c = 0; c < corners; ++c) {
+                Vector3 p = geometry.positions[geometry.indices[c]];
+                Vector3 dir = cage.directions[c] * sign;
+                vertices[c] = p + dir * FoldLimitedOffset(folds, p, dir, cage.reach[c]);
             }
+            // One line per pair of welded sides: the wire of each side's shell, drawn once.
+            var lines = new List<int>(corners * 2);
+            var seen = new HashSet<(int, int)>();
+            for (int c = 0; c < corners; c += 3)
+                for (int k = 0; k < 3; ++k) {
+                    int a = c + k, b = c + (k + 1) % 3;
+                    int sa = cage.side[a], sb = cage.side[b];
+                    if (sa == sb) continue;
+                    var pair = sa < sb ? (sa, sb) : (sb, sa);
+                    if (!seen.Add(pair)) continue;
+                    lines.Add(a); lines.Add(b);
+                }
             var shell = new Mesh { name = mesh.name + "_Cage" + suffix, hideFlags = HideFlags.HideAndDontSave, indexFormat = IndexFormat.UInt32 };
             shell.vertices = vertices;
-            shell.SetIndices(MeshViewport3D.EdgeIndices(mesh), MeshTopology.Lines, 0);
+            shell.SetIndices(lines.ToArray(), MeshTopology.Lines, 0);
             return shell;
         }
 

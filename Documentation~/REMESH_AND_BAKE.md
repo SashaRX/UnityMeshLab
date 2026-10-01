@@ -128,28 +128,49 @@ settings, marked "settings changed" in its header) and clears everything after i
    source vertex colors, interpolated at the nearest source surface point, onto
    the result mesh independently. Missed covered texels are magenta, not silently
    patched with unrelated material data. Projection rays are cast along a smooth
-   welded "cage" direction (area-weighted face normals averaged across coincident
-   vertices), not the vertex normal: UV-island hard edges leave chart-border
-   normals one-sided, and rays along them would sample a displaced source point,
-   baking artifact bands around every island. The tangent-space normal map is
-   still encoded against the vertex normal the result mesh shades with, so hard
-   island borders keep their crisp silhouette while the interior stays clean.
-   Rays only accept source triangles facing them (front-face filter): a plain
-   closest-hit ray travels twice the projection distance through the target and
-   pierces thin walls, sampling the far side's texture as periodic mirrored
+   welded "cage" direction, not the vertex normal: UV-island hard edges leave
+   chart-border normals one-sided, and rays along them would sample a displaced
+   source point, baking artifact bands around every island. The tangent-space
+   normal map is still encoded against the vertex normal the result mesh shades
+   with, so hard island borders keep their crisp silhouette while the interior
+   stays clean. The cage is built **per face corner and per side**: the corners
+   meeting at one position are clustered by the hemisphere their face normals
+   share (within 120°), and only one cluster's corners are averaged (face area ×
+   corner angle) and Laplacian-smoothed together over the cluster connectivity
+   (**Cage smoothing**, 0–10 passes, 2 by default). UV-chart and crease splits
+   weld back into one smooth direction as a plain cage does, but a double-sided
+   sheet — the wall of a non-closed source, thinner than a voxel cell and
+   collapsed to zero thickness by the simplifier, both windings on the same
+   vertices — keeps a front side and a back side, where a position weld would
+   sum two opposite normals to nothing and normalize the noise (rays leaving at
+   180° from their face, preview shells spiking across the whole model). Every
+   corner direction is checked against its own face and falls back to the
+   unsmoothed side, then to the face normal, so no ray starts behind the surface
+   it belongs to. **Fit cage to source** (default on) replaces the one global
+   ray travel with a per-side reach: each side casts along its direction both
+   ways (then asks for the nearest point) to measure where the source actually
+   is, doubles that for oblique surfaces, clamps it between 1× and 8× the
+   projection distance and smooths it over the side connectivity, never below a
+   side's own need — a cage that hugs the source where the decimation stayed
+   close and opens where it drifted, so fewer texels miss without deep rays
+   everywhere. Rays only accept source triangles facing them (front-face
+   filter): a plain closest-hit ray travels twice the reach through the target
+   and pierces thin walls, sampling the far side's texture as periodic mirrored
    patches; the filter's orientation comes from a probe that looks at the
    source from OUTSIDE — rays cast from a sphere around it toward its centre
    meet an outer surface first, and that triangle's winding against the ray
    gives the answer whatever the target's density — and it stays off when
-   fewer than 70% of the rays agree (open sheets, mixed winding). The 3D view's **Cage** toggle (the right sidebar's 3D panel drives the canvas's shared 3D view — switch the canvas to **3D** at its bottom centre)
-   draws the projection limits — the result mesh inflated by ±the ray travel
-   along the same welded cage normals, orange for the outer (ray origin) shell,
-   blue for the inner (ray end) shell — live from the current projection
-   distance, so the setting can be tuned before re-baking. The cage is a proper
-   smooth cage: its directions are area-weighted, welded across UV/crease splits
-   and Laplacian-smoothed over the welded connectivity, and each shell's offset
-   stops short of self-intersection (cast against the surface itself), so a
-   tight concavity shows a pinch instead of folding through to the far side.
+   fewer than 70% of the rays agree (open sheets, mixed winding). The 3D view's
+   **Cage** toggle (the right sidebar's 3D panel drives the canvas's shared 3D
+   view — switch the canvas to **3D** at its bottom centre) draws the projection
+   limits — every corner pushed ±its reach along its cage direction, one line
+   per welded side pair, orange for the outer (ray origin) shell, blue for the
+   inner (ray end) shell — live from the current distance, smoothing and fit
+   (the fit builds a BVH of the source once per capture), so the settings can be
+   tuned before re-baking; a double-sided sheet shows both of its shells. Each
+   shell's offset stops short of self-intersection (cast against the surface
+   itself), so a tight concavity shows a pinch instead of folding through to the
+   far side.
    For the *Bounding box* and *Hull* shapes the cage is replaced by **proxy
    projection**: every texel casts straight along its face normal from just
    outside the proxy, as deep as **Proxy search depth** allows (a fraction of
@@ -215,8 +236,10 @@ settings, marked "settings changed" in its header) and clears everything after i
    grazing term, Schlick Fresnel) — and all lighting, lightmap response and
    specular alike, reacts to the source's normal map, as it does in play.
    With the **RemeshDiag** log filter enabled, every bake also prints its health
-   counters to the Console: welded cage positions and split copies, one-sided
-   border normals (max cage deviation), nearest-fallback projection samples,
+   counters to the Console: welded cage positions and split copies, cage sides
+   and double-sided positions, vertices whose normal sits >30° off their cage
+   (max deviation), the longest fitted reach as a multiple of the projection
+   distance, nearest-fallback projection samples,
    front-face filter state and the normal map's tilt statistics (mean/max angle
    from flat, texels >45°); a map dominated by extreme tilts additionally raises
    a warning.

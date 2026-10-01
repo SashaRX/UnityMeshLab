@@ -138,6 +138,69 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(alpha[1].r, Is.EqualTo(1).Within(1e-4f));
         }
         [Test]
+        public void CageKeepsDoubleSidedSheetApart()
+        {
+            // A quad with both windings on the SAME four vertices: a wall thinner than a
+            // voxel after the simplifier collapsed its slab. A position weld sums the two
+            // sides to nothing; the sided cage gives every front corner +z and every back
+            // corner -z, with a uniform reach when no source is given.
+            var p=new[] { Vector3.zero, Vector3.right, new Vector3(1,1,0), Vector3.up };
+            var sheet=new RemeshNative.Geometry { positions=p, normals=new Vector3[4], indices=new[] { 0,1,2, 0,2,3, 0,2,1, 0,3,2 } };
+            var cage=RemeshBaker.BuildCage(sheet, 0.1f, 2f, null);
+            for (int c=0;c<6;++c) Assert.That(Vector3.Angle(cage.directions[c], Vector3.forward), Is.LessThan(0.01f), "front corner "+c);
+            for (int c=6;c<12;++c) Assert.That(Vector3.Angle(cage.directions[c], Vector3.back), Is.LessThan(0.01f), "back corner "+c);
+            Assert.AreEqual(4, cage.positions); Assert.AreEqual(8, cage.sides); Assert.AreEqual(4, cage.folded);
+            Assert.AreEqual(4, cage.zeroNormals);
+            foreach (float r in cage.reach) Assert.That(r, Is.EqualTo(0.1f).Within(1e-6f));
+            Assert.That(cage.Direction(0, new Vector3(0.2f,0.3f,0.5f)).z, Is.GreaterThan(0.99f));
+            Assert.That(cage.Reach(2, new Vector3(0.2f,0.3f,0.5f)), Is.EqualTo(0.1f).Within(1e-6f));
+        }
+        [Test]
+        public void CageWeldsSplitCopiesAcrossACrease()
+        {
+            // The 90° fold split along its shared edge (a chart border): the copies at one
+            // position agree within 120°, so they share one side whose direction is the
+            // average of both faces, and the sheet's far corners keep their own face.
+            var p=new[] { Vector3.zero, Vector3.right, Vector3.forward, Vector3.up, Vector3.zero, Vector3.right };
+            var fold=new RemeshNative.Geometry { positions=p, normals=new Vector3[6], indices=new[] { 0,1,2, 5,4,3 } };
+            RemeshNative.GenerateSplitNormals(fold, RemeshNormalWeighting.FaceArea);
+            var cage=RemeshBaker.BuildCage(fold, 0.1f, 0f, null);
+            var average=Vector3.Normalize(new Vector3(0,-1,-1));
+            Assert.AreEqual(4, cage.positions); Assert.AreEqual(4, cage.sides); Assert.AreEqual(0, cage.folded);
+            Assert.AreEqual(cage.side[0], cage.side[4], "coincident copies share a side");
+            Assert.That(Vector3.Angle(cage.directions[0], average), Is.LessThan(0.01f));
+            Assert.That(Vector3.Angle(cage.directions[4], average), Is.LessThan(0.01f));
+            Assert.That(Vector3.Angle(cage.directions[2], Vector3.down), Is.LessThan(0.01f), "far corner of the floor face");
+            Assert.That(Vector3.Angle(cage.directions[5], Vector3.back), Is.LessThan(0.01f), "far corner of the wall face");
+            // Every direction leaves the front of its own face.
+            for (int c=0;c<6;++c) {
+                int f=c/3; int a=fold.indices[f*3], b=fold.indices[f*3+1], d=fold.indices[f*3+2];
+                var fn=Vector3.Cross(p[b]-p[a], p[d]-p[a]).normalized;
+                Assert.That(Vector3.Dot(cage.directions[c], fn), Is.GreaterThan(RemeshBaker.Cage.MinFacing));
+            }
+            Assert.AreEqual(4, cage.oneSided, "all four split copies along the crease sit 45° off the welded cage");
+        }
+        [Test]
+        public void CageFitReachesTheSource()
+        {
+            // A flat target under a source sheet 0.3 above it: with a 0.1 projection
+            // distance the plain cage misses the source; the fitted reach measures 0.3
+            // along the ray, doubles it for oblique surfaces and stays within 8×.
+            var target=new RemeshNative.Geometry { positions=new[] { Vector3.zero, Vector3.right, new Vector3(1,1,0), Vector3.up },
+                normals=new[] { Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward }, indices=new[] { 0,1,2, 0,2,3 } };
+            var sp=new[] { new Vector3(-2,-2,0.3f), new Vector3(3,-2,0.3f), new Vector3(3,3,0.3f), new Vector3(-2,3,0.3f) };
+            var source=new TriangleBvh(sp, new[] { 0,1,2, 0,2,3 });
+            var fitted=RemeshBaker.BuildCage(target, 0.1f, 2f, source);
+            foreach (float r in fitted.reach) Assert.That(r, Is.EqualTo(0.6f).Within(1e-4f));
+            Assert.That(fitted.maxReach, Is.EqualTo(0.6f).Within(1e-4f));
+            // Far beyond the 8× range the fit falls back to the projection distance.
+            var far=new TriangleBvh(new[] { new Vector3(-2,-2,5), new Vector3(3,-2,5), new Vector3(3,3,5), new Vector3(-2,3,5) }, new[] { 0,1,2, 0,2,3 });
+            foreach (float r in RemeshBaker.BuildCage(target, 0.1f, 2f, far).reach) Assert.That(r, Is.EqualTo(0.1f).Within(1e-6f));
+            // Closer than the projection distance the reach stays at the distance.
+            var near=new TriangleBvh(new[] { new Vector3(-2,-2,0.02f), new Vector3(3,-2,0.02f), new Vector3(3,3,0.02f), new Vector3(-2,3,0.02f) }, new[] { 0,1,2, 0,2,3 });
+            foreach (float r in RemeshBaker.BuildCage(target, 0.1f, 2f, near).reach) Assert.That(r, Is.EqualTo(0.1f).Within(1e-6f));
+        }
+        [Test]
         public void UvIslandNormalsAreHardOnlyAtSplitVertices()
         {
             // Two faces folded 90° along x. Shared vertices smooth; split vertices stay hard.

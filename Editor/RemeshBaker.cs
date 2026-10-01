@@ -19,7 +19,11 @@ namespace SashaRX.UnityMeshLab
             public int empty;
             // Bake health counters surfaced through the RemeshDiag log category.
             public int rayFallbacks, weldedPositions, splitCopies, oneSidedNormals, loudTexels, zeroNormals;
-            public float maxOneSidedDeg, meanTiltDeg, maxTiltDeg;
+            // Cage: welded (position, side) clusters and the positions carrying more than
+            // one side (double-sided sheets, collapsed slabs); the longest fitted reach as
+            // a multiple of the projection distance.
+            public int cageSides, foldedPositions;
+            public float maxOneSidedDeg, meanTiltDeg, maxTiltDeg, maxReachRatio;
             public bool facingFilter;
             public bool beauty;
         }
@@ -57,12 +61,15 @@ namespace SashaRX.UnityMeshLab
                 faceDirs = FaceNormals(target.positions, target.indices);
                 depth = Mathf.Max(source.diagonal * settings.proxyDepth, source.diagonal * 1e-4f);
             }
-            // Projection rays follow a smooth welded "cage" direction, not the vertex
+            // Projection rays follow the smooth welded "cage" direction, not the vertex
             // normal: island hard-edge modes leave chart-border normals one-sided,
             // and casting along them samples a displaced source point, which bakes
             // artifact bands around every island. The tangent frame stays the vertex
             // normal the result mesh shades with, so encode and decode still match.
-            var cage = BuildCageNormals(target, result);
+            // The cage is per corner and per side (see Cage), so a double-sided sheet
+            // projects each face from its own side, and its reach is fitted to where
+            // the source actually is when the settings ask for it.
+            var cage = BuildCage(target, distance, settings.cageSmoothing, settings.cageFit && !proxy ? bvh : null, result);
             // Front-face filter for the projection rays: a plain closest-hit raycast
             // travels 2×distance THROUGH the target and can pierce a thin wall, sampling
             // the far side's texture (periodic mirrored/garbled patches). The filter only
@@ -105,7 +112,7 @@ namespace SashaRX.UnityMeshLab
                         for (int c = 0; c < candidateCount && face < 0; ++c)
                             if (Inside(target, candidates[c], uv, out w)) face = candidates[c];
                         if (face < 0) continue;
-                    if (!Project(source, target, tangents, cage, bvh, facing, beauty, face, w, distance,
+                    if (!Project(source, target, tangents, cage, bvh, facing, beauty, face, w,
                             proxy, faceDirs, depth, settings.vertexColorTint,
                             out var sc, out var sn, out var sm, out var sa, out var se, out var rayFallback)) continue;
                         if (rayFallback) Interlocked.Increment(ref rayFallbacks);
@@ -206,14 +213,15 @@ namespace SashaRX.UnityMeshLab
 
         // Trace from the destination surface point back to the source and evaluate its
         // material there. False when neither the ray nor the bounded nearest query hits.
-        // The ray direction comes from the welded cage normal; the tangent frame keeps
-        // the (possibly hard) vertex normal so encode matches how the mesh shades.
+        // The ray direction and reach come from the cage at the texel's corners; the
+        // tangent frame keeps the (possibly hard) vertex normal so encode matches how
+        // the mesh shades.
         // facing (when non-null) carries the orientation-consensus source face normals
         // that keep the ray and the fallback on the side of the surface facing the texel.
         // proxy: the ray starts just outside the proxy face and travels inward along the
         // face normal through the whole proxy (depth), first hit wins, no fallback.
-        static bool Project(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents, Vector3[] cage,
-            TriangleBvh bvh, Vector3[] facing, RemeshBeauty beauty, int face, Vector3 w, float distance,
+        static bool Project(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents, Cage cage,
+            TriangleBvh bvh, Vector3[] facing, RemeshBeauty beauty, int face, Vector3 w,
             bool proxy, Vector3[] faceDirs, float depth, bool vertexTint,
             out Color color, out Color normal, out Color metal, out Color ao, out Color emission, out bool rayFallback)
         {
@@ -239,17 +247,18 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             else {
-                Vector3 rayN = (cage[a] * w.x + cage[b] * w.y + cage[c] * w.z).normalized;
+                Vector3 rayN = cage.Direction(face, w);
+                float reach = cage.Reach(face, w);
                 var hit = facing != null
-                    ? bvh.RaycastFacingFiltered(p + rayN * distance, -rayN, distance * 2, facing)
-                    : bvh.Raycast(p + rayN * distance, -rayN, distance * 2);
+                    ? bvh.RaycastFacingFiltered(p + rayN * reach, -rayN, reach * 2, facing)
+                    : bvh.Raycast(p + rayN * reach, -rayN, reach * 2);
                 sourceFace = hit.triangleIndex; sw = hit.barycentric;
                 if (sourceFace < 0) {
-                    // Both fallbacks stay bounded by the projection distance: an unbounded
+                    // Both fallbacks stay bounded by the cage reach: an unbounded
                     // filtered query would smear an unrelated far part across a gap.
                     var nearest = facing != null
-                        ? bvh.FindNearestNormalFiltered(p, rayN, facing, 0f, distance)
-                        : bvh.FindNearest(p, distance);
+                        ? bvh.FindNearestNormalFiltered(p, rayN, facing, 0f, reach)
+                        : bvh.FindNearest(p, reach);
                     sourceFace = nearest.triangleIndex; sw = nearest.barycentric;
                     rayFallback = true;
                 }
@@ -303,58 +312,213 @@ namespace SashaRX.UnityMeshLab
             return lit;
         }
 
-        // Per-vertex raycast directions from area-weighted face normals welded across
-        // coincident vertices: UV chart borders (and crease edges) split vertices, and
-        // each copy's own normal is one-sided there, so rays cast along it land on a
-        // displaced source point. Welding by exact position — xatlas copies bit-identical
-        // coordinates — averages both sides back into a smooth cage direction, and a
-        // Laplacian pass over the WELDED connectivity smooths the sliver noise the
-        // adaptive decimation leaves in those directions (the "fully smooth cage" every
-        // baker prescribes). The pass runs on the welded mesh precisely so it flows
-        // through chart borders and hard edges instead of re-splitting them.
-        internal static Vector3[] BuildCageNormals(RemeshNative.Geometry target, Maps diag)
+        /// <summary>
+        /// The projection cage: a ray direction and a ray reach for every face CORNER of
+        /// the result mesh. Rays leave the surface point along the interpolated corner
+        /// directions, start <c>reach</c> away on the outside and travel 2 × reach.
+        ///
+        /// Directions are built per <b>side</b>, not per position: the corners meeting
+        /// at one position are clustered by the hemisphere their face normals share,
+        /// and only corners of one cluster are averaged (area × corner angle) and
+        /// smoothed together. UV-chart and crease splits (copies with agreeing normals)
+        /// weld back into one smooth direction as a plain welded cage does, but a
+        /// double-sided sheet — the walls of a non-closed source after the voxel
+        /// remesh, thinner than a cell and collapsed to zero thickness by the
+        /// simplifier — keeps a front side and a back side, where a position weld
+        /// would sum two opposite normals to nothing and normalize the noise (rays
+        /// leaving at 180° from their face, shells crossing the whole model).
+        /// Every corner direction is finally checked against its own face normal and
+        /// falls back to the unsmoothed side, then to the face normal, so no ray ever
+        /// starts behind the surface it belongs to.
+        ///
+        /// The reach is the projection distance everywhere, or, fitted, the distance the
+        /// source actually sits at along each side's ray (times a margin for oblique
+        /// surfaces, clamped between the projection distance and 8 × it) smoothed over
+        /// the side connectivity — a cage that hugs the source where the decimation
+        /// stayed close and opens where it drifted, instead of one global distance that
+        /// misses here and bleeds through there.
+        /// </summary>
+        internal sealed class Cage
         {
-            const float cageSmoothing = 2f;
-            var slots = new int[target.positions.Length];
-            var map = new System.Collections.Generic.Dictionary<(int, int, int), int>(target.positions.Length);
-            for (int i = 0; i < target.positions.Length; ++i) {
-                var p = target.positions[i];
+            public const float MinFacing = 0.05f;   // cos ≈ 87°: a direction must leave its face's front
+            public const float SideCos = -0.5f;     // corners within 120° of a side's sum join it
+            public const float FitMargin = 2f;      // reach = source distance × margin
+            public const float FitRange = 8f;       // the fit looks this many projection distances out
+
+            public Vector3[] directions;   // per corner (indices.Length)
+            public float[] reach;          // per corner
+            public int[] side;             // per corner: welded (position, side) cluster
+            public int positions, sides, folded, oneSided, zeroNormals;
+            public float maxDeviationDeg, maxReach, distance;
+
+            public Vector3 Direction(int face, Vector3 w)
+            {
+                int c = face * 3;
+                Vector3 d = directions[c] * w.x + directions[c + 1] * w.y + directions[c + 2] * w.z;
+                return d.sqrMagnitude > 1e-20f ? d.normalized : directions[c];
+            }
+
+            public float Reach(int face, Vector3 w)
+            {
+                int c = face * 3;
+                return reach[c] * w.x + reach[c + 1] * w.y + reach[c + 2] * w.z;
+            }
+        }
+
+        internal static Cage BuildCage(RemeshNative.Geometry target, float distance, float smoothing, TriangleBvh source, Maps diag = null)
+        {
+            var positions = target.positions; var indices = target.indices;
+            int corners = indices.Length, faces = corners / 3;
+            // Bit-exact position weld: xatlas and the simplifier copy coordinates exactly.
+            var slots = new int[positions.Length];
+            var map = new System.Collections.Generic.Dictionary<(int, int, int), int>(positions.Length);
+            for (int i = 0; i < positions.Length; ++i) {
+                var p = positions[i];
                 var key = (BitConverter.SingleToInt32Bits(p.x), BitConverter.SingleToInt32Bits(p.y), BitConverter.SingleToInt32Bits(p.z));
                 if (!map.TryGetValue(key, out int slot)) { slot = map.Count; map[key] = slot; }
                 slots[i] = slot;
             }
-            var welded = new Vector3[map.Count];
-            var weldedIndices = new int[target.indices.Length];
-            for (int i = 0; i < target.indices.Length; i += 3) {
-                int a = target.indices[i], b = target.indices[i + 1], c = target.indices[i + 2];
-                Vector3 n = Vector3.Cross(target.positions[b] - target.positions[a], target.positions[c] - target.positions[a]);
-                welded[slots[a]] += n; welded[slots[b]] += n; welded[slots[c]] += n;
-                weldedIndices[i] = slots[a]; weldedIndices[i + 1] = slots[b]; weldedIndices[i + 2] = slots[c];
+            // Sides: per position a linked list of clusters; a corner joins the cluster
+            // whose running sum its face normal agrees with best (within 120°), else
+            // opens a new one. A sum only ever grows (every member has a positive dot
+            // with it), so it never cancels the way a plain position weld does.
+            var firstSide = new int[map.Count];
+            for (int i = 0; i < firstSide.Length; ++i) firstSide[i] = -1;
+            var nextSide = new System.Collections.Generic.List<int>();
+            var sideSum = new System.Collections.Generic.List<Vector3>();
+            var sideVertex = new System.Collections.Generic.List<int>();
+            var cornerSide = new int[corners];
+            var faceNormal = new Vector3[faces];
+            for (int f = 0; f < faces; ++f) {
+                int a = indices[f * 3], b = indices[f * 3 + 1], c = indices[f * 3 + 2];
+                Vector3 cross = Vector3.Cross(positions[b] - positions[a], positions[c] - positions[a]);
+                float area2 = cross.magnitude;
+                Vector3 fn = area2 > 1e-30f ? cross / area2 : Vector3.zero;
+                faceNormal[f] = fn;
+                for (int k = 0; k < 3; ++k) {
+                    int v = indices[f * 3 + k], slot = slots[v];
+                    Vector3 e1 = positions[indices[f * 3 + (k + 1) % 3]] - positions[v];
+                    Vector3 e2 = positions[indices[f * 3 + (k + 2) % 3]] - positions[v];
+                    // Area × corner angle: meshopt's accumulation and Blender's weighted
+                    // normal in one, so decimation slivers barely steer the direction.
+                    Vector3 contribution = cross * (Vector3.Angle(e1, e2) * Mathf.Deg2Rad);
+                    int best = -1; float bestDot = float.NegativeInfinity;
+                    for (int sd = firstSide[slot]; sd >= 0; sd = nextSide[sd]) {
+                        Vector3 sum = sideSum[sd];
+                        float dot = sum.sqrMagnitude > 1e-30f && fn.sqrMagnitude > 0f ? Vector3.Dot(sum.normalized, fn) : 1f;
+                        if (dot > Cage.SideCos && dot > bestDot) { best = sd; bestDot = dot; }
+                    }
+                    if (best < 0) {
+                        best = sideSum.Count;
+                        sideSum.Add(Vector3.zero); sideVertex.Add(v);
+                        nextSide.Add(firstSide[slot]); firstSide[slot] = best;
+                    }
+                    sideSum[best] += contribution;
+                    cornerSide[f * 3 + k] = best;
+                }
             }
-            for (int i = 0; i < welded.Length; ++i)
-                if (welded[i].sqrMagnitude > 1e-30f) welded[i] = welded[i].normalized;
-            var weldedMesh = new RemeshNative.Geometry { normals = welded, indices = weldedIndices };
-            RemeshNative.SmoothNormals(weldedMesh, cageSmoothing);
-            var cage = new Vector3[target.positions.Length];
-            float maxDev = 0; int oneSided = 0, zeroNormalVerts = 0;
-            for (int i = 0; i < cage.Length; ++i) {
-                bool zeroVertexNormal = target.normals[i].sqrMagnitude < 1e-12f;
-                if (zeroVertexNormal) ++zeroNormalVerts;
-                // Fall back to the (possibly zero) vertex normal only when the welded
-                // sum is degenerate; zero cage entries zero the projection ray.
-                cage[i] = welded[slots[i]].sqrMagnitude > 1e-30f ? welded[slots[i]].normalized : target.normals[i];
-                float dev = Mathf.Acos(Mathf.Clamp(Vector3.Dot(cage[i], target.normals[i]), -1f, 1f)) * Mathf.Rad2Deg;
-                if (dev > maxDev) maxDev = dev;
-                if (dev > 30f) ++oneSided;
+            int sideCount = sideSum.Count;
+            var sideDir = new Vector3[sideCount];
+            for (int sd = 0; sd < sideCount; ++sd)
+                sideDir[sd] = sideSum[sd].sqrMagnitude > 1e-30f ? sideSum[sd].normalized : Vector3.zero;
+            // Laplacian smoothing over the SIDE connectivity: the corners of a face all
+            // sit on compatible sides, so the pass flows through chart borders and
+            // creases of one surface and never across to the other side of a sheet.
+            var welded = new RemeshNative.Geometry { normals = (Vector3[])sideDir.Clone(), indices = cornerSide };
+            RemeshNative.SmoothNormals(welded, smoothing);
+            var cage = new Cage { directions = new Vector3[corners], reach = new float[corners], side = cornerSide,
+                positions = map.Count, sides = sideCount, distance = distance };
+            var deviated = new bool[positions.Length];
+            for (int c = 0; c < corners; ++c) {
+                int sd = cornerSide[c], v = indices[c];
+                Vector3 fn = faceNormal[c / 3];
+                Vector3 d = welded.normals[sd];
+                if (!Facing(d, fn)) d = sideDir[sd];
+                if (!Facing(d, fn)) d = fn;
+                if (d.sqrMagnitude < 1e-20f) d = target.normals[v];   // degenerate face at a degenerate vertex
+                cage.directions[c] = d;
+                cage.reach[c] = distance;
+                if (target.normals[v].sqrMagnitude > 1e-12f) {
+                    float dev = Mathf.Acos(Mathf.Clamp(Vector3.Dot(d, target.normals[v]), -1f, 1f)) * Mathf.Rad2Deg;
+                    if (dev > cage.maxDeviationDeg) cage.maxDeviationDeg = dev;
+                    if (dev > 30f) deviated[v] = true;
+                }
             }
+            for (int i = 0; i < positions.Length; ++i) {
+                if (deviated[i]) ++cage.oneSided;
+                if (target.normals[i].sqrMagnitude < 1e-12f) ++cage.zeroNormals;
+            }
+            for (int slot = 0; slot < firstSide.Length; ++slot)
+                if (firstSide[slot] >= 0 && nextSide[firstSide[slot]] >= 0) ++cage.folded;
+            cage.maxReach = distance;
+            if (source != null && distance > 0f) FitReach(cage, welded.normals, sideDir, sideVertex, positions, source);
             if (diag != null) {
-                diag.weldedPositions = map.Count;
-                diag.splitCopies = target.positions.Length - map.Count;
-                diag.oneSidedNormals = oneSided;
-                diag.maxOneSidedDeg = maxDev;
-                diag.zeroNormals = zeroNormalVerts;
+                diag.weldedPositions = cage.positions;
+                diag.splitCopies = positions.Length - cage.positions;
+                diag.cageSides = cage.sides;
+                diag.foldedPositions = cage.folded;
+                diag.oneSidedNormals = cage.oneSided;
+                diag.maxOneSidedDeg = cage.maxDeviationDeg;
+                diag.zeroNormals = cage.zeroNormals;
+                diag.maxReachRatio = distance > 0f ? cage.maxReach / distance : 1f;
             }
             return cage;
+        }
+
+        static bool Facing(Vector3 d, Vector3 faceNormal)
+            => d.sqrMagnitude > 1e-20f && (faceNormal.sqrMagnitude < 1e-20f || Vector3.Dot(d, faceNormal) >= Cage.MinFacing);
+
+        // Per side: the distance the source sits at along the side's ray (either way),
+        // or the nearest source point when the ray meets nothing — the bake's nearest
+        // fallback is bounded by the same reach, so a fitted reach lets it catch what
+        // the ray cannot. Smoothed over the side connectivity, never below a side's own
+        // measured need, so the shells stay shells instead of spiking per vertex.
+        static void FitReach(Cage cage, Vector3[] smoothed, Vector3[] sideDir, System.Collections.Generic.List<int> sideVertex,
+            Vector3[] positions, TriangleBvh source)
+        {
+            float distance = cage.distance, range = distance * Cage.FitRange;
+            int sides = sideDir.Length;
+            var need = new float[sides];
+            for (int sd = 0; sd < sides; ++sd) {
+                Vector3 d = smoothed[sd].sqrMagnitude > 1e-20f ? smoothed[sd] : sideDir[sd];
+                Vector3 p = positions[sideVertex[sd]];
+                float found = -1f;
+                if (d.sqrMagnitude > 1e-20f) {
+                    float eps = distance * 1e-3f;
+                    var outward = source.Raycast(p + d * eps, d, range);
+                    var inward = source.Raycast(p - d * eps, -d, range);
+                    if (outward.triangleIndex >= 0) found = outward.t + eps;
+                    if (inward.triangleIndex >= 0 && (found < 0f || inward.t + eps < found)) found = inward.t + eps;
+                }
+                if (found < 0f) {
+                    var nearest = source.FindNearest(p, range);
+                    if (nearest.triangleIndex >= 0) found = Mathf.Sqrt(nearest.distSq);
+                }
+                need[sd] = found < 0f ? distance : Mathf.Clamp(found * Cage.FitMargin, distance, range);
+            }
+            var reach = (float[])need.Clone();
+            var sum = new float[sides]; var count = new int[sides];
+            var side = cage.side;
+            for (int pass = 0; pass < 2; ++pass) {
+                Array.Clear(sum, 0, sides); Array.Clear(count, 0, sides);
+                for (int c = 0; c < side.Length; c += 3) {
+                    Neighbour(reach, sum, count, side[c], side[c + 1]);
+                    Neighbour(reach, sum, count, side[c + 1], side[c + 2]);
+                    Neighbour(reach, sum, count, side[c + 2], side[c]);
+                }
+                for (int sd = 0; sd < sides; ++sd)
+                    if (count[sd] > 0) reach[sd] = Mathf.Max(need[sd], 0.5f * (reach[sd] + sum[sd] / count[sd]));
+            }
+            float max = distance;
+            for (int c = 0; c < side.Length; ++c) { cage.reach[c] = reach[side[c]]; if (reach[side[c]] > max) max = reach[side[c]]; }
+            cage.maxReach = max;
+        }
+
+        static void Neighbour(float[] reach, float[] sum, int[] count, int a, int b)
+        {
+            if (a == b) return;
+            sum[a] += reach[b]; ++count[a];
+            sum[b] += reach[a]; ++count[b];
         }
 
         // Nearest source surface point per result vertex, interpolating its vertex colours.
