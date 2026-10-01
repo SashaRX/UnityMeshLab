@@ -252,27 +252,37 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Drops connected pieces that are too small or too thin to matter for a proxy:
-        /// a piece whose bounds diagonal is under minSize × capture diagonal, or whose
-        /// smallest bounds side is under minThickness × capture diagonal (0 disables
-        /// either test). Pieces are the connected components of the position-welded
-        /// triangle graph, so bolts and railings go even when they share a mesh with the
-        /// wall. Vertices are compacted; the capture diagonal is kept so later fractions
-        /// stay relative to the original model. Returns false (and changes nothing) when
-        /// every piece would go.
+        /// Drops connected pieces that are too small or too rod-like to matter: a piece
+        /// whose extent is under minSize × capture diagonal, or whose CROSS-SECTION — the
+        /// two smaller of its three extents along its own principal axes — is under
+        /// minRodVoxels voxel cells (a cell = the capture's largest side / resolution,
+        /// the grid the voxel remesh runs on). Pipes, cables, railings and bolts go; a
+        /// sheet of any thickness (a gate leaf, a glass pane, a decal) is one thin
+        /// extent, not two, and stays. 0 disables either test. Pieces are the connected
+        /// components of the position-welded triangle graph, so a pipe goes even when it
+        /// shares a mesh with the wall. Vertices are compacted; the capture diagonal is
+        /// kept so later fractions stay relative to the original model. Returns false
+        /// (and changes nothing) when every piece would go.
         /// </summary>
-        public bool FilterSmallParts(float minSize, float minThickness, out int removedSmall, out int removedThin)
+        public bool FilterSmallParts(float minSize, float minRodVoxels, int resolution, out int removedSmall, out int removedThin)
         {
             removedSmall = removedThin = 0;
-            if (minSize <= 0 && minThickness <= 0) return true;
+            if (minSize <= 0 && minRodVoxels <= 0) return true;
             int vertexCount = positions.Length, faceCount = indices.Length / 3;
+            if (vertexCount == 0) return true;
+            Vector3 boundsMin = positions[0], boundsMax = positions[0];
+            foreach (var p in positions) { boundsMin = Vector3.Min(boundsMin, p); boundsMax = Vector3.Max(boundsMax, p); }
+            var extent = boundsMax - boundsMin;
+            float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, resolution);
+            float rodLimit = minRodVoxels * cell;
             // Weld by exact position so split-normal / UV-seam duplicates join their piece.
             var slot = new int[vertexCount];
             var slots = new Dictionary<(int, int, int), int>(vertexCount);
+            var unique = new List<Vector3>(vertexCount);
             for (int i = 0; i < vertexCount; ++i) {
                 var p = positions[i];
                 var key = (BitConverter.SingleToInt32Bits(p.x), BitConverter.SingleToInt32Bits(p.y), BitConverter.SingleToInt32Bits(p.z));
-                if (!slots.TryGetValue(key, out int id)) { id = slots.Count; slots[key] = id; }
+                if (!slots.TryGetValue(key, out int id)) { id = slots.Count; slots[key] = id; unique.Add(p); }
                 slot[i] = id;
             }
             var parent = new int[slots.Count];
@@ -283,22 +293,22 @@ namespace SashaRX.UnityMeshLab
                 Union(slot[indices[f * 3]], slot[indices[f * 3 + 1]]);
                 Union(slot[indices[f * 3]], slot[indices[f * 3 + 2]]);
             }
-            var mins = new Dictionary<int, Vector3>(); var maxs = new Dictionary<int, Vector3>();
-            for (int i = 0; i < vertexCount; ++i) {
-                int root = Find(slot[i]);
-                if (mins.TryGetValue(root, out var mn)) { mins[root] = Vector3.Min(mn, positions[i]); maxs[root] = Vector3.Max(maxs[root], positions[i]); }
-                else { mins[root] = positions[i]; maxs[root] = positions[i]; }
+            var members = new Dictionary<int, List<Vector3>>();
+            for (int i = 0; i < unique.Count; ++i) {
+                int root = Find(i);
+                if (!members.TryGetValue(root, out var list)) members[root] = list = new List<Vector3>();
+                list.Add(unique[i]);
             }
             var drop = new HashSet<int>();
-            foreach (var pair in mins) {
-                var size = maxs[pair.Key] - pair.Value;
-                bool small = minSize > 0 && size.magnitude < minSize * diagonal;
-                bool thin = !small && minThickness > 0 && Mathf.Min(size.x, Mathf.Min(size.y, size.z)) < minThickness * diagonal;
-                if (small) ++removedSmall; else if (thin) ++removedThin;
-                if (small || thin) drop.Add(pair.Key);
+            foreach (var pair in members) {
+                var extents = PrincipalExtents(pair.Value);  // descending
+                bool small = minSize > 0 && extents.magnitude < minSize * diagonal;
+                bool rod = !small && rodLimit > 0 && extents.y < rodLimit;
+                if (small) ++removedSmall; else if (rod) ++removedThin;
+                if (small || rod) drop.Add(pair.Key);
             }
             if (drop.Count == 0) return true;
-            if (drop.Count == mins.Count) { removedSmall = removedThin = 0; return false; }
+            if (drop.Count == members.Count) { removedSmall = removedThin = 0; return false; }
             // Compact faces, then vertices.
             var keptFaces = new List<int>(faceCount);
             for (int f = 0; f < faceCount; ++f)
@@ -329,6 +339,61 @@ namespace SashaRX.UnityMeshLab
             uv = Compact(uv); uv2 = Compact(uv2); colors = Compact(colors); vertexRenderer = Compact(vertexRenderer);
             indices = newIndices; faceMaterials = newFaceMaterials; faceLightmaps = newFaceLightmaps;
             return true;
+        }
+
+        /// <summary>
+        /// The extents of a point set along its own principal axes (covariance
+        /// eigenvectors), largest first — a pipe lying diagonally reads as long × thin ×
+        /// thin here where its axis-aligned bounds would read as fat.
+        /// </summary>
+        internal static Vector3 PrincipalExtents(List<Vector3> points)
+        {
+            int n = points.Count;
+            if (n == 0) return Vector3.zero;
+            Vector3 mean = Vector3.zero;
+            foreach (var p in points) mean += p;
+            mean /= n;
+            // Covariance (symmetric 3×3), then Jacobi rotations to diagonalize it.
+            double xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0;
+            foreach (var p in points) {
+                double dx = p.x - mean.x, dy = p.y - mean.y, dz = p.z - mean.z;
+                xx += dx * dx; yy += dy * dy; zz += dz * dz; xy += dx * dy; xz += dx * dz; yz += dy * dz;
+            }
+            var a = new double[3, 3] { { xx, xy, xz }, { xy, yy, yz }, { xz, yz, zz } };
+            var v = new double[3, 3] { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+            for (int sweep = 0; sweep < 32; ++sweep) {
+                double off = a[0, 1] * a[0, 1] + a[0, 2] * a[0, 2] + a[1, 2] * a[1, 2];
+                if (off < 1e-24) break;
+                for (int p = 0; p < 2; ++p)
+                    for (int q = p + 1; q < 3; ++q) {
+                        if (Math.Abs(a[p, q]) < 1e-30) continue;
+                        double theta = (a[q, q] - a[p, p]) / (2 * a[p, q]);
+                        double t = Math.Sign(theta) / (Math.Abs(theta) + Math.Sqrt(theta * theta + 1));
+                        if (theta == 0) t = 1;
+                        double c = 1 / Math.Sqrt(t * t + 1), sn = t * c;
+                        for (int k = 0; k < 3; ++k) {
+                            double akp = a[k, p], akq = a[k, q];
+                            a[k, p] = c * akp - sn * akq; a[k, q] = sn * akp + c * akq;
+                        }
+                        for (int k = 0; k < 3; ++k) {
+                            double apk = a[p, k], aqk = a[q, k];
+                            a[p, k] = c * apk - sn * aqk; a[q, k] = sn * apk + c * aqk;
+                        }
+                        for (int k = 0; k < 3; ++k) {
+                            double vkp = v[k, p], vkq = v[k, q];
+                            v[k, p] = c * vkp - sn * vkq; v[k, q] = sn * vkp + c * vkq;
+                        }
+                    }
+            }
+            var extents = new float[3];
+            for (int axis = 0; axis < 3; ++axis) {
+                var dir = new Vector3((float)v[0, axis], (float)v[1, axis], (float)v[2, axis]);
+                float lo = float.MaxValue, hi = float.MinValue;
+                foreach (var p in points) { float d = Vector3.Dot(p - mean, dir); if (d < lo) lo = d; if (d > hi) hi = d; }
+                extents[axis] = hi - lo;
+            }
+            Array.Sort(extents);
+            return new Vector3(extents[2], extents[1], extents[0]);
         }
 
         /// <summary>

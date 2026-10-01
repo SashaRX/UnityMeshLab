@@ -113,7 +113,7 @@ namespace SashaRX.UnityMeshLab
         {
             switch (stage) {
                 case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
-                    $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:F4}|{s.minPartThickness:F4}";
+                    $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:F4}|{s.minRodVoxels:F3}|{s.voxelResolution}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
@@ -215,12 +215,13 @@ namespace SashaRX.UnityMeshLab
             }
             long sourceTriangles = 0, resultTriangles = 0; int warnings = 0, droppedSmall = 0, droppedThin = 0;
             var shape = options.sourceShape;
-            // Part filter first, whatever the shape: small and thin pieces (bolts,
-            // railings, decals, glass) only add voxel noise to a remesh and inflate a
-            // proxy's boxes or hull.
+            // Part filter first, whatever the shape: small pieces and rods whose section
+            // the voxel grid cannot carry (bolts, pipes, cables, railings) only add voxel
+            // noise to a remesh and inflate a proxy's boxes or hull.
             for (int i = captures.Count - 1; i >= 0; --i) {
                 var node = captures[i];
-                if (!node.source.FilterSmallParts(options.minPartSize, options.minPartThickness, out int small, out int thin)) {
+                int gridResolution = shape == RemeshShape.Hull ? options.hullResolution : options.voxelResolution;
+                if (!node.source.FilterSmallParts(options.minPartSize, options.minRodVoxels, gridResolution, out int small, out int thin)) {
                     if (hierarchy) { UvtLog.Warn("[Remesh] " + node.name + ": every part is below the size/thickness filter, skipped."); captures.RemoveAt(i); continue; }
                     UvtLog.Warn("[Remesh] Every part is below the size/thickness filter; the filter was not applied.");
                 }
@@ -254,7 +255,7 @@ namespace SashaRX.UnityMeshLab
             Status = (hierarchy ? $"Remesh: {nodes.Count} node(s), " : "Remesh: ") +
                 $"{sourceTriangles:N0} → {resultTriangles:N0} triangles" +
                 (shape == RemeshShape.BoundingBox ? $" ({resultTriangles / 12:N0} oriented boxes)" : shape == RemeshShape.Hull ? " (hull)" : "") +
-                (droppedSmall + droppedThin > 0 ? $"; excluded {droppedSmall:N0} small, {droppedThin:N0} thin part(s)" : "") + "." +
+                (droppedSmall + droppedThin > 0 ? $"; excluded {droppedSmall:N0} small part(s), {droppedThin:N0} rod(s)" : "") + "." +
                 (warnings > 0 ? $" {warnings} material warning(s), see Console." : "");
         }
 

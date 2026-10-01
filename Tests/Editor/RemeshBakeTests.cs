@@ -33,7 +33,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<ArgumentException>(() => new RemeshSettings { chartIterations = 0 }.Validate());
             Assert.Throws<ArgumentException>(() => new RemeshSettings { hullResolution = 2 }.Validate());
             Assert.Throws<ArgumentException>(() => new RemeshSettings { minPartSize = 0.6f }.Validate());
-            Assert.Throws<ArgumentException>(() => new RemeshSettings { minPartThickness = float.NaN }.Validate());
+            Assert.Throws<ArgumentException>(() => new RemeshSettings { minRodVoxels = float.NaN }.Validate());
             Assert.DoesNotThrow(() => new RemeshSettings { targetTriangles = 0 }.Validate());
         }
         [Test]
@@ -217,38 +217,73 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(image.Sample(new Vector2(1.25f,0.5f)).r,Is.EqualTo(1).Within(1e-5f));
         }
 
-        static RemeshSource TwoParts(float diagonal)
+        // A 1×1 wall sheet at the origin, a 5-long × 0.01-wide rod strip at z = 3 (optionally
+        // yawed 45° so its axis-aligned bounds read fat), two renderers, no shared vertices.
+        // Rodrigues rotation: the test runs outside Unity too, where Quaternion is native.
+        static Vector3 Rotate(Vector3 p, Vector3 axis, float degrees)
         {
-            // A 1×1 wall triangle and a 0.01-sized bolt triangle, two renderers, no shared vertices.
+            axis.Normalize();
+            float c = Mathf.Cos(degrees * Mathf.Deg2Rad), s = Mathf.Sin(degrees * Mathf.Deg2Rad);
+            return p * c + Vector3.Cross(axis, p) * s + axis * (Vector3.Dot(axis, p) * (1 - c));
+        }
+        static RemeshSource SheetAndRod(float diagonal, bool diagonalRod)
+        {
+            Vector3 R(float x, float y) => (diagonalRod ? Rotate(new Vector3(x, y, 0), Vector3.forward, 45) : new Vector3(x, y, 0)) + new Vector3(0, 0, 3);
             return new RemeshSource {
-                positions = new[] { Vector3.zero, Vector3.right, Vector3.up,
-                    new Vector3(5,5,5), new Vector3(5.01f,5,5), new Vector3(5,5.01f,5) },
-                normals = new Vector3[6], tangents = new Vector4[6], uv = new Vector2[6],
-                colors = new[] { Color.red, Color.red, Color.red, Color.blue, Color.blue, Color.blue }, hasColors = true,
-                indices = new[] { 0,1,2, 3,4,5 }, faceMaterials = new[] { 0, 0 }, faceLightmaps = new[] { -1, -1 },
-                vertexRenderer = new[] { 0,0,0, 1,1,1 }, rendererToSpace = new[] { Matrix4x4.identity, Matrix4x4.identity },
+                positions = new[] { Vector3.zero, Vector3.right, Vector3.up, new Vector3(1, 1, 0),
+                    R(0, 0), R(5, 0), R(5, 0.01f), R(0, 0.01f) },
+                normals = new Vector3[8], tangents = new Vector4[8], uv = new Vector2[8],
+                colors = new[] { Color.red, Color.red, Color.red, Color.red, Color.blue, Color.blue, Color.blue, Color.blue }, hasColors = true,
+                indices = new[] { 0,1,2, 1,3,2, 4,5,6, 4,6,7 }, faceMaterials = new[] { 0, 0, 0, 0 }, faceLightmaps = new[] { -1, -1, -1, -1 },
+                vertexRenderer = new[] { 0,0,0,0, 1,1,1,1 }, rendererToSpace = new[] { Matrix4x4.identity, Matrix4x4.identity },
                 diagonal = diagonal, materials = new[] { new RemeshSource.Surface() }
             };
         }
         [Test]
-        public void FilterSmallPartsDropsTinyComponentsAndCompactsEveryStream()
+        public void FilterSmallPartsDropsRodsNotSheetsAndCompactsEveryStream()
         {
-            var source = TwoParts(10);
-            Assert.IsTrue(source.FilterSmallParts(0.05f, 0, out int small, out int thin));
-            Assert.AreEqual(1, small); Assert.AreEqual(0, thin);
-            Assert.AreEqual(3, source.positions.Length);
-            Assert.AreEqual(new[] { 0,1,2 }, source.indices);
-            Assert.AreEqual(1, source.faceMaterials.Length); Assert.AreEqual(1, source.faceLightmaps.Length);
-            Assert.AreEqual(3, source.colors.Length); Assert.AreEqual(Color.red, source.colors[2]);
-            Assert.AreEqual(new[] { 0,0,0 }, source.vertexRenderer);
+            // Longest side 5 (x) at resolution 50 → one cell = 0.1: the 0.01-wide rod's section is
+            // under a cell, the sheet's second extent (1) is ten cells — it stays.
+            var source = SheetAndRod(10, false);
+            Assert.IsTrue(source.FilterSmallParts(0, 1f, 50, out int small, out int rods));
+            Assert.AreEqual(0, small); Assert.AreEqual(1, rods);
+            Assert.AreEqual(4, source.positions.Length);
+            Assert.AreEqual(new[] { 0,1,2, 1,3,2 }, source.indices);
+            Assert.AreEqual(2, source.faceMaterials.Length); Assert.AreEqual(2, source.faceLightmaps.Length);
+            Assert.AreEqual(4, source.colors.Length); Assert.AreEqual(Color.red, source.colors[3]);
+            Assert.AreEqual(new[] { 0,0,0,0 }, source.vertexRenderer);
             Assert.AreEqual(10, source.diagonal);
-            // Thin test: both triangles are flat (zero z extent), so a thickness floor drops everything → refused, untouched.
-            var flat = TwoParts(10);
-            Assert.IsFalse(flat.FilterSmallParts(0, 0.01f, out small, out thin));
-            Assert.AreEqual(0, small); Assert.AreEqual(0, thin);
-            Assert.AreEqual(6, flat.positions.Length);
+            // The same rod yawed 45°: its axis-aligned box is 3.5 × 3.5, its principal section still 0.01.
+            var yawed = SheetAndRod(10, true);
+            Assert.IsTrue(yawed.FilterSmallParts(0, 1f, 50, out small, out rods));
+            Assert.AreEqual(1, rods); Assert.AreEqual(4, yawed.positions.Length);
+            // A coarser grid (cell 0.5) still keeps the sheet: one thin extent is not a rod.
+            var coarse = SheetAndRod(10, false);
+            Assert.IsTrue(coarse.FilterSmallParts(0, 1f, 10, out _, out rods));
+            Assert.AreEqual(1, rods); Assert.AreEqual(4, coarse.positions.Length);
+            // Size test: the rod's extent (5) passes a 0.2 × 10 floor, the sheet's (√2) does not.
+            var sized = SheetAndRod(10, false);
+            Assert.IsTrue(sized.FilterSmallParts(0.2f, 0, 50, out small, out rods));
+            Assert.AreEqual(1, small); Assert.AreEqual(0, rods); Assert.AreEqual(4, sized.positions.Length);
+            Assert.AreEqual(Color.blue, sized.colors[0]);
+            // A filter that would drop everything is refused and changes nothing.
+            var all = SheetAndRod(10, false);
+            Assert.IsFalse(all.FilterSmallParts(0.9f, 0, 50, out small, out rods));
+            Assert.AreEqual(0, small); Assert.AreEqual(0, rods); Assert.AreEqual(8, all.positions.Length);
             // 0/0 is a no-op.
-            Assert.IsTrue(TwoParts(10).FilterSmallParts(0, 0, out _, out _));
+            Assert.IsTrue(SheetAndRod(10, false).FilterSmallParts(0, 0, 50, out _, out _));
+        }
+        [Test]
+        public void PrincipalExtentsFollowThePointSetsOwnAxes()
+        {
+            var pts = new System.Collections.Generic.List<Vector3>();
+            foreach (var x in new[] { 0f, 4f }) foreach (var y in new[] { 0f, 2f }) foreach (var z in new[] { 0f, 0.5f })
+                pts.Add(Rotate(Rotate(new Vector3(x, y, z), Vector3.up, 45), new Vector3(1, 0, 1), 30) + Vector3.one * 7);
+            var e = RemeshSource.PrincipalExtents(pts);
+            Assert.That(e.x, Is.EqualTo(4).Within(1e-3f));
+            Assert.That(e.y, Is.EqualTo(2).Within(1e-3f));
+            Assert.That(e.z, Is.EqualTo(0.5f).Within(1e-3f));
+            Assert.AreEqual(Vector3.zero, RemeshSource.PrincipalExtents(new System.Collections.Generic.List<Vector3>()));
         }
         [Test]
         public void OrientedBoxesFollowTheRendererAxesAndWindOutward()

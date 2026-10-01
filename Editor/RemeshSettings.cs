@@ -81,11 +81,12 @@ namespace SashaRX.UnityMeshLab
         public int hullResolution = 24;
         public int hullTriangles = 120;
         // Part filter, applied to the capture before any shape is built: connected
-        // pieces whose bounds diagonal is below minPartSize × capture diagonal (bolts,
-        // railings, debris) or whose smallest bounds side is below minPartThickness ×
-        // capture diagonal (decals, glass sheets) are excluded. 0 = off.
+        // pieces whose extent is below minPartSize × capture diagonal (bolts, debris), or
+        // whose cross-section — the two smaller principal extents — is under minRodVoxels
+        // voxel cells (pipes, cables, railings: a section the voxel grid cannot carry)
+        // are excluded. Sheets of any thickness stay. 0 = off.
         public float minPartSize = 0.02f;
-        public float minPartThickness;
+        public float minRodVoxels = 1f;
         // Keep hierarchy: remesh every captured node SEPARATELY and save the result as a
         // hierarchy of meshes under one root (per-node materials, local transforms kept),
         // instead of welding everything into one _LOD0 mesh with one baked material.
@@ -161,7 +162,7 @@ namespace SashaRX.UnityMeshLab
                 (bakeSamples != 1 && bakeSamples != 4 && bakeSamples != 9 && bakeSamples != 16) ||
                 hullResolution < 4 || hullResolution > 256 || hullTriangles < 12 || hullTriangles > 100000 ||
                 !Finite(minPartSize) || minPartSize < 0 || minPartSize > 0.5f ||
-                !Finite(minPartThickness) || minPartThickness < 0 || minPartThickness > 0.5f)
+                !Finite(minRodVoxels) || minRodVoxels < 0 || minRodVoxels > 16f)
                 throw new ArgumentException("Invalid remesh settings.");
         }
 

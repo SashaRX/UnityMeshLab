@@ -43,13 +43,19 @@ settings, marked "settings changed" in its header) and clears everything after i
    closed, rounded blob that follows L- and T-shapes without the box
    decomposition's guesswork. Both proxy shapes bake the original's materials
    and lighting through the proxy projection described under **Bake**.
-   **Exclude parts smaller than / thinner than** (fractions of the capture
-   diagonal, applied before any shape) drop connected pieces of the capture —
-   the connected components of the position-welded triangle graph, so a bolt or
-   railing goes even when it shares a mesh with the wall — whose bounds diagonal
-   or smallest bounds side falls under the threshold; the stage status reports
-   how many pieces went, and a filter that would remove everything is skipped
-   with a warning instead of producing an empty remesh.
+   **Exclude parts smaller than** (a fraction of the capture diagonal) and
+   **Exclude rods thinner than** (in voxel cells) run before any shape over the
+   connected pieces of the capture — the connected components of the
+   position-welded triangle graph, so a pipe goes even when it shares a mesh
+   with the wall. A piece goes when its extent is under the size fraction, or
+   when its cross-section — the two smaller of its three extents along its own
+   principal axes — is under the rod threshold, a cell being the model's
+   longest side divided by the voxel (or hull) resolution: that is the section
+   the grid cannot carry anyway. Thin is not the criterion: a gate leaf, a
+   glass pane or a decal has one thin extent and stays; pipes, cables, railings
+   and bolts have two and go. The stage status reports how many pieces went,
+   and a filter that would remove everything is skipped with a warning instead
+   of producing an empty remesh.
    SkinnedMeshRenderers are baked at their
    current pose (skinning re-evaluated first — in edit mode it can be stale
    and bake every part at its authored origin) and then captured like static

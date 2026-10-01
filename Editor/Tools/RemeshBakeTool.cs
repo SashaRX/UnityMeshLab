@@ -135,9 +135,11 @@ namespace SashaRX.UnityMeshLab
                     settings.minPartSize = EditorGUILayout.Slider(new GUIContent("Exclude parts smaller than",
                         "Connected pieces whose bounds diagonal is below this fraction of the model's diagonal (bolts, railings, debris) are left out before any shape is built. 0 = keep everything."),
                         settings.minPartSize, 0, 0.2f);
-                    settings.minPartThickness = EditorGUILayout.Slider(new GUIContent("Exclude parts thinner than",
-                        "Connected pieces whose smallest bounds side is below this fraction of the model's diagonal (decals, glass sheets, fences) are left out. 0 = keep everything."),
-                        settings.minPartThickness, 0, 0.1f);
+                    settings.minRodVoxels = EditorGUILayout.Slider(new GUIContent("Exclude rods thinner than (voxels)",
+                        "Connected pieces whose cross-section — the two smaller of their extents along their own axes — is under this many voxel cells " +
+                        "(pipes, cables, railings, bolts) are left out; the grid cannot carry their section anyway. Sheets of any thickness (gate leaves, " +
+                        "glass panes, decals) stay. A cell is the model's longest side divided by the voxel (or hull) resolution. 0 = keep everything."),
+                        settings.minRodVoxels, 0, 4f);
                     settings.lod0Only = EditorGUILayout.Toggle(new GUIContent("LOD0 only",
                         "Capture ignores meshes named Name_LOD1 and higher; LODGroups already contribute LOD0 only."), settings.lod0Only);
                     settings.keepHierarchy = EditorGUILayout.Toggle(new GUIContent("Keep hierarchy",
