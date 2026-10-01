@@ -33,7 +33,8 @@ namespace SashaRX.UnityMeshLab
         public Shading Mode = Shading.Shaded;
         public bool Wireframe;
         public bool Lit = true;
-        public Color Background = new Color(0.16f, 0.16f, 0.16f, 1f);
+        public bool ShowGrid = true, ShowAxes = true;
+        public Color Background = new Color(0.16f, 0.19f, 0.24f, 1f);
         public Action RequestRepaint;
 
         // ── camera ──
@@ -44,7 +45,8 @@ namespace SashaRX.UnityMeshLab
         bool framedOnce;
 
         PreviewRenderUtility utility;
-        Material surface, flat, wire, points;
+        Material surface, flat, wire, points, translucent;
+        Bounds contentBounds; bool hasContent;
         Rect currentRect;
         bool drawing;
         readonly Dictionary<long, Mesh> encodedCache = new Dictionary<long, Mesh>();
@@ -64,6 +66,7 @@ namespace SashaRX.UnityMeshLab
         {
             currentRect = rect;
             var bounds = BoundsOf(items, out int key, out bool any);
+            contentBounds = bounds; hasContent = any;
             if (any && (!framedOnce || key != framedKey)) { Frame(bounds); framedKey = key; framedOnce = true; }
             HandleInput(rect, any ? bounds : (Bounds?)null);
             if (Event.current.type != EventType.Repaint) return;
@@ -92,6 +95,10 @@ namespace SashaRX.UnityMeshLab
                         if (Wireframe) DrawWire(item.mesh, item.matrix, Mode == Shading.Shaded ? new Color(0.05f, 0.05f, 0.05f, 1f) : new Color(0.4f, 0.85f, 1f, 1f));
                     }
                 overlay?.Invoke(this);
+                if (hasContent) {
+                    if (ShowGrid) DrawGrid(bounds);
+                    if (ShowAxes) DrawAxes(bounds);
+                }
                 // Scene materials of a URP project render through URP, not the built-in fallback.
                 utility.Render(true);
             }
@@ -210,7 +217,56 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < count; ++i) { vertices[i] = pairs[i]; vertexColors[i] = colors != null && i / 2 < colors.Count ? colors[i / 2] : Color.white; indices[i] = i; }
             mesh.vertices = vertices; mesh.colors = vertexColors; mesh.SetIndices(indices, MeshTopology.Lines, 0);
             frameMeshes.Add(mesh);
-            utility.DrawMesh(mesh, matrix, points, 0);
+            utility.DrawMesh(mesh, matrix, translucent, 0);
+        }
+
+        // A ground grid under the content: cells at a round step near a tenth of the
+        // content's size, fading toward the rim, every fifth line brighter.
+        void DrawGrid(Bounds bounds)
+        {
+            float step = NiceStep(Mathf.Max(bounds.size.x, bounds.size.z) / 8f);
+            if (step <= 0f) return;
+            int half = Mathf.Clamp(Mathf.CeilToInt(Mathf.Max(bounds.extents.x, bounds.extents.z) * 2.5f / step), 4, 60);
+            float y = bounds.min.y - radius * 0.002f;
+            float cx = Mathf.Round(bounds.center.x / step) * step, cz = Mathf.Round(bounds.center.z / step) * step;
+            float reach = half * step;
+            var pairs = new List<Vector3>(half * 8 + 4); var colors = new List<Color>(half * 4 + 2);
+            var tone = new Color(0.62f, 0.70f, 0.82f);
+            for (int i = -half; i <= half; ++i) {
+                float o = i * step;
+                float fade = 1f - Mathf.Abs(o) / reach;
+                float a = (i % 5 == 0 ? 0.40f : 0.18f) * fade;
+                var c = new Color(tone.r, tone.g, tone.b, a);
+                pairs.Add(new Vector3(cx + o, y, cz - reach)); pairs.Add(new Vector3(cx + o, y, cz + reach)); colors.Add(c);
+                pairs.Add(new Vector3(cx - reach, y, cz + o)); pairs.Add(new Vector3(cx + reach, y, cz + o)); colors.Add(c);
+            }
+            DrawLines(pairs, colors, Matrix4x4.identity);
+        }
+
+        // The pivot's axes: X red, Y green, Z blue, a quarter of the content radius long.
+        void DrawAxes(Bounds bounds)
+        {
+            float length = radius * 0.25f;
+            if (length <= 0f) return;
+            Vector3 o = bounds.center;
+            float head = length * 0.12f;
+            Vector3[] dirs = { Vector3.right, Vector3.up, Vector3.forward };
+            Color[] cols = { new Color(0.95f, 0.3f, 0.3f), new Color(0.45f, 0.9f, 0.3f), new Color(0.3f, 0.55f, 1f) };
+            for (int i = 0; i < 3; ++i) {
+                Vector3 d = dirs[i], tip = o + d * length;
+                Vector3 side = i == 1 ? Vector3.right : Vector3.up;
+                var pairs = new List<Vector3> { o, tip, tip, tip - d * head + side * head * 0.5f, tip, tip - d * head - side * head * 0.5f };
+                DrawLines(pairs, Matrix4x4.identity, cols[i]);
+            }
+        }
+
+        static float NiceStep(float raw)
+        {
+            if (raw <= 0f || float.IsNaN(raw) || float.IsInfinity(raw)) return 0f;
+            float power = Mathf.Pow(10f, Mathf.Floor(Mathf.Log10(raw)));
+            float m = raw / power;
+            float nice = m < 1.5f ? 1f : m < 3.5f ? 2f : m < 7.5f ? 5f : 10f;
+            return nice * power;
         }
 
         /// <summary>Draws camera-facing dots of a screen-constant size (pixels).</summary>
@@ -322,9 +378,11 @@ namespace SashaRX.UnityMeshLab
         bool EnsureResources()
         {
             if (utility == null) utility = new PreviewRenderUtility { cameraFieldOfView = 30f };
-            if (surface && flat && wire && points) return true;
+            if (surface && flat && wire && points && translucent) return true;
             var shader = Shader.Find("Hidden/MeshLab/RemeshPreview");
-            if (!shader) return false;
+            var overlayShader = Shader.Find("Hidden/MeshLab/UvOverlay");
+            if (!shader || !overlayShader) return false;
+            translucent = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave };
             surface = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             flat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             flat.SetFloat("_DepthOffset", -1);
@@ -438,7 +496,8 @@ namespace SashaRX.UnityMeshLab
             if (flat) Object.DestroyImmediate(flat);
             if (wire) Object.DestroyImmediate(wire);
             if (points) Object.DestroyImmediate(points);
-            surface = flat = wire = points = null;
+            if (translucent) Object.DestroyImmediate(translucent);
+            surface = flat = wire = points = translucent = null;
         }
     }
 }

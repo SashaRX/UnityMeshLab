@@ -41,6 +41,7 @@ namespace SashaRX.UnityMeshLab
         const string Canvas3DPref = "MeshLab.Canvas3D";
         readonly List<MeshViewport3D.Item> viewportItems = new List<MeshViewport3D.Item>();
         readonly List<MeshEntry> viewportEntries = new List<MeshEntry>();   // parallel to viewportItems; null for tool content
+        Rect canvasArea;   // the canvas column's content rect, from the last repaint
 
         // ── Layout ──
         float sideW = 300f;
@@ -404,18 +405,24 @@ namespace SashaRX.UnityMeshLab
             if (canvas3D)
             {
                 DrawViewport();
-                DrawStatusBar();
             }
             else
             {
-                // The switch takes its click before the canvas can (spot mode eats
-                // mouse-downs), and paints after it so the blit does not cover it.
-                HandleCanvasModeSwitchInput(canvas.LastCanvasRect);
+                // The canvas area always fills the column (the canvas itself draws only a
+                // help box when it has nothing to show), so the switch has a place in every
+                // state. Its click is taken before the canvas (spot mode eats mouse-downs)
+                // and it paints after the canvas blit.
+                HandleCanvasModeSwitchInput(canvasArea);
+                HandleCanvasModeKey(canvasArea);
+                EditorGUILayout.BeginVertical(GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
                 canvas.OnGUI(ctx,
                     ActiveTool != null ? (Action<UvCanvasView, float, float, float>)ActiveTool.OnDrawCanvasOverlay : null);
-                DrawCanvasModeSwitch(canvas.LastCanvasRect);
-                DrawStatusBar();
+                GUILayout.FlexibleSpace();
+                EditorGUILayout.EndVertical();
+                if (Event.current.type == EventType.Repaint) canvasArea = GUILayoutUtility.GetLastRect();
+                DrawCanvasModeSwitch(canvasArea);
             }
+            DrawStatusBar();
             EditorGUILayout.EndVertical();
 
             if (showGroupPanel)
@@ -858,18 +865,62 @@ namespace SashaRX.UnityMeshLab
         //  3D canvas (shared viewport)
         // ════════════════════════════════════════════════════════════
 
+        // ── In-canvas controls: a segmented pill (dark track, accent on the active
+        //    segment). Input is taken BEFORE the canvas or viewport consumes the event,
+        //    the visual is painted AFTER their blit, so both halves read the same rect. ──
+
+        static readonly Color SegmentTrack = new Color(0.10f, 0.11f, 0.13f, 0.92f);
+        static readonly Color SegmentAccent = new Color(0.96f, 0.52f, 0.14f, 1f);
+        static readonly Color SegmentText = new Color(0.82f, 0.84f, 0.88f, 1f);
+        static readonly Color SegmentTextActive = new Color(0.12f, 0.10f, 0.08f, 1f);
+
+        static int SegmentHit(Rect rect, int count, Vector2 mouse)
+        {
+            if (count <= 0 || !rect.Contains(mouse)) return -1;
+            return Mathf.Clamp((int)((mouse.x - rect.x) / rect.width * count), 0, count - 1);
+        }
+
+        static void DrawSegmented(Rect rect, string[] labels, int active, bool mini = false)
+        {
+            if (Event.current.type != EventType.Repaint) return;
+            EditorGUI.DrawRect(rect, SegmentTrack);
+            float w = rect.width / labels.Length;
+            var style = new GUIStyle(mini ? EditorStyles.miniLabel : EditorStyles.label) { alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
+            for (int i = 0; i < labels.Length; i++)
+            {
+                var cell = new Rect(rect.x + i * w, rect.y, w, rect.height);
+                if (i == active) EditorGUI.DrawRect(new Rect(cell.x + 2, cell.y + 2, cell.width - 4, cell.height - 4), SegmentAccent);
+                style.normal.textColor = i == active ? SegmentTextActive : SegmentText;
+                GUI.Label(cell, labels[i], style);
+            }
+            var outline = new Color(0f, 0f, 0f, 0.5f);
+            EditorGUI.DrawRect(new Rect(rect.x, rect.y, rect.width, 1), outline);
+            EditorGUI.DrawRect(new Rect(rect.x, rect.yMax - 1, rect.width, 1), outline);
+        }
+
         /// <summary>The UV | 3D switch, floating at the bottom centre of the canvas.</summary>
-        static Rect CanvasModeSwitchRect(Rect canvasRect) => new Rect(canvasRect.center.x - 70f, canvasRect.yMax - 26f, 140f, 20f);
-        static bool CanvasModeSwitchFits(Rect canvasRect) => canvasRect.width >= 120f && canvasRect.height >= 40f;
+        static Rect CanvasModeSwitchRect(Rect canvasRect) => new Rect(canvasRect.center.x - 90f, canvasRect.yMax - 32f, 180f, 24f);
+        static bool CanvasModeSwitchFits(Rect canvasRect) => canvasRect.width >= 200f && canvasRect.height >= 60f;
+        static readonly string[] CanvasModeLabels = { "UV", "3D" };
 
         void HandleCanvasModeSwitchInput(Rect canvasRect)
         {
             if (!CanvasModeSwitchFits(canvasRect)) return;
             var e = Event.current;
             if (e.type != EventType.MouseDown || e.button != 0) return;
-            var rect = CanvasModeSwitchRect(canvasRect);
-            if (!rect.Contains(e.mousePosition)) return;
-            SetCanvas3D(e.mousePosition.x >= rect.center.x);
+            int hit = SegmentHit(CanvasModeSwitchRect(canvasRect), 2, e.mousePosition);
+            if (hit < 0) return;
+            SetCanvas3D(hit == 1);
+            e.Use();
+        }
+
+        // Tab over the canvas flips the view, unless a text field has the keyboard.
+        void HandleCanvasModeKey(Rect canvasRect)
+        {
+            var e = Event.current;
+            if (e.type != EventType.KeyDown || e.keyCode != KeyCode.Tab || GUIUtility.keyboardControl != 0) return;
+            if (!canvasRect.Contains(e.mousePosition)) return;
+            SetCanvas3D(!canvas3D);
             e.Use();
         }
 
@@ -877,8 +928,42 @@ namespace SashaRX.UnityMeshLab
         {
             if (!CanvasModeSwitchFits(canvasRect)) return;
             var rect = CanvasModeSwitchRect(canvasRect);
-            int mode = GUI.Toolbar(rect, canvas3D ? 1 : 0, new[] { "UV", "3D" }, EditorStyles.miniButton);
-            if ((mode == 1) != canvas3D) SetCanvas3D(mode == 1);
+            DrawSegmented(rect, CanvasModeLabels, canvas3D ? 1 : 0);
+            if (Event.current.type == EventType.Repaint)
+                GUI.Label(new Rect(rect.xMax + 6, rect.y + 4, 60, 16), "Tab", new GUIStyle(EditorStyles.miniLabel) { normal = { textColor = new Color(0.6f, 0.62f, 0.66f) } });
+        }
+
+        // ── The 3D shading row along the top of the viewport (UV channels only where a mesh carries them). ──
+        static Rect ShadingRowRect(Rect viewportRect) => new Rect(viewportRect.x + 8, viewportRect.y + 8, viewportRect.width - 16, 24);
+        readonly List<MeshViewport3D.Shading> shadingRow = new List<MeshViewport3D.Shading>();
+        readonly List<string> shadingRowLabels = new List<string>();
+
+        void BuildShadingRow()
+        {
+            shadingRow.Clear(); shadingRowLabels.Clear();
+            for (int i = 0; i < MeshViewport3D.ShadingNames.Length; i++)
+            {
+                var mode = (MeshViewport3D.Shading)i;
+                if (mode >= MeshViewport3D.Shading.UV0 && !AnyMeshHasUv(mode - MeshViewport3D.Shading.UV0)) continue;
+                shadingRow.Add(mode); shadingRowLabels.Add(MeshViewport3D.ShadingNames[i]);
+            }
+            if (!shadingRow.Contains(viewport.Mode)) viewport.Mode = MeshViewport3D.Shading.Shaded;
+        }
+
+        void HandleShadingRowInput(Rect viewportRect)
+        {
+            var e = Event.current;
+            if (e.type != EventType.MouseDown || e.button != 0 || viewportRect.width < 320f) return;
+            int hit = SegmentHit(ShadingRowRect(viewportRect), shadingRow.Count, e.mousePosition);
+            if (hit < 0) return;
+            viewport.Mode = shadingRow[hit];
+            e.Use(); Repaint();
+        }
+
+        void DrawShadingRow(Rect viewportRect)
+        {
+            if (viewportRect.width < 320f || shadingRow.Count == 0) return;
+            DrawSegmented(ShadingRowRect(viewportRect), shadingRowLabels.ToArray(), shadingRow.IndexOf(viewport.Mode), mini: true);
         }
 
         void SetCanvas3D(bool on)
@@ -886,8 +971,10 @@ namespace SashaRX.UnityMeshLab
             if (canvas3D == on) return;
             canvas3D = on;
             EditorPrefs.SetBool(Canvas3DPref, on);
+            // Hover belongs to the view it was picked in; selection carries over.
+            canvas.HasHoveredShell = false; canvas.HoveredShellDebug = null; canvas.HoverHitValid = false;
             if (on) viewport?.FrameContent();
-            Repaint();
+            Repaint(); SceneView.RepaintAll();
         }
 
         /// <summary>Content for the 3D canvas: the active tool's, or the context's preview
@@ -970,14 +1057,17 @@ namespace SashaRX.UnityMeshLab
         {
             var rect = GUILayoutUtility.GetRect(GUIContent.none, GUIStyle.none, GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
             var items = CollectViewportItems();
+            BuildShadingRow();
+            HandleCanvasModeSwitchInput(rect);
+            HandleCanvasModeKey(rect);
             if (items.Count == 0)
             {
-                EditorGUI.DrawRect(rect, new Color(.08f, .08f, .08f));
+                EditorGUI.DrawRect(rect, viewport.Background);
                 GUI.Label(rect, "No meshes for this LOD.", new GUIStyle(EditorStyles.centeredGreyMiniLabel) { alignment = TextAnchor.MiddleCenter });
             }
             else
             {
-                HandleCanvasModeSwitchInput(rect);
+                HandleShadingRowInput(rect);
                 HandleViewportSpot(rect);
                 var tool3D = ActiveTool as IUvTool3D;
                 viewport.Draw(rect, items, view =>
@@ -985,9 +1075,12 @@ namespace SashaRX.UnityMeshLab
                     uvLayer.Draw(view, canvas, ctx, viewportItems, viewportEntries);
                     tool3D?.OnDraw3D(view);
                 });
-                if (canvas.SpotMode) canvas.DrawShellInfoPanel(rect);
+                DrawShadingRow(rect);
+                // The spot info panel sits under the shading row.
+                if (canvas.SpotMode) canvas.DrawShellInfoPanel(new Rect(rect.x, rect.y + 36, rect.width, rect.height - 36));
             }
             DrawCanvasModeSwitch(rect);
+            if (Event.current.type == EventType.Repaint) canvasArea = rect;
         }
 
         void DrawViewportToolbar()
@@ -1000,23 +1093,9 @@ namespace SashaRX.UnityMeshLab
             DrawUvChannelToggle();
             DrawSpotControls();
 
-            // ── Surface shading (in place of the UV zoom) ──
-            var bg = GUI.backgroundColor;
-            for (int i = 0; i < MeshViewport3D.ShadingNames.Length; i++)
-            {
-                var mode = (MeshViewport3D.Shading)i;
-                if (mode >= MeshViewport3D.Shading.UV0 && !AnyMeshHasUv(mode - MeshViewport3D.Shading.UV0)) continue;
-                bool active = viewport.Mode == mode;
-                GUI.backgroundColor = active ? new Color(.4f, .55f, 1f) : bg;
-                if (GUILayout.Button(MeshViewport3D.ShadingNames[i], EditorStyles.toolbarButton) && !active)
-                {
-                    viewport.Mode = mode;
-                    Repaint();
-                }
-            }
-            GUI.backgroundColor = bg;
-            GUILayout.Space(4);
+            // ── View options (the shading row lives inside the canvas) ──
             viewport.Lit = GUILayout.Toggle(viewport.Lit, "Lit", EditorStyles.toolbarButton, GUILayout.Width(30));
+            viewport.ShowGrid = GUILayout.Toggle(viewport.ShowGrid, "Grid", EditorStyles.toolbarButton, GUILayout.Width(36));
             if (GUILayout.Button("Frame", EditorStyles.toolbarButton, GUILayout.Width(44)))
                 viewport.FrameContent();
 
