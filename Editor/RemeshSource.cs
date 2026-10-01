@@ -50,6 +50,7 @@ namespace SashaRX.UnityMeshLab
         // (filtered) geometry along its own authored axes.
         public int[] vertexRenderer;
         public Matrix4x4[] rendererToSpace;
+        public int[] rendererLayer;   // GameObject layer per captured renderer (light culling masks)
 
         internal sealed class Image
         {
@@ -118,7 +119,7 @@ namespace SashaRX.UnityMeshLab
             var faceLightmaps = new List<int>();
             var lightmapRefs = new List<LightmapRef>();
             var lightmapIds = new Dictionary<(Texture2D, Texture2D, Vector4), int>();
-            var vertexRenderer = new List<int>(); var rendererToSpace = new List<Matrix4x4>();
+            var vertexRenderer = new List<int>(); var rendererToSpace = new List<Matrix4x4>(); var rendererLayer = new List<int>();
             string[] warnings;
             using (var reader = new Reader()) {
                 foreach (var renderer in renderers) {
@@ -127,6 +128,11 @@ namespace SashaRX.UnityMeshLab
                     // every renderer is isolated, and recoverable offenders degrade to
                     // a warning + skip.
                     Mesh mesh = null;
+                    // A renderer that fails halfway (a missing material on its second submesh)
+                    // is rolled back to these marks, so a "skipped" renderer leaves no orphan
+                    // vertices for the oriented boxes or stray faces for the remesh.
+                    int keepVertices = positions.Count, keepIndices = indices.Count, keepRenderers = rendererToSpace.Count;
+                    bool keepColors = hasColors;
                     try {
                         // A skinned source is baked at its current pose into a fresh runtime
                         // mesh. BakeMesh bakes the LAST EVALUATED skinning, which in edit mode
@@ -178,7 +184,7 @@ namespace SashaRX.UnityMeshLab
                         float sign = transform.determinant < 0 ? -1 : 1;
                         int first = positions.Count;
                         int rendererId = rendererToSpace.Count;
-                        rendererToSpace.Add(transform);
+                        rendererToSpace.Add(transform); rendererLayer.Add(renderer.gameObject.layer);
                         for (int i = 0; i < p.Length; ++i) {
                             vertexRenderer.Add(rendererId);
                             positions.Add(transform.MultiplyPoint3x4(p[i]));
@@ -240,6 +246,19 @@ namespace SashaRX.UnityMeshLab
                     }
                     catch (InvalidOperationException e) {
                         reader.warnings.Add(renderer.name + ": " + e.Message + " Skipped.");
+                        positions.RemoveRange(keepVertices, positions.Count - keepVertices);
+                        normals.RemoveRange(keepVertices, normals.Count - keepVertices);
+                        tangents.RemoveRange(keepVertices, tangents.Count - keepVertices);
+                        uv.RemoveRange(keepVertices, uv.Count - keepVertices);
+                        uv2.RemoveRange(keepVertices, uv2.Count - keepVertices);
+                        colors.RemoveRange(keepVertices, colors.Count - keepVertices);
+                        vertexRenderer.RemoveRange(keepVertices, vertexRenderer.Count - keepVertices);
+                        indices.RemoveRange(keepIndices, indices.Count - keepIndices);
+                        faces.RemoveRange(keepIndices / 3, faces.Count - keepIndices / 3);
+                        faceLightmaps.RemoveRange(keepIndices / 3, faceLightmaps.Count - keepIndices / 3);
+                        rendererToSpace.RemoveRange(keepRenderers, rendererToSpace.Count - keepRenderers);
+                        rendererLayer.RemoveRange(keepRenderers, rendererLayer.Count - keepRenderers);
+                        hasColors = keepColors;
                     }
                     finally { if (mesh) Object.DestroyImmediate(mesh); }
                 }
@@ -257,7 +276,7 @@ namespace SashaRX.UnityMeshLab
                 uv = uv.ToArray(), uv2 = uv2.ToArray(), colors = colors.ToArray(), hasColors = hasColors, indices = indices.ToArray(), faceMaterials = faces.ToArray(),
                 faceLightmaps = faceLightmaps.ToArray(), lightmapRefs = lightmapRefs.ToArray(), materials = materials.ToArray(),
                 diagonal = bounds.size.magnitude, warnings = warnings,
-                vertexRenderer = vertexRenderer.ToArray(), rendererToSpace = rendererToSpace.ToArray() };
+                vertexRenderer = vertexRenderer.ToArray(), rendererToSpace = rendererToSpace.ToArray(), rendererLayer = rendererLayer.ToArray() };
         }
 
         /// <summary>
@@ -543,6 +562,37 @@ namespace SashaRX.UnityMeshLab
 
         // Repo LOD naming is Name_LOD{N} (see the LOD/collision naming rule); anything
         // above LOD0 is a coarser duplicate of what LOD0 already captures.
+        /// <summary>
+        /// Every renderer the game would draw as a shadow caster in the loaded scenes:
+        /// enabled, active, casting shadows, LOD0 of its LODGroup, no collision names —
+        /// the same filters as CollectRenderers, over all scene roots. The Beauty bake
+        /// casts its shadow rays against these so a neighbouring building, a canopy or
+        /// a sibling keep-hierarchy node shadows the source as it does in the game.
+        /// </summary>
+        internal static List<Renderer> CollectSceneShadowCasters()
+        {
+            var excluded = new HashSet<Renderer>();
+            foreach (var group in Object.FindObjectsByType<LODGroup>(FindObjectsSortMode.None)) {
+                var lods = group.GetLODs();
+                var first = new HashSet<Renderer>(lods.Length > 0 ? lods[0].renderers : Array.Empty<Renderer>());
+                for (int l = 1; l < lods.Length; ++l)
+                    foreach (var r in lods[l].renderers) if (!first.Contains(r)) excluded.Add(r);
+            }
+            var result = new List<Renderer>();
+            foreach (var renderer in Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None)) {
+                if (!renderer.enabled || !renderer.gameObject.activeInHierarchy || excluded.Contains(renderer)) continue;
+                if (renderer.shadowCastingMode == UnityEngine.Rendering.ShadowCastingMode.Off) continue;
+                Mesh mesh;
+                if (renderer is SkinnedMeshRenderer skin) mesh = skin.sharedMesh;
+                else if (renderer is MeshRenderer && renderer.TryGetComponent<MeshFilter>(out var filter)) mesh = filter.sharedMesh;
+                else continue;
+                if (!mesh) continue;
+                if (MeshHygieneUtility.IsCollisionNodeName(renderer.name) || MeshHygieneUtility.IsCollisionNodeName(mesh.name)) continue;
+                result.Add(renderer);
+            }
+            return result;
+        }
+
         internal static bool IsHigherLodName(string name)
         {
             if (string.IsNullOrEmpty(name)) return false;
@@ -632,7 +682,9 @@ namespace SashaRX.UnityMeshLab
                     metallic = FloatOr(m, 0, "_Metallic"), smoothness = FloatOr(m, 0.5f, "_Smoothness", "_Glossiness"),
                     normalScale = FloatOr(m, 1, "_BumpScale", "_NormalScale"), aoStrength = FloatOr(m, 1, "_OcclusionStrength")
                 };
-                ShareBaseTransform(surface);
+                // Unknown shaders get no shared base transform: each map keeps the tiling
+                // and offset its own property carries (Read captured them), since nothing
+                // says this shader samples everything through the base map's ST.
                 return surface;
             }
 

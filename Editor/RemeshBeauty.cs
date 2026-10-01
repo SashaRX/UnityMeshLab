@@ -41,16 +41,17 @@ namespace SashaRX.UnityMeshLab
             public bool bounded;
             public Vector3 worldPos, boxMin, boxMax;
             public bool boxProjection;
-            public float importance;
+            public float importance, blendDistance;
         }
 
-        struct Directional { public Vector3 dir; public Color color; public float shadowStrength; }
+        struct Directional { public Vector3 dir; public Color color; public float shadowStrength; public int cullingMask; }
         struct Local
         {
             public Vector3 pos, axis;         // world space (axis used when spot)
             public Color color;
             public float rangeSqr, range, innerCos, outerCos, shadowStrength;
             public bool spot;
+            public int cullingMask;
         }
 
         const int AmbientW = 32, AmbientH = 16;
@@ -69,7 +70,10 @@ namespace SashaRX.UnityMeshLab
         readonly Vector3 viewPosition;        // world space; specular is baked for this vantage
         Matrix4x4 localToWorld, worldToLocal;
         TriangleBvh bvh;                      // capture-space source BVH, bound by the bake before workers run
+        readonly TriangleBvh occluders;       // world-space scene shadow casters (other renderers, sibling nodes)
         float shadowEpsilon;
+        /// <summary>What the scene shadow snapshot holds, for the bake status.</summary>
+        internal readonly string occluderSummary;
 
         /// <summary>Capture the lighting environment around root for geometry expressed in
         /// root-local space. Main thread only.</summary>
@@ -86,22 +90,25 @@ namespace SashaRX.UnityMeshLab
                 if (light.bakingOutput.lightmapBakeType == LightmapBakeType.Baked) continue;
                 Color color = light.color.linear * light.intensity;
                 float shadowStrength = light.shadows == LightShadows.None ? 0f : light.shadowStrength;
+                // The light's culling mask decides per captured renderer (layer) whether
+                // it lights and shadows that face at all; see Direct.
+                int mask = light.cullingMask;
                 if (light.type == LightType.Directional) {
                     dirList.Add(new Directional {
                         dir = -(light.transform.rotation * Vector3.forward).normalized,
-                        color = color, shadowStrength = shadowStrength,
+                        color = color, shadowStrength = shadowStrength, cullingMask = mask,
                     });
                 }
                 else if (light.type == LightType.Point) {
                     locList.Add(new Local { pos = light.transform.position, color = color,
-                        rangeSqr = light.range * light.range, range = light.range, shadowStrength = shadowStrength });
+                        rangeSqr = light.range * light.range, range = light.range, shadowStrength = shadowStrength, cullingMask = mask });
                 }
                 else if (light.type == LightType.Spot) {
                     float outer = light.spotAngle * 0.5f * Mathf.Deg2Rad;
                     float inner = Mathf.Min(light.innerSpotAngle * 0.5f * Mathf.Deg2Rad, outer - 1e-4f);
                     locList.Add(new Local { pos = light.transform.position, axis = light.transform.forward.normalized,
                         color = color, rangeSqr = light.range * light.range, range = light.range,
-                        innerCos = Mathf.Cos(inner), outerCos = Mathf.Cos(outer), spot = true, shadowStrength = shadowStrength });
+                        innerCos = Mathf.Cos(inner), outerCos = Mathf.Cos(outer), spot = true, shadowStrength = shadowStrength, cullingMask = mask });
                 }
             }
             directionals = dirList.ToArray();
@@ -149,12 +156,21 @@ namespace SashaRX.UnityMeshLab
                 probe.worldPos = rp.transform.position;
                 probe.boxMin = rp.bounds.min; probe.boxMax = rp.bounds.max;
                 probe.boxProjection = rp.boxProjection;
+                probe.blendDistance = Mathf.Max(0f, rp.blendDistance);
                 probeList.Add(probe);
             }
             probes = probeList.ToArray();
-            // No scene probe applies → the environment's custom reflection (Lighting ▸
-            // Environment Reflections) is the fallback Unity would blend to.
-            fallbackProbe = RenderSettings.customReflection != null ? ReadProbe(RenderSettings.customReflection, ProbeMips) : null;
+            // Outside every probe (and in each probe's blend band) the game falls back to
+            // the environment reflection: the custom cubemap in Custom mode, else the
+            // reflection Unity generated from the skybox.
+            Texture environment = RenderSettings.defaultReflectionMode == DefaultReflectionMode.Custom
+                ? RenderSettings.customReflection : ReflectionProbe.defaultTexture;
+            fallbackProbe = environment != null ? ReadProbe(environment, ProbeMips) : null;
+
+            // Shadow rays also test the rest of the scene: a neighbouring building, a
+            // canopy, or a sibling keep-hierarchy node shadows the source in the game, and
+            // the source's own BVH cannot see them.
+            occluders = CaptureOccluders(root, out occluderSummary);
 
             // Specular is view-dependent; bake it for the scene view camera's vantage
             // when one is open, else a three-quarter view of the object.
@@ -189,21 +205,30 @@ namespace SashaRX.UnityMeshLab
         Vector3 WorldNormal(Vector3 n) => worldToLocal.transpose.MultiplyVector(n).normalized;
 
         /// <summary>Direct realtime/mixed light at a source point (capture space). Thread-safe.</summary>
-        internal Color Direct(Vector3 p, Vector3 n)
+        internal Color Direct(Vector3 p, Vector3 n) => Direct(p, n, 0);
+
+        /// <summary>Direct light at a source point on a renderer of the given GameObject
+        /// layer: lights whose culling mask excludes the layer neither light nor shadow it.</summary>
+        internal Color Direct(Vector3 p, Vector3 n, int layer)
         {
             var sum = Color.black;
+            int layerBit = 1 << (layer & 31);
             Vector3 pw = localToWorld.MultiplyPoint3x4(p), nw = WorldNormal(n);
             Vector3 origin = p + n * shadowEpsilon;
+            Vector3 originWorld = localToWorld.MultiplyPoint3x4(origin);
             for (int i = 0; i < directionals.Length; ++i) {
                 var d = directionals[i];
+                if ((d.cullingMask & layerBit) == 0) continue;
                 float ndl = Vector3.Dot(nw, d.dir);
                 if (ndl <= 0f) continue;
-                float shadow = d.shadowStrength > 0f ? Shadow(origin, worldToLocal.MultiplyVector(d.dir).normalized, float.MaxValue) * d.shadowStrength : 0f;
+                float shadow = d.shadowStrength > 0f
+                    ? Shadow(origin, worldToLocal.MultiplyVector(d.dir).normalized, float.MaxValue, originWorld, d.dir, float.MaxValue) * d.shadowStrength : 0f;
                 if (shadow >= 1f) continue;
                 sum += d.color * (ndl * (1f - shadow));
             }
             for (int i = 0; i < locals.Length; ++i) {
                 var l = locals[i];
+                if ((l.cullingMask & layerBit) == 0) continue;
                 Vector3 toLight = l.pos - pw;
                 float distSq = toLight.sqrMagnitude;
                 if (distSq > l.rangeSqr || distSq < 1e-10f) continue;
@@ -225,7 +250,9 @@ namespace SashaRX.UnityMeshLab
                     // The shadow segment runs in capture space, so its length is the
                     // capture-space distance to the light, whatever the root's scale.
                     Vector3 toLightLocal = worldToLocal.MultiplyPoint3x4(l.pos) - p;
-                    shadow = Shadow(origin, toLightLocal.normalized, toLightLocal.magnitude) * l.shadowStrength;
+                    Vector3 toLightWorld = l.pos - originWorld;
+                    shadow = Shadow(origin, toLightLocal.normalized, toLightLocal.magnitude,
+                        originWorld, toLightWorld.normalized, toLightWorld.magnitude) * l.shadowStrength;
                 }
                 sum += l.color * (weight * attenuation * (1f - shadow));
             }
@@ -255,23 +282,19 @@ namespace SashaRX.UnityMeshLab
         internal Color Specular(Vector3 p, Vector3 n, Color albedo, float metallic, float smoothness)
         {
             Vector3 worldP = localToWorld.MultiplyPoint3x4(p);
-            Probe probe = PickProbe(worldP);
-            if (probe == null) return Color.black;
+            ProbeWeights(worldP, out var first, out float w0, out var second, out float w1);
+            if (first == null && fallbackProbe == null) return Color.black;
             Vector3 v = viewPosition - worldP;
             if (v.sqrMagnitude < 1e-10f) return Color.black;
             v.Normalize();
             Vector3 nw = WorldNormal(n);
             Vector3 worldR = Vector3.Reflect(-v, nw).normalized;
-            Vector3 dir = probe.boxProjection ? BoxProjected(worldR, worldP, probe) : worldR;
             float roughness = Mathf.Clamp01(1f - smoothness);
-            float remapped = roughness * (1.7f - 0.7f * roughness);
-            float mipFloat = remapped * (probe.mipCount - 1);
-            int m0 = Mathf.Clamp(Mathf.FloorToInt(mipFloat), 0, probe.mipCount - 1);
-            int m1 = Mathf.Min(m0 + 1, probe.mipCount - 1);
-            Color sample = Color.Lerp(
-                SampleEquirect(probe.mips[m0], probe.widths[m0], probe.heights[m0], dir),
-                SampleEquirect(probe.mips[m1], probe.widths[m1], probe.heights[m1], dir),
-                mipFloat - m0);
+            Color sample = Color.black;
+            float rest = 1f;
+            if (first != null) { sample += SampleProbe(first, worldR, worldP, roughness) * w0; rest -= w0; }
+            if (second != null && rest > 0f) { float w = rest * w1; sample += SampleProbe(second, worldR, worldP, roughness) * w; rest -= w; }
+            if (fallbackProbe != null && rest > 0f) sample += SampleProbe(fallbackProbe, worldR, worldP, roughness) * rest;
             float surfaceReduction = 1f / (roughness * roughness + 1f);
             Vector3 f0 = Vector3.Lerp(new Vector3(0.04f, 0.04f, 0.04f),
                 new Vector3(albedo.r, albedo.g, albedo.b), metallic);
@@ -279,6 +302,21 @@ namespace SashaRX.UnityMeshLab
             float fresnel = Mathf.Pow(1f - Mathf.Clamp01(Vector3.Dot(nw, v)), 5f);
             Vector3 specular = Vector3.Lerp(f0, new Vector3(grazingComponent, grazingComponent, grazingComponent), fresnel) * surfaceReduction;
             return new Color(specular.x * sample.r, specular.y * sample.g, specular.z * sample.b, 0f);
+        }
+
+        // One probe's prefiltered reflection along the (box-projected) reflection ray:
+        // the r(1.7−0.7r)·maxMip remap with the fractional part lerped between levels.
+        static Color SampleProbe(Probe probe, Vector3 worldR, Vector3 worldP, float roughness)
+        {
+            Vector3 dir = probe.boxProjection ? BoxProjected(worldR, worldP, probe) : worldR;
+            float remapped = roughness * (1.7f - 0.7f * roughness);
+            float mipFloat = remapped * (probe.mipCount - 1);
+            int m0 = Mathf.Clamp(Mathf.FloorToInt(mipFloat), 0, probe.mipCount - 1);
+            int m1 = Mathf.Min(m0 + 1, probe.mipCount - 1);
+            return Color.Lerp(
+                SampleEquirect(probe.mips[m0], probe.widths[m0], probe.heights[m0], dir),
+                SampleEquirect(probe.mips[m1], probe.widths[m1], probe.heights[m1], dir),
+                mipFloat - m0);
         }
 
         // URP BoxProjectedCubemapDirection, verbatim: the reflection ray is bent toward
@@ -315,22 +353,76 @@ namespace SashaRX.UnityMeshLab
 
         // ── plumbing ──
 
-        float Shadow(Vector3 origin, Vector3 dir, float maxDist)
+        // The source's own BVH in capture space, then the scene's shadow casters in
+        // world space (the same segment, expressed in each space).
+        float Shadow(Vector3 origin, Vector3 dir, float maxDist, Vector3 originWorld, Vector3 dirWorld, float maxWorld)
         {
-            if (bvh == null) return 0f;
-            var hit = bvh.Raycast(origin, dir, maxDist);
-            return hit.triangleIndex >= 0 ? 1f : 0f;
+            if (bvh != null && bvh.Raycast(origin, dir, maxDist).triangleIndex >= 0) return 1f;
+            if (occluders != null && occluders.Raycast(originWorld, dirWorld, maxWorld).triangleIndex >= 0) return 1f;
+            return 0f;
         }
 
-        Probe PickProbe(Vector3 world)
+        // Unity's probe blending, per sample: a probe's weight is 1 inside its box and
+        // falls to 0 across its blend distance outside it; the two highest-importance
+        // probes with weight share the sample (second one takes what the first leaves),
+        // and the environment reflection takes the rest ("Blend Probes and Skybox").
+        void ProbeWeights(Vector3 world, out Probe first, out float firstWeight, out Probe second, out float secondWeight)
         {
-            Probe best = null;
+            first = second = null; firstWeight = secondWeight = 0f;
             for (int i = 0; i < probes.Length; ++i) {
                 var probe = probes[i];
-                if (probe.bounded && !probe.bounds.Contains(world)) continue;
-                if (best == null || probe.importance > best.importance) best = probe;
+                float weight = 1f;
+                if (probe.bounded) {
+                    var box = probe.bounds;
+                    Vector3 outside = Vector3.Max(Vector3.zero, Vector3.Max(box.min - world, world - box.max));
+                    float distance = outside.magnitude;
+                    if (distance > 0f) weight = probe.blendDistance > 0f ? Mathf.Clamp01(1f - distance / probe.blendDistance) : 0f;
+                    if (weight <= 0f) continue;
+                }
+                if (first == null || Before(probe, first)) { second = first; secondWeight = firstWeight; first = probe; firstWeight = weight; }
+                else if (second == null || Before(probe, second)) { second = probe; secondWeight = weight; }
             }
-            return best ?? fallbackProbe;
+        }
+
+        // Unity orders candidates by importance, then by volume (the smaller box wins).
+        static bool Before(Probe a, Probe b)
+        {
+            if (a.importance != b.importance) return a.importance > b.importance;
+            float va = a.bounded ? a.bounds.size.x * a.bounds.size.y * a.bounds.size.z : float.MaxValue;
+            float vb = b.bounded ? b.bounds.size.x * b.bounds.size.y * b.bounds.size.z : float.MaxValue;
+            return va < vb;
+        }
+
+        // Scene shadow casters outside the source's own BVH, captured in world space
+        // (geometry only). Nearest to the source first, up to a triangle budget so a city
+        // block does not turn one bake into a scene-wide BVH build.
+        const long OccluderTriangleBudget = 4_000_000;
+        static TriangleBvh CaptureOccluders(GameObject root, out string summary)
+        {
+            summary = "";
+            var casters = RemeshSource.CollectSceneShadowCasters();
+            if (casters.Count == 0) return null;
+            Bounds world = ComputeWorldBounds(root);
+            casters.Sort((a, b) => a.bounds.SqrDistance(world.center).CompareTo(b.bounds.SqrDistance(world.center)));
+            var chosen = new List<Renderer>(casters.Count);
+            long triangles = 0; int skipped = 0;
+            foreach (var renderer in casters) {
+                Mesh mesh = renderer is SkinnedMeshRenderer skin ? skin.sharedMesh
+                    : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
+                if (!mesh) continue;
+                long count = 0;
+                for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                    if (mesh.GetTopology(sub) == MeshTopology.Triangles) count += (long)mesh.GetIndexCount(sub) / 3;
+                if (triangles + count > OccluderTriangleBudget) { ++skipped; continue; }
+                triangles += count; chosen.Add(renderer);
+            }
+            RemeshSource occluded = null;
+            try { occluded = RemeshSource.Capture(Matrix4x4.identity, chosen, required: false, geometryOnly: true); }
+            catch (InvalidOperationException) { }
+            if (occluded == null) return null;
+            summary = $"{chosen.Count:N0} scene shadow caster(s), {occluded.indices.Length / 3:N0} triangles" +
+                (skipped > 0 ? $" ({skipped:N0} farthest renderer(s) over the {OccluderTriangleBudget / 1_000_000}M-triangle budget left out)" : "");
+            return new TriangleBvh(occluded.positions, occluded.indices);
         }
 
         static Vector2 EquirectUV(Vector3 dir)

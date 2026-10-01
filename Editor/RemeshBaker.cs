@@ -281,13 +281,15 @@ namespace SashaRX.UnityMeshLab
             }
             Color albedoLinear = albedo.linear;
             int lightmapId = source.faceLightmaps != null && face < source.faceLightmaps.Length ? source.faceLightmaps[face] : -1;
+            // The face's renderer layer gates lights by their culling mask.
+            int layer = source.vertexRenderer != null && source.rendererLayer != null ? source.rendererLayer[source.vertexRenderer[a]] : 0;
             Color lit;
             if (lightmapId >= 0 && source.lightmaps != null && lightmapId < source.lightmaps.Length) {
                 Vector2 uv2 = source.uv2[a] * w.x + source.uv2[b] * w.y + source.uv2[c] * w.z;
-                lit = albedoLinear * (beauty.SampleLightmap(source.lightmaps[lightmapId], uv2, n) + beauty.Direct(p, n)) + emission;
+                lit = albedoLinear * (beauty.SampleLightmap(source.lightmaps[lightmapId], uv2, n) + beauty.Direct(p, n, layer)) + emission;
             }
             else {
-                lit = albedoLinear * (beauty.Direct(p, n) + beauty.Ambient(n)) + emission;
+                lit = albedoLinear * (beauty.Direct(p, n, layer) + beauty.Ambient(n)) + emission;
             }
             lit += beauty.Specular(p, n, albedoLinear, metal.r, metal.a);
             return lit;

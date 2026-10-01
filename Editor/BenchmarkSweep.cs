@@ -1369,6 +1369,9 @@ namespace SashaRX.UnityMeshLab
                     try { p.Kill(); } catch { /* best-effort */ }
                     return "";
                 }
+                // The timed wait only says git exited; the async line callbacks may still
+                // be queued. The parameterless wait drains them before the builder is read.
+                p.WaitForExit();
                 return stdout.ToString().Trim();
             }
             catch

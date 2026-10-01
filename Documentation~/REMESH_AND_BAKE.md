@@ -168,6 +168,17 @@ settings, marked "settings changed" in its header) and clears everything after i
    Scene lighting is captured once in world space and every capture space (the
    weld, or each keep-hierarchy node) converts into it, so light ranges, shadow
    distances and probe bounds stay in world units whatever the source's scale.
+   Shadow rays test the source's own geometry and the rest of the scene's shadow
+   casters (enabled, LOD0, casting shadows — captured geometry-only, nearest
+   renderers first up to a 4M-triangle budget), so a neighbouring building, a
+   canopy or a sibling keep-hierarchy node shadows the source as in the game;
+   the Console lists what the snapshot held. Lights honour their culling mask
+   per captured renderer layer: a light that does not reach the object's layer
+   neither lights nor shadows it. Reflection probes are blended the way the
+   runtime does — weight 1 inside a probe's box, falling to 0 across its blend
+   distance, the two highest-importance probes sharing the sample and the
+   environment reflection (the custom cubemap, or the reflection Unity
+   generated from the skybox) taking the rest.
    Lightmaps are read only for a Beauty bake, right before it runs, and only
    the region each renderer occupies (its lightmap scale/offset rect, one texel
    of padding); a region above 2048² texels is downsampled to fit, and the

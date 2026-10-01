@@ -338,9 +338,10 @@ namespace SashaRX.UnityMeshLab
 
         void Save()
         {
-            // Default output: a "remesh" subfolder next to the source model's asset.
-            // Falls back to the folder picker for scene-only objects with no asset.
-            string parent = RemeshExporter.ResolveDefaultFolder(source) ?? RemeshExporter.PickFolder(out saveStatus);
+            // Default output: a "remesh" subfolder next to the CAPTURED model's asset (the
+            // selection may have moved on since the bake). Falls back to the folder
+            // picker for scene-only objects with no asset, or a captured root that is gone.
+            string parent = RemeshExporter.ResolveDefaultFolder(pipeline.CapturedSource) ?? RemeshExporter.PickFolder(out saveStatus);
             if (parent == null) return;
             try { saveStatus = RemeshExporter.Export(pipeline, settings, parent); }
             catch (Exception e) { saveStatus = e.Message; }

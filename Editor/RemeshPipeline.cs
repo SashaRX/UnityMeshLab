@@ -46,6 +46,10 @@ namespace SashaRX.UnityMeshLab
         CancellationTokenSource cancellation;
         int running;
         bool hierarchy;
+        bool disposeRequested;   // Dispose() during a run: clear once the run has observed cancellation
+        /// <summary>The root the remesh stage captured; the save resolves its output folder from this,
+        /// not from whatever is selected at save time. Null until the stage ran.</summary>
+        public GameObject CapturedSource { get; private set; }
 
         // Previews come from the primary node: the weld itself, or the largest node of
         // a hierarchy so the existing preview panel keeps working.
@@ -84,15 +88,20 @@ namespace SashaRX.UnityMeshLab
         public float SourceDiagonal => Primary?.source != null ? Primary.source.diagonal : 0f;
         public bool SourceHasColors { get { foreach (var n in nodes) if (n.source != null && n.source.hasColors) return true; return false; } }
 
+        // True only when EVERY node carries the stage's output: a keep-hierarchy run
+        // fills the nodes one by one, and a repaint between two nodes must not read a
+        // half-finished stage (Summary dereferences every node).
         public bool Has(Stage stage)
         {
             if (nodes.Count == 0) return false;
-            switch (stage) {
-                case Stage.Remesh: return nodes[0].voxel != null;
-                case Stage.Simplify: return nodes[0].simplified != null;
-                case Stage.Unwrap: return nodes[0].geometry != null;
-                default: return nodes[0].maps != null;
+            foreach (var n in nodes) {
+                bool done = stage == Stage.Remesh ? n.voxel != null
+                    : stage == Stage.Simplify ? n.simplified != null
+                    : stage == Stage.Unwrap ? n.geometry != null
+                    : n.maps != null;
+                if (!done) return false;
             }
+            return true;
         }
 
         /// <summary>Short stage summary for the UI headers; null before the stage ran.</summary>
@@ -171,6 +180,9 @@ namespace SashaRX.UnityMeshLab
             finally {
                 cancellation.Dispose(); cancellation = null;
                 if (locked) EditorApplication.UnlockReloadAssemblies();
+                // A Dispose() that arrived mid-run waited for this point: the stage code
+                // above never sees a cleared node list or a destroyed mesh.
+                if (disposeRequested) { disposeRequested = false; ClearFrom(Stage.Remesh); }
                 Interlocked.Exchange(ref running, 0); Changed?.Invoke();
             }
         }
@@ -248,6 +260,7 @@ namespace SashaRX.UnityMeshLab
             }
             token.ThrowIfCancellationRequested();
             nodes.AddRange(captures);
+            CapturedSource = root;
             var primary = Primary;
             sourceMesh = BuildMesh(ResultName + "_Source", primary.source.positions, primary.source.indices,
                 primary.source.normals, primary.source.hasColors ? primary.source.colors : null);
@@ -327,6 +340,7 @@ namespace SashaRX.UnityMeshLab
                 Report("Capturing scene lighting…");
                 if (!root) throw new InvalidOperationException("The source root is gone; reselect it and rerun the remesh stage.");
                 beauty = new RemeshBeauty(root, SourceDiagonal);
+                if (!string.IsNullOrEmpty(beauty.occluderSummary)) UvtLog.Info("[Remesh] Beauty shadows also test " + beauty.occluderSummary + ".");
             }
             long sourceTriangles = 0, targetTriangles = 0, misses = 0, covered = 0, empty = 0; int warnings = 0;
             for (int i = 0; i < nodes.Count; ++i) {
@@ -466,13 +480,16 @@ namespace SashaRX.UnityMeshLab
                 if (voxelMesh) Object.DestroyImmediate(voxelMesh);
                 if (sourceMesh) Object.DestroyImmediate(sourceMesh);
                 voxelMesh = null; sourceMesh = null; keys[(int)Stage.Remesh] = null;
-                nodes.Clear(); hierarchy = false;
+                nodes.Clear(); hierarchy = false; CapturedSource = null;
             }
         }
 
+        /// <summary>Cancels a running stage and drops every output. Cancellation is
+        /// cooperative, so during a run the clear is deferred to the run's exit instead of
+        /// racing the stage that is still executing.</summary>
         public void Dispose()
         {
-            cancellation?.Cancel();
+            if (IsRunning) { disposeRequested = true; cancellation?.Cancel(); return; }
             ClearFrom(Stage.Remesh);
         }
     }
