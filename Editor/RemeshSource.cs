@@ -235,6 +235,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     finally { if (mesh) Object.DestroyImmediate(mesh); }
                 }
+                reader.FlushWarnings();
                 warnings = reader.warnings.ToArray();
             }
             if (indices.Count == 0) {
@@ -506,6 +507,21 @@ namespace SashaRX.UnityMeshLab
             }
             public void Dispose() { Object.DestroyImmediate(blit); }
             public readonly List<string> warnings = new List<string>();
+            // Materials on shaders other than Standard / URP Lit, grouped by shader: one
+            // summary line per capture instead of one warning per material.
+            readonly Dictionary<string, List<string>> genericShaders = new Dictionary<string, List<string>>();
+            public void FlushWarnings()
+            {
+                if (genericShaders.Count == 0) return;
+                int count = 0; var parts = new List<string>();
+                foreach (var pair in genericShaders) {
+                    count += pair.Value.Count;
+                    parts.Add("'" + pair.Key + "' (" + string.Join(", ", pair.Value) + ")");
+                }
+                warnings.Add(count + " material(s) use shaders other than Standard or URP/Lit; baking base colour, normal, occlusion and emission from common property names: " +
+                    string.Join("; ", parts) + ".");
+                genericShaders.Clear();
+            }
             public Surface Capture(Material m)
             {
                 string shaderName = m.shader ? m.shader.name : "<missing shader>";
@@ -539,7 +555,8 @@ namespace SashaRX.UnityMeshLab
             // say so, instead of refusing the whole model.
             Surface CaptureGeneric(Material m, string shaderName)
             {
-                warnings.Add(m.name + ": shader '" + shaderName + "' is not Standard or URP/Lit; baking base colour, normal, occlusion and emission from common property names.");
+                if (!genericShaders.TryGetValue(shaderName, out var names)) genericShaders[shaderName] = names = new List<string>();
+                names.Add(m.name);
                 string color = First(m, "_BaseMap", "_MainTex", "_BaseColorMap", "_AlbedoMap", "_Albedo");
                 string normal = First(m, "_BumpMap", "_NormalMap");
                 bool emissive = m.HasProperty("_EmissionColor") && (m.IsKeywordEnabled("_EMISSION") || m.HasProperty("_EmissionMap") && m.GetTexture("_EmissionMap"));

@@ -143,7 +143,8 @@ settings, marked "settings changed" in its header) and clears everything after i
    into a silhouette-correct impostor. **Vertex color tints albedo** multiplies
    the baked albedo by the source's interpolated vertex color (RGB, read as
    linear, the way vertex-tinting shaders do), independently of the vertex color
-   transfer toggles; it is off by default.
+   transfer toggles. It is on by default and does nothing on meshes without
+   vertex colors; turn it off for shaders that ignore the vertex color.
    **Bake mode** selects what lands in the maps: *Materials* transfers the source
    maps; *Beauty* bakes the object as the player sees it — realtime/mixed light
    with hard ray shadows, the renderer's lightmaps (sampled at its UV2, RGBM/HDR

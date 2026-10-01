@@ -134,9 +134,10 @@ namespace SashaRX.UnityMeshLab
         public int bakeSamples = 4;              // per texel: 1, 4, 9 or 16
         public bool transferVertexColor;
         public bool transferVertexAlpha;
-        // Multiply the source albedo by the source vertex color (RGB) while projecting,
-        // for shaders that use the vertex color as an albedo tint.
-        public bool vertexColorTint;
+        // Multiply the source albedo by the source vertex color (RGB) while projecting —
+        // the way vertex-tinting shaders read it. On by default; a mesh without colors
+        // is unaffected.
+        public bool vertexColorTint = true;
 
         // Save (FBX): embed the baked maps into the binary FBX instead of
         // linking them by absolute path. Portable, but the file grows by the

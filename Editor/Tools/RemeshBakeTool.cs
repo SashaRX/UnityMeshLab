@@ -214,8 +214,8 @@ namespace SashaRX.UnityMeshLab
                     settings.transferVertexColor = EditorGUILayout.Toggle("Vertex color (RGB)", settings.transferVertexColor);
                     settings.transferVertexAlpha = EditorGUILayout.Toggle("Vertex alpha", settings.transferVertexAlpha);
                     settings.vertexColorTint = EditorGUILayout.Toggle(new GUIContent("Vertex color tints albedo",
-                        "Multiply the projected albedo by the source vertex color (RGB), for shaders that use the vertex color as a tint."), settings.vertexColorTint);
-                    if (pipeline.Has(RemeshPipeline.Stage.Remesh) && !pipeline.SourceHasColors && (settings.transferVertexColor || settings.transferVertexAlpha || settings.vertexColorTint))
+                        "Multiply the projected albedo by the source vertex color (RGB), the way vertex-tinting shaders read it. Meshes without vertex colors are unaffected; turn off for shaders that ignore the vertex color."), settings.vertexColorTint);
+                    if (pipeline.Has(RemeshPipeline.Stage.Remesh) && !pipeline.SourceHasColors && (settings.transferVertexColor || settings.transferVertexAlpha))
                         EditorGUILayout.HelpBox("The source has no vertex colors; the transfer writes white.", MessageType.None);
                     StageButton(RemeshPipeline.Stage.Bake, "Bake");
                 }
