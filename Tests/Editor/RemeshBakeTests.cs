@@ -421,6 +421,31 @@ namespace SashaRX.UnityMeshLab.Tests
             // A closed source keeps the whole remesh: the slab against a copy of itself.
             var whole = RemeshTrim.Trim(slab, p, tri, 0.1f, CancellationToken.None, out removed);
             Assert.AreEqual(0, removed); Assert.AreEqual(12, whole.TriangleCount);
+            // A two-sided source (Cull Off material) is surface from behind too: both
+            // sides of the slab stay, only the four rims (8 faces) go; the flat
+            // double-sided sheet is kept whole.
+            var twoSided = new[] { true, true };
+            var both = RemeshTrim.Trim(slab, sourcePositions, sourceIndices, 0.1f, CancellationToken.None, out removed, out _, twoSided);
+            Assert.AreEqual(8, removed); Assert.AreEqual(4, both.TriangleCount);
+            RemeshTrim.Trim(flat, sourcePositions, sourceIndices, 0.1f, CancellationToken.None, out removed, out _, twoSided);
+            Assert.AreEqual(0, removed);
+        }
+        [Test]
+        public void TwoSidedFacesFollowTheMaterialsOrTheSetting()
+        {
+            var source = Source();
+            Assert.IsNull(source.TwoSidedFaces(RemeshBackfaces.FromMaterials), "no two-sided material");
+            Assert.IsNull(source.TwoSidedFaces(RemeshBackfaces.Never));
+            CollectionAssert.AreEqual(new[] { true }, source.TwoSidedFaces(RemeshBackfaces.Always));
+            source.materials[0].twoSided = true;
+            CollectionAssert.AreEqual(new[] { true }, source.TwoSidedFaces(RemeshBackfaces.FromMaterials));
+            Assert.IsNull(source.TwoSidedFaces(RemeshBackfaces.Never), "Never overrides the material");
+            // The bake accepts a two-sided face from behind: a sheet facing away from the
+            // target bakes without misses when its material is two-sided.
+            var target = new RemeshNative.Geometry { positions = source.positions, normals = source.normals, uv = source.uv, indices = source.indices };
+            var away = Source(); away.indices = new[] { 0, 2, 1 }; away.materials[0].twoSided = true;
+            var maps = RemeshBaker.Bake(away, target, source.tangents, new RemeshSettings { textureResolution = 64, padding = 2, sourceBackfaces = RemeshBackfaces.FromMaterials }, CancellationToken.None);
+            Assert.AreEqual(0, maps.misses); Assert.AreEqual(1, maps.twoSidedFaces);
         }
         [Test]
         public void PrincipalExtentsFollowThePointSetsOwnAxes()

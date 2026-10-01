@@ -71,12 +71,14 @@ namespace SashaRX.UnityMeshLab
             Vector3[] faceNormals, float normalDotMin)
             => FindNearestNormalFiltered(queryPoint, queryNormal, faceNormals, normalDotMin, float.MaxValue);
 
-        /// <summary>Normal-filtered nearest triangle within maxDist; triangleIndex -1 when none qualifies.</summary>
+        /// <summary>Normal-filtered nearest triangle within maxDist; triangleIndex -1 when none qualifies.
+        /// eitherSide (optional, per face): a two-sided face passes the test with |dot|,
+        /// its back counting as front.</summary>
         public HitResult FindNearestNormalFiltered(Vector3 queryPoint, Vector3 queryNormal,
-            Vector3[] faceNormals, float normalDotMin, float maxDist)
+            Vector3[] faceNormals, float normalDotMin, float maxDist, bool[] eitherSide = null)
         {
             var best = new HitResult { triangleIndex = -1, distSq = maxDist >= float.MaxValue ? float.MaxValue : maxDist * maxDist };
-            FindNearestNormFiltRecursive(0, queryPoint, queryNormal, faceNormals, normalDotMin, ref best);
+            FindNearestNormFiltRecursive(0, queryPoint, queryNormal, faceNormals, normalDotMin, eitherSide, ref best);
             return best;
         }
 
@@ -107,10 +109,10 @@ namespace SashaRX.UnityMeshLab
         /// pierces the wall and samples the far side's texture.
         /// faceNormals is indexed by local face index (same as returned triangleIndex).
         /// </summary>
-        public RayHit RaycastFacingFiltered(Vector3 origin, Vector3 direction, float maxDist, Vector3[] faceNormals)
+        public RayHit RaycastFacingFiltered(Vector3 origin, Vector3 direction, float maxDist, Vector3[] faceNormals, bool[] eitherSide = null)
         {
             var best = new RayHit { triangleIndex = -1, t = maxDist };
-            RaycastFacingRecursive(0, origin, direction, faceNormals, ref best);
+            RaycastFacingRecursive(0, origin, direction, faceNormals, eitherSide, ref best);
             return best;
         }
 
@@ -260,7 +262,7 @@ namespace SashaRX.UnityMeshLab
 
         // ─── Normal-filtered nearest-point query ───
         void FindNearestNormFiltRecursive(int nodeIdx, Vector3 q, Vector3 qNrm,
-            Vector3[] fNrm, float dotMin, ref HitResult best)
+            Vector3[] fNrm, float dotMin, bool[] eitherSide, ref HitResult best)
         {
             ref Node node = ref nodes[nodeIdx];
 
@@ -272,8 +274,11 @@ namespace SashaRX.UnityMeshLab
                 for (int i = node.triStart; i < node.triStart + node.triCount; i++)
                 {
                     int f = triIndices[i];
-                    if (f < fNrm.Length && Vector3.Dot(fNrm[f], qNrm) < dotMin)
-                        continue;
+                    if (f < fNrm.Length) {
+                        float dot = Vector3.Dot(fNrm[f], qNrm);
+                        if (eitherSide != null && f < eitherSide.Length && eitherSide[f]) dot = Mathf.Abs(dot);
+                        if (dot < dotMin) continue;
+                    }
 
                     int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
                     Vector3 closest = ClosestPointOnTriangle(q, verts[i0], verts[i1], verts[i2],
@@ -295,13 +300,13 @@ namespace SashaRX.UnityMeshLab
 
             if (dL < dR)
             {
-                FindNearestNormFiltRecursive(node.left, q, qNrm, fNrm, dotMin, ref best);
-                FindNearestNormFiltRecursive(node.right, q, qNrm, fNrm, dotMin, ref best);
+                FindNearestNormFiltRecursive(node.left, q, qNrm, fNrm, dotMin, eitherSide, ref best);
+                FindNearestNormFiltRecursive(node.right, q, qNrm, fNrm, dotMin, eitherSide, ref best);
             }
             else
             {
-                FindNearestNormFiltRecursive(node.right, q, qNrm, fNrm, dotMin, ref best);
-                FindNearestNormFiltRecursive(node.left, q, qNrm, fNrm, dotMin, ref best);
+                FindNearestNormFiltRecursive(node.right, q, qNrm, fNrm, dotMin, eitherSide, ref best);
+                FindNearestNormFiltRecursive(node.left, q, qNrm, fNrm, dotMin, eitherSide, ref best);
             }
         }
 
@@ -340,7 +345,7 @@ namespace SashaRX.UnityMeshLab
             if (second >= 0) RaycastRecursive(second, origin, dir, ref best);
         }
 
-        void RaycastFacingRecursive(int nodeIdx, Vector3 origin, Vector3 dir, Vector3[] fNrm, ref RayHit best)
+        void RaycastFacingRecursive(int nodeIdx, Vector3 origin, Vector3 dir, Vector3[] fNrm, bool[] eitherSide, ref RayHit best)
         {
             ref Node node = ref nodes[nodeIdx];
             if (!RayEntersAabb(origin, dir, node.bMin, node.bMax, best.t, out _))
@@ -351,7 +356,7 @@ namespace SashaRX.UnityMeshLab
                 for (int i = node.triStart; i < node.triStart + node.triCount; i++)
                 {
                     int f = triIndices[i];
-                    if (Vector3.Dot(fNrm[f], dir) > 0f) continue; // facing away from the ray origin
+                    if (Vector3.Dot(fNrm[f], dir) > 0f && !(eitherSide != null && f < eitherSide.Length && eitherSide[f])) continue; // facing away from the ray origin
                     int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
                     if (RayTriangleIntersect(origin, dir, verts[i0], verts[i1], verts[i2],
                             out float t, out float u, out float v)
@@ -366,8 +371,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             OrderChildren(node, origin, dir, best.t, out int first, out int second);
-            if (first >= 0) RaycastFacingRecursive(first, origin, dir, fNrm, ref best);
-            if (second >= 0) RaycastFacingRecursive(second, origin, dir, fNrm, ref best);
+            if (first >= 0) RaycastFacingRecursive(first, origin, dir, fNrm, eitherSide, ref best);
+            if (second >= 0) RaycastFacingRecursive(second, origin, dir, fNrm, eitherSide, ref best);
         }
 
         // The children the ray enters, nearer entry first; -1 for a child the ray misses

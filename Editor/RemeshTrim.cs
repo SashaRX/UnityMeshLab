@@ -27,21 +27,23 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>gaveUp: neither the source's winding nor its inverse kept a tenth of
         /// the remesh, so nothing was trimmed — the source is far from the remesh or
-        /// its winding is mixed beyond a single flip.</summary>
+        /// its winding is mixed beyond a single flip. sourceTwoSided (optional, per
+        /// source face): faces whose back counts as surface too (two-sided materials),
+        /// so both sides of the sheet around them stay.</summary>
         internal static RemeshNative.IndexedMesh Trim(RemeshNative.IndexedMesh mesh, Vector3[] sourcePositions, int[] sourceIndices,
-            float maxDistance, CancellationToken token, out int removedFaces, out bool gaveUp)
+            float maxDistance, CancellationToken token, out int removedFaces, out bool gaveUp, bool[] sourceTwoSided = null)
         {
             removedFaces = 0; gaveUp = false;
             int faces = mesh.indices.Length / 3;
             if (faces == 0 || sourceIndices.Length < 3) return mesh;
             var bvh = new TriangleBvh(sourcePositions, sourceIndices);
             var sourceNormals = FaceNormals(sourcePositions, sourceIndices);
-            var keep = Classify(mesh, bvh, sourceNormals, maxDistance, token, out int kept);
+            var keep = Classify(mesh, bvh, sourceNormals, sourceTwoSided, maxDistance, token, out int kept);
             // A source wound inside out would reject everything; judge it by its flipped
             // normals instead, and give up (keep all) when neither reading keeps a tenth.
             if (kept * 10 < faces) {
                 for (int i = 0; i < sourceNormals.Length; ++i) sourceNormals[i] = -sourceNormals[i];
-                var flipped = Classify(mesh, bvh, sourceNormals, maxDistance, token, out int keptFlipped);
+                var flipped = Classify(mesh, bvh, sourceNormals, sourceTwoSided, maxDistance, token, out int keptFlipped);
                 if (keptFlipped > kept) { keep = flipped; kept = keptFlipped; }
                 if (kept * 10 < faces) { gaveUp = true; return mesh; }
             }
@@ -58,8 +60,10 @@ namespace SashaRX.UnityMeshLab
         // at zero distance and keeps both, which is exactly the double-sided result
         // that breaks the cage and the bake. The back face's normal is opposite to the
         // sheet's, the rims are perpendicular; both fail the alignment and go. A source
-        // wound inside out is handled by the caller's flipped retry.
-        static bool[] Classify(RemeshNative.IndexedMesh mesh, TriangleBvh bvh, Vector3[] sourceNormals, float maxDistance, CancellationToken token, out int kept)
+        // wound inside out is handled by the caller's flipped retry. A two-sided source
+        // face passes with |dot|: both sides of the sheet around it are surface the
+        // player sees, only the rims go.
+        static bool[] Classify(RemeshNative.IndexedMesh mesh, TriangleBvh bvh, Vector3[] sourceNormals, bool[] twoSided, float maxDistance, CancellationToken token, out int kept)
         {
             int faces = mesh.indices.Length / 3;
             var keep = new bool[faces];
@@ -71,7 +75,7 @@ namespace SashaRX.UnityMeshLab
                 if (normal.sqrMagnitude < 1e-30f) return;   // degenerate: drop
                 normal.Normalize();
                 Vector3 centroid = (pa + pb + pc) / 3f;
-                var hit = bvh.FindNearestNormalFiltered(centroid, normal, sourceNormals, MinDot, maxDistance);
+                var hit = bvh.FindNearestNormalFiltered(centroid, normal, sourceNormals, MinDot, maxDistance, twoSided);
                 if (hit.triangleIndex < 0) return;
                 keep[f] = true; Interlocked.Increment(ref count);
             });

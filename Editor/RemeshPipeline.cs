@@ -123,12 +123,12 @@ namespace SashaRX.UnityMeshLab
         {
             switch (stage) {
                 case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
-                    $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:F4}|{s.minRodVoxels:F3}|{s.voxelResolution}|{s.trimToSource}";
+                    $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:F4}|{s.minRodVoxels:F3}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
                     $"{s.maxChartArea}|{s.maxChartBoundary}|{s.packRotate}|{s.packBlockAlign}|{s.packBruteForce}";
-                default: return $"{s.bakeMode}|{s.projectionDistance}|{s.cageSmoothing:F3}|{s.cageFit}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}";
+                default: return $"{s.bakeMode}|{s.projectionDistance}|{s.cageSmoothing:F3}|{s.cageFit}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}|{s.sourceBackfaces}";
             }
         }
 
@@ -263,7 +263,8 @@ namespace SashaRX.UnityMeshLab
                     foreach (var p in captured.positions) { mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p); }
                     var extent = mx - mn;
                     float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, options.voxelResolution);
-                    return RemeshTrim.Trim(voxel, captured.positions, captured.indices, cell * 2f, token, out trimmed, out trimGaveUp);
+                    return RemeshTrim.Trim(voxel, captured.positions, captured.indices, cell * 2f, token, out trimmed, out trimGaveUp,
+                        captured.TwoSidedFaces(options.sourceBackfaces));
                 }, token);
                 if (node.voxel == null || node.voxel.TriangleCount == 0) throw new InvalidOperationException("The remesh produced no geometry.");
                 if (trimGaveUp) { UvtLog.Warn("[Remesh] " + (hierarchy ? node.name + ": " : "") + "Trim to source surface kept under a tenth of the remesh " +
@@ -410,7 +411,8 @@ namespace SashaRX.UnityMeshLab
                     $"cage: {baked.weldedPositions:N0} welded positions ({baked.splitCopies:N0} split copies), {baked.cageSides:N0} sides " +
                     $"({baked.foldedPositions:N0} double-sided positions), {baked.oneSidedNormals:N0} vertices off their cage by >30° (max {baked.maxOneSidedDeg:F0}°), " +
                     $"reach up to {baked.maxReachRatio:F1}× the projection distance, {baked.zeroNormals:N0} zero normals; " +
-                    $"projection: {baked.rayFallbacks:N0} nearest-fallback samples, {baked.misses:N0} missed texels, front-face filter {(baked.facingFilter ? "on" : "off")}; " +
+                    $"projection: {baked.rayFallbacks:N0} nearest-fallback samples, {baked.misses:N0} missed texels, front-face filter {(baked.facingFilter ? "on" : "off")}, " +
+                    $"{baked.twoSidedFaces:N0} two-sided source faces; " +
                     $"normal map tilt: mean {baked.meanTiltDeg:F1}° / max {baked.maxTiltDeg:F0}°, {baked.loudTexels:N0} texels >45°; " +
                     $"bounds diagonal: source {captured.diagonal:F3} / target {targetDiagonal:F3} (ratio {scaleRatio:F2})");
             if (baked.zeroNormals > 0)

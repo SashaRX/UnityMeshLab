@@ -241,6 +241,10 @@ namespace SashaRX.UnityMeshLab
                             "plane, a curtain) into a thin slab; its back side and rims have no source face nearby with an aligned normal and go. " +
                             "Closed sources are left whole. Turn off to keep the slab, e.g. with Two-sided shell."), settings.trimToSource);
                     }
+                    settings.sourceBackfaces = (RemeshBackfaces)EditorGUILayout.EnumPopup(new GUIContent("Source backfaces",
+                        "Whether the source's back faces count as surface. From materials: two-sided when a material's cull mode is Off or its double-sided " +
+                        "switch is on (a Cull Off written into the shader itself is not detectable — use Always). Two-sided faces keep both sides of their " +
+                        "sheet through the trim and project from either side in the bake; Never keeps only the front of every face."), settings.sourceBackfaces);
                     StageButton(RemeshPipeline.Stage.Remesh, "Remesh");
                 }
                 if (StageHeader(RemeshPipeline.Stage.Simplify)) {

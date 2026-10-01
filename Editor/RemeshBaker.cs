@@ -25,6 +25,7 @@ namespace SashaRX.UnityMeshLab
             public int cageSides, foldedPositions;
             public float maxOneSidedDeg, meanTiltDeg, maxTiltDeg, maxReachRatio;
             public bool facingFilter;
+            public int twoSidedFaces;   // source faces whose back counts as surface (two-sided materials)
             public bool beauty;
         }
 
@@ -77,13 +78,19 @@ namespace SashaRX.UnityMeshLab
             // is not guaranteed to be outward, so a probe orients the normals first;
             // without a clear majority the filter stays off and the bake behaves exactly
             // as before.
+            // Two-sided source faces (Cull Off / double-sided materials, or the setting)
+            // are surface from behind too: they pass the filter from either side and cast
+            // no vote in the winding probe.
+            var twoSided = source.TwoSidedFaces(settings.sourceBackfaces);
+            if (twoSided != null) foreach (bool two in twoSided) if (two) ++result.twoSidedFaces;
             var faceNormals = FaceNormals(source.positions, source.indices);
-            int winding = ProbeWinding(bvh, source.positions, faceNormals);
+            int winding = ProbeWinding(bvh, source.positions, faceNormals, twoSided);
             bool facingFilter = winding != 0;
             if (winding < 0)
                 for (int f = 0; f < faceNormals.Length; ++f) faceNormals[f] = -faceNormals[f];
             result.facingFilter = facingFilter;
             Vector3[] facing = facingFilter ? faceNormals : null;
+            bool[] eitherSide = facingFilter ? twoSided : null;
             int misses = 0, rayFallbacks = 0, empties = 0;
             var emptyTexels = proxy ? new bool[count] : null;
             Parallel.For(0, size, new ParallelOptions { CancellationToken = token,
@@ -112,7 +119,7 @@ namespace SashaRX.UnityMeshLab
                         for (int c = 0; c < candidateCount && face < 0; ++c)
                             if (Inside(target, candidates[c], uv, out w)) face = candidates[c];
                         if (face < 0) continue;
-                    if (!Project(source, target, tangents, cage, bvh, facing, beauty, face, w,
+                    if (!Project(source, target, tangents, cage, bvh, facing, eitherSide, beauty, face, w,
                             proxy, faceDirs, depth, settings.vertexColorTint,
                             out var sc, out var sn, out var sm, out var sa, out var se, out var rayFallback)) continue;
                         if (rayFallback) Interlocked.Increment(ref rayFallbacks);
@@ -221,7 +228,7 @@ namespace SashaRX.UnityMeshLab
         // proxy: the ray starts just outside the proxy face and travels inward along the
         // face normal through the whole proxy (depth), first hit wins, no fallback.
         static bool Project(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents, Cage cage,
-            TriangleBvh bvh, Vector3[] facing, RemeshBeauty beauty, int face, Vector3 w,
+            TriangleBvh bvh, Vector3[] facing, bool[] eitherSide, RemeshBeauty beauty, int face, Vector3 w,
             bool proxy, Vector3[] faceDirs, float depth, bool vertexTint,
             out Color color, out Color normal, out Color metal, out Color ao, out Color emission, out bool rayFallback)
         {
@@ -235,12 +242,12 @@ namespace SashaRX.UnityMeshLab
                 Vector3 dir = faceDirs[face];
                 float eps = depth * 1e-4f;
                 var hit = facing != null
-                    ? bvh.RaycastFacingFiltered(p + dir * eps, -dir, depth, facing)
+                    ? bvh.RaycastFacingFiltered(p + dir * eps, -dir, depth, facing, eitherSide)
                     : bvh.Raycast(p + dir * eps, -dir, depth);
                 sourceFace = hit.triangleIndex; sw = hit.barycentric;
                 if (sourceFace < 0) {
                     var nearest = facing != null
-                        ? bvh.FindNearestNormalFiltered(p, dir, facing, 0f, depth)
+                        ? bvh.FindNearestNormalFiltered(p, dir, facing, 0f, depth, eitherSide)
                         : bvh.FindNearest(p, depth);
                     sourceFace = nearest.triangleIndex; sw = nearest.barycentric;
                     rayFallback = sourceFace >= 0;
@@ -250,14 +257,14 @@ namespace SashaRX.UnityMeshLab
                 Vector3 rayN = cage.Direction(face, w);
                 float reach = cage.Reach(face, w);
                 var hit = facing != null
-                    ? bvh.RaycastFacingFiltered(p + rayN * reach, -rayN, reach * 2, facing)
+                    ? bvh.RaycastFacingFiltered(p + rayN * reach, -rayN, reach * 2, facing, eitherSide)
                     : bvh.Raycast(p + rayN * reach, -rayN, reach * 2);
                 sourceFace = hit.triangleIndex; sw = hit.barycentric;
                 if (sourceFace < 0) {
                     // Both fallbacks stay bounded by the cage reach: an unbounded
                     // filtered query would smear an unrelated far part across a gap.
                     var nearest = facing != null
-                        ? bvh.FindNearestNormalFiltered(p, rayN, facing, 0f, reach)
+                        ? bvh.FindNearestNormalFiltered(p, rayN, facing, 0f, reach, eitherSide)
                         : bvh.FindNearest(p, reach);
                     sourceFace = nearest.triangleIndex; sw = nearest.barycentric;
                     rayFallback = true;
@@ -606,8 +613,9 @@ namespace SashaRX.UnityMeshLab
         /// cage, which falls apart once the target is a 100-triangle proxy of a 2000-
         /// triangle block). +1 outward, -1 inverted, 0 when fewer than 8 rays hit or
         /// under 70% agree (open sheets, mixed winding): the caller leaves the filter off.
+        /// Two-sided faces (twoSided, optional) are oriented either way and cast no vote.
         /// </summary>
-        internal static int ProbeWinding(TriangleBvh bvh, Vector3[] positions, Vector3[] faceNormals)
+        internal static int ProbeWinding(TriangleBvh bvh, Vector3[] positions, Vector3[] faceNormals, bool[] twoSided = null)
         {
             if (positions.Length == 0) return 0;
             Vector3 mn = positions[0], mx = positions[0];
@@ -623,6 +631,7 @@ namespace SashaRX.UnityMeshLab
                 var dir = new Vector3(Mathf.Cos(a) * r, y, Mathf.Sin(a) * r);
                 var hit = bvh.Raycast(centre + dir * (radius * 2f), -dir, radius * 4f);
                 if (hit.triangleIndex < 0) continue;
+                if (twoSided != null && hit.triangleIndex < twoSided.Length && twoSided[hit.triangleIndex]) continue;
                 // The ray travels along -dir; a triangle facing the ray origin has its
                 // winding normal pointing back along +dir.
                 if (Vector3.Dot(faceNormals[hit.triangleIndex], dir) > 0f) ++outward; else ++inward;

@@ -47,6 +47,21 @@ namespace SashaRX.UnityMeshLab
         Beauty,
     }
 
+    /// <summary>
+    /// Whether the source's back faces count as surface. A material that renders
+    /// both sides (Cull Off, double-sided) shows its sheet from behind too, so the
+    /// remesh keeps both sides of it and the bake samples it from either side.
+    /// </summary>
+    public enum RemeshBackfaces
+    {
+        /// <summary>Per material: two-sided when its cull mode or double-sided switch says so.</summary>
+        FromMaterials,
+        /// <summary>Every source face is two-sided.</summary>
+        Always,
+        /// <summary>Only the front of every source face counts.</summary>
+        Never,
+    }
+
     /// <summary>What the remesh stage builds from the captured source.</summary>
     public enum RemeshShape
     {
@@ -74,6 +89,9 @@ namespace SashaRX.UnityMeshLab
         // voxelizer closes an open sheet into a slab, and its back side and rims have no
         // source face nearby with an aligned normal. Closed sources are left whole.
         public bool trimToSource = true;
+        // Which source faces count from behind as well (trim keeps both sides of them,
+        // the bake's front-face filter accepts either side).
+        public RemeshBackfaces sourceBackfaces = RemeshBackfaces.FromMaterials;
         // Source capture: skip meshes named Name_LOD1 and higher (LODGroups already
         // contribute LOD0 only).
         public bool lod0Only = true;

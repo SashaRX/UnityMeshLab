@@ -94,6 +94,43 @@ namespace SashaRX.UnityMeshLab
             public Color tint, emissionTint;
             public float metallic, smoothness, normalScale, aoStrength;
             public bool smoothnessFromAlbedo;
+            // The material renders both sides (Cull Off / double-sided), so its back
+            // faces are surface the player sees.
+            public bool twoSided;
+        }
+
+        /// <summary>
+        /// Per source face, whether its back counts as surface too; null when no face
+        /// does. FromMaterials reads the captured materials' cull / double-sided state.
+        /// </summary>
+        public bool[] TwoSidedFaces(RemeshBackfaces mode)
+        {
+            if (mode == RemeshBackfaces.Never || faceMaterials == null) return null;
+            var result = new bool[faceMaterials.Length];
+            bool any = false;
+            for (int f = 0; f < result.Length; ++f) {
+                bool two = mode == RemeshBackfaces.Always ||
+                    (materials != null && faceMaterials[f] >= 0 && faceMaterials[f] < materials.Length && materials[faceMaterials[f]].twoSided);
+                result[f] = two; any |= two;
+            }
+            return any ? result : null;
+        }
+
+        /// <summary>
+        /// Whether a material renders its back faces: a cull-mode property set to Off
+        /// (Standard, URP and most master shaders expose `_Cull` or `_CullMode`), or
+        /// a double-sided switch (HDRP `_DoubleSidedEnable`, `_TwoSided`,
+        /// `_DoubleSided`). A `Cull Off` baked into the shader without a property is
+        /// invisible from here — the remesh stage's Source backfaces = Always covers it.
+        /// </summary>
+        internal static bool IsTwoSided(Material m)
+        {
+            if (!m) return false;
+            foreach (var name in new[] { "_Cull", "_CullMode", "_CullingMode" })
+                if (m.HasProperty(name) && Mathf.RoundToInt(m.GetFloat(name)) == (int)UnityEngine.Rendering.CullMode.Off) return true;
+            foreach (var name in new[] { "_DoubleSidedEnable", "_TwoSided", "_DoubleSided", "_DoubleSidedMode" })
+                if (m.HasProperty(name) && m.GetFloat(name) > 0.5f) return true;
+            return false;
         }
 
         /// <summary>The whole subtree under root welded into one snapshot in root-local space.</summary>
@@ -656,7 +693,8 @@ namespace SashaRX.UnityMeshLab
                     metallic = specular ? 0 : m.GetFloat("_Metallic"),
                     smoothness = m.GetFloat(urp ? "_Smoothness" : (metal || m.IsKeywordEnabled("_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A") ? "_GlossMapScale" : "_Glossiness")),
                     normalScale = m.GetFloat("_BumpScale"), aoStrength = m.GetFloat("_OcclusionStrength"),
-                    smoothnessFromAlbedo = m.IsKeywordEnabled("_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A")
+                    smoothnessFromAlbedo = m.IsKeywordEnabled("_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A"),
+                    twoSided = IsTwoSided(m)
                 };
                 ShareBaseTransform(surface);
                 return surface;
@@ -680,7 +718,8 @@ namespace SashaRX.UnityMeshLab
                     tint = ColorOr(m, Color.white, "_BaseColor", "_Color").linear,
                     emissionTint = emissive ? m.GetColor("_EmissionColor").linear : Color.black,
                     metallic = FloatOr(m, 0, "_Metallic"), smoothness = FloatOr(m, 0.5f, "_Smoothness", "_Glossiness"),
-                    normalScale = FloatOr(m, 1, "_BumpScale", "_NormalScale"), aoStrength = FloatOr(m, 1, "_OcclusionStrength")
+                    normalScale = FloatOr(m, 1, "_BumpScale", "_NormalScale"), aoStrength = FloatOr(m, 1, "_OcclusionStrength"),
+                    twoSided = IsTwoSided(m)
                 };
                 // Unknown shaders get no shared base transform: each map keeps the tiling
                 // and offset its own property carries (Read captured them), since nothing

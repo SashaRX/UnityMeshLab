@@ -88,7 +88,16 @@ Before the UV stage the canvas shows the selected model as usual.
    wound inside out is judged by its flipped normals; when neither reading keeps
    a tenth of the remesh, nothing is trimmed and a warning says so. The status
    reports how many faces went. Turn it off to keep the slab, for instance with
-   *Two-sided shell*.
+   *Two-sided shell*. **Source backfaces** decides which source faces count from
+   behind as well: *From materials* (default) marks a material two-sided when
+   its cull mode property (`_Cull`, `_CullMode`) is Off or a double-sided switch
+   (`_DoubleSidedEnable`, `_TwoSided`, `_DoubleSided`) is on; *Always* treats
+   every face as two-sided (for a `Cull Off` written into the shader itself,
+   which no property reveals); *Never* keeps only the front of every face. The
+   trim keeps both sides of the sheet around a two-sided face (only the rims
+   go), the bake's front-face filter accepts such a face from either side, and
+   the winding probe ignores it. The setting marks both the remesh and the
+   bake stage stale.
 3. **Simplify** — quadric simplification of the voxel mesh. It collapses the
    cheapest edges first, so with *Regularize = None* flat areas reduce to a few
    large triangles while curved or detailed areas keep their density. *Maximum
@@ -169,7 +178,9 @@ Before the UV stage the canvas shows the selected model as usual.
    source from OUTSIDE — rays cast from a sphere around it toward its centre
    meet an outer surface first, and that triangle's winding against the ray
    gives the answer whatever the target's density — and it stays off when
-   fewer than 70% of the rays agree (open sheets, mixed winding). The 3D view's
+   fewer than 70% of the rays agree (open sheets, mixed winding). Two-sided
+   source faces (see *Source backfaces*) pass the filter from either side and
+   cast no vote in the probe. The 3D view's
    **Cage** toggle (the right sidebar's 3D panel drives the canvas's shared 3D
    view — switch the canvas to **3D** at its bottom centre) draws the projection
    limits — every corner pushed ±its reach along its cage direction, one line
@@ -249,7 +260,7 @@ Before the UV stage the canvas shows the selected model as usual.
    and double-sided positions, vertices whose normal sits >30° off their cage
    (max deviation), the longest fitted reach as a multiple of the projection
    distance, nearest-fallback projection samples,
-   front-face filter state and the normal map's tilt statistics (mean/max angle
+   front-face filter state, two-sided source face count and the normal map's tilt statistics (mean/max angle
    from flat, texels >45°); a map dominated by extreme tilts additionally raises
    a warning.
 6. **Save**. The output lands in a `remesh` subfolder next to the source model's
