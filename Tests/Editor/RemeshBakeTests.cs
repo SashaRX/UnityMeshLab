@@ -421,14 +421,51 @@ namespace SashaRX.UnityMeshLab.Tests
             // A closed source keeps the whole remesh: the slab against a copy of itself.
             var whole = RemeshTrim.Trim(slab, p, tri, 0.1f, CancellationToken.None, out removed);
             Assert.AreEqual(0, removed); Assert.AreEqual(12, whole.TriangleCount);
-            // A two-sided source (Cull Off material) is surface from behind too: both
-            // sides of the slab stay, only the four rims (8 faces) go; the flat
-            // double-sided sheet is kept whole.
-            var twoSided = new[] { true, true };
-            var both = RemeshTrim.Trim(slab, sourcePositions, sourceIndices, 0.1f, CancellationToken.None, out removed, out _, twoSided);
-            Assert.AreEqual(8, removed); Assert.AreEqual(4, both.TriangleCount);
-            RemeshTrim.Trim(flat, sourcePositions, sourceIndices, 0.1f, CancellationToken.None, out removed, out _, twoSided);
-            Assert.AreEqual(0, removed);
+            // The classes name why each raw face went: 2 kept, 2 back (a source face within
+            // reach faces the other way), 8 rims (nothing parallel within reach).
+            var result = RemeshTrim.Trim(slab, sourcePositions, sourceIndices, 0.1f, CancellationToken.None);
+            int kept = 0, back = 0, rim = 0;
+            foreach (byte c in result.classes) { if (c == RemeshTrim.Kept) ++kept; else if (c == RemeshTrim.Back) ++back; else ++rim; }
+            Assert.AreEqual(2, kept); Assert.AreEqual(2, back); Assert.AreEqual(8, rim);
+            Assert.IsFalse(result.gaveUp); Assert.AreEqual(0, result.flipped);
+        }
+        [Test]
+        public void OrientConsistentlyRewindsTheMinorityOfEachPiece()
+        {
+            // A 3-quad strip with the middle quad wound the other way: both of its
+            // triangles flip; the majority (4 faces) keeps its winding. A detached quad
+            // keeps its own orientation (no shared edge constrains it).
+            var p = new[] { new Vector3(0,0,0), new Vector3(1,0,0), new Vector3(2,0,0), new Vector3(3,0,0),
+                            new Vector3(0,1,0), new Vector3(1,1,0), new Vector3(2,1,0), new Vector3(3,1,0),
+                            new Vector3(5,0,0), new Vector3(6,0,0), new Vector3(6,1,0), new Vector3(5,1,0) };
+            var mesh = new RemeshNative.IndexedMesh { positions = p, indices = new[] {
+                0,1,5, 0,5,4,        // +z
+                1,6,2, 1,5,6,        // -z (flipped quad)
+                2,3,7, 2,7,6,        // +z
+                8,10,9, 8,11,10 } }; // detached, -z
+            int flipped = RemeshTrim.OrientConsistently(mesh);
+            Assert.AreEqual(2, flipped);
+            for (int f = 0; f < 6; ++f) {
+                var n = Vector3.Cross(p[mesh.indices[f*3+1]] - p[mesh.indices[f*3]], p[mesh.indices[f*3+2]] - p[mesh.indices[f*3]]);
+                Assert.That(n.z, Is.GreaterThan(0), "strip face " + f);
+            }
+            for (int f = 6; f < 8; ++f) {
+                var n = Vector3.Cross(p[mesh.indices[f*3+1]] - p[mesh.indices[f*3]], p[mesh.indices[f*3+2]] - p[mesh.indices[f*3]]);
+                Assert.That(n.z, Is.LessThan(0), "detached face " + f);
+            }
+            // A sheet trimmed from a source with alternating winding comes out orientable:
+            // the remesh keeps per face the side agreeing with the source, then re-winds.
+            var src = new[] { new Vector3(0,0,0), new Vector3(1,0,0), new Vector3(2,0,0), new Vector3(0,1,0), new Vector3(1,1,0), new Vector3(2,1,0) };
+            var srcIdx = new[] { 0,1,4, 0,4,3,  1,2,5, 1,5,4 };  // both +z
+            srcIdx = new[] { 0,1,4, 0,4,3,  1,5,2, 1,4,5 };      // right quad -z
+            var sheet = new RemeshNative.IndexedMesh { positions = (Vector3[])src.Clone(),
+                indices = new[] { 0,1,4, 0,4,3, 1,2,5, 1,5,4,  0,4,1, 0,3,4, 1,5,2, 1,4,5 } };  // both sides, both windings
+            var trimmed = RemeshTrim.Trim(sheet, src, srcIdx, 0.1f, CancellationToken.None);
+            Assert.AreEqual(4, trimmed.removed); Assert.AreEqual(4, trimmed.mesh.TriangleCount);
+            Assert.AreEqual(2, trimmed.flipped, "the right quad's two faces, kept as -z like the source, are re-wound to the majority");
+            var tp = trimmed.mesh.positions; var ti = trimmed.mesh.indices;
+            for (int f = 0; f < 4; ++f)
+                Assert.That(Vector3.Cross(tp[ti[f*3+1]] - tp[ti[f*3]], tp[ti[f*3+2]] - tp[ti[f*3]]).z, Is.GreaterThan(0));
         }
         [Test]
         public void TwoSidedFacesFollowTheMaterialsOrTheSetting()

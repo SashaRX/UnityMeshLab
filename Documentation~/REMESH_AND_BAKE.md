@@ -19,6 +19,11 @@ settings, marked "settings changed" in its header) and clears everything after i
   smooth by design, so this toggle is what shows the transferred detail — the
   vivid pink/cyan atlas in **Maps ▸ Normal** is that same detail in tangent
   space, not corruption.
+  The **Trim** toggle, at the *Remesh* stage, shows the untrimmed remesh coloured
+  by what *Trim to source surface* did with each face: green kept, red the back
+  of a sheet (a source face within reach faces the other way), orange a rim or a
+  face with no source within reach — so what the cut removes, and why, is
+  visible before the simplifier touches it.
   The 3D panel also reports the atlas: island count and texel usage.
 - **Maps** — each baked map (base color, normal, metallic/smoothness, occlusion,
   emission).
@@ -86,18 +91,25 @@ Before the UV stage the canvas shows the selected model as usual.
    rims (perpendicular) have none and go, a closed source is left whole, and a
    source that is double-sided where it matters keeps both sides. A source
    wound inside out is judged by its flipped normals; when neither reading keeps
-   a tenth of the remesh, nothing is trimmed and a warning says so. The status
-   reports how many faces went. Turn it off to keep the slab, for instance with
-   *Two-sided shell*. **Source backfaces** decides which source faces count from
-   behind as well: *From materials* (default) marks a material two-sided when
-   its cull mode property (`_Cull`, `_CullMode`) is Off or a double-sided switch
+   a tenth of the remesh, nothing is trimmed and a warning says so. The kept
+   sheet is then re-wound to one consistent orientation per connected piece
+   (neighbours must traverse their shared edge in opposite directions; the
+   majority of each piece keeps the side that agreed with the source), so a
+   source modeled with arbitrary winding — common under a two-sided material —
+   comes out orientable. The status reports how many faces went and how many
+   were re-wound, and the Remesh stage's **Trim** toggle colours the untrimmed
+   remesh by class. Turn it off to keep the slab, for instance with *Two-sided
+   shell*. **Source backfaces** decides which source faces count from behind as
+   well: *From materials* (default) marks a material two-sided when its cull
+   mode property (`_Cull`, `_CullMode`) is Off or a double-sided switch
    (`_DoubleSidedEnable`, `_TwoSided`, `_DoubleSided`) is on; *Always* treats
    every face as two-sided (for a `Cull Off` written into the shader itself,
-   which no property reveals); *Never* keeps only the front of every face. The
-   trim keeps both sides of the sheet around a two-sided face (only the rims
-   go), the bake's front-face filter accepts such a face from either side, and
-   the winding probe ignores it. The setting marks both the remesh and the
-   bake stage stale.
+   which no property reveals); *Never* keeps only the front of every face. A
+   two-sided source still yields ONE sheet — the result material renders both
+   sides of it instead (URP Lit: Render Face Both; Standard has no two-sided
+   mode, and the save says so) — the bake's front-face filter accepts such a
+   face from either side, and the winding probe ignores it. The setting marks
+   both the remesh and the bake stage stale.
 3. **Simplify** — quadric simplification of the voxel mesh. It collapses the
    cheapest edges first, so with *Regularize = None* flat areas reduce to a few
    large triangles while curved or detailed areas keep their density. *Maximum

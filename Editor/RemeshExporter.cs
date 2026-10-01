@@ -112,9 +112,20 @@ namespace SashaRX.UnityMeshLab
                 root.transform.localScale = normalize ? Vector3.one : pipeline.RootScale;
                 var materials = new Material[nodes.Count];
                 var meshes = new Mesh[nodes.Count];
+                bool twoSidedWarned = false;
                 for (int i = 0; i < nodes.Count; ++i) {
                     var node = nodes[i];
                     materials[i] = CreateMaterial(shader, urp, node.maps.beauty, names[i] + "_Remesh", paths[i]);
+                    // A source that renders both sides keeps one sheet in the result; the
+                    // material renders both sides of it. URP Lit/Unlit expose the cull mode;
+                    // Standard and Unlit/Texture do not, so the user is told once.
+                    if (node.twoSided) {
+                        if (materials[i].HasProperty("_Cull")) { materials[i].SetFloat("_Cull", (float)CullMode.Off); materials[i].doubleSidedGI = true; }
+                        else if (!twoSidedWarned) {
+                            twoSidedWarned = true;
+                            UvtLog.Warn("[Remesh export] The source renders both sides, but " + shader.name + " has no two-sided mode; assign a two-sided shader to the result material or its back faces will be culled.");
+                        }
+                    }
                     temporary.Add(materials[i]);
                     meshes[i] = Object.Instantiate(node.mesh);
                     meshes[i].name = names[i] + "_LOD0"; meshes[i].hideFlags = HideFlags.None;
@@ -152,7 +163,8 @@ namespace SashaRX.UnityMeshLab
                 }
                 AssetDatabase.SaveAssets();
                 EditorGUIUtility.PingObject(ping);
-                string status = hierarchy ? $"Saved: {folder} ({nodes.Count} node(s))" : "Saved: " + folder;
+                string status = (hierarchy ? $"Saved: {folder} ({nodes.Count} node(s))" : "Saved: " + folder) +
+                    (twoSidedWarned ? ". Two-sided source: assign a two-sided shader (see Console)." : pipeline.ResultTwoSided ? ". Material renders both sides." : "");
                 UvtLog.Info("[Remesh export] " + status);
                 return status;
             }

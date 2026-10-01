@@ -182,6 +182,7 @@ namespace SashaRX.UnityMeshLab
             previewData.meshes[(int)RemeshPreview.Stage.Simplified] = pipeline.SimplifiedMesh;
             previewData.meshes[(int)RemeshPreview.Stage.Result] = pipeline.ResultMesh;
             previewData.geometry = pipeline.Geometry; previewData.maps = pipeline.Maps; previewData.baseColor = pipeline.BaseColorPreview;
+            previewData.trimMask = pipeline.TrimMaskMesh;
             // Live from the current settings so the cage preview reflects projection
             // distance changes before a re-bake; zero until a source snapshot exists.
             previewData.cageDistance = pipeline.SourceDiagonal * settings.projectionDistance;
@@ -243,8 +244,8 @@ namespace SashaRX.UnityMeshLab
                     }
                     settings.sourceBackfaces = (RemeshBackfaces)EditorGUILayout.EnumPopup(new GUIContent("Source backfaces",
                         "Whether the source's back faces count as surface. From materials: two-sided when a material's cull mode is Off or its double-sided " +
-                        "switch is on (a Cull Off written into the shader itself is not detectable — use Always). Two-sided faces keep both sides of their " +
-                        "sheet through the trim and project from either side in the bake; Never keeps only the front of every face."), settings.sourceBackfaces);
+                        "switch is on (a Cull Off written into the shader itself is not detectable — use Always). The trim still keeps one sheet; the result " +
+                        "material renders both sides instead, and the bake samples two-sided faces from either side. Never: only fronts count."), settings.sourceBackfaces);
                     StageButton(RemeshPipeline.Stage.Remesh, "Remesh");
                 }
                 if (StageHeader(RemeshPipeline.Stage.Simplify)) {

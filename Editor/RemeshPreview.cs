@@ -24,6 +24,8 @@ namespace SashaRX.UnityMeshLab
             public RemeshNative.Geometry geometry;
             public RemeshBaker.Maps maps;
             public Texture2D baseColor;
+            // Remesh stage: the untrimmed remesh coloured per trim class (null without a trim).
+            public Mesh trimMask;
             // Ray travel of the bake projection (source diagonal × projection distance);
             // the Cage toggle draws the result mesh inflated by ±this along the cage
             // directions, i.e. the exact shells the projection rays start and end on.
@@ -38,7 +40,7 @@ namespace SashaRX.UnityMeshLab
         View view;
         Stage stage = Stage.Result;
         Channel channel;
-        bool wireframe = true, shaded = true, textured = true, bumpMap = true, vertexColors, cageView;
+        bool wireframe = true, shaded = true, textured = true, bumpMap = true, vertexColors, cageView, trimMaskView = true;
         Material surface, wire;
         Mesh cageOuter, cageInner; int cageMeshId; string cageKey;
         RemeshSource cageSourceRef; TriangleBvh cageSourceBvh;
@@ -87,11 +89,14 @@ namespace SashaRX.UnityMeshLab
                 textured = GUILayout.Toggle(textured, "Texture", EditorStyles.miniButtonMid);
                 bumpMap = GUILayout.Toggle(bumpMap, "Bump", EditorStyles.miniButtonMid);
                 vertexColors = GUILayout.Toggle(vertexColors, "Vertex color", EditorStyles.miniButtonMid);
+                trimMaskView = GUILayout.Toggle(trimMaskView, new GUIContent("Trim", "Remesh stage: colour the untrimmed remesh by what Trim to source surface did with each face."), EditorStyles.miniButtonMid);
                 cageView = GUILayout.Toggle(cageView, "Cage", EditorStyles.miniButtonRight);
             }
             var mesh = data.meshes[(int)stage];
             EditorGUILayout.LabelField(mesh ? $"{mesh.vertexCount:N0} vertices · {Triangles(mesh):N0} triangles" : "Run this stage to preview it.",
                 EditorStyles.miniLabel);
+            if (ShowTrimMask(data))
+                EditorGUILayout.LabelField("Trim mask: green kept · red back of a sheet (opposite normal) · orange rim / no source within reach", EditorStyles.miniLabel);
             var g = data.geometry;
             if (g != null) {
                 string coverage = data.maps != null ? $" · {100.0 * data.maps.covered / ((double)data.maps.size * data.maps.size):0.#}% texels used" : "";
@@ -103,12 +108,19 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>The selected stage mesh for the shared 3D canvas, with the surface
         /// material this panel's toggles configure. False when no stage has run.</summary>
+        bool ShowTrimMask(Data data) => trimMaskView && stage == Stage.Remesh && data.trimMask;
+
+        // The mesh the 3D view shows for the stage: the trim mask stands in for the
+        // trimmed remesh while its toggle is on.
+        Mesh DisplayMesh(Data data) => ShowTrimMask(data) ? data.trimMask : data.meshes[(int)stage];
+
         public bool Fill3D(Data data, List<MeshViewport3D.Item> items)
         {
-            var mesh = data.meshes[(int)stage];
+            var mesh = DisplayMesh(data);
             if (!mesh) return false;
             if (!EnsureResources()) return false;
-            if (shaded) {
+            bool trimMask = ShowTrimMask(data);
+            if (shaded || trimMask) {
                 bool useTexture = textured && stage == Stage.Result && data.baseColor;
                 surface.SetTexture("_MainTex", useTexture ? data.baseColor : null);
                 surface.SetFloat("_UseTexture", useTexture ? 1 : 0);
@@ -120,7 +132,7 @@ namespace SashaRX.UnityMeshLab
                 // Beauty maps already contain the lighting; shading them again would
                 // double it, so the surface renders unlit exactly like the saved material.
                 surface.SetFloat("_Lit", stage == Stage.Result && data.maps != null && data.maps.beauty ? 0 : 1);
-                surface.SetFloat("_UseVertexColor", vertexColors && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
+                surface.SetFloat("_UseVertexColor", (vertexColors || trimMask) && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
                 surface.SetColor("_Color", Color.white);
                 var materials = new Material[mesh.subMeshCount];
                 for (int sub = 0; sub < materials.Length; ++sub) materials[sub] = surface;
@@ -133,7 +145,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Wire and cage overlays for the stage mesh in the shared 3D canvas.</summary>
         public void Overlay3D(Data data, MeshViewport3D view)
         {
-            var mesh = data.meshes[(int)stage];
+            var mesh = DisplayMesh(data);
             if (!mesh || !EnsureResources()) return;
             if (wireframe) view.DrawWire(mesh, Matrix4x4.identity, shaded ? new Color(0.05f, 0.05f, 0.05f, 1) : new Color(0.4f, 0.85f, 1f, 1));
             if (cageView && stage == Stage.Result && data.geometry != null && data.cageDistance > 0)

@@ -34,6 +34,13 @@ namespace SashaRX.UnityMeshLab
             public Matrix4x4 spaceToWorld = Matrix4x4.identity; // captured at remesh time
             public RemeshSource source;
             public RemeshNative.IndexedMesh voxel, simplified;
+            // Trim mask: the untrimmed remesh and the class of each of its faces
+            // (RemeshTrim.Kept/Back/Rim), for the Remesh stage's preview; null without a trim.
+            public RemeshNative.IndexedMesh voxelRaw;
+            public byte[] trimClasses;
+            // The capture has faces whose material renders both sides: the result
+            // material does too.
+            public bool twoSided;
             public float simplifyError;
             public RemeshNative.Geometry geometry;
             public Vector4[] tangents;
@@ -53,7 +60,7 @@ namespace SashaRX.UnityMeshLab
 
         // Previews come from the primary node: the weld itself, or the largest node of
         // a hierarchy so the existing preview panel keeps working.
-        Mesh sourceMesh, voxelMesh, simplifiedMesh;
+        Mesh sourceMesh, voxelMesh, simplifiedMesh, trimMaskMesh;
         Texture2D baseColorPreview;
 
         /// <summary>Settings snapshot every stage output was built with, indexed by Stage.</summary>
@@ -80,6 +87,11 @@ namespace SashaRX.UnityMeshLab
 
         public Mesh SourceMesh => sourceMesh;
         public Mesh VoxelMesh => voxelMesh;
+        /// <summary>The untrimmed remesh of the primary node with one colour per trim
+        /// class (green kept, red back of a sheet, orange rim); null when nothing was trimmed.</summary>
+        public Mesh TrimMaskMesh => trimMaskMesh;
+        /// <summary>Any node's capture renders both sides (two-sided materials or the setting).</summary>
+        public bool ResultTwoSided { get { foreach (var n in nodes) if (n.twoSided) return true; return false; } }
         public Mesh SimplifiedMesh => simplifiedMesh;
         public Mesh ResultMesh => Primary?.mesh;
         public RemeshNative.Geometry Geometry => Primary?.geometry;
@@ -226,7 +238,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (captures.Count == 0) throw new InvalidOperationException("Every captured node was empty; nothing to remesh.");
             }
-            long sourceTriangles = 0, resultTriangles = 0, trimmedFaces = 0; int warnings = 0, droppedSmall = 0, droppedThin = 0;
+            long sourceTriangles = 0, resultTriangles = 0, trimmedFaces = 0, flippedFaces = 0, twoSidedFaces = 0; int warnings = 0, droppedSmall = 0, droppedThin = 0;
             var shape = options.sourceShape;
             // Part filter first, whatever the shape: small pieces and rods whose section
             // the voxel grid cannot carry (bolts, pipes, cables, railings) only add voxel
@@ -251,7 +263,10 @@ namespace SashaRX.UnityMeshLab
                 // The proxy shapes replace the voxelizer: one oriented box per renderer,
                 // or a coarse voxel hull; materials and lighting still bake from the
                 // captured geometry, projected onto the proxy downstream.
-                int trimmed = 0; bool trimGaveUp = false;
+                var twoSidedMask = captured.TwoSidedFaces(options.sourceBackfaces);
+                node.twoSided = twoSidedMask != null;
+                if (twoSidedMask != null) foreach (bool two in twoSidedMask) if (two) ++twoSidedFaces;
+                RemeshTrim.Result trim = null;
                 node.voxel = await Task.Run(() => {
                     if (shape == RemeshShape.BoundingBox) return captured.OrientedBoxes();
                     if (shape == RemeshShape.Hull) return Hull(captured, options, token);
@@ -263,14 +278,24 @@ namespace SashaRX.UnityMeshLab
                     foreach (var p in captured.positions) { mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p); }
                     var extent = mx - mn;
                     float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, options.voxelResolution);
-                    return RemeshTrim.Trim(voxel, captured.positions, captured.indices, cell * 2f, token, out trimmed, out trimGaveUp,
-                        captured.TwoSidedFaces(options.sourceBackfaces));
+                    trim = RemeshTrim.Trim(voxel, captured.positions, captured.indices, cell * 2f, token);
+                    node.voxelRaw = voxel; node.trimClasses = trim.classes;
+                    return trim.mesh;
                 }, token);
                 if (node.voxel == null || node.voxel.TriangleCount == 0) throw new InvalidOperationException("The remesh produced no geometry.");
-                if (trimGaveUp) { UvtLog.Warn("[Remesh] " + (hierarchy ? node.name + ": " : "") + "Trim to source surface kept under a tenth of the remesh " +
-                    "with the source's winding and with its inverse, so nothing was trimmed. The source winding is mixed beyond one flip, or the remesh sits " +
-                    "more than two cells from it (raise the voxel resolution)."); }
-                trimmedFaces += trimmed;
+                if (trim != null) {
+                    if (trim.gaveUp) UvtLog.Warn("[Remesh] " + (hierarchy ? node.name + ": " : "") + "Trim to source surface kept under a tenth of the remesh " +
+                        "with the source's winding and with its inverse, so nothing was trimmed. The source winding is mixed beyond one flip, or the remesh sits " +
+                        "more than two cells from it (raise the voxel resolution).");
+                    trimmedFaces += trim.removed; flippedFaces += trim.flipped;
+                    if (UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag)) {
+                        int back = 0, rim = 0;
+                        foreach (byte c in trim.classes) { if (c == RemeshTrim.Back) ++back; else if (c == RemeshTrim.Rim) ++rim; }
+                        UvtLog.Info(UvtLog.Category.RemeshDiag, "[" + node.name + "] trim: " + $"{trim.classes.Length:N0} remesh faces, kept {trim.classes.Length - trim.removed:N0}, " +
+                            $"back of a sheet {back:N0}, rim/no source {rim:N0}, re-wound {trim.flipped:N0}{(trim.gaveUp ? ", GAVE UP (nothing trimmed)" : "")}; " +
+                            $"two-sided source faces {(twoSidedMask == null ? 0 : CountTrue(twoSidedMask)):N0}");
+                    }
+                }
                 sourceTriangles += captured.indices.Length / 3;
                 resultTriangles += node.voxel.TriangleCount;
             }
@@ -281,12 +306,35 @@ namespace SashaRX.UnityMeshLab
             sourceMesh = BuildMesh(ResultName + "_Source", primary.source.positions, primary.source.indices,
                 primary.source.normals, primary.source.hasColors ? primary.source.colors : null);
             voxelMesh = BuildMesh(ResultName + "_Voxel", primary.voxel.positions, primary.voxel.indices);
+            trimMaskMesh = primary.trimClasses != null ? BuildTrimMask(ResultName + "_TrimMask", primary.voxelRaw, primary.trimClasses) : null;
             Status = (hierarchy ? $"Remesh: {nodes.Count} node(s), " : "Remesh: ") +
                 $"{sourceTriangles:N0} → {resultTriangles:N0} triangles" +
                 (shape == RemeshShape.BoundingBox ? $" ({resultTriangles / 12:N0} oriented boxes)" : shape == RemeshShape.Hull ? " (hull)" : "") +
                 (droppedSmall + droppedThin > 0 ? $"; excluded {droppedSmall:N0} small part(s), {droppedThin:N0} rod(s)" : "") +
-                (trimmedFaces > 0 ? $"; trimmed {trimmedFaces:N0} face(s) the source has no surface for" : "") + "." +
+                (trimmedFaces > 0 ? $"; trimmed {trimmedFaces:N0} face(s) the source has no surface for" : options.trimToSource && shape == RemeshShape.LOD0 ? "; nothing to trim" : "") +
+                (flippedFaces > 0 ? $"; re-wound {flippedFaces:N0} face(s) to one orientation" : "") +
+                (twoSidedFaces > 0 ? $"; {twoSidedFaces:N0} two-sided source face(s), the result renders both sides" : "") + "." +
                 (warnings > 0 ? $" {warnings} material warning(s), see Console." : "");
+            UvtLog.Info("[Remesh] " + Status);
+        }
+
+        static int CountTrue(bool[] mask) { int n = 0; foreach (bool b in mask) if (b) ++n; return n; }
+
+        // The untrimmed remesh with one flat colour per face class, so the 3D view can
+        // show what the trim removed and why before the simplifier touches it.
+        static Mesh BuildTrimMask(string name, RemeshNative.IndexedMesh raw, byte[] classes)
+        {
+            int faces = classes.Length;
+            var positions = new Vector3[faces * 3]; var colors = new Color[faces * 3]; var indices = new int[faces * 3];
+            var kept = new Color(0.45f, 0.8f, 0.45f); var back = new Color(0.9f, 0.25f, 0.25f); var rim = new Color(1f, 0.6f, 0.15f);
+            for (int f = 0; f < faces; ++f) {
+                var color = classes[f] == RemeshTrim.Kept ? kept : classes[f] == RemeshTrim.Back ? back : rim;
+                for (int k = 0; k < 3; ++k) {
+                    positions[f * 3 + k] = raw.positions[raw.indices[f * 3 + k]];
+                    colors[f * 3 + k] = color; indices[f * 3 + k] = f * 3 + k;
+                }
+            }
+            return BuildMesh(name, positions, indices, null, colors);
         }
 
         // The Hull shape: a coarse voxelization without surface fitting (blocky by
@@ -500,7 +548,8 @@ namespace SashaRX.UnityMeshLab
             if (stage <= Stage.Remesh) {
                 if (voxelMesh) Object.DestroyImmediate(voxelMesh);
                 if (sourceMesh) Object.DestroyImmediate(sourceMesh);
-                voxelMesh = null; sourceMesh = null; keys[(int)Stage.Remesh] = null;
+                if (trimMaskMesh) Object.DestroyImmediate(trimMaskMesh);
+                voxelMesh = null; sourceMesh = null; trimMaskMesh = null; keys[(int)Stage.Remesh] = null;
                 nodes.Clear(); hierarchy = false; CapturedSource = null;
             }
         }
