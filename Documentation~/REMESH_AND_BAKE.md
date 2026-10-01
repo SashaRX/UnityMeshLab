@@ -31,19 +31,25 @@ settings, marked "settings changed" in its header) and clears everything after i
    combined in root-local coordinates; LODGroups contribute LOD0 only, collision
    nodes are excluded, and **LOD0 only** (default on) skips meshes named
    `Name_LOD1` and higher wherever they sit. **Shape** picks what the remesh
-   stage builds from the capture: *LOD0* voxelize the geometry (the default), or
-   *Bounding box* replace every captured model with its axis-aligned box — a
-   far-LOD proxy whose faces still receive the original's materials and baked
-   lighting through the normal projection (weld: one box for the whole model;
-   keep-hierarchy: one box per node), or
-   *Box set* a union of boxes partitioned BY RENDERER first — every node with a
-   renderer keeps its own box(es), the recursive gap split running inside each
-   renderer's geometry (a *Split gap* fraction gates it) so L- and T-shaped
-   meshes fall apart into their arms — plain cubes, one mesh instanced by
-   transforms, never special primitives. The stage status reports the box
-   count and the share of the original bounds' volume the boxes cover; the
-   bake projects the original's materials and lighting onto them exactly as
-   onto a single box.
+   stage builds from the capture: *LOD0* voxelizes the geometry (the default);
+   *Bounding box* replaces every captured renderer with its own oriented box —
+   measured over the renderer's geometry along the renderer's authored axes and
+   placed back in the capture space, so a yawed building keeps a yawed box
+   instead of the inflated axis-aligned one (weld: one box per renderer, all in
+   one mesh; keep-hierarchy: one box per node; a flat renderer gets a minimal
+   slab thickness); *Hull* runs the same geometry
+   through a coarse voxel pass (*Hull resolution*, solid fill, no shell fit) and
+   a strongly regularized simplification down to *Hull triangles*, giving a
+   closed, rounded blob that follows L- and T-shapes without the box
+   decomposition's guesswork. Both proxy shapes bake the original's materials
+   and lighting through the proxy projection described under **Bake**.
+   **Exclude parts smaller than / thinner than** (fractions of the capture
+   diagonal, applied before any shape) drop connected pieces of the capture —
+   the connected components of the position-welded triangle graph, so a bolt or
+   railing goes even when it shares a mesh with the wall — whose bounds diagonal
+   or smallest bounds side falls under the threshold; the stage status reports
+   how many pieces went, and a filter that would remove everything is skipped
+   with a warning instead of producing an empty remesh.
    SkinnedMeshRenderers are baked at their
    current pose (skinning re-evaluated first — in edit mode it can be stale
    and bake every part at its authored origin) and then captured like static
@@ -120,6 +126,18 @@ settings, marked "settings changed" in its header) and clears everything after i
    and Laplacian-smoothed over the welded connectivity, and each shell's offset
    stops short of self-intersection (cast against the surface itself), so a
    tight concavity shows a pinch instead of folding through to the far side.
+   For the *Bounding box* and *Hull* shapes the cage is replaced by **proxy
+   projection**: every texel casts straight along its face normal from just
+   outside the proxy through the proxy's full depth and takes the first source
+   surface it meets, so each proxy face shows what a viewer looking at that face
+   would see; there is no nearest-surface fallback. Texels whose ray meets no
+   geometry (the empty corners of a box around an L-shaped building) are written
+   with **alpha 0** in the color map and filled from the nearest hit texel, and
+   the stage status counts them — a shader that clips on alpha turns the proxy
+   into a silhouette-correct impostor. **Vertex color tints albedo** multiplies
+   the baked albedo by the source's interpolated vertex color (RGB, read as
+   linear, the way vertex-tinting shaders do), independently of the vertex color
+   transfer toggles; it is off by default.
    **Bake mode** selects what lands in the maps: *Materials* transfers the source
    maps; *Beauty* bakes the object as the player sees it — realtime/mixed light
    with hard ray shadows, the renderer's lightmaps (sampled at its UV2, RGBM/HDR

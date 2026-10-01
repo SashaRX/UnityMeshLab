@@ -13,6 +13,10 @@ namespace SashaRX.UnityMeshLab
             public Color[] emission;
             public Color[] vertexColors; // per result vertex, null unless a transfer was requested
             public int size, misses, covered;
+            // Proxy shapes: covered texels whose inward ray met no source geometry (the
+            // empty part of a box face). Filled from their nearest hit and written with
+            // alpha 0 in the base color, not counted as misses.
+            public int empty;
             // Bake health counters surfaced through the RemeshDiag log category.
             public int rayFallbacks, weldedPositions, splitCopies, oneSidedNormals, loudTexels, zeroNormals;
             public float maxOneSidedDeg, meanTiltDeg, maxTiltDeg;
@@ -40,6 +44,18 @@ namespace SashaRX.UnityMeshLab
             result.beauty = beauty != null;
             if (beauty != null) beauty.BindShadows(bvh);
             float distance = source.diagonal * settings.projectionDistance;
+            // Proxy shapes (boxes, hull) are far from the surface they stand for, so
+            // their texels look INWARD along the face normal through the whole proxy —
+            // an orthographic snapshot of the model from that side — instead of the
+            // short two-sided cage ray; nothing behind a texel means "empty", not a miss.
+            bool proxy = settings.sourceShape != RemeshShape.LOD0;
+            Vector3[] faceDirs = null; float depth = 0;
+            if (proxy) {
+                faceDirs = FaceNormals(target.positions, target.indices);
+                Vector3 mn = target.positions[0], mx = target.positions[0];
+                foreach (var pv in target.positions) { mn = Vector3.Min(mn, pv); mx = Vector3.Max(mx, pv); }
+                depth = (mx - mn).magnitude * 1.01f + source.diagonal * 1e-4f;
+            }
             // Projection rays follow a smooth welded "cage" direction, not the vertex
             // normal: island hard-edge modes leave chart-border normals one-sided,
             // and casting along them samples a displaced source point, which bakes
@@ -70,7 +86,8 @@ namespace SashaRX.UnityMeshLab
                 for (int f = 0; f < faces; ++f) faceNormals[f] = -faceNormals[f];
             result.facingFilter = facingFilter;
             Vector3[] facing = facingFilter ? faceNormals : null;
-            int misses = 0, rayFallbacks = 0;
+            int misses = 0, rayFallbacks = 0, empties = 0;
+            var emptyTexels = proxy ? new bool[count] : null;
             Parallel.For(0, size, new ParallelOptions { CancellationToken = token,
                 MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, y => {
                 var candidates = new int[9];
@@ -98,6 +115,7 @@ namespace SashaRX.UnityMeshLab
                             if (Inside(target, candidates[c], uv, out w)) face = candidates[c];
                         if (face < 0) continue;
                     if (!Project(source, target, tangents, cage, bvh, facing, beauty, face, w, distance,
+                            proxy, faceDirs, depth, settings.vertexColorTint,
                             out var sc, out var sn, out var sm, out var sa, out var se, out var rayFallback)) continue;
                         if (rayFallback) Interlocked.Increment(ref rayFallbacks);
                         color += sc.linear; metal += sm; ao += sa; emission += se;
@@ -105,6 +123,7 @@ namespace SashaRX.UnityMeshLab
                         ++hits;
                     }
                     if (hits == 0) {
+                        if (proxy) { emptyTexels[pixel] = true; Interlocked.Increment(ref empties); continue; }
                         Interlocked.Increment(ref misses);
                         result.color[pixel] = new Color32(255, 0, 255, 255);
                         result.normal[pixel] = new Color32(128, 128, 255, 255);
@@ -122,6 +141,8 @@ namespace SashaRX.UnityMeshLab
             });
             result.misses = misses;
             result.rayFallbacks = rayFallbacks;
+            result.empty = empties;
+            if (proxy && empties > 0) FillEmpty(result, owners, emptyTexels, token);
             // Normal-map tilt health: how far encoded normals lean away from the
             // tangent plane's up axis. Loud, strongly-tilted maps on smooth-ish
             // sources are the visual signature of displaced projection samples.
@@ -198,35 +219,48 @@ namespace SashaRX.UnityMeshLab
         // the (possibly hard) vertex normal so encode matches how the mesh shades.
         // facing (when non-null) carries the orientation-consensus source face normals
         // that keep the ray and the fallback on the side of the surface facing the texel.
+        // proxy: the ray starts just outside the proxy face and travels inward along the
+        // face normal through the whole proxy (depth), first hit wins, no fallback.
         static bool Project(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents, Vector3[] cage,
             TriangleBvh bvh, Vector3[] facing, RemeshBeauty beauty, int face, Vector3 w, float distance,
+            bool proxy, Vector3[] faceDirs, float depth, bool vertexTint,
             out Color color, out Color normal, out Color metal, out Color ao, out Color emission, out bool rayFallback)
         {
             int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
             Vector3 p = target.positions[a] * w.x + target.positions[b] * w.y + target.positions[c] * w.z;
             Vector3 n = (target.normals[a] * w.x + target.normals[b] * w.y + target.normals[c] * w.z).normalized;
-            Vector3 rayN = (cage[a] * w.x + cage[b] * w.y + cage[c] * w.z).normalized;
             Vector4 tangent = tangents[a] * w.x + tangents[b] * w.y + tangents[c] * w.z;
-            var hit = facing != null
-                ? bvh.RaycastFacingFiltered(p + rayN * distance, -rayN, distance * 2, facing)
-                : bvh.Raycast(p + rayN * distance, -rayN, distance * 2);
-            int sourceFace = hit.triangleIndex;
-            Vector3 sw = hit.barycentric;
+            int sourceFace; Vector3 sw;
             rayFallback = false;
-            if (sourceFace < 0) {
-                // Both fallbacks stay bounded by the projection distance: an unbounded
-                // filtered query would smear an unrelated far part across a gap.
-                var nearest = facing != null
-                    ? bvh.FindNearestNormalFiltered(p, rayN, facing, 0f, distance)
-                    : bvh.FindNearest(p, distance);
-                sourceFace = nearest.triangleIndex; sw = nearest.barycentric;
-                rayFallback = true;
+            if (proxy) {
+                Vector3 dir = faceDirs[face];
+                float eps = depth * 1e-4f;
+                var hit = facing != null
+                    ? bvh.RaycastFacingFiltered(p + dir * eps, -dir, depth, facing)
+                    : bvh.Raycast(p + dir * eps, -dir, depth);
+                sourceFace = hit.triangleIndex; sw = hit.barycentric;
+            }
+            else {
+                Vector3 rayN = (cage[a] * w.x + cage[b] * w.y + cage[c] * w.z).normalized;
+                var hit = facing != null
+                    ? bvh.RaycastFacingFiltered(p + rayN * distance, -rayN, distance * 2, facing)
+                    : bvh.Raycast(p + rayN * distance, -rayN, distance * 2);
+                sourceFace = hit.triangleIndex; sw = hit.barycentric;
+                if (sourceFace < 0) {
+                    // Both fallbacks stay bounded by the projection distance: an unbounded
+                    // filtered query would smear an unrelated far part across a gap.
+                    var nearest = facing != null
+                        ? bvh.FindNearestNormalFiltered(p, rayN, facing, 0f, distance)
+                        : bvh.FindNearest(p, distance);
+                    sourceFace = nearest.triangleIndex; sw = nearest.barycentric;
+                    rayFallback = true;
+                }
             }
             if (sourceFace < 0) {
                 color = normal = metal = ao = emission = default;
                 return false;
             }
-            Evaluate(source, sourceFace, sw, n, tangent, out color, out normal, out metal, out ao, out emission);
+            Evaluate(source, sourceFace, sw, n, tangent, vertexTint, out color, out normal, out metal, out ao, out emission);
             if (beauty != null) color = BeautyLight(beauty, source, sourceFace, sw, color, metal, emission).gamma;
             return true;
         }
@@ -355,12 +389,23 @@ namespace SashaRX.UnityMeshLab
 
         internal static void Evaluate(RemeshSource source, int face, Vector3 w, Vector3 targetNormal, Vector4 targetTangent,
             out Color color, out Color normal, out Color metal, out Color ao, out Color emission)
+            => Evaluate(source, face, w, targetNormal, targetTangent, false, out color, out normal, out metal, out ao, out emission);
+
+        // vertexTint multiplies the albedo by the interpolated source vertex color (RGB,
+        // taken as linear, the way vertex-tinting shaders read it).
+        internal static void Evaluate(RemeshSource source, int face, Vector3 w, Vector3 targetNormal, Vector4 targetTangent, bool vertexTint,
+            out Color color, out Color normal, out Color metal, out Color ao, out Color emission)
         {
             int a = source.indices[face * 3], b = source.indices[face * 3 + 1], c = source.indices[face * 3 + 2];
             Vector2 uv = source.uv[a] * w.x + source.uv[b] * w.y + source.uv[c] * w.z;
             var surface = source.materials[source.faceMaterials[face]];
             Color albedo = surface.color.Sample(uv, Color.white);
-            color = (albedo * surface.tint).gamma; color.a = 1;
+            Color linear = albedo * surface.tint;
+            if (vertexTint && source.colors != null) {
+                Color vc = source.colors[a] * w.x + source.colors[b] * w.y + source.colors[c] * w.z;
+                linear = new Color(linear.r * vc.r, linear.g * vc.g, linear.b * vc.b, linear.a);
+            }
+            color = linear.gamma; color.a = 1;
             var n = (source.normals[a] * w.x + source.normals[b] * w.y + source.normals[c] * w.z).normalized;
             var t = source.tangents[a] * w.x + source.tangents[b] * w.y + source.tangents[c] * w.z;
             if (surface.normal.image != null) {
@@ -387,6 +432,69 @@ namespace SashaRX.UnityMeshLab
             t = (t - n * Vector3.Dot(t, n)).normalized;
             if (t.sqrMagnitude < 1e-10f) t = Vector3.Cross(n, Mathf.Abs(n.y) < 0.9f ? Vector3.up : Vector3.right).normalized;
             b = Vector3.Cross(n, t) * (tangent.w < 0 ? -1 : 1);
+        }
+
+        static Vector3[] FaceNormals(Vector3[] positions, int[] indices)
+        {
+            var normals = new Vector3[indices.Length / 3];
+            for (int f = 0; f < normals.Length; ++f) {
+                int a = indices[f * 3], b = indices[f * 3 + 1], c = indices[f * 3 + 2];
+                normals[f] = Vector3.Cross(positions[b] - positions[a], positions[c] - positions[a]).normalized;
+            }
+            return normals;
+        }
+
+        // Proxy "empty" texels take the maps of their nearest hit texel (jump flooding
+        // over the whole atlas, O(n log n), so holes hundreds of texels wide fill
+        // without seams) and keep alpha 0 in the base color as the coverage mask.
+        static void FillEmpty(Maps maps, int[] owners, bool[] empty, CancellationToken token)
+        {
+            int size = maps.size, count = owners.Length;
+            var seed = new bool[count];
+            for (int i = 0; i < count; ++i) seed[i] = owners[i] >= 0 && !empty[i];
+            var nearest = NearestSeeds(seed, size, token);
+            for (int i = 0; i < count; ++i) {
+                if (!empty[i]) continue;
+                int from = nearest[i];
+                if (from >= 0) {
+                    maps.color[i] = maps.color[from]; maps.normal[i] = maps.normal[from];
+                    maps.metal[i] = maps.metal[from]; maps.ao[i] = maps.ao[from]; maps.emission[i] = maps.emission[from];
+                }
+                else { maps.normal[i] = new Color32(128, 128, 255, 255); maps.ao[i] = new Color32(255, 255, 255, 255); }
+                var c = maps.color[i]; c.a = 0; maps.color[i] = c;
+            }
+        }
+
+        // Jump flooding: for every texel, the index of the nearest seed texel (-1 when
+        // there is none).
+        internal static int[] NearestSeeds(bool[] seed, int size, CancellationToken token)
+        {
+            int count = size * size;
+            var nearest = new int[count]; var next = new int[count];
+            for (int i = 0; i < count; ++i) nearest[i] = seed[i] ? i : -1;
+            long DistSq(int from, int to) { long dx = from % size - to % size, dy = from / size - to / size; return dx * dx + dy * dy; }
+            for (int step = Math.Max(1, size / 2); step >= 1; step /= 2) {
+                token.ThrowIfCancellationRequested();
+                Array.Copy(nearest, next, count);
+                for (int y = 0; y < size; ++y)
+                    for (int x = 0; x < size; ++x) {
+                        int i = y * size + x;
+                        int best = next[i];
+                        long bestD = best >= 0 ? DistSq(i, best) : long.MaxValue;
+                        for (int dy = -step; dy <= step; dy += step)
+                            for (int dx = -step; dx <= step; dx += step) {
+                                int xx = x + dx, yy = y + dy;
+                                if (xx < 0 || yy < 0 || xx >= size || yy >= size) continue;
+                                int candidate = nearest[yy * size + xx];
+                                if (candidate < 0) continue;
+                                long d = DistSq(i, candidate);
+                                if (d < bestD) { bestD = d; best = candidate; }
+                            }
+                        next[i] = best;
+                    }
+                var swap = nearest; nearest = next; next = swap;
+            }
+            return nearest;
         }
 
         static void Dilate(Maps maps, int[] owners, int padding, CancellationToken token)

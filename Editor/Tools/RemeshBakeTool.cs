@@ -125,13 +125,19 @@ namespace SashaRX.UnityMeshLab
 
                 if (StageHeader(RemeshPipeline.Stage.Remesh)) {
                     settings.sourceShape = (RemeshShape)EditorGUILayout.EnumPopup(new GUIContent("Shape",
-                        "LOD0: voxelize the captured geometry. Bounding box: replace every captured model with its axis-aligned box — a proxy for far LODs; " +
-                        "materials and lighting still bake from the original geometry, projected onto the box. Box set: one box per renderer node, recursively " +
-                        "split inside wherever a wide empty gap separates that renderer's geometry (L-/T-shapes fall apart into arms)."), settings.sourceShape);
-                    if (settings.sourceShape == RemeshShape.BoxSet)
-                        settings.boxSplitGap = EditorGUILayout.Slider(new GUIContent("Split gap",
-                            "The smallest empty gap (a fraction of a box's extent) that still splits it in two. Lower values chase finer protrusions with more boxes."),
-                            settings.boxSplitGap, 0.05f, 0.5f);
+                        "LOD0: voxelize the captured geometry. Bounding box: one box per renderer along the renderer's own axes — a far-LOD proxy; " +
+                        "materials and lighting bake from the original geometry, projected onto the box faces. Hull: a coarse blocky voxel hull " +
+                        "simplified to a small triangle budget, keeping L/T footprints, courtyards and roof steps."), settings.sourceShape);
+                    if (settings.sourceShape == RemeshShape.Hull) {
+                        settings.hullResolution = EditorGUILayout.IntSlider(new GUIContent("Hull resolution", "Voxels along the longest axis of the coarse pass."), settings.hullResolution, 8, 64);
+                        settings.hullTriangles = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Hull triangles", "Triangle budget the hull is simplified to."), settings.hullTriangles), 12, 100000);
+                    }
+                    settings.minPartSize = EditorGUILayout.Slider(new GUIContent("Exclude parts smaller than",
+                        "Connected pieces whose bounds diagonal is below this fraction of the model's diagonal (bolts, railings, debris) are left out before any shape is built. 0 = keep everything."),
+                        settings.minPartSize, 0, 0.2f);
+                    settings.minPartThickness = EditorGUILayout.Slider(new GUIContent("Exclude parts thinner than",
+                        "Connected pieces whose smallest bounds side is below this fraction of the model's diagonal (decals, glass sheets, fences) are left out. 0 = keep everything."),
+                        settings.minPartThickness, 0, 0.1f);
                     settings.lod0Only = EditorGUILayout.Toggle(new GUIContent("LOD0 only",
                         "Capture ignores meshes named Name_LOD1 and higher; LODGroups already contribute LOD0 only."), settings.lod0Only);
                     settings.keepHierarchy = EditorGUILayout.Toggle(new GUIContent("Keep hierarchy",
@@ -205,7 +211,9 @@ namespace SashaRX.UnityMeshLab
                         settings.bakeSamples, Array.ConvertAll(SampleNames, n => new GUIContent(n)), SampleCounts);
                     settings.transferVertexColor = EditorGUILayout.Toggle("Vertex color (RGB)", settings.transferVertexColor);
                     settings.transferVertexAlpha = EditorGUILayout.Toggle("Vertex alpha", settings.transferVertexAlpha);
-                    if (pipeline.Has(RemeshPipeline.Stage.Remesh) && !pipeline.SourceHasColors && (settings.transferVertexColor || settings.transferVertexAlpha))
+                    settings.vertexColorTint = EditorGUILayout.Toggle(new GUIContent("Vertex color tints albedo",
+                        "Multiply the projected albedo by the source vertex color (RGB), for shaders that use the vertex color as a tint."), settings.vertexColorTint);
+                    if (pipeline.Has(RemeshPipeline.Stage.Remesh) && !pipeline.SourceHasColors && (settings.transferVertexColor || settings.transferVertexAlpha || settings.vertexColorTint))
                         EditorGUILayout.HelpBox("The source has no vertex colors; the transfer writes white.", MessageType.None);
                     StageButton(RemeshPipeline.Stage.Bake, "Bake");
                 }

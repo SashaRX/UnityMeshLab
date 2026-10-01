@@ -52,14 +52,15 @@ namespace SashaRX.UnityMeshLab
     {
         /// <summary>Voxelize the captured geometry (the default remesh).</summary>
         LOD0,
-        /// <summary>Replace every captured model with its axis-aligned bounding box — a
-        /// proxy for far LODs; materials and lighting still bake from the original
-        /// geometry, projected onto the box.</summary>
+        /// <summary>One box per captured renderer, aligned to that renderer's own axes
+        /// (the mesh's authored bounds carried by its transform) — a far-LOD proxy;
+        /// materials and lighting bake from the original geometry, projected onto the
+        /// box faces.</summary>
         BoundingBox,
-        /// <summary>Recursive box approximation: split the bounds wherever a wide empty
-        /// gap separates geometry, so L- and T-shapes decompose into a small set of
-        /// boxes (one cube mesh instanced by transforms downstream).</summary>
-        BoxSet,
+        /// <summary>A coarse blocky hull: the (filtered) capture voxelized at a low
+        /// resolution without surface fitting and simplified to a small triangle
+        /// budget, so L/T footprints, courtyards and roofs keep their silhouette.</summary>
+        Hull,
     }
 
     [Serializable]
@@ -72,12 +73,19 @@ namespace SashaRX.UnityMeshLab
         // Source capture: skip meshes named Name_LOD1 and higher (LODGroups already
         // contribute LOD0 only).
         public bool lod0Only = true;
-        // What the remesh stage builds from the capture: the voxelized geometry, or a
-        // bounding-box proxy per captured model (keep-hierarchy) / for the whole weld.
+        // What the remesh stage builds from the capture: the voxelized geometry, one
+        // oriented box per renderer, or a coarse voxel hull.
         public RemeshShape sourceShape = RemeshShape.LOD0;
-        // Box-set shape: the smallest EMPTY gap (fraction of a box's extent) that still
-        // splits it in two; smaller values chase finer protrusions with more boxes.
-        public float boxSplitGap = 0.2f;
+        // Hull shape: voxel resolution of the coarse pass and the triangle budget the
+        // strong-regularized simplification stops at.
+        public int hullResolution = 24;
+        public int hullTriangles = 120;
+        // Part filter, applied to the capture before any shape is built: connected
+        // pieces whose bounds diagonal is below minPartSize × capture diagonal (bolts,
+        // railings, debris) or whose smallest bounds side is below minPartThickness ×
+        // capture diagonal (decals, glass sheets) are excluded. 0 = off.
+        public float minPartSize = 0.02f;
+        public float minPartThickness;
         // Keep hierarchy: remesh every captured node SEPARATELY and save the result as a
         // hierarchy of meshes under one root (per-node materials, local transforms kept),
         // instead of welding everything into one _LOD0 mesh with one baked material.
@@ -125,6 +133,9 @@ namespace SashaRX.UnityMeshLab
         public int bakeSamples = 4;              // per texel: 1, 4, 9 or 16
         public bool transferVertexColor;
         public bool transferVertexAlpha;
+        // Multiply the source albedo by the source vertex color (RGB) while projecting,
+        // for shaders that use the vertex color as an albedo tint.
+        public bool vertexColorTint;
 
         // Save (FBX): embed the baked maps into the binary FBX instead of
         // linking them by absolute path. Portable, but the file grows by the
@@ -147,7 +158,10 @@ namespace SashaRX.UnityMeshLab
                 chartIterations < 1 || chartIterations > 16 || !NonNegative(maxChartArea) || !NonNegative(maxChartBoundary) ||
                 textureResolution < 64 || textureResolution > 8192 || (textureResolution & (textureResolution - 1)) != 0 ||
                 padding < 1 || padding > 32 || !Finite(projectionDistance) || projectionDistance <= 0 || projectionDistance > 1 ||
-                (bakeSamples != 1 && bakeSamples != 4 && bakeSamples != 9 && bakeSamples != 16))
+                (bakeSamples != 1 && bakeSamples != 4 && bakeSamples != 9 && bakeSamples != 16) ||
+                hullResolution < 4 || hullResolution > 256 || hullTriangles < 12 || hullTriangles > 100000 ||
+                !Finite(minPartSize) || minPartSize < 0 || minPartSize > 0.5f ||
+                !Finite(minPartThickness) || minPartThickness < 0 || minPartThickness > 0.5f)
                 throw new ArgumentException("Invalid remesh settings.");
         }
 

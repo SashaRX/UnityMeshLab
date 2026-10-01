@@ -45,6 +45,11 @@ namespace SashaRX.UnityMeshLab
         public Surface[] materials;
         public float diagonal;
         public string[] warnings = Array.Empty<string>();
+        // Which captured renderer each vertex came from, and that renderer's local →
+        // capture-space matrix: the oriented-box shape measures every renderer's
+        // (filtered) geometry along its own authored axes.
+        public int[] vertexRenderer;
+        public Matrix4x4[] rendererToSpace;
 
         internal sealed class Image
         {
@@ -98,65 +103,6 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// The renderer's own world bounds expressed in the space whose world→local
-        /// matrix is worldToSpace (the 8 corners transformed, re-axised) — Unity's
-        /// bbox, not a recomputed one. Main thread.
-        /// </summary>
-        public static Bounds RendererBounds(Matrix4x4 worldToSpace, Renderer renderer)
-        {
-            var b = renderer.bounds;
-            var result = new Bounds(worldToSpace.MultiplyPoint3x4(b.center), Vector3.zero);
-            result.Encapsulate(worldToSpace.MultiplyPoint3x4(b.min));
-            result.Encapsulate(worldToSpace.MultiplyPoint3x4(b.max));
-            result.Encapsulate(worldToSpace.MultiplyPoint3x4(new Vector3(b.min.x, b.min.y, b.max.z)));
-            result.Encapsulate(worldToSpace.MultiplyPoint3x4(new Vector3(b.min.x, b.max.y, b.min.z)));
-            result.Encapsulate(worldToSpace.MultiplyPoint3x4(new Vector3(b.max.x, b.min.y, b.min.z)));
-            result.Encapsulate(worldToSpace.MultiplyPoint3x4(new Vector3(b.min.x, b.max.y, b.max.z)));
-            result.Encapsulate(worldToSpace.MultiplyPoint3x4(new Vector3(b.max.x, b.min.y, b.max.z)));
-            result.Encapsulate(worldToSpace.MultiplyPoint3x4(new Vector3(b.max.x, b.max.y, b.min.z)));
-            return result;
-        }
-
-        /// <summary>
-        /// One renderer's vertices AND triangle indices (non-triangle submeshes dropped)
-        /// in the space whose world→local matrix is worldToSpace — the geometry the box
-        /// decomposition partitions BY RENDERER, without any material readback. Null when
-        /// the renderer contributes no triangles. Main thread.
-        /// </summary>
-        public static void CollectSurface(Matrix4x4 worldToSpace, Renderer renderer, out Vector3[] positions, out int[] triangles)
-        {
-            positions = null; triangles = null;
-            Mesh mesh;
-            if (renderer is SkinnedMeshRenderer skin) {
-                mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
-                var bones = skin.bones;
-                skin.bones = Array.Empty<Transform>();
-                skin.bones = bones;
-                skin.BakeMesh(mesh);
-            }
-            else if (renderer is MeshRenderer) {
-                var filter = renderer.GetComponent<MeshFilter>();
-                if (!filter || !filter.sharedMesh) return;
-                mesh = UvCanvasView.MakeReadableCopy(filter.sharedMesh);
-            }
-            else return;
-            try {
-                var p = mesh.vertices;
-                var transform = worldToSpace * renderer.localToWorldMatrix;
-                positions = new Vector3[p.Length];
-                for (int i = 0; i < p.Length; ++i) positions[i] = transform.MultiplyPoint3x4(p[i]);
-                var tris = new List<int>(mesh.triangles.Length);
-                for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
-                    if (mesh.GetTopology(sub) != MeshTopology.Triangles) continue;
-                    var t = mesh.GetTriangles(sub);
-                    for (int i = 0; i < t.Length; ++i) tris.Add(t[i]);
-                }
-                triangles = tris.ToArray();
-            }
-            finally { Object.DestroyImmediate(mesh); }
-        }
-
-        /// <summary>
         /// Snapshot of the given renderers expressed in the space whose world→local
         /// matrix is worldToSpace. Returns null when they contribute no triangles and
         /// required is false; throws otherwise.
@@ -172,6 +118,7 @@ namespace SashaRX.UnityMeshLab
             var faceLightmaps = new List<int>();
             var lightmapRefs = new List<LightmapRef>();
             var lightmapIds = new Dictionary<(Texture2D, Texture2D, Vector4), int>();
+            var vertexRenderer = new List<int>(); var rendererToSpace = new List<Matrix4x4>();
             string[] warnings;
             using (var reader = new Reader()) {
                 foreach (var renderer in renderers) {
@@ -230,7 +177,10 @@ namespace SashaRX.UnityMeshLab
                         var normalTransform = transform.inverse.transpose;
                         float sign = transform.determinant < 0 ? -1 : 1;
                         int first = positions.Count;
+                        int rendererId = rendererToSpace.Count;
+                        rendererToSpace.Add(transform);
                         for (int i = 0; i < p.Length; ++i) {
+                            vertexRenderer.Add(rendererId);
                             positions.Add(transform.MultiplyPoint3x4(p[i]));
                             Vector3 nn = normalTransform.MultiplyVector(n[i]).normalized;
                             normals.Add(nn);
@@ -297,7 +247,139 @@ namespace SashaRX.UnityMeshLab
             return new RemeshSource { positions = positions.ToArray(), normals = normals.ToArray(), tangents = tangents.ToArray(),
                 uv = uv.ToArray(), uv2 = uv2.ToArray(), colors = colors.ToArray(), hasColors = hasColors, indices = indices.ToArray(), faceMaterials = faces.ToArray(),
                 faceLightmaps = faceLightmaps.ToArray(), lightmapRefs = lightmapRefs.ToArray(), materials = materials.ToArray(),
-                diagonal = bounds.size.magnitude, warnings = warnings };
+                diagonal = bounds.size.magnitude, warnings = warnings,
+                vertexRenderer = vertexRenderer.ToArray(), rendererToSpace = rendererToSpace.ToArray() };
+        }
+
+        /// <summary>
+        /// Drops connected pieces that are too small or too thin to matter for a proxy:
+        /// a piece whose bounds diagonal is under minSize × capture diagonal, or whose
+        /// smallest bounds side is under minThickness × capture diagonal (0 disables
+        /// either test). Pieces are the connected components of the position-welded
+        /// triangle graph, so bolts and railings go even when they share a mesh with the
+        /// wall. Vertices are compacted; the capture diagonal is kept so later fractions
+        /// stay relative to the original model. Returns false (and changes nothing) when
+        /// every piece would go.
+        /// </summary>
+        public bool FilterSmallParts(float minSize, float minThickness, out int removedSmall, out int removedThin)
+        {
+            removedSmall = removedThin = 0;
+            if (minSize <= 0 && minThickness <= 0) return true;
+            int vertexCount = positions.Length, faceCount = indices.Length / 3;
+            // Weld by exact position so split-normal / UV-seam duplicates join their piece.
+            var slot = new int[vertexCount];
+            var slots = new Dictionary<(int, int, int), int>(vertexCount);
+            for (int i = 0; i < vertexCount; ++i) {
+                var p = positions[i];
+                var key = (BitConverter.SingleToInt32Bits(p.x), BitConverter.SingleToInt32Bits(p.y), BitConverter.SingleToInt32Bits(p.z));
+                if (!slots.TryGetValue(key, out int id)) { id = slots.Count; slots[key] = id; }
+                slot[i] = id;
+            }
+            var parent = new int[slots.Count];
+            for (int i = 0; i < parent.Length; ++i) parent[i] = i;
+            int Find(int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+            void Union(int a, int b) { a = Find(a); b = Find(b); if (a != b) parent[a] = b; }
+            for (int f = 0; f < faceCount; ++f) {
+                Union(slot[indices[f * 3]], slot[indices[f * 3 + 1]]);
+                Union(slot[indices[f * 3]], slot[indices[f * 3 + 2]]);
+            }
+            var mins = new Dictionary<int, Vector3>(); var maxs = new Dictionary<int, Vector3>();
+            for (int i = 0; i < vertexCount; ++i) {
+                int root = Find(slot[i]);
+                if (mins.TryGetValue(root, out var mn)) { mins[root] = Vector3.Min(mn, positions[i]); maxs[root] = Vector3.Max(maxs[root], positions[i]); }
+                else { mins[root] = positions[i]; maxs[root] = positions[i]; }
+            }
+            var drop = new HashSet<int>();
+            foreach (var pair in mins) {
+                var size = maxs[pair.Key] - pair.Value;
+                bool small = minSize > 0 && size.magnitude < minSize * diagonal;
+                bool thin = !small && minThickness > 0 && Mathf.Min(size.x, Mathf.Min(size.y, size.z)) < minThickness * diagonal;
+                if (small) ++removedSmall; else if (thin) ++removedThin;
+                if (small || thin) drop.Add(pair.Key);
+            }
+            if (drop.Count == 0) return true;
+            if (drop.Count == mins.Count) { removedSmall = removedThin = 0; return false; }
+            // Compact faces, then vertices.
+            var keptFaces = new List<int>(faceCount);
+            for (int f = 0; f < faceCount; ++f)
+                if (!drop.Contains(Find(slot[indices[f * 3]]))) keptFaces.Add(f);
+            var remap = new int[vertexCount];
+            for (int i = 0; i < vertexCount; ++i) remap[i] = -1;
+            int next = 0;
+            var newIndices = new int[keptFaces.Count * 3];
+            var newFaceMaterials = new int[keptFaces.Count];
+            var newFaceLightmaps = new int[keptFaces.Count];
+            for (int k = 0; k < keptFaces.Count; ++k) {
+                int f = keptFaces[k];
+                for (int c = 0; c < 3; ++c) {
+                    int v = indices[f * 3 + c];
+                    if (remap[v] < 0) remap[v] = next++;
+                    newIndices[k * 3 + c] = remap[v];
+                }
+                newFaceMaterials[k] = faceMaterials[f];
+                newFaceLightmaps[k] = faceLightmaps[f];
+            }
+            T[] Compact<T>(T[] source) {
+                if (source == null) return null;
+                var result = new T[next];
+                for (int i = 0; i < vertexCount; ++i) if (remap[i] >= 0) result[remap[i]] = source[i];
+                return result;
+            }
+            positions = Compact(positions); normals = Compact(normals); tangents = Compact(tangents);
+            uv = Compact(uv); uv2 = Compact(uv2); colors = Compact(colors); vertexRenderer = Compact(vertexRenderer);
+            indices = newIndices; faceMaterials = newFaceMaterials; faceLightmaps = newFaceLightmaps;
+            return true;
+        }
+
+        /// <summary>
+        /// One box per captured renderer, measured over that renderer's (filtered)
+        /// vertices along the renderer's own axes and placed back in capture space —
+        /// the authored bounding box carried by the transform, not an axis-aligned box
+        /// in the root's frame. Flat renderers get a minimal thickness. All boxes merged
+        /// into one outward-wound mesh.
+        /// </summary>
+        public RemeshNative.IndexedMesh OrientedBoxes()
+        {
+            int renderers = rendererToSpace.Length;
+            var mins = new Vector3[renderers]; var maxs = new Vector3[renderers]; var any = new bool[renderers];
+            var toLocal = new Matrix4x4[renderers];
+            for (int r = 0; r < renderers; ++r) toLocal[r] = rendererToSpace[r].inverse;
+            for (int i = 0; i < positions.Length; ++i) {
+                int r = vertexRenderer[i];
+                var local = toLocal[r].MultiplyPoint3x4(positions[i]);
+                if (!any[r]) { any[r] = true; mins[r] = local; maxs[r] = local; }
+                else { mins[r] = Vector3.Min(mins[r], local); maxs[r] = Vector3.Max(maxs[r], local); }
+            }
+            var vertices = new List<Vector3>(); var tris = new List<int>();
+            int[] faces = { 0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5 };
+            for (int r = 0; r < renderers; ++r) {
+                if (!any[r]) continue;
+                Vector3 mn = mins[r], mx = maxs[r];
+                // A flat renderer (plaza, road sheet, decal) would give a zero-thickness box:
+                // degenerate side faces and two z-fighting sheets. Pad any axis under 0.4% of
+                // the largest side to that, centred on the true extent.
+                var size = mx - mn;
+                float minSide = Mathf.Max(size.x, Mathf.Max(size.y, size.z)) * 0.004f;
+                for (int axis = 0; axis < 3; ++axis) {
+                    if (size[axis] >= minSide) continue;
+                    float centre = (mn[axis] + mx[axis]) * 0.5f;
+                    mn[axis] = centre - minSide * 0.5f; mx[axis] = centre + minSide * 0.5f;
+                }
+                int baseIndex = vertices.Count;
+                var m = rendererToSpace[r];
+                vertices.Add(m.MultiplyPoint3x4(new Vector3(mn.x, mn.y, mn.z))); vertices.Add(m.MultiplyPoint3x4(new Vector3(mx.x, mn.y, mn.z)));
+                vertices.Add(m.MultiplyPoint3x4(new Vector3(mx.x, mx.y, mn.z))); vertices.Add(m.MultiplyPoint3x4(new Vector3(mn.x, mx.y, mn.z)));
+                vertices.Add(m.MultiplyPoint3x4(new Vector3(mn.x, mn.y, mx.z))); vertices.Add(m.MultiplyPoint3x4(new Vector3(mx.x, mn.y, mx.z)));
+                vertices.Add(m.MultiplyPoint3x4(new Vector3(mx.x, mx.y, mx.z))); vertices.Add(m.MultiplyPoint3x4(new Vector3(mn.x, mx.y, mx.z)));
+                bool mirrored = m.determinant < 0;
+                for (int i = 0; i < 36; i += 3) {
+                    tris.Add(baseIndex + faces[i]);
+                    tris.Add(baseIndex + faces[mirrored ? i + 2 : i + 1]);
+                    tris.Add(baseIndex + faces[mirrored ? i + 1 : i + 2]);
+                }
+            }
+            if (tris.Count == 0) return null;
+            return new RemeshNative.IndexedMesh { positions = vertices.ToArray(), indices = tris.ToArray() };
         }
 
         /// <summary>

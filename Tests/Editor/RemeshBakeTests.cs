@@ -31,6 +31,9 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<ArgumentException>(() => new RemeshSettings { projectionDistance = 0 }.Validate());
             Assert.Throws<ArgumentException>(() => new RemeshSettings { bakeSamples = 3 }.Validate());
             Assert.Throws<ArgumentException>(() => new RemeshSettings { chartIterations = 0 }.Validate());
+            Assert.Throws<ArgumentException>(() => new RemeshSettings { hullResolution = 2 }.Validate());
+            Assert.Throws<ArgumentException>(() => new RemeshSettings { minPartSize = 0.6f }.Validate());
+            Assert.Throws<ArgumentException>(() => new RemeshSettings { minPartThickness = float.NaN }.Validate());
             Assert.DoesNotThrow(() => new RemeshSettings { targetTriangles = 0 }.Validate());
         }
         [Test]
@@ -212,6 +215,111 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(image.Sample(new Vector2(1.25f,0.5f)).r,Is.EqualTo(0).Within(1e-5f));
             image.wrapU=TextureWrapMode.Clamp;
             Assert.That(image.Sample(new Vector2(1.25f,0.5f)).r,Is.EqualTo(1).Within(1e-5f));
+        }
+
+        static RemeshSource TwoParts(float diagonal)
+        {
+            // A 1×1 wall triangle and a 0.01-sized bolt triangle, two renderers, no shared vertices.
+            return new RemeshSource {
+                positions = new[] { Vector3.zero, Vector3.right, Vector3.up,
+                    new Vector3(5,5,5), new Vector3(5.01f,5,5), new Vector3(5,5.01f,5) },
+                normals = new Vector3[6], tangents = new Vector4[6], uv = new Vector2[6],
+                colors = new[] { Color.red, Color.red, Color.red, Color.blue, Color.blue, Color.blue }, hasColors = true,
+                indices = new[] { 0,1,2, 3,4,5 }, faceMaterials = new[] { 0, 0 }, faceLightmaps = new[] { -1, -1 },
+                vertexRenderer = new[] { 0,0,0, 1,1,1 }, rendererToSpace = new[] { Matrix4x4.identity, Matrix4x4.identity },
+                diagonal = diagonal, materials = new[] { new RemeshSource.Surface() }
+            };
+        }
+        [Test]
+        public void FilterSmallPartsDropsTinyComponentsAndCompactsEveryStream()
+        {
+            var source = TwoParts(10);
+            Assert.IsTrue(source.FilterSmallParts(0.05f, 0, out int small, out int thin));
+            Assert.AreEqual(1, small); Assert.AreEqual(0, thin);
+            Assert.AreEqual(3, source.positions.Length);
+            Assert.AreEqual(new[] { 0,1,2 }, source.indices);
+            Assert.AreEqual(1, source.faceMaterials.Length); Assert.AreEqual(1, source.faceLightmaps.Length);
+            Assert.AreEqual(3, source.colors.Length); Assert.AreEqual(Color.red, source.colors[2]);
+            Assert.AreEqual(new[] { 0,0,0 }, source.vertexRenderer);
+            Assert.AreEqual(10, source.diagonal);
+            // Thin test: both triangles are flat (zero z extent), so a thickness floor drops everything → refused, untouched.
+            var flat = TwoParts(10);
+            Assert.IsFalse(flat.FilterSmallParts(0, 0.01f, out small, out thin));
+            Assert.AreEqual(0, small); Assert.AreEqual(0, thin);
+            Assert.AreEqual(6, flat.positions.Length);
+            // 0/0 is a no-op.
+            Assert.IsTrue(TwoParts(10).FilterSmallParts(0, 0, out _, out _));
+        }
+        [Test]
+        public void OrientedBoxesFollowTheRendererAxesAndWindOutward()
+        {
+            // A 2×1 rectangle authored in renderer-local XZ, the renderer yawed 45°.
+            var yaw = Matrix4x4.TRS(new Vector3(3,0,0), Quaternion.Euler(0,45,0), Vector3.one);
+            Vector3[] local = { Vector3.zero, new Vector3(2,0,0), new Vector3(2,0,1), new Vector3(0,0,1) };
+            var source = new RemeshSource {
+                positions = new Vector3[4], indices = new[] { 0,1,2, 0,2,3 },
+                vertexRenderer = new[] { 0,0,0,0 }, rendererToSpace = new[] { yaw }
+            };
+            for (int i = 0; i < 4; ++i) source.positions[i] = yaw.MultiplyPoint3x4(local[i]);
+            var box = source.OrientedBoxes();
+            Assert.AreEqual(8, box.positions.Length); Assert.AreEqual(36, box.indices.Length);
+            // Corners land on the local 2×0×1 box, not on the ~2.1×2.1 axis-aligned one.
+            var inv = yaw.inverse; var mn = Vector3.one * float.MaxValue; var mx = Vector3.one * float.MinValue;
+            foreach (var p in box.positions) { var l = inv.MultiplyPoint3x4(p); mn = Vector3.Min(mn, l); mx = Vector3.Max(mx, l); }
+            Assert.That(mn.x, Is.EqualTo(0).Within(1e-5f)); Assert.That(mx.x, Is.EqualTo(2).Within(1e-5f));
+            Assert.That(mn.z, Is.EqualTo(0).Within(1e-5f)); Assert.That(mx.z, Is.EqualTo(1).Within(1e-5f));
+            // The flat axis is padded to 0.4% of the longest side, centred on the sheet.
+            Assert.That(mx.y - mn.y, Is.EqualTo(0.008f).Within(1e-5f));
+            Assert.That(mx.y + mn.y, Is.EqualTo(0).Within(1e-5f));
+            // A mirrored renderer gets its winding flipped back, so the signed volume keeps its sign.
+            float Volume(RemeshNative.IndexedMesh m) {
+                float v = 0;
+                for (int i = 0; i < m.indices.Length; i += 3)
+                    v += Vector3.Dot(m.positions[m.indices[i]], Vector3.Cross(m.positions[m.indices[i+1]], m.positions[m.indices[i+2]]));
+                return v / 6;
+            }
+            var cube = new RemeshSource { positions = new[] { Vector3.zero, Vector3.one }, indices = new int[0],
+                vertexRenderer = new[] { 0, 0 }, rendererToSpace = new[] { Matrix4x4.identity } };
+            var mirrored = new RemeshSource { positions = new[] { Vector3.zero, new Vector3(-1,1,1) }, indices = new int[0],
+                vertexRenderer = new[] { 0, 0 }, rendererToSpace = new[] { Matrix4x4.Scale(new Vector3(-1,1,1)) } };
+            float straight = Volume(cube.OrientedBoxes()), flipped = Volume(mirrored.OrientedBoxes());
+            Assert.That(Mathf.Abs(straight), Is.EqualTo(1).Within(1e-5f));
+            Assert.That(flipped, Is.EqualTo(straight).Within(1e-5f));
+            // No vertices at all → no box.
+            Assert.IsNull(new RemeshSource { positions = new Vector3[0], indices = new int[0], vertexRenderer = new int[0],
+                rendererToSpace = new[] { Matrix4x4.identity } }.OrientedBoxes());
+        }
+        [Test]
+        public void VertexColorTintMultipliesTheLinearAlbedo()
+        {
+            var source = Source();
+            RemeshBaker.Evaluate(source,0,new Vector3(1,0,0),Vector3.forward,new Vector4(1,0,0,1),true,
+                out var color, out _, out _, out _, out _);
+            // Vertex 0 is pure red: the tinted albedo keeps only the red channel of the material tint.
+            Assert.That(color.r, Is.EqualTo(new Color(0.25f,0.5f,0.75f).gamma.r).Within(1e-5f));
+            Assert.That(color.g, Is.EqualTo(0).Within(1e-5f)); Assert.That(color.b, Is.EqualTo(0).Within(1e-5f));
+            Assert.AreEqual(1, color.a);
+            // Half-way between red and green vertices: both channels at half strength, blue gone.
+            RemeshBaker.Evaluate(source,0,new Vector3(0.5f,0.5f,0),Vector3.forward,new Vector4(1,0,0,1),true,
+                out color, out _, out _, out _, out _);
+            Assert.That(color.r, Is.EqualTo(new Color(0.125f,0,0).gamma.r).Within(1e-5f));
+            Assert.That(color.g, Is.EqualTo(new Color(0,0.25f,0).gamma.g).Within(1e-5f));
+            Assert.That(color.b, Is.EqualTo(0).Within(1e-5f));
+            // Off: untouched.
+            RemeshBaker.Evaluate(source,0,new Vector3(1,0,0),Vector3.forward,new Vector4(1,0,0,1),false,
+                out color, out _, out _, out _, out _);
+            Assert.That(color.g, Is.EqualTo(new Color(0.25f,0.5f,0.75f).gamma.g).Within(1e-5f));
+        }
+        [Test]
+        public void NearestSeedsAssignsEveryTexelToItsClosestSeed()
+        {
+            var seed = new bool[16]; seed[0] = true; seed[15] = true;
+            var nearest = RemeshBaker.NearestSeeds(seed, 4, CancellationToken.None);
+            Assert.AreEqual(0, nearest[0]); Assert.AreEqual(0, nearest[1]); Assert.AreEqual(0, nearest[4]);
+            Assert.AreEqual(15, nearest[15]); Assert.AreEqual(15, nearest[14]); Assert.AreEqual(15, nearest[11]);
+            foreach (var n in nearest) Assert.That(n, Is.GreaterThanOrEqualTo(0));
+            // No seeds at all: everything stays unassigned.
+            foreach (var n in RemeshBaker.NearestSeeds(new bool[16], 4, CancellationToken.None)) Assert.AreEqual(-1, n);
         }
     }
 }
