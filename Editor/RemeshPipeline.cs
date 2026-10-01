@@ -127,7 +127,7 @@ namespace SashaRX.UnityMeshLab
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
                     $"{s.maxChartArea}|{s.maxChartBoundary}|{s.packRotate}|{s.packBlockAlign}|{s.packBruteForce}";
-                default: return $"{s.bakeMode}|{s.projectionDistance}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}";
+                default: return $"{s.bakeMode}|{s.projectionDistance}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}";
             }
         }
 
@@ -343,6 +343,7 @@ namespace SashaRX.UnityMeshLab
                 if (!string.IsNullOrEmpty(beauty.occluderSummary)) UvtLog.Info("[Remesh] Beauty shadows also test " + beauty.occluderSummary + ".");
             }
             long sourceTriangles = 0, targetTriangles = 0, misses = 0, covered = 0, empty = 0; int warnings = 0;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
             for (int i = 0; i < nodes.Count; ++i) {
                 var node = nodes[i];
                 token.ThrowIfCancellationRequested();
@@ -369,7 +370,8 @@ namespace SashaRX.UnityMeshLab
             Status = (hierarchy ? $"{nodes.Count} node(s): " : "") + $"{sourceTriangles:N0} → {targetTriangles:N0} triangles. " +
                 (misses == 0 ? "All covered texels projected." : $"{misses:N0} / {covered:N0} texels missed (magenta). Increase projection distance and rebake.") +
                 (empty > 0 ? $" {empty:N0} proxy texels see no geometry (alpha 0, filled from neighbours)." : "") +
-                (warnings > 0 ? $" {warnings} material warning(s), see Console." : "");
+                (warnings > 0 ? $" {warnings} material warning(s), see Console." : "") +
+                $" Bake {clock.Elapsed.TotalSeconds:F1} s.";
             UvtLog.Info("[Remesh] " + Status);
         }
 

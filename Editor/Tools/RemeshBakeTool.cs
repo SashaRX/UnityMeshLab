@@ -260,7 +260,13 @@ namespace SashaRX.UnityMeshLab
                         "Materials transfers the source maps. Beauty bakes the object as the player sees it — realtime/mixed light with ray shadows, " +
                         "lightmaps, ambient and reflection probes folded into one lit BaseColor texture; the saved material becomes Unlit. " +
                         "Specular uses the scene view camera's position at bake time."), settings.bakeMode);
-                    settings.projectionDistance = EditorGUILayout.Slider("Projection / bounds", settings.projectionDistance, 0.001f, 0.2f);
+                    if (settings.sourceShape == RemeshShape.LOD0)
+                        settings.projectionDistance = EditorGUILayout.Slider("Projection / bounds", settings.projectionDistance, 0.001f, 0.2f);
+                    else
+                        settings.proxyDepth = EditorGUILayout.Slider(new GUIContent("Proxy search depth",
+                            "How deep behind a proxy face a texel looks for the source, as a fraction of the model's diagonal: the ray along the face " +
+                            "normal, then the nearest surface within the same reach. Short keeps each face to what sits behind it and bakes fast; " +
+                            "long lets a face see across courtyards and costs a full traversal per empty texel."), settings.proxyDepth, 0.01f, 1f);
                     settings.bakeSamples = EditorGUILayout.IntPopup(new GUIContent("Samples per texel", "Supersampling for smoother edges and detail."),
                         settings.bakeSamples, Array.ConvertAll(SampleNames, n => new GUIContent(n)), SampleCounts);
                     settings.transferVertexColor = EditorGUILayout.Toggle("Vertex color (RGB)", settings.transferVertexColor);

@@ -306,12 +306,13 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ─── Raycast query ───
+        // Both traversals visit the nearer child first: once a hit shrinks best.t the far
+        // child is culled by the slab test, which matters for long rays (a proxy texel
+        // looking through a whole building, a shadow ray across a scene).
         void RaycastRecursive(int nodeIdx, Vector3 origin, Vector3 dir, ref RayHit best)
         {
             ref Node node = ref nodes[nodeIdx];
-
-            // Ray-AABB intersection (slab method)
-            if (!RayIntersectsAabb(origin, dir, node.bMin, node.bMax, best.t))
+            if (!RayEntersAabb(origin, dir, node.bMin, node.bMax, best.t, out _))
                 return;
 
             // Leaf: test triangles
@@ -334,17 +335,15 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            // Traverse both children (order doesn't matter much for raycast, but
-            // we could optimize by traversing closer first based on ray direction)
-            RaycastRecursive(node.left, origin, dir, ref best);
-            RaycastRecursive(node.right, origin, dir, ref best);
+            OrderChildren(node, origin, dir, best.t, out int first, out int second);
+            if (first >= 0) RaycastRecursive(first, origin, dir, ref best);
+            if (second >= 0) RaycastRecursive(second, origin, dir, ref best);
         }
 
         void RaycastFacingRecursive(int nodeIdx, Vector3 origin, Vector3 dir, Vector3[] fNrm, ref RayHit best)
         {
             ref Node node = ref nodes[nodeIdx];
-
-            if (!RayIntersectsAabb(origin, dir, node.bMin, node.bMax, best.t))
+            if (!RayEntersAabb(origin, dir, node.bMin, node.bMax, best.t, out _))
                 return;
 
             if (node.left == -1)
@@ -366,8 +365,23 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            RaycastFacingRecursive(node.left, origin, dir, fNrm, ref best);
-            RaycastFacingRecursive(node.right, origin, dir, fNrm, ref best);
+            OrderChildren(node, origin, dir, best.t, out int first, out int second);
+            if (first >= 0) RaycastFacingRecursive(first, origin, dir, fNrm, ref best);
+            if (second >= 0) RaycastFacingRecursive(second, origin, dir, fNrm, ref best);
+        }
+
+        // The children the ray enters, nearer entry first; -1 for a child the ray misses
+        // or that lies beyond the current best hit.
+        void OrderChildren(in Node node, Vector3 origin, Vector3 dir, float maxT, out int first, out int second)
+        {
+            ref Node l = ref nodes[node.left];
+            ref Node r = ref nodes[node.right];
+            bool hitL = RayEntersAabb(origin, dir, l.bMin, l.bMax, maxT, out float tL);
+            bool hitR = RayEntersAabb(origin, dir, r.bMin, r.bMax, maxT, out float tR);
+            if (hitL && hitR) { if (tL <= tR) { first = node.left; second = node.right; } else { first = node.right; second = node.left; } }
+            else if (hitL) { first = node.left; second = -1; }
+            else if (hitR) { first = node.right; second = -1; }
+            else { first = second = -1; }
         }
 
         // ─── Geometry helpers ───
@@ -385,9 +399,14 @@ namespace SashaRX.UnityMeshLab
         /// within [0, maxT].
         /// </summary>
         static bool RayIntersectsAabb(Vector3 origin, Vector3 dir, Vector3 bMin, Vector3 bMax, float maxT)
+            => RayEntersAabb(origin, dir, bMin, bMax, maxT, out _);
+
+        // Slab test that also reports the entry distance (0 when the origin is inside).
+        static bool RayEntersAabb(Vector3 origin, Vector3 dir, Vector3 bMin, Vector3 bMax, float maxT, out float tEnter)
         {
             float tmin = 0f;
             float tmax = maxT;
+            tEnter = 0f;
 
             for (int i = 0; i < 3; i++)
             {
@@ -412,6 +431,7 @@ namespace SashaRX.UnityMeshLab
                     if (tmin > tmax) return false;
                 }
             }
+            tEnter = tmin;
             return true;
         }
 

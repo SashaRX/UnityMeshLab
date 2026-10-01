@@ -143,10 +143,14 @@ settings, marked "settings changed" in its header) and clears everything after i
    tight concavity shows a pinch instead of folding through to the far side.
    For the *Bounding box* and *Hull* shapes the cage is replaced by **proxy
    projection**: every texel casts straight along its face normal from just
-   outside the proxy through the proxy's full depth and takes the first source
-   surface it meets, so each proxy face shows what a viewer looking at that face
-   would see; there is no nearest-surface fallback. Texels whose ray meets no
-   geometry (the empty corners of a box around an L-shaped building) are written
+   outside the proxy, as deep as **Proxy search depth** allows (a fraction of
+   the capture diagonal, 0.1 by default), and takes the first source surface it
+   meets, so each proxy face shows what sits behind it; a ray that meets
+   nothing falls back to the nearest surface within the same reach, so a hull's
+   rounded corner still picks the wall beside it. Keep the depth short: a deep
+   look sees across courtyards through the block and costs a whole BVH
+   traversal per empty texel. Texels that find no geometry within reach (the
+   empty corners of a box around an L-shaped building) are written
    with **alpha 0** in the color map and filled from the nearest hit texel, and
    the stage status counts them — a shader that clips on alpha turns the proxy
    into a silhouette-correct impostor. **Vertex color tints albedo** multiplies

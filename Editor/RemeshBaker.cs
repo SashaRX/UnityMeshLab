@@ -48,13 +48,14 @@ namespace SashaRX.UnityMeshLab
             // their texels look INWARD along the face normal through the whole proxy —
             // an orthographic snapshot of the model from that side — instead of the
             // short two-sided cage ray; nothing behind a texel means "empty", not a miss.
+            // The look is bounded (proxyDepth × capture diagonal) and falls back to the
+            // nearest surface within the same reach: a hull's rounded corner still picks
+            // the wall beside it, and no texel traverses the whole model to find nothing.
             bool proxy = settings.sourceShape != RemeshShape.LOD0;
             Vector3[] faceDirs = null; float depth = 0;
             if (proxy) {
                 faceDirs = FaceNormals(target.positions, target.indices);
-                Vector3 mn = target.positions[0], mx = target.positions[0];
-                foreach (var pv in target.positions) { mn = Vector3.Min(mn, pv); mx = Vector3.Max(mx, pv); }
-                depth = (mx - mn).magnitude * 1.01f + source.diagonal * 1e-4f;
+                depth = Mathf.Max(source.diagonal * settings.proxyDepth, source.diagonal * 1e-4f);
             }
             // Projection rays follow a smooth welded "cage" direction, not the vertex
             // normal: island hard-edge modes leave chart-border normals one-sided,
@@ -229,6 +230,13 @@ namespace SashaRX.UnityMeshLab
                     ? bvh.RaycastFacingFiltered(p + dir * eps, -dir, depth, facing)
                     : bvh.Raycast(p + dir * eps, -dir, depth);
                 sourceFace = hit.triangleIndex; sw = hit.barycentric;
+                if (sourceFace < 0) {
+                    var nearest = facing != null
+                        ? bvh.FindNearestNormalFiltered(p, dir, facing, 0f, depth)
+                        : bvh.FindNearest(p, depth);
+                    sourceFace = nearest.triangleIndex; sw = nearest.barycentric;
+                    rayFallback = sourceFace >= 0;
+                }
             }
             else {
                 Vector3 rayN = (cage[a] * w.x + cage[b] * w.y + cage[c] * w.z).normalized;

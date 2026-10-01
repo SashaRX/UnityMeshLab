@@ -403,6 +403,12 @@ namespace SashaRX.UnityMeshLab
             var casters = RemeshSource.CollectSceneShadowCasters();
             if (casters.Count == 0) return null;
             Bounds world = ComputeWorldBounds(root);
+            // Only casters near the source take part: its bounds grown by twice their size
+            // on every side. A tower three blocks away at a low sun is out of reach, and a
+            // city scene no longer turns one bake into a scene-wide capture.
+            Bounds reach = world; reach.Expand(world.size * 4f);
+            casters.RemoveAll(r => !r.bounds.Intersects(reach) && !r.transform.IsChildOf(root.transform));
+            if (casters.Count == 0) return null;
             casters.Sort((a, b) => a.bounds.SqrDistance(world.center).CompareTo(b.bounds.SqrDistance(world.center)));
             var chosen = new List<Renderer>(casters.Count);
             long triangles = 0; int skipped = 0;
@@ -420,7 +426,7 @@ namespace SashaRX.UnityMeshLab
             try { occluded = RemeshSource.Capture(Matrix4x4.identity, chosen, required: false, geometryOnly: true); }
             catch (InvalidOperationException) { }
             if (occluded == null) return null;
-            summary = $"{chosen.Count:N0} scene shadow caster(s), {occluded.indices.Length / 3:N0} triangles" +
+            summary = $"{chosen.Count:N0} scene shadow caster(s) within reach, {occluded.indices.Length / 3:N0} triangles" +
                 (skipped > 0 ? $" ({skipped:N0} farthest renderer(s) over the {OccluderTriangleBudget / 1_000_000}M-triangle budget left out)" : "");
             return new TriangleBvh(occluded.positions, occluded.indices);
         }

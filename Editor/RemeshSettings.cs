@@ -131,6 +131,12 @@ namespace SashaRX.UnityMeshLab
         // lighting into one BaseColor texture and the saved material becomes Unlit.
         public RemeshBakeMode bakeMode = RemeshBakeMode.Materials;
         public float projectionDistance = 0.02f; // fraction of source bounds diagonal
+        // Proxy shapes (boxes, hull): how deep behind a proxy face a texel looks for the
+        // source surface, as a fraction of the capture diagonal — the ray along the face
+        // normal, then the nearest surface within the same reach. A full-depth look
+        // sees the far side of a courtyard through the block and costs a whole BVH
+        // traversal per empty texel; a short one keeps each face to what sits behind it.
+        public float proxyDepth = 0.1f;
         public int bakeSamples = 4;              // per texel: 1, 4, 9 or 16
         public bool transferVertexColor;
         public bool transferVertexAlpha;
@@ -160,6 +166,7 @@ namespace SashaRX.UnityMeshLab
                 chartIterations < 1 || chartIterations > 16 || !NonNegative(maxChartArea) || !NonNegative(maxChartBoundary) ||
                 textureResolution < 64 || textureResolution > 8192 || (textureResolution & (textureResolution - 1)) != 0 ||
                 padding < 1 || padding > 32 || !Finite(projectionDistance) || projectionDistance <= 0 || projectionDistance > 1 ||
+                !Finite(proxyDepth) || proxyDepth < 0.005f || proxyDepth > 1 ||
                 (bakeSamples != 1 && bakeSamples != 4 && bakeSamples != 9 && bakeSamples != 16) ||
                 hullResolution < 4 || hullResolution > 256 || hullTriangles < 12 || hullTriangles > 100000 ||
                 !Finite(minPartSize) || minPartSize < 0 || minPartSize > 0.5f ||
