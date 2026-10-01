@@ -346,7 +346,7 @@ namespace SashaRX.UnityMeshLab
                 node.mesh.colors = node.maps.vertexColors;
                 sourceTriangles += source.indices.Length / 3; targetTriangles += target.indices.Length / 3;
                 misses += node.maps.misses; covered += node.maps.covered; empty += node.maps.empty; warnings += source.warnings.Length;
-                LogDiagnostics(node);
+                LogDiagnostics(node, options.sourceShape);
             }
             token.ThrowIfCancellationRequested();
             var primary = Primary;
@@ -363,7 +363,7 @@ namespace SashaRX.UnityMeshLab
         // border normals, nearest-query fallbacks and normal-map tilt. A loud,
         // strongly-tilted map on a smooth-ish source is the signature of displaced
         // projection samples; loud fraction > 5% also warns on its own.
-        static void LogDiagnostics(Node node)
+        static void LogDiagnostics(Node node, RemeshShape shape)
         {
             var baked = node.maps; var captured = node.source; var target = node.geometry;
             // Source and target live in the same capture space by construction; the
@@ -392,7 +392,12 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Warn(UvtLog.Category.RemeshDiag, prefix +
                     $"target/source bounds diagonal ratio is {scaleRatio:F2} — the remeshed mesh no longer matches the source size. " +
                     "Check voxel resolution, small-part pruning and simplification settings, and rebake.");
-            if (baked.loudTexels > baked.covered / 20 && baked.meanTiltDeg > 30f)
+            // A heavy reduction (or a proxy shape) moves the geometry INTO the normal map
+            // on purpose; a strongly tilted map is the correct result there, not a sign
+            // of displaced samples, so the warning only fires on mild decimations.
+            int sourceFaces = captured.indices.Length / 3, targetFaces = target.indices.Length / 3;
+            bool heavyReduction = shape != RemeshShape.LOD0 || targetFaces * 5 < sourceFaces;
+            if (!heavyReduction && baked.loudTexels > baked.covered / 20 && baked.meanTiltDeg > 30f)
                 UvtLog.Warn(UvtLog.Category.RemeshDiag, prefix +
                     $"{100.0 * baked.loudTexels / Mathf.Max(1, baked.covered):F1}% of texels lean >45° with a {baked.meanTiltDeg:F0}° mean tilt — " +
                     "the map is dominated by extreme normals. Check the hard-edge mode, projection distance and cage fit, " +
