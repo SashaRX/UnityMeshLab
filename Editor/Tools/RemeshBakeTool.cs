@@ -11,7 +11,7 @@ namespace SashaRX.UnityMeshLab
     /// right-sidebar previews and the save action. The stage work itself lives in
     /// <see cref="RemeshPipeline"/>, the export in <see cref="RemeshExporter"/>.
     /// </summary>
-    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar
+    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D
     {
         public string ToolName => "Remesh & Bake";
         public string ToolId => "remesh_bake";
@@ -138,6 +138,12 @@ namespace SashaRX.UnityMeshLab
 
         public void OnDrawRightSidebar()
         {
+            SyncPreviewData();
+            previews.Draw(previewData);
+        }
+
+        void SyncPreviewData()
+        {
             previewData.meshes[(int)RemeshPreview.Stage.Source] = pipeline.SourceMesh;
             previewData.meshes[(int)RemeshPreview.Stage.Remesh] = pipeline.VoxelMesh;
             previewData.meshes[(int)RemeshPreview.Stage.Simplified] = pipeline.SimplifiedMesh;
@@ -146,8 +152,18 @@ namespace SashaRX.UnityMeshLab
             // Live from the current settings so the cage preview reflects projection
             // distance changes before a re-bake; zero until a source snapshot exists.
             previewData.cageDistance = pipeline.SourceDiagonal * settings.projectionDistance;
-            previews.Draw(previewData);
         }
+
+        // The shared 3D canvas shows the selected pipeline stage (in capture space) with
+        // the right sidebar's surface and overlay toggles; before the remesh stage ran it
+        // falls back to the hub's view of the selected model.
+        public bool Get3DContent(List<MeshViewport3D.Item> items)
+        {
+            SyncPreviewData();
+            return previews.Fill3D(previewData, items);
+        }
+
+        public void OnDraw3D(MeshViewport3D view) => previews.Overlay3D(previewData, view);
 
         public void OnDrawSidebar()
         {

@@ -10,7 +10,7 @@ using UnityEditor.SceneManagement;
 
 namespace SashaRX.UnityMeshLab
 {
-    public class PrefabBuilderTool : IUvTool
+    public class PrefabBuilderTool : IUvTool, IUvTool3D
     {
         UvToolContext ctx;
         UvCanvasView canvas;
@@ -2178,6 +2178,18 @@ namespace SashaRX.UnityMeshLab
             {
                 preview.DrawUnusedVertexDots();
             }
+        }
+
+        // ── Shared 3D canvas: the LOD meshes as the hub shows them, plus the edge and
+        // problem overlays of the active scene preview mode. ──
+
+        public bool Get3DContent(List<MeshViewport3D.Item> items) => false;
+
+        public void OnDraw3D(MeshViewport3D view)
+        {
+            if (preview == null) return;
+            if (previewMode == PreviewMode.EdgeWireframe && preview.HasEdgeOverlays) preview.DrawEdgeWireframe(view);
+            if (previewMode == PreviewMode.ProblemAreas && preview.HasUnusedVertOverlays) preview.DrawUnusedVertexDots(view);
         }
 
         // ── Unused interface methods ──

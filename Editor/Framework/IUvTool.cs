@@ -67,6 +67,23 @@ namespace SashaRX.UnityMeshLab
     }
 
     /// <summary>
+    /// Opt-in for tools that take part in the shared 3D canvas (the hub's UV | 3D
+    /// switch). Without it a tool's 3D view shows the context's meshes for the
+    /// preview LOD with their scene materials.
+    /// </summary>
+    public interface IUvTool3D
+    {
+        /// <summary>
+        /// Fill items with what the 3D canvas should show while this tool is active and
+        /// return true; return false to show the context's LOD meshes instead.
+        /// </summary>
+        bool Get3DContent(List<MeshViewport3D.Item> items);
+
+        /// <summary>Draw on top of the content (wire, lines, points) through the viewport's overlay API.</summary>
+        void OnDraw3D(MeshViewport3D view);
+    }
+
+    /// <summary>
     /// Opt-in marker for tools that want a right-side sidebar in addition to
     /// the standard left sidebar. The hub renders this sidebar to the right
     /// of the canvas with its own resize handle. Tools that don't implement

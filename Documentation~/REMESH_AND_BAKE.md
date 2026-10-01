@@ -132,7 +132,7 @@ settings, marked "settings changed" in its header) and clears everything after i
    source from OUTSIDE — rays cast from a sphere around it toward its centre
    meet an outer surface first, and that triangle's winding against the ray
    gives the answer whatever the target's density — and it stays off when
-   fewer than 70% of the rays agree (open sheets, mixed winding). The 3D preview's **Cage** toggle
+   fewer than 70% of the rays agree (open sheets, mixed winding). The 3D view's **Cage** toggle (the right sidebar's 3D panel drives the canvas's shared 3D view — switch the canvas to **3D** at its bottom centre)
    draws the projection limits — the result mesh inflated by ±the ray travel
    along the same welded cage normals, orange for the outer (ray origin) shell,
    blue for the inner (ray end) shell — live from the current projection

@@ -8,8 +8,9 @@ using Object = UnityEngine.Object;
 namespace SashaRX.UnityMeshLab
 {
     /// <summary>
-    /// Right-sidebar previews for Remesh &amp; Bake: an orbitable 3D view of any pipeline
-    /// stage, the result UV layout and the baked maps. Owns every Unity object it creates.
+    /// Right-sidebar previews for Remesh &amp; Bake: the stage picker and surface toggles
+    /// for the shared 3D canvas (Fill3D / Overlay3D), the result UV layout and the baked
+    /// maps. Owns every Unity object it creates.
     /// </summary>
     internal sealed class RemeshPreview : IDisposable
     {
@@ -35,11 +36,7 @@ namespace SashaRX.UnityMeshLab
         Stage stage = Stage.Result;
         Channel channel;
         bool wireframe = true, shaded = true, textured = true, bumpMap = true, vertexColors, cageView, uvTexture = true, uvTint = true;
-        Vector2 orbit = new Vector2(-135, 20);
-        float zoom = 1;
-        PreviewRenderUtility utility;
         Material surface, wire, lines;
-        readonly Dictionary<int, Mesh> wireCache = new Dictionary<int, Mesh>();
         Mesh cageOuter, cageInner; int cageMeshId; float cageDistanceCached = -1;
         RemeshBaker.Maps mapSource;
         readonly Texture2D[] mapTextures = new Texture2D[5];
@@ -60,8 +57,6 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Drop cached per-mesh wireframes; call before destroying preview meshes.</summary>
         public void Invalidate()
         {
-            foreach (var mesh in wireCache.Values) if (mesh) Object.DestroyImmediate(mesh);
-            wireCache.Clear();
             if (cageOuter) Object.DestroyImmediate(cageOuter);
             if (cageInner) Object.DestroyImmediate(cageInner);
             cageOuter = cageInner = null; cageMeshId = 0; cageDistanceCached = -1;
@@ -73,13 +68,15 @@ namespace SashaRX.UnityMeshLab
         public void Dispose()
         {
             Invalidate();
-            utility?.Cleanup(); utility = null;
             if (surface) Object.DestroyImmediate(surface);
             if (wire) Object.DestroyImmediate(wire);
             if (lines) Object.DestroyImmediate(lines);
         }
 
         // ── 3D ──
+        // The stage mesh is shown in the hub's shared 3D canvas (UV | 3D switch): this
+        // panel only picks the stage and the surface/overlay toggles; Fill3D and
+        // Overlay3D feed the viewport through the tool's IUvTool3D implementation.
 
         void DrawMesh(Data data)
         {
@@ -93,29 +90,19 @@ namespace SashaRX.UnityMeshLab
                 cageView = GUILayout.Toggle(cageView, "Cage", EditorStyles.miniButtonRight);
             }
             var mesh = data.meshes[(int)stage];
-            Rect rect = GUILayoutUtility.GetAspectRect(1);
-            HandleOrbit(rect);
             EditorGUILayout.LabelField(mesh ? $"{mesh.vertexCount:N0} vertices · {Triangles(mesh):N0} triangles" : "Run this stage to preview it.",
                 EditorStyles.miniLabel);
-            EditorGUILayout.LabelField("Drag to orbit, scroll to zoom.", EditorStyles.centeredGreyMiniLabel);
-            if (Event.current.type != EventType.Repaint) return;
-            EditorGUI.DrawRect(rect, new Color(0.16f, 0.16f, 0.16f));
-            if (!mesh || !EnsureResources()) return;
+            EditorGUILayout.LabelField("Shown in the canvas's 3D view (UV | 3D switch at its bottom).", EditorStyles.centeredGreyMiniLabel);
+            if (GUI.changed) RequestRepaint?.Invoke();
+        }
 
-            var bounds = mesh.bounds;
-            if (cageView && stage == Stage.Result && data.geometry != null && data.cageDistance > 0)
-                bounds.Expand(data.cageDistance * 2);
-            float radius = Mathf.Max(bounds.extents.magnitude, 1e-4f);
-            float distance = radius / Mathf.Sin(15 * Mathf.Deg2Rad) * zoom;
-            var rotation = Quaternion.Euler(orbit.y, orbit.x, 0);
-            utility.BeginPreview(rect, GUIStyle.none);
-            var camera = utility.camera;
-            camera.clearFlags = CameraClearFlags.SolidColor;
-            camera.backgroundColor = new Color(0.16f, 0.16f, 0.16f, 1);
-            camera.transform.rotation = rotation;
-            camera.transform.position = bounds.center - rotation * Vector3.forward * distance;
-            camera.nearClipPlane = Mathf.Max(distance - radius * 2, distance * 0.001f);
-            camera.farClipPlane = distance + radius * 2;
+        /// <summary>The selected stage mesh for the shared 3D canvas, with the surface
+        /// material this panel's toggles configure. False when no stage has run.</summary>
+        public bool Fill3D(Data data, List<MeshViewport3D.Item> items)
+        {
+            var mesh = data.meshes[(int)stage];
+            if (!mesh) return false;
+            if (!EnsureResources()) return false;
             if (shaded) {
                 bool useTexture = textured && stage == Stage.Result && data.baseColor;
                 surface.SetTexture("_MainTex", useTexture ? data.baseColor : null);
@@ -129,98 +116,48 @@ namespace SashaRX.UnityMeshLab
                 // double it, so the surface renders unlit exactly like the saved material.
                 surface.SetFloat("_Lit", stage == Stage.Result && data.maps != null && data.maps.beauty ? 0 : 1);
                 surface.SetFloat("_UseVertexColor", vertexColors && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
-                for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, Matrix4x4.identity, surface, sub);
+                surface.SetColor("_Color", Color.white);
+                var materials = new Material[mesh.subMeshCount];
+                for (int sub = 0; sub < materials.Length; ++sub) materials[sub] = surface;
+                items.Add(new MeshViewport3D.Item(mesh, Matrix4x4.identity, materials));
             }
-            if (wireframe) {
-                var edges = Wire(mesh);
-                wire.SetColor("_Color", shaded ? new Color(0.05f, 0.05f, 0.05f, 1) : new Color(0.4f, 0.85f, 1f, 1));
-                if (edges) utility.DrawMesh(edges, Matrix4x4.identity, wire, 0);
-            }
-            if (cageView && stage == Stage.Result && data.geometry != null && data.cageDistance > 0)
-                DrawCage(mesh, data.geometry, data.cageDistance);
-            utility.Render();
-            GUI.DrawTexture(rect, utility.EndPreview(), ScaleMode.StretchToFill, false);
+            else items.Add(new MeshViewport3D.Item(mesh, Matrix4x4.identity, new Material[0]));
+            return true;
         }
 
-        void HandleOrbit(Rect rect)
+        /// <summary>Wire and cage overlays for the stage mesh in the shared 3D canvas.</summary>
+        public void Overlay3D(Data data, MeshViewport3D view)
         {
-            int id = GUIUtility.GetControlID("RemeshPreviewOrbit".GetHashCode(), FocusType.Passive, rect);
-            var e = Event.current;
-            switch (e.GetTypeForControl(id)) {
-                case EventType.MouseDown:
-                    if (rect.Contains(e.mousePosition)) { GUIUtility.hotControl = id; e.Use(); }
-                    break;
-                case EventType.MouseDrag:
-                    if (GUIUtility.hotControl != id) break;
-                    orbit += e.delta * 0.5f;
-                    orbit.y = Mathf.Clamp(orbit.y, -89, 89);
-                    e.Use(); RequestRepaint?.Invoke();
-                    break;
-                case EventType.MouseUp:
-                    if (GUIUtility.hotControl == id) { GUIUtility.hotControl = 0; e.Use(); }
-                    break;
-                case EventType.ScrollWheel:
-                    if (!rect.Contains(e.mousePosition)) break;
-                    zoom = Mathf.Clamp(zoom * (1 + e.delta.y * 0.05f), 0.05f, 20);
-                    e.Use(); RequestRepaint?.Invoke();
-                    break;
-            }
+            var mesh = data.meshes[(int)stage];
+            if (!mesh || !EnsureResources()) return;
+            if (wireframe) view.DrawWire(mesh, Matrix4x4.identity, shaded ? new Color(0.05f, 0.05f, 0.05f, 1) : new Color(0.4f, 0.85f, 1f, 1));
+            if (cageView && stage == Stage.Result && data.geometry != null && data.cageDistance > 0)
+                DrawCage(view, mesh, data.geometry, data.cageDistance);
         }
 
         bool EnsureResources()
         {
-            if (utility == null) utility = new PreviewRenderUtility { cameraFieldOfView = 30 };
-            if (!surface || !wire) {
-                var shader = Shader.Find("Hidden/MeshLab/RemeshPreview");
-                if (!shader) return false;
-                surface = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-                wire = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-                wire.SetFloat("_Lit", 0); wire.SetFloat("_DepthOffset", -1);
-            }
+            if (surface && wire) return true;
+            var shader = Shader.Find("Hidden/MeshLab/RemeshPreview");
+            if (!shader) return false;
+            surface = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
+            wire = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
+            wire.SetFloat("_Lit", 0); wire.SetFloat("_DepthOffset", -1);
             return true;
-        }
-
-        // One line per unique triangle edge, cached per mesh instance.
-        Mesh Wire(Mesh mesh)
-        {
-            int key = mesh.GetInstanceID();
-            if (wireCache.TryGetValue(key, out var cached) && cached) return cached;
-            var indices = EdgeIndices(mesh);
-            if (indices == null) return null;
-            var edges = new Mesh { name = mesh.name + "_Wire", hideFlags = HideFlags.HideAndDontSave, indexFormat = IndexFormat.UInt32 };
-            edges.vertices = mesh.vertices;
-            edges.SetIndices(indices, MeshTopology.Lines, 0);
-            wireCache[key] = edges;
-            return edges;
-        }
-
-        static List<int> EdgeIndices(Mesh mesh)
-        {
-            var tris = mesh.triangles;
-            if (tris.Length / 3 > 1000000) return null;
-            var seen = new HashSet<long>();
-            var indices = new List<int>(tris.Length);
-            long stride = mesh.vertexCount;
-            for (int i = 0; i < tris.Length; i += 3)
-                for (int k = 0; k < 3; ++k) {
-                    int a = tris[i + k], b = tris[i + (k + 1) % 3];
-                    if (seen.Add(Math.Min(a, b) * stride + Math.Max(a, b))) { indices.Add(a); indices.Add(b); }
-                }
-            return indices;
         }
 
         // The projection cage, drawn as its two limit shells: the result mesh inflated
         // by ±cageDistance along the same welded cage normals the bake rays follow
         // (outer = ray origins, inner = ray ends). Rebuilt when the mesh or the
         // distance changes; turn the surface Wire off to read a shell alone.
-        void DrawCage(Mesh mesh, RemeshNative.Geometry geometry, float distance)
+        void DrawCage(MeshViewport3D view, Mesh mesh, RemeshNative.Geometry geometry, float distance)
         {
             int id = mesh.GetInstanceID();
             if (id != cageMeshId || Mathf.Abs(distance - cageDistanceCached) > 1e-6f) {
                 if (cageOuter) Object.DestroyImmediate(cageOuter);
                 if (cageInner) Object.DestroyImmediate(cageInner);
                 var cageNormals = RemeshBaker.BuildCageNormals(geometry, null);
-                var indices = EdgeIndices(mesh);
+                var indices = MeshViewport3D.EdgeIndices(mesh);
                 if (indices != null) {
                     var folds = new TriangleBvh(geometry.positions, geometry.indices);
                     cageOuter = CageShell(mesh, geometry, cageNormals, distance, "Outer", folds);
@@ -230,9 +167,9 @@ namespace SashaRX.UnityMeshLab
                 cageMeshId = id; cageDistanceCached = distance;
             }
             wire.SetColor("_Color", new Color(1f, 0.55f, 0.15f, 0.9f));
-            if (cageOuter) utility.DrawMesh(cageOuter, Matrix4x4.identity, wire, 0);
+            if (cageOuter) view.DrawMesh(cageOuter, Matrix4x4.identity, wire, 0);
             wire.SetColor("_Color", new Color(0.35f, 0.6f, 1f, 0.45f));
-            if (cageInner) utility.DrawMesh(cageInner, Matrix4x4.identity, wire, 0);
+            if (cageInner) view.DrawMesh(cageInner, Matrix4x4.identity, wire, 0);
         }
 
         static Mesh CageShell(Mesh mesh, RemeshNative.Geometry geometry, Vector3[] cageNormals, float distance, string suffix, TriangleBvh folds)
@@ -244,7 +181,7 @@ namespace SashaRX.UnityMeshLab
             }
             var shell = new Mesh { name = mesh.name + "_Cage" + suffix, hideFlags = HideFlags.HideAndDontSave, indexFormat = IndexFormat.UInt32 };
             shell.vertices = vertices;
-            shell.SetIndices(EdgeIndices(mesh), MeshTopology.Lines, 0);
+            shell.SetIndices(MeshViewport3D.EdgeIndices(mesh), MeshTopology.Lines, 0);
             return shell;
         }
 
