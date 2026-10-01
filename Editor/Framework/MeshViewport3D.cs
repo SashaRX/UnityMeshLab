@@ -92,14 +92,15 @@ namespace SashaRX.UnityMeshLab
                         if (Wireframe) DrawWire(item.mesh, item.matrix, Mode == Shading.Shaded ? new Color(0.05f, 0.05f, 0.05f, 1f) : new Color(0.4f, 0.85f, 1f, 1f));
                     }
                 overlay?.Invoke(this);
-                utility.Render();
+                // Scene materials of a URP project render through URP, not the built-in fallback.
+                utility.Render(true);
             }
             catch (Exception ex) { UvtLog.Warn("[3D] " + ex.Message); }
             finally {
                 drawing = false;
                 GUI.DrawTexture(rect, utility.EndPreview(), ScaleMode.StretchToFill, false);
                 foreach (var mesh in frameMeshes) if (mesh) Object.DestroyImmediate(mesh);
-                frameMeshes.Clear();
+                frameMeshes.Clear(); frameBlocks.Clear();
             }
         }
 
@@ -126,13 +127,32 @@ namespace SashaRX.UnityMeshLab
         //  Overlay API (valid inside the overlay callback)
         // ═══════════════════════════════════════════════════════════
 
-        /// <summary>Draws a mesh with the given material (null = the viewport's lit grey).</summary>
-        public void DrawMesh(Mesh mesh, Matrix4x4 matrix, Material material = null, int submesh = -1)
+        // Draws are queued and rendered together at the end of the frame, so per-draw
+        // values (a colour, a texture) travel in property blocks, never on the shared
+        // materials — otherwise the last value set would paint every queued draw.
+        readonly List<MaterialPropertyBlock> frameBlocks = new List<MaterialPropertyBlock>();
+        MaterialPropertyBlock Block() { var block = new MaterialPropertyBlock(); frameBlocks.Add(block); return block; }
+
+        /// <summary>Draws a mesh with the given material (null = the viewport's lit grey),
+        /// optionally with per-draw properties.</summary>
+        public void DrawMesh(Mesh mesh, Matrix4x4 matrix, Material material = null, int submesh = -1, MaterialPropertyBlock properties = null)
         {
             if (!drawing || !mesh) return;
             if (!material) { material = surface; surface.SetFloat("_UseVertexColor", 0); surface.SetFloat("_Lit", 1); surface.SetColor("_Color", new Color(0.72f, 0.72f, 0.72f, 1f)); }
-            if (submesh >= 0) utility.DrawMesh(mesh, matrix, material, submesh);
-            else for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, matrix, material, sub);
+            if (submesh >= 0) utility.DrawMesh(mesh, matrix, material, submesh, properties);
+            else for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, matrix, material, sub, properties);
+        }
+
+        /// <summary>Draws a mesh with the given material and a per-draw texture/tint pair
+        /// (the UV layer: texture + white, a shell highlight: white texture + colour).</summary>
+        public void DrawTextured(Mesh mesh, Matrix4x4 matrix, Material material, Texture texture, Color tint, int uvChannel)
+        {
+            if (!drawing || !mesh || !material) return;
+            var block = Block();
+            block.SetTexture("_MainTex", texture ? texture : Texture2D.whiteTexture);
+            block.SetColor("_Color", tint);
+            block.SetFloat("_UVChannel", uvChannel);
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, matrix, material, sub, block);
         }
 
         /// <summary>Draws the mesh's unique triangle edges as lines (cached per mesh).</summary>
@@ -140,9 +160,31 @@ namespace SashaRX.UnityMeshLab
         {
             if (!drawing || !mesh) return;
             var edges = WireOf(mesh);
-            if (!edges) return;
-            wire.SetColor("_Color", color);
-            utility.DrawMesh(edges, matrix, wire, 0);
+            if (edges) DrawLineMesh(edges, matrix, color);
+        }
+
+        /// <summary>Draws a prebuilt line-topology mesh in one colour (cage shells, edge sets).</summary>
+        public void DrawLineMesh(Mesh lines, Matrix4x4 matrix, Color color)
+        {
+            if (!drawing || !lines) return;
+            var block = Block(); block.SetColor("_Color", color);
+            utility.DrawMesh(lines, matrix, wire, 0, block);
+        }
+
+        /// <summary>The world-space ray under a GUI point of the last drawn rect, from the
+        /// camera the next repaint will use. False when the point is outside the rect.</summary>
+        public bool TryScreenRay(Vector2 guiPoint, out Vector3 origin, out Vector3 direction)
+        {
+            origin = direction = Vector3.zero;
+            if (currentRect.width <= 0f || currentRect.height <= 0f || !currentRect.Contains(guiPoint)) return false;
+            var rotation = Quaternion.Euler(orbit.y, orbit.x, 0f);
+            origin = pivot - rotation * Vector3.forward * distance;
+            float ndcX = (guiPoint.x - currentRect.x) / currentRect.width * 2f - 1f;
+            float ndcY = 1f - (guiPoint.y - currentRect.y) / currentRect.height * 2f;
+            float tanHalf = Mathf.Tan(15f * Mathf.Deg2Rad);
+            float aspect = currentRect.width / currentRect.height;
+            direction = (rotation * new Vector3(ndcX * tanHalf * aspect, ndcY * tanHalf, 1f)).normalized;
+            return true;
         }
 
         /// <summary>Draws line segments given as consecutive point pairs.</summary>
@@ -155,8 +197,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < indices.Length; ++i) indices[i] = i;
             mesh.vertices = vertices; mesh.SetIndices(indices, MeshTopology.Lines, 0);
             frameMeshes.Add(mesh);
-            wire.SetColor("_Color", color);
-            utility.DrawMesh(mesh, matrix, wire, 0);
+            DrawLineMesh(mesh, matrix, color);
         }
 
         /// <summary>Draws per-segment coloured lines: pairs[i*2..i*2+1] in colors[i].</summary>

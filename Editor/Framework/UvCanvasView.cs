@@ -331,6 +331,86 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ════════════════════════════════════════════════════════════
+        //  UV layer for the 3D canvas
+        // ════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Renders what this canvas would draw for ONE mesh — the preview background
+        /// (checker, lightmap or main texture), the active fill mode, the border edges —
+        /// into a square UV-space texture (tile 0 only, transparent elsewhere), with the
+        /// same pixel matrix and helpers as the canvas, so the 3D canvas can lay the UV
+        /// viewer over the model. Wire is left to the 3D view (true 3D lines). Returns
+        /// the texture (reusing target when its size fits) or null when GL is unavailable.
+        /// </summary>
+        public RenderTexture RenderUvLayer(UvToolContext ctx, Mesh mesh, MeshEntry entry, RenderTexture target, int size)
+        {
+            if (GlMat == null || mesh == null) return null;
+            if (target == null || target.width != size || target.height != size)
+            {
+                if (target) { target.Release(); UnityEngine.Object.DestroyImmediate(target); }
+                target = new RenderTexture(size, size, 0, RenderTextureFormat.ARGB32) { hideFlags = HideFlags.HideAndDontSave, wrapMode = TextureWrapMode.Repeat, filterMode = FilterMode.Bilinear };
+            }
+            var prevRT = RenderTexture.active;
+            RenderTexture.active = target;
+            GL.Clear(true, true, new Color(0f, 0f, 0f, 0f));
+            bool push = false;
+            try
+            {
+                GlMat.SetPass(0);
+                GL.PushMatrix(); push = true;
+                GL.LoadPixelMatrix(0, size, size, 0);
+                float cx = 0f, cy = 0f, sz = size;
+                var draws = new List<ValueTuple<Mesh, MeshEntry, int>> { new ValueTuple<Mesh, MeshEntry, int>(mesh, entry, 0) };
+                var tile = new HashSet<Vector2Int> { new Vector2Int(0, 0) };
+                Texture bgTex = ResolveUvPreviewBackgroundTexture(ctx, draws);
+                if (bgTex != null)
+                {
+                    float bgAlpha = CheckerEnabled ? 0.5f : (CurrentPreviewMode == PreviewMode.Lightmap ? 0.95f : 0.95f);
+                    float bgExposure = CurrentPreviewMode == PreviewMode.Lightmap ? LmExposure : 1f;
+                    GlTextureBg(cx, cy, sz, bgTex, Vector2.one, Vector2.zero, bgAlpha, tile, bgExposure);
+                    GlMat.SetPass(0);
+                }
+                else if (CheckerEnabled)
+                    GlCheckerBg(cx, cy, sz, 8, 0.5f, ctx.PreviewUvChannel == 1, tile);
+
+                ClearFrameCaches();
+                var uvs = RdUvCached(mesh, ctx.PreviewUvChannel);
+                var tri = GetTrianglesCached(mesh);
+                if (uvs != null && tri != null)
+                {
+                    if (CurrentPreviewMode == PreviewMode.Lightmap && ctx.PreviewUvChannel == 1 && entry?.renderer != null && entry.renderer.lightmapIndex >= 0)
+                    {
+                        var so = entry.renderer.lightmapScaleOffset;
+                        var transformed = new Vector2[uvs.Length];
+                        for (int vi = 0; vi < uvs.Length; vi++)
+                            transformed[vi] = new Vector2(uvs[vi].x * so.x + so.z, uvs[vi].y * so.y + so.w);
+                        uvs = transformed;
+                    }
+                    int uN = uvs.Length, fN = tri.Length / 3;
+                    bool hasFill = !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
+                    if (hasFill) FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
+                    if (ShowBorder)
+                    {
+                        HashSet<int> bdr = entry?.transferState?.borderPrimitiveIds;
+                        if (bdr != null && bdr.Count > 0) GlBdr(cx, cy, sz, uvs, tri, fN, uN, bdr);
+                        else GlUvBoundary(ctx, cx, cy, sz, mesh, uvs, tri, uN);
+                    }
+                }
+            }
+            catch (Exception ex) { UvtLog.Warn("[UV] 3D layer GL: " + ex.Message); }
+            finally { if (push) GL.PopMatrix(); }
+            RenderTexture.active = prevRT;
+            return target;
+        }
+
+        /// <summary>The spot-mode info panel for a hit found in the 3D canvas.</summary>
+        public ShellDebugHit MakeHit(UvToolContext ctx, MeshEntry entry, Mesh mesh, UvShell shell, Vector2 uvPoint)
+            => BuildHit(ctx, entry, mesh, shell, uvPoint, 0);
+
+        /// <summary>The hover/selection info panel in the canvas's top-right corner.</summary>
+        public void DrawShellInfoPanel(Rect canvasRect) => DrawShellDebugOverlay(canvasRect);
+
+        // ════════════════════════════════════════════════════════════
         //  Input Handling
         // ════════════════════════════════════════════════════════════
 

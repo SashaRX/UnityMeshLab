@@ -166,10 +166,8 @@ namespace SashaRX.UnityMeshLab
                 else cageOuter = cageInner = null;
                 cageMeshId = id; cageDistanceCached = distance;
             }
-            wire.SetColor("_Color", new Color(1f, 0.55f, 0.15f, 0.9f));
-            if (cageOuter) view.DrawMesh(cageOuter, Matrix4x4.identity, wire, 0);
-            wire.SetColor("_Color", new Color(0.35f, 0.6f, 1f, 0.45f));
-            if (cageInner) view.DrawMesh(cageInner, Matrix4x4.identity, wire, 0);
+            if (cageOuter) view.DrawLineMesh(cageOuter, Matrix4x4.identity, new Color(1f, 0.55f, 0.15f, 0.9f));
+            if (cageInner) view.DrawLineMesh(cageInner, Matrix4x4.identity, new Color(0.35f, 0.6f, 1f, 0.45f));
         }
 
         static Mesh CageShell(Mesh mesh, RemeshNative.Geometry geometry, Vector3[] cageNormals, float distance, string suffix, TriangleBvh folds)
