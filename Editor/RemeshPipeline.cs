@@ -122,7 +122,7 @@ namespace SashaRX.UnityMeshLab
         {
             switch (stage) {
                 case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
-                    $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:F4}|{s.minRodVoxels:F3}|{s.voxelResolution}";
+                    $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:F4}|{s.minRodVoxels:F3}|{s.voxelResolution}|{s.trimToSource}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
@@ -225,7 +225,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (captures.Count == 0) throw new InvalidOperationException("Every captured node was empty; nothing to remesh.");
             }
-            long sourceTriangles = 0, resultTriangles = 0; int warnings = 0, droppedSmall = 0, droppedThin = 0;
+            long sourceTriangles = 0, resultTriangles = 0, trimmedFaces = 0; int warnings = 0, droppedSmall = 0, droppedThin = 0;
             var shape = options.sourceShape;
             // Part filter first, whatever the shape: small pieces and rods whose section
             // the voxel grid cannot carry (bolts, pipes, cables, railings) only add voxel
@@ -250,11 +250,22 @@ namespace SashaRX.UnityMeshLab
                 // The proxy shapes replace the voxelizer: one oriented box per renderer,
                 // or a coarse voxel hull; materials and lighting still bake from the
                 // captured geometry, projected onto the proxy downstream.
-                node.voxel = await Task.Run(() =>
-                    shape == RemeshShape.LOD0 ? RemeshNative.Voxelize(captured.positions, captured.indices, options, token)
-                    : shape == RemeshShape.BoundingBox ? captured.OrientedBoxes()
-                    : Hull(captured, options, token), token);
-                if (node.voxel == null) throw new InvalidOperationException("The proxy shape produced no geometry.");
+                int trimmed = 0;
+                node.voxel = await Task.Run(() => {
+                    if (shape == RemeshShape.BoundingBox) return captured.OrientedBoxes();
+                    if (shape == RemeshShape.Hull) return Hull(captured, options, token);
+                    var voxel = RemeshNative.Voxelize(captured.positions, captured.indices, options, token);
+                    if (!options.trimToSource || voxel == null) return voxel;
+                    // The remesh surface sits within a cell of the source; two cells of reach
+                    // keep a closed source whole and still find nothing behind an open sheet.
+                    Vector3 mn = captured.positions[0], mx = captured.positions[0];
+                    foreach (var p in captured.positions) { mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p); }
+                    var extent = mx - mn;
+                    float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, options.voxelResolution);
+                    return RemeshTrim.Trim(voxel, captured.positions, captured.indices, cell * 2f, token, out trimmed);
+                }, token);
+                if (node.voxel == null || node.voxel.TriangleCount == 0) throw new InvalidOperationException("The remesh produced no geometry.");
+                trimmedFaces += trimmed;
                 sourceTriangles += captured.indices.Length / 3;
                 resultTriangles += node.voxel.TriangleCount;
             }
@@ -268,7 +279,8 @@ namespace SashaRX.UnityMeshLab
             Status = (hierarchy ? $"Remesh: {nodes.Count} node(s), " : "Remesh: ") +
                 $"{sourceTriangles:N0} → {resultTriangles:N0} triangles" +
                 (shape == RemeshShape.BoundingBox ? $" ({resultTriangles / 12:N0} oriented boxes)" : shape == RemeshShape.Hull ? " (hull)" : "") +
-                (droppedSmall + droppedThin > 0 ? $"; excluded {droppedSmall:N0} small part(s), {droppedThin:N0} rod(s)" : "") + "." +
+                (droppedSmall + droppedThin > 0 ? $"; excluded {droppedSmall:N0} small part(s), {droppedThin:N0} rod(s)" : "") +
+                (trimmedFaces > 0 ? $"; trimmed {trimmedFaces:N0} face(s) the source has no surface for" : "") + "." +
                 (warnings > 0 ? $" {warnings} material warning(s), see Console." : "");
         }
 

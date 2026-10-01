@@ -70,6 +70,10 @@ namespace SashaRX.UnityMeshLab
         public int voxelResolution = 128;
         public bool solve = true;
         public bool shell;
+        // After the voxel remesh, drop the faces the source has no surface for: the
+        // voxelizer closes an open sheet into a slab, and its back side and rims have no
+        // source face nearby with an aligned normal. Closed sources are left whole.
+        public bool trimToSource = true;
         // Source capture: skip meshes named Name_LOD1 and higher (LODGroups already
         // contribute LOD0 only).
         public bool lod0Only = true;

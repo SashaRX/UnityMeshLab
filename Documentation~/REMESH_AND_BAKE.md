@@ -70,7 +70,16 @@ settings, marked "settings changed" in its header) and clears everything after i
    importers are never touched (no reimports).
 2. **Voxel remesh** — voxel resolution (4–256), fit to source surface, two-sided
    shell. Higher resolution preserves smaller gaps but produces a denser,
-   uniform intermediate mesh.
+   uniform intermediate mesh. **Trim to source surface** (default on) masks the
+   result against the source: the voxelizer closes every surface, so an open
+   sheet (a wall, a roof plane, a curtain) comes back as a thin slab with a
+   front, a back and rims; a remesh face stays only when a source face lies
+   within two voxel cells of it, parallel to it, with the remesh face on that
+   source face's front side — the back of a one-sided sheet and the slab's rims
+   have none and go, a closed source is left whole, and a source that is
+   double-sided where it matters keeps both sides. The status reports how many
+   faces went. Turn it off to keep the slab, for instance with *Two-sided
+   shell*.
 3. **Simplify** — quadric simplification of the voxel mesh. It collapses the
    cheapest edges first, so with *Regularize = None* flat areas reduce to a few
    large triangles while curved or detailed areas keep their density. *Maximum

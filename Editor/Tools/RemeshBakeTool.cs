@@ -200,6 +200,10 @@ namespace SashaRX.UnityMeshLab
                         settings.voxelResolution = EditorGUILayout.IntSlider("Voxel resolution", settings.voxelResolution, 4, 256);
                         settings.solve = EditorGUILayout.Toggle("Fit source surface", settings.solve);
                         settings.shell = EditorGUILayout.Toggle("Two-sided shell", settings.shell);
+                        settings.trimToSource = EditorGUILayout.Toggle(new GUIContent("Trim to source surface",
+                            "After the voxel remesh, drop the faces the source has no surface for. The voxelizer closes an open sheet (a wall, a roof " +
+                            "plane, a curtain) into a thin slab; its back side and rims have no source face nearby with an aligned normal and go. " +
+                            "Closed sources are left whole. Turn off to keep the slab, e.g. with Two-sided shell."), settings.trimToSource);
                     }
                     StageButton(RemeshPipeline.Stage.Remesh, "Remesh");
                 }

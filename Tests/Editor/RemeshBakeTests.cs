@@ -311,6 +311,37 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(0, RemeshBaker.ProbeWinding(new TriangleBvh(sheet, sheetTri), sheet, sheetN));
         }
         [Test]
+        public void TrimKeepsTheSideTheSourceHasAndDropsTheSlabsBackAndRims()
+        {
+            // Source: one quad whose front faces -z (Unity's Quad winding). Remesh: a thin
+            // slab around it (a box 1×1×0.05), as the voxelizer returns for an open sheet.
+            var sourcePositions = new[] { new Vector3(0, 0, 0), new Vector3(1, 0, 0), new Vector3(1, 1, 0), new Vector3(0, 1, 0) };
+            var sourceIndices = new[] { 0, 2, 1, 0, 3, 2 };
+            Cube(out var p, out var tri, false);
+            for (int i = 0; i < p.Length; ++i) p[i] = new Vector3(p[i].x, p[i].y, p[i].z * 0.05f - 0.025f);
+            var slab = new RemeshNative.IndexedMesh { positions = p, indices = tri };
+            var trimmed = RemeshTrim.Trim(slab, sourcePositions, sourceIndices, 0.1f, CancellationToken.None, out int removed);
+            // The two faces on the source's front side (-z) survive; the back and the four rims (10 faces) go.
+            Assert.AreEqual(10, removed);
+            Assert.AreEqual(2, trimmed.TriangleCount);
+            Assert.AreEqual(4, trimmed.positions.Length);
+            foreach (var v in trimmed.positions) Assert.That(v.z, Is.EqualTo(-0.025f).Within(1e-5f));
+            // The same slab with its winding inverted keeps the same side: the remesh's own
+            // orientation convention does not decide, the source's does.
+            Cube(out var pi, out var triInverted, true);
+            for (int i = 0; i < pi.Length; ++i) pi[i] = new Vector3(pi[i].x, pi[i].y, pi[i].z * 0.05f - 0.025f);
+            var inverted = RemeshTrim.Trim(new RemeshNative.IndexedMesh { positions = pi, indices = triInverted }, sourcePositions, sourceIndices, 0.1f, CancellationToken.None, out removed);
+            Assert.AreEqual(10, removed);
+            foreach (var v in inverted.positions) Assert.That(v.z, Is.EqualTo(-0.025f).Within(1e-5f));
+            // A source facing +z keeps the +z side instead.
+            var flippedSource = RemeshTrim.Trim(slab, sourcePositions, new[] { 0, 1, 2, 0, 2, 3 }, 0.1f, CancellationToken.None, out removed);
+            Assert.AreEqual(10, removed);
+            foreach (var v in flippedSource.positions) Assert.That(v.z, Is.EqualTo(0.025f).Within(1e-5f));
+            // A closed source keeps the whole remesh: the slab against a copy of itself.
+            var whole = RemeshTrim.Trim(slab, p, tri, 0.1f, CancellationToken.None, out removed);
+            Assert.AreEqual(0, removed); Assert.AreEqual(12, whole.TriangleCount);
+        }
+        [Test]
         public void PrincipalExtentsFollowThePointSetsOwnAxes()
         {
             var pts = new System.Collections.Generic.List<Vector3>();
