@@ -33,6 +33,13 @@ namespace SashaRX.UnityMeshLab
 
         public bool include = true;
 
+        /// <summary>
+        /// Background texture for the UV canvas when the entry has no renderer to take
+        /// a material from: tool-made meshes (the Remesh &amp; Bake result shows its
+        /// baked base color). Not owned by the entry.
+        /// </summary>
+        public Texture previewTexture;
+
         /// <summary>Pipeline step flag — true after UV0 false-seam welding. Prevents re-running the step. Reset on ResetPipelineState.</summary>
         public bool wasWelded;
         /// <summary>Pipeline step flag — true after edge-seam welding. Prevents re-running the step. Reset on ResetPipelineState.</summary>

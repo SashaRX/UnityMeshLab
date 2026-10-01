@@ -11,7 +11,7 @@ namespace SashaRX.UnityMeshLab
     /// right-sidebar previews and the save action. The stage work itself lives in
     /// <see cref="RemeshPipeline"/>, the export in <see cref="RemeshExporter"/>.
     /// </summary>
-    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D
+    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvToolUvContent
     {
         public string ToolName => "Remesh & Bake";
         public string ToolId => "remesh_bake";
@@ -36,6 +36,10 @@ namespace SashaRX.UnityMeshLab
         readonly RemeshPreview previews = new RemeshPreview();
         readonly RemeshPreview.Data previewData = new RemeshPreview.Data();
         string saveStatus;
+        UvToolContext ctx; UvCanvasView canvas;
+        // The result mesh as a canvas entry: one stable instance so the canvas's hover
+        // and selection survive repaints; its mesh follows the pipeline.
+        readonly MeshEntry resultEntry = new MeshEntry { include = true };
         internal GameObject Source => source;
 
         public RemeshBakeTool()
@@ -50,8 +54,9 @@ namespace SashaRX.UnityMeshLab
 
         internal void SaveSettings() => EditorPrefs.SetString(SettingsKey, JsonUtility.ToJson(settings));
 
-        public void OnActivate(UvToolContext context, UvCanvasView canvas)
+        public void OnActivate(UvToolContext context, UvCanvasView canvasView)
         {
+            ctx = context; canvas = canvasView;
             FollowSelection();
             Selection.selectionChanged -= FollowSelection;
             Selection.selectionChanged += FollowSelection;
@@ -99,7 +104,35 @@ namespace SashaRX.UnityMeshLab
         public void OnRefresh() { }
         public void OnDrawToolbarExtra() { }
         public void OnDrawStatusBar() { GUILayout.Label(Status, EditorStyles.miniLabel); }
-        public IEnumerable<UvCanvasView.FillModeEntry> GetFillModes() => null;
+        // The canvas's UV mode shows the result's atlas once Normals & UV ran: the same
+        // shells, wire, border and spot picking as any mesh, over the baked base color
+        // (checker when the canvas asks for it). "Islands" tints every UV shell.
+        public IEnumerable<UvCanvasView.FillModeEntry> GetFillModes()
+        {
+            yield return new UvCanvasView.FillModeEntry { name = "Islands", drawCallback = DrawFillIslands };
+            yield return new UvCanvasView.FillModeEntry { name = "None", drawCallback = null };
+        }
+
+        public bool GetUvContent(List<MeshEntry> entries)
+        {
+            var mesh = pipeline.ResultMesh;
+            if (!mesh) return false;
+            resultEntry.originalMesh = resultEntry.fbxMesh = mesh;
+            resultEntry.previewTexture = pipeline.BaseColorPreview;
+            entries.Add(resultEntry);
+            return true;
+        }
+
+        void DrawFillIslands(UvCanvasView cv, float cx, float cy, float sz, Mesh mesh, MeshEntry entry)
+        {
+            if (ctx == null) return;
+            var uvs = cv.RdUvCached(mesh, ctx.PreviewUvChannel);
+            var tri = cv.GetTrianglesCached(mesh);
+            if (uvs == null || tri == null) return;
+            int hover = cv.HasHoveredShell && cv.HoveredShell.meshEntry == entry ? cv.HoveredShell.shellId : -1;
+            int selected = cv.HasSelectedShell && cv.SelectedShell.meshEntry == entry ? cv.SelectedShell.shellId : -1;
+            cv.GlFillSh(ctx, cx, cy, sz, mesh, tri.Length / 3, uvs.Length, entry, hover, selected, null);
+        }
         public void OnSceneGUI(SceneView sceneView)
         {
             if (!highlightCapture || !source) return;

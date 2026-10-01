@@ -19,10 +19,15 @@ settings, marked "settings changed" in its header) and clears everything after i
   smooth by design, so this toggle is what shows the transferred detail — the
   vivid pink/cyan atlas in **Maps ▸ Normal** is that same detail in tangent
   space, not corruption.
-- **UV** — the final UV layout with islands tinted and the baked base color under
-  it; island count, triangle count and texel usage.
+  The 3D panel also reports the atlas: island count and texel usage.
 - **Maps** — each baked map (base color, normal, metallic/smoothness, occlusion,
   emission).
+
+The canvas's **UV** mode (the UV | 3D switch at its bottom) shows the result's
+atlas once Normals & UV ran — the same shells, wire, border, spot picking and
+status line as any mesh — over the baked base color (or the checker when the
+canvas asks for it), with an **Islands** fill mode that tints every UV shell.
+Before the UV stage the canvas shows the selected model as usual.
 
 1. **Source.** Select a model root. **Source root** follows the
    selection: a LOD child resolves to its LODGroup, and selections without a
@@ -72,14 +77,18 @@ settings, marked "settings changed" in its header) and clears everything after i
    shell. Higher resolution preserves smaller gaps but produces a denser,
    uniform intermediate mesh. **Trim to source surface** (default on) masks the
    result against the source: the voxelizer closes every surface, so an open
-   sheet (a wall, a roof plane, a curtain) comes back as a thin slab with a
-   front, a back and rims; a remesh face stays only when a source face lies
-   within two voxel cells of it, parallel to it, with the remesh face on that
-   source face's front side — the back of a one-sided sheet and the slab's rims
-   have none and go, a closed source is left whole, and a source that is
-   double-sided where it matters keeps both sides. The status reports how many
-   faces went. Turn it off to keep the slab, for instance with *Two-sided
-   shell*.
+   sheet (a wall, a roof plane, a curtain) comes back as a slab with a front, a
+   back and rims — and because the remesher fits its vertices onto the input
+   surface, the front and the back lie ON the sheet, a zero-thickness
+   double-sided surface rather than a cell-thick slab. A remesh face stays only
+   when a source face lies within two voxel cells of it whose normal points the
+   same way; the back of a one-sided sheet (opposite normal) and the slab's
+   rims (perpendicular) have none and go, a closed source is left whole, and a
+   source that is double-sided where it matters keeps both sides. A source
+   wound inside out is judged by its flipped normals; when neither reading keeps
+   a tenth of the remesh, nothing is trimmed and a warning says so. The status
+   reports how many faces went. Turn it off to keep the slab, for instance with
+   *Two-sided shell*.
 3. **Simplify** — quadric simplification of the voxel mesh. It collapses the
    cheapest edges first, so with *Regularize = None* flat areas reduce to a few
    large triangles while curved or detailed areas keep their density. *Maximum

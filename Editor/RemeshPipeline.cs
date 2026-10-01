@@ -251,7 +251,7 @@ namespace SashaRX.UnityMeshLab
                 // The proxy shapes replace the voxelizer: one oriented box per renderer,
                 // or a coarse voxel hull; materials and lighting still bake from the
                 // captured geometry, projected onto the proxy downstream.
-                int trimmed = 0;
+                int trimmed = 0; bool trimGaveUp = false;
                 node.voxel = await Task.Run(() => {
                     if (shape == RemeshShape.BoundingBox) return captured.OrientedBoxes();
                     if (shape == RemeshShape.Hull) return Hull(captured, options, token);
@@ -263,9 +263,12 @@ namespace SashaRX.UnityMeshLab
                     foreach (var p in captured.positions) { mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p); }
                     var extent = mx - mn;
                     float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, options.voxelResolution);
-                    return RemeshTrim.Trim(voxel, captured.positions, captured.indices, cell * 2f, token, out trimmed);
+                    return RemeshTrim.Trim(voxel, captured.positions, captured.indices, cell * 2f, token, out trimmed, out trimGaveUp);
                 }, token);
                 if (node.voxel == null || node.voxel.TriangleCount == 0) throw new InvalidOperationException("The remesh produced no geometry.");
+                if (trimGaveUp) { UvtLog.Warn("[Remesh] " + (hierarchy ? node.name + ": " : "") + "Trim to source surface kept under a tenth of the remesh " +
+                    "with the source's winding and with its inverse, so nothing was trimmed. The source winding is mixed beyond one flip, or the remesh sits " +
+                    "more than two cells from it (raise the voxel resolution)."); }
                 trimmedFaces += trimmed;
                 sourceTriangles += captured.indices.Length / 3;
                 resultTriangles += node.voxel.TriangleCount;

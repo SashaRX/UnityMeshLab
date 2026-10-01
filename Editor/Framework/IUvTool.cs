@@ -84,6 +84,22 @@ namespace SashaRX.UnityMeshLab
     }
 
     /// <summary>
+    /// Opt-in for tools whose own output should fill the shared UV canvas (the hub's
+    /// UV mode) instead of the context's preview-LOD meshes — the Remesh &amp; Bake
+    /// result with its new atlas. The canvas treats the entries like any other: fill
+    /// modes, wire, border, spot picking, checker or the entry's own preview texture.
+    /// </summary>
+    public interface IUvToolUvContent
+    {
+        /// <summary>
+        /// Fill entries with what the UV canvas should show while this tool is active and
+        /// return true; return false to show the context's LOD meshes instead. Keep the
+        /// MeshEntry instances stable across frames so hover and selection persist.
+        /// </summary>
+        bool GetUvContent(List<MeshEntry> entries);
+    }
+
+    /// <summary>
     /// Opt-in marker for tools that want a right-side sidebar in addition to
     /// the standard left sidebar. The hub renders this sidebar to the right
     /// of the canvas with its own resize handle. Tools that don't implement

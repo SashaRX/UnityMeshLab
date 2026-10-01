@@ -70,6 +70,17 @@ namespace SashaRX.UnityMeshLab
         public bool Panning;
         public Rect LastCanvasRect;
         public List<FillModeEntry> FillModes = new List<FillModeEntry>();
+
+        /// <summary>
+        /// When set, the canvas shows these entries instead of the context's preview-LOD
+        /// meshes: a tool's own output (the Remesh &amp; Bake result) laid out with the
+        /// same fill modes, wire, border, spot picking and backgrounds. The hub sets it
+        /// each frame from <see cref="IUvToolUvContent"/>.
+        /// </summary>
+        public List<MeshEntry> EntriesOverride;
+
+        /// <summary>The entries the canvas currently shows.</summary>
+        public List<MeshEntry> Entries(UvToolContext ctx) => EntriesOverride ?? ctx.ForLod(ctx.PreviewLod);
         public int ActiveFillModeIndex;
         public bool FillHidden;
         public bool ShowWireframe = true;
@@ -188,11 +199,11 @@ namespace SashaRX.UnityMeshLab
 
         public void OnGUI(UvToolContext ctx, Action<UvCanvasView, float, float, float> toolOverlay)
         {
-            var ee = ctx.ForLod(ctx.PreviewLod);
+            var ee = Entries(ctx);
             if (ee.Count == 0) { EditorGUILayout.HelpBox("No meshes for this LOD.", MessageType.Info); HoveredShellDebug = null; return; }
 
             List<string> canvasGroupKeys = null;
-            if (ctx.RepackPerMesh && ctx.IsolatedMeshGroup >= 0)
+            if (EntriesOverride == null && ctx.RepackPerMesh && ctx.IsolatedMeshGroup >= 0)
                 canvasGroupKeys = ctx.BuildGroupKeys(ctx.PreviewLod);
 
             var draws = new List<ValueTuple<Mesh, MeshEntry, int>>();
@@ -200,7 +211,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if (canvasGroupKeys != null && ctx.IsolatedMeshGroup >= 0 && ctx.IsolatedMeshGroup < canvasGroupKeys.Count)
                 {
-                    string eKey = ee[i].meshGroupKey ?? ee[i].renderer.name;
+                    string eKey = ee[i].meshGroupKey ?? (ee[i].renderer != null ? ee[i].renderer.name : null);
                     if (eKey != canvasGroupKeys[ctx.IsolatedMeshGroup]) continue;
                 }
                 Mesh m = ctx.DMesh(ee[i]);
@@ -498,7 +509,7 @@ namespace SashaRX.UnityMeshLab
 
         public void FitToUvBounds(UvToolContext ctx)
         {
-            var ee = ctx.ForLod(ctx.PreviewLod);
+            var ee = Entries(ctx);
             float minU=float.MaxValue, minV=float.MaxValue, maxU=float.MinValue, maxV=float.MinValue;
             bool any = false;
             foreach (var entry in ee)
@@ -1114,12 +1125,12 @@ namespace SashaRX.UnityMeshLab
 
         List<MeshEntry> FilteredEntries(UvToolContext ctx)
         {
-            var ee = ctx.ForLod(ctx.PreviewLod);
-            if (!ctx.RepackPerMesh || ctx.IsolatedMeshGroup < 0) return ee;
+            var ee = Entries(ctx);
+            if (EntriesOverride != null || !ctx.RepackPerMesh || ctx.IsolatedMeshGroup < 0) return ee;
             var keys = ctx.BuildGroupKeys(ctx.PreviewLod);
             if (ctx.IsolatedMeshGroup >= keys.Count) return ee;
             string isoKey = keys[ctx.IsolatedMeshGroup];
-            return ee.Where(e => (e.meshGroupKey ?? e.renderer.name) == isoKey).ToList();
+            return ee.Where(e => (e.meshGroupKey ?? (e.renderer != null ? e.renderer.name : null)) == isoKey).ToList();
         }
 
         // ════════════════════════════════════════════════════════════
@@ -1163,6 +1174,9 @@ namespace SashaRX.UnityMeshLab
         Texture ResolveUvPreviewBackgroundTexture(UvToolContext ctx, List<ValueTuple<Mesh, MeshEntry, int>> draws)
         {
             if (CheckerEnabled) return CheckerTexturePreview.GetCheckerTexture();
+            // Tool-made entries carry their own background (a baked base color).
+            foreach (var item in draws)
+                if (item.Item2.renderer == null && item.Item2.previewTexture != null) return item.Item2.previewTexture;
             if (CurrentPreviewMode == PreviewMode.Lightmap)
             {
                 foreach (var item in draws)

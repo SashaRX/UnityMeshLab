@@ -389,13 +389,31 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(2, trimmed.TriangleCount);
             Assert.AreEqual(4, trimmed.positions.Length);
             foreach (var v in trimmed.positions) Assert.That(v.z, Is.EqualTo(-0.025f).Within(1e-5f));
-            // The same slab with its winding inverted keeps the same side: the remesh's own
-            // orientation convention does not decide, the source's does.
+            // Orientation decides, not position: the remesher fits both slab faces onto the
+            // sheet itself, so only the face whose normal agrees with the source can be
+            // told apart. The same slab wound inside out keeps the face at +z whose
+            // (inverted) normal points -z like the source.
             Cube(out var pi, out var triInverted, true);
             for (int i = 0; i < pi.Length; ++i) pi[i] = new Vector3(pi[i].x, pi[i].y, pi[i].z * 0.05f - 0.025f);
             var inverted = RemeshTrim.Trim(new RemeshNative.IndexedMesh { positions = pi, indices = triInverted }, sourcePositions, sourceIndices, 0.1f, CancellationToken.None, out removed);
             Assert.AreEqual(10, removed);
-            foreach (var v in inverted.positions) Assert.That(v.z, Is.EqualTo(-0.025f).Within(1e-5f));
+            foreach (var v in inverted.positions) Assert.That(v.z, Is.EqualTo(0.025f).Within(1e-5f));
+            for (int f = 0; f < inverted.indices.Length; f += 3) {
+                var fn = Vector3.Cross(inverted.positions[inverted.indices[f + 1]] - inverted.positions[inverted.indices[f]],
+                    inverted.positions[inverted.indices[f + 2]] - inverted.positions[inverted.indices[f]]).normalized;
+                Assert.That(Vector3.Dot(fn, Vector3.back), Is.GreaterThan(0.99f));
+            }
+            // A zero-thickness double-sided sheet — what the remesher really returns for an
+            // open source — keeps exactly the winding that matches the source.
+            var flat = new RemeshNative.IndexedMesh { positions = (Vector3[])sourcePositions.Clone(),
+                indices = new[] { 0, 2, 1, 0, 3, 2, 0, 1, 2, 0, 2, 3 } };
+            var oneSided = RemeshTrim.Trim(flat, sourcePositions, sourceIndices, 0.1f, CancellationToken.None, out removed);
+            Assert.AreEqual(2, removed); Assert.AreEqual(2, oneSided.TriangleCount); Assert.AreEqual(4, oneSided.positions.Length);
+            for (int f = 0; f < oneSided.indices.Length; f += 3) {
+                var fn = Vector3.Cross(oneSided.positions[oneSided.indices[f + 1]] - oneSided.positions[oneSided.indices[f]],
+                    oneSided.positions[oneSided.indices[f + 2]] - oneSided.positions[oneSided.indices[f]]).normalized;
+                Assert.That(Vector3.Dot(fn, Vector3.back), Is.GreaterThan(0.99f));
+            }
             // A source facing +z keeps the +z side instead.
             var flippedSource = RemeshTrim.Trim(slab, sourcePositions, new[] { 0, 1, 2, 0, 2, 3 }, 0.1f, CancellationToken.None, out removed);
             Assert.AreEqual(10, removed);

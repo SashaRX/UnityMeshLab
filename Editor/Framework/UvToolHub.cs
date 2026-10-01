@@ -41,6 +41,7 @@ namespace SashaRX.UnityMeshLab
         const string Canvas3DPref = "MeshLab.Canvas3D";
         readonly List<MeshViewport3D.Item> viewportItems = new List<MeshViewport3D.Item>();
         readonly List<MeshEntry> viewportEntries = new List<MeshEntry>();   // parallel to viewportItems; null for tool content
+        readonly List<MeshEntry> uvContentEntries = new List<MeshEntry>();  // a tool's own UV canvas content (IUvToolUvContent)
         Rect canvasArea;   // the canvas column's content rect, from the last repaint
 
         // ── Layout ──
@@ -395,6 +396,10 @@ namespace SashaRX.UnityMeshLab
             // Middle column with explicit Width so it's the first thing to
             // shrink when the window is too narrow.
             EditorGUILayout.BeginVertical(GUILayout.Width(canvasW));
+            // A tool may put its own output in the UV canvas (the Remesh & Bake result);
+            // resolved every frame so it follows the tool's stages and tab switches.
+            uvContentEntries.Clear();
+            canvas.EntriesOverride = ActiveTool is IUvToolUvContent uvContent && uvContent.GetUvContent(uvContentEntries) ? uvContentEntries : null;
             if (canvas3D) DrawViewportToolbar(); else DrawCanvasToolbar();
 
             bool showGroupPanel = ctx.RepackPerMesh && ctx.MeshGroupCount(ctx.PreviewLod) > 1;
@@ -1280,13 +1285,14 @@ namespace SashaRX.UnityMeshLab
             GUILayout.Space(6);
 
             // ── Status info ──
-            var ee = ctx.ForLod(ctx.PreviewLod);
+            var ee = canvas.Entries(ctx);
             int tV = 0, tT = 0;
             foreach (var e in ee) { Mesh m = ctx.DMesh(e); if (m == null) continue; tV += m.vertexCount; tT += m.triangles.Length / 3; }
             string hoverInfo = canvas.HoverHitValid
                 ? $" | UV:{canvas.UvSpot.x:F3},{canvas.UvSpot.y:F3} S:{canvas.HoveredShellId}"
                 : (canvas.SpotMode ? " | UV:--" : string.Empty);
-            EditorGUILayout.LabelField("LOD" + ctx.PreviewLod + " " + ee.Count + "m V:" + tV + " T:" + tT + " " + (ctx.PreviewUvChannel == 0 ? "UV0" : "UV1") + hoverInfo, EditorStyles.miniLabel);
+            string what = canvas.EntriesOverride != null ? ActiveTool.ToolName + " result" : "LOD" + ctx.PreviewLod + " " + ee.Count + "m";
+            EditorGUILayout.LabelField(what + " V:" + tV + " T:" + tT + " " + (ctx.PreviewUvChannel == 0 ? "UV0" : "UV1") + hoverInfo, EditorStyles.miniLabel);
 
             GUILayout.FlexibleSpace();
 

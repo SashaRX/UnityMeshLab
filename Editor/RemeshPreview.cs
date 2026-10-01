@@ -14,7 +14,7 @@ namespace SashaRX.UnityMeshLab
     /// </summary>
     internal sealed class RemeshPreview : IDisposable
     {
-        internal enum View { Mesh, Uv, Maps }
+        internal enum View { Mesh, Maps }
         internal enum Stage { Source, Remesh, Simplified, Result }
         internal enum Channel { BaseColor, Normal, MetallicSmoothness, Occlusion, Emission }
 
@@ -33,13 +33,13 @@ namespace SashaRX.UnityMeshLab
             public RemeshSource source;
         }
 
-        static readonly string[] ViewNames = { "3D", "UV", "Maps" };
+        static readonly string[] ViewNames = { "3D", "Maps" };
         public Action RequestRepaint;
         View view;
         Stage stage = Stage.Result;
         Channel channel;
-        bool wireframe = true, shaded = true, textured = true, bumpMap = true, vertexColors, cageView, uvTexture = true, uvTint = true;
-        Material surface, wire, lines;
+        bool wireframe = true, shaded = true, textured = true, bumpMap = true, vertexColors, cageView;
+        Material surface, wire;
         Mesh cageOuter, cageInner; int cageMeshId; string cageKey;
         RemeshSource cageSourceRef; TriangleBvh cageSourceBvh;
         RemeshBaker.Maps mapSource;
@@ -51,11 +51,7 @@ namespace SashaRX.UnityMeshLab
         {
             view = (View)GUILayout.Toolbar((int)view, ViewNames, EditorStyles.toolbarButton);
             EditorGUILayout.Space(2);
-            switch (view) {
-                case View.Mesh: DrawMesh(data); break;
-                case View.Uv: DrawUv(data); break;
-                default: DrawMaps(data); break;
-            }
+            if (view == View.Mesh) DrawMesh(data); else DrawMaps(data);
         }
 
         /// <summary>Drop cached per-mesh wireframes; call before destroying preview meshes.</summary>
@@ -75,7 +71,6 @@ namespace SashaRX.UnityMeshLab
             Invalidate();
             if (surface) Object.DestroyImmediate(surface);
             if (wire) Object.DestroyImmediate(wire);
-            if (lines) Object.DestroyImmediate(lines);
         }
 
         // ── 3D ──
@@ -97,7 +92,12 @@ namespace SashaRX.UnityMeshLab
             var mesh = data.meshes[(int)stage];
             EditorGUILayout.LabelField(mesh ? $"{mesh.vertexCount:N0} vertices · {Triangles(mesh):N0} triangles" : "Run this stage to preview it.",
                 EditorStyles.miniLabel);
-            EditorGUILayout.LabelField("Shown in the canvas's 3D view (UV | 3D switch at its bottom).", EditorStyles.centeredGreyMiniLabel);
+            var g = data.geometry;
+            if (g != null) {
+                string coverage = data.maps != null ? $" · {100.0 * data.maps.covered / ((double)data.maps.size * data.maps.size):0.#}% texels used" : "";
+                EditorGUILayout.LabelField($"Atlas: {g.chartCount:N0} islands{coverage}", EditorStyles.miniLabel);
+            }
+            EditorGUILayout.LabelField("The canvas shows the stage in 3D and the result's atlas in UV (switch at its bottom).", EditorStyles.centeredGreyMiniLabel);
             if (GUI.changed) RequestRepaint?.Invoke();
         }
 
@@ -231,75 +231,6 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ── UV ──
-
-        void DrawUv(Data data)
-        {
-            using (new EditorGUILayout.HorizontalScope()) {
-                uvTexture = GUILayout.Toggle(uvTexture, "Base color", EditorStyles.miniButtonLeft);
-                uvTint = GUILayout.Toggle(uvTint, "Tint islands", EditorStyles.miniButtonRight);
-            }
-            var g = data.geometry;
-            Rect rect = GUILayoutUtility.GetAspectRect(1);
-            if (g == null) EditorGUILayout.LabelField("Run Normals & UV to preview the layout.", EditorStyles.miniLabel);
-            else {
-                string coverage = data.maps != null ? $" · {100.0 * data.maps.covered / ((double)data.maps.size * data.maps.size):0.#}% texels used" : "";
-                EditorGUILayout.LabelField($"{g.chartCount:N0} islands · {g.indices.Length / 3:N0} triangles{coverage}", EditorStyles.miniLabel);
-            }
-            if (Event.current.type != EventType.Repaint) return;
-            EditorGUI.DrawRect(rect, new Color(0.12f, 0.12f, 0.12f));
-            if (uvTexture && data.baseColor) GUI.DrawTexture(rect, data.baseColor, ScaleMode.StretchToFill, false);
-            if (g == null || !EnsureLines()) return;
-            GUI.BeginClip(rect);
-            GL.PushMatrix();
-            lines.SetPass(0);
-            float w = rect.width, h = rect.height;
-            int triangles = g.indices.Length / 3;
-            if (uvTint && triangles <= 500000) {
-                GL.Begin(GL.TRIANGLES);
-                for (int f = 0; f < triangles; ++f) {
-                    GL.Color(ChartColor(g.charts[g.indices[f * 3]]));
-                    for (int k = 0; k < 3; ++k) {
-                        var uv = g.uv[g.indices[f * 3 + k]];
-                        GL.Vertex3(uv.x * w, (1 - uv.y) * h, 0);
-                    }
-                }
-                GL.End();
-            }
-            if (triangles <= 500000) {
-                GL.Begin(GL.LINES);
-                GL.Color(new Color(1, 1, 1, 0.55f));
-                for (int f = 0; f < triangles; ++f)
-                    for (int k = 0; k < 3; ++k) {
-                        var a = g.uv[g.indices[f * 3 + k]]; var b = g.uv[g.indices[f * 3 + (k + 1) % 3]];
-                        GL.Vertex3(a.x * w, (1 - a.y) * h, 0); GL.Vertex3(b.x * w, (1 - b.y) * h, 0);
-                    }
-                GL.End();
-            }
-            GL.PopMatrix();
-            GUI.EndClip();
-        }
-
-        bool EnsureLines()
-        {
-            if (lines) return true;
-            var shader = Shader.Find("Hidden/Internal-Colored");
-            if (!shader) return false;
-            lines = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-            lines.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
-            lines.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
-            lines.SetInt("_Cull", (int)CullMode.Off);
-            lines.SetInt("_ZWrite", 0);
-            lines.SetInt("_ZTest", (int)CompareFunction.Always);
-            return true;
-        }
-
-        static Color ChartColor(int chart)
-        {
-            uint h = unchecked((uint)chart * 2654435761u);
-            var color = Color.HSVToRGB((h & 0xffff) / 65535f, 0.55f, 0.95f);
-            color.a = 0.35f;
-            return color;
-        }
 
         // ── Maps ──
 
