@@ -535,24 +535,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static LODGroup CreateLodGroupStatic(List<(GameObject go, int lodIndex)> siblings)
-        {
-            var lodRoot = siblings[0].go.transform.parent.gameObject;
-
-            var lodGroup = Undo.AddComponent<LODGroup>(lodRoot);
-
-            // Remap to contiguous indices (handles gaps like LOD0, LOD2 → slot 0, 1)
-            var lods = new LOD[siblings.Count];
-            for (int i = 0; i < siblings.Count; i++)
-            {
-                var renderers = siblings[i].go.GetComponentsInChildren<Renderer>();
-                lods[i] = new LOD(Mathf.Pow(0.5f, i + 1), renderers);
-            }
-
-            lodGroup.SetLODs(lods);
-            lodGroup.RecalculateBounds();
-
-            return lodGroup;
-        }
+            => LodHierarchy.CreateFromSiblings(siblings);
 
         internal static void NormalizeSingleLodTransitionForGeneration(List<LOD> lods, int startLod)
         {
@@ -564,16 +547,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static LODGroup CreateLodGroupFromRenderers(GameObject root)
-        {
-            var renderers = root.GetComponentsInChildren<Renderer>();
-            if (renderers.Length == 0) return null;
-
-            var lodGroup = Undo.AddComponent<LODGroup>(root);
-            lodGroup.SetLODs(new[] { new LOD(0.01f, renderers) });
-            lodGroup.RecalculateBounds();
-
-            return lodGroup;
-        }
+            => LodHierarchy.CreateFromRenderers(root, 0.01f, requireRenderers: true, out _);
 
         void CreateLodGroup(List<(GameObject go, int lodIndex)> siblings)
         {

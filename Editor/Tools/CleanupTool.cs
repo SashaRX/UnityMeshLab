@@ -171,17 +171,11 @@ namespace SashaRX.UnityMeshLab
                     GUI.backgroundColor = new Color(.6f, .75f, .9f);
                     if (GUILayout.Button($"Add LODGroup to \"{selected.name}\"", GUILayout.Height(24)))
                     {
-                        var lodGroup = Undo.AddComponent<LODGroup>(selected);
-                        // Auto-assign renderers as LOD0
-                        var renderers = selected.GetComponentsInChildren<Renderer>();
-                        if (renderers.Length > 0)
-                        {
-                            lodGroup.SetLODs(new LOD[] { new LOD(0.5f, renderers) });
-                            lodGroup.RecalculateBounds();
-                        }
+                        // Every renderer below the root becomes LOD0.
+                        var lodGroup = LodHierarchy.CreateFromRenderers(selected, 0.5f, requireRenderers: false, out int rendererCount);
                         ctx.Refresh(lodGroup);
                         requestRepaint?.Invoke();
-                        UvtLog.Info($"Added LODGroup to {selected.name} with {renderers.Length} renderer(s)");
+                        UvtLog.Info($"Added LODGroup to {selected.name} with {rendererCount} renderer(s)");
                     }
                     GUI.backgroundColor = bgc;
                 }
@@ -1237,7 +1231,7 @@ namespace SashaRX.UnityMeshLab
             bool rootHasRenderableMesh =
                 (rootMf != null && rootMf.sharedMesh != null) ||
                 (rootSmr != null && rootSmr.sharedMesh != null);
-            if (rootHasRenderableMesh && !IsRootRendererUsedAsLod0(root.gameObject, lods))
+            if (rootHasRenderableMesh && !LodHierarchy.RootRendererIsLod0(root.gameObject, lods))
             {
                 sceneIssues.Add(new SceneIssue
                 {
@@ -1368,13 +1362,14 @@ namespace SashaRX.UnityMeshLab
             {
                 if (issue.kind != SceneIssue.Kind.RootHasMesh) continue;
                 if (issue.gameObject == null || ctx.LodGroup == null) continue;
-                if (IsRootRendererUsedAsLod0(issue.gameObject, ctx.LodGroup.GetLODs()))
+                if (LodHierarchy.RootRendererIsLod0(issue.gameObject, ctx.LodGroup.GetLODs()))
                 {
                     UvtLog.Info($"Skipped root mesh move for '{issue.gameObject.name}': root renderer is already used as LOD0.");
                     continue;
                 }
 
-                MoveRootMeshToChild(issue.gameObject);
+                int lodCount = LodHierarchy.MoveRootMeshToChild(issue.gameObject);
+                UvtLog.Info($"Moved root mesh to child, sorted {lodCount} LOD(s) by polycount.");
                 movedRoots.Add(issue.gameObject);
                 needsRefresh = true;
             }
@@ -1412,53 +1407,19 @@ namespace SashaRX.UnityMeshLab
                 if (issue.kind != SceneIssue.Kind.MissingCollider) continue;
                 if (issue.gameObject == null) continue;
 
-                AddColliderFromCollisionMesh(issue.gameObject);
+                LodHierarchy.AddColliderFromCollisionMesh(issue.gameObject);
                 needsRefresh = true;
             }
 
             return needsRefresh;
         }
 
+        // Direct children named _LOD{n}: one slot per index up to the highest (gaps stay
+        // empty), halving transitions.
         void RebuildLodGroupFromHierarchy()
         {
-            var root = ctx.LodGroup.transform;
-            var colSet = new HashSet<GameObject>(MeshHygieneUtility.FindCollisionObjects(root));
-            var lodChildren = new SortedDictionary<int, List<Renderer>>();
-
-            for (int i = 0; i < root.childCount; i++)
-            {
-                var child = root.GetChild(i);
-                if (colSet.Contains(child.gameObject)) continue;
-
-                if (!MeshHygieneUtility.TryParseLodIndex(child.name, out int lodIdx)) continue;
-                var r = child.GetComponent<Renderer>();
-                if (r == null) continue;
-
-                if (!lodChildren.ContainsKey(lodIdx))
-                    lodChildren[lodIdx] = new List<Renderer>();
-                lodChildren[lodIdx].Add(r);
-            }
-
-            if (lodChildren.Count == 0) return;
-
-            Undo.RecordObject(ctx.LodGroup, "Rebuild LODGroup");
-
-            int maxLod = lodChildren.Keys.Max() + 1;
-            var newLods = new LOD[maxLod];
-            for (int i = 0; i < maxLod; i++)
-            {
-                Renderer[] renderers;
-                if (lodChildren.TryGetValue(i, out var list))
-                    renderers = list.ToArray();
-                else
-                    renderers = new Renderer[0];
-
-                newLods[i] = new LOD(Mathf.Pow(0.5f, i + 1), renderers);
-            }
-
-            ctx.LodGroup.SetLODs(newLods);
-            ctx.LodGroup.RecalculateBounds();
-            UvtLog.Info($"Rebuilt LODGroup with {maxLod} LOD level(s).");
+            int levels = LodHierarchy.RebuildFromNames(ctx.LodGroup, recursive: false, keepEmptySlots: true, LodHierarchy.Transitions.Halving);
+            if (levels > 0) UvtLog.Info($"Rebuilt LODGroup with {levels} LOD level(s).");
         }
 
         // ═══════════════════════════════════════════════════════════════
@@ -2434,140 +2395,9 @@ namespace SashaRX.UnityMeshLab
             requestRepaint?.Invoke();
         }
 
-        /// <summary>
-        /// Move mesh from root to a new child, sort all mesh children by polycount,
-        /// and rename them _LOD0, _LOD1, etc. Root becomes empty pivot.
-        /// </summary>
-        void MoveRootMeshToChild(GameObject root)
-        {
-            string baseName = UvToolContext.ExtractGroupKey(root.name);
-            if (string.IsNullOrEmpty(baseName)) baseName = root.name;
-            baseName = MeshHygieneUtility.SanitizeName(baseName);
-            if (string.IsNullOrEmpty(baseName)) baseName = "Unnamed";
-
-            var rootMf = root.GetComponent<MeshFilter>();
-            var rootMr = root.GetComponent<MeshRenderer>();
-            if (rootMf == null || rootMf.sharedMesh == null) return;
-
-            // Create child for root's mesh
-            var lod0Child = new GameObject(baseName + "_temp");
-            Undo.RegisterCreatedObjectUndo(lod0Child, "Move Root Mesh");
-            lod0Child.transform.SetParent(root.transform, false);
-            var newMf = lod0Child.AddComponent<MeshFilter>();
-            newMf.sharedMesh = rootMf.sharedMesh;
-            if (rootMr != null)
-            {
-                var newMr = lod0Child.AddComponent<MeshRenderer>();
-                newMr.sharedMaterials = rootMr.sharedMaterials;
-                newMr.shadowCastingMode = rootMr.shadowCastingMode;
-                newMr.receiveShadows = rootMr.receiveShadows;
-                newMr.lightProbeUsage = rootMr.lightProbeUsage;
-                newMr.reflectionProbeUsage = rootMr.reflectionProbeUsage;
-                if (rootMr is MeshRenderer srcMr && newMr is MeshRenderer dstMr)
-                {
-                    dstMr.receiveGI = srcMr.receiveGI;
-                    dstMr.scaleInLightmap = srcMr.scaleInLightmap;
-                }
-                GameObjectUtility.SetStaticEditorFlags(lod0Child,
-                    GameObjectUtility.GetStaticEditorFlags(root.gameObject));
-                Undo.DestroyObjectImmediate(rootMr);
-            }
-            // MeshCollider stays on the node (root) — the convention is
-            // Node(Collider) → LOD children, applied recursively to nested nodes.
-            Undo.DestroyObjectImmediate(rootMf);
-
-            // Collect all mesh children (excluding collision)
-            var colSet = new HashSet<GameObject>(MeshHygieneUtility.FindCollisionObjects(root.transform));
-            var lodCandidates = new List<(Transform t, int polyCount)>();
-            foreach (Transform child in root.transform)
-            {
-                if (colSet.Contains(child.gameObject)) continue;
-                var mf = child.GetComponent<MeshFilter>();
-                var smr = child.GetComponent<SkinnedMeshRenderer>();
-                var mesh = mf != null ? mf.sharedMesh : (smr != null ? smr.sharedMesh : null);
-                if (mesh == null) continue;
-                lodCandidates.Add((child, MeshHygieneUtility.GetTriangleCount(mesh)));
-            }
-
-            // Sort by polycount descending (LOD0 = highest)
-            lodCandidates.Sort((a, b) => b.polyCount.CompareTo(a.polyCount));
-
-            // Rename to _LOD0, _LOD1, etc.
-            // Use a temporary naming pass first to avoid collisions when
-            // children already contain one of the target names.
-            for (int i = 0; i < lodCandidates.Count; i++)
-            {
-                string tmpName = "__UVTMP_LOD_" + i + "_" + Guid.NewGuid().ToString("N");
-                if (lodCandidates[i].t.name != tmpName)
-                {
-                    Undo.RecordObject(lodCandidates[i].t.gameObject, "Rename LOD");
-                    lodCandidates[i].t.name = tmpName;
-                }
-            }
-
-            for (int i = 0; i < lodCandidates.Count; i++)
-            {
-                string finalName = baseName + "_LOD" + i;
-                if (lodCandidates[i].t.name != finalName)
-                {
-                    Undo.RecordObject(lodCandidates[i].t.gameObject, "Rename LOD");
-                    lodCandidates[i].t.name = finalName;
-                }
-            }
-
-            UvtLog.Info($"Moved root mesh to child, sorted {lodCandidates.Count} LOD(s) by polycount.");
-        }
-
-        /// <summary>
-        /// Find the first collision mesh (_COL/_Collider) and add MeshCollider to root.
-        /// Disable renderer on collision nodes.
-        /// </summary>
-        void AddColliderFromCollisionMesh(GameObject root)
-        {
-            if (root.GetComponent<MeshCollider>() != null) return;
-
-            var colObjects = MeshHygieneUtility.FindCollisionObjects(root.transform);
-            foreach (var colObj in colObjects)
-            {
-                var mf = colObj.GetComponent<MeshFilter>();
-                if (mf == null || mf.sharedMesh == null) continue;
-
-                var collider = Undo.AddComponent<MeshCollider>(root);
-                collider.sharedMesh = mf.sharedMesh;
-                UvtLog.Info($"Added MeshCollider to {root.name} from {colObj.name}");
-
-                // Disable renderer on collision node
-                var mr = colObj.GetComponent<MeshRenderer>();
-                if (mr != null)
-                {
-                    Undo.RecordObject(mr, "Disable COL Renderer");
-                    mr.enabled = false;
-                }
-                break; // one collider is enough
-            }
-        }
-
         // ═══════════════════════════════════════════════════════════════
         // Helpers
         // ═══════════════════════════════════════════════════════════════
-
-        static bool IsRootRendererUsedAsLod0(GameObject root, LOD[] lods)
-        {
-            if (root == null || lods == null || lods.Length == 0) return false;
-
-            var rootRenderer = root.GetComponent<Renderer>();
-            if (rootRenderer == null) return false;
-
-            var lod0Renderers = lods[0].renderers;
-            if (lod0Renderers == null || lod0Renderers.Length == 0) return false;
-
-            for (int i = 0; i < lod0Renderers.Length; i++)
-            {
-                if (lod0Renderers[i] == rootRenderer)
-                    return true;
-            }
-            return false;
-        }
 
         void DrawScanFixButtons(Action scan, Action fix, System.Collections.IList issues)
         {
