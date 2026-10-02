@@ -37,7 +37,7 @@ name: SonarQube
 #                       first analysis, so it needs Execute Analysis + Create Projects.
 #   SONAR_API_TOKEN   — secret, optional: a USER token (squ_…) for the web API reads and
 #                       the project deletes when SONAR_TOKEN is analysis-only.
-#   SONAR_HOST_URL    — variable, optional; defaults to the Mesh Lab server below.
+#   SONAR_HOST_URL    — secret or variable, optional; defaults to the Mesh Lab server below.
 #   SONAR_PROJECT_KEY — variable, optional; defaults to SashaRX_UnityMeshLab.
 on:
   push:

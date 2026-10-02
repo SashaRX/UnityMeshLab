@@ -419,6 +419,18 @@ function sonarEnv() {
   return { host, token };
 }
 
+// Token auth: `Authorization: Bearer` (SonarQube 10.0+); a server that answers 401 to it
+// is retried once with the pre-10 form, HTTP Basic with the token as the user name and
+// no password. A 401 from both is the token itself (not a user token, revoked, or the
+// wrong secret), and the error says so.
+let authScheme = 'bearer';
+
+function authHeader(token) {
+  return authScheme === 'bearer'
+    ? `Bearer ${token}`
+    : `Basic ${Buffer.from(`${token}:`, 'utf8').toString('base64')}`;
+}
+
 async function sonarRequest(path, { method = 'GET', params = {} } = {}) {
   const { host, token } = sonarEnv();
   const url = new URL(host + path);
@@ -426,19 +438,28 @@ async function sonarRequest(path, { method = 'GET', params = {} } = {}) {
   if (method === 'GET') {
     url.search = body.toString();
   }
-  const res = await fetch(url, {
-    method,
-    headers: { Authorization: `Bearer ${token}` },
-    body: method === 'GET' ? undefined : body,
-    signal: AbortSignal.timeout(30_000),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    const err = new Error(`${method} ${path} -> HTTP ${res.status}: ${text.slice(0, 300)}`);
-    err.status = res.status;
-    throw err;
+  for (;;) {
+    const res = await fetch(url, {
+      method,
+      headers: { Authorization: authHeader(token) },
+      body: method === 'GET' ? undefined : body,
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await res.text();
+    if (res.status === 401 && authScheme === 'bearer') {
+      authScheme = 'basic';
+      continue;
+    }
+    if (!res.ok) {
+      const hint = res.status === 401
+        ? ' — the token the web API got (SONAR_API_TOKEN, else SONAR_TOKEN) was refused with both Bearer and Basic auth: it must be a USER token (squ_...) of an account that can browse the project'
+        : '';
+      const err = new Error(`${method} ${path} -> HTTP ${res.status}: ${text.slice(0, 300)}${hint}`);
+      err.status = res.status;
+      throw err;
+    }
+    return text ? JSON.parse(text) : {};
   }
-  return text ? JSON.parse(text) : {};
 }
 
 // All OPEN/CONFIRMED issues of a project. `components` + `issueStatuses` are the
