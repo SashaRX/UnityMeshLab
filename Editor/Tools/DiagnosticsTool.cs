@@ -12,7 +12,6 @@ namespace SashaRX.UnityMeshLab
     public sealed class DiagnosticsTool : IUvTool, IUvToolDebugOnly
     {
         UvToolContext ctx;
-        Action requestRepaint;
 
         TestSuiteAsset sweepSuite;
         bool foldBench = true, foldLogFilters = true, foldReports = true;
@@ -20,7 +19,7 @@ namespace SashaRX.UnityMeshLab
         public string ToolName => "Diagnostics";
         public string ToolId => "diagnostics";
         public int ToolOrder => 90;
-        public Action RequestRepaint { set => requestRepaint = value; }
+        public Action RequestRepaint { get; set; }
 
         public void OnActivate(UvToolContext ctx, UvCanvasView canvas) { this.ctx = ctx; }
         public void OnDeactivate() { }

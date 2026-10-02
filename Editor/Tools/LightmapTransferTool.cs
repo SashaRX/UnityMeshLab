@@ -98,11 +98,7 @@ namespace SashaRX.UnityMeshLab
 
         // ── Sweep / benchmark host (Editor/Bench): the runners drive this tab's pipeline ──
         UvToolContext ISweepHost.Context => ctx;
-        SymmetrySplitShells.ThresholdMode ISweepHost.SymmetrySplitMode
-        {
-            get => symSplitThresholdMode;
-            set => symSplitThresholdMode = value;
-        }
+        public SymmetrySplitShells.ThresholdMode SymmetrySplitMode { get; set; } = SymmetrySplitShells.ThresholdMode.LegacyFixed;
         void ISweepHost.ResetWorkingCopies() => ResetWorkingCopies();
         void ISweepHost.RunPipeline(string runLabel) => ExecFullPipeline(runLabel);
         void IBenchmarkHost.Bind(LODGroup lodGroup) { ctx.Refresh(lodGroup); OnRefresh(); }
@@ -124,7 +120,6 @@ namespace SashaRX.UnityMeshLab
         bool foldValidationOverlay;
         bool splitTargetsInSymmetryStep;
         bool skipSymmetrySplitStep;
-        SymmetrySplitShells.ThresholdMode symSplitThresholdMode = SymmetrySplitShells.ThresholdMode.LegacyFixed;
         HashSet<int> lastSymmetrySplitLods = new HashSet<int>();
 
         // ── Pipeline stage toggles (Setup tab) ──
@@ -619,12 +614,12 @@ namespace SashaRX.UnityMeshLab
                 + "separation threshold across a few values and picks the best.",
                 ref runSym, hasSettings: true, drawSettings: () =>
                 {
-                    symSplitThresholdMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
+                    SymmetrySplitMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
                         new GUIContent("Threshold mode",
                             "Strategy for picking the SymSplit separation threshold. "
                             + "Legacy Fixed uses 0.10; Adaptive picks per-shell from area."),
-                        symSplitThresholdMode);
-                    SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
+                        SymmetrySplitMode);
+                    SymmetrySplitShells.CurrentThresholdMode = SymmetrySplitMode;
                     // Advanced / debug-only toggle — hidden from production UI.
                     if (DebugUi.Enabled)
                     {
@@ -1136,11 +1131,11 @@ namespace SashaRX.UnityMeshLab
             if (ctx.XatlasTexelsPerUnit < 0f) ctx.XatlasTexelsPerUnit = 0f;
             // SymSplit thresholds shared with Setup tab — duplicated here for
             // convenience when iterating on Repack only.
-            symSplitThresholdMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
+            SymmetrySplitMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
                 new GUIContent("SymSplit thresholds",
                     "Shared with Setup tab. Strategy for picking the SymSplit separation threshold."),
-                symSplitThresholdMode);
-            SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
+                SymmetrySplitMode);
+            SymmetrySplitShells.CurrentThresholdMode = SymmetrySplitMode;
         }
 
         // ──────────────── Transfer ────────────────
@@ -1386,7 +1381,7 @@ namespace SashaRX.UnityMeshLab
         void ExecSymmetrySplit(bool includeTargets, float separationThreshold = 0.10f)
         {
             if (ctx.LodGroup == null) return;
-            SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
+            SymmetrySplitShells.CurrentThresholdMode = SymmetrySplitMode;
             lastSymmetrySplitLods.Clear();
 
             // Phase 1: Split source LOD and capture parameters for coordinated LOD splitting
@@ -1466,7 +1461,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (ctx.LodGroup == null) return;
             using var _bench = BenchmarkRecorder.NewRun(ctx, runLabel,
-                splitTargetsInSymmetryStep, symSplitThresholdMode);
+                splitTargetsInSymmetryStep, SymmetrySplitMode);
             BenchmarkRecorder.Current?.StageBegin("pipeline");
             bool completedSuccessfully = false;
             try
@@ -1827,7 +1822,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (entries.Count == 0) return;
             using var _bench = BenchmarkRecorder.NewRun(ctx, "Repack",
-                splitTargetsInSymmetryStep, symSplitThresholdMode);
+                splitTargetsInSymmetryStep, SymmetrySplitMode);
             bool ownsSession = _bench is BenchmarkRecorder;
             bool ownsProgress = !UvProgress.IsActive;
             if (ownsProgress)
@@ -1972,7 +1967,7 @@ namespace SashaRX.UnityMeshLab
         async Task ExecTransferAllImpl(bool useAsync)
         {
             using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
-                splitTargetsInSymmetryStep, symSplitThresholdMode);
+                splitTargetsInSymmetryStep, SymmetrySplitMode);
             bool ownsSession = _bench is BenchmarkRecorder;
             bool ownsProgress = !UvProgress.IsActive;
             int targetLodCount = 0;
@@ -3194,10 +3189,10 @@ namespace SashaRX.UnityMeshLab
             ctx.ShellPaddingPx = SanitizePadding(s.shellPaddingPx);
             ctx.BorderPaddingPx = SanitizePadding(s.borderPaddingPx);
             ctx.RepackPerMesh = s.repackPerMesh;
-            symSplitThresholdMode = Enum.IsDefined(typeof(SymmetrySplitShells.ThresholdMode), s.symmetrySplitThresholdMode)
+            SymmetrySplitMode = Enum.IsDefined(typeof(SymmetrySplitShells.ThresholdMode), s.symmetrySplitThresholdMode)
                 ? (SymmetrySplitShells.ThresholdMode)s.symmetrySplitThresholdMode
                 : SymmetrySplitShells.ThresholdMode.LegacyFixed;
-            SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
+            SymmetrySplitShells.CurrentThresholdMode = SymmetrySplitMode;
             ctx.SourceLodIndex = Mathf.Clamp(s.sourceLodIndex, 0, Mathf.Max(0, ctx.LodCount - 1));
             ctx.PipeSettings.saveNewMeshAssets = s.saveNewMeshAssets;
             if (IsSafeAssetFolderPath(s.savePath)) ctx.PipeSettings.savePath = s.savePath;
@@ -3232,7 +3227,7 @@ namespace SashaRX.UnityMeshLab
                 s.shellPaddingPx = ctx.ShellPaddingPx;
                 s.borderPaddingPx = ctx.BorderPaddingPx;
                 s.repackPerMesh = ctx.RepackPerMesh;
-                s.symmetrySplitThresholdMode = (int)symSplitThresholdMode;
+                s.symmetrySplitThresholdMode = (int)SymmetrySplitMode;
                 s.sourceLodIndex = ctx.SourceLodIndex;
                 s.saveNewMeshAssets = ctx.PipeSettings.saveNewMeshAssets;
                 s.savePath = ctx.PipeSettings.savePath;

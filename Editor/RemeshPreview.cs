@@ -122,24 +122,22 @@ namespace SashaRX.UnityMeshLab
             if (!mesh) return false;
             if (!EnsureResources()) return false;
             bool trimMask = ShowTrimMask(data);
-            {
-                bool useTexture = textured && stage == Stage.Result && data.baseColor;
-                surface.SetTexture("_MainTex", useTexture ? data.baseColor : null);
-                surface.SetFloat("_UseTexture", useTexture ? 1 : 0);
-                // Only the result stage has tangents; its baked normal map is the same
-                // data the saved material gets, so the preview shows the final shading.
-                var bump = bumpMap && stage == Stage.Result && data.maps != null ? MapTexture(data.maps, Channel.Normal) : null;
-                surface.SetTexture("_BumpMap", bump);
-                surface.SetFloat("_UseBumpMap", bump ? 1 : 0);
-                // Beauty maps already contain the lighting; shading them again would
-                // double it, so the surface renders unlit exactly like the saved material.
-                surface.SetFloat("_Lit", stage == Stage.Result && data.maps != null && data.maps.beauty ? 0 : 1);
-                surface.SetFloat("_UseVertexColor", trimMask && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
-                surface.SetColor("_Color", Color.white);
-                var materials = new Material[mesh.subMeshCount];
-                for (int sub = 0; sub < materials.Length; ++sub) materials[sub] = surface;
-                items.Add(new MeshViewport3D.Item(mesh, Matrix4x4.identity, materials));
-            }
+            bool useTexture = textured && stage == Stage.Result && data.baseColor;
+            surface.SetTexture("_MainTex", useTexture ? data.baseColor : null);
+            surface.SetFloat("_UseTexture", useTexture ? 1 : 0);
+            // Only the result stage has tangents; its baked normal map is the same
+            // data the saved material gets, so the preview shows the final shading.
+            var bump = bumpMap && stage == Stage.Result && data.maps != null ? MapTexture(data.maps, Channel.Normal) : null;
+            surface.SetTexture("_BumpMap", bump);
+            surface.SetFloat("_UseBumpMap", bump ? 1 : 0);
+            // Beauty maps already contain the lighting; shading them again would
+            // double it, so the surface renders unlit exactly like the saved material.
+            surface.SetFloat("_Lit", stage == Stage.Result && data.maps != null && data.maps.beauty ? 0 : 1);
+            surface.SetFloat("_UseVertexColor", trimMask && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
+            surface.SetColor("_Color", Color.white);
+            var materials = new Material[mesh.subMeshCount];
+            for (int sub = 0; sub < materials.Length; ++sub) materials[sub] = surface;
+            items.Add(new MeshViewport3D.Item(mesh, Matrix4x4.identity, materials));
             return true;
         }
 
