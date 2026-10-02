@@ -269,17 +269,12 @@ namespace SashaRX.UnityMeshLab
             return paths;
         }
 
+        // Base color is sRGB, the normal map a normal map, the rest linear data.
         static void ConfigureMaps(string[] paths, int size)
         {
-            for (int i = 0; i < paths.Length; ++i) {
-                var importer = AssetImporter.GetAtPath(paths[i]) as TextureImporter;
-                if (importer == null) throw new IOException("Texture import failed: " + paths[i]);
-                importer.textureType = i == 1 ? TextureImporterType.NormalMap : TextureImporterType.Default;
-                importer.sRGBTexture = i == 0; importer.wrapMode = TextureWrapMode.Clamp;
-                importer.maxTextureSize = size; importer.textureCompression = TextureImporterCompression.Uncompressed;
-                importer.mipmapEnabled = true; importer.alphaSource = TextureImporterAlphaSource.FromInput;
-                importer.SaveAndReimport();
-            }
+            for (int i = 0; i < paths.Length; ++i)
+                TextureAssets.Configure(paths[i],
+                    i == 0 ? TextureAssets.Kind.Color : i == 1 ? TextureAssets.Kind.NormalMap : TextureAssets.Kind.Linear, size);
         }
 
         static Material CreateMaterial(Shader shader, bool urp, bool unlit, string name, string[] paths)
@@ -321,14 +316,13 @@ namespace SashaRX.UnityMeshLab
 
         static byte[] Encode(RemeshBaker.Maps maps, int index)
         {
-            var texture = new Texture2D(maps.size, maps.size,
-                index == EmissionMap ? TextureFormat.RGBAFloat : TextureFormat.RGBA32, false, true);
-            try {
-                if (index == EmissionMap) { texture.SetPixels(maps.emission); texture.Apply(); return texture.EncodeToEXR(Texture2D.EXRFlags.OutputAsFloat); }
-                texture.SetPixels32(index == 0 ? maps.color : index == 1 ? maps.normal : index == 2 ? maps.metal : maps.ao);
-                texture.Apply(); return texture.EncodeToPNG();
-            }
-            finally { Object.DestroyImmediate(texture); }
+            var bytes = index == EmissionMap
+                ? TextureAssets.EncodeExr(maps.emission, maps.size, maps.size)
+                : TextureAssets.EncodePng(index == 0 ? maps.color : index == 1 ? maps.normal : index == 2 ? maps.metal : maps.ao, maps.size, maps.size);
+            // A missing or mis-sized buffer is a bake bug; say which map, and let the
+            // export roll its folder back as it does for every other failure.
+            if (bytes == null) throw new InvalidOperationException($"Map '{MapNames[index]}' has no {maps.size}×{maps.size} pixel buffer to write.");
+            return bytes;
         }
     }
 }

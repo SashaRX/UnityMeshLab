@@ -1779,24 +1779,14 @@ namespace SashaRX.UnityMeshLab
             // Now draw samples on top of a fresh canvas with the same
             // backdrop. Software path: load the rendered base, draw dots.
             int size = UvPngWriter.DefaultSize;
-            var pixels = new Color32[size * size];
-            byte[] basePng = File.ReadAllBytes(basePath);
-            var baseTex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-            try
+            // Render may produce different dimensions; only a same-sized backdrop is reused.
+            var pixels = TextureAssets.ReadImage(basePath, out int w, out int h);
+            if (pixels == null || w != size || h != size)
             {
-                baseTex.LoadImage(basePng);
-                var basePixels = baseTex.GetPixels32();
-                // Render may produce different dimensions; just trust loaded size.
-                int w = baseTex.width, h = baseTex.height;
-                if (w * h == basePixels.Length && w == size && h == size)
-                    pixels = basePixels;
-                else
-                {
-                    var bg = new Color32(244, 244, 248, 255);
-                    for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
-                }
+                pixels = new Color32[size * size];
+                var bg = new Color32(244, 244, 248, 255);
+                for (int i = 0; i < pixels.Length; i++) pixels[i] = bg;
             }
-            finally { UnityEngine.Object.DestroyImmediate(baseTex); }
 
             // Draw each sample as a 3-pixel disk in bright magenta. The
             // UV→pixel mapping MUST match UvPngWriter — it renders the
@@ -3651,22 +3641,9 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        /// <summary>Encode a pixel buffer to PNG via a transient Texture2D.
-        /// Caller owns the path and ensures the directory exists.</summary>
+        /// <summary>Encode a pixel buffer to PNG and write it (see <see cref="TextureAssets.WritePng"/>).</summary>
         static void EncodePng(Color32[] pixels, int width, int height, string path)
-        {
-            var tex = new Texture2D(width, height, TextureFormat.RGBA32, false);
-            try
-            {
-                tex.SetPixels32(pixels);
-                tex.Apply(false, false);
-                File.WriteAllBytes(path, tex.EncodeToPNG());
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(tex);
-            }
-        }
+            => TextureAssets.WritePng(path, pixels, width, height);
 
     }
 }
