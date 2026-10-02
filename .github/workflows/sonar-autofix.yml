@@ -1,0 +1,497 @@
+# Sonar Autofix — fix a PR's NEW findings from the self-hosted SonarQube with the AI
+# SUBSCRIPTIONS (Claude, Codex/ChatGPT, ZCode/GLM Coding Plan) — no pay-per-request
+# model API: Tools~/sonar-fix.sh strips every API key and refuses an API-key login.
+# Modelled on SashaRX/Space's sonar-autofix.yml; the Sonar runbook in SashaRX/Space (docs/sonar-autofix.md; here the tools live in Tools~/ and the config in ~/.config/meshlab/) is the
+# setup runbook.
+#
+# Called by the SonarQube run of a pull request (the `autofix` job in
+# sonar-static-analysis.yml, one call per checked PR), right after its scan job published
+# the `sonar-pr-findings-<N>` artifact — so it runs in the PR's own context (no
+# workflow_run / issue_comment, which would check PR code out with the base branch's
+# secrets and write token). Also dispatchable by hand with a PR number: it then takes the
+# findings of the newest SonarQube run that checked that PR's current head.
+#
+# Loop: fixer edits (files only, never git) → guard rails + the licence-free compile of
+# both FBX variants + the CS0103 guard → fast-forward push to the PR branch → re-dispatch
+# the package checks and the Sonar PR check on the new head, because a GITHUB_TOKEN push
+# triggers no pull_request run by GitHub's design. Those are workflow_dispatch events,
+# which never call this workflow again: one autofix pass per human push. Nothing is
+# auto-merged; an unfixed batch goes to the "Sonar Autofix Backlog" issue.
+
+name: Sonar Autofix
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_sha:
+        description: The analysed head; the push is a plain fast-forward of exactly this commit
+        required: true
+        type: string
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      CODEX_AUTH_JSON:
+        required: false
+      ZAI_API_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to retry (uses the newest SonarQube check of its head)
+        required: true
+        type: string
+
+# Nothing at the workflow level: the one job below declares exactly what it needs.
+permissions: {}
+
+jobs:
+  autofix:
+    name: Sonar Autofix (subscriptions)
+    # The self-hosted runner (vars.CI_RUNNER) is where the subscription CLIs are logged in;
+    # on a GitHub-hosted runner every provider is skipped and the findings go to the backlog.
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    permissions:
+      contents: write        # push the validated patch to the PR branch
+      pull-requests: write   # comment on the PR
+      issues: write          # the Sonar Autofix Backlog issue
+      actions: write         # read the findings artifact, re-dispatch the checks
+    concurrency:
+      group: sonar-autofix-${{ inputs.pr_number }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Resolve trusted pull request and its findings
+        id: pr
+        uses: actions/github-script@v9
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_IN: ${{ inputs.head_sha }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const skip = (why) => { core.notice(`Sonar autofix skipped: ${why}`); core.setOutput('eligible', 'false'); };
+            const prNumber = Number(process.env.PR_NUMBER);
+            const artifactName = `sonar-pr-findings-${prNumber}`;
+            const findingsArtifact = async (runId) => {
+              const { data } = await github.rest.actions.listWorkflowRunArtifacts({ owner, repo, run_id: runId, per_page: 100 });
+              return data.artifacts.find((a) => a.name === artifactName && !a.expired);
+            };
+
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            const sameRepo = pr.head.repo?.full_name === `${owner}/${repo}`;
+            const trustedAuthor = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(pr.author_association);
+            if (pr.state !== 'open' || !sameRepo || !trustedAuthor) {
+              return skip(`PR #${prNumber}: state=${pr.state}, sameRepo=${sameRepo}, authorAssociation=${pr.author_association}`);
+            }
+
+            let headSha;
+            let runId;
+            if (process.env.HEAD_IN) {
+              // Called from a SonarQube run: its scan job uploaded this PR's artifact.
+              headSha = process.env.HEAD_IN;
+              if (pr.head.sha !== headSha) {
+                return skip(`PR #${prNumber} moved on to ${pr.head.sha}; its own run will follow`);
+              }
+              runId = context.runId;
+              if (!(await findingsArtifact(runId))) {
+                return skip(`no ${artifactName} artifact in this run (the Sonar PR check did not complete)`);
+              }
+            } else {
+              // Manual retry: the newest completed SonarQube run that published a bundle
+              // for this PR (the bundle's own head is verified after download).
+              headSha = pr.head.sha;
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner, repo, workflow_id: 'sonar-static-analysis.yml', status: 'completed', per_page: 30,
+              });
+              for (const run of data.workflow_runs) {
+                if (await findingsArtifact(run.id)) {
+                  runId = run.id;
+                  break;
+                }
+              }
+              if (!runId) {
+                return skip(`no ${artifactName} artifact in the recent SonarQube runs (the Sonar PR check did not complete)`);
+              }
+            }
+            const { data: commit } = await github.rest.git.getCommit({ owner, repo, commit_sha: headSha });
+            if (commit.message.includes('[sonar-autofix]')) {
+              return skip('the head is already an autofix commit');
+            }
+
+            core.setOutput('eligible', 'true');
+            core.setOutput('number', String(prNumber));
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('head_sha', headSha);
+            core.setOutput('run_id', String(runId));
+            core.setOutput('artifact', artifactName);
+
+      - name: Download findings
+        if: steps.pr.outputs.eligible == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.pr.outputs.artifact }}
+          run-id: ${{ steps.pr.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sonar-pr-findings
+
+      - name: Read findings
+        if: steps.pr.outputs.eligible == 'true'
+        id: sonar
+        uses: actions/github-script@v9
+        env:
+          BUNDLE: ${{ runner.temp }}/sonar-pr-findings
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            const { meta, findings } = JSON.parse(fs.readFileSync(`${process.env.BUNDLE}/findings.json`, 'utf8'));
+            if (!meta?.head || meta.head !== process.env.HEAD_SHA) {
+              core.notice(`Sonar autofix skipped: the findings bundle is for ${meta?.head ? meta.head.slice(0, 7) : 'an unknown head'}, the PR head is ${process.env.HEAD_SHA.slice(0, 7)}`);
+              core.setOutput('has_issues', 'false');
+              return;
+            }
+            core.setOutput('has_issues', findings.length > 0 ? 'true' : 'false');
+            core.setOutput('issue_count', String(findings.length));
+
+      # The exact analysed commit, detached: the push below is then a plain fast-forward
+      # of the PR branch, and GitHub rejects it if the branch moved.
+      - name: Check out PR head
+        if: steps.sonar.outputs.has_issues == 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The fixer and the validation tools are THIS workflow's own copies (the ref the
+      # SonarQube run or the manual dispatch ran on), not the PR head's: an older branch
+      # may not carry them, and a branch cut before a fixer change would run the old one.
+      - name: Fetch the tooling from this workflow's ref
+        if: steps.sonar.outputs.has_issues == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tooling="$RUNNER_TEMP/tooling"
+          mkdir -p "$tooling"
+          # git with the token as an HTTP header from GIT_CONFIG_* environment variables —
+          # never in a URL or an argument other processes could list (actions/checkout's way);
+          # the encoded form is masked in the log like the token itself.
+          b64="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$b64"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $b64" \
+            git fetch -q --no-tags "https://github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_SHA"
+          for f in sonar-fix.sh compile_check.py check_undeclared_identifiers.py; do
+            if ! git show "FETCH_HEAD:Tools~/$f" > "$tooling/$f"; then
+              echo "::error title=Sonar autofix::could not fetch Tools~/$f at ${GITHUB_SHA:0:7}; no fixer runs"
+              exit 1
+            fi
+          done
+          echo "tooling: Tools~/{sonar-fix.sh,compile_check.py,check_undeclared_identifiers.py} @ ${GITHUB_SHA:0:7} (this workflow's ref)"
+
+      # The prompt stays in RUNNER_TEMP (fed on stdin), so it can never be committed.
+      # A patch is only worth anything for the head it was made on: the push below is a
+      # plain fast-forward. So the PR head is polled while the fixer runs, and a move (a
+      # new push, another agent's commit) stops the fixer at once instead of letting it
+      # run out its timeout on a patch that can no longer land. The fixer runs in its own
+      # session so the stop reaches the CLI it started, not just the script.
+      - name: Fix with the AI subscriptions
+        if: steps.sonar.outputs.has_issues == 'true'
+        id: fix
+        continue-on-error: true
+        shell: bash
+        env:
+          SONAR_FIXERS: ${{ vars.SONAR_FIXERS }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          SONAR_FIX_POLL_SEC: '30'
+        run: |
+          set -uo pipefail
+          prompt="$RUNNER_TEMP/sonar-pr-findings/prompt.md"
+          fixer_script="$RUNNER_TEMP/tooling/sonar-fix.sh"
+          # .git/ is outside the guard's `git status`: its config, hooks and info are
+          # snapshotted here so the guard can prove the fixer left them alone (a planted
+          # hook or fsmonitor would otherwise run inside the push step's git).
+          tar -cf "$RUNNER_TEMP/git-meta.tar" .git/config .git/hooks .git/info
+          # setsid: the fixer and everything it starts share ONE session, and that is
+          # how they are stopped together — `timeout` inside sonar-fix.sh moves the CLI
+          # into a process group of its own, which a process-group kill would miss.
+          # With job control off (set +m, as in any non-interactive shell) the background
+          # child is not a process-group leader, so setsid(2) runs in place without a
+          # fork: the PID in $! IS the new session's id, which pkill/pgrep -s take.
+          set +m
+          # The fixer inherits this step's environment MINUS the GitHub token: only the
+          # watcher below and the push step need it, and Codex runs commands in its
+          # sandbox, where a token in the environment is a token in a file it can write.
+          setsid env -u GH_TOKEN bash "$fixer_script" "$prompt" &
+          fixer=$!
+          stop_fixer() {
+            pkill -TERM -s "$fixer" 2>/dev/null || kill -TERM "$fixer" 2>/dev/null || true
+            for _ in 1 2 3 4 5 6; do
+              pgrep -s "$fixer" >/dev/null 2>&1 || return 0
+              sleep 5
+            done
+            pkill -KILL -s "$fixer" 2>/dev/null || kill -KILL "$fixer" 2>/dev/null || true
+          }
+          # A cancelled job signals this shell; take the fixer down with it.
+          trap 'stop_fixer; exit 143' TERM INT
+          waited=0
+          superseded=0
+          while kill -0 "$fixer" 2>/dev/null; do
+            sleep 5
+            waited=$((waited + 5))
+            if [[ "$waited" -lt "$SONAR_FIX_POLL_SEC" ]]; then
+              continue
+            fi
+            waited=0
+            # The plain-SHA media type answers with the 40 hex digits and nothing else:
+            # no JSON to parse, nothing piped into an interpreter.
+            head="$(curl -fsS --max-time 20 \
+              -H @<(printf 'Authorization: Bearer %s\n' "$GH_TOKEN") -H 'Accept: application/vnd.github.sha' \
+              "${GITHUB_API_URL:-https://api.github.com}/repos/$GITHUB_REPOSITORY/commits/refs/pull/$PR_NUMBER/head")" || head=""
+            if [[ ! "$head" =~ ^[0-9a-f]{40}$ ]]; then
+              head=""
+            fi
+            if [[ -n "$head" && "$head" != "$HEAD_SHA" ]]; then
+              echo "::notice title=Sonar autofix superseded::PR #$PR_NUMBER moved to ${head:0:7} while ${HEAD_SHA:0:7} was being fixed; the fixer is stopped (its patch could no longer be pushed). The newer head's own check decides what is left."
+              echo "superseded=true" >> "$GITHUB_OUTPUT"
+              superseded=1
+              stop_fixer
+              break
+            fi
+          done
+          rc=0
+          wait "$fixer" || rc=$?
+          # A deliberate stop is not a failed fix: the step ends green with the notice
+          # above, and `superseded` (not the outcome) keeps the push and report away.
+          if [[ "$superseded" -eq 1 ]]; then
+            exit 0
+          fi
+          exit "$rc"
+
+      # Deterministic guard rails on top of the prompt's rules: the patch may only MODIFY
+      # tracked .cs files under Editor/ or Tests/. A new, renamed or deleted file needs a
+      # .meta decision a human makes; .meta/.asmdef, package.json, Plugins/, Native~/,
+      # Tools~/, the workflows and the docs are never autofix territory.
+      - name: Detect changed areas
+        if: steps.sonar.outputs.has_issues == 'true' && steps.fix.outputs.superseded != 'true'
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          if ! tar -df "$RUNNER_TEMP/git-meta.tar" >/dev/null 2>&1; then
+            echo "::error::The patch changed .git/config, .git/hooks or .git/info; nothing from this run is pushed."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "guard=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          status="$(git status --porcelain --untracked-files=all)"
+          printf '%s\n' "$status"
+          if [ -z "$status" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+          guard=true
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            code="${line:0:2}"; path="${line:3}"
+            if [ "$code" != " M" ]; then
+              echo "::error::The patch adds, deletes, renames or stages a file ($code $path); only edits to existing files are allowed."
+              guard=false
+            elif ! grep -Eq '^(Editor|Tests)/.*\.cs$' <<<"$path"; then
+              echo "::error::The patch touches $path; only .cs files under Editor/ or Tests/ may change."
+              guard=false
+            fi
+          done <<<"$status"
+          echo "guard=$guard" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@v4
+        if: steps.changes.outputs.has_changes == 'true'
+        with:
+          dotnet-version: '8.0.x'
+
+      # The same checks every PR runs: both FBX define variants compile against the Unity
+      # reference assemblies, and no identifier is used without a declaration.
+      - name: Validate C#
+        id: validate
+        if: steps.changes.outputs.has_changes == 'true' && steps.changes.outputs.guard == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/tooling/compile_check.py" --root . --out "$RUNNER_TEMP/compile-check"
+          python3 "$RUNNER_TEMP/tooling/check_undeclared_identifiers.py" Editor Tests
+
+      - name: Evaluate validation
+        if: steps.sonar.outputs.has_issues == 'true'
+        id: validation
+        env:
+          GUARD: ${{ steps.changes.outputs.guard }}
+          VALIDATE: ${{ steps.validate.outcome }}
+        shell: bash
+        run: |
+          ok=true
+          if [ "$GUARD" = "false" ]; then ok=false; fi
+          if [ "$VALIDATE" = "failure" ] || [ "$VALIDATE" = "cancelled" ]; then ok=false; fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push validated fixes
+        id: push
+        if: >-
+          steps.fix.outcome == 'success' &&
+          steps.changes.outputs.has_changes == 'true' &&
+          steps.validation.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PROVIDER: ${{ steps.fix.outputs.provider }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -u -- Editor Tests
+          git -c core.hooksPath=/dev/null -c core.fsmonitor=false commit -m "fix(sonar): autofix PR #${PR_NUMBER} findings via ${PROVIDER} [sonar-autofix]"
+          b64="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$b64"
+          # The lease makes the push atomic with the head the fix was made on: it lands
+          # only while the branch still points at exactly that commit.
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $b64" \
+            git -c core.hooksPath=/dev/null -c core.fsmonitor=false push --force-with-lease="refs/heads/${HEAD_REF}:${HEAD_SHA}" \
+              "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${HEAD_REF}"
+
+      # A GITHUB_TOKEN push starts no pull_request run, so the new head would carry no
+      # checks at all. Dispatch them instead: the package checks on the PR branch, the
+      # Sonar PR check from the default branch (whose workflow takes the PR number).
+      # Both need their workflow_dispatch trigger on the default branch; until then the
+      # dispatch fails and the PR comment says so.
+      - name: Re-run checks on the new head
+        id: recheck
+        if: steps.push.outcome == 'success'
+        continue-on-error: true
+        uses: actions/github-script@v9
+        env:
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const main = context.payload.repository?.default_branch ?? 'main';
+            const dispatches = [
+              ['meta-check.yml', process.env.HEAD_REF, {}],
+              ['sonar-static-analysis.yml', main, { prs: process.env.PR_NUMBER }],
+            ];
+            for (const [workflow_id, ref, inputs] of dispatches) {
+              await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id, ref, inputs });
+              core.info(`dispatched ${workflow_id} on ${ref}`);
+            }
+
+      # Nothing to report for a run that was cancelled (a newer autofix for the same PR
+      # took over — the concurrency group) or superseded (the PR moved mid-fix): the
+      # newer run reports for itself.
+      - name: Report and persist unresolved findings
+        if: >-
+          always() && !cancelled() &&
+          steps.fix.outputs.superseded != 'true' &&
+          steps.pr.outputs.eligible == 'true' && steps.sonar.outputs.has_issues == 'true'
+        uses: actions/github-script@v9
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          FIX_OUTCOME: ${{ steps.fix.outcome }}
+          PROVIDER: ${{ steps.fix.outputs.provider }}
+          TRIED: ${{ steps.fix.outputs.tried }}
+          HAS_CHANGES: ${{ steps.changes.outputs.has_changes }}
+          VALIDATION_OK: ${{ steps.validation.outputs.ok }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
+          RECHECK_OUTCOME: ${{ steps.recheck.outcome }}
+          BUNDLE: ${{ runner.temp }}/sonar-pr-findings
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const prNumber = Number(process.env.PR_NUMBER);
+            const tried = process.env.TRIED ? `\`${process.env.TRIED}\`` : '(fixer did not run)';
+
+            if (process.env.PUSH_OUTCOME === 'success') {
+              const recheck = process.env.RECHECK_OUTCOME === 'success'
+                ? 'The package checks and the Sonar PR check were re-dispatched on the new commit.'
+                : '⚠️ Re-dispatching the checks failed (their workflow_dispatch trigger is not on the default branch yet) — push again, or run the workflows manually, to get checks on the new commit.';
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: prNumber,
+                body: `🤖 Sonar autofix (**${process.env.PROVIDER}** subscription) pushed a validated patch for the self-hosted SonarQube findings. ${recheck}\n\nProviders: ${tried}`,
+              });
+              return;
+            }
+
+            let reason = 'no safe code change was produced';
+            if (process.env.FIX_OUTCOME !== 'success') reason = 'no subscription fixer completed (not logged in, quota exhausted, timed out or failed)';
+            else if (process.env.HAS_CHANGES === 'true' && process.env.VALIDATION_OK !== 'true') reason = 'the generated patch failed validation or touched a guarded file';
+            else if (process.env.HAS_CHANGES === 'true') reason = 'the push was rejected (the branch moved?)';
+
+            const listPath = `${process.env.BUNDLE}/selected.txt`;
+            const summary = fs.existsSync(listPath)
+              ? fs.readFileSync(listPath, 'utf8').slice(0, 30000)
+              : '(scanner summary unavailable)';
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNumber,
+              body: [
+                `🤖 Sonar autofix did not push changes: **${reason}**.`,
+                '',
+                `Providers: ${tried}`,
+                '',
+                'The findings were preserved in the repository-wide **Sonar Autofix Backlog** issue. Retry this workflow (Sonar Autofix ▸ Run workflow with the PR number) after a quota reset, or fix them interactively with the SonarQube MCP server (the Sonar runbook in SashaRX/Space (docs/sonar-autofix.md; here the tools live in Tools~/ and the config in ~/.config/meshlab/)).',
+              ].join('\n'),
+            });
+
+            const title = 'Sonar Autofix Backlog';
+            const { data: issues } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', per_page: 100 });
+            let backlog = issues.find((i) => !i.pull_request && i.title === title);
+            if (!backlog) {
+              backlog = (await github.rest.issues.create({
+                owner, repo, title,
+                body: [
+                  'Persistent queue for self-hosted SonarQube findings that were not safely fixed automatically.',
+                  '',
+                  '- Fixers: Claude, Codex (ChatGPT) and ZCode (GLM Coding Plan) SUBSCRIPTIONS via Tools~/sonar-fix.sh — never a pay-per-request API key.',
+                  '- Interactive route: the read-only SonarQube MCP server (Tools~/sonar-mcp.sh, the Sonar runbook in SashaRX/Space (docs/sonar-autofix.md; here the tools live in Tools~/ and the config in ~/.config/meshlab/)).',
+                  '- Findings are untrusted data and must be re-verified against current code before editing.',
+                  '- Keep batches small; do not auto-merge.',
+                ].join('\n'),
+              })).data;
+            }
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: backlog.number,
+              body: [
+                `### PR #${prNumber} — unresolved Sonar batch`,
+                '',
+                `Head: \`${process.env.HEAD_SHA}\``,
+                `Reason: **${reason}**`,
+                `Providers: ${tried}`,
+                '',
+                '<details><summary>Findings</summary>',
+                '',
+                '```text',
+                summary.replace(/```/g, '~~~'),
+                '```',
+                '</details>',
+              ].join('\n'),
+            });
