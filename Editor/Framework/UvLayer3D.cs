@@ -60,8 +60,10 @@ namespace SashaRX.UnityMeshLab
                 var item = items[i];
                 if (!item.mesh) continue;
                 var entry = i < entries.Count ? entries[i] : null;
-                if (entry == null) continue;   // tool content draws its own wire and overlays
+                // The status bar's Wire is the one wireframe toggle of both canvas modes,
+                // tool content included; the UV layer and spot picking need an entry.
                 if (canvas.ShowWireframe) view.DrawWire(item.mesh, item.matrix, WireShaded);
+                if (entry == null) continue;
                 if (layerVisible)
                 {
                     int id = item.mesh.GetInstanceID();

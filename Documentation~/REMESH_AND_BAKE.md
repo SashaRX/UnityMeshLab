@@ -11,15 +11,21 @@ stage first brings every earlier stage up to date (missing output or changed
 settings, marked "settings changed" in its header) and clears everything after it.
 **Run all stages** re-runs the whole chain. The right panel previews the result:
 
-- **3D** — orbitable view (drag to orbit, scroll to zoom) of the source, voxel
-  remesh, simplified mesh or final result, with wireframe, shading, baked base
-  color, baked normal map and vertex color toggles. The **Bump** toggle applies
-  the baked tangent-space normal map to the result stage only (earlier stages
-  have no tangents); with *Hard edges = UV islands* the vertex normals are
-  smooth by design, so this toggle is what shows the transferred detail — the
-  vivid pink/cyan atlas in **Maps ▸ Normal** is that same detail in tangent
-  space, not corruption.
-  The **Trim** toggle, at the *Remesh* stage, shows the untrimmed remesh coloured
+- **3D** — a vertical list for the narrow right column: the **Stage** (source,
+  voxel remesh, simplified mesh or final result) shown in the canvas's 3D view,
+  then what is specific to this tool — **Baked base color** and **Baked normal
+  map** on the result, **Trim mask** on the remesh stage, **Cage shells** on the
+  result. Wireframe, the shading modes (vertex colours, normals, tangents, UV
+  channels), the UV fill mode, the island borders (**Bdr**) and spot picking are
+  the canvas's own controls (status bar and the 3D view's shading row) and
+  apply to the stage mesh like to any other mesh: with the result stage shown,
+  the UV layer draws the atlas's islands and their borders on the model in 3D.
+  The normal-map toggle applies the baked tangent-space normal map to the
+  result stage only (earlier stages have no tangents); with *Hard edges = UV
+  islands* the vertex normals are smooth by design, so this toggle is what
+  shows the transferred detail — the vivid pink/cyan atlas in **Maps ▸ Normal**
+  is that same detail in tangent space, not corruption.
+  **Trim mask**, at the *Remesh* stage, shows the untrimmed remesh coloured
   by what *Trim to source surface* did with each face: green kept, red the back
   of a sheet (a source face within reach faces the other way), orange a rim or a
   face with no source within reach — so what the cut removes, and why, is

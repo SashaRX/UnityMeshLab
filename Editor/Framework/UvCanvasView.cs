@@ -374,6 +374,9 @@ namespace SashaRX.UnityMeshLab
                 var draws = new List<ValueTuple<Mesh, MeshEntry, int>> { new ValueTuple<Mesh, MeshEntry, int>(mesh, entry, 0) };
                 var tile = new HashSet<Vector2Int> { new Vector2Int(0, 0) };
                 Texture bgTex = ResolveUvPreviewBackgroundTexture(ctx, draws);
+                // A tool entry's preview texture is the surface the 3D view already shows;
+                // laying it over the model again would only dim it.
+                if (entry != null && entry.renderer == null && bgTex == entry.previewTexture && !CheckerEnabled) bgTex = null;
                 if (bgTex != null)
                 {
                     float bgAlpha = CheckerEnabled ? 0.5f : (CurrentPreviewMode == PreviewMode.Lightmap ? 0.95f : 0.95f);

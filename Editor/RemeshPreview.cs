@@ -40,8 +40,8 @@ namespace SashaRX.UnityMeshLab
         View view;
         Stage stage = Stage.Result;
         Channel channel;
-        bool wireframe = true, shaded = true, textured = true, bumpMap = true, vertexColors, cageView, trimMaskView = true;
-        Material surface, wire;
+        bool textured = true, bumpMap = true, cageView, trimMaskView = true;
+        Material surface;
         Mesh cageOuter, cageInner; int cageMeshId; string cageKey;
         RemeshSource cageSourceRef; TriangleBvh cageSourceBvh;
         RemeshBaker.Maps mapSource;
@@ -72,7 +72,6 @@ namespace SashaRX.UnityMeshLab
         {
             Invalidate();
             if (surface) Object.DestroyImmediate(surface);
-            if (wire) Object.DestroyImmediate(wire);
         }
 
         // ── 3D ──
@@ -80,34 +79,37 @@ namespace SashaRX.UnityMeshLab
         // panel only picks the stage and the surface/overlay toggles; Fill3D and
         // Overlay3D feed the viewport through the tool's IUvTool3D implementation.
 
+        // Vertical, for a narrow right column beside the canvas. Only what is specific
+        // to this tool lives here: the stage, the baked maps on the result, the trim
+        // mask and the cage. Wire, shading modes, UV fill and island borders are the
+        // canvas's own controls (status bar and the 3D view's shading row) and apply
+        // to the stage mesh like to any other.
         void DrawMesh(Data data)
         {
-            using (new EditorGUILayout.HorizontalScope()) {
-                stage = (Stage)EditorGUILayout.EnumPopup(stage, GUILayout.Width(90));
-                wireframe = GUILayout.Toggle(wireframe, "Wire", EditorStyles.miniButtonLeft);
-                shaded = GUILayout.Toggle(shaded, "Shaded", EditorStyles.miniButtonMid);
-                textured = GUILayout.Toggle(textured, "Texture", EditorStyles.miniButtonMid);
-                bumpMap = GUILayout.Toggle(bumpMap, "Bump", EditorStyles.miniButtonMid);
-                vertexColors = GUILayout.Toggle(vertexColors, "Vertex color", EditorStyles.miniButtonMid);
-                trimMaskView = GUILayout.Toggle(trimMaskView, new GUIContent("Trim", "Remesh stage: colour the untrimmed remesh by what Trim to source surface did with each face."), EditorStyles.miniButtonMid);
-                cageView = GUILayout.Toggle(cageView, "Cage", EditorStyles.miniButtonRight);
-            }
+            stage = (Stage)EditorGUILayout.EnumPopup("Stage", stage);
+            bool result = stage == Stage.Result;
+            using (new EditorGUI.DisabledScope(!result || !data.baseColor))
+                textured = EditorGUILayout.ToggleLeft(new GUIContent("Baked base color", "Result stage: show the baked base color on the surface."), textured);
+            using (new EditorGUI.DisabledScope(!result || data.maps == null))
+                bumpMap = EditorGUILayout.ToggleLeft(new GUIContent("Baked normal map", "Result stage: shade with the baked tangent-space normal map (the saved material's look)."), bumpMap);
+            using (new EditorGUI.DisabledScope(stage != Stage.Remesh || !data.trimMask))
+                trimMaskView = EditorGUILayout.ToggleLeft(new GUIContent("Trim mask", "Remesh stage: colour the untrimmed remesh by what Trim to source surface did with each face."), trimMaskView);
+            using (new EditorGUI.DisabledScope(!result || data.geometry == null))
+                cageView = EditorGUILayout.ToggleLeft(new GUIContent("Cage shells", "Result stage: the projection limits — every corner pushed ±its reach along its cage direction; orange where the rays start, blue where they end."), cageView);
             var mesh = data.meshes[(int)stage];
             EditorGUILayout.LabelField(mesh ? $"{mesh.vertexCount:N0} vertices · {Triangles(mesh):N0} triangles" : "Run this stage to preview it.",
                 EditorStyles.miniLabel);
             if (ShowTrimMask(data))
-                EditorGUILayout.LabelField("Trim mask: green kept · red back of a sheet (opposite normal) · orange rim / no source within reach", EditorStyles.miniLabel);
+                EditorGUILayout.LabelField("Trim mask: green kept · red back of a sheet (opposite normal) · orange rim / no source within reach", EditorStyles.wordWrappedMiniLabel);
             var g = data.geometry;
             if (g != null) {
                 string coverage = data.maps != null ? $" · {100.0 * data.maps.covered / ((double)data.maps.size * data.maps.size):0.#}% texels used" : "";
                 EditorGUILayout.LabelField($"Atlas: {g.chartCount:N0} islands{coverage}", EditorStyles.miniLabel);
             }
-            EditorGUILayout.LabelField("The canvas shows the stage in 3D and the result's atlas in UV (switch at its bottom).", EditorStyles.centeredGreyMiniLabel);
+            EditorGUILayout.LabelField("Wire, shading modes, UV fill and island borders: canvas controls (status bar, 3D shading row).", EditorStyles.wordWrappedMiniLabel);
             if (GUI.changed) RequestRepaint?.Invoke();
         }
 
-        /// <summary>The selected stage mesh for the shared 3D canvas, with the surface
-        /// material this panel's toggles configure. False when no stage has run.</summary>
         bool ShowTrimMask(Data data) => trimMaskView && stage == Stage.Remesh && data.trimMask;
 
         // The mesh the 3D view shows for the stage: the trim mask stands in for the
@@ -120,7 +122,7 @@ namespace SashaRX.UnityMeshLab
             if (!mesh) return false;
             if (!EnsureResources()) return false;
             bool trimMask = ShowTrimMask(data);
-            if (shaded || trimMask) {
+            {
                 bool useTexture = textured && stage == Stage.Result && data.baseColor;
                 surface.SetTexture("_MainTex", useTexture ? data.baseColor : null);
                 surface.SetFloat("_UseTexture", useTexture ? 1 : 0);
@@ -132,34 +134,31 @@ namespace SashaRX.UnityMeshLab
                 // Beauty maps already contain the lighting; shading them again would
                 // double it, so the surface renders unlit exactly like the saved material.
                 surface.SetFloat("_Lit", stage == Stage.Result && data.maps != null && data.maps.beauty ? 0 : 1);
-                surface.SetFloat("_UseVertexColor", (vertexColors || trimMask) && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
+                surface.SetFloat("_UseVertexColor", trimMask && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
                 surface.SetColor("_Color", Color.white);
                 var materials = new Material[mesh.subMeshCount];
                 for (int sub = 0; sub < materials.Length; ++sub) materials[sub] = surface;
                 items.Add(new MeshViewport3D.Item(mesh, Matrix4x4.identity, materials));
             }
-            else items.Add(new MeshViewport3D.Item(mesh, Matrix4x4.identity, new Material[0]));
             return true;
         }
 
-        /// <summary>Wire and cage overlays for the stage mesh in the shared 3D canvas.</summary>
+        /// <summary>The cage overlay for the result in the shared 3D canvas (the wire is
+        /// the canvas's own, drawn by the hub's UV layer for every item).</summary>
         public void Overlay3D(Data data, MeshViewport3D view)
         {
             var mesh = DisplayMesh(data);
             if (!mesh || !EnsureResources()) return;
-            if (wireframe) view.DrawWire(mesh, Matrix4x4.identity, shaded ? new Color(0.05f, 0.05f, 0.05f, 1) : new Color(0.4f, 0.85f, 1f, 1));
             if (cageView && stage == Stage.Result && data.geometry != null && data.cageDistance > 0)
                 DrawCage(view, mesh, data);
         }
 
         bool EnsureResources()
         {
-            if (surface && wire) return true;
+            if (surface) return true;
             var shader = Shader.Find("Hidden/MeshLab/RemeshPreview");
             if (!shader) return false;
             surface = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-            wire = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-            wire.SetFloat("_Lit", 0); wire.SetFloat("_DepthOffset", -1);
             return true;
         }
 

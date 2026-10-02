@@ -989,7 +989,16 @@ namespace SashaRX.UnityMeshLab
             viewportItems.Clear(); viewportEntries.Clear();
             if (ActiveTool is IUvTool3D tool3D && tool3D.Get3DContent(viewportItems))
             {
-                for (int i = 0; i < viewportItems.Count; i++) viewportEntries.Add(null);
+                // A tool item showing the same mesh as one of the tool's UV entries gets
+                // that entry, so the UV layer (fill, island borders) and spot picking work
+                // on it in 3D exactly as on a context mesh; other items only get the wire.
+                for (int i = 0; i < viewportItems.Count; i++)
+                {
+                    MeshEntry match = null;
+                    foreach (var e in uvContentEntries)
+                        if (viewportItems[i].mesh != null && ctx.DMesh(e) == viewportItems[i].mesh) { match = e; break; }
+                    viewportEntries.Add(match);
+                }
                 return viewportItems;
             }
             viewportItems.Clear();
