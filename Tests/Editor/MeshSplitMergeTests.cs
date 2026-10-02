@@ -44,6 +44,22 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Combine_MirroredPartFlipsWindingAndHandedness()
+        {
+            var a = Quad(0, 1); created.Add(a);
+            var b = Quad(2, 1); created.Add(b);
+            var mirror = Matrix4x4.Scale(new Vector3(-1, 1, 1));
+            var merged = MeshSplitMerge.Combine(new List<(Mesh, Matrix4x4)> { (a, Matrix4x4.identity), (b, mirror) }, "M"); created.Add(merged);
+            var tris = merged.triangles;
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, new List<int>(tris).GetRange(0, 6), "the first part keeps its winding");
+            CollectionAssert.AreEqual(new[] { 4, 6, 5, 4, 7, 6 }, new List<int>(tris).GetRange(6, 6), "the mirrored part is re-wound");
+            Assert.AreEqual(1f, merged.tangents[0].w);
+            Assert.AreEqual(-1f, merged.tangents[4].w, "handedness flips with the mirror");
+            Assert.AreEqual(Vector3.back, merged.normals[4], "a mirror across X leaves a -Z normal alone");
+            Assert.AreEqual(-3f, merged.vertices[5].x, 1e-5f);
+        }
+
+        [Test]
         public void SplitAndMerge_RoundTripThroughALodGroup()
         {
             var root = new GameObject("Asset"); created.Add(root);
@@ -55,6 +71,8 @@ namespace SashaRX.UnityMeshLab.Tests
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             var mr = go.AddComponent<MeshRenderer>(); mr.sharedMaterials = new[] { mat, mat };
             lodGroup.SetLODs(new[] { new LOD(0.1f, new Renderer[] { mr }) });
+            var attachment = new GameObject("Attachment"); created.Add(attachment);
+            attachment.transform.SetParent(go.transform, false);
 
             var ctx = new UvToolContext();
             ctx.Refresh(lodGroup);
@@ -63,6 +81,9 @@ namespace SashaRX.UnityMeshLab.Tests
 
             Assert.AreEqual(1, MeshSplitMerge.SplitByMaterial(ctx, report.split, "test split"));
             Assert.AreEqual(2, lodGroup.GetLODs()[0].renderers.Length, "both children took the source's LOD slot");
+            Assert.IsTrue(go != null && go.GetComponent<MeshRenderer>() == null, "a source with children stays as a bare container");
+            Assert.AreSame(go.transform, attachment.transform.parent, "its child is kept");
+            Object.DestroyImmediate(go);
             foreach (var r in lodGroup.GetLODs()[0].renderers) { created.Add(r.gameObject); created.Add(r.GetComponent<MeshFilter>().sharedMesh); Assert.That(r.name, Does.EndWith("_LOD0")); }
 
             ctx.Refresh(lodGroup);
