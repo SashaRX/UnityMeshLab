@@ -190,14 +190,9 @@ namespace SashaRX.UnityMeshLab
         // whole folder back.
         static Object ExportFbx(string fbxPath, GameObject root, Material material, string prefabPath, bool embedTextures)
         {
-            UnityEditor.Formats.Fbx.Exporter.ModelExporter.ExportObjects(fbxPath, new Object[] { root },
-                new UnityEditor.Formats.Fbx.Exporter.ExportModelOptions {
-                    ExportFormat = UnityEditor.Formats.Fbx.Exporter.ExportFormat.Binary,
-                    // Embedded maps make the FBX self-contained; a linked FBX would
-                    // reference this machine's absolute paths instead.
-                    EmbedTextures = embedTextures });
-            var fbxInfo = new FileInfo(Path.GetFullPath(fbxPath));
-            if (!fbxInfo.Exists || fbxInfo.Length == 0) throw new IOException("FBX export produced an empty file.");
+            // Embedded maps make the FBX self-contained; a linked FBX would reference
+            // this machine's absolute paths instead.
+            FbxExport.Write(fbxPath, root, embedTextures);
             var modelImporter = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
             if (modelImporter != null) {
                 // The curated material + prefab ship next to the FBX; keep the importer

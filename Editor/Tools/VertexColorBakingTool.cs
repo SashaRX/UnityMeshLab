@@ -1558,7 +1558,7 @@ namespace SashaRX.UnityMeshLab
             List<Vector3> targetAnchors,
             float effectiveRadius)
         {
-            var sidecarEntries = CollisionMeshTool.GetCollisionMeshesFromSidecar(ctx.SourceFbxPath);
+            var sidecarEntries = SidecarStore.CollisionMeshes(ctx.SourceFbxPath);
             if (sidecarEntries == null || sidecarEntries.Count == 0)
                 return;
 

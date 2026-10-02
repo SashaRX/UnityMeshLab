@@ -485,13 +485,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             // Build CollisionMeshEntry and save to sidecar
-            string sidecarPath = Uv2DataAsset.GetSidecarPath(fbxPath);
-            var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sidecarPath);
-            if (data == null)
-            {
-                data = ScriptableObject.CreateInstance<Uv2DataAsset>();
-                AssetDatabase.CreateAsset(data, sidecarPath);
-            }
+            string sidecarPath = SidecarStore.PathFor(fbxPath);
+            var data = SidecarStore.LoadOrCreate(fbxPath);
 
             // Build flattened collision entry per source mesh
             int meshIdx = 0;
@@ -546,149 +541,17 @@ namespace SashaRX.UnityMeshLab
                 data.collisionEntries.Add(entry);
             }
 
-            EditorUtility.SetDirty(data);
-            AssetDatabase.SaveAssets();
+            SidecarStore.Save(data);
             UvtLog.Info($"[Collision] Saved to sidecar: {sidecarPath} ({data.collisionEntries.Count} collision entries)");
         }
 
         /// <summary>
-        /// Get the saved collision meshes for FBX export.
-        /// Returns list of (meshName, collisionMeshes, isConvex) for each entry.
-        /// Called by LightmapTransferTool.ExportFbx.
+        /// The saved collision meshes for FBX export, one list per entry (meshName,
+        /// meshes, isConvex). Forwards to <see cref="SidecarStore.CollisionMeshes"/>; the
+        /// caller owns and destroys the meshes.
         /// </summary>
         public static List<(string meshName, List<Mesh> meshes, bool isConvex)> GetCollisionMeshesFromSidecar(string fbxPath)
-        {
-            var result = new List<(string, List<Mesh>, bool)>();
-            string sidecarPath = Uv2DataAsset.GetSidecarPath(fbxPath);
-            var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sidecarPath);
-            if (data == null || data.collisionEntries == null) return result;
-
-            foreach (var entry in data.collisionEntries)
-            {
-                if (!TryValidateCollisionEntry(entry, out var globalTriangleIndices, out string validationError))
-                {
-                    UvtLog.Warn($"[Collision] Ignoring invalid sidecar entry: {validationError}");
-                    continue;
-                }
-
-                bool isConvex = entry.mode == 1;
-                var meshes = new List<Mesh>();
-                int hullCount = entry.positionOffsets.Length;
-
-                for (int h = 0; h < hullCount; h++)
-                {
-                    int posStart = entry.positionOffsets[h];
-                    int posEnd   = (h + 1 < hullCount) ? entry.positionOffsets[h + 1] : entry.allPositions.Length;
-                    int triStart = entry.triangleOffsets[h];
-                    int triEnd   = (h + 1 < hullCount) ? entry.triangleOffsets[h + 1] : entry.allTriangles.Length;
-
-                    int vertCount = posEnd - posStart;
-                    var verts = new Vector3[vertCount];
-                    Array.Copy(entry.allPositions, posStart, verts, 0, vertCount);
-
-                    int idxCount = triEnd - triStart;
-                    var tris = new int[idxCount];
-                    Array.Copy(entry.allTriangles, triStart, tris, 0, idxCount);
-                    if (globalTriangleIndices[h])
-                    {
-                        // Current sidecars store indices in the flattened vertex array.
-                        for (int i = 0; i < tris.Length; i++)
-                            tris[i] -= posStart;
-                    }
-
-                    var mesh = new Mesh();
-                    mesh.name = isConvex
-                        ? $"{entry.meshGroupKey}_COL_Hull{h}"
-                        : $"{entry.meshGroupKey}_COL";
-                    mesh.SetVertices(verts);
-                    mesh.SetTriangles(tris, 0);
-                    mesh.RecalculateNormals();
-                    mesh.RecalculateBounds();
-                    meshes.Add(mesh);
-                }
-
-                result.Add((entry.meshGroupKey, meshes, isConvex));
-            }
-            return result;
-        }
-
-        // Bounds keep malformed project-controlled sidecars from causing large
-        // secondary allocations during export. They are deliberately far above
-        // the expected size of collision geometry.
-        const int MaxSidecarHullCount = 1024;
-        const int MaxSidecarVertexCount = 1_000_000;
-        const int MaxSidecarIndexCount = 3_000_000;
-
-        static bool TryValidateCollisionEntry(
-            CollisionMeshEntry entry,
-            out bool[] globalTriangleIndices,
-            out string error)
-        {
-            globalTriangleIndices = null;
-            error = null;
-
-            if (entry == null)
-                return Invalid("entry is null", out error);
-            if (entry.mode != 0 && entry.mode != 1)
-                return Invalid($"'{entry.meshGroupKey}' has unknown mode {entry.mode}", out error);
-            if (entry.allPositions == null || entry.positionOffsets == null ||
-                entry.allTriangles == null || entry.triangleOffsets == null)
-                return Invalid($"'{entry.meshGroupKey}' has missing mesh arrays", out error);
-
-            int hullCount = entry.positionOffsets.Length;
-            if (hullCount == 0 || hullCount > MaxSidecarHullCount)
-                return Invalid($"'{entry.meshGroupKey}' has invalid hull count {hullCount}", out error);
-            if (entry.triangleOffsets.Length != hullCount)
-                return Invalid($"'{entry.meshGroupKey}' has mismatched offset arrays", out error);
-            if (entry.positionOffsets[0] != 0 || entry.triangleOffsets[0] != 0)
-                return Invalid($"'{entry.meshGroupKey}' has non-zero initial offsets", out error);
-            if (entry.allPositions.Length > MaxSidecarVertexCount ||
-                entry.allTriangles.Length > MaxSidecarIndexCount)
-                return Invalid($"'{entry.meshGroupKey}' exceeds collision mesh size limits", out error);
-
-            globalTriangleIndices = new bool[hullCount];
-            for (int h = 0; h < hullCount; h++)
-            {
-                int posStart = entry.positionOffsets[h];
-                int posEnd = h + 1 < hullCount ? entry.positionOffsets[h + 1] : entry.allPositions.Length;
-                int triStart = entry.triangleOffsets[h];
-                int triEnd = h + 1 < hullCount ? entry.triangleOffsets[h + 1] : entry.allTriangles.Length;
-
-                if (posStart < 0 || posEnd <= posStart || posEnd > entry.allPositions.Length)
-                    return Invalid($"'{entry.meshGroupKey}' has invalid vertex range for hull {h}", out error);
-                if (triStart < 0 || triEnd <= triStart || triEnd > entry.allTriangles.Length ||
-                    (triEnd - triStart) % 3 != 0)
-                    return Invalid($"'{entry.meshGroupKey}' has invalid triangle range for hull {h}", out error);
-
-                int vertexCount = posEnd - posStart;
-                bool canBeLocal = true;
-                bool canBeGlobal = true;
-                for (int i = triStart; i < triEnd; i++)
-                {
-                    int index = entry.allTriangles[i];
-                    canBeLocal &= index >= 0 && index < vertexCount;
-                    canBeGlobal &= index >= posStart && index < posEnd;
-                }
-
-                if (!canBeLocal && !canBeGlobal)
-                    return Invalid($"'{entry.meshGroupKey}' has out-of-range indices for hull {h}", out error);
-
-                // Before global rebasing was added, multi-hull sidecars stored
-                // per-hull local indices. Accept both safe encodings so existing
-                // generated data remains exportable.
-                // Prefer the current global encoding when an ambiguous range is
-                // valid as both; legacy local data normally contains index zero.
-                globalTriangleIndices[h] = canBeGlobal;
-            }
-
-            return true;
-        }
-
-        static bool Invalid(string message, out string error)
-        {
-            error = message;
-            return false;
-        }
+            => SidecarStore.CollisionMeshes(fbxPath);
 
         void RemoveFromScene()
         {

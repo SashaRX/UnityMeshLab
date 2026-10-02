@@ -116,7 +116,7 @@ namespace SashaRX.UnityMeshLab
                     go.AddComponent<MeshFilter>().sharedMesh = mesh;
                     var mr = go.AddComponent<MeshRenderer>();
                     mr.sharedMaterial = s < mats.Length ? mats[s] : null;
-                    CopyRendererSettings(e.renderer, mr);
+                    RendererSettings.Copy(e.renderer, mr, includeMaterials: false);
                     created.Add(mr);
                 }
                 if (created.Count == 0)
@@ -358,18 +358,6 @@ namespace SashaRX.UnityMeshLab
         }
 
         static UnityEngine.Rendering.VertexAttribute UvAttribute(int channel) => UnityEngine.Rendering.VertexAttribute.TexCoord0 + channel;
-
-        static void CopyRendererSettings(Renderer from, Renderer to)
-        {
-            to.shadowCastingMode = from.shadowCastingMode;
-            to.receiveShadows = from.receiveShadows;
-            to.lightProbeUsage = from.lightProbeUsage;
-            to.reflectionProbeUsage = from.reflectionProbeUsage;
-            to.motionVectorGenerationMode = from.motionVectorGenerationMode;
-            to.probeAnchor = from.probeAnchor;
-            to.lightmapIndex = from.lightmapIndex;
-            to.realtimeLightmapIndex = from.realtimeLightmapIndex;
-        }
 
         // The source renderer's slot in every LOD level takes the created renderers.
         static void ReplaceInLodGroup(LODGroup lodGroup, Renderer source, List<Renderer> created, string undoLabel)

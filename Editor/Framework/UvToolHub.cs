@@ -1853,47 +1853,14 @@ namespace SashaRX.UnityMeshLab
 
         void UpdateSelectedSidecar()
         {
-            selectedSidecarPath = null;
-            selectedFbxPath = null;
-            selectedResetLabel = null;
-
-            var fbxPaths = new HashSet<string>();
-            if (ctx?.MeshEntries != null)
-            {
-                foreach (var e in ctx.MeshEntries)
-                {
-                    Mesh m = e.fbxMesh ?? e.originalMesh;
-                    if (m == null) continue;
-                    string path = AssetDatabase.GetAssetPath(m);
-                    if (!string.IsNullOrEmpty(path) && path.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
-                        fbxPaths.Add(path);
-                }
-            }
-
+            selectedSidecarPath = selectedFbxPath = selectedResetLabel = null;
+            // The loaded entries' FBX files, else those under the selected object.
+            var fbxPaths = SidecarStore.FbxPaths(ctx?.MeshEntries);
             if (fbxPaths.Count == 0)
-            {
-                var go = Selection.activeGameObject;
-                if (go == null) return;
-                foreach (var mf in go.GetComponentsInChildren<MeshFilter>())
-                {
-                    if (mf.sharedMesh == null) continue;
-                    string path = AssetDatabase.GetAssetPath(mf.sharedMesh);
-                    if (!string.IsNullOrEmpty(path) && path.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
-                        fbxPaths.Add(path);
-                }
-            }
-
-            foreach (string fbx in fbxPaths)
-            {
-                string sidecar = Uv2DataAsset.GetSidecarPath(fbx);
-                if (AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sidecar) != null)
-                {
-                    selectedFbxPath = fbx;
-                    selectedSidecarPath = sidecar;
-                    selectedResetLabel = System.IO.Path.GetFileNameWithoutExtension(fbx);
-                    return;
-                }
-            }
+                fbxPaths = SidecarStore.FbxPaths(Selection.activeGameObject);
+            if (!SidecarStore.TryFindFirst(fbxPaths, out selectedFbxPath, out selectedSidecarPath))
+                return;
+            selectedResetLabel = System.IO.Path.GetFileNameWithoutExtension(selectedFbxPath);
         }
 
         void ResetSelectedUv2()
@@ -1906,9 +1873,7 @@ namespace SashaRX.UnityMeshLab
                 "Delete", "Cancel"))
                 return;
 
-            if (AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(selectedSidecarPath) != null)
-                AssetDatabase.DeleteAsset(selectedSidecarPath);
-
+            SidecarStore.Delete(new[] { selectedFbxPath });
             AssetDatabase.Refresh();
 
             {
