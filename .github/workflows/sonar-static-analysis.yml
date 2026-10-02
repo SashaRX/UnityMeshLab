@@ -357,3 +357,45 @@ jobs:
             echo ""
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # One table for the whole run: every checked PR with its gating / severe / advisory
+  # counts and the gating findings themselves, from the bundles the scan jobs uploaded.
+  summary:
+    name: Findings across the checked PRs
+    needs: [plan, scan]
+    if: always() && needs.plan.outputs.has-prs == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sonar-pr-findings-*
+          path: ${{ runner.temp }}/findings
+
+      - name: Tabulate
+        run: |
+          set -euo pipefail
+          {
+            echo "## SonarQube — findings on the changed lines of every checked PR"
+            echo ""
+            echo "| PR | Gating | Severe | Advisory |"
+            echo "|---|---|---|---|"
+            for d in "$RUNNER_TEMP"/findings/sonar-pr-findings-*/; do
+              [ -f "$d/findings.json" ] || continue
+              n="$(basename "$d" | sed 's/sonar-pr-findings-//')"
+              jq -r --arg pr "$n" '.findings as $f
+                | "| #\($pr) | \($f | map(select(.advisory | not)) | length) | \($f | map(select((.advisory | not) and .severe)) | length) | \($f | map(select(.advisory)) | length) |"' "$d/findings.json"
+            done | sort -t'#' -k2 -n
+            echo ""
+            for d in "$RUNNER_TEMP"/findings/sonar-pr-findings-*/; do
+              [ -f "$d/findings.json" ] || continue
+              n="$(basename "$d" | sed 's/sonar-pr-findings-//')"
+              if [ "$(jq '[.findings[] | select(.advisory | not)] | length' "$d/findings.json")" = "0" ]; then continue; fi
+              echo "<details><summary>PR #$n — gating findings</summary>"
+              echo ""
+              jq -r '.findings[] | select(.advisory | not) | "- `\(.rule)` \(.label) — `\(.path):\(.line // "")` \(.message | gsub("[\r\n]+"; " "))"' "$d/findings.json"
+              echo ""
+              echo "</details>"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
