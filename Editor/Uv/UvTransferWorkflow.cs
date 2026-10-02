@@ -16,7 +16,6 @@ namespace SashaRX.UnityMeshLab
 
         UvToolContext ctx;
         UvCanvasView canvas;
-        Action requestRepaint;
 
         // Surface-area scans materialize mesh vertex/index data and are far too
         // expensive to run on every OnGUI repaint. Cache the result keyed by the
@@ -26,7 +25,7 @@ namespace SashaRX.UnityMeshLab
         double _areaPreview;
         bool _hasAreaPreview;
 
-        public Action RequestRepaint { get => requestRepaint; set => requestRepaint = value; }
+        public Action RequestRepaint { get; set; }
 
         internal static bool IsBruteForcePackAvailable(int internalOversample)
         {
@@ -195,7 +194,7 @@ namespace SashaRX.UnityMeshLab
                         // showing a stale "running…" state.
                         if (UvProgress.IsActive) UvProgress.Fail(ex?.Message ?? "error");
                     }
-                    requestRepaint?.Invoke();
+                    RequestRepaint?.Invoke();
                 }, TaskScheduler.FromCurrentSynchronizationContext());
             }
             catch (System.Exception ex)
@@ -204,7 +203,7 @@ namespace SashaRX.UnityMeshLab
                 _pipelineInFlight = false;
                 UvtLog.Error($"[Pipeline] '{label}' failed to start: {ex.Message}");
                 if (UvProgress.IsActive) UvProgress.Fail(ex.Message);
-                requestRepaint?.Invoke();
+                RequestRepaint?.Invoke();
             }
         }
         Vector2 reportScroll;
@@ -417,7 +416,7 @@ namespace SashaRX.UnityMeshLab
                         var lodGroup = LodGroupUtility.CreateLodGroupStatic(siblings);
                         ctx.Refresh(lodGroup);
                         OnRefresh();
-                        requestRepaint?.Invoke();
+                        RequestRepaint?.Invoke();
                     }
                     GUI.backgroundColor = bgc;
                 }
@@ -437,7 +436,7 @@ namespace SashaRX.UnityMeshLab
                         {
                             ctx.Refresh(lodGroup);
                             OnRefresh();
-                            requestRepaint?.Invoke();
+                            RequestRepaint?.Invoke();
                         }
                     }
                     GUI.backgroundColor = bgc;
@@ -1246,7 +1245,7 @@ namespace SashaRX.UnityMeshLab
                     if (changed && canvas != null)
                     {
                         canvas.ValidationFilterMask = mask;
-                        requestRepaint?.Invoke();
+                        RequestRepaint?.Invoke();
                     }
                     EditorGUILayout.LabelField(
                         mask == TransferValidator.TriIssue.None ? "(all triangles drawn)" : $"mask: {mask}",
@@ -1284,7 +1283,7 @@ namespace SashaRX.UnityMeshLab
                 uv0Reports[e.originalMesh.GetInstanceID()] = report;
             }
             uv0Analyzed = true;
-            requestRepaint?.Invoke();
+            RequestRepaint?.Invoke();
         }
 
         /// <summary>meshopt binary-equivalence dedup + GPU cache/overdraw/
@@ -1316,7 +1315,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             ctx.ClearAllCaches();
-            requestRepaint?.Invoke();
+            RequestRepaint?.Invoke();
         }
 
         /// <summary>UV-aware false-seam weld via Uv0Analyzer.UvEdgeWeld.
@@ -1359,7 +1358,7 @@ namespace SashaRX.UnityMeshLab
 
             uv0Welded = true;
             ctx.ClearAllCaches();
-            requestRepaint?.Invoke();
+            RequestRepaint?.Invoke();
         }
 
         void ExecSymmetrySplit(bool includeTargets, float separationThreshold = 0.10f)
@@ -1430,7 +1429,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             ctx.ClearAllCaches();
-            requestRepaint?.Invoke();
+            RequestRepaint?.Invoke();
         }
 
         // Sync entry — used by sweep loops where each cell runs end-to-end
@@ -1777,7 +1776,7 @@ namespace SashaRX.UnityMeshLab
 
             if (cancelled)
             {
-                requestRepaint?.Invoke();
+                RequestRepaint?.Invoke();
                 return false;
             }
             if (separationConfigs.Length > 1 && bestConfigIdx > 0)
@@ -1785,7 +1784,7 @@ namespace SashaRX.UnityMeshLab
                     $"(sep={separationConfigs[bestConfigIdx]:P0})");
 
             UvtLog.Info("[Pipeline] Complete.");
-            requestRepaint?.Invoke();
+            RequestRepaint?.Invoke();
             return true;
         }
 
@@ -1922,7 +1921,7 @@ namespace SashaRX.UnityMeshLab
             // later failing group must not erase an earlier group's success.
             ctx.HasRepack = ctx.MeshEntries.Any(e => e.repackedMesh != null);
             ctx.ClearAllCaches();
-            requestRepaint?.Invoke();
+            RequestRepaint?.Invoke();
         }
 
         Task ExecRepackPerMeshAsync(List<MeshEntry> entries) => ExecRepackPerMeshImpl(entries, useAsync: true);
@@ -1968,7 +1967,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     ctx.HasTransfer = false;
                     UvtLog.Warn("[Transfer] No included target LOD meshes; transfer skipped.");
-                    requestRepaint?.Invoke();
+                    RequestRepaint?.Invoke();
                     return;
                 }
 
@@ -1990,7 +1989,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 ctx.HasTransfer = !UvProgress.CancelRequested;
                 completedSuccessfully = !UvProgress.CancelRequested;
-                requestRepaint?.Invoke();
+                RequestRepaint?.Invoke();
             }
             finally
             {
@@ -2106,7 +2105,6 @@ namespace SashaRX.UnityMeshLab
         }
 
         void ApplyUv2ToFbx() => ctx.Assets.ApplyUv2Public();
-        Mesh GetResultMesh(MeshEntry entry) => ctx.Assets.GetResultMesh(entry);
         public void ExportFbxPublic(bool overwriteSource) => ctx.Assets.ExportFbxPublic(overwriteSource);
         public void ExportFbxPublic(bool overwriteSource, FbxExportIntent intent) => ctx.Assets.ExportFbxPublic(overwriteSource, intent);
         public void ApplyUv2Public() => ctx.Assets.ApplyUv2Public();
@@ -2120,7 +2118,7 @@ namespace SashaRX.UnityMeshLab
             => ctx.Assets.ExportIsolatedChannelsToFbx(path, entries, intent);
 
         public void BeforeAssetWrite() => RestoreAllPreviews();
-        public void AfterAssetWrite() { OnRefresh(); SaveSettingsToSidecar(); requestRepaint?.Invoke(); }
+        public void AfterAssetWrite() { OnRefresh(); SaveSettingsToSidecar(); RequestRepaint?.Invoke(); }
 
         void RefreshSetupSelectionCache(GameObject selected, List<(GameObject go, int lodIndex)> siblings)
         {
@@ -2187,7 +2185,7 @@ namespace SashaRX.UnityMeshLab
             ctx.ClearAllCaches();
             shellTransformCache.Clear();
             canvas.ClearHoverState(false);
-            requestRepaint?.Invoke();
+            RequestRepaint?.Invoke();
         }
 
         static void DestroyWorkingMesh(ref Mesh mesh)
@@ -2209,7 +2207,7 @@ namespace SashaRX.UnityMeshLab
 
             ctx.Refresh(ctx.LodGroup);
             OnRefresh();
-            requestRepaint?.Invoke();
+            RequestRepaint?.Invoke();
         }
 
         void ResetPipelineState()
@@ -2226,7 +2224,7 @@ namespace SashaRX.UnityMeshLab
             AssetDatabase.Refresh();
             ctx.Refresh(ctx.LodGroup);
             OnRefresh();
-            requestRepaint?.Invoke();
+            RequestRepaint?.Invoke();
         }
 
         /// <summary>
@@ -2391,7 +2389,7 @@ namespace SashaRX.UnityMeshLab
                     }
 
                     if (canvas.HoverHitValid != hadHit || canvas.HoveredShellId != prevShell)
-                        requestRepaint?.Invoke();
+                        RequestRepaint?.Invoke();
                     sv.Repaint();
                 }
             }
@@ -2400,7 +2398,7 @@ namespace SashaRX.UnityMeshLab
                 canvas.HoverHitValid = false;
                 canvas.HoveredShellId = -1;
                 sceneSpotCachedEntry = null;
-                requestRepaint?.Invoke();
+                RequestRepaint?.Invoke();
             }
 
             if (e.type != EventType.Repaint) return;
