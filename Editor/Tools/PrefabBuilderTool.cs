@@ -42,20 +42,8 @@ namespace SashaRX.UnityMeshLab
         bool hierarchyFoldout = true;
 
         // ── Split/Merge state ──
-        struct SplitCandidate
-        {
-            public MeshEntry entry;
-            public bool include;
-        }
-        struct MergeGroup
-        {
-            public int lodIndex;
-            public Material material;
-            public List<MeshEntry> entries;
-            public bool include;
-        }
-        List<SplitCandidate> splitCandidates;
-        List<MergeGroup> mergeCandidates;
+        List<MeshSplitMerge.SplitCandidate> splitCandidates;
+        List<MeshSplitMerge.MergeGroup> mergeCandidates;
         bool splitMergeFoldout;
 
         // ── LOD management state ──
@@ -1723,241 +1711,33 @@ namespace SashaRX.UnityMeshLab
 
         void ScanSplitMerge()
         {
-            splitCandidates = new List<SplitCandidate>();
-            mergeCandidates = new List<MergeGroup>();
-
-            var mergeMap = new Dictionary<string, MergeGroup>();
-
-            for (int li = 0; li < ctx.LodCount; li++)
-            {
-                var entries = ctx.ForLod(li);
-                foreach (var e in entries)
-                {
-                    var mesh = e.originalMesh ?? e.fbxMesh;
-                    if (mesh == null || e.renderer == null) continue;
-
-                    if (mesh.subMeshCount > 1)
-                    {
-                        splitCandidates.Add(new SplitCandidate
-                        {
-                            entry = e,
-                            include = true
-                        });
-                    }
-
-                    var mats = e.renderer.sharedMaterials;
-                    if (mesh.subMeshCount == 1 && mats.Length == 1 && mats[0] != null)
-                    {
-                        string key = $"{li}_{mats[0].GetInstanceID()}";
-                        if (!mergeMap.ContainsKey(key))
-                            mergeMap[key] = new MergeGroup
-                            {
-                                lodIndex = li,
-                                material = mats[0],
-                                entries = new List<MeshEntry>(),
-                                include = true
-                            };
-                        mergeMap[key].entries.Add(e);
-                    }
-                }
-            }
-
-            foreach (var kvp in mergeMap)
-                if (kvp.Value.entries.Count > 1)
-                    mergeCandidates.Add(kvp.Value);
-
-            UvtLog.Info($"Split/Merge scan: {splitCandidates.Count} split, {mergeCandidates.Count} merge.");
+            var report = MeshSplitMerge.Scan(ctx);
+            splitCandidates = report.split; mergeCandidates = report.merge;
         }
 
         void FixSplitByMaterial()
         {
             if (splitCandidates == null) return;
-
-            Undo.SetCurrentGroupName("Prefab Builder: Split by Material");
-            int undoGroup = Undo.GetCurrentGroup();
-            int split = 0;
-
-            foreach (var sc in splitCandidates)
+            // The split preview swaps materials: restore before the library reads them.
+            preview?.Restore();
+            previewMode = PreviewMode.None;
+            int split = MeshSplitMerge.SplitByMaterial(ctx, splitCandidates, "Prefab Builder: Split by Material");
+            if (split > 0 && ctx.LodGroup != null)
             {
-                if (!sc.include) continue;
-                if (sc.entry.renderer == null || sc.entry.meshFilter == null) continue;
-                var mesh = sc.entry.originalMesh ?? sc.entry.fbxMesh;
-                if (mesh == null || !mesh.isReadable) continue;
-
-                var mats = sc.entry.renderer.sharedMaterials;
-                string srcName = sc.entry.renderer.name;
-                srcName = MeshNaming.SplitLodSuffix(srcName, out string lodSuffix);
-
-                var parent = sc.entry.renderer.transform.parent;
-
-                for (int s = 0; s < mesh.subMeshCount && s < mats.Length; s++)
-                {
-                    string matName = mats[s] != null ? mats[s].name : $"mat{s}";
-                    string childName = $"{srcName}_{matName}{lodSuffix}";
-
-                    // Extract submesh
-                    var subTris = mesh.GetTriangles(s);
-                    var subMesh = MeshHygieneUtility.ExtractSubmesh(mesh, subTris);
-                    if (subMesh == null) continue;
-                    subMesh.name = childName;
-
-                    var childGo = new GameObject(childName);
-                    Undo.RegisterCreatedObjectUndo(childGo, "Split");
-                    childGo.transform.SetParent(parent, false);
-                    childGo.transform.localPosition = sc.entry.renderer.transform.localPosition;
-                    childGo.transform.localRotation = sc.entry.renderer.transform.localRotation;
-                    childGo.transform.localScale = sc.entry.renderer.transform.localScale;
-
-                    var newMf = childGo.AddComponent<MeshFilter>();
-                    newMf.sharedMesh = subMesh;
-                    var newMr = childGo.AddComponent<MeshRenderer>();
-                    newMr.sharedMaterials = new[] { mats[s] };
-
-                    GameObjectUtility.SetStaticEditorFlags(childGo,
-                        GameObjectUtility.GetStaticEditorFlags(sc.entry.renderer.gameObject));
-                }
-
-                UvtLog.Info($"Split: {sc.entry.renderer.name} -> {mesh.subMeshCount} children");
-                Undo.DestroyObjectImmediate(sc.entry.renderer.gameObject);
-                split++;
-            }
-
-            Undo.CollapseUndoOperations(undoGroup);
-
-            if (split > 0)
-            {
-                ctx.Refresh(ctx.LodGroup);
                 RebuildLodGroupFromNames();
                 ctx.LodGroup.RecalculateBounds();
             }
-
-            splitCandidates = null;
-            mergeCandidates = null;
-            preview?.Restore();
-            previewMode = PreviewMode.None;
+            splitCandidates = null; mergeCandidates = null;
             requestRepaint?.Invoke();
         }
 
         void FixMerge()
         {
             if (mergeCandidates == null) return;
-
-            Undo.SetCurrentGroupName("Prefab Builder: Merge");
-            int undoGroup = Undo.GetCurrentGroup();
-            int merged = 0;
-
-            foreach (var g in mergeCandidates)
-            {
-                if (!g.include || g.entries.Count < 2) continue;
-
-                var firstEntry = g.entries[0];
-                if (firstEntry.renderer == null) continue;
-
-                var parent = firstEntry.renderer.transform.parent;
-                var baseMatrix = firstEntry.renderer.transform.worldToLocalMatrix;
-
-                // Combine meshes
-                var allPos = new List<Vector3>();
-                var allNormals = new List<Vector3>();
-                var allUvs = new List<Vector2>();
-                var allTris = new List<int>();
-                var destroyList = new List<GameObject>();
-
-                foreach (var e in g.entries)
-                {
-                    var mesh = e.originalMesh ?? e.fbxMesh;
-                    if (mesh == null || e.renderer == null) continue;
-
-                    var verts = mesh.vertices;
-                    var normals = mesh.normals;
-                    var uvs = mesh.uv;
-                    var tris = mesh.triangles;
-
-                    Matrix4x4 toFirst = baseMatrix * e.renderer.transform.localToWorldMatrix;
-                    int vertBase = allPos.Count;
-
-                    for (int v = 0; v < verts.Length; v++)
-                    {
-                        allPos.Add(toFirst.MultiplyPoint3x4(verts[v]));
-                        if (normals != null && v < normals.Length)
-                            allNormals.Add(toFirst.MultiplyVector(normals[v]).normalized);
-                        if (uvs != null && v < uvs.Length)
-                            allUvs.Add(uvs[v]);
-                    }
-
-                    for (int t = 0; t < tris.Length; t++)
-                        allTris.Add(tris[t] + vertBase);
-
-                    if (e != firstEntry)
-                        destroyList.Add(e.renderer.gameObject);
-                }
-
-                var mergedMesh = new Mesh();
-                mergedMesh.name = firstEntry.renderer.name;
-                mergedMesh.SetVertices(allPos);
-                if (allNormals.Count == allPos.Count) mergedMesh.SetNormals(allNormals);
-                if (allUvs.Count == allPos.Count) mergedMesh.SetUVs(0, allUvs);
-                mergedMesh.SetTriangles(allTris, 0);
-                mergedMesh.RecalculateBounds();
-
-                Undo.RecordObject(firstEntry.meshFilter, "Merge");
-                firstEntry.meshFilter.sharedMesh = mergedMesh;
-
-                // Record the LODGroup before rewriting its renderer arrays.
-                // Without this, undoing the merge restores the destroyed
-                // GameObjects (Undo.DestroyObjectImmediate is undoable) but
-                // leaves the LODGroup pointing at the merged renderer list,
-                // so the restored objects fall out of LOD switching.
-                Undo.RecordObject(ctx.LodGroup, "Merge");
-
-                // Update LODGroup renderers
-                var lods = ctx.LodGroup.GetLODs();
-                for (int li = 0; li < lods.Length; li++)
-                {
-                    var renderers = new List<Renderer>(lods[li].renderers);
-                    bool replaced = false;
-                    for (int ri = renderers.Count - 1; ri >= 0; ri--)
-                    {
-                        if (renderers[ri] == null) continue;
-                        if (destroyList.Contains(renderers[ri].gameObject))
-                        {
-                            if (!replaced)
-                            {
-                                renderers[ri] = firstEntry.renderer;
-                                replaced = true;
-                            }
-                            else
-                                renderers.RemoveAt(ri);
-                        }
-                    }
-                    lods[li].renderers = renderers.ToArray();
-                }
-                ctx.LodGroup.SetLODs(lods);
-                if (PrefabUtility.IsPartOfPrefabInstance(ctx.LodGroup))
-                    PrefabUtility.RecordPrefabInstancePropertyModifications(ctx.LodGroup);
-
-                foreach (var go in destroyList)
-                {
-                    if (go == null) continue;
-                    Undo.DestroyObjectImmediate(go);
-                }
-
-                merged++;
-                UvtLog.Info($"Merged: {g.entries.Count} objects -> {firstEntry.renderer.name}");
-            }
-
-            Undo.CollapseUndoOperations(undoGroup);
-
-            if (merged > 0)
-            {
-                ctx.Refresh(ctx.LodGroup);
-                ctx.LodGroup.RecalculateBounds();
-            }
-
-            splitCandidates = null;
-            mergeCandidates = null;
             preview?.Restore();
             previewMode = PreviewMode.None;
+            MeshSplitMerge.MergeSameMaterial(ctx, mergeCandidates, "Prefab Builder: Merge");
+            splitCandidates = null; mergeCandidates = null;
             requestRepaint?.Invoke();
         }
 
