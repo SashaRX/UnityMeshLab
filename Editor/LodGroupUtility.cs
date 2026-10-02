@@ -177,6 +177,15 @@ namespace SashaRX.UnityMeshLab
         internal static LODGroup CreateLodGroupFromRenderers(GameObject root)
             => LodHierarchy.CreateFromRenderers(root, 0.01f, requireRenderers: true, out _);
 
+        static bool IsMeshReferenced(Mesh mesh)
+        {
+            foreach (var filter in Resources.FindObjectsOfTypeAll<MeshFilter>())
+                if (filter.sharedMesh == mesh) return true;
+            foreach (var renderer in Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>())
+                if (renderer.sharedMesh == mesh) return true;
+            return false;
+        }
+
         internal static void ClearGeneratedLods(UvToolContext ctx)
         {
             if (ctx.GeneratedLodObjects.Count == 0) return;
@@ -195,23 +204,32 @@ namespace SashaRX.UnityMeshLab
                 foreach (var lod in lods)
                 {
                     if (lod.renderers == null || lod.renderers.Length == 0) continue;
-                    bool anyGenerated = false;
-                    foreach (var r in lod.renderers)
-                        if (r != null && generatedSet.Contains(r.gameObject))
-                        { anyGenerated = true; break; }
-                    if (!anyGenerated) cleanedLods.Add(lod);
+                    var remaining = new List<Renderer>();
+                    foreach (var renderer in lod.renderers)
+                        if (renderer != null && !generatedSet.Contains(renderer.gameObject)) remaining.Add(renderer);
+                    if (remaining.Count > 0)
+                        cleanedLods.Add(new LOD(lod.screenRelativeTransitionHeight, remaining.ToArray()) { fadeTransitionWidth = lod.fadeTransitionWidth });
                 }
 
-                if (cleanedLods.Count != lods.Length)
+                if (generatedSet.Count > 0)
                 {
                     Undo.RecordObject(ctx.LodGroup, "Clear Generated LODs");
                     ctx.LodGroup.SetLODs(cleanedLods.ToArray());
                 }
             }
 
-            // Destroy generated GameObjects (top-level ones destroy children too)
+            var ownedMeshes = new HashSet<Mesh>();
             foreach (var go in ctx.GeneratedLodObjects)
+            {
+                if (ctx.GeneratedLodMeshes.TryGetValue(go, out var mesh))
+                {
+                    if (mesh && !EditorUtility.IsPersistent(mesh)) ownedMeshes.Add(mesh);
+                    ctx.GeneratedLodMeshes.Remove(go);
+                }
                 if (go != null) Undo.DestroyObjectImmediate(go);
+            }
+            foreach (var mesh in ownedMeshes)
+                if (!IsMeshReferenced(mesh)) Undo.DestroyObjectImmediate(mesh);
 
             Undo.CollapseUndoOperations(undoGroup);
 

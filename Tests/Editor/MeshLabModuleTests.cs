@@ -236,12 +236,86 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsEmpty(context.GeneratedLodObjects);
                 Assert.AreEqual(1, context.LodGroup.GetLODs().Length);
                 Assert.AreSame(source, child.GetComponent<MeshFilter>().sharedMesh);
+                Assert.IsTrue(generated == null, "Owned temporary LOD meshes must be released with their objects");
             }
             finally
             {
                 UnityEngine.Object.DestroyImmediate(root);
                 if (generated != null) UnityEngine.Object.DestroyImmediate(generated);
                 UnityEngine.Object.DestroyImmediate(source);
+            }
+        }
+
+        [Test]
+        public void GeneratedLodCleanupDoesNotCrossGroupBoundariesOrDropOtherRenderers()
+        {
+            var rootA = new GameObject("A");
+            var rootB = new GameObject("B");
+            var groupA = rootA.AddComponent<LODGroup>();
+            var groupB = rootB.AddComponent<LODGroup>();
+            var generatedA = new GameObject("A_LOD1"); generatedA.transform.SetParent(rootA.transform);
+            var generatedB = new GameObject("B_LOD1"); generatedB.transform.SetParent(rootB.transform);
+            var retainedB = new GameObject("B_LOD0"); retainedB.transform.SetParent(rootB.transform);
+            var meshA = new Mesh(); var meshB = new Mesh();
+            generatedA.AddComponent<MeshFilter>().sharedMesh = meshA;
+            generatedB.AddComponent<MeshFilter>().sharedMesh = meshB;
+            var rendererA = generatedA.AddComponent<MeshRenderer>();
+            var rendererB = generatedB.AddComponent<MeshRenderer>();
+            var retainedRenderer = retainedB.AddComponent<MeshRenderer>();
+            groupA.SetLODs(new[] { new LOD(.5f, new[] { rendererA }) });
+            groupB.SetLODs(new[] { new LOD(.5f, new[] { rendererB, retainedRenderer }) });
+            try
+            {
+                var context = new UvToolContext(); context.Refresh(groupA);
+                context.GeneratedLodObjects.Add(generatedA); context.GeneratedLodMeshes.Add(generatedA, meshA);
+                groupA = LodGroupUtility.Rebuild(rootA, groupA.GetLODs());
+                context.LodGroup = groupA;
+                CollectionAssert.AreEqual(new[] { generatedA }, context.GeneratedLodObjects, "Ownership survives a LODGroup component rebuild");
+                context.Refresh(groupB);
+                Assert.IsEmpty(context.GeneratedLodObjects);
+                context.GeneratedLodObjects.Add(generatedB); context.GeneratedLodMeshes.Add(generatedB, meshB);
+                LodGroupUtility.ClearGeneratedLods(context);
+                Assert.IsTrue(generatedA != null); Assert.IsTrue(meshA != null);
+                Assert.AreSame(rendererA, groupA.GetLODs()[0].renderers[0]);
+                Assert.IsTrue(generatedB == null); Assert.IsTrue(meshB == null);
+                Assert.AreSame(retainedRenderer, groupB.GetLODs()[0].renderers[0]);
+                context.Refresh(groupA);
+                CollectionAssert.AreEqual(new[] { generatedA }, context.GeneratedLodObjects);
+                LodGroupUtility.ClearGeneratedLods(context);
+                Assert.IsTrue(generatedA == null); Assert.IsTrue(meshA == null);
+                Assert.IsEmpty(context.GeneratedLodMeshes);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootA); UnityEngine.Object.DestroyImmediate(rootB);
+                if (meshA != null) UnityEngine.Object.DestroyImmediate(meshA);
+                if (meshB != null) UnityEngine.Object.DestroyImmediate(meshB);
+            }
+        }
+
+        [Test]
+        public void GeneratedLodCleanupPreservesAMeshSharedOutsideTheGeneratedObjects()
+        {
+            var root = new GameObject("Body");
+            var generated = new GameObject("Body_LOD1"); generated.transform.SetParent(root.transform);
+            var other = new GameObject("Other");
+            var mesh = new Mesh();
+            generated.AddComponent<MeshFilter>().sharedMesh = mesh;
+            other.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var renderer = generated.AddComponent<MeshRenderer>();
+            var group = root.AddComponent<LODGroup>(); group.SetLODs(new[] { new LOD(.5f, new[] { renderer }) });
+            try
+            {
+                var context = new UvToolContext(); context.Refresh(group);
+                context.GeneratedLodObjects.Add(generated); context.GeneratedLodMeshes.Add(generated, mesh);
+                LodGroupUtility.ClearGeneratedLods(context);
+                Assert.IsTrue(generated == null); Assert.IsTrue(mesh != null);
+                Assert.AreSame(mesh, other.GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root); UnityEngine.Object.DestroyImmediate(other);
+                UnityEngine.Object.DestroyImmediate(mesh);
             }
         }
 

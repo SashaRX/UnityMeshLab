@@ -133,6 +133,7 @@ namespace SashaRX.UnityMeshLab
                         if (entry.renderer != null)
                         {
                             var go = new GameObject(meshName);
+                            Undo.RegisterCreatedObjectUndo(go, "Generate LOD");
 
                             Transform srcParent = entry.renderer.transform.parent;
                             Transform lodGroupTransform = ctx.LodGroup.transform;
@@ -153,6 +154,8 @@ namespace SashaRX.UnityMeshLab
                             go.transform.localPosition = entry.renderer.transform.localPosition;
                             go.transform.localRotation = entry.renderer.transform.localRotation;
                             go.transform.localScale    = entry.renderer.transform.localScale;
+                            Undo.RegisterCreatedObjectUndo(r.simplifiedMesh, "Generate LOD Mesh");
+                            ctx.GeneratedLodMeshes[go] = r.simplifiedMesh;
                             var mf = go.AddComponent<MeshFilter>();
                             mf.sharedMesh = r.simplifiedMesh;
                             var mr = go.AddComponent<MeshRenderer>();
@@ -166,7 +169,6 @@ namespace SashaRX.UnityMeshLab
 
                             GameObjectUtility.SetStaticEditorFlags(go,
                                 GameObjectUtility.GetStaticEditorFlags(entry.renderer.gameObject));
-                            Undo.RegisterCreatedObjectUndo(go, "Generate LOD");
                             result.generatedObjects.Add(go);
                             lodRenderers.Add(mr);
                         }

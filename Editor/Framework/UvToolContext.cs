@@ -31,7 +31,21 @@ namespace SashaRX.UnityMeshLab
         MeshAssetOperations assets;
         /// <summary>Saving/export belongs to this window's context, independently of any tab.</summary>
         public MeshAssetOperations Assets => assets ?? (assets = new MeshAssetOperations(this));
-        internal readonly List<GameObject> GeneratedLodObjects = new List<GameObject>();
+        readonly Dictionary<GameObject, List<GameObject>> generatedLods = new Dictionary<GameObject, List<GameObject>>();
+        readonly List<GameObject> unboundGeneratedLods = new List<GameObject>();
+        internal readonly Dictionary<GameObject, Mesh> GeneratedLodMeshes = new Dictionary<GameObject, Mesh>();
+        internal List<GameObject> GeneratedLodObjects
+        {
+            get
+            {
+                if (!LodGroup) return unboundGeneratedLods;
+                // Rebuilding the LODGroup component keeps the same root and ownership.
+                var root = LodGroup.gameObject;
+                if (!generatedLods.TryGetValue(root, out var objects))
+                    generatedLods.Add(root, objects = new List<GameObject>());
+                return objects;
+            }
+        }
 
         // ── Selection ──
         public LODGroup LodGroup;
