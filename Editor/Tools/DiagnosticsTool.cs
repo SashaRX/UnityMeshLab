@@ -145,7 +145,6 @@ namespace SashaRX.UnityMeshLab
                 if (GUILayout.Button("Open BenchmarkReports folder", GUILayout.Height(22)))
                     EditorUtility.RevealInFinder(reports);
             }
-            requestRepaint?.Invoke();
         }
     }
 }
