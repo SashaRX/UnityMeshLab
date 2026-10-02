@@ -403,6 +403,32 @@ jobs:
 
   # One table for the whole run: every checked PR with its gating / severe / advisory
   # counts and the gating findings themselves, from the bundles the scan jobs uploaded.
+  # One autofix call per checked same-repo PR, right after its scan published the
+  # findings bundle. The called workflow decides on its own whether there is anything
+  # to do (open PR, trusted author, head unchanged, a non-empty bundle) and runs on the
+  # self-hosted runner where the subscription CLIs are logged in (vars.CI_RUNNER).
+  autofix:
+    name: Autofix
+    needs: [plan, scan]
+    if: always() && needs.plan.outputs.has-prs == 'true' && needs.scan.result != 'skipped' && needs.scan.result != 'cancelled'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.plan.outputs.pr-matrix) }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    uses: ./.github/workflows/sonar-autofix.yml
+    with:
+      pr_number: ${{ matrix.pr }}
+      head_sha: ${{ matrix.head }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+      ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+
   summary:
     name: Findings across the checked PRs
     needs: [plan, scan]
