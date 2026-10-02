@@ -97,6 +97,9 @@ jobs:
                 return skip(`PR #${prNumber} moved on to ${pr.head.sha}; its own run will follow`);
               }
               runId = context.runId;
+              if (!(await findingsArtifact(runId))) {
+                return skip(`no ${artifactName} artifact in this run (the Sonar PR check did not complete)`);
+              }
             } else {
               // Manual retry: the newest completed SonarQube run that published a bundle
               // for this PR (the bundle's own head is verified after download).
@@ -146,8 +149,8 @@ jobs:
           script: |
             const fs = require('fs');
             const { meta, findings } = JSON.parse(fs.readFileSync(`${process.env.BUNDLE}/findings.json`, 'utf8'));
-            if (meta?.head && meta.head !== process.env.HEAD_SHA) {
-              core.notice(`Sonar autofix skipped: the findings bundle is for ${meta.head.slice(0, 7)}, the PR head is ${process.env.HEAD_SHA.slice(0, 7)}`);
+            if (!meta?.head || meta.head !== process.env.HEAD_SHA) {
+              core.notice(`Sonar autofix skipped: the findings bundle is for ${meta?.head ? meta.head.slice(0, 7) : 'an unknown head'}, the PR head is ${process.env.HEAD_SHA.slice(0, 7)}`);
               core.setOutput('has_issues', 'false');
               return;
             }
@@ -215,6 +218,10 @@ jobs:
           set -uo pipefail
           prompt="$RUNNER_TEMP/sonar-pr-findings/prompt.md"
           fixer_script="$RUNNER_TEMP/tooling/sonar-fix.sh"
+          # .git/ is outside the guard's `git status`: its config, hooks and info are
+          # snapshotted here so the guard can prove the fixer left them alone (a planted
+          # hook or fsmonitor would otherwise run inside the push step's git).
+          tar -cf "$RUNNER_TEMP/git-meta.tar" .git/config .git/hooks .git/info
           # setsid: the fixer and everything it starts share ONE session, and that is
           # how they are stopped together — `timeout` inside sonar-fix.sh moves the CLI
           # into a process group of its own, which a process-group kill would miss.
@@ -282,6 +289,12 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
+          if ! tar -df "$RUNNER_TEMP/git-meta.tar" >/dev/null 2>&1; then
+            echo "::error::The patch changed .git/config, .git/hooks or .git/info; nothing from this run is pushed."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "guard=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           status="$(git status --porcelain --untracked-files=all)"
           printf '%s\n' "$status"
@@ -314,7 +327,7 @@ jobs:
       # reference assemblies, and no identifier is used without a declaration.
       - name: Validate C#
         id: validate
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.changes.outputs.has_changes == 'true' && steps.changes.outputs.guard == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -352,15 +365,15 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "fix(sonar): autofix PR #${PR_NUMBER} findings via ${PROVIDER} [sonar-autofix]"
+          git add -u -- Editor Tests
+          git -c core.hooksPath=/dev/null -c core.fsmonitor=false commit -m "fix(sonar): autofix PR #${PR_NUMBER} findings via ${PROVIDER} [sonar-autofix]"
           b64="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           echo "::add-mask::$b64"
           # The lease makes the push atomic with the head the fix was made on: it lands
           # only while the branch still points at exactly that commit.
           GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $b64" \
-            git push --force-with-lease="refs/heads/${HEAD_REF}:${HEAD_SHA}" \
+            git -c core.hooksPath=/dev/null -c core.fsmonitor=false push --force-with-lease="refs/heads/${HEAD_REF}:${HEAD_SHA}" \
               "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${HEAD_REF}"
 
       # A GITHUB_TOKEN push starts no pull_request run, so the new head would carry no
