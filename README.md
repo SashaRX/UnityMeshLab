@@ -42,7 +42,7 @@ After a run, each stage row shows the outcome with an icon: `…` running, `✓`
 
 ### Debug surfaces
 
-Diagnostic and benchmarking blocks (Parameter Sweep, Log Filters, UV0 Analysis & Fix, FBX Metrics menus, Sweep Test Suite asset) are hidden by default. Enable them via **Edit → Project Settings → Mesh Lab → Developer → Show Debug UI** when iterating on the pipeline or debugging.
+The **Diagnostics** tab (parameter sweep, multi-model benchmark, report rebuild, log filters, hierarchical probe, FBX metrics export) and the other diagnostic surfaces (UV0 Analysis & Fix in UV2 Transfer, FBX Metrics menus, Sweep Test Suite asset) are hidden by default. Enable them via **Edit → Project Settings → Mesh Lab → Developer → Show Debug UI** when iterating on the pipeline or debugging.
 
 ## Remesh & Bake
 

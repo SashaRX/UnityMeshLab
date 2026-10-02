@@ -119,7 +119,6 @@ namespace SashaRX.UnityMeshLab
         Dictionary<int, bool> reportLodFoldouts = new Dictionary<int, bool>();
         bool foldOutput = true;
         bool foldUv0Analysis;
-        bool foldLogFilters;
         bool foldValidationOverlay;
         bool splitTargetsInSymmetryStep;
         bool skipSymmetrySplitStep;
@@ -216,20 +215,6 @@ namespace SashaRX.UnityMeshLab
             }
         }
         Vector2 reportScroll;
-        TestSuiteAsset sweepSuite;
-
-        // Cache of the filterable UvtLog categories — enumerated once on type init
-        // to avoid per-repaint Enum.GetValues allocations inside the Log filters UI.
-        // Composite flag UvtLog.Category.All is filtered out; only single bits remain.
-        static readonly UvtLog.Category[] s_logCategories = BuildLogCategoryList();
-        static UvtLog.Category[] BuildLogCategoryList()
-        {
-            var all = (UvtLog.Category[])Enum.GetValues(typeof(UvtLog.Category));
-            var list = new List<UvtLog.Category>(all.Length);
-            foreach (var c in all)
-                if (c != UvtLog.Category.All) list.Add(c);
-            return list.ToArray();
-        }
 
         // ── LOD generation ──
         int generateLodCount = 2;
@@ -541,94 +526,21 @@ namespace SashaRX.UnityMeshLab
 
             // ── Debug / diagnostics ──
             // Hidden by default — toggleable from Project Settings ▸ Mesh Lab
-            // ▸ Developer. Houses Parameter Sweep, Log Filters, and UV0
-            // Analysis & Fix; production users see a clean Setup tab without
-            // these benchmark / diagnostic blocks.
-            if (MeshLabProjectSettings.Instance.showDebugUI)
+            // ▸ Developer. Houses UV0 Analysis & Fix; the sweep, the benchmark
+            // and the log filters live in the Diagnostics tab.
+            if (DebugUi.Enabled)
                 DrawSetupDebugSection();
         }
 
         // ──────────────── Setup tab debug section ──────────────────────
         //
-        // Houses diagnostic and benchmarking blocks that are not part of
-        // day-to-day production use: Parameter Sweep, Log Filters, UV0
-        // Analysis & Fix. Gated by MeshLabProjectSettings.showDebugUI so
-        // shipping artists see a clean Setup tab; developers flip the
-        // toggle in Project Settings ▸ Mesh Lab ▸ Developer.
+        // UV0 Analysis & Fix — a diagnostic that edits this tab's working
+        // meshes, so it stays here. Gated by Show Debug UI (DebugUi.Enabled)
+        // so shipping artists see a clean Setup tab.
         void DrawSetupDebugSection()
         {
             EditorGUILayout.Space(10);
-            // Banner so the debug block is unmistakably distinct from the
-            // production sections above it.
-            var bannerRect = GUILayoutUtility.GetRect(0, 20f, GUILayout.ExpandWidth(true));
-            EditorGUI.DrawRect(bannerRect, new Color(0.55f, 0.35f, 0.10f, 0.30f));
-            var bannerStyle = new GUIStyle(EditorStyles.miniBoldLabel)
-            {
-                alignment = TextAnchor.MiddleLeft,
-                normal = { textColor = new Color(1f, 0.85f, 0.55f) },
-            };
-            GUI.Label(new Rect(bannerRect.x + 6f, bannerRect.y, bannerRect.width - 12f, bannerRect.height),
-                "DEBUG  ·  hide via Project Settings ▸ Mesh Lab ▸ Show Debug UI",
-                bannerStyle);
-
-            // ── Parameter Sweep ──
-            EditorGUILayout.Space(6);
-            H("Parameter Sweep");
-            sweepSuite = (TestSuiteAsset)EditorGUILayout.ObjectField(
-                "Sweep suite", sweepSuite, typeof(TestSuiteAsset), false);
-            int cells = 0;
-            string sweepError = null;
-            if (sweepSuite != null && sweepSuite.sweep != null)
-                SweepRunner.TryValidate(sweepSuite.sweep, ctx, symSplitThresholdMode, out cells, out sweepError);
-            if (!string.IsNullOrEmpty(sweepError))
-                EditorGUILayout.HelpBox(sweepError, MessageType.Error);
-            int caseCount = (sweepSuite != null && sweepSuite.cases != null) ? sweepSuite.cases.Count : 0;
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                using (new EditorGUI.DisabledScope(sweepSuite == null || cells == 0))
-                {
-                    if (GUILayout.Button($"Run Sweep ({cells})", GUILayout.Height(22)))
-                        SweepRunner.Run(this, sweepSuite.sweep);
-                }
-                using (new EditorGUI.DisabledScope(sweepSuite == null || caseCount == 0))
-                {
-                    if (GUILayout.Button(new GUIContent($"Run Benchmark ({caseCount} cases)",
-                            "Iterate every TestSuiteAsset.cases[]; for each model, " +
-                            "spawn its FBX, then run every technique enabled in " +
-                            "suite.techniques (legacyXatlasSweep, hierarchicalProbe, " +
-                            "hierarchicalRepack, stageDSweep). All artefacts land under one directory " +
-                            "BenchmarkReports/bench_<ts>/<idx>_<label>/."),
-                        GUILayout.Height(22)))
-                    {
-                        BenchmarkRunner.Run(this, sweepSuite);
-                    }
-                }
-                if (GUILayout.Button(new GUIContent("Rebuild Report",
-                        "Pick a BenchmarkReports/ folder and rebuild summary.csv / winner.json / index.html " +
-                        "from the per-cell CSVs already on disk. Use this after a mid-sweep Unity crash."),
-                        GUILayout.Height(22)))
-                {
-                    ExecRebuildSweepReport();
-                }
-            }
-
-            // ── Log filters ──
-            EditorGUILayout.Space(6);
-            foldLogFilters = EditorGUILayout.Foldout(foldLogFilters, "Log filters", true);
-            if (foldLogFilters)
-            {
-                EditorGUI.indentLevel++;
-                UvtLog.Current = (UvtLog.Level)EditorGUILayout.EnumPopup("Level", UvtLog.Current);
-                var enabled = UvtLog.EnabledCategories;
-                for (int i = 0; i < s_logCategories.Length; i++)
-                {
-                    var cat = s_logCategories[i];
-                    bool on = (enabled & cat) != 0;
-                    bool newOn = EditorGUILayout.ToggleLeft(cat.ToString(), on);
-                    if (newOn != on) UvtLog.SetCategoryEnabled(cat, newOn);
-                }
-                EditorGUI.indentLevel--;
-            }
+            DebugUi.Banner();
 
             // ── UV0 Analysis & Fix ──
             EditorGUILayout.Space(4);
@@ -712,7 +624,7 @@ namespace SashaRX.UnityMeshLab
                         symSplitThresholdMode);
                     SymmetrySplitShells.CurrentThresholdMode = symSplitThresholdMode;
                     // Advanced / debug-only toggle — hidden from production UI.
-                    if (MeshLabProjectSettings.Instance.showDebugUI)
+                    if (DebugUi.Enabled)
                     {
                         splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft(
                             new GUIContent("Apply to target LODs (advanced)",
@@ -1000,7 +912,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Advanced (debug only) ──────────────────────────────────
-            if (MeshLabProjectSettings.Instance.showDebugUI)
+            if (DebugUi.Enabled)
             {
                 EditorGUILayout.Space(2);
                 foldRepackAdvanced = EditorGUILayout.Foldout(foldRepackAdvanced, "Advanced (debug)", true);
@@ -1579,51 +1491,6 @@ namespace SashaRX.UnityMeshLab
                         BenchmarkRecorder.Current.RecordMesh(e);
                     }
             }
-        }
-
-        /// <summary>
-        /// Prompts the user for a BenchmarkReports/ folder and asks
-        /// <see cref="BenchmarkSweep.RebuildFromExistingCsvs"/> to reconstruct
-        /// summary.csv / winner.json / index.html from whatever per-cell CSVs
-        /// are still on disk after a mid-sweep Unity crash. Surfaces the result
-        /// (or a "no CSVs found" message) via <see cref="EditorUtility.DisplayDialog"/>.
-        /// </summary>
-        void ExecRebuildSweepReport()
-        {
-            string defaultDir = SweepRunner.ReportsRoot();
-            if (!System.IO.Directory.Exists(defaultDir)) defaultDir = System.IO.Directory.GetParent(defaultDir)?.FullName ?? defaultDir;
-
-            string picked = EditorUtility.OpenFolderPanel(
-                "Pick BenchmarkReports/ folder to rebuild", defaultDir, "");
-            if (string.IsNullOrEmpty(picked)) return;
-
-            string outDir;
-            try
-            {
-                outDir = BenchmarkRunner.RebuildReport(picked);
-            }
-            catch (Exception ex)
-            {
-                UvtLog.Error(UvtLog.Category.Benchmark,
-                    $"[Sweep] Rebuild threw: {ex.Message}");
-                EditorUtility.DisplayDialog("Rebuild Sweep Report",
-                    $"Rebuild failed: {ex.Message}", "OK");
-                return;
-            }
-
-            if (string.IsNullOrEmpty(outDir))
-            {
-                EditorUtility.DisplayDialog("Rebuild Sweep Report",
-                    "No matching CSVs were found in:\n" + picked +
-                    "\n\nLook for files named *_sweep_resR_padS_bdrB_arapA_stretchT_*.csv.",
-                    "OK");
-                return;
-            }
-
-            EditorUtility.DisplayDialog("Rebuild Sweep Report",
-                "Recovery report written to:\n" + outDir +
-                "\n\nOpen index.html in a browser for the per-run gallery.",
-                "OK");
         }
 
         /// <summary>

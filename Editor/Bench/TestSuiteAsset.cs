@@ -12,14 +12,14 @@ namespace SashaRX.UnityMeshLab
     // No [CreateAssetMenu] here — the asset is a developer/benchmarking
     // artefact and shouldn't pollute the Assets ▸ Create menu for production
     // users. The custom MenuItem below gates the entry behind
-    // MeshLabProjectSettings.showDebugUI so it only appears when the user
+    // Show Debug UI (DebugUi.Enabled) so it only appears when the user
     // has explicitly opted into the debug UI.
     public class TestSuiteAsset : ScriptableObject
     {
         const string CreateMenuPath = "Assets/Create/Mesh Lab/Sweep Test Suite";
 
         [MenuItem(CreateMenuPath, true)]
-        static bool CreateAsset_Validate() => MeshLabProjectSettings.Instance.showDebugUI;
+        static bool CreateAsset_Validate() => DebugUi.Enabled;
 
         [MenuItem(CreateMenuPath, priority = 600)]
         static void CreateAsset()
