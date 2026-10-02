@@ -444,7 +444,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 finally { source.ReleaseLightmaps(); }
                 // A re-bake without the transfer must not keep the previous colors.
-                node.mesh.colors = node.maps.vertexColors;
+                VertexChannels.SetColors(node.mesh, node.maps.vertexColors);
                 sourceTriangles += source.indices.Length / 3; targetTriangles += target.indices.Length / 3;
                 misses += node.maps.misses; covered += node.maps.covered; empty += node.maps.empty; warnings += source.warnings.Length;
                 LogDiagnostics(node, options.sourceShape);
@@ -511,7 +511,7 @@ namespace SashaRX.UnityMeshLab
                 baseColorPreview = null; keys[(int)Stage.Bake] = null;
                 foreach (var node in nodes) {
                     node.maps = null;
-                    if (node.mesh) node.mesh.colors = null;
+                    if (node.mesh) VertexChannels.SetColors(node.mesh, null);
                 }
             }
             if (stage <= Stage.Unwrap) {

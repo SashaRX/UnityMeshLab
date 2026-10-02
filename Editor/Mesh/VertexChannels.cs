@@ -203,6 +203,23 @@ namespace SashaRX.UnityMeshLab
             NotifyChanged(mesh);
         }
 
+        /// <summary>Replaces the mesh's whole colour array (null removes the stream) and raises
+        /// <see cref="Changed"/>. No Undo or SetDirty: a caller that needs them records them itself.</summary>
+        internal static void SetColors(Mesh mesh, Color[] colors)
+        {
+            if (mesh == null) return;
+            mesh.colors = colors;
+            NotifyChanged(mesh);
+        }
+
+        /// <summary>Replaces one UV channel (null removes it) and raises <see cref="Changed"/>. No Undo or SetDirty.</summary>
+        internal static void SetUvs(Mesh mesh, int channel, Vector2[] uvs)
+        {
+            if (mesh == null) return;
+            if (uvs == null) mesh.SetUVs(channel, (List<Vector2>)null); else mesh.SetUVs(channel, uvs);
+            NotifyChanged(mesh);
+        }
+
         /// <summary>The mesh's colours at its vertex count, or null when it has none (for <see cref="RestoreColors"/>).</summary>
         internal static Color32[] SnapshotColors(Mesh mesh)
         {

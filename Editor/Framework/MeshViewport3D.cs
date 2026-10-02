@@ -407,7 +407,12 @@ namespace SashaRX.UnityMeshLab
         Mesh Encoded(Mesh mesh, Shading mode)
         {
             long key = ((long)mesh.GetInstanceID() << 8) | (byte)mode;
-            if (encodedCache.TryGetValue(key, out var cached) && cached) return cached;
+            if (encodedCache.TryGetValue(key, out var cached) && cached) {
+                // A mesh rebuilt under the same instance (a compaction, a re-import) changes
+                // its vertex count; the clone made from the old vertices is stale.
+                if (cached.vertexCount == mesh.vertexCount) return cached;
+                Object.DestroyImmediate(cached);
+            }
             var colors = EncodeColors(mesh, mode);
             if (colors == null) { encodedCache[key] = null; return null; }
             var clone = Object.Instantiate(mesh);
@@ -462,7 +467,10 @@ namespace SashaRX.UnityMeshLab
         Mesh WireOf(Mesh mesh)
         {
             int key = mesh.GetInstanceID();
-            if (wireCache.TryGetValue(key, out var cached) && cached) return cached;
+            if (wireCache.TryGetValue(key, out var cached) && cached) {
+                if (cached.vertexCount == mesh.vertexCount) return cached;
+                Object.DestroyImmediate(cached);
+            }
             var indices = EdgeIndices(mesh);
             Mesh edges = null;
             if (indices != null) {

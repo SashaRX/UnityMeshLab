@@ -1938,7 +1938,7 @@ namespace SashaRX.UnityMeshLab
                     continue;
 
                 foreach (int ch in channels)
-                    mesh.SetUVs(ch, (List<Vector2>)null);
+                    VertexChannels.SetUvs(mesh, ch, null);
                 // Note: vertex colors are NOT auto-stripped — they may contain
                 // valid AO/data even when all zeros (full occlusion).
 
@@ -2363,12 +2363,12 @@ namespace SashaRX.UnityMeshLab
                     var colors = new Color[vertCount];
                     for (int vi = 0; vi < vertCount; vi++)
                         colors[vi] = Color.white;
-                    mesh.colors = colors;
+                    VertexChannels.SetColors(mesh, colors);
                     UvtLog.Info($"[Cleanup] {mesh.name}: added vertex colors");
                 }
                 else if (!ensureColors && attr.hasColors)
                 {
-                    mesh.colors = null;
+                    VertexChannels.SetColors(mesh, null);
                     UvtLog.Info($"[Cleanup] {mesh.name}: removed vertex colors");
                 }
 
@@ -2377,12 +2377,12 @@ namespace SashaRX.UnityMeshLab
                 {
                     if (ensureUv[ch] && !attr.hasUv[ch])
                     {
-                        mesh.SetUVs(ch, new Vector2[vertCount]);
+                        VertexChannels.SetUvs(mesh, ch, new Vector2[vertCount]);
                         UvtLog.Info($"[Cleanup] {mesh.name}: added UV{ch}");
                     }
                     else if (!ensureUv[ch] && attr.hasUv[ch])
                     {
-                        mesh.SetUVs(ch, (List<Vector2>)null);
+                        VertexChannels.SetUvs(mesh, ch, null);
                         UvtLog.Info($"[Cleanup] {mesh.name}: removed UV{ch}");
                     }
                 }
