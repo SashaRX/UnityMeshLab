@@ -32,6 +32,7 @@ See `AGENTS.md` for shared rules that apply to all AI agents.
 - **Context:** `Editor/Framework/UvToolContext.cs` — shared state
 - **Tools:** `Editor/Tools/` — each implements `IUvTool`
 - **Geometry:** `Editor/Geometry/` — `MeshGeometry` (face normals, welding, sample directions, barycentrics) and `GpuReadback` (the one GPU → CPU texture read); spatial queries in `Editor/TriangleBvh.cs` / `TriangleBvh2D.cs`. Use these; never add a tool-local copy
+- **Assets:** `Editor/Assets/` — `FbxExport` (every FBX write: the isolated channel re-save, the LOD-rebuild hierarchy passes, the atomic write, the post-reimport relink) and `SidecarStore` (the `_uv2data.asset` sidecar: UV2 entries, collision hulls, tool settings). Tools never call `ModelExporter` or open a `Uv2DataAsset` themselves
 - **Native:** `Plugins/` binaries, `Native~/` C++ source
 - **Sidecar:** `Uv2DataAsset` persists UV2/collision data alongside FBX
 

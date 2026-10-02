@@ -156,7 +156,7 @@ namespace SashaRX.UnityMeshLab
                             var mf = go.AddComponent<MeshFilter>();
                             mf.sharedMesh = r.simplifiedMesh;
                             var mr = go.AddComponent<MeshRenderer>();
-                            LightmapTransferTool.CopyRendererSettings(entry.renderer, mr);
+                            RendererSettings.Copy(entry.renderer, mr);
 
                             if (opts.progressiveScaleInLightmap && lodLevel > 0)
                             {
