@@ -23,6 +23,9 @@ Usage:
   python3 Tools~/compile_check.py                 # build both define variants
   python3 Tools~/compile_check.py --prepare-only  # only write .compile-check/ (SonarQube)
   python3 Tools~/compile_check.py --out DIR       # another build directory
+  python3 Tools~/compile_check.py --root DIR      # another checkout's Editor/ and Tests/
+                                                  # (the SonarQube workflow scans a PR's
+                                                  # commit with this script from its own ref)
 """
 import argparse
 import os
@@ -32,7 +35,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent  # the package this script ships in; --root overrides
 UNITY_SDK_VERSION = "2021.1.14.1"
 NUNIT_VERSION = "3.13.3"
 FBX_DEFINE = "LIGHTMAP_UV_TOOL_FBX_EXPORTER"
@@ -206,10 +209,16 @@ def build(out: Path, fbx: bool) -> int:
 
 
 def main() -> int:
+    global ROOT
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=str(ROOT / ".compile-check"), help="build directory (default .compile-check/)")
     ap.add_argument("--prepare-only", action="store_true", help="write the build directory and stop")
+    ap.add_argument("--root", default=str(ROOT), help="the package checkout whose Editor/ and Tests/ to build (default: this script's)")
     args = ap.parse_args()
+    ROOT = Path(args.root).resolve()
+    if not (ROOT / "Editor").is_dir() or not (ROOT / "Tests").is_dir():
+        print(f"error: --root {ROOT} has no Editor/ and Tests/ folders.", file=sys.stderr)
+        return 2
     out = Path(args.out).resolve()
     if out == ROOT or (out / "Editor").resolve() == (ROOT / "Editor").resolve():
         print(f"error: --out must not be the package root ({ROOT}); the build directory's Editor/ and Tests/ "

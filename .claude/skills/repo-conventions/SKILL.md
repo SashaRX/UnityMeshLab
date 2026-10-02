@@ -31,7 +31,8 @@ Canonical conventions for the `UnityMeshLab` repository. This file overrides `_s
 Located under `.github/workflows/`:
 
 - `build-native.yml` — builds native plugin binaries (platform-specific).
-- `meta-check.yml` — verifies `.meta` file coverage.
+- `meta-check.yml` — *Unity Package Checks*: `.meta` file coverage, `package.json`, the CS0103 identifier heuristic, and the licence-free C# compile of `Editor/` + `Tests/` (`Tools~/compile_check.py`, .NET SDK against the NuGet Unity reference assemblies, both FBX define variants).
+- `sonar.yml` — *SonarQube*: analyses the compile-check build with `dotnet-sonarscanner` on the self-hosted server (Community edition, so one project per PR: `<key>_pr<N>`, base commit as the new-code baseline, head waits for the quality gate). Runs on pushes to `main`, on every PR, and on demand (`prs` input: `open`, numbers, or `main`). Needs the `SONAR_TOKEN` secret; skips with a notice without it.
 - `version-bump.yml` — automates `package.json` version bumps.
 - `test.yml` — EditMode test run on Unity 6000.0. License-gated: skips cleanly when no `UNITY_LICENSE`/`UNITY_SERIAL` secrets are configured. **This repository is on Unity Personal (free) tier**, and Unity disabled manual `.alf`→`.ulf` activation for Personal seats in 2024, so the test job is currently always **skipped** on GitHub-hosted runners. Local Test Runner remains the canonical pre-commit verification path. See `unity-ci-validation/SKILL.md` §License activation for the recipe and the path forward (self-hosted runner or Plus/Pro upgrade).
 - `release.yml` — tag-triggered GitHub Release; verifies `v<version>` tag matches `package.json` and extracts the matching section from `CHANGELOG.md`.

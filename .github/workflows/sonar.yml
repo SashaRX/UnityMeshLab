@@ -1,18 +1,32 @@
 name: SonarQube
 
-# Analyses the package's C# on the self-hosted SonarQube and publishes the result
-# to its project. Runs on pushes to main and on demand only: the server runs the
-# Community edition, whose analysis is one branch per project — a pull-request
-# scan would overwrite main's picture rather than decorate the PR.
+# Analyses the package's C# on the self-hosted SonarQube (Community edition: one
+# branch per project, no pull-request decoration) and publishes the result:
+#
+#   push to main       → the project itself (SONAR_PROJECT_KEY): main's picture.
+#   pull_request       → a project per PR, <SONAR_PROJECT_KEY>_pr<N>: the PR's base
+#                        commit is analysed first as the baseline, then its head, so
+#                        with the default "previous version" new-code period the
+#                        project's New Code is exactly the PR's diff and its quality
+#                        gate judges that. The head analysis waits for the gate and
+#                        fails the check when the gate fails.
+#                        A PR that changes this workflow scans every open PR instead
+#                        of only itself: the workflow is proven on the whole queue.
+#   workflow_dispatch  → `prs` = "open" (every open PR), a list of numbers, or "main".
+#
+# The C# build is the licence-free one from Tools~/compile_check.py, taken from
+# THIS workflow's ref (an older PR does not carry the script yet): sources are
+# copied into a build directory outside the checkout (reference-gap substitutions
+# keep line numbers), so issues carry the repo-relative path and line; SCM blame is
+# off for that reason.
 #
 # Secrets / variables (repository settings):
-#   SONAR_TOKEN     — secret, a project or global analysis token from the server.
-#   SONAR_HOST_URL  — variable, optional; defaults to the Mesh Lab server below.
+#   SONAR_TOKEN       — secret, an analysis token from the server. Per-PR projects
+#                       are created by the scanner on first analysis, so the token
+#                       needs the server's "Create Projects" permission (a global
+#                       token of a user with that right, not a project token).
+#   SONAR_HOST_URL    — variable, optional; defaults to the Mesh Lab server below.
 #   SONAR_PROJECT_KEY — variable, optional; defaults to SashaRX_UnityMeshLab.
-#
-# The C# build is the licence-free one from Tools~/compile_check.py: sources are
-# copied into .compile-check/ (reference-gap substitutions keep line numbers), so
-# issues carry the repo-relative path and line; SCM blame is off for that reason.
 on:
   push:
     branches: [main]
@@ -21,19 +35,34 @@ on:
       - 'Tests/**'
       - 'Tools~/compile_check.py'
       - '.github/workflows/sonar.yml'
+  pull_request:
+    paths:
+      - 'Editor/**'
+      - 'Tests/**'
+      - 'Tools~/compile_check.py'
+      - '.github/workflows/sonar.yml'
   workflow_dispatch:
+    inputs:
+      prs:
+        description: 'What to analyse: "open" (every open PR), PR numbers separated by commas, or "main"'
+        default: 'open'
+        required: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'http://178.104.156.174:9000' }}
+  SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY || 'SashaRX_UnityMeshLab' }}
+
 jobs:
-  analyse:
-    name: Scan with dotnet-sonarscanner
+  plan:
+    name: Decide what to analyse
     runs-on: ubuntu-latest
-    env:
-      SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'http://178.104.156.174:9000' }}
-      SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY || 'SashaRX_UnityMeshLab' }}
+    outputs:
+      has-token: ${{ steps.probe.outputs.has-token }}
+      matrix: ${{ steps.targets.outputs.matrix }}
     steps:
       - name: Probe token
         id: probe
@@ -48,54 +77,136 @@ jobs:
             echo "No \`SONAR_TOKEN\` secret. Create a token on the server (My Account ▸ Security) and add it under Settings ▸ Secrets ▸ Actions." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # One matrix entry per analysis: the Sonar project key, the commit to analyse
+      # and, for a PR, the base commit analysed first as the baseline.
+      - name: Collect targets
+        id: targets
         if: steps.probe.outputs.has-token == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          THIS_PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.sha }}
+          INPUT_PRS: ${{ github.event.inputs.prs }}
+        run: |
+          set -euo pipefail
+          pr_entry() {
+            gh pr view "$1" --json number,headRefOid,baseRefOid,headRefName,baseRefName \
+              --jq "{key: \"${SONAR_PROJECT_KEY}_pr\(.number)\", label: \"PR #\(.number) \(.headRefName) → \(.baseRefName)\", head: .headRefOid, base: .baseRefOid, pr: .number}"
+          }
+          open_prs() { gh pr list --state open --limit 100 --json number --jq '.[].number'; }
+          main_entry() { printf '{"key":"%s","label":"main","head":"%s","base":"","pr":""}\n' "$SONAR_PROJECT_KEY" "$HEAD_SHA"; }
+          case "$EVENT" in
+            push) main_entry > targets.jsonl ;;
+            workflow_dispatch)
+              if [ "$INPUT_PRS" = "main" ]; then main_entry > targets.jsonl
+              elif [ "$INPUT_PRS" = "open" ]; then : > targets.jsonl; for n in $(open_prs); do pr_entry "$n" >> targets.jsonl; done
+              else : > targets.jsonl; for n in $(echo "$INPUT_PRS" | tr ',' ' '); do pr_entry "$n" >> targets.jsonl; done
+              fi ;;
+            pull_request)
+              if gh pr diff "$THIS_PR" --name-only | grep -qx '.github/workflows/sonar.yml'; then
+                echo "::notice::This PR changes the SonarQube workflow — analysing every open PR with it."
+                : > targets.jsonl; for n in $(open_prs); do pr_entry "$n" >> targets.jsonl; done
+              else
+                pr_entry "$THIS_PR" > targets.jsonl
+              fi ;;
+          esac
+          jq -c -s '{include: .}' targets.jsonl > matrix.json
+          echo "matrix=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
+          echo "Targets:"; jq -r '.include[] | "  \(.label)  \(.key)"' matrix.json
+
+  scan:
+    name: ${{ matrix.label }}
+    needs: plan
+    if: needs.plan.outputs.has-token == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      # The workflow's own ref carries the build script; the analysed commits may not.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          path: tooling
+          sparse-checkout: |
+            Tools~/compile_check.py
+            .github/workflows/sonar.yml
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: src
+          ref: ${{ matrix.head }}
           fetch-depth: 0
 
       - uses: actions/setup-java@v4
-        if: steps.probe.outputs.has-token == 'true'
         with:
           distribution: temurin
           java-version: '17'
 
       - uses: actions/setup-dotnet@v4
-        if: steps.probe.outputs.has-token == 'true'
         with:
           dotnet-version: '8.0.x'
 
       - name: Cache NuGet packages and the scanner
-        if: steps.probe.outputs.has-token == 'true'
         uses: actions/cache@v4
         with:
           path: |
             ~/.nuget/packages
             ~/.sonar/cache
-          key: sonar-${{ runner.os }}-${{ hashFiles('Tools~/compile_check.py', '.github/workflows/sonar.yml') }}
+          key: sonar-${{ runner.os }}-${{ hashFiles('tooling/Tools~/compile_check.py', 'tooling/.github/workflows/sonar.yml') }}
 
       - name: Install dotnet-sonarscanner
-        if: steps.probe.outputs.has-token == 'true'
         run: dotnet tool install --global dotnet-sonarscanner --version 11.3.0
 
-      - name: Prepare the licence-free build
-        if: steps.probe.outputs.has-token == 'true'
-        run: python3 'Tools~/compile_check.py' --prepare-only
-
-      - name: Begin, build, end
-        if: steps.probe.outputs.has-token == 'true'
+      # One analysis of one commit: prepare the licence-free build of that checkout
+      # into a directory outside it, begin, build, end. The version string is the
+      # package version plus the commit, so every analysis is a new "version" and the
+      # previous one is the new-code baseline.
+      - name: Analyse
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        working-directory: .compile-check
+          KEY: ${{ matrix.key }}
+          LABEL: ${{ matrix.label }}
+          HEAD: ${{ matrix.head }}
+          BASE: ${{ matrix.base }}
+          PR: ${{ matrix.pr }}
         run: |
-          dotnet sonarscanner begin \
-            /k:"$SONAR_PROJECT_KEY" \
-            /n:"Mesh Lab" \
-            /v:"$(jq -r .version ../package.json)" \
-            /d:sonar.host.url="$SONAR_HOST_URL" \
-            /d:sonar.token="$SONAR_TOKEN" \
-            /d:sonar.scm.disabled=true \
-            /d:sonar.exclusions="Shims/**" \
-            /d:sonar.cs.file.suffixes=".cs"
-          dotnet build MeshLab.sln -nologo -v q --no-incremental -p:MeshLabFbx=true
-          dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+          set -euo pipefail
+          analyse() {  # analyse <sha> <wait-for-quality-gate>
+            local sha="$1" wait="$2" out="$RUNNER_TEMP/compile-check"
+            git -C src checkout -q "$sha"
+            rm -rf "$out"
+            python3 tooling/Tools~/compile_check.py --prepare-only --root src --out "$out"
+            local version; version="$(jq -r .version src/package.json)+${sha:0:7}"
+            (
+              cd "$out"
+              dotnet sonarscanner begin \
+                /k:"$KEY" \
+                /n:"Mesh Lab ${PR:+PR #$PR}" \
+                /v:"$version" \
+                /d:sonar.host.url="$SONAR_HOST_URL" \
+                /d:sonar.token="$SONAR_TOKEN" \
+                /d:sonar.scm.disabled=true \
+                /d:sonar.exclusions="Shims/**" \
+                /d:sonar.cs.file.suffixes=".cs" \
+                /d:sonar.qualitygate.wait="$wait"
+              dotnet build MeshLab.sln -nologo -v q --no-incremental -p:MeshLabFbx=true
+              dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+            )
+          }
+          if [ -n "$BASE" ]; then
+            echo "== baseline: base commit $BASE"
+            analyse "$BASE" false
+          fi
+          echo "== $LABEL: $HEAD"
+          {
+            echo "### SonarQube — $LABEL"
+            echo ""
+            echo "[$KEY]($SONAR_HOST_URL/dashboard?id=$KEY) — analysed \`${HEAD:0:7}\`${BASE:+ against baseline \`${BASE:0:7}\`}."
+          } >> "$GITHUB_STEP_SUMMARY"
+          analyse "$HEAD" true
