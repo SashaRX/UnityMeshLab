@@ -386,38 +386,9 @@ namespace SashaRX.UnityMeshLab
         /// Returns a readable copy of the mesh if needed.
         /// Caller must DestroyImmediate the copy when done (if copy != original).
         /// </summary>
-        static Mesh EnsureReadable(Mesh mesh)
-        {
-            if (mesh.isReadable) return mesh;
-            var copy = UnityEngine.Object.Instantiate(mesh);
-            copy.hideFlags = HideFlags.HideAndDontSave;
-            return copy;
-        }
+        static Mesh EnsureReadable(Mesh mesh) => MeshAccess.Readable(mesh, out _);
 
-        static Bounds ComputeCombinedBounds(List<(Mesh mesh, Matrix4x4 transform)> meshes)
-        {
-            var bounds = new Bounds();
-            bool first = true;
-            foreach (var (mesh, xform) in meshes)
-            {
-                var mb = mesh.bounds;
-                var corners = new Vector3[8];
-                corners[0] = xform.MultiplyPoint3x4(new Vector3(mb.min.x, mb.min.y, mb.min.z));
-                corners[1] = xform.MultiplyPoint3x4(new Vector3(mb.max.x, mb.min.y, mb.min.z));
-                corners[2] = xform.MultiplyPoint3x4(new Vector3(mb.min.x, mb.max.y, mb.min.z));
-                corners[3] = xform.MultiplyPoint3x4(new Vector3(mb.max.x, mb.max.y, mb.min.z));
-                corners[4] = xform.MultiplyPoint3x4(new Vector3(mb.min.x, mb.min.y, mb.max.z));
-                corners[5] = xform.MultiplyPoint3x4(new Vector3(mb.max.x, mb.min.y, mb.max.z));
-                corners[6] = xform.MultiplyPoint3x4(new Vector3(mb.min.x, mb.max.y, mb.max.z));
-                corners[7] = xform.MultiplyPoint3x4(new Vector3(mb.max.x, mb.max.y, mb.max.z));
-                foreach (var c in corners)
-                {
-                    if (first) { bounds = new Bounds(c, Vector3.zero); first = false; }
-                    else bounds.Encapsulate(c);
-                }
-            }
-            return bounds;
-        }
+        static Bounds ComputeCombinedBounds(List<(Mesh mesh, Matrix4x4 transform)> meshes) => MeshTransform.CombinedBounds(meshes);
 
         static void AppendGeometryBuffers(
             List<(Mesh mesh, Matrix4x4 transform)> meshes,

@@ -707,26 +707,8 @@ namespace SashaRX.UnityMeshLab
 
                 if (matGroups.Count == mesh.subMeshCount) continue; // no duplicates
 
-                // Need readable mesh to merge
-                if (!mesh.isReadable)
-                {
-                    string assetPath = AssetDatabase.GetAssetPath(mesh);
-                    if (!string.IsNullOrEmpty(assetPath))
-                    {
-                        var imp = AssetImporter.GetAtPath(assetPath) as ModelImporter;
-                        if (imp != null && !imp.isReadable)
-                        {
-                            imp.isReadable = true;
-                            imp.SaveAndReimport();
-                            mesh = mf.sharedMesh; // re-read after reimport
-                        }
-                    }
-                }
-
-                if (!mesh.isReadable) continue;
-
-                // Clone mesh
-                var newMesh = UnityEngine.Object.Instantiate(mesh);
+                // A readable copy through MeshData: no importer flip, no reimport.
+                var newMesh = MeshAccess.ReadableCopy(mesh);
                 newMesh.name = mesh.name;
 
                 // Build merged submeshes
@@ -741,7 +723,7 @@ namespace SashaRX.UnityMeshLab
                     // Combine triangle indices from all submeshes in this group
                     var combinedTris = new List<int>();
                     foreach (int s in indices)
-                        combinedTris.AddRange(mesh.GetTriangles(s));
+                        combinedTris.AddRange(newMesh.GetTriangles(s));
                     mergedSubs.Add(combinedTris.ToArray());
                 }
 
@@ -756,18 +738,6 @@ namespace SashaRX.UnityMeshLab
                 issue.renderer.sharedMaterials = newMats.ToArray();
 
                 UvtLog.Info($"Merged submeshes on {issue.renderer.name}: {mesh.subMeshCount} → {mergedSubs.Count} submeshes");
-
-                // Restore isReadable if we changed it
-                string meshPath = AssetDatabase.GetAssetPath(mesh);
-                if (!string.IsNullOrEmpty(meshPath))
-                {
-                    var mimp = AssetImporter.GetAtPath(meshPath) as ModelImporter;
-                    if (mimp != null && mimp.isReadable)
-                    {
-                        mimp.isReadable = false;
-                        mimp.SaveAndReimport();
-                    }
-                }
             }
 
             // ImporterRemap issues are not fixable — they require "Overwrite Source FBX"
@@ -1037,52 +1007,28 @@ namespace SashaRX.UnityMeshLab
                             var mf = issue.gameObject.GetComponent<MeshFilter>();
                             var mc = issue.gameObject.GetComponent<MeshCollider>();
 
-                            string assetPath = AssetDatabase.GetAssetPath(issue.mesh);
-                            if (!string.IsNullOrEmpty(assetPath))
+                            // Positions and triangles only, read through MeshData whatever the
+                            // import's Read/Write flag says: no importer flip, no reimport.
+                            Mesh fresh = mf != null ? mf.sharedMesh : (mc != null ? mc.sharedMesh : null);
+                            if (fresh != null)
                             {
-                                var imp = AssetImporter.GetAtPath(assetPath) as ModelImporter;
-                                if (imp != null)
+                                var readable = MeshAccess.ReadableCopy(fresh);
+                                var clone = new Mesh { name = fresh.name, indexFormat = readable.indexFormat };
+                                clone.SetVertices(readable.vertices);
+                                clone.SetTriangles(readable.triangles, 0);
+                                clone.RecalculateBounds();
+                                UnityEngine.Object.DestroyImmediate(readable);
+                                if (mf != null)
                                 {
-                                    bool wasReadable = imp.isReadable;
-                                    if (!wasReadable)
-                                    {
-                                        imp.isReadable = true;
-                                        Uv2AssetPostprocessor.bypassPaths.Add(assetPath);
-                                        imp.SaveAndReimport();
-                                    }
-
-                                    Mesh freshMesh = mf != null ? mf.sharedMesh : (mc != null ? mc.sharedMesh : null);
-                                    if (freshMesh != null && freshMesh.isReadable)
-                                    {
-                                        var clone = UnityEngine.Object.Instantiate(freshMesh);
-                                        clone.name = freshMesh.name;
-                                        var cPos = clone.vertices;
-                                        var cTris = clone.triangles;
-                                        clone.Clear();
-                                        clone.SetVertices(cPos);
-                                        clone.SetTriangles(cTris, 0);
-                                        clone.RecalculateBounds();
-
-                                        if (mf != null)
-                                        {
-                                            Undo.RecordObject(mf, "Strip Collider Attributes");
-                                            mf.sharedMesh = clone;
-                                        }
-                                        if (mc != null)
-                                        {
-                                            Undo.RecordObject(mc, "Strip Collider Attributes");
-                                            mc.sharedMesh = clone;
-                                        }
-                                        UvtLog.Info($"Stripped extra attributes from {issue.gameObject.name}");
-                                    }
-
-                                    if (!wasReadable)
-                                    {
-                                        imp.isReadable = false;
-                                        Uv2AssetPostprocessor.bypassPaths.Add(assetPath);
-                                        imp.SaveAndReimport();
-                                    }
+                                    Undo.RecordObject(mf, "Strip Collider Attributes");
+                                    mf.sharedMesh = clone;
                                 }
+                                if (mc != null)
+                                {
+                                    Undo.RecordObject(mc, "Strip Collider Attributes");
+                                    mc.sharedMesh = clone;
+                                }
+                                UvtLog.Info($"Stripped extra attributes from {issue.gameObject.name}");
                             }
                         }
                         break;

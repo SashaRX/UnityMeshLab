@@ -321,31 +321,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (Mathf.Approximately(scale.x, 1) && Mathf.Approximately(scale.y, 1) && Mathf.Approximately(scale.z, 1)) return;
             if (Mathf.Abs(scale.x) < 1e-6f || Mathf.Abs(scale.y) < 1e-6f || Mathf.Abs(scale.z) < 1e-6f) return;
-            bool mirrored = scale.x * scale.y * scale.z < 0;
-            var vertices = mesh.vertices;
-            for (int i = 0; i < vertices.Length; ++i) vertices[i] = Vector3.Scale(vertices[i], scale);
-            mesh.vertices = vertices;
-            var inv = new Vector3(1f / scale.x, 1f / scale.y, 1f / scale.z);
-            var normals = mesh.normals;
-            for (int i = 0; i < normals.Length; ++i) normals[i] = Vector3.Scale(normals[i], inv).normalized;
-            mesh.normals = normals;
-            var tangents = mesh.tangents;
-            for (int i = 0; i < tangents.Length; ++i) {
-                var t = Vector3.Scale(new Vector3(tangents[i].x, tangents[i].y, tangents[i].z), scale);
-                if (i < normals.Length) t -= normals[i] * Vector3.Dot(t, normals[i]);
-                t.Normalize();
-                tangents[i] = new Vector4(t.x, t.y, t.z, mirrored ? -tangents[i].w : tangents[i].w);
-            }
-            mesh.tangents = tangents;
-            if (mirrored)
-                for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
-                    var triangles = mesh.GetTriangles(sub);
-                    for (int i = 0; i < triangles.Length; i += 3) {
-                        int tmp = triangles[i + 1]; triangles[i + 1] = triangles[i + 2]; triangles[i + 2] = tmp;
-                    }
-                    mesh.SetTriangles(triangles, sub);
-                }
-            mesh.RecalculateBounds();
+            MeshTransform.BakeMatrix(mesh, Matrix4x4.Scale(scale));
         }
 
         static byte[] Encode(RemeshBaker.Maps maps, int index)
