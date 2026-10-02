@@ -18,6 +18,9 @@ namespace SashaRX.UnityMeshLab
 {
     internal static class FbxExport
     {
+        const string MetaExtension = ".meta";
+        const string RelinkUndoLabel = "Relink Mesh";
+
         // ─────────────────────────────────────────────────────────────────
         // Names
         // ─────────────────────────────────────────────────────────────────
@@ -38,10 +41,10 @@ namespace SashaRX.UnityMeshLab
 
             if (!string.IsNullOrEmpty(fallback) &&
                 (fallback.StartsWith("Hidden/", StringComparison.OrdinalIgnoreCase) ||
-                 fallback.StartsWith("Hidden_", StringComparison.OrdinalIgnoreCase)))
+                 fallback.StartsWith("Hidden_", StringComparison.OrdinalIgnoreCase)) &&
+                entry?.renderer != null && !string.IsNullOrEmpty(entry.renderer.name))
             {
-                if (entry?.renderer != null && !string.IsNullOrEmpty(entry.renderer.name))
-                    return entry.renderer.name;
+                return entry.renderer.name;
             }
 
             if (!string.IsNullOrEmpty(fallback)) return fallback;
@@ -752,8 +755,8 @@ namespace SashaRX.UnityMeshLab
             // backup names. unchecked cast rather than Math.Abs — Math.Abs(int.MinValue) throws.
             string pathHash = unchecked((uint)fullPath.GetHashCode()).ToString("X8");
             string metaBak = Path.Combine(Path.GetTempPath(), Path.GetFileName(fullPath) + "." + pathHash + ".meta.bak");
-            bool metaBackedUp = File.Exists(fullPath + ".meta");
-            if (metaBackedUp) File.Copy(fullPath + ".meta", metaBak, true);
+            bool metaBackedUp = File.Exists(fullPath + MetaExtension);
+            if (metaBackedUp) File.Copy(fullPath + MetaExtension, metaBak, true);
 
             string tmpRelPath = targetFbxPath + ".tmp";
             string tmpAbsPath = Path.GetFullPath(tmpRelPath);
@@ -783,12 +786,12 @@ namespace SashaRX.UnityMeshLab
 
                 // The exporter may have generated a .meta for the .tmp — strip it so the
                 // AssetDatabase does not pick up a ghost asset on the next refresh.
-                string tmpMetaPath = tmpAbsPath + ".meta";
+                string tmpMetaPath = tmpAbsPath + MetaExtension;
                 if (File.Exists(tmpMetaPath)) File.Delete(tmpMetaPath);
 
                 if (metaBackedUp && File.Exists(metaBak))
                 {
-                    File.Copy(metaBak, fullPath + ".meta", true);
+                    File.Copy(metaBak, fullPath + MetaExtension, true);
                     File.Delete(metaBak);
                 }
             }
@@ -796,7 +799,8 @@ namespace SashaRX.UnityMeshLab
             {
                 // Best-effort: drop a leftover .tmp so a retry is not blocked. The original
                 // error matters, so this never throws.
-                try { if (File.Exists(tmpAbsPath)) File.Delete(tmpAbsPath); } catch { }
+                try { if (File.Exists(tmpAbsPath)) File.Delete(tmpAbsPath); }
+                catch { /* the leftover .tmp is cosmetic; the exception below is the real error */ }
                 throw;
             }
 #else
@@ -1249,7 +1253,7 @@ namespace SashaRX.UnityMeshLab
                     if (renameMap != null && renameMap.TryGetValue(meshName, out string newName)) meshName = newName;
                     if (meshByName.TryGetValue(meshName, out var freshMesh) && mf.sharedMesh != freshMesh)
                     {
-                        Undo.RecordObject(mf, "Relink Mesh");
+                        Undo.RecordObject(mf, RelinkUndoLabel);
                         mf.sharedMesh = freshMesh;
                         relinked++;
                     }
@@ -1260,7 +1264,7 @@ namespace SashaRX.UnityMeshLab
                 string goName = mf.gameObject.name;
                 if (meshByName.TryGetValue(goName, out var match))
                 {
-                    Undo.RecordObject(mf, "Relink Mesh");
+                    Undo.RecordObject(mf, RelinkUndoLabel);
                     mf.sharedMesh = match;
                     relinked++;
                     continue;
@@ -1270,7 +1274,7 @@ namespace SashaRX.UnityMeshLab
                     foreach (var kvp in renameMap)
                     {
                         if (goName != kvp.Key || !meshByName.TryGetValue(kvp.Value, out var renamedMesh)) continue;
-                        Undo.RecordObject(mf, "Relink Mesh");
+                        Undo.RecordObject(mf, RelinkUndoLabel);
                         mf.sharedMesh = renamedMesh;
                         relinked++;
                         break;
@@ -1281,7 +1285,7 @@ namespace SashaRX.UnityMeshLab
                     foreach (var kvp in meshByName)
                     {
                         if (!goName.Contains(kvp.Key) && !kvp.Key.Contains(goName)) continue;
-                        Undo.RecordObject(mf, "Relink Mesh");
+                        Undo.RecordObject(mf, RelinkUndoLabel);
                         mf.sharedMesh = kvp.Value;
                         relinked++;
                         break;
