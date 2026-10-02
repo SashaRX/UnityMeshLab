@@ -133,7 +133,13 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
             var encoded = Encoded(mesh, Mode);
-            if (!encoded) return;
+            if (!encoded) {
+                // The mesh lacks the mode's data (a mesh without tangents next to ones that
+                // have them): draw it as the neutral grey Shaded uses, never let it vanish.
+                surface.SetFloat(UseVertexColorId, 0); surface.SetFloat("_Lit", Lit ? 1 : 0); surface.SetColor(ColorId, new Color(0.72f, 0.72f, 0.72f, 1f));
+                for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, item.matrix, surface, sub);
+                return;
+            }
             surface.SetFloat(UseVertexColorId, 1); surface.SetColor(ColorId, Color.white);
             // Data encodings read better unlit; the headlight stays for vertex colours.
             surface.SetFloat("_Lit", Lit && Mode == Shading.VertexColors ? 1 : 0);
