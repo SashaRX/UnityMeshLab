@@ -42,7 +42,10 @@ namespace SashaRX.UnityMeshLab
                 // Rebuilding the LODGroup component keeps the same root and ownership.
                 var root = LodGroup.gameObject;
                 if (!generatedLods.TryGetValue(root, out var objects))
-                    generatedLods.Add(root, objects = new List<GameObject>());
+                {
+                    objects = new List<GameObject>();
+                    generatedLods.Add(root, objects);
+                }
                 return objects;
             }
         }
