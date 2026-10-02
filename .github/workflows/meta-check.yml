@@ -24,6 +24,9 @@ on:
       - 'Tools~/**'
       - '*.md'
       - 'package.json'
+  # Manual re-run on any branch (a GITHUB_TOKEN push by a workflow starts no
+  # pull_request run of its own, so a bot commit needs this to get its checks).
+  workflow_dispatch:
 
 jobs:
   meta-files:

@@ -1,0 +1,332 @@
+name: SonarQube
+
+# Static analysis of the package's C# on the self-hosted SonarQube Community Build,
+# modelled on SashaRX/Space's sonar-static-analysis.yml.
+#
+# Community Build has no branch/PR analysis (no branch plugin, no PR decoration): a
+# scan without a branch parameter REPLACES the project's single branch, so a PR scan
+# into the main key would overwrite main's dashboard. Hence:
+#
+#   push to main       → the project itself (SONAR_PROJECT_KEY) with the Quality Gate
+#                        ENFORCED (sonar.qualitygate.wait=true — a red gate reds the job).
+#   pull_request       → a THROWAWAY project <key>_pr<N>_r<run id>_<attempt> (unique per
+#                        run, so a cancelled run's cleanup never deletes a newer run's
+#                        project). Tools~/sonar-pr-check.mjs keeps the OPEN issues on the
+#                        lines the PR adds or modifies — the server's new-code period
+#                        plays no part — publishes them (annotations, job summary, the
+#                        `sonar-pr-findings-<N>` artifact), deletes the project, and
+#                        gates: ANY new finding on a changed line reds the check, like
+#                        the server gate's new_violations > 0.
+#                        A PR that changes the Sonar workflows or tools checks every open
+#                        PR instead of only itself (the tooling is proven on the queue;
+#                        only the triggering PR's own findings gate that run).
+#   workflow_dispatch  → `prs` = "open" (every open PR), PR numbers, or "main".
+#
+# The findings bundle each PR check uploads (`sonar-pr-findings-<N>`: findings.json,
+# prompt.md, selected.txt, summary.md) is what an autofix step would consume; none is
+# wired here. The Sonar runbook in SashaRX/Space (docs/sonar-autofix.md) describes that
+# loop; here the tools live in Tools~/ and the config in ~/.config/meshlab/.
+#
+# The C# build is the licence-free one from Tools~/compile_check.py, taken from THIS
+# workflow's ref (an older PR may not carry the script): sources are copied into a
+# build directory outside the checkout (reference-gap substitutions keep line numbers),
+# so issues carry the repo-relative path and line; SCM blame is off for that reason.
+#
+# Secrets / variables (repository settings):
+#   SONAR_TOKEN       — secret, the scanner's token. Throwaway projects are created on
+#                       first analysis, so it needs Execute Analysis + Create Projects.
+#   SONAR_API_TOKEN   — secret, optional: a USER token (squ_…) for the web API reads and
+#                       the project deletes when SONAR_TOKEN is analysis-only.
+#   SONAR_HOST_URL    — variable, optional; defaults to the Mesh Lab server below.
+#   SONAR_PROJECT_KEY — variable, optional; defaults to SashaRX_UnityMeshLab.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Editor/**'
+      - 'Tests/**'
+      - 'Tools~/compile_check.py'
+      - 'Tools~/sonar-pr-check.mjs'
+      - '.github/workflows/sonar-static-analysis.yml'
+  pull_request:
+    paths:
+      - 'Editor/**'
+      - 'Tests/**'
+      - 'Tools~/compile_check.py'
+      - 'Tools~/sonar-*'
+      - '.github/workflows/sonar-*.yml'
+  workflow_dispatch:
+    inputs:
+      prs:
+        description: 'What to analyse: "open" (every open PR), PR numbers separated by commas, or "main"'
+        default: 'open'
+        required: true
+
+# Nothing at the workflow level: every job declares its own.
+permissions: {}
+
+concurrency:
+  group: sonar-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'http://178.104.156.174:9000' }}
+  SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY || 'SashaRX_UnityMeshLab' }}
+
+jobs:
+  plan:
+    name: Decide what to analyse
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      has-token: ${{ steps.probe.outputs.has-token }}
+      matrix: ${{ steps.targets.outputs.matrix }}
+      pr-matrix: ${{ steps.targets.outputs.pr-matrix }}
+      has-prs: ${{ steps.targets.outputs.has-prs }}
+    steps:
+      - name: Probe token
+        id: probe
+        env:
+          HAS_TOKEN: ${{ secrets.SONAR_TOKEN != '' }}
+        run: |
+          echo "has-token=$HAS_TOKEN" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::notice::SONAR_TOKEN is not configured — add a SonarQube token as a repository secret to enable the scan."
+            echo "### SonarQube scan skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "No \`SONAR_TOKEN\` secret. Create a token on the server (My Account ▸ Security) and add it under Settings ▸ Secrets ▸ Actions — the Sonar runbook in SashaRX/Space (docs/sonar-autofix.md; here the tools live in Tools~/ and the config in ~/.config/meshlab/)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # One matrix entry per analysis: the Sonar project key, the commit to analyse and,
+      # for a PR, its base (the diff base), head ref (the autofix push target), whether
+      # it is same-repo (autofix eligibility) and whether its findings gate this run.
+      - name: Collect targets
+        id: targets
+        if: steps.probe.outputs.has-token == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          THIS_PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.sha }}
+          INPUT_PRS: ${{ github.event.inputs.prs }}
+        run: |
+          set -euo pipefail
+          pr_entry() {
+            gh pr view "$1" --json number,headRefOid,baseRefOid,headRefName,baseRefName,isCrossRepository \
+              --jq "{key: \"${SONAR_PROJECT_KEY}_pr\(.number)_r${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}\", label: \"PR #\(.number) \(.headRefName) → \(.baseRefName)\", head: .headRefOid, base: .baseRefOid, pr: (.number|tostring), head_ref: .headRefName, same_repo: (.isCrossRepository|not)}" \
+              | jq -c --arg event "$EVENT" --arg this "$THIS_PR" '. + {gate: (if $event == "pull_request" then (.pr == $this) else true end)}'
+          }
+          open_prs() { gh pr list --state open --limit 100 --json number --jq '.[].number'; }
+          main_entry() { printf '{"key":"%s","label":"main","head":"%s","base":"","pr":"","head_ref":"","same_repo":false,"gate":true}\n' "$SONAR_PROJECT_KEY" "$HEAD_SHA"; }
+          : > targets.jsonl
+          case "$EVENT" in
+            push) main_entry > targets.jsonl ;;
+            workflow_dispatch)
+              if [ "$INPUT_PRS" = "main" ]; then main_entry > targets.jsonl
+              elif [ "$INPUT_PRS" = "open" ]; then for n in $(open_prs); do pr_entry "$n" >> targets.jsonl; done
+              else for n in $(echo "$INPUT_PRS" | tr ',' ' '); do pr_entry "$n" >> targets.jsonl; done
+              fi ;;
+            pull_request)
+              if gh pr diff "$THIS_PR" --name-only | grep -Eq '^(\.github/workflows/sonar-.*\.yml|Tools~/sonar-.*)$'; then
+                echo "::notice::This PR changes the SonarQube workflows or tools — checking every open PR with them."
+                for n in $(open_prs); do pr_entry "$n" >> targets.jsonl; done
+              else
+                pr_entry "$THIS_PR" > targets.jsonl
+              fi ;;
+          esac
+          jq -c -s '{include: .}' targets.jsonl > matrix.json
+          jq -c -s '{include: map(select(.pr != "" and .same_repo))}' targets.jsonl > pr-matrix.json
+          {
+            echo "matrix=$(cat matrix.json)"
+            echo "pr-matrix=$(cat pr-matrix.json)"
+            echo "has-prs=$(jq -r 'if (.include | length) > 0 then "true" else "false" end' pr-matrix.json)"
+          } >> "$GITHUB_OUTPUT"
+          echo "Targets:"; jq -r '.include[] | "  \(.label)  \(.key)  gate=\(.gate)"' matrix.json
+
+  scan:
+    name: ${{ matrix.label }}
+    needs: plan
+    if: needs.plan.outputs.has-token == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      KEY: ${{ matrix.key }}
+      LABEL: ${{ matrix.label }}
+      HEAD: ${{ matrix.head }}
+      BASE: ${{ matrix.base }}
+      PR: ${{ matrix.pr }}
+      # Web API reads + project deletion need a USER token (Tools~/sonar-pr-check.mjs);
+      # SONAR_API_TOKEN supplies one when SONAR_TOKEN is analysis-only.
+      SONAR_API_TOKEN: ${{ secrets.SONAR_API_TOKEN || secrets.SONAR_TOKEN }}
+    steps:
+      # The workflow's own ref carries the build and check tools; the analysed commits may not.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: tooling
+          sparse-checkout: |
+            Tools~/compile_check.py
+            Tools~/sonar-pr-check.mjs
+            Tools~/sonar-pr-check.test.mjs
+            .github/workflows/sonar-static-analysis.yml
+          sparse-checkout-cone-mode: false
+
+      # Full history: the PR's merge base must be present for the diff.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: src
+          ref: ${{ matrix.head }}
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Cache NuGet packages and the scanner
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nuget/packages
+            ~/.sonar/cache
+          key: sonar-${{ runner.os }}-${{ hashFiles('tooling/Tools~/compile_check.py', 'tooling/.github/workflows/sonar-static-analysis.yml') }}
+
+      - name: Self-test the findings tool
+        run: node --test tooling/Tools~/sonar-pr-check.test.mjs
+
+      - name: Install dotnet-sonarscanner
+        run: dotnet tool install --global dotnet-sonarscanner --version 11.3.0
+
+      # Prepare the licence-free build of the analysed checkout into a directory outside
+      # it, then begin / build / end in that directory (begin sets the MSBuild targets up
+      # for this shell only). Main waits for the gate; a PR's gate is the step below.
+      - name: Analyse
+        id: scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/compile-check"
+          python3 tooling/Tools~/compile_check.py --prepare-only --root src --out "$out"
+          version="$(jq -r .version src/package.json)+${HEAD:0:7}"
+          if [ -n "$PR" ]; then
+            NAME="Mesh Lab - PR #$PR (throwaway)"; QG_WAIT=false
+          else
+            NAME="Mesh Lab"; QG_WAIT=true
+          fi
+          cd "$out"
+          dotnet sonarscanner begin \
+            /k:"$KEY" \
+            /n:"$NAME" \
+            /v:"$version" \
+            /d:sonar.host.url="$SONAR_HOST_URL" \
+            /d:sonar.token="$SONAR_TOKEN" \
+            /d:sonar.scm.disabled=true \
+            /d:sonar.exclusions="Shims/**" \
+            /d:sonar.cs.file.suffixes=".cs" \
+            /d:sonar.qualitygate.wait="$QG_WAIT"
+          dotnet build MeshLab.sln -nologo -v q --no-incremental -p:MeshLabFbx=true
+          dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN" 2>&1 | tee "$RUNNER_TEMP/sonar-end.log"
+          # The server processes the report asynchronously; the PR check waits on this
+          # compute-engine task before it reads any issue.
+          TASK="$(find .sonarqube -name report-task.txt -exec grep -h '^ceTaskId=' {} + 2>/dev/null | head -n 1 | cut -d= -f2)"
+          if [ -z "$TASK" ]; then
+            TASK="$(grep -oE 'api/ce/task\?id=[A-Za-z0-9_-]+' "$RUNNER_TEMP/sonar-end.log" | tail -n 1 | cut -d= -f2)"
+          fi
+          echo "ce_task=$TASK" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the server to process the scan
+        id: wait
+        if: matrix.pr != ''
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_API_TOKEN }}
+          TASK: ${{ steps.scan.outputs.ce_task }}
+        run: |
+          if [ -z "$TASK" ]; then
+            echo "::error::The scan reported no compute-engine task id."
+            exit 1
+          fi
+          node tooling/Tools~/sonar-pr-check.mjs wait --task-id "$TASK"
+
+      # The diff the scan saw: merge-base(base, head)..head of the PR branch itself.
+      - name: Findings on the lines this PR changes
+        id: findings
+        if: steps.wait.outcome == 'success'
+        working-directory: src
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          MERGE_BASE="$(git merge-base "$BASE" "$HEAD")"
+          node ../tooling/Tools~/sonar-pr-check.mjs pr-findings \
+            --project "$KEY" --base "$MERGE_BASE" --head "$HEAD" --pr "$PR" --max 12 \
+            --out-dir "$RUNNER_TEMP/sonar-pr-findings"
+
+      # Always uploaded for a PR (an empty bundle too): the autofix job reads it.
+      - name: Upload findings for the autofix loop
+        if: steps.findings.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-pr-findings-${{ matrix.pr }}
+          path: ${{ runner.temp }}/sonar-pr-findings
+          retention-days: 7
+
+      - name: Delete the throwaway PR project
+        if: always() && matrix.pr != ''
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_API_TOKEN }}
+        run: node tooling/Tools~/sonar-pr-check.mjs delete --project "$KEY"
+
+      - name: Gate
+        if: always() && matrix.pr != ''
+        env:
+          SCAN: ${{ steps.scan.outcome }}
+          FINDINGS: ${{ steps.findings.outcome }}
+          TOTAL: ${{ steps.findings.outputs.total }}
+          SEVERE: ${{ steps.findings.outputs.severe }}
+          GATES: ${{ matrix.gate }}
+        run: |
+          if [ "$FINDINGS" != "success" ]; then
+            echo "::error::The Sonar PR check did not complete (scan: $SCAN) — see the steps above."
+            exit 1
+          fi
+          if [ "${TOTAL:-0}" != "0" ]; then
+            if [ "$GATES" = "true" ]; then
+              echo "::error::$TOTAL new Sonar finding(s) on lines this PR changes ($SEVERE severe) — see the job summary."
+              exit 1
+            fi
+            echo "::warning::$LABEL: $TOTAL new Sonar finding(s) on its changed lines ($SEVERE severe); that PR's own check gates it."
+            exit 0
+          fi
+          echo "Sonar PR check passed: no new findings on the lines this PR changes."
+
+      # WHY the gate said what it said (main only): the per-condition verdicts.
+      - name: Summarize the main analysis
+        if: always() && matrix.pr == ''
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_API_TOKEN }}
+        run: |
+          {
+            echo "## SonarQube — main"
+            echo ""
+            echo "[$KEY]($SONAR_HOST_URL/dashboard?id=$KEY) — analysed \`${HEAD:0:7}\`, Quality Gate enforced (a red gate reds this job)."
+            echo ""
+            echo '```json'
+            curl -sS -m 15 -H @<(printf 'Authorization: Bearer %s\n' "$SONAR_TOKEN") \
+              "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$KEY" || echo '{"error":"gate status not read"}'
+            echo ""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
