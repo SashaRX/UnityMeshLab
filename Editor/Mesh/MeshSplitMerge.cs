@@ -126,7 +126,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 ReplaceInLodGroup(ctx.LodGroup, e.renderer, created, undoLabel);
                 UvtLog.Info($"Split {e.renderer.name}: {subCount} submeshes → {created.Count} objects");
-                RemoveSource(e.renderer.gameObject, undoLabel);
+                RemoveSource(e.renderer.gameObject);
                 split++;
             }
             UvtLog.Info($"Split {split} multi-material mesh(es).");
@@ -225,13 +225,13 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < n; i++) pos[i] = positions[used[i]];
             mesh.SetVertices(pos);
             var normals = source.normals;
-            if (normals != null && normals.Length == positions.Length) { var a = new Vector3[n]; for (int i = 0; i < n; i++) a[i] = normals[used[i]]; mesh.normals = a; }
+            if (normals != null && normals.Length == positions.Length) { var a = new Vector3[n]; for (int i = 0; i < n; i++) { a[i] = normals[used[i]]; } mesh.normals = a; }
             var tangents = source.tangents;
-            if (tangents != null && tangents.Length == positions.Length) { var a = new Vector4[n]; for (int i = 0; i < n; i++) a[i] = tangents[used[i]]; mesh.tangents = a; }
+            if (tangents != null && tangents.Length == positions.Length) { var a = new Vector4[n]; for (int i = 0; i < n; i++) { a[i] = tangents[used[i]]; } mesh.tangents = a; }
             var colors = source.colors;
-            if (colors != null && colors.Length == positions.Length) { var a = new Color[n]; for (int i = 0; i < n; i++) a[i] = colors[used[i]]; mesh.colors = a; }
+            if (colors != null && colors.Length == positions.Length) { var a = new Color[n]; for (int i = 0; i < n; i++) { a[i] = colors[used[i]]; } mesh.colors = a; }
             var weights = source.boneWeights;
-            if (weights != null && weights.Length == positions.Length) { var a = new BoneWeight[n]; for (int i = 0; i < n; i++) a[i] = weights[used[i]]; mesh.boneWeights = a; }
+            if (weights != null && weights.Length == positions.Length) { var a = new BoneWeight[n]; for (int i = 0; i < n; i++) { a[i] = weights[used[i]]; } mesh.boneWeights = a; }
             var uv = new List<Vector4>();
             for (int ch = 0; ch < 8; ch++)
             {
@@ -346,7 +346,7 @@ namespace SashaRX.UnityMeshLab
         // The split source goes away with its mesh — unless the node carries children or
         // components beyond its mesh pair (a collider, a script), in which case the node
         // stays as their container and only its MeshFilter and MeshRenderer are removed.
-        static void RemoveSource(GameObject source, string undoLabel)
+        static void RemoveSource(GameObject source)
         {
             bool keepNode = source.transform.childCount > 0 || source.GetComponents<Component>().Length > 3;
             if (!keepNode) { Undo.DestroyObjectImmediate(source); return; }
