@@ -340,8 +340,9 @@ Texture snapshots and Unity mesh/asset APIs stay on the main thread.
   Fibonacci sample directions, 2D barycentrics, point–box distance);
   `Editor/Geometry/GpuReadback.cs` — the one GPU → CPU texture readback (blit
   through an optional material or sub-rectangle into a linear temporary, then
-  ReadPixels). Spatial queries are `Editor/TriangleBvh.cs` (3D: ray, nearest,
-  normal- and facing-filtered, either-side masks) and `Editor/TriangleBvh2D.cs`
+  ReadPixels). Spatial queries are `Editor/TriangleBvh.cs` (3D: binned-SAH build,
+  watertight two-sided ray test, nearest point, normal- and facing-filtered,
+  either-side masks) and `Editor/TriangleBvh2D.cs`
   (UV space); `Editor/Geometry/GpuBvh.cs` is the same tree on the GPU with the
   same queries in batches (`Shaders/BvhQueries.compute`), and
   `Shaders/BvhTraversal.hlsl` is the one traversal every compute kernel includes

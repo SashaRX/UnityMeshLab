@@ -61,6 +61,77 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(-1, bvh.Raycast(new Vector3(s*0.25f, s*0.25f, 1f), Vector3.right, 2f).triangleIndex, "parallel to it");
         }
         [Test]
+        public void BvhRaysAreWatertightAcrossSharedEdgesAndVertices()
+        {
+            // A 4×4 grid of quads split into triangles, all in z = 0; rays cast exactly
+            // through every shared vertex and through points along every shared edge
+            // must all hit (Möller–Trumbore can leak a ray between two triangles there).
+            const int n = 4; var p = new System.Collections.Generic.List<Vector3>(); var idx = new System.Collections.Generic.List<int>();
+            for (int y = 0; y <= n; ++y) for (int x = 0; x <= n; ++x) p.Add(new Vector3(x * 0.37f, y * 0.53f, 0));
+            for (int y = 0; y < n; ++y) for (int x = 0; x < n; ++x) {
+                int a = y * (n + 1) + x; idx.AddRange(new[] { a, a + 1, a + n + 2, a, a + n + 2, a + n + 1 });
+            }
+            var bvh = new TriangleBvh(p.ToArray(), idx.ToArray());
+            var dirs = new[] { Vector3.back, new Vector3(0.3f, -0.2f, -1f).normalized, new Vector3(-0.7f, 0.4f, 1f).normalized };
+            int tested = 0;
+            foreach (var d in dirs) {
+                // Shared vertices.
+                for (int y = 1; y < n; ++y) for (int x = 1; x < n; ++x) {
+                    var target = new Vector3(x * 0.37f, y * 0.53f, 0);
+                    var hit = bvh.Raycast(target - d * 2f, d, 5f);
+                    Assert.GreaterOrEqual(hit.triangleIndex, 0, $"vertex {x},{y} along {d}"); ++tested;
+                }
+                // Points along shared edges (horizontal, vertical and diagonal).
+                for (int i = 1; i < 7; ++i) {
+                    float s = i / 7f;
+                    foreach (var target in new[] { new Vector3((1 + s) * 0.37f, 2 * 0.53f, 0), new Vector3(2 * 0.37f, (1 + s) * 0.53f, 0), new Vector3((1 + s) * 0.37f, (1 + s) * 0.53f, 0) }) {
+                        var hit = bvh.Raycast(target - d * 2f, d, 5f);
+                        Assert.GreaterOrEqual(hit.triangleIndex, 0, $"edge point {target} along {d}"); ++tested;
+                        Assert.That(hit.t, Is.EqualTo(2f).Within(1e-4f));
+                        var w = hit.barycentric; int f = hit.triangleIndex;
+                        var at = p[idx[f * 3]] * w.x + p[idx[f * 3 + 1]] * w.y + p[idx[f * 3 + 2]] * w.z;
+                        Assert.That((at - target).magnitude, Is.LessThan(1e-4f), "barycentric weights locate the hit");
+                    }
+                }
+            }
+            Assert.Greater(tested, 50);
+            // Behind the origin and beyond the reach: no hit.
+            Assert.AreEqual(-1, bvh.Raycast(new Vector3(0.5f, 0.5f, -1f), Vector3.back, 5f).triangleIndex);
+            Assert.AreEqual(-1, bvh.Raycast(new Vector3(0.5f, 0.5f, 3f), Vector3.back, 2f).triangleIndex);
+        }
+        [Test]
+        public void BvhQueriesMatchBruteForceOnARandomSoup()
+        {
+            // The SAH build must not change what the queries answer: nearest point and
+            // first ray hit agree with an exhaustive scan over 400 random triangles.
+            var rng = new System.Random(7);
+            float R() => (float)rng.NextDouble();
+            int faces = 400; var p = new Vector3[faces * 3]; var idx = new int[faces * 3];
+            for (int f = 0; f < faces; ++f) {
+                var centre = new Vector3(R() * 4 - 2, R() * 4 - 2, R() * 4 - 2);
+                for (int k = 0; k < 3; ++k) { p[f * 3 + k] = centre + new Vector3(R() - 0.5f, R() - 0.5f, R() - 0.5f) * 0.6f; idx[f * 3 + k] = f * 3 + k; }
+            }
+            var bvh = new TriangleBvh(p, idx);
+            var frameDir = Vector3.zero;
+            for (int q = 0; q < 200; ++q) {
+                var point = new Vector3(R() * 5 - 2.5f, R() * 5 - 2.5f, R() * 5 - 2.5f);
+                var near = bvh.FindNearest(point);
+                float brute = float.MaxValue;
+                for (int f = 0; f < faces; ++f) {
+                    var cp = TriangleBvh.ClosestPointOnTriangle(point, p[f * 3], p[f * 3 + 1], p[f * 3 + 2], out _);
+                    brute = Mathf.Min(brute, (cp - point).sqrMagnitude);
+                }
+                Assert.That(near.distSq, Is.EqualTo(brute).Within(1e-5f), "nearest " + q);
+                var dir = new Vector3(R() - 0.5f, R() - 0.5f, R() - 0.5f).normalized;
+                var hit = bvh.Raycast(point, dir, 10f);
+                float bruteT = 10f; var frame = new TriangleBvh.RayFrame(dir);
+                for (int f = 0; f < faces; ++f)
+                    if (TriangleBvh.Watertight(in frame, point, p[f * 3], p[f * 3 + 1], p[f * 3 + 2], bruteT, out float t, out _)) bruteT = t;
+                if (bruteT < 10f) { Assert.GreaterOrEqual(hit.triangleIndex, 0, "ray " + q); Assert.That(hit.t, Is.EqualTo(bruteT).Within(1e-5f)); }
+                else Assert.AreEqual(-1, hit.triangleIndex, "ray " + q);
+            }
+        }
+        [Test]
         public void MeshGeometryHelpersAgreeWithTheirDefinitions()
         {
             var p = new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.zero, Vector3.right };

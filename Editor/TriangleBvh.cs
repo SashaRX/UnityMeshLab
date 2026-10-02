@@ -1,6 +1,10 @@
-// TriangleBvh.cs — AABB Bounding Volume Hierarchy for nearest-surface queries
-// Used by SurfaceProjectionSolver to find closest source triangle for each target sample
+// TriangleBvh.cs — the package's triangle BVH: binned-SAH build (Wald 2007, 8 bins
+// per axis, SAH-terminated leaves), ordered ray traversal with the watertight
+// two-sided ray–triangle test (Woop, Benthin, Wald 2013), nearest-point queries with
+// optional normal / facing / either-side filters. GetGPUData hands the same tree to
+// Shaders/BvhTraversal.hlsl, which mirrors every test here.
 
+using System;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
@@ -22,7 +26,16 @@ namespace SashaRX.UnityMeshLab
         int[] tris;
         int nodeCount;
 
-        const int MAX_LEAF = 4;
+        // Leaves: the SAH decides (a split must beat C_INT × count), with a hard cap so
+        // piles of coincident triangles still terminate; below MIN_SPLIT nothing is tried.
+        const int MAX_LEAF = 8, MIN_SPLIT = 3, BINS = 8;
+        const float C_TRAV = 1f, C_INT = 1f;
+
+        // Per face, for the build only: bounds and centroid; plus the SAH bin scratch.
+        Vector3[] faceMin, faceMax, faceCentroid;
+        readonly int[] binCount = new int[BINS], leftCount = new int[BINS - 1], rightCount = new int[BINS - 1];
+        readonly float[] leftArea = new float[BINS - 1], rightArea = new float[BINS - 1];
+        readonly Vector3[] binMin = new Vector3[BINS], binMax = new Vector3[BINS];
 
         public TriangleBvh(Vector3[] vertices, int[] triangles)
         {
@@ -31,15 +44,22 @@ namespace SashaRX.UnityMeshLab
             int faceCount = triangles.Length / 3;
 
             triIndices = new int[faceCount];
-            for (int i = 0; i < faceCount; i++)
-                triIndices[i] = i;
+            faceMin = new Vector3[faceCount]; faceMax = new Vector3[faceCount]; faceCentroid = new Vector3[faceCount];
+            for (int f = 0; f < faceCount; f++)
+            {
+                triIndices[f] = f;
+                Vector3 a = verts[tris[f * 3]], b = verts[tris[f * 3 + 1]], c = verts[tris[f * 3 + 2]];
+                faceMin[f] = Vector3.Min(a, Vector3.Min(b, c));
+                faceMax[f] = Vector3.Max(a, Vector3.Max(b, c));
+                faceCentroid[f] = (a + b + c) * (1f / 3f);
+            }
 
-            nodes = new Node[faceCount * 2 + 1];
+            nodes = new Node[Math.Max(1, faceCount * 2)];
             nodeCount = 0;
-
-            BuildRecursive(0, faceCount);
+            if (faceCount == 0) { nodes[nodeCount++] = new Node { left = -1, right = -1, triStart = 0, triCount = 0 }; }
+            else BuildRecursive(0, faceCount);
+            faceMin = faceMax = faceCentroid = null;
         }
-
         // ─── Nearest point on any triangle ───
         public struct HitResult
         {
@@ -98,7 +118,8 @@ namespace SashaRX.UnityMeshLab
         public RayHit Raycast(Vector3 origin, Vector3 direction, float maxDist)
         {
             var best = new RayHit { triangleIndex = -1, t = maxDist };
-            RaycastRecursive(0, origin, direction, ref best);
+            var frame = new RayFrame(direction);
+            RaycastRecursive(0, origin, direction, in frame, ref best);
             return best;
         }
 
@@ -112,7 +133,8 @@ namespace SashaRX.UnityMeshLab
         public RayHit RaycastFacingFiltered(Vector3 origin, Vector3 direction, float maxDist, Vector3[] faceNormals, bool[] eitherSide = null)
         {
             var best = new RayHit { triangleIndex = -1, t = maxDist };
-            RaycastFacingRecursive(0, origin, direction, faceNormals, eitherSide, ref best);
+            var frame = new RayFrame(direction);
+            RaycastFacingRecursive(0, origin, direction, in frame, faceNormals, eitherSide, ref best);
             return best;
         }
 
@@ -129,44 +151,89 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ─── Build ───
+        // Binned SAH (Wald 2007): BINS bins along each axis over the centroid bounds,
+        // the cheapest plane by surface-area heuristic; the split only happens when it
+        // beats testing the whole node. A midpoint split keeps the tree balanced where
+        // the SAH finds nothing (coincident centroids).
         int BuildRecursive(int start, int count)
         {
             int idx = nodeCount++;
             ref Node node = ref nodes[idx];
+            ComputeBounds(start, count, out node.bMin, out node.bMax, out Vector3 cMin, out Vector3 cMax);
+            node.left = -1; node.right = -1;
+            if (count < MIN_SPLIT) { node.triStart = start; node.triCount = count; return idx; }
 
-            // Compute bounds
-            ComputeBounds(start, count, out node.bMin, out node.bMax);
-            node.left = -1;
-            node.right = -1;
-
-            if (count <= MAX_LEAF)
+            int bestAxis = -1, bestBin = -1; float bestCost = float.MaxValue;
+            Vector3 cExtent = cMax - cMin;
+            var binCount = this.binCount; var leftArea = this.leftArea; var rightArea = this.rightArea;
+            var leftCount = this.leftCount; var rightCount = this.rightCount; var binMin = this.binMin; var binMax = this.binMax;
+            for (int axis = 0; axis < 3; axis++)
             {
-                node.triStart = start;
-                node.triCount = count;
-                return idx;
+                float extent = GetComponent(cExtent, axis);
+                if (extent <= 0f) continue;
+                float scale = BINS / extent, origin = GetComponent(cMin, axis);
+                for (int b = 0; b < BINS; b++) { binCount[b] = 0; binMin[b] = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue); binMax[b] = new Vector3(float.MinValue, float.MinValue, float.MinValue); }
+                for (int i = start; i < start + count; i++)
+                {
+                    int f = triIndices[i];
+                    int b = Math.Min(BINS - 1, (int)((GetComponent(faceCentroid[f], axis) - origin) * scale));
+                    binCount[b]++;
+                    binMin[b] = Vector3.Min(binMin[b], faceMin[f]); binMax[b] = Vector3.Max(binMax[b], faceMax[f]);
+                }
+                // Sweep from both ends: area and count of everything left / right of each plane.
+                Vector3 lMin = binMin[0], lMax = binMax[0]; int lCount = 0;
+                for (int b = 0; b < BINS - 1; b++)
+                {
+                    lCount += binCount[b];
+                    if (b > 0) { lMin = Vector3.Min(lMin, binMin[b]); lMax = Vector3.Max(lMax, binMax[b]); }
+                    leftCount[b] = lCount; leftArea[b] = lCount > 0 ? HalfArea(lMin, lMax) : 0f;
+                }
+                Vector3 rMin = binMin[BINS - 1], rMax = binMax[BINS - 1]; int rCount = 0;
+                for (int b = BINS - 1; b > 0; b--)
+                {
+                    rCount += binCount[b];
+                    if (b < BINS - 1) { rMin = Vector3.Min(rMin, binMin[b]); rMax = Vector3.Max(rMax, binMax[b]); }
+                    rightCount[b - 1] = rCount; rightArea[b - 1] = rCount > 0 ? HalfArea(rMin, rMax) : 0f;
+                }
+                for (int b = 0; b < BINS - 1; b++)
+                {
+                    if (leftCount[b] == 0 || rightCount[b] == 0) continue;
+                    float cost = leftArea[b] * leftCount[b] + rightArea[b] * rightCount[b];
+                    if (cost < bestCost) { bestCost = cost; bestAxis = axis; bestBin = b; }
+                }
             }
 
-            // Split along longest axis
-            Vector3 extent = node.bMax - node.bMin;
-            int axis = 0;
-            if (extent.y > extent.x) axis = 1;
-            if (extent.z > (axis == 0 ? extent.x : extent.y)) axis = 2;
-
-            float splitVal = GetComponent(node.bMin, axis) + GetComponent(extent, axis) * 0.5f;
-
-            // Partition
-            int mid = Partition(start, count, axis, splitVal);
-
-            // Fallback: split in half if partition failed
-            if (mid == start || mid == start + count)
-                mid = start + count / 2;
-
-            node.triStart = -1;
-            node.triCount = 0;
-            node.left = BuildRecursive(start, mid - start);
-            node.right = BuildRecursive(mid, start + count - mid);
-
+            float nodeArea = HalfArea(node.bMin, node.bMax);
+            bool split = bestAxis >= 0 && nodeArea > 0f && C_TRAV + C_INT * bestCost / nodeArea < C_INT * count;
+            int mid = start;
+            if (split)
+            {
+                float plane = GetComponent(cMin, bestAxis) + (bestBin + 1) * GetComponent(cExtent, bestAxis) / BINS;
+                mid = Partition(start, count, bestAxis, plane);
+                if (mid == start || mid == start + count) split = false;
+            }
+            if (!split)
+            {
+                if (count <= MAX_LEAF) { node.triStart = start; node.triCount = count; return idx; }
+                // Forced split for oversize leaves the SAH would not cut: the middle of
+                // the longest centroid axis, or the middle of the range when all coincide.
+                int axis = 0;
+                if (cExtent.y > cExtent.x) axis = 1;
+                if (cExtent.z > GetComponent(cExtent, axis)) axis = 2;
+                mid = Partition(start, count, axis, GetComponent(cMin, axis) + GetComponent(cExtent, axis) * 0.5f);
+                if (mid == start || mid == start + count) mid = start + count / 2;
+            }
+            node.triStart = -1; node.triCount = 0;
+            int left = BuildRecursive(start, mid - start);
+            int right = BuildRecursive(mid, start + count - mid);
+            nodes[idx].left = left; nodes[idx].right = right;   // `node` may be stale after recursion (no realloc, but be explicit)
             return idx;
+        }
+
+        static float HalfArea(Vector3 min, Vector3 max)
+        {
+            Vector3 e = max - min;
+            return e.x * e.y + e.y * e.z + e.z * e.x;
         }
 
         int Partition(int start, int count, int axis, float splitVal)
@@ -174,7 +241,7 @@ namespace SashaRX.UnityMeshLab
             int lo = start, hi = start + count - 1;
             while (lo <= hi)
             {
-                float c = TriangleCentroidAxis(triIndices[lo], axis);
+                float c = GetComponent(faceCentroid[triIndices[lo]], axis);
                 if (c < splitVal)
                     lo++;
                 else
@@ -188,32 +255,18 @@ namespace SashaRX.UnityMeshLab
             return lo;
         }
 
-        float TriangleCentroidAxis(int face, int axis)
+        void ComputeBounds(int start, int count, out Vector3 bMin, out Vector3 bMax, out Vector3 cMin, out Vector3 cMax)
         {
-            int i0 = tris[face * 3], i1 = tris[face * 3 + 1], i2 = tris[face * 3 + 2];
-            return (GetComponent(verts[i0], axis) +
-                    GetComponent(verts[i1], axis) +
-                    GetComponent(verts[i2], axis)) / 3f;
-        }
-
-        void ComputeBounds(int start, int count, out Vector3 bMin, out Vector3 bMax)
-        {
-            bMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-            bMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-
+            bMin = cMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            bMax = cMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
             for (int i = start; i < start + count; i++)
             {
                 int f = triIndices[i];
-                for (int j = 0; j < 3; j++)
-                {
-                    Vector3 v = verts[tris[f * 3 + j]];
-                    bMin = Vector3.Min(bMin, v);
-                    bMax = Vector3.Max(bMax, v);
-                }
+                bMin = Vector3.Min(bMin, faceMin[f]); bMax = Vector3.Max(bMax, faceMax[f]);
+                cMin = Vector3.Min(cMin, faceCentroid[f]); cMax = Vector3.Max(cMax, faceCentroid[f]);
             }
         }
 
-        // ─── Nearest-point query ───
         void FindNearestRecursive(int nodeIdx, Vector3 q, ref HitResult best)
         {
             ref Node node = ref nodes[nodeIdx];
@@ -314,7 +367,7 @@ namespace SashaRX.UnityMeshLab
         // Both traversals visit the nearer child first: once a hit shrinks best.t the far
         // child is culled by the slab test, which matters for long rays (a proxy texel
         // looking through a whole building, a shadow ray across a scene).
-        void RaycastRecursive(int nodeIdx, Vector3 origin, Vector3 dir, ref RayHit best)
+        void RaycastRecursive(int nodeIdx, Vector3 origin, Vector3 dir, in RayFrame frame, ref RayHit best)
         {
             ref Node node = ref nodes[nodeIdx];
             if (!RayEntersAabb(origin, dir, node.bMin, node.bMax, best.t, out _))
@@ -327,25 +380,22 @@ namespace SashaRX.UnityMeshLab
                 {
                     int f = triIndices[i];
                     int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
-
-                    if (RayTriangleIntersect(origin, dir, verts[i0], verts[i1], verts[i2],
-                            out float t, out float u, out float v)
-                        && t >= 0f && t < best.t)
+                    if (Watertight(in frame, origin, verts[i0], verts[i1], verts[i2], best.t, out float t, out Vector3 bary))
                     {
                         best.t = t;
                         best.triangleIndex = f;
-                        best.barycentric = new Vector3(1f - u - v, u, v);
+                        best.barycentric = bary;
                     }
                 }
                 return;
             }
 
             OrderChildren(node, origin, dir, best.t, out int first, out int second);
-            if (first >= 0) RaycastRecursive(first, origin, dir, ref best);
-            if (second >= 0) RaycastRecursive(second, origin, dir, ref best);
+            if (first >= 0) RaycastRecursive(first, origin, dir, in frame, ref best);
+            if (second >= 0) RaycastRecursive(second, origin, dir, in frame, ref best);
         }
 
-        void RaycastFacingRecursive(int nodeIdx, Vector3 origin, Vector3 dir, Vector3[] fNrm, bool[] eitherSide, ref RayHit best)
+        void RaycastFacingRecursive(int nodeIdx, Vector3 origin, Vector3 dir, in RayFrame frame, Vector3[] fNrm, bool[] eitherSide, ref RayHit best)
         {
             ref Node node = ref nodes[nodeIdx];
             if (!RayEntersAabb(origin, dir, node.bMin, node.bMax, best.t, out _))
@@ -358,21 +408,19 @@ namespace SashaRX.UnityMeshLab
                     int f = triIndices[i];
                     if (Vector3.Dot(fNrm[f], dir) > 0f && !(eitherSide != null && f < eitherSide.Length && eitherSide[f])) continue; // facing away from the ray origin
                     int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
-                    if (RayTriangleIntersect(origin, dir, verts[i0], verts[i1], verts[i2],
-                            out float t, out float u, out float v)
-                        && t >= 0f && t < best.t)
+                    if (Watertight(in frame, origin, verts[i0], verts[i1], verts[i2], best.t, out float t, out Vector3 bary))
                     {
                         best.t = t;
                         best.triangleIndex = f;
-                        best.barycentric = new Vector3(1f - u - v, u, v);
+                        best.barycentric = bary;
                     }
                 }
                 return;
             }
 
             OrderChildren(node, origin, dir, best.t, out int first, out int second);
-            if (first >= 0) RaycastFacingRecursive(first, origin, dir, fNrm, eitherSide, ref best);
-            if (second >= 0) RaycastFacingRecursive(second, origin, dir, fNrm, eitherSide, ref best);
+            if (first >= 0) RaycastFacingRecursive(first, origin, dir, in frame, fNrm, eitherSide, ref best);
+            if (second >= 0) RaycastFacingRecursive(second, origin, dir, in frame, fNrm, eitherSide, ref best);
         }
 
         // The children the ray enters, nearer entry first; -1 for a child the ray misses
@@ -444,34 +492,70 @@ namespace SashaRX.UnityMeshLab
         /// Möller–Trumbore ray-triangle intersection.
         /// Returns true if hit, with t (distance), u, v (barycentric of B, C).
         /// </summary>
-        static bool RayTriangleIntersect(Vector3 origin, Vector3 dir,
-            Vector3 a, Vector3 b, Vector3 c,
-            out float t, out float u, out float v)
+        /// <summary>
+        /// Per-ray part of the watertight ray–triangle test (Woop, Benthin, Wald, JCGT
+        /// 2013): the ray's dominant axis kz, the other two in winding-preserving order
+        /// (swapped when the ray points down kz), and the shear that maps the ray onto
+        /// the unit ray (0,0,1).
+        /// </summary>
+        public readonly struct RayFrame
         {
-            t = 0; u = 0; v = 0;
+            public readonly int kx, ky, kz;
+            public readonly float sx, sy, sz;
 
-            Vector3 edge1 = b - a;
-            Vector3 edge2 = c - a;
-            Vector3 h = Vector3.Cross(dir, edge2);
-            float det = Vector3.Dot(edge1, h);
+            public RayFrame(Vector3 dir)
+            {
+                Vector3 a = new Vector3(Mathf.Abs(dir.x), Mathf.Abs(dir.y), Mathf.Abs(dir.z));
+                kz = a.x > a.y ? (a.x > a.z ? 0 : 2) : (a.y > a.z ? 1 : 2);
+                kx = kz + 1; if (kx == 3) kx = 0;
+                ky = kx + 1; if (ky == 3) ky = 0;
+                if (GetComponent(dir, kz) < 0f) { int t = kx; kx = ky; ky = t; }
+                float dz = GetComponent(dir, kz);
+                if (dz == 0f) dz = 1e-30f;   // a zero direction hits nothing anyway
+                sx = GetComponent(dir, kx) / dz;
+                sy = GetComponent(dir, ky) / dz;
+                sz = 1f / dz;
+            }
+        }
 
-            // Parallel test relative to the triangle's own scale: |det| ≤ |e1|·|e2|, so an
-            // absolute 1e-7 silently rejected every face of a millimetre-scale mesh
-            // (edges ~1e-4 → det ~1e-8) as "parallel" and the bake missed the whole model.
-            float scale = Mathf.Sqrt(edge1.sqrMagnitude * edge2.sqrMagnitude);
-            if (Mathf.Abs(det) <= 1e-7f * scale) return false;
-
-            float invDet = 1f / det;
-            Vector3 s = origin - a;
-            u = invDet * Vector3.Dot(s, h);
-            if (u < 0f || u > 1f) return false;
-
-            Vector3 q = Vector3.Cross(s, edge1);
-            v = invDet * Vector3.Dot(dir, q);
-            if (v < 0f || u + v > 1f) return false;
-
-            t = invDet * Vector3.Dot(edge2, q);
-            return true; // t can be negative — caller checks t >= 0
+        /// <summary>
+        /// Watertight two-sided ray–triangle test (Woop, Benthin, Wald 2013). Vertices
+        /// are translated to the ray origin, sheared so the ray becomes (0,0,1), and
+        /// tested with three 2D edge functions; an edge that evaluates to exactly 0 is
+        /// re-evaluated in double precision, and a 0 that survives counts as inside, so
+        /// adjacent triangles never leak a ray between them (no cracks along shared
+        /// edges or at shared vertices, which Möller–Trumbore does not guarantee). The
+        /// hit is accepted when 0 ≤ t &lt; maxT; bary holds the weights of a, b, c.
+        /// </summary>
+        public static bool Watertight(in RayFrame k, Vector3 origin, Vector3 a, Vector3 b, Vector3 c, float maxT, out float t, out Vector3 bary)
+        {
+            t = 0f; bary = default;
+            a -= origin; b -= origin; c -= origin;
+            float az = GetComponent(a, k.kz), bz = GetComponent(b, k.kz), cz = GetComponent(c, k.kz);
+            float ax = GetComponent(a, k.kx) - k.sx * az, ay = GetComponent(a, k.ky) - k.sy * az;
+            float bx = GetComponent(b, k.kx) - k.sx * bz, by = GetComponent(b, k.ky) - k.sy * bz;
+            float cx = GetComponent(c, k.kx) - k.sx * cz, cy = GetComponent(c, k.ky) - k.sy * cz;
+            float U = cx * by - cy * bx;
+            float V = ax * cy - ay * cx;
+            float W = bx * ay - by * ax;
+            if (U == 0f || V == 0f || W == 0f)
+            {
+                U = (float)((double)cx * by - (double)cy * bx);
+                V = (float)((double)ax * cy - (double)ay * cx);
+                W = (float)((double)bx * ay - (double)by * ax);
+            }
+            if ((U < 0f || V < 0f || W < 0f) && (U > 0f || V > 0f || W > 0f)) return false;
+            float det = U + V + W;
+            if (det == 0f) return false;   // ray in the triangle's plane, or a degenerate triangle
+            float T = U * (k.sz * az) + V * (k.sz * bz) + W * (k.sz * cz);
+            // Scaled depth test with the determinant's sign folded in (two-sided).
+            float sign = det < 0f ? -1f : 1f;
+            float Ts = T * sign, dets = det * sign;
+            if (Ts < 0f || Ts >= maxT * dets) return false;
+            float rcp = 1f / det;
+            t = T * rcp;
+            bary = new Vector3(U * rcp, V * rcp, W * rcp);
+            return true;
         }
 
         /// <summary>

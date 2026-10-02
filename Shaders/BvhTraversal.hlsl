@@ -61,24 +61,49 @@ bool BvhRayAabb(float3 origin, float3 invDir, float3 bMin, float3 bMax, float ma
     return tmin <= min(tmax, maxT);
 }
 
-// Möller–Trumbore. The parallel test is relative to the triangle's own scale
-// (|det| <= |e1|·|e2|), so millimetre meshes register hits like metre ones.
-bool BvhRayTriangle(float3 origin, float3 dir, float3 a, float3 b, float3 c, out float t, out float u, out float v)
+// Watertight two-sided ray–triangle test (Woop, Benthin, Wald, JCGT 2013), the
+// same as TriangleBvh.Watertight: vertices translated to the ray origin and sheared
+// so the ray is (0,0,1), three 2D edge functions, an edge at exactly 0 counts as
+// inside, so adjacent triangles never leak a ray between them. The CPU re-evaluates
+// a zero edge in double precision; GPUs without doubles keep the conservative hit
+// (the paper: a false positive once per ~million tests, on tiny far triangles only).
+struct BvhRayFrame { int kx; int ky; int kz; float sx; float sy; float sz; };
+
+BvhRayFrame BvhFrame(float3 dir)
 {
-    t = 0; u = 0; v = 0;
-    float3 edge1 = b - a;
-    float3 edge2 = c - a;
-    float3 h = cross(dir, edge2);
-    float det = dot(edge1, h);
-    if (abs(det) <= 1e-7 * sqrt(dot(edge1, edge1) * dot(edge2, edge2))) return false;
-    float invDet = 1.0 / det;
-    float3 s = origin - a;
-    u = invDet * dot(s, h);
-    if (u < 0.0 || u > 1.0) return false;
-    float3 q = cross(s, edge1);
-    v = invDet * dot(dir, q);
-    if (v < 0.0 || u + v > 1.0) return false;
-    t = invDet * dot(edge2, q);
+    BvhRayFrame k;
+    float3 a = abs(dir);
+    k.kz = a.x > a.y ? (a.x > a.z ? 0 : 2) : (a.y > a.z ? 1 : 2);
+    k.kx = k.kz + 1; if (k.kx == 3) k.kx = 0;
+    k.ky = k.kx + 1; if (k.ky == 3) k.ky = 0;
+    if (dir[k.kz] < 0.0) { int t = k.kx; k.kx = k.ky; k.ky = t; }
+    float dz = dir[k.kz];
+    if (dz == 0.0) dz = 1e-30;
+    k.sx = dir[k.kx] / dz; k.sy = dir[k.ky] / dz; k.sz = 1.0 / dz;
+    return k;
+}
+
+bool BvhWatertight(BvhRayFrame k, float3 origin, float3 a, float3 b, float3 c, float maxT, out float t, out float3 bary)
+{
+    t = 0; bary = float3(0, 0, 0);
+    a -= origin; b -= origin; c -= origin;
+    float az = a[k.kz], bz = b[k.kz], cz = c[k.kz];
+    float ax = a[k.kx] - k.sx * az, ay = a[k.ky] - k.sy * az;
+    float bx = b[k.kx] - k.sx * bz, by = b[k.ky] - k.sy * bz;
+    float cx = c[k.kx] - k.sx * cz, cy = c[k.ky] - k.sy * cz;
+    float U = cx * by - cy * bx;
+    float V = ax * cy - ay * cx;
+    float W = bx * ay - by * ax;
+    if ((U < 0.0 || V < 0.0 || W < 0.0) && (U > 0.0 || V > 0.0 || W > 0.0)) return false;
+    float det = U + V + W;
+    if (det == 0.0) return false;
+    float T = U * (k.sz * az) + V * (k.sz * bz) + W * (k.sz * cz);
+    float sgn = det < 0.0 ? -1.0 : 1.0;
+    float Ts = T * sgn, dets = det * sgn;
+    if (Ts < 0.0 || Ts >= maxT * dets) return false;
+    float rcp = 1.0 / det;
+    t = T * rcp;
+    bary = float3(U, V, W) * rcp;
     return true;
 }
 
@@ -125,6 +150,7 @@ BvhRayHit BvhRaycast(float3 origin, float3 dir, float maxDist, bool facingFilter
         abs(dir.x) > BVH_DIR_EPSILON ? 1.0 / dir.x : (dir.x >= 0 ? 1e20 : -1e20),
         abs(dir.y) > BVH_DIR_EPSILON ? 1.0 / dir.y : (dir.y >= 0 ? 1e20 : -1e20),
         abs(dir.z) > BVH_DIR_EPSILON ? 1.0 / dir.z : (dir.z >= 0 ? 1e20 : -1e20));
+    BvhRayFrame frame = BvhFrame(dir);
     int stack[BVH_MAX_STACK];
     int sp = 0;
     stack[sp++] = 0;
@@ -143,10 +169,10 @@ BvhRayHit BvhRaycast(float3 origin, float3 dir, float maxDist, bool facingFilter
                 float3 a = _TriVerts[_Tris[f * 3]];
                 float3 b = _TriVerts[_Tris[f * 3 + 1]];
                 float3 c = _TriVerts[_Tris[f * 3 + 2]];
-                float t, u, v;
-                if (BvhRayTriangle(origin, dir, a, b, c, t, u, v) && t >= 0.0 && t < best.t)
+                float t; float3 bary;
+                if (BvhWatertight(frame, origin, a, b, c, best.t, t, bary))
                 {
-                    best.t = t; best.tri = f; best.u = u; best.v = v;
+                    best.t = t; best.tri = f; best.u = bary.y; best.v = bary.z;
                 }
             }
             continue;
