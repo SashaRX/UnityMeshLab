@@ -22,10 +22,10 @@
 // scanner's base dir is Tools~/compile_check.py's build directory, whose Editor/ and
 // Tests/ mirror the repo's.
 //
-// Env: SONAR_HOST_URL, SONAR_TOKEN. The workflows pass SONAR_API_TOKEN here when it
-// is set (else SONAR_TOKEN): reading issues and deleting the throwaway projects need
-// a USER token (squ_...) whose account has Browse + Administer on the projects it
-// created — an analysis-only token (sqa_/sqp_) can scan but not do that.
+// Env: SONAR_HOST_URL, SONAR_API_TOKEN and/or SONAR_TOKEN (both are tried, in that
+// order): reading issues and deleting the throwaway projects need a USER token
+// (squ_...) whose account has Browse + Administer on the projects it created — an
+// analysis-only token (sqa_/sqp_) can scan but not do that.
 // GITHUB_OUTPUT / GITHUB_STEP_SUMMARY are written when present.
 //
 // Scanner text (messages, paths) is UNTRUSTED: it is escaped before it becomes a
@@ -407,59 +407,74 @@ export function buildFixPrompt(findings, { mode, prNumber }) {
 
 // ── Sonar web API ─────────────────────────────────────────────────────────────────
 
+// SONAR_HOST_URL plus the tokens to try, in order: SONAR_API_TOKEN (the user token the
+// workflows pass for web API reads) and SONAR_TOKEN (the scanner's; it is often a user
+// token too). An analysis-only token (sqa_/sqp_) can scan but not read.
 function sonarEnv() {
   let host = process.env.SONAR_HOST_URL ?? '';
   while (host.endsWith('/')) {
     host = host.slice(0, -1);
   }
-  const token = process.env.SONAR_TOKEN ?? '';
-  if (!host || !token) {
-    throw new Error('SONAR_HOST_URL and SONAR_TOKEN must be set');
+  const tokens = [...new Set([process.env.SONAR_API_TOKEN, process.env.SONAR_TOKEN].filter(Boolean))];
+  if (!host || tokens.length === 0) {
+    throw new Error('SONAR_HOST_URL and SONAR_TOKEN (or SONAR_API_TOKEN) must be set');
   }
-  return { host, token };
+  return { host, tokens };
 }
 
-// Token auth: `Authorization: Bearer` (SonarQube 10.0+); a server that answers 401 to it
-// is retried once with the pre-10 form, HTTP Basic with the token as the user name and
-// no password. A 401 from both is the token itself (not a user token, revoked, or the
-// wrong secret), and the error says so.
-let authScheme = 'bearer';
+// Token auth: `Authorization: Bearer` (SonarQube 10.0+); a 401 is retried with the
+// pre-10 form (HTTP Basic, the token as the user name, no password), then with the
+// next token. The first (token, scheme) pair the server accepts is kept for the rest
+// of the run. A 401 from every pair is the tokens themselves, and the error says so.
+const AUTH_SCHEMES = ['bearer', 'basic'];
+let authChoice = null;
 
-function authHeader(token) {
-  return authScheme === 'bearer'
+function authHeader(token, scheme) {
+  return scheme === 'bearer'
     ? `Bearer ${token}`
     : `Basic ${Buffer.from(`${token}:`, 'utf8').toString('base64')}`;
 }
 
+function authCandidates(tokens) {
+  if (authChoice) {
+    return [authChoice];
+  }
+  return tokens.flatMap((token) => AUTH_SCHEMES.map((scheme) => ({ token, scheme })));
+}
+
 async function sonarRequest(path, { method = 'GET', params = {} } = {}) {
-  const { host, token } = sonarEnv();
+  const { host, tokens } = sonarEnv();
   const url = new URL(host + path);
   const body = new URLSearchParams(params);
   if (method === 'GET') {
     url.search = body.toString();
   }
-  for (;;) {
+  let last = null;
+  for (const candidate of authCandidates(tokens)) {
     const res = await fetch(url, {
       method,
-      headers: { Authorization: authHeader(token) },
+      headers: { Authorization: authHeader(candidate.token, candidate.scheme) },
       body: method === 'GET' ? undefined : body,
       signal: AbortSignal.timeout(30_000),
     });
     const text = await res.text();
-    if (res.status === 401 && authScheme === 'bearer') {
-      authScheme = 'basic';
+    last = { res, text };
+    if (res.status === 401 && !authChoice) {
       continue;
     }
     if (!res.ok) {
-      const hint = res.status === 401
-        ? ' — the token the web API got (SONAR_API_TOKEN, else SONAR_TOKEN) was refused with both Bearer and Basic auth: it must be a USER token (squ_...) of an account that can browse the project'
-        : '';
-      const err = new Error(`${method} ${path} -> HTTP ${res.status}: ${text.slice(0, 300)}${hint}`);
-      err.status = res.status;
-      throw err;
+      break;
     }
+    authChoice = candidate;
     return text ? JSON.parse(text) : {};
   }
+  const { res, text } = last;
+  const hint = res.status === 401
+    ? ` — refused ${tokens.length} token(s) with Bearer and Basic auth: the web API needs a USER token (squ_...) of an account that can browse the project; set it as SONAR_API_TOKEN`
+    : '';
+  const err = new Error(`${method} ${path} -> HTTP ${res.status}: ${text.slice(0, 300)}${hint}`);
+  err.status = res.status;
+  throw err;
 }
 
 // All OPEN/CONFIRMED issues of a project. `components` + `issueStatuses` are the

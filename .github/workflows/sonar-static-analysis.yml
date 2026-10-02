@@ -163,9 +163,6 @@ jobs:
       HEAD: ${{ matrix.head }}
       BASE: ${{ matrix.base }}
       PR: ${{ matrix.pr }}
-      # Web API reads + project deletion need a USER token (Tools~/sonar-pr-check.mjs);
-      # SONAR_API_TOKEN supplies one when SONAR_TOKEN is analysis-only.
-      SONAR_API_TOKEN: ${{ secrets.SONAR_API_TOKEN || secrets.SONAR_TOKEN }}
     steps:
       # The workflow's own ref carries the build and check tools; the analysed commits may not.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -248,11 +245,14 @@ jobs:
           fi
           echo "ce_task=$TASK" >> "$GITHUB_OUTPUT"
 
+      # Web API reads and the project delete try SONAR_API_TOKEN, then SONAR_TOKEN
+      # (Tools~/sonar-pr-check.mjs): they need a USER token, which either may be.
       - name: Wait for the server to process the scan
         id: wait
         if: matrix.pr != ''
         env:
-          SONAR_TOKEN: ${{ env.SONAR_API_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_API_TOKEN: ${{ secrets.SONAR_API_TOKEN }}
           TASK: ${{ steps.scan.outputs.ce_task }}
         run: |
           if [ -z "$TASK" ]; then
@@ -267,7 +267,8 @@ jobs:
         if: steps.wait.outcome == 'success'
         working-directory: src
         env:
-          SONAR_TOKEN: ${{ env.SONAR_API_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_API_TOKEN: ${{ secrets.SONAR_API_TOKEN }}
         run: |
           set -euo pipefail
           MERGE_BASE="$(git merge-base "$BASE" "$HEAD")"
@@ -287,7 +288,8 @@ jobs:
       - name: Delete the throwaway PR project
         if: always() && matrix.pr != ''
         env:
-          SONAR_TOKEN: ${{ env.SONAR_API_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_API_TOKEN: ${{ secrets.SONAR_API_TOKEN }}
         run: node tooling/Tools~/sonar-pr-check.mjs delete --project "$KEY"
 
       - name: Gate
@@ -317,7 +319,8 @@ jobs:
       - name: Summarize the main analysis
         if: always() && matrix.pr == ''
         env:
-          SONAR_TOKEN: ${{ env.SONAR_API_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_API_TOKEN: ${{ secrets.SONAR_API_TOKEN }}
         run: |
           {
             echo "## SonarQube — main"
