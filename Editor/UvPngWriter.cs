@@ -122,11 +122,13 @@ namespace SashaRX.UnityMeshLab
                 GL.PopMatrix();
 
                 var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
-                tex.ReadPixels(new Rect(0, 0, size, size), 0, 0, false);
-                tex.Apply();
-                Directory.CreateDirectory(Path.GetDirectoryName(path) ?? ".");
-                File.WriteAllBytes(path, tex.EncodeToPNG());
-                Object.DestroyImmediate(tex);
+                try
+                {
+                    tex.ReadPixels(new Rect(0, 0, size, size), 0, 0, false);
+                    tex.Apply();
+                    TextureAssets.WriteFile(path, tex.EncodeToPNG());
+                }
+                finally { Object.DestroyImmediate(tex); }
             }
             finally
             {

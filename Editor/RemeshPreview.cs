@@ -265,24 +265,21 @@ namespace SashaRX.UnityMeshLab
             }
             int index = (int)which;
             if (mapTextures[index]) return mapTextures[index];
-            var texture = new Texture2D(maps.size, maps.size, TextureFormat.RGBA32, false, which != Channel.BaseColor) {
-                hideFlags = HideFlags.HideAndDontSave };
+            Color32[] pixels;
             switch (which) {
-                case Channel.BaseColor: texture.SetPixels32(maps.color); break;
-                case Channel.Normal: texture.SetPixels32(maps.normal); break;
-                case Channel.MetallicSmoothness: texture.SetPixels32(maps.metal); break;
-                case Channel.Occlusion: texture.SetPixels32(maps.ao); break;
+                case Channel.BaseColor: pixels = maps.color; break;
+                case Channel.Normal: pixels = maps.normal; break;
+                case Channel.MetallicSmoothness: pixels = maps.metal; break;
+                case Channel.Occlusion: pixels = maps.ao; break;
                 default:
-                    var pixels = new Color32[maps.emission.Length];
+                    pixels = new Color32[maps.emission.Length];
                     for (int i = 0; i < pixels.Length; ++i) {
                         var e = maps.emission[i];
                         pixels[i] = new Color(Mathf.Clamp01(e.r), Mathf.Clamp01(e.g), Mathf.Clamp01(e.b), 1).gamma;
                     }
-                    texture.SetPixels32(pixels);
                     break;
             }
-            texture.Apply();
-            return mapTextures[index] = texture;
+            return mapTextures[index] = TextureAssets.FromPixels(pixels, maps.size, maps.size, linear: which != Channel.BaseColor);
         }
     }
 }

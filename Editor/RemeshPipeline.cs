@@ -436,8 +436,7 @@ namespace SashaRX.UnityMeshLab
             }
             token.ThrowIfCancellationRequested();
             var primary = Primary;
-            baseColorPreview = new Texture2D(primary.maps.size, primary.maps.size, TextureFormat.RGBA32, false, false) { hideFlags = HideFlags.HideAndDontSave };
-            baseColorPreview.SetPixels32(primary.maps.color); baseColorPreview.Apply();
+            baseColorPreview = TextureAssets.FromPixels(primary.maps.color, primary.maps.size, primary.maps.size, linear: false);
             Status = (hierarchy ? $"{nodes.Count} node(s): " : "") + $"{sourceTriangles:N0} → {targetTriangles:N0} triangles. " +
                 (misses == 0 ? "All covered texels projected." : $"{misses:N0} / {covered:N0} texels missed (magenta). Increase projection distance and rebake.") +
                 (empty > 0 ? $" {empty:N0} proxy texels see no geometry (alpha 0, filled from neighbours)." : "") +
