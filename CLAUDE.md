@@ -32,6 +32,7 @@ See `AGENTS.md` for shared rules that apply to all AI agents.
 - **Context:** `Editor/Framework/UvToolContext.cs` — shared state
 - **Tools:** `Editor/Tools/` — each implements `IUvTool`
 - **Geometry:** `Editor/Geometry/` — `MeshGeometry` (face normals, welding, sample directions, barycentrics) and `GpuReadback` (the one GPU → CPU texture read); spatial queries in `Editor/TriangleBvh.cs` / `TriangleBvh2D.cs`. Use these; never add a tool-local copy
+- **Vertex channels:** `Editor/Mesh/VertexChannels.cs` — a scalar per-vertex channel (`AOTargetChannel`: colour component or UV component) decoded, read, written (whole mesh or one submesh), levels/blend, greyscale preview colours, fill/snapshot/restore of `colors32`. Never decode the enum or poke `colors32`/`GetUVs` for a scalar channel in a tool
 - **UV:** `Editor/Uv/UvTopology.cs` — index-space UV layout topology (channel read, boundary edges, unique edges, point-in-triangle, shell vote, face→shell, shell data, UDIM tiles); the canvas, 3D layer and viewport cache its results, never recompute them locally
 - **Assets:** `Editor/Assets/` — `FbxExport` (every FBX write: the isolated channel re-save, the LOD-rebuild hierarchy passes, the atomic write, the post-reimport relink) and `SidecarStore` (the `_uv2data.asset` sidecar: UV2 entries, collision hulls, tool settings). Tools never call `ModelExporter` or open a `Uv2DataAsset` themselves
 - **Native:** `Plugins/` binaries, `Native~/` C++ source

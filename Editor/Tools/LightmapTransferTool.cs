@@ -3221,10 +3221,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (uvChannelOverride >= 0) return uvChannelOverride;
             var aoChannel = VertexColorBakingTool.LastAppliedTargetChannel;
-            if (!aoChannel.HasValue) return -1;
-            int ch = (int)aoChannel.Value;
-            if (ch <= (int)AOTargetChannel.VertexColorA) return -1;
-            return (ch - (int)AOTargetChannel.UV0_X) / 2;
+            return aoChannel.HasValue ? VertexChannels.UvChannel(aoChannel.Value) : -1;
         }
 
         // Legacy shim. The implementation has been folded into

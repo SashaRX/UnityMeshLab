@@ -49,7 +49,7 @@ namespace SashaRX.UnityMeshLab
                 ? (AOTargetChannel)channelComp
                 : (AOTargetChannel)(4 + (channelType - 1) * 2 + channelComp);
 
-        string TargetChannelName => channelTypeNames[channelType] + " " + (channelType == 0 ? colorCompNames : uvCompNames)[channelComp];
+        string TargetChannelName => VertexChannels.Name(TargetChannel);
 
         // ── Post-processing ──
         // Topology blur
@@ -2039,7 +2039,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (mesh == null) continue;
 
-                var ao = ReadFromChannel(mesh, channel);
+                var ao = VertexChannels.Read(mesh, channel);
                 if (ao == null) continue;
 
                 bakedRawAO[mesh] = ao;
@@ -2062,38 +2062,6 @@ namespace SashaRX.UnityMeshLab
             ActivatePreview();
             requestRepaint?.Invoke();
             UvtLog.Info($"[Vertex AO] Loaded {bakedVertexCount} vertices from {TargetChannelName}");
-        }
-
-        static float[] ReadFromChannel(Mesh mesh, AOTargetChannel channel)
-        {
-            int ch = (int)channel;
-            int vertCount = mesh.vertexCount;
-
-            if (ch <= (int)AOTargetChannel.VertexColorA)
-            {
-                var colors = mesh.colors32;
-                if (colors == null || colors.Length != vertCount) return null;
-                int comp = ch - (int)AOTargetChannel.VertexColorR;
-                var ao = new float[vertCount];
-                for (int i = 0; i < vertCount; i++)
-                {
-                    var c = colors[i];
-                    ao[i] = (comp == 0 ? c.r : comp == 1 ? c.g : comp == 2 ? c.b : c.a) / 255f;
-                }
-                return ao;
-            }
-            else
-            {
-                int uvIdx = (ch - (int)AOTargetChannel.UV0_X) / 2;
-                int comp  = (ch - (int)AOTargetChannel.UV0_X) % 2;
-                var uvs = new List<Vector2>();
-                mesh.GetUVs(uvIdx, uvs);
-                if (uvs.Count != vertCount) return null;
-                var ao = new float[vertCount];
-                for (int i = 0; i < vertCount; i++)
-                    ao[i] = Mathf.Clamp01(comp == 0 ? uvs[i].x : uvs[i].y);
-                return ao;
-            }
         }
 
         void ApplyBlur()
@@ -2121,18 +2089,9 @@ namespace SashaRX.UnityMeshLab
             bakedFinalAO = new Dictionary<Mesh, float[]>();
             foreach (var mesh in bakedRawAO.Keys)
             {
-                var raw = bakedRawAO[mesh];
-                if (faceAreaStrength > 0f && bakedFaceAreaAO != null && bakedFaceAreaAO.TryGetValue(mesh, out var faa))
-                {
-                    var blended = new float[raw.Length];
-                    for (int i = 0; i < raw.Length; i++)
-                        blended[i] = Mathf.Lerp(raw[i], faa[i], faceAreaStrength);
-                    bakedFinalAO[mesh] = blended;
-                }
-                else
-                {
-                    bakedFinalAO[mesh] = (float[])raw.Clone();
-                }
+                float[] faa = null;
+                if (faceAreaStrength > 0f && bakedFaceAreaAO != null) bakedFaceAreaAO.TryGetValue(mesh, out faa);
+                bakedFinalAO[mesh] = VertexChannels.Blend(bakedRawAO[mesh], faa, faceAreaStrength);
             }
 
             // 1. Topology blur
@@ -2165,17 +2124,8 @@ namespace SashaRX.UnityMeshLab
 
             // 3. Brightness / Contrast
             if (ppBrightness != 0f || ppContrast != 1f)
-            {
-                foreach (var mesh in bakedFinalAO.Keys.ToList())
-                {
-                    var ao = bakedFinalAO[mesh];
-                    for (int i = 0; i < ao.Length; i++)
-                    {
-                        float v = (ao[i] - 0.5f) * ppContrast + 0.5f + ppBrightness;
-                        ao[i] = Mathf.Clamp01(v);
-                    }
-                }
-            }
+                foreach (var ao in bakedFinalAO.Values)
+                    VertexChannels.Levels(ao, ppBrightness, ppContrast);
         }
 
         // ── Apply ──
@@ -2229,25 +2179,15 @@ namespace SashaRX.UnityMeshLab
 
                     if (applySelectedRendererOnly && applySelectedSubmeshOnly)
                     {
-                        var merged = ReadFromChannel(mesh, channel) ?? new float[mesh.vertexCount];
-                        if (selectedSubmeshIndex < 0 || selectedSubmeshIndex >= mesh.subMeshCount)
+                        if (!VertexChannels.WriteSubmesh(mesh, ao, channel, selectedSubmeshIndex, "Write AO Channel"))
                         {
                             UvtLog.Warn($"[Vertex AO] Submesh index {selectedSubmeshIndex} is out of range for mesh '{mesh.name}'.");
                             continue;
                         }
-
-                        var triangles = mesh.GetTriangles(selectedSubmeshIndex);
-                        for (int ti = 0; ti < triangles.Length; ti++)
-                        {
-                            int vi = triangles[ti];
-                            if (vi >= 0 && vi < merged.Length)
-                                merged[vi] = ao[vi];
-                        }
-                        VertexAOBaker.WriteToChannel(mesh, merged, channel);
                     }
                     else
                     {
-                        VertexAOBaker.WriteToChannel(mesh, ao, channel);
+                        VertexChannels.Write(mesh, ao, channel, "Write AO Channel");
                     }
                     EditorUtility.SetDirty(mesh);
                 }
@@ -2304,14 +2244,7 @@ namespace SashaRX.UnityMeshLab
                 // Clone mesh with AO in vertex colors
                 var clone = UnityEngine.Object.Instantiate(mesh);
                 clone.hideFlags = HideFlags.HideAndDontSave;
-                var colors = new Color32[clone.vertexCount];
-                var ao = bakedFinalAO[mesh];
-                for (int i = 0; i < colors.Length; i++)
-                {
-                    byte v = (byte)(Mathf.Clamp01(ao[i]) * 255f);
-                    colors[i] = new Color32(v, v, v, 255);
-                }
-                clone.colors32 = colors;
+                clone.colors32 = VertexChannels.Greyscale(bakedFinalAO[mesh]);
                 mf.sharedMesh = clone;
 
                 var mats = new Material[mr.sharedMaterials.Length];

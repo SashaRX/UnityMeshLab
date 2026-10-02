@@ -223,12 +223,9 @@ namespace SashaRX.UnityMeshLab
             public static AoUvTarget From(AOTargetChannel? applied)
             {
                 if (!applied.HasValue) return None;
-                int v = (int)applied.Value;
-                if (v < (int)AOTargetChannel.UV0_X) return None;
-                int channel = (v - (int)AOTargetChannel.UV0_X) / 2;
-                int component = (v - (int)AOTargetChannel.UV0_X) % 2;
-                if (channel == 1) return None;
-                return new AoUvTarget(channel, component);
+                int channel = VertexChannels.UvChannel(applied.Value);
+                if (channel < 0 || channel == 1) return None;
+                return new AoUvTarget(channel, VertexChannels.UvComponent(applied.Value));
             }
         }
 
