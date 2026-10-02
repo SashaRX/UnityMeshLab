@@ -10,6 +10,8 @@ namespace SashaRX.UnityMeshLab
     // Geometry is expressed in the capture space (the source root or a hierarchy node).
     internal sealed class RemeshSource
     {
+        const string EmissionMapProperty = "_EmissionMap";
+
         public Vector3[] positions, normals;
         public Vector4[] tangents;
         public Vector2[] uv;
@@ -496,7 +498,11 @@ namespace SashaRX.UnityMeshLab
             for (int axis = 0; axis < 3; ++axis) {
                 var dir = new Vector3((float)v[0, axis], (float)v[1, axis], (float)v[2, axis]);
                 float lo = float.MaxValue, hi = float.MinValue;
-                foreach (var p in points) { float d = Vector3.Dot(p - mean, dir); if (d < lo) lo = d; if (d > hi) hi = d; }
+                foreach (var p in points) {
+                    float d = Vector3.Dot(p - mean, dir);
+                    if (d < lo) lo = d;
+                    if (d > hi) hi = d;
+                }
                 extents[axis] = hi - lo;
             }
             Array.Sort(extents);
@@ -664,7 +670,7 @@ namespace SashaRX.UnityMeshLab
                 var surface = new Surface {
                     color = Read(m, color, true), normal = Read(m, "_BumpMap", false, true, m.IsKeywordEnabled("_NORMALMAP")),
                     metal = Read(m, "_MetallicGlossMap", false, false, metal), ao = Read(m, "_OcclusionMap", false),
-                    emission = Read(m, "_EmissionMap", true, false, m.IsKeywordEnabled("_EMISSION"), true),
+                    emission = Read(m, EmissionMapProperty, true, false, m.IsKeywordEnabled("_EMISSION"), true),
                     tint = m.GetColor(urp ? "_BaseColor" : "_Color").linear,
                     emissionTint = m.IsKeywordEnabled("_EMISSION") ? m.GetColor("_EmissionColor").linear : Color.black,
                     metallic = specular ? 0 : m.GetFloat("_Metallic"),
@@ -686,12 +692,12 @@ namespace SashaRX.UnityMeshLab
                 names.Add(m.name);
                 string color = First(m, "_BaseMap", "_MainTex", "_BaseColorMap", "_AlbedoMap", "_Albedo");
                 string normal = First(m, "_BumpMap", "_NormalMap");
-                bool emissive = m.HasProperty("_EmissionColor") && (m.IsKeywordEnabled("_EMISSION") || m.HasProperty("_EmissionMap") && m.GetTexture("_EmissionMap"));
+                bool emissive = m.HasProperty("_EmissionColor") && (m.IsKeywordEnabled("_EMISSION") || m.HasProperty(EmissionMapProperty) && m.GetTexture(EmissionMapProperty));
                 var surface = new Surface {
                     color = color != null ? Read(m, color, true) : new Map(),
                     normal = normal != null ? Read(m, normal, false, true) : new Map(),
                     metal = new Map(), ao = Read(m, "_OcclusionMap", false),
-                    emission = emissive ? Read(m, "_EmissionMap", true, false, true, true) : new Map(),
+                    emission = emissive ? Read(m, EmissionMapProperty, true, false, true, true) : new Map(),
                     tint = ColorOr(m, Color.white, "_BaseColor", "_Color").linear,
                     emissionTint = emissive ? m.GetColor("_EmissionColor").linear : Color.black,
                     metallic = FloatOr(m, 0, "_Metallic"), smoothness = FloatOr(m, 0.5f, "_Smoothness", "_Glossiness"),

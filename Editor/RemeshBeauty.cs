@@ -60,8 +60,8 @@ namespace SashaRX.UnityMeshLab
         // point/normal through localToWorld first, so one snapshot serves the weld and
         // every keep-hierarchy node alike (see ForSpace) and light ranges, distances and
         // attenuation all stay in the same units whatever the source root's scale.
-        readonly Directional[] directionals = Array.Empty<Directional>();
-        readonly Local[] locals = Array.Empty<Local>();
+        readonly Directional[] directionals;
+        readonly Local[] locals;
         readonly Probe[] probes;
         readonly Probe fallbackProbe;
         readonly Color[] ambientGrid;         // evaluated by Unity on the main thread

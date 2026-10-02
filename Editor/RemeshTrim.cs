@@ -162,7 +162,7 @@ namespace SashaRX.UnityMeshLab
                     foreach (var (nb, myDir, theirDir) in neighbours[f]) {
                         if (visited[nb]) continue;
                         bool mine = myDir ^ flip[f];
-                        flip[nb] = (theirDir ^ false) == mine;   // consistent: opposite directions
+                        flip[nb] = theirDir == mine;   // consistent: opposite directions
                         visited[nb] = true; queue.Enqueue(nb);
                     }
                 }

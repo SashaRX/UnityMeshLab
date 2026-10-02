@@ -46,7 +46,6 @@ namespace SashaRX.UnityMeshLab
 
         PreviewRenderUtility utility;
         Material surface, flat, wire, points, translucent;
-        Bounds contentBounds; bool hasContent;
         Rect currentRect;
         bool drawing;
         readonly Dictionary<long, Mesh> encodedCache = new Dictionary<long, Mesh>();
@@ -66,7 +65,6 @@ namespace SashaRX.UnityMeshLab
         {
             currentRect = rect;
             var bounds = BoundsOf(items, out int key, out bool any);
-            contentBounds = bounds; hasContent = any;
             if (any && (!framedOnce || key != framedKey)) { Frame(bounds); framedKey = key; framedOnce = true; }
             HandleInput(rect, any ? bounds : (Bounds?)null);
             if (Event.current.type != EventType.Repaint) return;
@@ -95,7 +93,7 @@ namespace SashaRX.UnityMeshLab
                         if (Wireframe) DrawWire(item.mesh, item.matrix, Mode == Shading.Shaded ? new Color(0.05f, 0.05f, 0.05f, 1f) : new Color(0.4f, 0.85f, 1f, 1f));
                     }
                 overlay?.Invoke(this);
-                if (hasContent) {
+                if (any) {
                     if (ShowGrid) DrawGrid(bounds);
                     if (ShowAxes) DrawAxes(bounds);
                 }

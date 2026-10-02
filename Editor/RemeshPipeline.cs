@@ -19,6 +19,8 @@ namespace SashaRX.UnityMeshLab
     /// </summary>
     internal sealed class RemeshPipeline : IDisposable
     {
+        const string LogPrefix = "[Remesh] ";
+
         internal enum Stage { Remesh, Simplify, Unwrap, Bake }
 
         /// <summary>One captured piece of the source and its stage outputs.</summary>
@@ -91,7 +93,7 @@ namespace SashaRX.UnityMeshLab
         /// class (green kept, red back of a sheet, orange rim); null when nothing was trimmed.</summary>
         public Mesh TrimMaskMesh => trimMaskMesh;
         /// <summary>Any node's capture renders both sides (two-sided materials or the setting).</summary>
-        public bool ResultTwoSided { get { foreach (var n in nodes) if (n.twoSided) return true; return false; } }
+        public bool ResultTwoSided => nodes.Exists(n => n.twoSided);
         public Mesh SimplifiedMesh => simplifiedMesh;
         public Mesh ResultMesh => Primary?.mesh;
         public RemeshNative.Geometry Geometry => Primary?.geometry;
@@ -99,7 +101,7 @@ namespace SashaRX.UnityMeshLab
         public Texture2D BaseColorPreview => baseColorPreview;
         public float SourceDiagonal => Primary?.source != null ? Primary.source.diagonal : 0f;
         public RemeshSource Source => Primary?.source;
-        public bool SourceHasColors { get { foreach (var n in nodes) if (n.source != null && n.source.hasColors) return true; return false; } }
+        public bool SourceHasColors => nodes.Exists(n => n.source != null && n.source.hasColors);
 
         // True only when EVERY node carries the stage's output: a keep-hierarchy run
         // fills the nodes one by one, and a repaint between two nodes must not read a
@@ -123,10 +125,18 @@ namespace SashaRX.UnityMeshLab
             if (!Has(stage)) return null;
             long total = 0;
             switch (stage) {
-                case Stage.Remesh: foreach (var n in nodes) total += n.voxel.TriangleCount; return $"{total:N0} tris";
-                case Stage.Simplify: foreach (var n in nodes) total += n.simplified.TriangleCount; return $"{total:N0} tris";
-                case Stage.Unwrap: foreach (var n in nodes) total += n.geometry.chartCount; return $"{total:N0} islands";
-                default: foreach (var n in nodes) total += n.maps.misses; return total > 0 ? $"{total:N0} missed" : "done";
+                case Stage.Remesh:
+                    foreach (var n in nodes) { total += n.voxel.TriangleCount; }
+                    return $"{total:N0} tris";
+                case Stage.Simplify:
+                    foreach (var n in nodes) { total += n.simplified.TriangleCount; }
+                    return $"{total:N0} tris";
+                case Stage.Unwrap:
+                    foreach (var n in nodes) { total += n.geometry.chartCount; }
+                    return $"{total:N0} islands";
+                default:
+                    foreach (var n in nodes) { total += n.maps.misses; }
+                    return total > 0 ? $"{total:N0} missed" : "done";
             }
         }
 
@@ -189,7 +199,7 @@ namespace SashaRX.UnityMeshLab
                 return true;
             }
             catch (OperationCanceledException) { Status = "Cancelled. Source assets were preserved."; return false; }
-            catch (Exception e) { Status = e.Message; UvtLog.Error("[Remesh] " + e); return false; }
+            catch (Exception e) { Status = e.Message; UvtLog.Error(LogPrefix + e); return false; }
             finally {
                 cancellation.Dispose(); cancellation = null;
                 if (locked) EditorApplication.UnlockReloadAssemblies();
@@ -233,7 +243,7 @@ namespace SashaRX.UnityMeshLab
                         localRotation = toRoot.rotation, localScale = toRoot.lossyScale };
                     node.spaceToWorld = rootToWorld * Matrix4x4.TRS(node.localPosition, node.localRotation, node.localScale);
                     node.source = RemeshSource.Capture(node.spaceToWorld.inverse, new[] { renderer }, required: false);
-                    if (node.source == null) { UvtLog.Warn("[Remesh] " + renderer.name + ": nothing to remesh, skipped."); continue; }
+                    if (node.source == null) { UvtLog.Warn(LogPrefix + renderer.name + ": nothing to remesh, skipped."); continue; }
                     captures.Add(node);
                 }
                 if (captures.Count == 0) throw new InvalidOperationException("Every captured node was empty; nothing to remesh.");
@@ -247,7 +257,7 @@ namespace SashaRX.UnityMeshLab
                 var node = captures[i];
                 int gridResolution = shape == RemeshShape.Hull ? options.hullResolution : options.voxelResolution;
                 if (!node.source.FilterSmallParts(options.minPartSize, options.minRodVoxels, gridResolution, out int small, out int thin)) {
-                    if (hierarchy) { UvtLog.Warn("[Remesh] " + node.name + ": every part is below the size/thickness filter, skipped."); captures.RemoveAt(i); continue; }
+                    if (hierarchy) { UvtLog.Warn(LogPrefix + node.name + ": every part is below the size/thickness filter, skipped."); captures.RemoveAt(i); continue; }
                     UvtLog.Warn("[Remesh] Every part is below the size/thickness filter; the filter was not applied.");
                 }
                 droppedSmall += small; droppedThin += thin;
@@ -255,7 +265,7 @@ namespace SashaRX.UnityMeshLab
             if (captures.Count == 0) throw new InvalidOperationException("Every node fell below the part filter; nothing to remesh.");
             for (int i = 0; i < captures.Count; ++i) {
                 var node = captures[i];
-                foreach (var warning in node.source.warnings) { UvtLog.Warn("[Remesh] " + warning); ++warnings; }
+                foreach (var warning in node.source.warnings) { UvtLog.Warn(LogPrefix + warning); ++warnings; }
                 token.ThrowIfCancellationRequested();
                 string verb = shape == RemeshShape.LOD0 ? "Voxel remeshing" : shape == RemeshShape.BoundingBox ? "Boxing" : "Hulling";
                 Report(hierarchy ? $"{verb} {node.name} ({i + 1}/{captures.Count})…" : verb + "…");
@@ -284,7 +294,7 @@ namespace SashaRX.UnityMeshLab
                 }, token);
                 if (node.voxel == null || node.voxel.TriangleCount == 0) throw new InvalidOperationException("The remesh produced no geometry.");
                 if (trim != null) {
-                    if (trim.gaveUp) UvtLog.Warn("[Remesh] " + (hierarchy ? node.name + ": " : "") + "Trim to source surface kept under a tenth of the remesh " +
+                    if (trim.gaveUp) UvtLog.Warn(LogPrefix + (hierarchy ? node.name + ": " : "") + "Trim to source surface kept under a tenth of the remesh " +
                         "with the source's winding and with its inverse, so nothing was trimmed. The source winding is mixed beyond one flip, or the remesh sits " +
                         "more than two cells from it (raise the voxel resolution).");
                     trimmedFaces += trim.removed; flippedFaces += trim.flipped;
@@ -315,10 +325,15 @@ namespace SashaRX.UnityMeshLab
                 (flippedFaces > 0 ? $"; re-wound {flippedFaces:N0} face(s) to one orientation" : "") +
                 (twoSidedFaces > 0 ? $"; {twoSidedFaces:N0} two-sided source face(s), the result renders both sides" : "") + "." +
                 (warnings > 0 ? $" {warnings} material warning(s), see Console." : "");
-            UvtLog.Info("[Remesh] " + Status);
+            UvtLog.Info(LogPrefix + Status);
         }
 
-        static int CountTrue(bool[] mask) { int n = 0; foreach (bool b in mask) if (b) ++n; return n; }
+        static int CountTrue(bool[] mask)
+        {
+            int n = 0;
+            foreach (bool b in mask) { if (b) ++n; }
+            return n;
+        }
 
         // The untrimmed remesh with one flat colour per face class, so the 3D view can
         // show what the trim removed and why before the simplifier touches it.
@@ -442,7 +457,7 @@ namespace SashaRX.UnityMeshLab
                 (empty > 0 ? $" {empty:N0} proxy texels see no geometry (alpha 0, filled from neighbours)." : "") +
                 (warnings > 0 ? $" {warnings} material warning(s), see Console." : "") +
                 $" Bake {clock.Elapsed.TotalSeconds:F1} s ({(primary.maps.gpu ? "GPU" : "CPU")} queries).";
-            UvtLog.Info("[Remesh] " + Status);
+            UvtLog.Info(LogPrefix + Status);
         }
 
         // Bake health (RemeshDiag log category): BakeHealth judges the counters the bake

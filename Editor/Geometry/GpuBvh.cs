@@ -59,7 +59,11 @@ namespace SashaRX.UnityMeshLab
             var n = normals != null && normals.Length == FaceCount ? normals : new Vector3[1];
             faceNormals = new ComputeBuffer(Math.Max(1, n.Length), 12); faceNormals.SetData(n);
             uint[] mask = new uint[1];
-            if (either != null && either.Length == FaceCount) { mask = new uint[FaceCount]; for (int i = 0; i < FaceCount; ++i) mask[i] = either[i] ? 1u : 0u; eitherSideCount = FaceCount; }
+            if (either != null && either.Length == FaceCount) {
+                mask = new uint[FaceCount];
+                for (int i = 0; i < FaceCount; ++i) { mask[i] = either[i] ? 1u : 0u; }
+                eitherSideCount = FaceCount;
+            }
             eitherSide = new ComputeBuffer(Math.Max(1, mask.Length), 4); eitherSide.SetData(mask);
         }
 

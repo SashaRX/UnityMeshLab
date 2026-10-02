@@ -194,7 +194,7 @@ namespace SashaRX.UnityMeshLab
 
                 // Upload the tree once (GpuBvh owns the buffers) and the directions
                 gpuBvh = GpuBvh.TryCreate(bvh, faceNormals);
-                if (gpuBvh == null) throw new Exception("GPU BVH unavailable (compute shaders unsupported or BvhQueries.compute missing).");
+                if (gpuBvh == null) throw new InvalidOperationException("GPU BVH unavailable (compute shaders unsupported or BvhQueries.compute missing).");
                 dirBuf = new ComputeBuffer(directions.Length, 12);
                 dirBuf.SetData(directions);
 
