@@ -143,63 +143,7 @@ namespace SashaRX.UnityMeshLab
         /// space).
         /// </summary>
         public static void WriteToChannel(Mesh mesh, float[] aoValues, AOTargetChannel channel)
-        {
-            if (mesh == null || aoValues == null || aoValues.Length != mesh.vertexCount) return;
-
-            Undo.RecordObject(mesh, "Write AO Channel");
-
-            int ch = (int)channel;
-            if (ch <= (int)AOTargetChannel.VertexColorA)
-            {
-                // Vertex Color R/G/B/A
-                var colors = mesh.colors32;
-                if (colors == null || colors.Length != mesh.vertexCount)
-                {
-                    colors = new Color32[mesh.vertexCount];
-                    for (int i = 0; i < colors.Length; i++)
-                        colors[i] = new Color32(255, 255, 255, 255);
-                }
-                int comp = ch - (int)AOTargetChannel.VertexColorR; // 0=R,1=G,2=B,3=A
-                for (int i = 0; i < aoValues.Length; i++)
-                {
-                    byte v = (byte)(Mathf.Clamp01(aoValues[i]) * 255f);
-                    var c = colors[i];
-                    if (comp == 0) c.r = v;
-                    else if (comp == 1) c.g = v;
-                    else if (comp == 2) c.b = v;
-                    else c.a = v;
-                    colors[i] = c;
-                }
-                mesh.colors32 = colors;
-            }
-            else
-            {
-                // UV channel X or Y
-                int uvIdx = (ch - (int)AOTargetChannel.UV0_X) / 2;  // 0-4
-                int comp  = (ch - (int)AOTargetChannel.UV0_X) % 2;  // 0=X, 1=Y
-                var uvs = new List<Vector2>();
-                mesh.GetUVs(uvIdx, uvs);
-                if (uvs.Count != mesh.vertexCount)
-                {
-                    uvs.Clear();
-                    for (int i = 0; i < mesh.vertexCount; i++)
-                        uvs.Add(Vector2.zero);
-                }
-                for (int i = 0; i < aoValues.Length; i++)
-                {
-                    // Clamp to [0,1] — matches the vertex-color path and keeps
-                    // downstream shaders well-defined. Upstream math (area
-                    // correction, blur) can drift slightly out of range due
-                    // to float error / user intensity tweaks.
-                    float v = Mathf.Clamp01(aoValues[i]);
-                    var uv = uvs[i];
-                    if (comp == 0) uv.x = v;
-                    else uv.y = v;
-                    uvs[i] = uv;
-                }
-                mesh.SetUVs(uvIdx, uvs);
-            }
-        }
+            => VertexChannels.Write(mesh, aoValues, channel, "Write AO Channel");
 
         // ── Face-area AO correction ──
 
