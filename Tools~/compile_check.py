@@ -10,6 +10,10 @@ without and once with LIGHTMAP_UV_TOOL_FBX_EXPORTER (a stub stands in for the FB
 Exporter package), so both halves of every #if build. Anything the compiler
 rejects fails the check with the repo-relative file and line.
 
+Each project lives in its own folder under Projects/ so the two restores never
+share an obj/ (one project.assets.json for both made the Tests build lose NUnit
+whenever Editor restored last).
+
 The 2021.1 references predate four APIs the code uses; each is bridged by a
 line-preserving text substitution on the COPIED sources (never the repo), listed
 in SHIMS with the reason. Keep that list short: every entry is an API the real
@@ -84,9 +88,9 @@ EDITOR_CSPROJ = f"""<Project Sdk="Microsoft.NET.Sdk">
     <DefineConstants Condition="'$(MeshLabFbx)' == 'true'">$(DefineConstants);{FBX_DEFINE}</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Editor/**/*.cs" />
-    <Compile Include="Shims/UnityApiShims.cs" />
-    <Compile Include="Shims/FbxExporterStub.cs" Condition="'$(MeshLabFbx)' == 'true'" />
+    <Compile Include="../../Editor/**/*.cs" LinkBase="Editor" />
+    <Compile Include="../../Shims/UnityApiShims.cs" />
+    <Compile Include="../../Shims/FbxExporterStub.cs" Condition="'$(MeshLabFbx)' == 'true'" />
     <PackageReference Include="Unity3D.SDK" Version="{UNITY_SDK_VERSION}" NoWarn="NU1701" />
   </ItemGroup>
 </Project>
@@ -104,8 +108,8 @@ TESTS_CSPROJ = f"""<Project Sdk="Microsoft.NET.Sdk">
     <DefineConstants>$(DefineConstants);UNITY_EDITOR;UNITY_INCLUDE_TESTS</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Tests/**/*.cs" />
-    <ProjectReference Include="Editor.csproj" />
+    <Compile Include="../../Tests/**/*.cs" LinkBase="Tests" />
+    <ProjectReference Include="../Editor/Editor.csproj" />
     <PackageReference Include="Unity3D.SDK" Version="{UNITY_SDK_VERSION}" NoWarn="NU1701" />
     <PackageReference Include="NUnit" Version="{NUNIT_VERSION}" />
   </ItemGroup>
@@ -114,9 +118,9 @@ TESTS_CSPROJ = f"""<Project Sdk="Microsoft.NET.Sdk">
 
 SLN = """Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Editor", "Editor.csproj", "{6B3C1A4E-0D4B-4D4F-9C3B-1F1C9B6D1E01}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Editor", "Projects\\Editor\\Editor.csproj", "{6B3C1A4E-0D4B-4D4F-9C3B-1F1C9B6D1E01}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Tests", "Tests.csproj", "{6B3C1A4E-0D4B-4D4F-9C3B-1F1C9B6D1E02}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Tests", "Projects\\Tests\\Tests.csproj", "{6B3C1A4E-0D4B-4D4F-9C3B-1F1C9B6D1E02}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -161,8 +165,9 @@ def prepare(out: Path) -> None:
     (out / "Shims").mkdir(exist_ok=True)
     (out / "Shims" / "UnityApiShims.cs").write_text(SHIM_SOURCE, encoding="utf-8")
     (out / "Shims" / "FbxExporterStub.cs").write_text(FBX_STUB_SOURCE, encoding="utf-8")
-    (out / "Editor.csproj").write_text(EDITOR_CSPROJ, encoding="utf-8")
-    (out / "Tests.csproj").write_text(TESTS_CSPROJ, encoding="utf-8")
+    for name, csproj in (("Editor", EDITOR_CSPROJ), ("Tests", TESTS_CSPROJ)):
+        (out / "Projects" / name).mkdir(parents=True, exist_ok=True)
+        (out / "Projects" / name / f"{name}.csproj").write_text(csproj, encoding="utf-8")
     (out / "MeshLab.sln").write_text(SLN, encoding="utf-8")
     print(f"prepared {out} ({shims} reference-gap substitution(s) applied to the copies)")
 
