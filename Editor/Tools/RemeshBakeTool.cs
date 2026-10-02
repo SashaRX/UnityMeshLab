@@ -58,8 +58,7 @@ namespace SashaRX.UnityMeshLab
         {
             this.ctx = ctx;
             FollowSelection();
-            Selection.selectionChanged -= FollowSelection;
-            Selection.selectionChanged += FollowSelection;
+            FollowSelectionChanges(FollowSelection, true);
             previews.RequestRepaint = () => RequestRepaint?.Invoke();
             // Result/preview objects carry HideAndDontSave, so they survive scene loads but
             // would leak across a domain reload once this instance is discarded.
@@ -68,9 +67,17 @@ namespace SashaRX.UnityMeshLab
         }
         public void OnDeactivate()
         {
-            Selection.selectionChanged -= FollowSelection;
+            FollowSelectionChanges(FollowSelection, false);
             AssemblyReloadEvents.beforeAssemblyReload -= SaveSettingsAndClear;
             SaveSettingsAndClear();
+        }
+
+        // Selection.selectionChanged is a static delegate field, so the one place that
+        // writes it is static too; remove-then-add keeps the subscription single.
+        static void FollowSelectionChanges(Action handler, bool follow)
+        {
+            Selection.selectionChanged -= handler;
+            if (follow) Selection.selectionChanged += handler;
         }
 
         void SaveSettingsAndClear()

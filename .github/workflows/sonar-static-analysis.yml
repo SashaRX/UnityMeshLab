@@ -238,11 +238,15 @@ jobs:
           #         (no such UV channel, no colours, encode failed) throughout the code
           #         base and every caller tests for it; an empty collection would erase
           #         the difference between "none" and "empty".
-          IGNORE_IDS="s125,s1104,s107,s1168"
+          #   S1215 GC.Collect — in Editor/Bench only: the sweep collects between cells so
+          #         the next cell's memory and timing do not carry the last one's garbage;
+          #         everywhere else the rule stays on.
+          IGNORE_IDS="s125,s1104,s107,s1168,s1215"
           IGNORE_ARGS=""
           for id in s125 s1104 s107 s1168; do
             IGNORE_ARGS="$IGNORE_ARGS /d:sonar.issue.ignore.multicriteria.$id.ruleKey=csharpsquid:${id^^} /d:sonar.issue.ignore.multicriteria.$id.resourceKey=**/*"
           done
+          IGNORE_ARGS="$IGNORE_ARGS /d:sonar.issue.ignore.multicriteria.s1215.ruleKey=csharpsquid:S1215 /d:sonar.issue.ignore.multicriteria.s1215.resourceKey=Editor/Bench/**"
           cd "$out"
           # IGNORE_ARGS is deliberately word-split into flags.
           # shellcheck disable=SC2086
