@@ -106,6 +106,7 @@ TESTS_CSPROJ = f"""<Project Sdk="Microsoft.NET.Sdk">
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <NoWarn>$(NoWarn);{NOWARN}</NoWarn>
     <DefineConstants>$(DefineConstants);UNITY_EDITOR;UNITY_INCLUDE_TESTS</DefineConstants>
+    <DefineConstants Condition="'$(MeshLabFbx)' == 'true'">$(DefineConstants);{FBX_DEFINE}</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../Tests/**/*.cs" LinkBase="Tests" />
@@ -210,6 +211,10 @@ def main() -> int:
     ap.add_argument("--prepare-only", action="store_true", help="write the build directory and stop")
     args = ap.parse_args()
     out = Path(args.out).resolve()
+    if out == ROOT or (out / "Editor").resolve() == (ROOT / "Editor").resolve():
+        print(f"error: --out must not be the package root ({ROOT}); the build directory's Editor/ and Tests/ "
+              "are deleted and rewritten on every run.", file=sys.stderr)
+        return 2
     prepare(out)
     if args.prepare_only:
         return 0

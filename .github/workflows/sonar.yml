@@ -76,7 +76,7 @@ jobs:
 
       - name: Install dotnet-sonarscanner
         if: steps.probe.outputs.has-token == 'true'
-        run: dotnet tool install --global dotnet-sonarscanner
+        run: dotnet tool install --global dotnet-sonarscanner --version 11.3.0
 
       - name: Prepare the licence-free build
         if: steps.probe.outputs.has-token == 'true'
