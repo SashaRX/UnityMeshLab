@@ -385,13 +385,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static int GetLodIndexFromName(string name)
-        {
-            var match = System.Text.RegularExpressions.Regex.Match(
-                name, @"_LOD(\d+)$",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            return match.Success && int.TryParse(match.Groups[1].Value, out int lodIdx) ? lodIdx : -1;
-        }
+        static int GetLodIndexFromName(string name) => MeshNaming.LodIndex(name);
 
         void DrawEditableName(GameObject go, string suffix, int indent)
         {
@@ -1639,15 +1633,7 @@ namespace SashaRX.UnityMeshLab
                         if (sc.include)
                         {
                             string srcName = sc.entry.renderer.name;
-                            string lodSuffix = "";
-                            var lodMatch = System.Text.RegularExpressions.Regex.Match(
-                                srcName, @"([_\-\s]+LOD\d+)$",
-                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                            if (lodMatch.Success)
-                            {
-                                lodSuffix = lodMatch.Value;
-                                srcName = srcName.Substring(0, srcName.Length - lodSuffix.Length);
-                            }
+                            srcName = MeshNaming.SplitLodSuffix(srcName, out string lodSuffix);
 
                             EditorGUILayout.LabelField("      Create:", EditorStyles.miniLabel);
                             for (int s = 0; s < mesh.subMeshCount && s < mats.Length; s++)
@@ -1800,15 +1786,7 @@ namespace SashaRX.UnityMeshLab
 
                 var mats = sc.entry.renderer.sharedMaterials;
                 string srcName = sc.entry.renderer.name;
-                string lodSuffix = "";
-                var lodMatch = System.Text.RegularExpressions.Regex.Match(
-                    srcName, @"([_\-\s]+LOD\d+)$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (lodMatch.Success)
-                {
-                    lodSuffix = lodMatch.Value;
-                    srcName = srcName.Substring(0, srcName.Length - lodSuffix.Length);
-                }
+                srcName = MeshNaming.SplitLodSuffix(srcName, out string lodSuffix);
 
                 var parent = sc.entry.renderer.transform.parent;
 

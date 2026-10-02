@@ -5330,18 +5330,12 @@ namespace SashaRX.UnityMeshLab
                 if (!hasMesh)
                     continue;
 
-                var match = System.Text.RegularExpressions.Regex.Match(
-                    child.name,
-                    @"^(.+)_LOD(\d+)$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (!match.Success)
+                // Any LOD index the name carries, even one the LODGroup cannot hold: this
+                // pass only groups and orders children, MeshNaming decides the rule.
+                string groupPrefix = MeshNaming.SplitLodSuffix(child.name, out string lodSuffix);
+                if (lodSuffix.Length == 0 || !int.TryParse(lodSuffix.Substring(lodSuffix.ToUpperInvariant().LastIndexOf("LOD") + 3), out int parsedIndex))
                     continue;
 
-                int parsedIndex;
-                if (!int.TryParse(match.Groups[2].Value, out parsedIndex))
-                    continue;
-
-                string groupPrefix = match.Groups[1].Value;
                 if (!groupedLodChildren.TryGetValue(groupPrefix, out var list))
                 {
                     list = new List<(Transform, int, int)>();
@@ -5665,7 +5659,7 @@ namespace SashaRX.UnityMeshLab
                         if (!r.ok) { UvtLog.Error($"[GenerateLOD] Failed on {srcMesh.name}: {r.error}"); continue; }
 
                         string baseName = entry.fbxMesh != null ? entry.fbxMesh.name : srcMesh.name;
-                        baseName = System.Text.RegularExpressions.Regex.Replace(baseName, @"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$", "");
+                        baseName = MeshNaming.StripPipelineSuffixes(baseName);
                         string meshName = baseName + "_LOD" + (ctx.SourceLodIndex + lodIdx + 1);
                         r.simplifiedMesh.name = meshName;
                         string assetPath = AssetDatabase.GenerateUniqueAssetPath(savePath + "/" + meshName + ".asset");

@@ -6,7 +6,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.RegularExpressions;
 using UnityEngine;
 using UnityEditor;
 
@@ -483,14 +482,6 @@ namespace SashaRX.UnityMeshLab
         // ── Auto-detect LOD siblings ──
 
         // LODGroup supports at most eight levels; reject name-derived indices outside that range.
-        const int MaxSupportedLodIndex = 7;
-
-        static bool TryGetSupportedLodIndex(Match match, out int lodIndex)
-        {
-            return int.TryParse(match.Groups[2].Value, out lodIndex)
-                && lodIndex <= MaxSupportedLodIndex;
-        }
-
         /// <summary>
         /// Given a GameObject whose name ends with a LOD suffix (e.g. Gazebo_LOD0),
         /// find all sibling GameObjects under the same parent that share the same
@@ -501,16 +492,13 @@ namespace SashaRX.UnityMeshLab
         {
             if (go == null) return null;
 
-            // Match trailing LOD suffix: _LOD0, -LOD1, LOD2, etc.
-            var m = Regex.Match(go.name, @"^(.+?)([_\-\s]*)LOD(\d+)$", RegexOptions.IgnoreCase);
-            if (m.Success)
+            // Trailing LOD suffix (_LOD0, -LOD1, " LOD2"): the one naming rule, MeshNaming.
+            if (MeshNaming.HasLodSuffix(go.name))
             {
-                if (!int.TryParse(m.Groups[3].Value, out int selectedLodIndex)
-                    || selectedLodIndex > MaxSupportedLodIndex)
-                    return null;
+                if (!MeshNaming.TryParseLod(go.name, out string baseName, out _))
+                    return null;   // an index the LODGroup cannot hold
 
                 // Selected object has LOD suffix — search siblings
-                string baseName = m.Groups[1].Value;
                 var parent = go.transform.parent;
                 if (parent == null) return null;
 
@@ -518,10 +506,8 @@ namespace SashaRX.UnityMeshLab
                 for (int i = 0; i < parent.childCount; i++)
                 {
                     var child = parent.GetChild(i).gameObject;
-                    var cm = Regex.Match(child.name, @"^(.+?)[_\-\s]*LOD(\d+)$", RegexOptions.IgnoreCase);
-                    if (cm.Success
-                        && string.Equals(cm.Groups[1].Value, baseName, System.StringComparison.OrdinalIgnoreCase)
-                        && TryGetSupportedLodIndex(cm, out int lodIndex))
+                    if (MeshNaming.TryParseLod(child.name, out string childBase, out int lodIndex)
+                        && string.Equals(childBase, baseName, System.StringComparison.OrdinalIgnoreCase))
                         results.Add((child, lodIndex));
                 }
 
@@ -535,8 +521,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < go.transform.childCount; i++)
             {
                 var child = go.transform.GetChild(i).gameObject;
-                var cm = Regex.Match(child.name, @"^(.+?)[_\-\s]*LOD(\d+)$", RegexOptions.IgnoreCase);
-                if (cm.Success && TryGetSupportedLodIndex(cm, out int lodIndex))
+                if (MeshNaming.TryParseLod(child.name, out _, out int lodIndex))
                     childResults.Add((child, lodIndex));
             }
 

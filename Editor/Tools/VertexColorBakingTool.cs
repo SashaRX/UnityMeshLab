@@ -1546,25 +1546,9 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        // Collider mesh-name convention: "_COL" OR "_COL_Hull{digits}"
-        // (convex hull decomposition suffix). Both forms map to the same
-        // base name via StripColSuffix.
-        static bool EndsWithColSuffix(string name)
-            => StripColSuffix(name) != name;
-
-        static string StripColSuffix(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return name;
-            if (name.EndsWith("_COL", StringComparison.OrdinalIgnoreCase))
-                return name.Substring(0, name.Length - 4);
-            int hullIdx = name.LastIndexOf("_COL_Hull", StringComparison.OrdinalIgnoreCase);
-            if (hullIdx < 0) return name;
-            int digitStart = hullIdx + 9; // "_COL_Hull".Length
-            if (digitStart >= name.Length) return name;
-            for (int i = digitStart; i < name.Length; i++)
-                if (!char.IsDigit(name[i])) return name;
-            return name.Substring(0, hullIdx);
-        }
+        // Collider mesh-name convention lives in MeshNaming (_COL, _COL_Hull{N}, _COL_*, _Collider, _Collision).
+        static bool EndsWithColSuffix(string name) => MeshNaming.IsCollision(name);
+        static string StripColSuffix(string name) => MeshNaming.StripCollision(name);
 
         void CollectSidecarCollisionOccluders(
             LodBakeBatch batch,
