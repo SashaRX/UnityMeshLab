@@ -33,6 +33,16 @@ namespace SashaRX.UnityMeshLab
         // ── Shared components ──
         UvToolContext ctx;
         UvCanvasView canvas;
+        // The shared 3D viewport behind the canvas's UV | 3D switch. One instance per
+        // window; every tool draws into it through IUvTool3D.
+        MeshViewport3D viewport;
+        UvLayer3D uvLayer;
+        bool canvas3D;
+        const string Canvas3DPref = "MeshLab.Canvas3D";
+        readonly List<MeshViewport3D.Item> viewportItems = new List<MeshViewport3D.Item>();
+        readonly List<MeshEntry> viewportEntries = new List<MeshEntry>();   // parallel to viewportItems; null for tool content
+        readonly List<MeshEntry> uvContentEntries = new List<MeshEntry>();  // a tool's own UV canvas content (IUvToolUvContent)
+        Rect canvasArea;   // the canvas column's content rect, from the last repaint
 
         // ── Layout ──
         float sideW = 300f;
@@ -95,6 +105,9 @@ namespace SashaRX.UnityMeshLab
             canvas = new UvCanvasView();
             canvas.Init();
             canvas.RequestRepaint = Repaint;
+            viewport = new MeshViewport3D { RequestRepaint = Repaint };
+            uvLayer = new UvLayer3D();
+            canvas3D = EditorPrefs.GetBool(Canvas3DPref, false);
 
             // Discover all IUvTool implementations via reflection
             tools = new List<IUvTool>();
@@ -180,6 +193,8 @@ namespace SashaRX.UnityMeshLab
                 ctx.LodGroup.ForceLOD(-1);
 
             canvas?.Cleanup();
+            viewport?.Dispose(); viewport = null;
+            uvLayer?.Dispose(); uvLayer = null;
 
             RestoreWorkingMeshes();
         }
@@ -231,7 +246,7 @@ namespace SashaRX.UnityMeshLab
                     ctx.Refresh(lg);
                     _cachedLodCount = ctx.LodCount;
                     _cachedRendererCount = CountValidRenderers(lg);
-                    ActiveTool?.OnRefresh();
+                    ActiveTool?.OnRefresh(); InvalidateViewportCaches();
                 }
                 else if (lg == null)
                 {
@@ -271,7 +286,7 @@ namespace SashaRX.UnityMeshLab
                                 _cachedLodCount = 0;
                                 _cachedRendererCount = 0;
                             }
-                            ActiveTool?.OnRefresh();
+                            ActiveTool?.OnRefresh(); InvalidateViewportCaches();
                         }
                     }
                 }
@@ -311,7 +326,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            ActiveTool?.OnRefresh();
+            ActiveTool?.OnRefresh(); InvalidateViewportCaches();
             Repaint();
         }
 
@@ -333,7 +348,7 @@ namespace SashaRX.UnityMeshLab
                     _cachedLodCount = ctx.LodCount;
                     _cachedRendererCount = CountValidRenderers(ctx.LodGroup);
                     ctx.PreviewLod = Mathf.Clamp(ctx.PreviewLod, 0, Mathf.Max(0, ctx.LodCount - 1));
-                    ActiveTool?.OnRefresh();
+                    ActiveTool?.OnRefresh(); InvalidateViewportCaches();
                 }
             }
 
@@ -381,15 +396,37 @@ namespace SashaRX.UnityMeshLab
             // Middle column with explicit Width so it's the first thing to
             // shrink when the window is too narrow.
             EditorGUILayout.BeginVertical(GUILayout.Width(canvasW));
-            DrawCanvasToolbar();
+            // A tool may put its own output in the UV canvas (the Remesh & Bake result);
+            // resolved every frame so it follows the tool's stages and tab switches.
+            uvContentEntries.Clear();
+            canvas.EntriesOverride = ActiveTool is IUvToolUvContent uvContent && uvContent.GetUvContent(uvContentEntries) ? uvContentEntries : null;
+            if (canvas3D) DrawViewportToolbar(); else DrawCanvasToolbar();
 
             bool showGroupPanel = ctx.RepackPerMesh && ctx.MeshGroupCount(ctx.PreviewLod) > 1;
             if (showGroupPanel)
                 EditorGUILayout.BeginHorizontal();
 
             EditorGUILayout.BeginVertical();
-            canvas.OnGUI(ctx,
-                ActiveTool != null ? (Action<UvCanvasView, float, float, float>)ActiveTool.OnDrawCanvasOverlay : null);
+            if (canvas3D)
+            {
+                DrawViewport();
+            }
+            else
+            {
+                // The canvas area always fills the column (the canvas itself draws only a
+                // help box when it has nothing to show), so the switch has a place in every
+                // state. Its click is taken before the canvas (spot mode eats mouse-downs)
+                // and it paints after the canvas blit.
+                HandleCanvasModeSwitchInput(canvasArea);
+                HandleCanvasModeKey(canvasArea);
+                EditorGUILayout.BeginVertical(GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
+                canvas.OnGUI(ctx,
+                    ActiveTool != null ? (Action<UvCanvasView, float, float, float>)ActiveTool.OnDrawCanvasOverlay : null);
+                GUILayout.FlexibleSpace();
+                EditorGUILayout.EndVertical();
+                if (Event.current.type == EventType.Repaint) canvasArea = GUILayoutUtility.GetLastRect();
+                DrawCanvasModeSwitch(canvasArea);
+            }
             DrawStatusBar();
             EditorGUILayout.EndVertical();
 
@@ -465,8 +502,14 @@ namespace SashaRX.UnityMeshLab
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
 
+            // Debug-only tabs (IUvToolDebugOnly) show with Show Debug UI on; when the
+            // setting goes off while one is active, the hub falls back to the first tab.
+            bool debug = DebugUi.Enabled;
+            if (!debug && activeToolIndex >= 0 && activeToolIndex < tools.Count && tools[activeToolIndex] is IUvToolDebugOnly)
+                SwitchTool(0);
             for (int i = 0; i < tools.Count; i++)
             {
+                if (!debug && tools[i] is IUvToolDebugOnly) continue;
                 var bg = GUI.backgroundColor;
                 if (i == activeToolIndex)
                     GUI.backgroundColor = new Color(.35f, .65f, 1f);
@@ -707,7 +750,13 @@ namespace SashaRX.UnityMeshLab
         void DrawCanvasToolbar()
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+            DrawLodButtons();
+            DrawUvCanvasToolbarBody();
+        }
 
+        // The LOD row shared by the UV and 3D canvas toolbars.
+        void DrawLodButtons()
+        {
             // ── LOD buttons ──
             if (ctx.LodCount > 0)
             {
@@ -742,7 +791,23 @@ namespace SashaRX.UnityMeshLab
                 GUILayout.Label("▲ " + lodTris.ToString("N0"), triStyle, GUILayout.Width(72));
                 GUILayout.Space(4);
             }
+        }
 
+        void DrawUvCanvasToolbarBody()
+        {
+            DrawUvChannelToggle();
+            DrawSpotControls();
+
+            // ── Zoom + Fit ──
+            canvas.Zoom = EditorGUILayout.Slider(canvas.Zoom, .01f, 20f, GUILayout.Width(90));
+            if (GUILayout.Button("Fit", EditorStyles.toolbarButton, GUILayout.Width(28)))
+                canvas.FitToUvBounds(ctx);
+
+            DrawToolbarTail();
+        }
+
+        void DrawUvChannelToggle()
+        {
             // ── UV channel toggle ──
             {
                 var bg = GUI.backgroundColor;
@@ -760,7 +825,10 @@ namespace SashaRX.UnityMeshLab
             }
 
             GUILayout.Space(6);
+        }
 
+        void DrawSpotControls()
+        {
             // ── Spot / Lock / Clear ──
             bool spotNext = GUILayout.Toggle(canvas.SpotMode, "Spot", EditorStyles.toolbarButton, GUILayout.Width(52));
             if (spotNext != canvas.SpotMode)
@@ -780,12 +848,10 @@ namespace SashaRX.UnityMeshLab
             }
 
             GUILayout.Space(6);
+        }
 
-            // ── Zoom + Fit ──
-            canvas.Zoom = EditorGUILayout.Slider(canvas.Zoom, .01f, 20f, GUILayout.Width(90));
-            if (GUILayout.Button("Fit", EditorStyles.toolbarButton, GUILayout.Width(28)))
-                canvas.FitToUvBounds(ctx);
-
+        void DrawToolbarTail()
+        {
             // ── Tool extra toolbar ──
             ActiveTool?.OnDrawToolbarExtra();
 
@@ -804,6 +870,277 @@ namespace SashaRX.UnityMeshLab
             }
 
             EditorGUILayout.EndHorizontal();
+        }
+
+        // ════════════════════════════════════════════════════════════
+        //  3D canvas (shared viewport)
+        // ════════════════════════════════════════════════════════════
+
+        // ── In-canvas controls: a segmented pill (dark track, accent on the active
+        //    segment). Input is taken BEFORE the canvas or viewport consumes the event,
+        //    the visual is painted AFTER their blit, so both halves read the same rect. ──
+
+        static readonly Color SegmentTrack = new Color(0.10f, 0.11f, 0.13f, 0.92f);
+        static readonly Color SegmentAccent = new Color(0.96f, 0.52f, 0.14f, 1f);
+        static readonly Color SegmentText = new Color(0.82f, 0.84f, 0.88f, 1f);
+        static readonly Color SegmentTextActive = new Color(0.12f, 0.10f, 0.08f, 1f);
+
+        static int SegmentHit(Rect rect, int count, Vector2 mouse)
+        {
+            if (count <= 0 || !rect.Contains(mouse)) return -1;
+            return Mathf.Clamp((int)((mouse.x - rect.x) / rect.width * count), 0, count - 1);
+        }
+
+        static void DrawSegmented(Rect rect, string[] labels, int active, bool mini = false)
+        {
+            if (Event.current.type != EventType.Repaint) return;
+            EditorGUI.DrawRect(rect, SegmentTrack);
+            float w = rect.width / labels.Length;
+            var style = new GUIStyle(mini ? EditorStyles.miniLabel : EditorStyles.label) { alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
+            for (int i = 0; i < labels.Length; i++)
+            {
+                var cell = new Rect(rect.x + i * w, rect.y, w, rect.height);
+                if (i == active) EditorGUI.DrawRect(new Rect(cell.x + 2, cell.y + 2, cell.width - 4, cell.height - 4), SegmentAccent);
+                style.normal.textColor = i == active ? SegmentTextActive : SegmentText;
+                GUI.Label(cell, labels[i], style);
+            }
+            var outline = new Color(0f, 0f, 0f, 0.5f);
+            EditorGUI.DrawRect(new Rect(rect.x, rect.y, rect.width, 1), outline);
+            EditorGUI.DrawRect(new Rect(rect.x, rect.yMax - 1, rect.width, 1), outline);
+        }
+
+        /// <summary>The UV | 3D switch, floating at the bottom centre of the canvas.</summary>
+        static Rect CanvasModeSwitchRect(Rect canvasRect) => new Rect(canvasRect.center.x - 90f, canvasRect.yMax - 32f, 180f, 24f);
+        static bool CanvasModeSwitchFits(Rect canvasRect) => canvasRect.width >= 200f && canvasRect.height >= 60f;
+        static readonly string[] CanvasModeLabels = { "UV", "3D" };
+
+        void HandleCanvasModeSwitchInput(Rect canvasRect)
+        {
+            if (!CanvasModeSwitchFits(canvasRect)) return;
+            var e = Event.current;
+            if (e.type != EventType.MouseDown || e.button != 0) return;
+            int hit = SegmentHit(CanvasModeSwitchRect(canvasRect), 2, e.mousePosition);
+            if (hit < 0) return;
+            SetCanvas3D(hit == 1);
+            e.Use();
+        }
+
+        // Tab over the canvas flips the view, unless a text field has the keyboard.
+        void HandleCanvasModeKey(Rect canvasRect)
+        {
+            var e = Event.current;
+            if (e.type != EventType.KeyDown || e.keyCode != KeyCode.Tab || GUIUtility.keyboardControl != 0) return;
+            if (!canvasRect.Contains(e.mousePosition)) return;
+            SetCanvas3D(!canvas3D);
+            e.Use();
+        }
+
+        void DrawCanvasModeSwitch(Rect canvasRect)
+        {
+            if (!CanvasModeSwitchFits(canvasRect)) return;
+            var rect = CanvasModeSwitchRect(canvasRect);
+            DrawSegmented(rect, CanvasModeLabels, canvas3D ? 1 : 0);
+            if (Event.current.type == EventType.Repaint)
+                GUI.Label(new Rect(rect.xMax + 6, rect.y + 4, 60, 16), "Tab", new GUIStyle(EditorStyles.miniLabel) { normal = { textColor = new Color(0.6f, 0.62f, 0.66f) } });
+        }
+
+        // ── The 3D shading row along the top of the viewport (Normals, Tangents and UV channels only where a mesh carries them). ──
+        static Rect ShadingRowRect(Rect viewportRect) => new Rect(viewportRect.x + 8, viewportRect.y + 8, viewportRect.width - 16, 24);
+        readonly List<MeshViewport3D.Shading> shadingRow = new List<MeshViewport3D.Shading>();
+        readonly List<string> shadingRowLabels = new List<string>();
+
+        void BuildShadingRow()
+        {
+            shadingRow.Clear(); shadingRowLabels.Clear();
+            for (int i = 0; i < MeshViewport3D.ShadingNames.Length; i++)
+            {
+                var mode = (MeshViewport3D.Shading)i;
+                if (mode == MeshViewport3D.Shading.Normals && !AnyMeshHas(UnityEngine.Rendering.VertexAttribute.Normal)) continue;
+                if (mode == MeshViewport3D.Shading.Tangents && !AnyMeshHas(UnityEngine.Rendering.VertexAttribute.Tangent)) continue;
+                if (mode >= MeshViewport3D.Shading.UV0 && !AnyMeshHasUv(mode - MeshViewport3D.Shading.UV0)) continue;
+                shadingRow.Add(mode); shadingRowLabels.Add(MeshViewport3D.ShadingNames[i]);
+            }
+            if (!shadingRow.Contains(viewport.Mode)) viewport.Mode = MeshViewport3D.Shading.Shaded;
+        }
+
+        void HandleShadingRowInput(Rect viewportRect)
+        {
+            var e = Event.current;
+            if (e.type != EventType.MouseDown || e.button != 0 || viewportRect.width < 320f) return;
+            int hit = SegmentHit(ShadingRowRect(viewportRect), shadingRow.Count, e.mousePosition);
+            if (hit < 0) return;
+            viewport.Mode = shadingRow[hit];
+            e.Use(); Repaint();
+        }
+
+        void DrawShadingRow(Rect viewportRect)
+        {
+            if (viewportRect.width < 320f || shadingRow.Count == 0) return;
+            DrawSegmented(ShadingRowRect(viewportRect), shadingRowLabels.ToArray(), shadingRow.IndexOf(viewport.Mode), mini: true);
+        }
+
+        void SetCanvas3D(bool on)
+        {
+            if (canvas3D == on) return;
+            canvas3D = on;
+            EditorPrefs.SetBool(Canvas3DPref, on);
+            // Hover belongs to the view it was picked in; selection carries over.
+            canvas.HasHoveredShell = false; canvas.HoveredShellDebug = null; canvas.HoverHitValid = false;
+            if (on) viewport?.FrameContent();
+            Repaint(); SceneView.RepaintAll();
+        }
+
+        /// <summary>Content for the 3D canvas: the active tool's, or the context's preview
+        /// LOD meshes with their scene materials (the same meshes the UV canvas shows).</summary>
+        List<MeshViewport3D.Item> CollectViewportItems()
+        {
+            viewportItems.Clear(); viewportEntries.Clear();
+            if (ActiveTool is IUvTool3D tool3D && tool3D.Get3DContent(viewportItems))
+            {
+                // A tool item showing the same mesh as one of the tool's UV entries gets
+                // that entry, so the UV layer (fill, island borders) and spot picking work
+                // on it in 3D exactly as on a context mesh; other items only get the wire.
+                for (int i = 0; i < viewportItems.Count; i++)
+                {
+                    MeshEntry match = null;
+                    foreach (var e in uvContentEntries)
+                        if (viewportItems[i].mesh != null && ctx.DMesh(e) == viewportItems[i].mesh) { match = e; break; }
+                    viewportEntries.Add(match);
+                }
+                return viewportItems;
+            }
+            viewportItems.Clear();
+            List<string> groupKeys = ctx.RepackPerMesh && ctx.IsolatedMeshGroup >= 0 ? ctx.BuildGroupKeys(ctx.PreviewLod) : null;
+            foreach (var e in ctx.ForLod(ctx.PreviewLod))
+            {
+                if (groupKeys != null && ctx.IsolatedMeshGroup < groupKeys.Count)
+                {
+                    string key = e.meshGroupKey ?? (e.renderer != null ? e.renderer.name : null);
+                    if (key != groupKeys[ctx.IsolatedMeshGroup]) continue;
+                }
+                Mesh mesh = ctx.DMesh(e);
+                if (mesh == null) continue;
+                var matrix = e.renderer != null ? e.renderer.localToWorldMatrix : Matrix4x4.identity;
+                viewportItems.Add(new MeshViewport3D.Item(mesh, matrix, e.renderer != null ? e.renderer.sharedMaterials : null));
+                viewportEntries.Add(e);
+            }
+            return viewportItems;
+        }
+
+        void InvalidateViewportCaches()
+        {
+            uvLayer?.Invalidate();
+            viewport?.InvalidateCaches();
+        }
+
+        // Spot mode in 3D: the face under the mouse (camera ray against the context
+        // meshes) feeds the same hover/selection state the UV canvas and the tools read.
+        void HandleViewportSpot(Rect rect)
+        {
+            if (!canvas.SpotMode) return;
+            var e = Event.current;
+            bool inside = rect.Contains(e.mousePosition);
+            if (!inside)
+            {
+                if (!canvas.LockSelection && canvas.HasHoveredShell) { canvas.HasHoveredShell = false; canvas.HoveredShellDebug = null; Repaint(); }
+                return;
+            }
+            if (e.type != EventType.MouseMove && e.type != EventType.MouseDown && e.type != EventType.MouseDrag) return;
+            if (!canvas.LockSelection)
+            {
+                if (uvLayer.Pick(viewport, canvas, ctx, e.mousePosition, viewportItems, viewportEntries, out var hit, out var debug, out var world))
+                {
+                    canvas.HoveredShell = hit; canvas.HasHoveredShell = true; canvas.HoveredShellDebug = debug;
+                    canvas.HoveredShellId = hit.shellId; canvas.UvSpot = hit.uvHit; canvas.HoverHitValid = true; canvas.HoverWorldPos = world;
+                    canvas.CanvasSpotUv = hit.uvHit; canvas.CanvasSpotValid = true;
+                }
+                else
+                {
+                    canvas.HasHoveredShell = false; canvas.HoveredShellDebug = null; canvas.HoverHitValid = false; canvas.CanvasSpotValid = false;
+                }
+                Repaint(); SceneView.RepaintAll();
+            }
+            if (e.type == EventType.MouseDown && e.button == 0 && !e.alt)
+            {
+                if (canvas.HasHoveredShell) { canvas.SelectedShell = canvas.HoveredShell; canvas.HasSelectedShell = true; }
+                else if (!canvas.LockSelection) canvas.HasSelectedShell = false;
+                canvas.SelectedShellDebug = canvas.HoveredShellDebug != null ? UvCanvasView.CloneHit(canvas.HoveredShellDebug) : null;
+                if (e.clickCount == 2 && canvas.HasSelectedShell)
+                {
+                    try { canvas.OnDoubleClickShell?.Invoke(canvas.SelectedShell); }
+                    catch (Exception ex) { UvtLog.Error($"[3D] Double-click shell focus failed: {ex.Message}"); }
+                    e.Use();
+                }
+                Repaint(); SceneView.RepaintAll();
+            }
+        }
+
+        void DrawViewport()
+        {
+            var rect = GUILayoutUtility.GetRect(GUIContent.none, GUIStyle.none, GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
+            var items = CollectViewportItems();
+            BuildShadingRow();
+            HandleCanvasModeSwitchInput(rect);
+            HandleCanvasModeKey(rect);
+            if (items.Count == 0)
+            {
+                EditorGUI.DrawRect(rect, viewport.Background);
+                GUI.Label(rect, "No meshes for this LOD.", new GUIStyle(EditorStyles.centeredGreyMiniLabel) { alignment = TextAnchor.MiddleCenter });
+            }
+            else
+            {
+                HandleShadingRowInput(rect);
+                HandleViewportSpot(rect);
+                var tool3D = ActiveTool as IUvTool3D;
+                viewport.Draw(rect, items, view =>
+                {
+                    uvLayer.Draw(view, canvas, ctx, viewportItems, viewportEntries);
+                    tool3D?.OnDraw3D(view);
+                });
+                DrawShadingRow(rect);
+                // The spot info panel sits under the shading row.
+                if (canvas.SpotMode) canvas.DrawShellInfoPanel(new Rect(rect.x, rect.y + 36, rect.width, rect.height - 36));
+            }
+            DrawCanvasModeSwitch(rect);
+            if (Event.current.type == EventType.Repaint) canvasArea = rect;
+        }
+
+        void DrawViewportToolbar()
+        {
+            // Fresh content first: the UV-channel shading buttons below depend on it, and
+            // the toolbar paints before the viewport does.
+            CollectViewportItems();
+            EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+            DrawLodButtons();
+            DrawUvChannelToggle();
+            DrawSpotControls();
+
+            // ── View options (the shading row lives inside the canvas) ──
+            viewport.Lit = GUILayout.Toggle(viewport.Lit, "Lit", EditorStyles.toolbarButton, GUILayout.Width(30));
+            viewport.ShowGrid = GUILayout.Toggle(viewport.ShowGrid, "Grid", EditorStyles.toolbarButton, GUILayout.Width(36));
+            if (GUILayout.Button("Frame", EditorStyles.toolbarButton, GUILayout.Width(44)))
+                viewport.FrameContent();
+
+            DrawToolbarTail();
+        }
+
+        bool AnyMeshHas(UnityEngine.Rendering.VertexAttribute attribute)
+        {
+            foreach (var item in viewportItems)
+                if (item.mesh != null && item.mesh.HasVertexAttribute(attribute)) return true;
+            return false;
+        }
+
+        bool AnyMeshHasUv(int channel)
+        {
+            var uv = new List<Vector2>();
+            foreach (var item in viewportItems)
+            {
+                if (item.mesh == null) continue;
+                item.mesh.GetUVs(channel, uv);
+                if (uv.Count > 0) return true;
+            }
+            return false;
         }
 
         // ═���════════════════════════════════���═════════════════════════
@@ -972,13 +1309,14 @@ namespace SashaRX.UnityMeshLab
             GUILayout.Space(6);
 
             // ── Status info ──
-            var ee = ctx.ForLod(ctx.PreviewLod);
+            var ee = canvas.Entries(ctx);
             int tV = 0, tT = 0;
             foreach (var e in ee) { Mesh m = ctx.DMesh(e); if (m == null) continue; tV += m.vertexCount; tT += m.triangles.Length / 3; }
             string hoverInfo = canvas.HoverHitValid
                 ? $" | UV:{canvas.UvSpot.x:F3},{canvas.UvSpot.y:F3} S:{canvas.HoveredShellId}"
                 : (canvas.SpotMode ? " | UV:--" : string.Empty);
-            EditorGUILayout.LabelField("LOD" + ctx.PreviewLod + " " + ee.Count + "m V:" + tV + " T:" + tT + " " + (ctx.PreviewUvChannel == 0 ? "UV0" : "UV1") + hoverInfo, EditorStyles.miniLabel);
+            string what = canvas.EntriesOverride != null ? ActiveTool.ToolName + " result" : "LOD" + ctx.PreviewLod + " " + ee.Count + "m";
+            EditorGUILayout.LabelField(what + " V:" + tV + " T:" + tT + " " + (ctx.PreviewUvChannel == 0 ? "UV0" : "UV1") + hoverInfo, EditorStyles.miniLabel);
 
             GUILayout.FlexibleSpace();
 
@@ -1142,6 +1480,16 @@ namespace SashaRX.UnityMeshLab
                 string repoRoot = System.IO.Path.GetDirectoryName(Application.dataPath);
                 string fullPath = System.IO.Path.GetFullPath(assetPath);
                 string relativePath = assetPath.Replace('\\', '/');
+                // Validate before the path becomes part of a git revision: the
+                // backup only ever reads repo-relative Assets/ paths. A
+                // validated "main:<path>" operand can never be parsed by git
+                // as an option, so nothing user-controlled can alter the
+                // command's meaning.
+                if (!relativePath.StartsWith("Assets/", StringComparison.Ordinal) || relativePath.Contains(".."))
+                {
+                    UvtLog.Error($"[Backup] '{relativePath}' is not a repo-relative Assets path.");
+                    return;
+                }
 
                 string dir = System.IO.Path.GetDirectoryName(fullPath);
                 string name = System.IO.Path.GetFileNameWithoutExtension(fullPath);
@@ -1151,13 +1499,13 @@ namespace SashaRX.UnityMeshLab
                     .Replace('\\', '/');
                 string tempBackupPath = backupPath + ".tmp";
 
-                if (!RunGit(repoRoot, $"cat-file -e \"main:{relativePath}\"", out _, out string existsErr))
+                if (!RunGit(repoRoot, new[] { "cat-file", "-e", "main:" + relativePath }, out _, out string existsErr))
                 {
                     UvtLog.Error($"[Backup] '{relativePath}' does not exist on branch 'main'. {existsErr.Trim()}");
                     return;
                 }
 
-                using (var proc = StartGitBinary(repoRoot, $"cat-file --filters \"main:{relativePath}\""))
+                using (var proc = StartGitBinary(repoRoot, "cat-file", "--filters", "main:" + relativePath))
                 {
                     var stderrBuf = new System.Text.StringBuilder();
                     proc.ErrorDataReceived += (s, e) => { if (e.Data != null) stderrBuf.AppendLine(e.Data); };
@@ -1201,22 +1549,39 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        internal static System.Diagnostics.Process StartGitBinary(string workingDirectory, string arguments)
+        // The only git options this package ever passes; anything else that
+        // starts with '-' is refused by StartGitBinary below.
+        static readonly System.Collections.Generic.HashSet<string> AllowedGitOptions =
+            new System.Collections.Generic.HashSet<string> { "-e", "--filters" };
+
+        internal static System.Diagnostics.Process StartGitBinary(string workingDirectory, params string[] arguments)
         {
-            var psi = new System.Diagnostics.ProcessStartInfo
+            var process = new System.Diagnostics.Process
             {
-                FileName = "git",
-                Arguments = arguments,
-                WorkingDirectory = workingDirectory,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
+                StartInfo = new System.Diagnostics.ProcessStartInfo("git")
+                {
+                    WorkingDirectory = workingDirectory,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
             };
-            return System.Diagnostics.Process.Start(psi);
+            // One verbatim token per git argument via ArgumentList — no
+            // command-line string is assembled. Options are allow-listed and
+            // callers validate their operands, so no argument can smuggle an
+            // extra git option or command.
+            foreach (var argument in arguments)
+            {
+                if (argument.StartsWith("-", StringComparison.Ordinal) && !AllowedGitOptions.Contains(argument))
+                    throw new System.ArgumentException("Refusing unexpected git option: " + argument);
+                process.StartInfo.ArgumentList.Add(argument);
+            }
+            process.Start();
+            return process;
         }
 
-        internal static bool RunGit(string workingDirectory, string arguments, out string stdout, out string stderr)
+        internal static bool RunGit(string workingDirectory, string[] arguments, out string stdout, out string stderr)
         {
             using (var proc = StartGitBinary(workingDirectory, arguments))
             {
@@ -1503,47 +1868,14 @@ namespace SashaRX.UnityMeshLab
 
         void UpdateSelectedSidecar()
         {
-            selectedSidecarPath = null;
-            selectedFbxPath = null;
-            selectedResetLabel = null;
-
-            var fbxPaths = new HashSet<string>();
-            if (ctx?.MeshEntries != null)
-            {
-                foreach (var e in ctx.MeshEntries)
-                {
-                    Mesh m = e.fbxMesh ?? e.originalMesh;
-                    if (m == null) continue;
-                    string path = AssetDatabase.GetAssetPath(m);
-                    if (!string.IsNullOrEmpty(path) && path.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
-                        fbxPaths.Add(path);
-                }
-            }
-
+            selectedSidecarPath = selectedFbxPath = selectedResetLabel = null;
+            // The loaded entries' FBX files, else those under the selected object.
+            var fbxPaths = SidecarStore.FbxPaths(ctx?.MeshEntries);
             if (fbxPaths.Count == 0)
-            {
-                var go = Selection.activeGameObject;
-                if (go == null) return;
-                foreach (var mf in go.GetComponentsInChildren<MeshFilter>())
-                {
-                    if (mf.sharedMesh == null) continue;
-                    string path = AssetDatabase.GetAssetPath(mf.sharedMesh);
-                    if (!string.IsNullOrEmpty(path) && path.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
-                        fbxPaths.Add(path);
-                }
-            }
-
-            foreach (string fbx in fbxPaths)
-            {
-                string sidecar = Uv2DataAsset.GetSidecarPath(fbx);
-                if (AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sidecar) != null)
-                {
-                    selectedFbxPath = fbx;
-                    selectedSidecarPath = sidecar;
-                    selectedResetLabel = System.IO.Path.GetFileNameWithoutExtension(fbx);
-                    return;
-                }
-            }
+                fbxPaths = SidecarStore.FbxPaths(Selection.activeGameObject);
+            if (!SidecarStore.TryFindFirst(fbxPaths, out selectedFbxPath, out selectedSidecarPath))
+                return;
+            selectedResetLabel = System.IO.Path.GetFileNameWithoutExtension(selectedFbxPath);
         }
 
         void ResetSelectedUv2()
@@ -1556,9 +1888,7 @@ namespace SashaRX.UnityMeshLab
                 "Delete", "Cancel"))
                 return;
 
-            if (AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(selectedSidecarPath) != null)
-                AssetDatabase.DeleteAsset(selectedSidecarPath);
-
+            SidecarStore.Delete(new[] { selectedFbxPath });
             AssetDatabase.Refresh();
 
             {
@@ -1577,7 +1907,7 @@ namespace SashaRX.UnityMeshLab
             if (ctx?.LodGroup != null)
             {
                 ctx.Refresh(ctx.LodGroup);
-                ActiveTool?.OnRefresh();
+                ActiveTool?.OnRefresh(); InvalidateViewportCaches();
             }
 
             ctx.PostResetColoring = true;

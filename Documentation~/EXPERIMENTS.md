@@ -309,7 +309,7 @@
 ### Sidecar collision entries — не удалять при FBX overwrite
 - Старый код удалял весь sidecar (включая collision entries) после overwrite.
 - При повторном экспорте collision meshes были недоступны (non-readable FBX sub-assets).
-- **Решение**: `ClearUv2EntriesForFbxPaths()` — удаляет только UV2 entries, сохраняет collision entries.
+- **Решение**: `SidecarStore.ClearUv2Entries()` — удаляет только UV2 entries, сохраняет collision entries.
 
 ### Convex hull triangle indices — глобальный offset
 - `SaveToSidecar()` хранит triangle indices как flattened array. Для multi-hull convex decomposition индексы должны быть rebased к глобальному vertex offset.

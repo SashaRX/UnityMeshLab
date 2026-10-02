@@ -45,35 +45,31 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
-        // Paint mesh.colors32 with a uniform Color32 across every mesh variant
-        // of an entry (originalMesh, repackedMesh, transferredMesh, fbxMesh).
-        // Skips collision meshes via MeshHygieneUtility. Returns the number of
-        // distinct meshes painted.
-        public static int BakeSolidColorOnEntries(IEnumerable<MeshEntry> entries, Color color)
+        // The meshes a variant paints: every mesh variant of an included, non-collision
+        // entry (originalMesh, repackedMesh, transferredMesh, fbxMesh), each once.
+        static List<Mesh> PaintableMeshes(IEnumerable<MeshEntry> entries)
         {
-            if (entries == null) return 0;
-            var color32 = (Color32)color;
-            var painted = new HashSet<Mesh>();
-
+            var meshes = new List<Mesh>();
+            if (entries == null) return meshes;
+            var seen = new HashSet<Mesh>();
             foreach (var entry in entries)
             {
                 if (entry == null || entry.renderer == null || !entry.include) continue;
-                if (MeshHygieneUtility.IsCollisionNodeName(entry.renderer.name)) continue;
-
-                var meshes = new[] { entry.originalMesh, entry.repackedMesh, entry.transferredMesh, entry.fbxMesh };
-                foreach (var mesh in meshes)
-                {
-                    if (mesh == null || mesh.vertexCount == 0) continue;
-                    if (!painted.Add(mesh)) continue;
-
-                    Undo.RecordObject(mesh, "Bake Solid Color");
-                    var arr = new Color32[mesh.vertexCount];
-                    for (int i = 0; i < arr.Length; i++) arr[i] = color32;
-                    mesh.colors32 = arr;
-                    EditorUtility.SetDirty(mesh);
-                }
+                if (MeshNaming.IsCollision(entry.renderer.name)) continue;
+                foreach (var mesh in new[] { entry.originalMesh, entry.repackedMesh, entry.transferredMesh, entry.fbxMesh })
+                    if (mesh != null && mesh.vertexCount > 0 && seen.Add(mesh)) meshes.Add(mesh);
             }
-            return painted.Count;
+            return meshes;
+        }
+
+        // Paint mesh.colors32 with a uniform colour across every mesh variant of an
+        // entry. Returns the number of distinct meshes painted.
+        public static int BakeSolidColorOnEntries(IEnumerable<MeshEntry> entries, Color color)
+        {
+            var meshes = PaintableMeshes(entries);
+            foreach (var mesh in meshes)
+                VertexChannels.FillColors(mesh, color, "Bake Solid Color");
+            return meshes.Count;
         }
 
         // Capture the current vertex colors of every mesh BakeSolidColorOnEntries
@@ -82,21 +78,8 @@ namespace SashaRX.UnityMeshLab
         static Dictionary<Mesh, Color32[]> SnapshotEntryColors(IEnumerable<MeshEntry> entries)
         {
             var backup = new Dictionary<Mesh, Color32[]>();
-            if (entries == null) return backup;
-            foreach (var entry in entries)
-            {
-                if (entry == null || entry.renderer == null || !entry.include) continue;
-                if (MeshHygieneUtility.IsCollisionNodeName(entry.renderer.name)) continue;
-
-                var meshes = new[] { entry.originalMesh, entry.repackedMesh, entry.transferredMesh, entry.fbxMesh };
-                foreach (var mesh in meshes)
-                {
-                    if (mesh == null || mesh.vertexCount == 0) continue;
-                    if (backup.ContainsKey(mesh)) continue;
-                    var c = mesh.colors32;
-                    backup[mesh] = (c != null && c.Length == mesh.vertexCount) ? c : null;
-                }
-            }
+            foreach (var mesh in PaintableMeshes(entries))
+                backup[mesh] = VertexChannels.SnapshotColors(mesh);
             return backup;
         }
 
@@ -105,13 +88,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (backup == null) return;
             foreach (var kv in backup)
-            {
-                var mesh = kv.Key;
-                if (mesh == null) continue;
-                Undo.RecordObject(mesh, "Restore Vertex Colors");
-                mesh.colors32 = kv.Value ?? new Color32[mesh.vertexCount];
-                EditorUtility.SetDirty(mesh);
-            }
+                if (kv.Key != null) VertexChannels.RestoreColors(kv.Key, kv.Value, "Restore Vertex Colors");
         }
 
         // Run a batch of variants against the same source FBX/prefab. Each

@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEditor;
@@ -69,6 +70,17 @@ namespace SashaRX.UnityMeshLab
         public bool Panning;
         public Rect LastCanvasRect;
         public List<FillModeEntry> FillModes = new List<FillModeEntry>();
+
+        /// <summary>
+        /// When set, the canvas shows these entries instead of the context's preview-LOD
+        /// meshes: a tool's own output (the Remesh &amp; Bake result) laid out with the
+        /// same fill modes, wire, border, spot picking and backgrounds. The hub sets it
+        /// each frame from <see cref="IUvToolUvContent"/>.
+        /// </summary>
+        public List<MeshEntry> EntriesOverride;
+
+        /// <summary>The entries the canvas currently shows.</summary>
+        public List<MeshEntry> Entries(UvToolContext ctx) => EntriesOverride ?? ctx.ForLod(ctx.PreviewLod);
         public int ActiveFillModeIndex;
         public bool FillHidden;
         public bool ShowWireframe = true;
@@ -187,11 +199,11 @@ namespace SashaRX.UnityMeshLab
 
         public void OnGUI(UvToolContext ctx, Action<UvCanvasView, float, float, float> toolOverlay)
         {
-            var ee = ctx.ForLod(ctx.PreviewLod);
+            var ee = Entries(ctx);
             if (ee.Count == 0) { EditorGUILayout.HelpBox("No meshes for this LOD.", MessageType.Info); HoveredShellDebug = null; return; }
 
             List<string> canvasGroupKeys = null;
-            if (ctx.RepackPerMesh && ctx.IsolatedMeshGroup >= 0)
+            if (EntriesOverride == null && ctx.RepackPerMesh && ctx.IsolatedMeshGroup >= 0)
                 canvasGroupKeys = ctx.BuildGroupKeys(ctx.PreviewLod);
 
             var draws = new List<ValueTuple<Mesh, MeshEntry, int>>();
@@ -199,7 +211,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if (canvasGroupKeys != null && ctx.IsolatedMeshGroup >= 0 && ctx.IsolatedMeshGroup < canvasGroupKeys.Count)
                 {
-                    string eKey = ee[i].meshGroupKey ?? ee[i].renderer.name;
+                    string eKey = ee[i].meshGroupKey ?? (ee[i].renderer != null ? ee[i].renderer.name : null);
                     if (eKey != canvasGroupKeys[ctx.IsolatedMeshGroup]) continue;
                 }
                 Mesh m = ctx.DMesh(ee[i]);
@@ -330,6 +342,89 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ════════════════════════════════════════════════════════════
+        //  UV layer for the 3D canvas
+        // ════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Renders what this canvas would draw for ONE mesh — the preview background
+        /// (checker, lightmap or main texture), the active fill mode, the border edges —
+        /// into a square UV-space texture (tile 0 only, transparent elsewhere), with the
+        /// same pixel matrix and helpers as the canvas, so the 3D canvas can lay the UV
+        /// viewer over the model. Wire is left to the 3D view (true 3D lines). Returns
+        /// the texture (reusing target when its size fits) or null when GL is unavailable.
+        /// </summary>
+        public RenderTexture RenderUvLayer(UvToolContext ctx, Mesh mesh, MeshEntry entry, RenderTexture target, int size)
+        {
+            if (GlMat == null || mesh == null) return null;
+            if (target == null || target.width != size || target.height != size)
+            {
+                if (target) { target.Release(); UnityEngine.Object.DestroyImmediate(target); }
+                target = new RenderTexture(size, size, 0, RenderTextureFormat.ARGB32) { hideFlags = HideFlags.HideAndDontSave, wrapMode = TextureWrapMode.Repeat, filterMode = FilterMode.Bilinear };
+            }
+            var prevRT = RenderTexture.active;
+            RenderTexture.active = target;
+            GL.Clear(true, true, new Color(0f, 0f, 0f, 0f));
+            bool push = false;
+            try
+            {
+                GlMat.SetPass(0);
+                GL.PushMatrix(); push = true;
+                GL.LoadPixelMatrix(0, size, size, 0);
+                float cx = 0f, cy = 0f, sz = size;
+                var draws = new List<ValueTuple<Mesh, MeshEntry, int>> { new ValueTuple<Mesh, MeshEntry, int>(mesh, entry, 0) };
+                var tile = new HashSet<Vector2Int> { new Vector2Int(0, 0) };
+                Texture bgTex = ResolveUvPreviewBackgroundTexture(ctx, draws);
+                // A tool entry's preview texture is the surface the 3D view already shows;
+                // laying it over the model again would only dim it.
+                if (entry != null && entry.renderer == null && bgTex == entry.previewTexture && !CheckerEnabled) bgTex = null;
+                if (bgTex != null)
+                {
+                    float bgAlpha = CheckerEnabled ? 0.5f : 0.95f;
+                    float bgExposure = CurrentPreviewMode == PreviewMode.Lightmap ? LmExposure : 1f;
+                    GlTextureBg(cx, cy, sz, bgTex, Vector2.one, Vector2.zero, bgAlpha, tile, bgExposure);
+                    GlMat.SetPass(0);
+                }
+                else if (CheckerEnabled)
+                    GlCheckerBg(cx, cy, sz, 8, 0.5f, ctx.PreviewUvChannel == 1, tile);
+
+                ClearFrameCaches();
+                var uvs = RdUvCached(mesh, ctx.PreviewUvChannel);
+                var tri = GetTrianglesCached(mesh);
+                if (uvs != null && tri != null)
+                {
+                    if (CurrentPreviewMode == PreviewMode.Lightmap && ctx.PreviewUvChannel == 1 && entry?.renderer != null && entry.renderer.lightmapIndex >= 0)
+                    {
+                        var so = entry.renderer.lightmapScaleOffset;
+                        var transformed = new Vector2[uvs.Length];
+                        for (int vi = 0; vi < uvs.Length; vi++)
+                            transformed[vi] = new Vector2(uvs[vi].x * so.x + so.z, uvs[vi].y * so.y + so.w);
+                        uvs = transformed;
+                    }
+                    int uN = uvs.Length, fN = tri.Length / 3;
+                    bool hasFill = !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
+                    if (hasFill) FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
+                    if (ShowBorder)
+                    {
+                        HashSet<int> bdr = entry?.transferState?.borderPrimitiveIds;
+                        if (bdr != null && bdr.Count > 0) GlBdr(cx, cy, sz, uvs, tri, fN, uN, bdr);
+                        else GlUvBoundary(ctx, cx, cy, sz, mesh, uvs, tri, uN);
+                    }
+                }
+            }
+            catch (Exception ex) { UvtLog.Warn("[UV] 3D layer GL: " + ex.Message); }
+            finally { if (push) GL.PopMatrix(); }
+            RenderTexture.active = prevRT;
+            return target;
+        }
+
+        /// <summary>The spot-mode info panel for a hit found in the 3D canvas.</summary>
+        public ShellDebugHit MakeHit(UvToolContext ctx, MeshEntry entry, Mesh mesh, UvShell shell, Vector2 uvPoint)
+            => BuildHit(ctx, entry, mesh, shell, uvPoint, 0);
+
+        /// <summary>The hover/selection info panel in the canvas's top-right corner.</summary>
+        public void DrawShellInfoPanel(Rect canvasRect) => DrawShellDebugOverlay(canvasRect);
+
+        // ════════════════════════════════════════════════════════════
         //  Input Handling
         // ════════════════════════════════════════════════════════════
 
@@ -417,7 +512,7 @@ namespace SashaRX.UnityMeshLab
 
         public void FitToUvBounds(UvToolContext ctx)
         {
-            var ee = ctx.ForLod(ctx.PreviewLod);
+            var ee = Entries(ctx);
             float minU=float.MaxValue, minV=float.MaxValue, maxU=float.MinValue, maxV=float.MinValue;
             bool any = false;
             foreach (var entry in ee)
@@ -460,7 +555,7 @@ namespace SashaRX.UnityMeshLab
         public static bool TOk(Vector2[] u, int n, int a, int b, int c) => a>=0&&a<n&&b>=0&&b<n&&c>=0&&c<n && UOk(u[a])&&UOk(u[b])&&UOk(u[c]);
         public static void Vx(float ox, float oy, float sz, Vector2 u) => GL.Vertex3(ox+u.x*sz, oy+(1f-u.y)*sz, 0);
 
-        public static Vector2[] RdUv(Mesh m, int ch) { var l = new List<Vector2>(); m.GetUVs(ch, l); return l.Count > 0 ? l.ToArray() : null; }
+        public static Vector2[] RdUv(Mesh m, int ch) => UvTopology.ReadUv(m, ch);
 
         public Vector2[] RdUvCached(Mesh m, int ch)
         {
@@ -495,22 +590,25 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        public static int VoteBestShell(int[] vertToShell, int vertCount, int i0, int i1, int i2)
-        {
-            int s0 = (i0 >= 0 && i0 < vertToShell.Length) ? vertToShell[i0] : -1;
-            int s1 = (i1 >= 0 && i1 < vertToShell.Length) ? vertToShell[i1] : -1;
-            int s2 = (i2 >= 0 && i2 < vertToShell.Length) ? vertToShell[i2] : -1;
-            if (s0 >= 0 && s0 == s1) return s0;
-            if (s0 >= 0 && s0 == s2) return s0;
-            if (s1 >= 0 && s1 == s2) return s1;
-            if (s0 >= 0) return s0;
-            if (s1 >= 0) return s1;
-            return s2;
-        }
-
         // ════════════════════════════════════════════════════════════
         //  GL Draw Methods
         // ════════════════════════════════════════════════════════════
+
+        // ── The helpers that lived on this view before Editor/Uv/UvTopology.cs and
+        //    Editor/Mesh/MeshAccess.cs: public forwarders so code compiled against them
+        //    keeps building; new code calls the libraries. ──
+        [Obsolete("Use UvTopology.VoteBestShell(vertToShell, i0, i1, i2); vertCount is the index bound it checked.")]
+        public static int VoteBestShell(int[] vertToShell, int vertCount, int i0, int i1, int i2)
+            => UvTopology.VoteBestShell(vertToShell, i0 < vertCount ? i0 : -1, i1 < vertCount ? i1 : -1, i2 < vertCount ? i2 : -1);
+
+        [Obsolete("Use UvTopology.BoundaryEdgePairs(tri).")]
+        public static int[] BuildBoundaryEdgePairs(int[] tri) => UvTopology.BoundaryEdgePairs(tri);
+
+        [Obsolete("Use UvTopology.PointInTriangle(p, a, b, c).")]
+        public static bool PointInTriangle(Vector2 p, Vector2 a, Vector2 b, Vector2 c) => UvTopology.PointInTriangle(p, a, b, c);
+
+        [Obsolete("Use MeshAccess.ReadableCopy(src).")]
+        public static Mesh MakeReadableCopy(Mesh src) => MeshAccess.ReadableCopy(src);
 
         public void GlGrid(float ox, float oy, float sz, HashSet<Vector2Int> occupiedTiles = null)
         {
@@ -694,7 +792,7 @@ namespace SashaRX.UnityMeshLab
             int id = mesh.GetInstanceID();
             if (!ctx.BoundaryEdgeCache.TryGetValue(id, out int[] pairs))
             {
-                pairs = BuildBoundaryEdgePairs(tri);
+                pairs = UvTopology.BoundaryEdgePairs(tri);
                 ctx.BoundaryEdgeCache[id] = pairs;
             }
             if (pairs == null || pairs.Length == 0) return;
@@ -736,7 +834,7 @@ namespace SashaRX.UnityMeshLab
             {
                 int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
                 if (!TOk(uv, uN, a0, a1, a2)) continue;
-                int sh = VoteBestShell(vertShellMap, uN, a0, a1, a2);
+                int sh = UvTopology.VoteBestShell(vertShellMap, a0, a1, a2);
                 Color nc = sh < 0
                     ? new Color(0.3f, 0.3f, 0.3f, FillAlpha)
                     : new Color(pal[sh % pal.Length].r, pal[sh % pal.Length].g, pal[sh % pal.Length].b, FillAlpha * 1.5f);
@@ -815,41 +913,8 @@ namespace SashaRX.UnityMeshLab
             long key = ((long)mesh.GetInstanceID() << 8) ^ (uint)channel;
             if (ctx.PreviewShellDataCache.TryGetValue(key, out var cached)) return cached;
 
-            var uv = RdUvCached(mesh, channel);
-            var triangles = GetTrianglesCached(mesh);
-            if (uv == null || triangles == null || triangles.Length < 3) return null;
-
-            List<UvShell> shells;
-            try { shells = UvShellExtractor.Extract(uv, triangles, computeDescriptors: true); }
-            catch { return null; }
-
-            var faceToShell = new Dictionary<int, int>(triangles.Length / 3);
-            var shellById = new Dictionary<int, UvShell>(shells.Count);
-            var bounds = new Bounds[shells.Count];
-            for (int i = 0; i < shells.Count; i++)
-            {
-                var shell = shells[i];
-                shellById[shell.shellId] = shell;
-                bool hasPoint = false;
-                Bounds b = new Bounds(Vector3.zero, Vector3.zero);
-                foreach (int fi in shell.faceIndices)
-                {
-                    faceToShell[fi] = shell.shellId;
-                    int t0 = fi * 3;
-                    if (t0 + 2 >= triangles.Length) continue;
-                    for (int k = 0; k < 3; k++)
-                    {
-                        int vi = triangles[t0 + k];
-                        if (vi < 0 || vi >= uv.Length) continue;
-                        Vector3 p = uv[vi];
-                        if (!hasPoint) { b = new Bounds(p, Vector3.zero); hasPoint = true; }
-                        else b.Encapsulate(p);
-                    }
-                }
-                bounds[i] = b;
-            }
-
-            cached = new PreviewShellData { shells = shells, faceToShell = faceToShell, shellById = shellById, shellBounds = bounds, triangles = triangles, uvs = uv };
+            cached = UvTopology.BuildShellData(RdUvCached(mesh, channel), GetTrianglesCached(mesh));
+            if (cached == null) return null;
             ctx.PreviewShellDataCache[key] = cached;
             return cached;
         }
@@ -863,15 +928,8 @@ namespace SashaRX.UnityMeshLab
                 long key = ((long)mesh.GetInstanceID() << 8) ^ (uint)channel;
                 if (ctx.OccupiedTilesPerMesh.TryGetValue(key, out var c)) { foreach (var t in c) tiles.Add(t); continue; }
                 var perMesh = new HashSet<Vector2Int>();
-                var uvs = RdUvCached(mesh, channel);
-                if (uvs != null)
-                    for (int i = 0; i < uvs.Length; i++)
-                    {
-                        var u = uvs[i];
-                        if (!UOk(u)) continue;
-                        var tile = new Vector2Int(Mathf.FloorToInt(u.x), Mathf.FloorToInt(u.y));
-                        perMesh.Add(tile); tiles.Add(tile);
-                    }
+                UvTopology.OccupiedTiles(RdUvCached(mesh, channel), perMesh, UOk);
+                tiles.UnionWith(perMesh);
                 ctx.OccupiedTilesPerMesh[key] = perMesh;
             }
             return tiles;
@@ -1016,63 +1074,22 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
+        /// <summary>Barycentrics of p in the UV triangle abc, true when p is inside (with a small tolerance).</summary>
         public static bool TryBarycentric(Vector2 p, Vector2 a, Vector2 b, Vector2 c, out Vector3 bary)
         {
-            Vector2 v0 = b - a, v1 = c - a, v2 = p - a;
-            float d00 = Vector2.Dot(v0, v0), d01 = Vector2.Dot(v0, v1), d11 = Vector2.Dot(v1, v1);
-            float d20 = Vector2.Dot(v2, v0), d21 = Vector2.Dot(v2, v1);
-            float denom = d00 * d11 - d01 * d01;
-            if (Mathf.Abs(denom) < 1e-8f) { bary = default; return false; }
-            float v = (d11 * d20 - d01 * d21) / denom;
-            float w = (d00 * d21 - d01 * d20) / denom;
-            float u = 1f - v - w;
-            bary = new Vector3(u, v, w);
+            if (!MeshGeometry.Barycentric(p, a, b, c, out bary)) { bary = default; return false; }
             const float eps = -1e-4f;
-            return u >= eps && v >= eps && w >= eps;
+            return bary.x >= eps && bary.y >= eps && bary.z >= eps;
         }
 
         List<MeshEntry> FilteredEntries(UvToolContext ctx)
         {
-            var ee = ctx.ForLod(ctx.PreviewLod);
-            if (!ctx.RepackPerMesh || ctx.IsolatedMeshGroup < 0) return ee;
+            var ee = Entries(ctx);
+            if (EntriesOverride != null || !ctx.RepackPerMesh || ctx.IsolatedMeshGroup < 0) return ee;
             var keys = ctx.BuildGroupKeys(ctx.PreviewLod);
             if (ctx.IsolatedMeshGroup >= keys.Count) return ee;
             string isoKey = keys[ctx.IsolatedMeshGroup];
-            return ee.Where(e => (e.meshGroupKey ?? e.renderer.name) == isoKey).ToList();
-        }
-
-        // ════════════════════════════════════════════════════════════
-        //  Boundary Edges
-        // ════════════════════════════════════════════════════════════
-
-        public static int[] BuildBoundaryEdgePairs(int[] tri)
-        {
-            if (tri == null || tri.Length < 3) return Array.Empty<int>();
-            var counts = new Dictionary<ulong, int>(tri.Length);
-            var orient = new Dictionary<ulong, (int a, int b)>(tri.Length);
-            for (int i = 0; i + 2 < tri.Length; i += 3)
-            {
-                AddEdge(tri[i], tri[i+1], counts, orient);
-                AddEdge(tri[i+1], tri[i+2], counts, orient);
-                AddEdge(tri[i+2], tri[i], counts, orient);
-            }
-            var result = new List<int>();
-            foreach (var kv in counts)
-            {
-                if (kv.Value != 1) continue;
-                var e = orient[kv.Key];
-                result.Add(e.a); result.Add(e.b);
-            }
-            return result.ToArray();
-        }
-
-        static void AddEdge(int a, int b, Dictionary<ulong, int> counts, Dictionary<ulong, (int a, int b)> orient)
-        {
-            if (a == b) return;
-            int lo = a < b ? a : b, hi = a < b ? b : a;
-            ulong key = ((ulong)(uint)lo << 32) | (uint)hi;
-            counts.TryGetValue(key, out int c); counts[key] = c + 1;
-            if (!orient.ContainsKey(key)) orient[key] = (a, b);
+            return ee.Where(e => (e.meshGroupKey ?? (e.renderer != null ? e.renderer.name : null)) == isoKey).ToList();
         }
 
         // ════════════════════════════════════════════════════════════
@@ -1082,6 +1099,9 @@ namespace SashaRX.UnityMeshLab
         Texture ResolveUvPreviewBackgroundTexture(UvToolContext ctx, List<ValueTuple<Mesh, MeshEntry, int>> draws)
         {
             if (CheckerEnabled) return CheckerTexturePreview.GetCheckerTexture();
+            // Tool-made entries carry their own background (a baked base color).
+            foreach (var item in draws)
+                if (item.Item2.renderer == null && item.Item2.previewTexture != null) return item.Item2.previewTexture;
             if (CurrentPreviewMode == PreviewMode.Lightmap)
             {
                 foreach (var item in draws)
@@ -1135,7 +1155,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     int a = cache.triangles[f*3], b = cache.triangles[f*3+1], c = cache.triangles[f*3+2];
                     if (!TOk(cache.uvs, cache.uvs.Length, a, b, c)) continue;
-                    if (!PointInTriangle(uvPoint, cache.uvs[a], cache.uvs[b], cache.uvs[c])) continue;
+                    if (!UvTopology.PointInTriangle(uvPoint, cache.uvs[a], cache.uvs[b], cache.uvs[c])) continue;
                     if (!cache.faceToShell.TryGetValue(f, out int shellId)) return null;
                     if (!cache.shellById.TryGetValue(shellId, out var shell)) return null;
                     return BuildHit(ctx, item.Item2, mesh, shell, uvPoint, item.Item3);
@@ -1165,14 +1185,6 @@ namespace SashaRX.UnityMeshLab
                 uvChannel = src.uvChannel, hoverUv = src.hoverUv, tileU = src.tileU, tileV = src.tileV,
                 localUv = src.localUv, drawIndex = src.drawIndex
             };
-        }
-
-        public static bool PointInTriangle(Vector2 p, Vector2 a, Vector2 b, Vector2 c)
-        {
-            float s1 = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
-            float s2 = (c.x - b.x) * (p.y - b.y) - (c.y - b.y) * (p.x - b.x);
-            float s3 = (a.x - c.x) * (p.y - c.y) - (a.y - c.y) * (p.x - c.x);
-            return !((s1 < 0f || s2 < 0f || s3 < 0f) && (s1 > 0f || s2 > 0f || s3 > 0f));
         }
 
         void DrawShellDebugOverlay(Rect canvasRect)
@@ -1209,50 +1221,6 @@ namespace SashaRX.UnityMeshLab
                 var lr = new Rect(panelRect.x + padX, panelRect.y + padY + i * lineH, panelW - padX * 2, lineH);
                 GUI.Label(lr, lines[i], i == 0 && pinned ? pinnedStyle : style);
             }
-        }
-
-        public static Mesh MakeReadableCopy(Mesh src)
-        {
-            var dst = new Mesh();
-            dst.indexFormat = src.indexFormat;
-            dst.SetVertices(new List<Vector3>(src.vertices));
-            if (src.normals != null && src.normals.Length > 0) dst.SetNormals(new List<Vector3>(src.normals));
-            if (src.tangents != null && src.tangents.Length > 0) dst.SetTangents(new List<Vector4>(src.tangents));
-            if (src.colors != null && src.colors.Length > 0) dst.SetColors(new List<Color>(src.colors));
-            if (src.boneWeights != null && src.boneWeights.Length > 0) dst.boneWeights = src.boneWeights;
-            if (src.bindposes != null && src.bindposes.Length > 0) dst.bindposes = src.bindposes;
-            for (int ch = 0; ch < 8; ch++)
-            {
-                var attr = (VertexAttribute)((int)VertexAttribute.TexCoord0 + ch);
-                if (!src.HasVertexAttribute(attr)) continue;
-                int dim = src.GetVertexAttributeDimension(attr);
-                if (dim <= 2)
-                {
-                    var uv = new List<Vector2>(); src.GetUVs(ch, uv);
-                    if (uv.Count > 0 && !IsAllZero2(uv)) dst.SetUVs(ch, uv);
-                }
-                else if (dim == 3)
-                {
-                    var uv = new List<Vector3>(); src.GetUVs(ch, uv);
-                    if (uv.Count > 0) dst.SetUVs(ch, uv);
-                }
-                else
-                {
-                    var uv = new List<Vector4>(); src.GetUVs(ch, uv);
-                    if (uv.Count > 0) dst.SetUVs(ch, uv);
-                }
-            }
-            dst.subMeshCount = src.subMeshCount;
-            for (int s = 0; s < src.subMeshCount; s++) dst.SetTriangles(src.GetTriangles(s), s);
-            dst.bounds = src.bounds;
-            return dst;
-        }
-
-        static bool IsAllZero2(List<Vector2> uv)
-        {
-            for (int i = 0; i < uv.Count; i++)
-                if (uv[i].x != 0f || uv[i].y != 0f) return false;
-            return true;
         }
     }
 }

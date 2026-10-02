@@ -456,6 +456,37 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>The same edge wireframe in the shared 3D canvas.</summary>
+        public void DrawEdgeWireframe(MeshViewport3D view)
+        {
+            if (edgeOverlays == null) return;
+            foreach (var (segments, matrix) in edgeOverlays)
+            {
+                var pairs = new List<Vector3>(segments.Count * 2);
+                var colors = new List<Color>(segments.Count);
+                foreach (var seg in segments)
+                {
+                    var color = GetEdgeColor(seg.flags);
+                    if (color.a < 0.2f) continue;   // interior edges stay out of the 3D paint; the Wire toggle shows them
+                    pairs.Add(seg.a); pairs.Add(seg.b); colors.Add(color);
+                }
+                view.DrawLines(pairs, colors, matrix);
+            }
+        }
+
+        /// <summary>The unused-vertex dots in the shared 3D canvas.</summary>
+        public void DrawUnusedVertexDots(MeshViewport3D view)
+        {
+            if (unusedVertOverlays == null) return;
+            foreach (var data in unusedVertOverlays)
+            {
+                var points = new List<Vector3>();
+                for (int i = 0; i < data.mask.Length && i < data.positions.Length; i++)
+                    if (data.mask[i]) points.Add(data.positions[i]);
+                view.DrawPoints(points, data.localToWorld, new Color(1f, 0.86f, 0.16f, 0.9f), 6f);
+            }
+        }
+
         /// <summary>Draw yellow dots for unused vertices. Call from OnSceneGUI.</summary>
         public void DrawUnusedVertexDots()
         {

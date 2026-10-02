@@ -66,12 +66,14 @@ strip-parameterization.
 
 | Piece | Location | What it does |
 | --- | --- | --- |
-| `UvtLog.Category` | `Editor/UvtLog.cs` | Per-subsystem log filter. Toggle in *Pipeline Settings → Log filters*. |
-| `BenchmarkRecorder` | `Editor/BenchmarkRecorder.cs` | Collects per-mesh metrics during `ExecFullPipeline` / `ExecTransferAll`; writes CSV + JSON into `<projectRoot>/BenchmarkReports/` on session end. Only records when *Project Settings ▸ Mesh Lab ▸ Developer ▸ Show Debug UI* is on — with the toggle off `NewRun` returns a no-op scope and no report folder is created. |
+| `UvtLog.Category` | `Editor/UvtLog.cs` | Per-subsystem log filter. Toggle in *Diagnostics → Log filters* (`DebugUi.LogFilters`). |
+| `BenchmarkRecorder` | `Editor/Bench/BenchmarkRecorder.cs` | Collects per-mesh metrics during `ExecFullPipeline` / `ExecTransferAll`; writes CSV + JSON into `<projectRoot>/BenchmarkReports/` on session end. Only records when *Project Settings ▸ Mesh Lab ▸ Developer ▸ Show Debug UI* is on — with the toggle off `NewRun` returns a no-op scope and no report folder is created. |
 | `SymmetrySplitShells.LastFallbackCount` / `LastTotalSplitCount` | `Editor/SymmetrySplitShells.cs` | Counters read by the recorder. |
 | `GroupedShellTransfer.LastTopologyIterations` / `LastTopologyFixed` / `LastTopologyCapHit` | `Editor/GroupedShellTransfer.cs` | Counters for the Laplacian topology pass. |
 | `UvCanvasView.ValidationFilterMask` | `Editor/Framework/UvCanvasView.cs` | Restricts the validation fill/overlay to selected `TriIssue` bits. |
-| `TestSuiteAsset` | `Editor/Settings/TestSuiteAsset.cs` | ScriptableObject registry of benchmark cases (FBX + LOD path + expected ranges). Create via `Assets → Create → Mesh Lab → Sweep Test Suite`. |
+| `SweepRunner` / `BenchmarkRunner` | `Editor/Bench/SweepRunner.cs`, `Editor/Bench/BenchmarkRunner.cs` | The sweep and the multi-model benchmark as libraries: matrix → cells, per-cell pipeline runs through an `ISweepHost` / `IBenchmarkHost` (the tab implements them), artefact routing, aggregate, manifest, archive. Any tool with an end-to-end pipeline can host them. |
+| `DebugUi` / `BakeHealth` / `HierarchicalDiag` / `FbxMetricsExporter` | `Editor/Diagnostics/` | The Show Debug UI gate, banner and log-filter block; the Remesh & Bake health report; the hierarchical probe; the FBX characterization export. The **Diagnostics** tab (`Editor/Tools/DiagnosticsTool.cs`, shown with Show Debug UI on) hosts the sweep / benchmark buttons, the log filters and the report exports. |
+| `TestSuiteAsset` | `Editor/Bench/TestSuiteAsset.cs` | ScriptableObject registry of benchmark cases (FBX + LOD path + expected ranges). Create via `Assets → Create → Mesh Lab → Sweep Test Suite`. |
 
 ## Metrics (one CSV row per mesh × LOD)
 
@@ -181,7 +183,7 @@ sort is free.
 
 For cross-model regression coverage — running the full sweep matrix on
 every case in the suite without manually switching FBXes — use **Run
-Multi-Case (N × M)**. Located in *Setup → Parameter Sweep*, right of the
+Multi-Case (N × M)**. Located in the *Diagnostics* tab, right of the
 single-model **Run Sweep** button. `N` is the number of `cases`, `M` is
 the cell count.
 
@@ -237,7 +239,7 @@ resetBetweenRuns              = true
 Per-cell label encodes every axis so the recovery regex can reconstruct
 CellConfigs from filenames: `sweep_res{R}_pad{S}_bdr{B}_arap{A}_stretch{T}_os{O}_sym{legacy|adaptive}`.
 
-In *LightmapTransferTool → Setup tab*, assign the asset to the **Sweep suite**
+In the *Diagnostics* tab (Show Debug UI on), assign the asset to the **Sweep suite**
 field; the neighbouring **Run Sweep (N)** button iterates the cartesian
 product (N = product of array lengths). Each cell:
 

@@ -110,7 +110,7 @@ namespace SashaRX.UnityMeshLab
                 return rawAO;
 
             var bvh = new TriangleBvh(allVerts.ToArray(), allTris.ToArray());
-            var directions = GenerateSphereDirections(settings.sampleCount);
+            var directions = MeshGeometry.SphereDirections(settings.sampleCount);
 
             Bounds combinedBounds = ComputeCombinedBounds(targets);
             float extent = Mathf.Max(combinedBounds.extents.magnitude, 0.0001f);
@@ -143,63 +143,7 @@ namespace SashaRX.UnityMeshLab
         /// space).
         /// </summary>
         public static void WriteToChannel(Mesh mesh, float[] aoValues, AOTargetChannel channel)
-        {
-            if (mesh == null || aoValues == null || aoValues.Length != mesh.vertexCount) return;
-
-            Undo.RecordObject(mesh, "Write AO Channel");
-
-            int ch = (int)channel;
-            if (ch <= (int)AOTargetChannel.VertexColorA)
-            {
-                // Vertex Color R/G/B/A
-                var colors = mesh.colors32;
-                if (colors == null || colors.Length != mesh.vertexCount)
-                {
-                    colors = new Color32[mesh.vertexCount];
-                    for (int i = 0; i < colors.Length; i++)
-                        colors[i] = new Color32(255, 255, 255, 255);
-                }
-                int comp = ch - (int)AOTargetChannel.VertexColorR; // 0=R,1=G,2=B,3=A
-                for (int i = 0; i < aoValues.Length; i++)
-                {
-                    byte v = (byte)(Mathf.Clamp01(aoValues[i]) * 255f);
-                    var c = colors[i];
-                    if (comp == 0) c.r = v;
-                    else if (comp == 1) c.g = v;
-                    else if (comp == 2) c.b = v;
-                    else c.a = v;
-                    colors[i] = c;
-                }
-                mesh.colors32 = colors;
-            }
-            else
-            {
-                // UV channel X or Y
-                int uvIdx = (ch - (int)AOTargetChannel.UV0_X) / 2;  // 0-4
-                int comp  = (ch - (int)AOTargetChannel.UV0_X) % 2;  // 0=X, 1=Y
-                var uvs = new List<Vector2>();
-                mesh.GetUVs(uvIdx, uvs);
-                if (uvs.Count != mesh.vertexCount)
-                {
-                    uvs.Clear();
-                    for (int i = 0; i < mesh.vertexCount; i++)
-                        uvs.Add(Vector2.zero);
-                }
-                for (int i = 0; i < aoValues.Length; i++)
-                {
-                    // Clamp to [0,1] — matches the vertex-color path and keeps
-                    // downstream shaders well-defined. Upstream math (area
-                    // correction, blur) can drift slightly out of range due
-                    // to float error / user intensity tweaks.
-                    float v = Mathf.Clamp01(aoValues[i]);
-                    var uv = uvs[i];
-                    if (comp == 0) uv.x = v;
-                    else uv.y = v;
-                    uvs[i] = uv;
-                }
-                mesh.SetUVs(uvIdx, uvs);
-            }
-        }
+            => VertexChannels.Write(mesh, aoValues, channel, "Write AO Channel");
 
         // ── Face-area AO correction ──
 
@@ -386,58 +330,9 @@ namespace SashaRX.UnityMeshLab
         /// Returns a readable copy of the mesh if needed.
         /// Caller must DestroyImmediate the copy when done (if copy != original).
         /// </summary>
-        static Mesh EnsureReadable(Mesh mesh)
-        {
-            if (mesh.isReadable) return mesh;
-            var copy = UnityEngine.Object.Instantiate(mesh);
-            copy.hideFlags = HideFlags.HideAndDontSave;
-            return copy;
-        }
+        static Mesh EnsureReadable(Mesh mesh) => MeshAccess.Readable(mesh, out _);
 
-        static Vector3[] GenerateSphereDirections(int count)
-        {
-            // Full sphere via golden spiral — per-vertex dot(dir, normal) filter
-            // selects the correct hemisphere. This ensures all normal orientations
-            // get equal sampling coverage (fixes black artifacts on sideways/downward faces).
-            var dirs = new Vector3[count];
-            float goldenRatio = (1f + Mathf.Sqrt(5f)) / 2f;
-            for (int i = 0; i < count; i++)
-            {
-                float cosTheta = 1f - 2f * (i + 0.5f) / count; // -1 to +1 (full sphere)
-                float sinTheta = Mathf.Sqrt(1f - cosTheta * cosTheta);
-                float phi = 2f * Mathf.PI * i / goldenRatio;
-                dirs[i] = new Vector3(
-                    sinTheta * Mathf.Cos(phi),
-                    cosTheta,
-                    sinTheta * Mathf.Sin(phi));
-            }
-            return dirs;
-        }
-
-        static Bounds ComputeCombinedBounds(List<(Mesh mesh, Matrix4x4 transform)> meshes)
-        {
-            var bounds = new Bounds();
-            bool first = true;
-            foreach (var (mesh, xform) in meshes)
-            {
-                var mb = mesh.bounds;
-                var corners = new Vector3[8];
-                corners[0] = xform.MultiplyPoint3x4(new Vector3(mb.min.x, mb.min.y, mb.min.z));
-                corners[1] = xform.MultiplyPoint3x4(new Vector3(mb.max.x, mb.min.y, mb.min.z));
-                corners[2] = xform.MultiplyPoint3x4(new Vector3(mb.min.x, mb.max.y, mb.min.z));
-                corners[3] = xform.MultiplyPoint3x4(new Vector3(mb.max.x, mb.max.y, mb.min.z));
-                corners[4] = xform.MultiplyPoint3x4(new Vector3(mb.min.x, mb.min.y, mb.max.z));
-                corners[5] = xform.MultiplyPoint3x4(new Vector3(mb.max.x, mb.min.y, mb.max.z));
-                corners[6] = xform.MultiplyPoint3x4(new Vector3(mb.min.x, mb.max.y, mb.max.z));
-                corners[7] = xform.MultiplyPoint3x4(new Vector3(mb.max.x, mb.max.y, mb.max.z));
-                foreach (var c in corners)
-                {
-                    if (first) { bounds = new Bounds(c, Vector3.zero); first = false; }
-                    else bounds.Encapsulate(c);
-                }
-            }
-            return bounds;
-        }
+        static Bounds ComputeCombinedBounds(List<(Mesh mesh, Matrix4x4 transform)> meshes) => MeshTransform.CombinedBounds(meshes);
 
         static void AppendGeometryBuffers(
             List<(Mesh mesh, Matrix4x4 transform)> meshes,

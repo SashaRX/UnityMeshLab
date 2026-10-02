@@ -44,10 +44,13 @@ jobs:
           persist-credentials: false
 
       - name: Configure CMake
-        run: cmake -S 'Native~' -B build ${{ matrix.cmake_args }} -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S 'Native~' -B build ${{ matrix.cmake_args }} -DCMAKE_BUILD_TYPE=Release -DMESHLAB_BUILD_TESTS=ON
 
       - name: Build
         run: cmake --build build --config Release
+
+      - name: Test remesh bridge
+        run: ctest --test-dir build -C Release --output-on-failure
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

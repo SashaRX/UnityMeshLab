@@ -32,8 +32,8 @@ namespace SashaRX.UnityMeshLab
         bool[] ensureUv = new bool[8];
 
         // ── Split/Merge state ──
-        List<SplitCandidate> splitCandidates;
-        List<MergeGroup> mergeCandidates;
+        List<MeshSplitMerge.SplitCandidate> splitCandidates;
+        List<MeshSplitMerge.MergeGroup> mergeCandidates;
 
         // ── Scan results (null = not scanned yet, empty = scanned, no issues) ──
         List<MaterialIssue> materialIssues;
@@ -73,20 +73,6 @@ namespace SashaRX.UnityMeshLab
             public Kind kind;
             public GameObject gameObject;
             public string description;
-        }
-
-        struct SplitCandidate
-        {
-            public MeshEntry entry;
-            public bool include;
-        }
-
-        struct MergeGroup
-        {
-            public int lodIndex;
-            public Material material;
-            public List<MeshEntry> entries;
-            public bool include;
         }
 
         class MeshReport
@@ -185,17 +171,11 @@ namespace SashaRX.UnityMeshLab
                     GUI.backgroundColor = new Color(.6f, .75f, .9f);
                     if (GUILayout.Button($"Add LODGroup to \"{selected.name}\"", GUILayout.Height(24)))
                     {
-                        var lodGroup = Undo.AddComponent<LODGroup>(selected);
-                        // Auto-assign renderers as LOD0
-                        var renderers = selected.GetComponentsInChildren<Renderer>();
-                        if (renderers.Length > 0)
-                        {
-                            lodGroup.SetLODs(new LOD[] { new LOD(0.5f, renderers) });
-                            lodGroup.RecalculateBounds();
-                        }
+                        // Every renderer below the root becomes LOD0.
+                        var lodGroup = LodHierarchy.CreateFromRenderers(selected, 0.5f, requireRenderers: false, out int rendererCount);
                         ctx.Refresh(lodGroup);
                         requestRepaint?.Invoke();
-                        UvtLog.Info($"Added LODGroup to {selected.name} with {renderers.Length} renderer(s)");
+                        UvtLog.Info($"Added LODGroup to {selected.name} with {rendererCount} renderer(s)");
                     }
                     GUI.backgroundColor = bgc;
                 }
@@ -721,26 +701,8 @@ namespace SashaRX.UnityMeshLab
 
                 if (matGroups.Count == mesh.subMeshCount) continue; // no duplicates
 
-                // Need readable mesh to merge
-                if (!mesh.isReadable)
-                {
-                    string assetPath = AssetDatabase.GetAssetPath(mesh);
-                    if (!string.IsNullOrEmpty(assetPath))
-                    {
-                        var imp = AssetImporter.GetAtPath(assetPath) as ModelImporter;
-                        if (imp != null && !imp.isReadable)
-                        {
-                            imp.isReadable = true;
-                            imp.SaveAndReimport();
-                            mesh = mf.sharedMesh; // re-read after reimport
-                        }
-                    }
-                }
-
-                if (!mesh.isReadable) continue;
-
-                // Clone mesh
-                var newMesh = UnityEngine.Object.Instantiate(mesh);
+                // A readable copy through MeshData: no importer flip, no reimport.
+                var newMesh = MeshAccess.ReadableCopy(mesh);
                 newMesh.name = mesh.name;
 
                 // Build merged submeshes
@@ -755,7 +717,7 @@ namespace SashaRX.UnityMeshLab
                     // Combine triangle indices from all submeshes in this group
                     var combinedTris = new List<int>();
                     foreach (int s in indices)
-                        combinedTris.AddRange(mesh.GetTriangles(s));
+                        combinedTris.AddRange(newMesh.GetTriangles(s));
                     mergedSubs.Add(combinedTris.ToArray());
                 }
 
@@ -770,18 +732,6 @@ namespace SashaRX.UnityMeshLab
                 issue.renderer.sharedMaterials = newMats.ToArray();
 
                 UvtLog.Info($"Merged submeshes on {issue.renderer.name}: {mesh.subMeshCount} → {mergedSubs.Count} submeshes");
-
-                // Restore isReadable if we changed it
-                string meshPath = AssetDatabase.GetAssetPath(mesh);
-                if (!string.IsNullOrEmpty(meshPath))
-                {
-                    var mimp = AssetImporter.GetAtPath(meshPath) as ModelImporter;
-                    if (mimp != null && mimp.isReadable)
-                    {
-                        mimp.isReadable = false;
-                        mimp.SaveAndReimport();
-                    }
-                }
             }
 
             // ImporterRemap issues are not fixable — they require "Overwrite Source FBX"
@@ -1051,52 +1001,28 @@ namespace SashaRX.UnityMeshLab
                             var mf = issue.gameObject.GetComponent<MeshFilter>();
                             var mc = issue.gameObject.GetComponent<MeshCollider>();
 
-                            string assetPath = AssetDatabase.GetAssetPath(issue.mesh);
-                            if (!string.IsNullOrEmpty(assetPath))
+                            // Positions and triangles only, read through MeshData whatever the
+                            // import's Read/Write flag says: no importer flip, no reimport.
+                            Mesh fresh = mf != null ? mf.sharedMesh : (mc != null ? mc.sharedMesh : null);
+                            if (fresh != null)
                             {
-                                var imp = AssetImporter.GetAtPath(assetPath) as ModelImporter;
-                                if (imp != null)
+                                var readable = MeshAccess.ReadableCopy(fresh);
+                                var clone = new Mesh { name = fresh.name, indexFormat = readable.indexFormat };
+                                clone.SetVertices(readable.vertices);
+                                clone.SetTriangles(readable.triangles, 0);
+                                clone.RecalculateBounds();
+                                UnityEngine.Object.DestroyImmediate(readable);
+                                if (mf != null)
                                 {
-                                    bool wasReadable = imp.isReadable;
-                                    if (!wasReadable)
-                                    {
-                                        imp.isReadable = true;
-                                        Uv2AssetPostprocessor.bypassPaths.Add(assetPath);
-                                        imp.SaveAndReimport();
-                                    }
-
-                                    Mesh freshMesh = mf != null ? mf.sharedMesh : (mc != null ? mc.sharedMesh : null);
-                                    if (freshMesh != null && freshMesh.isReadable)
-                                    {
-                                        var clone = UnityEngine.Object.Instantiate(freshMesh);
-                                        clone.name = freshMesh.name;
-                                        var cPos = clone.vertices;
-                                        var cTris = clone.triangles;
-                                        clone.Clear();
-                                        clone.SetVertices(cPos);
-                                        clone.SetTriangles(cTris, 0);
-                                        clone.RecalculateBounds();
-
-                                        if (mf != null)
-                                        {
-                                            Undo.RecordObject(mf, "Strip Collider Attributes");
-                                            mf.sharedMesh = clone;
-                                        }
-                                        if (mc != null)
-                                        {
-                                            Undo.RecordObject(mc, "Strip Collider Attributes");
-                                            mc.sharedMesh = clone;
-                                        }
-                                        UvtLog.Info($"Stripped extra attributes from {issue.gameObject.name}");
-                                    }
-
-                                    if (!wasReadable)
-                                    {
-                                        imp.isReadable = false;
-                                        Uv2AssetPostprocessor.bypassPaths.Add(assetPath);
-                                        imp.SaveAndReimport();
-                                    }
+                                    Undo.RecordObject(mf, "Strip Collider Attributes");
+                                    mf.sharedMesh = clone;
                                 }
+                                if (mc != null)
+                                {
+                                    Undo.RecordObject(mc, "Strip Collider Attributes");
+                                    mc.sharedMesh = clone;
+                                }
+                                UvtLog.Info($"Stripped extra attributes from {issue.gameObject.name}");
                             }
                         }
                         break;
@@ -1209,9 +1135,7 @@ namespace SashaRX.UnityMeshLab
                 if (child.GetComponent<Renderer>() == null) continue;
 
                 // Check if name has LOD suffix
-                bool hasLodSuffix = System.Text.RegularExpressions.Regex.IsMatch(
-                    child.name, @"_LOD\d+$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                bool hasLodSuffix = MeshNaming.HasLodSuffix(child.name);
 
                 // If prefab available, check if this child doesn't exist in prefab
                 bool orphanedFromPrefab = prefabChildNames != null && !prefabChildNames.Contains(child.name);
@@ -1287,9 +1211,7 @@ namespace SashaRX.UnityMeshLab
                     foreach (var r in currentLods[0].renderers)
                     {
                         if (r == null) continue;
-                        bool hasLodSuffix = System.Text.RegularExpressions.Regex.IsMatch(
-                            r.name, @"[_\-\s]+LOD\d+$",
-                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        bool hasLodSuffix = MeshNaming.HasLodSuffix(r.name);
                         if (!hasLodSuffix)
                         {
                             sceneIssues.Add(new SceneIssue
@@ -1309,7 +1231,7 @@ namespace SashaRX.UnityMeshLab
             bool rootHasRenderableMesh =
                 (rootMf != null && rootMf.sharedMesh != null) ||
                 (rootSmr != null && rootSmr.sharedMesh != null);
-            if (rootHasRenderableMesh && !IsRootRendererUsedAsLod0(root.gameObject, lods))
+            if (rootHasRenderableMesh && !LodHierarchy.RootRendererIsLod0(root.gameObject, lods))
             {
                 sceneIssues.Add(new SceneIssue
                 {
@@ -1440,13 +1362,14 @@ namespace SashaRX.UnityMeshLab
             {
                 if (issue.kind != SceneIssue.Kind.RootHasMesh) continue;
                 if (issue.gameObject == null || ctx.LodGroup == null) continue;
-                if (IsRootRendererUsedAsLod0(issue.gameObject, ctx.LodGroup.GetLODs()))
+                if (LodHierarchy.RootRendererIsLod0(issue.gameObject, ctx.LodGroup.GetLODs()))
                 {
                     UvtLog.Info($"Skipped root mesh move for '{issue.gameObject.name}': root renderer is already used as LOD0.");
                     continue;
                 }
 
-                MoveRootMeshToChild(issue.gameObject);
+                int lodCount = LodHierarchy.MoveRootMeshToChild(issue.gameObject);
+                UvtLog.Info($"Moved root mesh to child, sorted {lodCount} LOD(s) by polycount.");
                 movedRoots.Add(issue.gameObject);
                 needsRefresh = true;
             }
@@ -1484,53 +1407,19 @@ namespace SashaRX.UnityMeshLab
                 if (issue.kind != SceneIssue.Kind.MissingCollider) continue;
                 if (issue.gameObject == null) continue;
 
-                AddColliderFromCollisionMesh(issue.gameObject);
+                LodHierarchy.AddColliderFromCollisionMesh(issue.gameObject);
                 needsRefresh = true;
             }
 
             return needsRefresh;
         }
 
+        // Direct children named _LOD{n}: one slot per index up to the highest (gaps stay
+        // empty), halving transitions.
         void RebuildLodGroupFromHierarchy()
         {
-            var root = ctx.LodGroup.transform;
-            var colSet = new HashSet<GameObject>(MeshHygieneUtility.FindCollisionObjects(root));
-            var lodChildren = new SortedDictionary<int, List<Renderer>>();
-
-            for (int i = 0; i < root.childCount; i++)
-            {
-                var child = root.GetChild(i);
-                if (colSet.Contains(child.gameObject)) continue;
-
-                if (!MeshHygieneUtility.TryParseLodIndex(child.name, out int lodIdx)) continue;
-                var r = child.GetComponent<Renderer>();
-                if (r == null) continue;
-
-                if (!lodChildren.ContainsKey(lodIdx))
-                    lodChildren[lodIdx] = new List<Renderer>();
-                lodChildren[lodIdx].Add(r);
-            }
-
-            if (lodChildren.Count == 0) return;
-
-            Undo.RecordObject(ctx.LodGroup, "Rebuild LODGroup");
-
-            int maxLod = lodChildren.Keys.Max() + 1;
-            var newLods = new LOD[maxLod];
-            for (int i = 0; i < maxLod; i++)
-            {
-                Renderer[] renderers;
-                if (lodChildren.TryGetValue(i, out var list))
-                    renderers = list.ToArray();
-                else
-                    renderers = new Renderer[0];
-
-                newLods[i] = new LOD(Mathf.Pow(0.5f, i + 1), renderers);
-            }
-
-            ctx.LodGroup.SetLODs(newLods);
-            ctx.LodGroup.RecalculateBounds();
-            UvtLog.Info($"Rebuilt LODGroup with {maxLod} LOD level(s).");
+            int levels = LodHierarchy.RebuildFromNames(ctx.LodGroup, recursive: false, keepEmptySlots: true, LodHierarchy.Transitions.Halving);
+            if (levels > 0) UvtLog.Info($"Rebuilt LODGroup with {levels} LOD level(s).");
         }
 
         // ═══════════════════════════════════════════════════════════════
@@ -2049,7 +1938,7 @@ namespace SashaRX.UnityMeshLab
                     continue;
 
                 foreach (int ch in channels)
-                    mesh.SetUVs(ch, (List<Vector2>)null);
+                    VertexChannels.SetUvs(mesh, ch, null);
                 // Note: vertex colors are NOT auto-stripped — they may contain
                 // valid AO/data even when all zeros (full occlusion).
 
@@ -2065,448 +1954,23 @@ namespace SashaRX.UnityMeshLab
         void FixMeshSplitByMaterial()
         {
             if (splitCandidates == null || splitCandidates.Count == 0) return;
-
-            // Restore any active checker/shell preview BEFORE reading sharedMaterials.
-            // Otherwise mats[] below would be [checkerMat, ...] and the new split
-            // children would inherit the preview material permanently — the original
-            // renderer they were backed up against is destroyed below, so the normal
-            // preview-restore path can't rescue them.
-            if (CheckerTexturePreview.IsActive) CheckerTexturePreview.Restore();
-            if (ShellColorModelPreview.IsActive) ShellColorModelPreview.Restore();
-
-            using var _undo = MeshHygieneUtility.BeginUndoGroup("Cleanup: Split by Material");
-            int split = 0;
-
-            foreach (var sc in splitCandidates)
-            {
-                if (!sc.include) continue;
-                var e = sc.entry;
-                var srcMesh = e.originalMesh ?? e.fbxMesh;
-                if (srcMesh == null || e.renderer == null || e.meshFilter == null) continue;
-
-                var mats = e.renderer.sharedMaterials;
-                int subCount = srcMesh.subMeshCount;
-                if (subCount <= 1) continue;
-
-                var parent = e.renderer.transform.parent;
-                var srcTransform = e.renderer.transform;
-                var newRenderers = new List<Renderer>();
-
-                // Compute source name + trailing LOD suffix once per renderer; each
-                // submesh child reuses these to build `{srcName}_{matName}{lodSuffix}`,
-                // keeping `_LOD{N}` at the END for ExtractGroupKey compatibility.
-                string srcName = e.renderer.name;
-                string lodSuffix = "";
-                var lodMatch = System.Text.RegularExpressions.Regex.Match(
-                    srcName, @"([_\-\s]+LOD\d+)$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (lodMatch.Success)
-                {
-                    lodSuffix = lodMatch.Value;
-                    srcName = srcName.Substring(0, srcName.Length - lodSuffix.Length);
-                }
-
-                // Warn if material count doesn't line up with submeshes — slots beyond
-                // the shorter of the two would be silently unassigned otherwise.
-                if (mats.Length != subCount)
-                    UvtLog.Warn($"Split '{e.renderer.name}': material count ({mats.Length}) != submesh count ({subCount}) — " +
-                                (mats.Length < subCount
-                                    ? "some submeshes will have no material."
-                                    : "extra material slots will be dropped."));
-
-                for (int s = 0; s < subCount; s++)
-                {
-                    // Extract submesh
-                    var subTris = srcMesh.GetTriangles(s);
-                    if (subTris.Length == 0) continue;
-
-                    // Build vertex remap: old index → new compact index
-                    var usedVerts = new HashSet<int>(subTris);
-                    var oldToNew = new Dictionary<int, int>();
-                    int newIdx = 0;
-                    foreach (int vi in usedVerts.OrderBy(v => v))
-                        oldToNew[vi] = newIdx++;
-                    int newVertCount = newIdx;
-
-                    // Extract vertex data
-                    var srcPos = srcMesh.vertices;
-                    var srcNorm = srcMesh.normals;
-                    var srcTan = srcMesh.tangents;
-                    var srcColors = srcMesh.colors;
-                    var srcBw = srcMesh.boneWeights;
-
-                    var newPos = new Vector3[newVertCount];
-                    Vector3[] newNorm = srcNorm != null && srcNorm.Length > 0 ? new Vector3[newVertCount] : null;
-                    Vector4[] newTan = srcTan != null && srcTan.Length > 0 ? new Vector4[newVertCount] : null;
-                    Color[] newColors = srcColors != null && srcColors.Length > 0 ? new Color[newVertCount] : null;
-                    BoneWeight[] newBw = srcBw != null && srcBw.Length > 0 ? new BoneWeight[newVertCount] : null;
-
-                    foreach (var kvp in oldToNew)
-                    {
-                        int oi = kvp.Key, ni = kvp.Value;
-                        newPos[ni] = srcPos[oi];
-                        if (newNorm != null) newNorm[ni] = srcNorm[oi];
-                        if (newTan != null) newTan[ni] = srcTan[oi];
-                        if (newColors != null) newColors[ni] = srcColors[oi];
-                        if (newBw != null) newBw[ni] = srcBw[oi];
-                    }
-
-                    // Remap triangle indices
-                    var newTris = new int[subTris.Length];
-                    for (int t = 0; t < subTris.Length; t++)
-                        newTris[t] = oldToNew[subTris[t]];
-
-                    // Build the child name ONCE and reuse for both mesh asset and
-                    // GameObject so the FBX export (which names export children after
-                    // entry.fbxMesh.name) matches the scene hierarchy exactly.
-                    string matName = s < mats.Length && mats[s] != null ? mats[s].name : $"mat{s}";
-                    if (s < mats.Length && mats[s] == null)
-                        UvtLog.Warn($"Split '{e.renderer.name}': material slot [{s}] is null — child '{srcName}_mat{s}{lodSuffix}' will have no material.");
-                    string childName = $"{srcName}_{matName}{lodSuffix}";
-
-                    // Build new mesh
-                    var newMesh = new Mesh();
-                    newMesh.name = childName;
-                    newMesh.SetVertices(newPos);
-                    if (newNorm != null) newMesh.normals = newNorm;
-                    if (newTan != null) newMesh.tangents = newTan;
-                    if (newColors != null) newMesh.colors = newColors;
-                    if (newBw != null) newMesh.boneWeights = newBw;
-
-                    // Copy UV channels
-                    var tmpUv2 = new List<Vector2>();
-                    var tmpUv3 = new List<Vector3>();
-                    var tmpUv4 = new List<Vector4>();
-                    for (int ch = 0; ch < 8; ch++)
-                    {
-                        // Try Vector4 first (preserves dimension)
-                        tmpUv4.Clear();
-                        srcMesh.GetUVs(ch, tmpUv4);
-                        if (tmpUv4.Count > 0)
-                        {
-                            var chData = new List<Vector4>(newVertCount);
-                            for (int vi = 0; vi < newVertCount; vi++) chData.Add(default);
-                            foreach (var kvp in oldToNew)
-                                chData[kvp.Value] = tmpUv4[kvp.Key];
-                            newMesh.SetUVs(ch, chData);
-                            continue;
-                        }
-                    }
-
-                    if (newVertCount > 65535)
-                        newMesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
-                    newMesh.SetTriangles(newTris, 0);
-                    newMesh.RecalculateBounds();
-
-                    // Create new GameObject (name already computed above as childName)
-                    var go = new GameObject(childName);
-                    Undo.RegisterCreatedObjectUndo(go, "Split by Material");
-                    go.transform.SetParent(parent, false);
-                    go.transform.localPosition = srcTransform.localPosition;
-                    go.transform.localRotation = srcTransform.localRotation;
-                    go.transform.localScale = srcTransform.localScale;
-
-                    var mf = go.AddComponent<MeshFilter>();
-                    mf.sharedMesh = newMesh;
-                    var mr = go.AddComponent<MeshRenderer>();
-                    mr.sharedMaterial = s < mats.Length ? mats[s] : null;
-                    // Copy renderer settings from source
-                    var srcR = e.renderer;
-                    mr.shadowCastingMode = srcR.shadowCastingMode;
-                    mr.receiveShadows = srcR.receiveShadows;
-                    mr.lightProbeUsage = srcR.lightProbeUsage;
-                    mr.reflectionProbeUsage = srcR.reflectionProbeUsage;
-                    mr.motionVectorGenerationMode = srcR.motionVectorGenerationMode;
-                    mr.probeAnchor = srcR.probeAnchor;
-                    mr.lightmapIndex = srcR.lightmapIndex;
-                    mr.realtimeLightmapIndex = srcR.realtimeLightmapIndex;
-
-                    newRenderers.Add(mr);
-                }
-
-                // Update LODGroup to replace original renderer with new renderers
-                if (ctx.LodGroup != null)
-                {
-                    Undo.RecordObject(ctx.LodGroup, "Split by Material");
-                    var lods = ctx.LodGroup.GetLODs();
-                    for (int li = 0; li < lods.Length; li++)
-                    {
-                        if (lods[li].renderers == null) continue;
-                        var renderers = new List<Renderer>(lods[li].renderers);
-                        int idx = renderers.IndexOf(e.renderer);
-                        if (idx >= 0)
-                        {
-                            renderers.RemoveAt(idx);
-                            renderers.InsertRange(idx, newRenderers);
-                            lods[li].renderers = renderers.ToArray();
-                        }
-                    }
-                    ctx.LodGroup.SetLODs(lods);
-                }
-
-                // Destroy original
-                UvtLog.Info($"Split {e.renderer.name}: {subCount} submeshes → {newRenderers.Count} objects");
-                Undo.DestroyObjectImmediate(e.renderer.gameObject);
-                split++;
-            }
-
-            UvtLog.Info($"Split {split} multi-material mesh(es).");
-
-            if (split > 0 && ctx.LodGroup != null)
-                ctx.Refresh(ctx.LodGroup);
-
-            splitCandidates = null;
-            mergeCandidates = null;
-            meshReport = null;
+            MeshSplitMerge.SplitByMaterial(ctx, splitCandidates, "Cleanup: Split by Material");
+            splitCandidates = null; mergeCandidates = null; meshReport = null;
             requestRepaint?.Invoke();
         }
 
         void FixMeshMerge()
         {
             if (mergeCandidates == null || mergeCandidates.Count == 0) return;
-
-            using var _undo = MeshHygieneUtility.BeginUndoGroup("Cleanup: Merge Same-Material");
-            int merged = 0;
-
-            foreach (var group in mergeCandidates)
-            {
-                if (!group.include || group.entries.Count < 2) continue;
-
-                // Determine which vertex attributes exist across all meshes
-                bool hasNormals = false, hasTangents = false, hasColors = false;
-                bool[] hasUv = new bool[8];
-                int totalVerts = 0, totalTris = 0;
-
-                foreach (var e in group.entries)
-                {
-                    var mesh = e.originalMesh ?? e.fbxMesh;
-                    if (mesh == null) continue;
-                    totalVerts += mesh.vertexCount;
-                    totalTris += (int)(mesh.triangles.Length);
-                    if (mesh.normals != null && mesh.normals.Length > 0) hasNormals = true;
-                    if (mesh.tangents != null && mesh.tangents.Length > 0) hasTangents = true;
-                    if (mesh.colors != null && mesh.colors.Length > 0) hasColors = true;
-                    var tmpCheck = new List<Vector2>();
-                    for (int ch = 0; ch < 8; ch++)
-                    {
-                        tmpCheck.Clear();
-                        mesh.GetUVs(ch, tmpCheck);
-                        if (tmpCheck.Count > 0) hasUv[ch] = true;
-                    }
-                }
-
-                // Merge vertex data
-                var allPos = new List<Vector3>(totalVerts);
-                var allNorm = hasNormals ? new List<Vector3>(totalVerts) : null;
-                var allTan = hasTangents ? new List<Vector4>(totalVerts) : null;
-                var allColors = hasColors ? new List<Color>(totalVerts) : null;
-                var allUvs = new List<Vector4>[8];
-                for (int ch = 0; ch < 8; ch++)
-                    allUvs[ch] = hasUv[ch] ? new List<Vector4>(totalVerts) : null;
-                var allTrisArr = new List<int>(totalTris);
-
-                var parent = group.entries[0].renderer.transform.parent;
-                var firstEntry = group.entries[0];
-                var destroyList = new List<GameObject>();
-
-                foreach (var e in group.entries)
-                {
-                    var mesh = e.originalMesh ?? e.fbxMesh;
-                    if (mesh == null || e.renderer == null) continue;
-
-                    int vertOffset = allPos.Count;
-
-                    // Transform vertices to local space of first entry
-                    var srcTransform = e.renderer.transform;
-                    var dstTransform = firstEntry.renderer.transform;
-                    var pos = mesh.vertices;
-                    for (int vi = 0; vi < pos.Length; vi++)
-                    {
-                        // world → dst local
-                        var worldPos = srcTransform.TransformPoint(pos[vi]);
-                        allPos.Add(dstTransform.InverseTransformPoint(worldPos));
-                    }
-
-                    if (allNorm != null)
-                    {
-                        var norms = mesh.normals;
-                        if (norms != null && norms.Length > 0)
-                        {
-                            for (int vi = 0; vi < norms.Length; vi++)
-                            {
-                                var worldNorm = srcTransform.TransformDirection(norms[vi]);
-                                allNorm.Add(dstTransform.InverseTransformDirection(worldNorm));
-                            }
-                        }
-                        else
-                        {
-                            for (int vi = 0; vi < pos.Length; vi++)
-                                allNorm.Add(Vector3.up);
-                        }
-                    }
-
-                    if (allTan != null)
-                    {
-                        var tans = mesh.tangents;
-                        if (tans != null && tans.Length > 0)
-                        {
-                            for (int vi = 0; vi < tans.Length; vi++)
-                            {
-                                var t = tans[vi];
-                                var worldTan = srcTransform.TransformDirection(new Vector3(t.x, t.y, t.z));
-                                var localTan = dstTransform.InverseTransformDirection(worldTan);
-                                allTan.Add(new Vector4(localTan.x, localTan.y, localTan.z, t.w));
-                            }
-                        }
-                        else
-                        {
-                            for (int vi = 0; vi < pos.Length; vi++)
-                                allTan.Add(new Vector4(1, 0, 0, 1));
-                        }
-                    }
-
-                    if (allColors != null)
-                    {
-                        var cols = mesh.colors;
-                        if (cols != null && cols.Length > 0)
-                        {
-                            allColors.AddRange(cols);
-                        }
-                        else
-                        {
-                            for (int vi = 0; vi < pos.Length; vi++)
-                                allColors.Add(Color.white);
-                        }
-                    }
-
-                    var tmpUv4 = new List<Vector4>();
-                    for (int ch = 0; ch < 8; ch++)
-                    {
-                        if (allUvs[ch] == null) continue;
-                        tmpUv4.Clear();
-                        mesh.GetUVs(ch, tmpUv4);
-                        if (tmpUv4.Count > 0)
-                        {
-                            allUvs[ch].AddRange(tmpUv4);
-                        }
-                        else
-                        {
-                            for (int vi = 0; vi < pos.Length; vi++)
-                                allUvs[ch].Add(Vector4.zero);
-                        }
-                    }
-
-                    // Offset triangle indices
-                    var tris = mesh.triangles;
-                    for (int t = 0; t < tris.Length; t++)
-                        allTrisArr.Add(tris[t] + vertOffset);
-
-                    destroyList.Add(e.renderer.gameObject);
-                }
-
-                // Build merged mesh name — always include LOD suffix from group
-                string mergeSrcName = firstEntry.renderer.name;
-                // Strip existing LOD suffix if present
-                var mergeLodMatch = System.Text.RegularExpressions.Regex.Match(
-                    mergeSrcName, @"([_\-\s]+LOD\d+)$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (mergeLodMatch.Success)
-                    mergeSrcName = mergeSrcName.Substring(0, mergeSrcName.Length - mergeLodMatch.Value.Length);
-                string mergedName = $"{mergeSrcName}_LOD{group.lodIndex}";
-
-                // Build merged mesh
-                var mergedMesh = new Mesh();
-                if (allPos.Count > 65535) mergedMesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
-                mergedMesh.name = mergedName;
-                mergedMesh.SetVertices(allPos);
-                if (allNorm != null) mergedMesh.SetNormals(allNorm);
-                if (allTan != null) mergedMesh.SetTangents(allTan);
-                if (allColors != null) mergedMesh.SetColors(allColors);
-                for (int ch = 0; ch < 8; ch++)
-                {
-                    if (allUvs[ch] != null)
-                        mergedMesh.SetUVs(ch, allUvs[ch]);
-                }
-                mergedMesh.SetTriangles(allTrisArr, 0);
-                mergedMesh.RecalculateBounds();
-
-                // Create new GameObject at first entry's position
-                var srcT = firstEntry.renderer.transform;
-                var mergedGo = new GameObject(mergedMesh.name);
-                Undo.RegisterCreatedObjectUndo(mergedGo, "Merge Same-Material");
-                mergedGo.transform.SetParent(parent, false);
-                mergedGo.transform.localPosition = srcT.localPosition;
-                mergedGo.transform.localRotation = srcT.localRotation;
-                mergedGo.transform.localScale = srcT.localScale;
-
-                var mergedMf = mergedGo.AddComponent<MeshFilter>();
-                mergedMf.sharedMesh = mergedMesh;
-                var mergedMr = mergedGo.AddComponent<MeshRenderer>();
-                mergedMr.sharedMaterial = group.material;
-
-                // Update LODGroup
-                if (ctx.LodGroup != null)
-                {
-                    Undo.RecordObject(ctx.LodGroup, "Merge Same-Material");
-                    var lods = ctx.LodGroup.GetLODs();
-                    for (int li = 0; li < lods.Length; li++)
-                    {
-                        if (lods[li].renderers == null) continue;
-                        var renderers = new List<Renderer>(lods[li].renderers);
-                        bool replaced = false;
-                        for (int ri = renderers.Count - 1; ri >= 0; ri--)
-                        {
-                            if (renderers[ri] == null) continue;
-                            if (destroyList.Contains(renderers[ri].gameObject))
-                            {
-                                if (!replaced)
-                                {
-                                    renderers[ri] = mergedMr;
-                                    replaced = true;
-                                }
-                                else
-                                {
-                                    renderers.RemoveAt(ri);
-                                }
-                            }
-                        }
-                        lods[li].renderers = renderers.ToArray();
-                    }
-                    ctx.LodGroup.SetLODs(lods);
-                }
-
-                // Destroy originals
-                foreach (var go in destroyList)
-                {
-                    if (go == null) continue;
-                    UvtLog.Info($"Merged: {go.name}");
-                    Undo.DestroyObjectImmediate(go);
-                }
-
-                merged++;
-                UvtLog.Info($"Created merged object: {mergedMesh.name} ({allPos.Count} verts)");
-            }
-
-            UvtLog.Info($"Merged {merged} group(s).");
-
-            if (merged > 0 && ctx.LodGroup != null)
-            {
-                ctx.Refresh(ctx.LodGroup);
-                ctx.LodGroup.RecalculateBounds();
-
-                // Validate LODGroup integrity after merge
-                var finalLods = ctx.LodGroup.GetLODs();
-                for (int li = 0; li < finalLods.Length; li++)
-                {
-                    if (finalLods[li].renderers == null || finalLods[li].renderers.Length == 0)
-                        UvtLog.Warn($"[Merge] LOD{li} has no renderers after merge.");
-                }
-            }
-
-            splitCandidates = null;
-            mergeCandidates = null;
-            meshReport = null;
+            MeshSplitMerge.MergeSameMaterial(ctx, mergeCandidates, "Cleanup: Merge Same-Material");
+            splitCandidates = null; mergeCandidates = null; meshReport = null;
             requestRepaint?.Invoke();
+        }
+
+        void ScanSplitMerge()
+        {
+            var report = MeshSplitMerge.Scan(ctx);
+            splitCandidates = report.split; mergeCandidates = report.merge;
         }
 
         // ═══════════════════════════════════════════════════════════════
@@ -2564,15 +2028,7 @@ namespace SashaRX.UnityMeshLab
                         {
                             // Compute output names (same logic as FixMeshSplitByMaterial)
                             string srcName = sc.entry.renderer.name;
-                            string lodSuffix = "";
-                            var lodMatch = System.Text.RegularExpressions.Regex.Match(
-                                srcName, @"([_\-\s]+LOD\d+)$",
-                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                            if (lodMatch.Success)
-                            {
-                                lodSuffix = lodMatch.Value;
-                                srcName = srcName.Substring(0, srcName.Length - lodSuffix.Length);
-                            }
+                            srcName = MeshNaming.SplitLodSuffix(srcName, out string lodSuffix);
 
                             EditorGUILayout.LabelField("      Remove:", EditorStyles.miniLabel);
                             EditorGUILayout.LabelField($"        {sc.entry.renderer.name}", EditorStyles.miniLabel);
@@ -2668,59 +2124,6 @@ namespace SashaRX.UnityMeshLab
                     GUI.backgroundColor = bgc;
                 }
             }
-        }
-
-        void ScanSplitMerge()
-        {
-            splitCandidates = new List<SplitCandidate>();
-            mergeCandidates = new List<MergeGroup>();
-
-            var mergeMap = new Dictionary<string, MergeGroup>();
-
-            for (int li = 0; li < ctx.LodCount; li++)
-            {
-                var entries = ctx.ForLod(li);
-                foreach (var e in entries)
-                {
-                    var mesh = e.originalMesh ?? e.fbxMesh;
-                    if (mesh == null || e.renderer == null) continue;
-
-                    // Multi-material detection
-                    if (mesh.subMeshCount > 1)
-                    {
-                        splitCandidates.Add(new SplitCandidate
-                        {
-                            entry = e,
-                            include = true
-                        });
-                    }
-
-                    // Merge candidates: single-submesh, single-material
-                    var mats = e.renderer.sharedMaterials;
-                    if (mesh.subMeshCount == 1 && mats.Length == 1 && mats[0] != null)
-                    {
-                        string key = $"{li}_{mats[0].GetInstanceID()}";
-                        if (!mergeMap.ContainsKey(key))
-                            mergeMap[key] = new MergeGroup
-                            {
-                                lodIndex = li,
-                                material = mats[0],
-                                entries = new List<MeshEntry>(),
-                                include = true
-                            };
-                        mergeMap[key].entries.Add(e);
-                    }
-                }
-            }
-
-            foreach (var kvp in mergeMap)
-            {
-                if (kvp.Value.entries.Count > 1)
-                    mergeCandidates.Add(kvp.Value);
-            }
-
-            UvtLog.Info($"Split/Merge scan: {splitCandidates.Count} split candidate(s), " +
-                        $"{mergeCandidates.Count} merge group(s).");
         }
 
         // ═══════════════════════════════════════════════════════════════
@@ -2960,12 +2363,12 @@ namespace SashaRX.UnityMeshLab
                     var colors = new Color[vertCount];
                     for (int vi = 0; vi < vertCount; vi++)
                         colors[vi] = Color.white;
-                    mesh.colors = colors;
+                    VertexChannels.SetColors(mesh, colors);
                     UvtLog.Info($"[Cleanup] {mesh.name}: added vertex colors");
                 }
                 else if (!ensureColors && attr.hasColors)
                 {
-                    mesh.colors = null;
+                    VertexChannels.SetColors(mesh, null);
                     UvtLog.Info($"[Cleanup] {mesh.name}: removed vertex colors");
                 }
 
@@ -2974,12 +2377,12 @@ namespace SashaRX.UnityMeshLab
                 {
                     if (ensureUv[ch] && !attr.hasUv[ch])
                     {
-                        mesh.SetUVs(ch, new Vector2[vertCount]);
+                        VertexChannels.SetUvs(mesh, ch, new Vector2[vertCount]);
                         UvtLog.Info($"[Cleanup] {mesh.name}: added UV{ch}");
                     }
                     else if (!ensureUv[ch] && attr.hasUv[ch])
                     {
-                        mesh.SetUVs(ch, (List<Vector2>)null);
+                        VertexChannels.SetUvs(mesh, ch, null);
                         UvtLog.Info($"[Cleanup] {mesh.name}: removed UV{ch}");
                     }
                 }
@@ -2992,140 +2395,9 @@ namespace SashaRX.UnityMeshLab
             requestRepaint?.Invoke();
         }
 
-        /// <summary>
-        /// Move mesh from root to a new child, sort all mesh children by polycount,
-        /// and rename them _LOD0, _LOD1, etc. Root becomes empty pivot.
-        /// </summary>
-        void MoveRootMeshToChild(GameObject root)
-        {
-            string baseName = UvToolContext.ExtractGroupKey(root.name);
-            if (string.IsNullOrEmpty(baseName)) baseName = root.name;
-            baseName = MeshHygieneUtility.SanitizeName(baseName);
-            if (string.IsNullOrEmpty(baseName)) baseName = "Unnamed";
-
-            var rootMf = root.GetComponent<MeshFilter>();
-            var rootMr = root.GetComponent<MeshRenderer>();
-            if (rootMf == null || rootMf.sharedMesh == null) return;
-
-            // Create child for root's mesh
-            var lod0Child = new GameObject(baseName + "_temp");
-            Undo.RegisterCreatedObjectUndo(lod0Child, "Move Root Mesh");
-            lod0Child.transform.SetParent(root.transform, false);
-            var newMf = lod0Child.AddComponent<MeshFilter>();
-            newMf.sharedMesh = rootMf.sharedMesh;
-            if (rootMr != null)
-            {
-                var newMr = lod0Child.AddComponent<MeshRenderer>();
-                newMr.sharedMaterials = rootMr.sharedMaterials;
-                newMr.shadowCastingMode = rootMr.shadowCastingMode;
-                newMr.receiveShadows = rootMr.receiveShadows;
-                newMr.lightProbeUsage = rootMr.lightProbeUsage;
-                newMr.reflectionProbeUsage = rootMr.reflectionProbeUsage;
-                if (rootMr is MeshRenderer srcMr && newMr is MeshRenderer dstMr)
-                {
-                    dstMr.receiveGI = srcMr.receiveGI;
-                    dstMr.scaleInLightmap = srcMr.scaleInLightmap;
-                }
-                GameObjectUtility.SetStaticEditorFlags(lod0Child,
-                    GameObjectUtility.GetStaticEditorFlags(root.gameObject));
-                Undo.DestroyObjectImmediate(rootMr);
-            }
-            // MeshCollider stays on the node (root) — the convention is
-            // Node(Collider) → LOD children, applied recursively to nested nodes.
-            Undo.DestroyObjectImmediate(rootMf);
-
-            // Collect all mesh children (excluding collision)
-            var colSet = new HashSet<GameObject>(MeshHygieneUtility.FindCollisionObjects(root.transform));
-            var lodCandidates = new List<(Transform t, int polyCount)>();
-            foreach (Transform child in root.transform)
-            {
-                if (colSet.Contains(child.gameObject)) continue;
-                var mf = child.GetComponent<MeshFilter>();
-                var smr = child.GetComponent<SkinnedMeshRenderer>();
-                var mesh = mf != null ? mf.sharedMesh : (smr != null ? smr.sharedMesh : null);
-                if (mesh == null) continue;
-                lodCandidates.Add((child, MeshHygieneUtility.GetTriangleCount(mesh)));
-            }
-
-            // Sort by polycount descending (LOD0 = highest)
-            lodCandidates.Sort((a, b) => b.polyCount.CompareTo(a.polyCount));
-
-            // Rename to _LOD0, _LOD1, etc.
-            // Use a temporary naming pass first to avoid collisions when
-            // children already contain one of the target names.
-            for (int i = 0; i < lodCandidates.Count; i++)
-            {
-                string tmpName = "__UVTMP_LOD_" + i + "_" + Guid.NewGuid().ToString("N");
-                if (lodCandidates[i].t.name != tmpName)
-                {
-                    Undo.RecordObject(lodCandidates[i].t.gameObject, "Rename LOD");
-                    lodCandidates[i].t.name = tmpName;
-                }
-            }
-
-            for (int i = 0; i < lodCandidates.Count; i++)
-            {
-                string finalName = baseName + "_LOD" + i;
-                if (lodCandidates[i].t.name != finalName)
-                {
-                    Undo.RecordObject(lodCandidates[i].t.gameObject, "Rename LOD");
-                    lodCandidates[i].t.name = finalName;
-                }
-            }
-
-            UvtLog.Info($"Moved root mesh to child, sorted {lodCandidates.Count} LOD(s) by polycount.");
-        }
-
-        /// <summary>
-        /// Find the first collision mesh (_COL/_Collider) and add MeshCollider to root.
-        /// Disable renderer on collision nodes.
-        /// </summary>
-        void AddColliderFromCollisionMesh(GameObject root)
-        {
-            if (root.GetComponent<MeshCollider>() != null) return;
-
-            var colObjects = MeshHygieneUtility.FindCollisionObjects(root.transform);
-            foreach (var colObj in colObjects)
-            {
-                var mf = colObj.GetComponent<MeshFilter>();
-                if (mf == null || mf.sharedMesh == null) continue;
-
-                var collider = Undo.AddComponent<MeshCollider>(root);
-                collider.sharedMesh = mf.sharedMesh;
-                UvtLog.Info($"Added MeshCollider to {root.name} from {colObj.name}");
-
-                // Disable renderer on collision node
-                var mr = colObj.GetComponent<MeshRenderer>();
-                if (mr != null)
-                {
-                    Undo.RecordObject(mr, "Disable COL Renderer");
-                    mr.enabled = false;
-                }
-                break; // one collider is enough
-            }
-        }
-
         // ═══════════════════════════════════════════════════════════════
         // Helpers
         // ═══════════════════════════════════════════════════════════════
-
-        static bool IsRootRendererUsedAsLod0(GameObject root, LOD[] lods)
-        {
-            if (root == null || lods == null || lods.Length == 0) return false;
-
-            var rootRenderer = root.GetComponent<Renderer>();
-            if (rootRenderer == null) return false;
-
-            var lod0Renderers = lods[0].renderers;
-            if (lod0Renderers == null || lod0Renderers.Length == 0) return false;
-
-            for (int i = 0; i < lod0Renderers.Length; i++)
-            {
-                if (lod0Renderers[i] == rootRenderer)
-                    return true;
-            }
-            return false;
-        }
 
         void DrawScanFixButtons(Action scan, Action fix, System.Collections.IList issues)
         {

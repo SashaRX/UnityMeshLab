@@ -16,6 +16,11 @@ both pipelines (sidecar on/off) and .meta file semantics.
 
 ## Current export flow (as of PR #75)
 
+> The mechanics named below have since moved out of the tool: the hierarchy passes,
+> the export mesh, the write and the relink are `Editor/Assets/FbxExport.cs`, the
+> sidecar reads and writes are `Editor/Assets/SidecarStore.cs`; `LightmapTransferTool`
+> keeps the dialogs, backups, importer lock and sequencing described here.
+
 `LightmapTransferTool.cs:908-1284` `ExportFbx(bool overwriteSource)`:
 
 1. Find source FBX path via `ctx.MeshEntries[*].fbxMesh` asset path or

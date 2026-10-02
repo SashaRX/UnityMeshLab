@@ -11,17 +11,6 @@ namespace SashaRX.UnityMeshLab
 {
     internal static class LodPipelineOps
     {
-        static readonly System.Text.RegularExpressions.Regex LodSuffixRegex =
-            new System.Text.RegularExpressions.Regex(
-                @"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$",
-                System.Text.RegularExpressions.RegexOptions.Compiled);
-
-        static readonly System.Text.RegularExpressions.Regex TrailingLodRegex =
-            new System.Text.RegularExpressions.Regex(
-                @"[_\-\s]+LOD\d+$",
-                System.Text.RegularExpressions.RegexOptions.Compiled |
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
         internal struct Options
         {
             public int count;
@@ -125,7 +114,7 @@ namespace SashaRX.UnityMeshLab
                             UvtLog.Warn($"[LodPipelineOps] LOD{lodLevel}: target {ratio:P0} but got {actualRatio:P0} — increase Target Error");
 
                         string baseName = entry.fbxMesh != null ? entry.fbxMesh.name : srcMesh.name;
-                        baseName = LodSuffixRegex.Replace(baseName, "");
+                        baseName = MeshNaming.StripPipelineSuffixes(baseName);
                         string meshName = baseName + "_LOD" + lodLevel;
                         r.simplifiedMesh.name = meshName;
 
@@ -167,7 +156,7 @@ namespace SashaRX.UnityMeshLab
                             var mf = go.AddComponent<MeshFilter>();
                             mf.sharedMesh = r.simplifiedMesh;
                             var mr = go.AddComponent<MeshRenderer>();
-                            LightmapTransferTool.CopyRendererSettings(entry.renderer, mr);
+                            RendererSettings.Copy(entry.renderer, mr);
 
                             if (opts.progressiveScaleInLightmap && lodLevel > 0)
                             {
@@ -210,7 +199,7 @@ namespace SashaRX.UnityMeshLab
             foreach (var (entry, srcMesh) in sourceMeshes)
             {
                 if (entry.renderer == null) continue;
-                if (!TrailingLodRegex.IsMatch(entry.renderer.name))
+                if (!MeshNaming.HasLodSuffix(entry.renderer.name))
                 {
                     Undo.RecordObject(entry.renderer.gameObject, "Rename LOD0");
                     string newName = entry.renderer.gameObject.name + "_LOD0";

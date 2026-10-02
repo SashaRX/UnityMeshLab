@@ -28,7 +28,7 @@ The script discovers the BenchmarkReports layout by looking for *.csv files
 matching *_sweep_res*_pad*_bdr*_*.csv next to *_png/ folders.
 """
 
-import argparse, csv, glob, html, json, os, re, sys
+import argparse, csv, glob, html, json, os, pathlib, re, sys
 from collections import defaultdict
 
 
@@ -392,10 +392,48 @@ def render_index(out_dir, models, gallery_id):
              '<p>Per-model galleries with voting (rating 1-5 + tags). Votes live in your browser; export at the bottom of each page.</p>',
              '<ul>']
     for m in models:
-        parts.append(f'<li><a href="_gallery_{html.escape(m)}.html">{html.escape(m)}</a></li>')
+        parts.append(f'<li><a href="_gallery_{html.escape(MODEL_FILES[m])}.html">{html.escape(m)}</a></li>')
     parts.append('</ul></body></html>')
-    with open(os.path.join(out_dir, "_gallery_index.html"), "w", encoding="utf-8") as f:
-        f.write("\n".join(parts))
+    write_gallery_file(out_dir, "_gallery_index.html", "\n".join(parts))
+
+
+def safe_model_filename(model):
+    """lodGroup values come from sweep CSVs (untrusted); keep them out of the
+    path layer — no separators, no traversal, no empty result."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(model)).strip("._")
+    if not safe:
+        raise SystemExit(f"model name has no filesystem-safe characters: {model!r}")
+    return safe
+
+
+def safe_model_filenames(models):
+    """One stable page name per model: the sanitized name, with `_2`, `_3`… appended
+    (in model order) when two models sanitize to the same string, so no page is
+    overwritten by another and every link targets the file that was written."""
+    names, used = {}, set()
+    for m in models:
+        base = safe_model_filename(m)
+        name, n = base, 2
+        while name.lower() in used:
+            name = f"{base}_{n}"
+            n += 1
+        used.add(name.lower())
+        names[m] = name
+    return names
+
+
+def write_gallery_file(out_dir, filename, content):
+    """All gallery writes go through here. The output directory is resolved
+    to its canonical form, the target must resolve to a direct child with the
+    exact given name (a plain sanitized basename) — anything containing a
+    separator, '.' or '..' is refused, so no CSV-derived value can make a
+    write escape the chosen gallery directory."""
+    root = pathlib.Path(out_dir).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    target = (root / filename).resolve()
+    if target.parent != root or target.name != filename or not filename:
+        raise SystemExit(f"refusing unsafe gallery filename: {filename!r}")
+    target.write_text(content, encoding="utf-8")
 
 
 def render_model(out_dir, gallery_id, model, all_cells, res_axis, pad_axis, bdr_axis):
@@ -412,7 +450,7 @@ def render_model(out_dir, gallery_id, model, all_cells, res_axis, pad_axis, bdr_
             pairs.add((r.get("rendererName"), int(r.get("lodIndex", -1))))
     pairs = sorted(pairs)
 
-    nav = " | ".join(f'<a href="_gallery_{html.escape(m)}.html">{html.escape(m)}</a>' for m in MODELS_ORDER)
+    nav = " | ".join(f'<a href="_gallery_{html.escape(MODEL_FILES[m])}.html">{html.escape(m)}</a>' for m in MODELS_ORDER)
     nav += f' | <a href="_gallery_index.html">index</a>'
 
     parts = [f'<!doctype html><html><head><meta charset="utf-8"><title>UV2 — {html.escape(model)}</title>',
@@ -447,11 +485,11 @@ def render_model(out_dir, gallery_id, model, all_cells, res_axis, pad_axis, bdr_
     parts.append(f'<script>{js_inline}</script>')
     parts.append('</body></html>')
 
-    with open(os.path.join(out_dir, f"_gallery_{model}.html"), "w", encoding="utf-8") as f:
-        f.write("\n".join(parts))
+    write_gallery_file(out_dir, f"_gallery_{MODEL_FILES[model]}.html", "\n".join(parts))
 
 
 MODELS_ORDER = []  # filled per call
+MODEL_FILES = {}   # model -> page file stem, filled per call
 
 
 def main():
@@ -478,8 +516,9 @@ def main():
     bdr_axis = sorted({c["bdr"] for c in cells})
     models = sorted({c["lodGroup"] for c in cells})
 
-    global MODELS_ORDER
+    global MODELS_ORDER, MODEL_FILES
     MODELS_ORDER = models
+    MODEL_FILES = safe_model_filenames(models)
 
     for m in models:
         render_model(out_dir, gallery_id, m, cells, res_axis, pad_axis, bdr_axis)

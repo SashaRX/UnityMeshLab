@@ -305,6 +305,55 @@ see §9).
    write itself) is the core's responsibility. Call sites
    never touch these sets directly.
 
+### Quad preservation (`keepQuads`)
+
+A re-save must not triangulate a quad mesh. Unity meshes carry topology in
+their index buffer, and the FBX exporter writes whatever topology the
+serialized mesh has — so the clone that reaches `ModelExporter` must be
+imported with `keepQuads = true`:
+
+* **Isolated core** — Phase 1 enables `keepQuads` on the source importer
+  (alongside `isReadable`) before the clone is loaded. `keepQuads` only
+  reshapes the index buffer (4 indices per quad instead of two triangles);
+  vertex order and count are untouched, so the snapshot/clone
+  vertex-count contract holds. The value persists after export (like
+  `generateSecondaryUV = off`) — restoring `false` would triangulate the
+  just-written quad FBX on the next import.
+* **Variant exports** (`ExportVertexColorsToFbxAs`) — the source importer
+  must end the export unchanged, so `keepQuads` is toggled on only for the
+  clone reimport and restored by `FbxExport.ImporterRestoreScope` at method exit —
+  success, every early return and failure alike, a throwing Phase 1 reimport
+  included: the scope is created before Phase 1 and told about each change
+  before the reimport that applies it (the same scope puts `isReadable` back
+  for source re-saves). The new variant file's own importer
+  gets `keepQuads` pinned in Phase 4 so its project view matches the file.
+* **Wide LOD-rebuild path** — already locks `keepQuads` via
+  `PrepareImportSettings(lockForFbxOverwrite: true)` before export. Its
+  export meshes take topology from the tool's computed result meshes, so
+  the first export of a freshly loaded (triangulated) import still writes
+  triangles; once the lock has persisted and the model reloaded, every
+  later export keeps quads.
+* **Known limitation** — `keepQuads` covers quads only. N-gons
+  (>4 vertices per face) still import triangulated, and generated LODs
+  (meshoptimizer output) are triangle meshes by construction.
+
+### New-geometry export (Remesh & Bake) — the one out-of-core write
+
+`RemeshBakeTool.Save()` exports a **brand-new mesh** (voxel remesh result)
+into a **uniquely created folder**, gated by the same
+`LIGHTMAP_UV_TOOL_FBX_EXPORTER` define. It calls
+`ModelExporter.ExportObjects` directly because the isolated core is a
+*re-save* pipeline: its snapshots key on mesh name and require the same
+vertex count, so it structurally cannot carry re-topologized geometry,
+and there is no source FBX whose untouched channels must survive.
+Safety comes from the fresh-path guarantees instead: the target file
+never pre-exists (a new unique folder), the output is verified
+non-empty, and any failure rolls the whole generated folder back.
+The FBX importer of the result is pinned to `materialImportMode = None`
+so the importer does not duplicate the curated material that ships
+next to the FBX. Do not use this carve-out for anything that mutates
+an existing FBX — that path must go through the core.
+
 ### What "rework, not parallel" means in code review
 
 Reject PRs that:

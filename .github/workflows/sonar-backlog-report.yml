@@ -1,0 +1,47 @@
+# Sonar Backlog Report — a READ-ONLY snapshot of the main project on the self-hosted
+# SonarQube: every open issue grouped by rule, the security hotspots still to review,
+# and how many issues are already Accepted / False positive. It is the triage input
+# for deciding, rule by rule, fix / exclude in configuration / Accept / False positive.
+# Nothing on the server or in the repo is changed: the job only reads the web API
+# (Tools~/sonar-pr-check.mjs report) and uploads report.md + the full JSON lists.
+# Modelled on SashaRX/Space's sonar-backlog-report.yml; the Sonar runbook in SashaRX/Space (docs/sonar-autofix.md; here the tools live in Tools~/ and the config in ~/.config/meshlab/)
+# is the runbook.
+
+name: Sonar Backlog Report
+
+# Manual dispatch only: the job holds the Sonar user token, so it runs when someone with
+# write access starts it, never because a branch was pushed.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL || vars.SONAR_HOST_URL || 'http://178.104.156.174:9000' }}
+  SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY || 'SashaRX_UnityMeshLab' }}
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Read the open issues and hotspots
+        env:
+          # Web API reads need a USER token — see Tools~/sonar-pr-check.mjs.
+          SONAR_TOKEN: ${{ secrets.SONAR_API_TOKEN || secrets.SONAR_TOKEN }}
+        run: |
+          node Tools~/sonar-pr-check.mjs report --project "$SONAR_PROJECT_KEY" \
+            --out-dir "$RUNNER_TEMP/sonar-backlog-report"
+
+      - name: Upload the report
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-backlog-report
+          path: ${{ runner.temp }}/sonar-backlog-report
+          retention-days: 14

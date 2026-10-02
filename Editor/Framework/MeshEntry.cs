@@ -33,6 +33,13 @@ namespace SashaRX.UnityMeshLab
 
         public bool include = true;
 
+        /// <summary>
+        /// Background texture for the UV canvas when the entry has no renderer to take
+        /// a material from: tool-made meshes (the Remesh &amp; Bake result shows its
+        /// baked base color). Not owned by the entry.
+        /// </summary>
+        public Texture previewTexture;
+
         /// <summary>Pipeline step flag — true after UV0 false-seam welding. Prevents re-running the step. Reset on ResetPipelineState.</summary>
         public bool wasWelded;
         /// <summary>Pipeline step flag — true after edge-seam welding. Prevents re-running the step. Reset on ResetPipelineState.</summary>
@@ -105,26 +112,7 @@ namespace SashaRX.UnityMeshLab
             if (faceToShellByMeshAndChannel.TryGetValue(key, out var cached))
                 return cached;
 
-            int faceCount = triangles.Length / 3;
-            var faceToShell = new int[faceCount];
-            for (int i = 0; i < faceToShell.Length; i++) faceToShell[i] = -1;
-
-            try
-            {
-                var shells = UvShellExtractor.Extract(uv, triangles);
-                foreach (var shell in shells)
-                {
-                    if (shell?.faceIndices == null) continue;
-                    foreach (int f in shell.faceIndices)
-                        if (f >= 0 && f < faceToShell.Length)
-                            faceToShell[f] = shell.shellId;
-                }
-            }
-            catch
-            {
-                // Keep -1 mapping when shell extraction fails.
-            }
-
+            var faceToShell = UvTopology.FaceToShell(uv, triangles);
             faceToShellByMeshAndChannel[key] = faceToShell;
             return faceToShell;
         }

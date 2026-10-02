@@ -259,15 +259,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Strip trailing LOD/COL suffixes to get a stable group key.
         /// </summary>
-        public static string ExtractGroupKey(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return name;
-            return System.Text.RegularExpressions.Regex.Replace(
-                name,
-                @"(?:[_\-\s]+(?:LOD\d+|COL(?:_Hull\d+)?|Collider|Collision))+$",
-                "",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        }
+        public static string ExtractGroupKey(string name) => MeshNaming.GroupKey(name);
 
         /// <summary>
         /// Cleans up LOD slots: always removes null renderers from within a slot.
@@ -276,32 +268,7 @@ namespace SashaRX.UnityMeshLab
         /// slots (from "Add LOD Level") survive a context refresh.
         /// </summary>
         public static bool CompactLodArray(LODGroup lodGroup, bool removeEmptySlots = false)
-        {
-            if (lodGroup == null) return false;
-            var lods = lodGroup.GetLODs();
-            var compacted = new List<LOD>();
-            bool changed = false;
-            foreach (var lod in lods)
-            {
-                var renderers = lod.renderers ?? new Renderer[0];
-                var valid = renderers.Where(r => r != null).ToArray();
-                if (valid.Length != renderers.Length) changed = true;
-                if (valid.Length == 0)
-                {
-                    if (removeEmptySlots) { changed = true; continue; }
-                    compacted.Add(new LOD(lod.screenRelativeTransitionHeight, new Renderer[0]));
-                    continue;
-                }
-                compacted.Add(new LOD(lod.screenRelativeTransitionHeight, valid));
-            }
-            if (changed)
-            {
-                Undo.RecordObject(lodGroup, "Compact LOD Array");
-                lodGroup.SetLODs(compacted.ToArray());
-                UvtLog.Info($"[Context] Compacted LOD array: {lods.Length} → {compacted.Count} slots.");
-            }
-            return changed;
-        }
+            => LodHierarchy.Compact(lodGroup, removeEmptySlots);
 
         public void Refresh(LODGroup lodGroup)
         {

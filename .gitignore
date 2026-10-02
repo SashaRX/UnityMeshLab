@@ -48,3 +48,9 @@ test.txt
 # Temp commit message file
 .commitmsg
 commitmsg.txt
+
+# Mimosa security-plugin runtime state (hook ledgers, scan reports, session baselines)
+.mimosa/
+
+# Tools~/compile_check.py build directory
+.compile-check/
