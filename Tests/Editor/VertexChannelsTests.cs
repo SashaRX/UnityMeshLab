@@ -77,12 +77,15 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void SubmeshWriteTouchesOnlyThatSubmeshesVertices()
         {
-            VertexChannels.Write(mesh, new[] { .5f, .5f, .5f, .5f }, AOTargetChannel.UV1_X);
+            // Vertex 0 (submesh 0 only) carries an out-of-range value the write must not touch.
+            mesh.SetUVs(1, new System.Collections.Generic.List<Vector2> { new Vector2(2f, .5f), new Vector2(.5f, .5f), new Vector2(.5f, .5f), new Vector2(.5f, .5f) });
             Assert.IsTrue(VertexChannels.WriteSubmesh(mesh, new[] { 0f, 0f, 0f, 0f }, AOTargetChannel.UV1_X, 1));
-            var v = VertexChannels.Read(mesh, AOTargetChannel.UV1_X);
-            Assert.AreEqual(.5f, v[0], 1e-6f, "vertex 0 is only in submesh 0");
-            Assert.AreEqual(0f, v[1], 1e-6f);
-            Assert.AreEqual(0f, v[3], 1e-6f);
+            var raw = new System.Collections.Generic.List<Vector2>();
+            mesh.GetUVs(1, raw);
+            Assert.AreEqual(2f, raw[0].x, 1e-6f, "vertex 0 is only in submesh 0 and keeps its raw value");
+            Assert.AreEqual(0f, raw[1].x, 1e-6f);
+            Assert.AreEqual(0f, raw[3].x, 1e-6f);
+            Assert.AreEqual(.5f, raw[3].y, 1e-6f, "the other component is untouched");
         }
 
         [Test]

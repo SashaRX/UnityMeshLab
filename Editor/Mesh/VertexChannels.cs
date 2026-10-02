@@ -79,6 +79,11 @@ namespace SashaRX.UnityMeshLab
         /// when given.
         /// </summary>
         internal static void Write(Mesh mesh, float[] values, AOTargetChannel channel, string undoLabel = null)
+            => WriteMasked(mesh, values, channel, null, undoLabel);
+
+        // The write behind Write and WriteSubmesh: with a mask, only the vertices it marks
+        // are touched and every other vertex keeps its stored value byte- or float-exact.
+        static void WriteMasked(Mesh mesh, float[] values, AOTargetChannel channel, bool[] mask, string undoLabel)
         {
             if (mesh == null || values == null || values.Length != mesh.vertexCount) return;
             if (undoLabel != null) Undo.RecordObject(mesh, undoLabel);
@@ -94,6 +99,7 @@ namespace SashaRX.UnityMeshLab
                 int comp = ColorComponent(channel);
                 for (int i = 0; i < values.Length; i++)
                 {
+                    if (mask != null && !mask[i]) continue;
                     byte v = (byte)(Mathf.Clamp01(values[i]) * 255f);
                     var c = colors[i];
                     if (comp == 0) c.r = v; else if (comp == 1) c.g = v; else if (comp == 2) c.b = v; else c.a = v;
@@ -113,6 +119,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 for (int i = 0; i < values.Length; i++)
                 {
+                    if (mask != null && !mask[i]) continue;
                     // Clamp to [0,1] like the colour path; blur and area correction can
                     // drift slightly out of range.
                     float v = Mathf.Clamp01(values[i]);
@@ -126,21 +133,17 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Writes <paramref name="values"/> only at the vertices submesh
-        /// <paramref name="submesh"/> uses, keeping the channel's current value (or the
-        /// default) elsewhere. False when the submesh index is out of range.
+        /// <paramref name="submesh"/> uses; every other vertex keeps its stored value
+        /// exactly (no re-read, no clamp). False when the submesh index is out of range.
         /// </summary>
         internal static bool WriteSubmesh(Mesh mesh, float[] values, AOTargetChannel channel, int submesh, string undoLabel = null)
         {
             if (mesh == null || values == null || values.Length != mesh.vertexCount) return false;
             if (submesh < 0 || submesh >= mesh.subMeshCount) return false;
-            var merged = Read(mesh, channel) ?? new float[mesh.vertexCount];
-            var triangles = mesh.GetTriangles(submesh);
-            for (int ti = 0; ti < triangles.Length; ti++)
-            {
-                int vi = triangles[ti];
-                if (vi >= 0 && vi < merged.Length) merged[vi] = values[vi];
-            }
-            Write(mesh, merged, channel, undoLabel);
+            var mask = new bool[mesh.vertexCount];
+            foreach (int vi in mesh.GetIndices(submesh))
+                if (vi >= 0 && vi < mask.Length) mask[vi] = true;
+            WriteMasked(mesh, values, channel, mask, undoLabel);
             return true;
         }
 
