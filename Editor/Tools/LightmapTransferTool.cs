@@ -3394,7 +3394,6 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        void ExportFbx(bool overwriteSource) => ExportFbx(overwriteSource, FbxExportIntent.All);
 
         // ExportFbx with intent. Narrow intent (no Hierarchy and no LodGroup bits)
         // delegates per group to the isolated channel re-save (atomic write, preflight,
