@@ -111,6 +111,7 @@ namespace SashaRX.UnityMeshLab
                 var root = new GameObject(clean + "_LOD0");
                 temporary.Add(root);
                 root.transform.localScale = normalize ? Vector3.one : pipeline.RootScale;
+                root.transform.localRotation = pipeline.RootRotation;
                 var materials = new Material[nodes.Count];
                 var meshes = new Mesh[nodes.Count];
                 bool twoSidedWarned = false;

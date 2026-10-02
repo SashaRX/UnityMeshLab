@@ -109,4 +109,11 @@ namespace SashaRX.UnityMeshLab
     {
         void OnDrawRightSidebar();
     }
+
+    /// <summary>Optional hooks around shared asset writes. Only the active tool is called.</summary>
+    public interface IUvToolAssetLifecycle
+    {
+        void BeforeAssetWrite();
+        void AfterAssetWrite();
+    }
 }

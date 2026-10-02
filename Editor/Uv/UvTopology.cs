@@ -30,6 +30,30 @@ namespace SashaRX.UnityMeshLab
 
         // ── edges ──
 
+        // Weld only vertices agreeing in BOTH position and the displayed UV channel.
+        // Normal/crease splits with continuous UVs are not UV shell boundaries.
+        internal static int[] UvBoundaryEdgePairs(Mesh mesh, int channel)
+        {
+            var uv = ReadUv(mesh, channel);
+            if (uv == null || uv.Length != mesh.vertexCount) return Array.Empty<int>();
+            var positions = MeshGeometry.WeldPositions(mesh.vertices, out _);
+            var slots = new Dictionary<(int, float, float), int>();
+            var representatives = new List<int>();
+            var remap = new int[uv.Length];
+            for (int i = 0; i < uv.Length; ++i) {
+                var key = (positions[i], uv[i].x, uv[i].y);
+                if (!slots.TryGetValue(key, out int slot)) {
+                    slot = slots.Count; slots[key] = slot; representatives.Add(i);
+                }
+                remap[i] = slot;
+            }
+            var triangles = mesh.triangles;
+            for (int i = 0; i < triangles.Length; ++i) triangles[i] = remap[triangles[i]];
+            var pairs = BoundaryEdgePairs(triangles);
+            for (int i = 0; i < pairs.Length; ++i) pairs[i] = representatives[pairs[i]];
+            return pairs;
+        }
+
         static ulong EdgeKey(int a, int b)
         {
             int lo = a < b ? a : b, hi = a < b ? b : a;

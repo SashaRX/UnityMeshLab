@@ -21,7 +21,13 @@ namespace SashaRX.UnityMeshLab.Tests
             var m = new Mesh();
             var v = new Vector3[count * 3];
             var t = new int[count * 3];
-            for (int i = 0; i < t.Length; i++) { v[i] = new Vector3(i, 0, 0); t[i] = i; }
+            for (int i = 0; i < count; i++)
+            {
+                v[i * 3] = new Vector3(i * 2, 0, 0);
+                v[i * 3 + 1] = new Vector3(i * 2 + 1, 0, 0);
+                v[i * 3 + 2] = new Vector3(i * 2, 1, 0);
+            }
+            for (int i = 0; i < t.Length; i++) t[i] = i;
             m.vertices = v; m.triangles = t;
             scratch.Add(m);
             return m;
@@ -93,9 +99,17 @@ namespace SashaRX.UnityMeshLab.Tests
 
             var bare = Node("Table", null);
             var bareGroup = bare.AddComponent<LODGroup>();
+            var initialLods = bareGroup.GetLODs();
             Node("Top", bare.transform, Tris(1));
             Assert.AreEqual(0, LodHierarchy.RebuildFromNames(bareGroup, false, true, LodHierarchy.Transitions.Halving));
-            Assert.AreEqual(1, bareGroup.GetLODs().Length, "a fresh LODGroup's default slot is untouched");
+            var unchangedLods = bareGroup.GetLODs();
+            Assert.AreEqual(initialLods.Length, unchangedLods.Length, "the engine's initial slots are untouched");
+            for (int i = 0; i < initialLods.Length; i++)
+            {
+                Assert.AreEqual(initialLods[i].screenRelativeTransitionHeight, unchangedLods[i].screenRelativeTransitionHeight);
+                Assert.AreEqual(initialLods[i].fadeTransitionWidth, unchangedLods[i].fadeTransitionWidth);
+                CollectionAssert.AreEqual(initialLods[i].renderers, unchangedLods[i].renderers);
+            }
         }
 
         [Test]

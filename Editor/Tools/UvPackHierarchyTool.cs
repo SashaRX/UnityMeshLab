@@ -2,7 +2,7 @@
 // subtree, without requiring a LODGroup. For every included MeshRenderer
 // under the selected root, clones the mesh and runs XatlasRepack.RepackSingle
 // to write a fresh unique UV1 atlas. Apply swaps the clone into the scene;
-// "Overwrite Selected FBX" forwards to LightmapTransferTool's hierarchy
+// "Overwrite Selected FBX" uses the shared context export service and hierarchy
 // export overload with channel=1.
 
 using System;
@@ -13,6 +13,7 @@ using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
+    [MeshLabTool("uv1_hierarchy", MeshLabLibraries.Uv, MeshLabLibraries.Assets)]
     public class UvPackHierarchyTool : IUvTool
     {
         UvToolContext ctx;
@@ -561,14 +562,7 @@ namespace SashaRX.UnityMeshLab
                 "Overwrite", "Cancel"))
                 return;
 
-            var hub = Resources.FindObjectsOfTypeAll<UvToolHub>();
-            if (hub.Length == 0) return;
-            var transferTool = hub[0].FindTool<LightmapTransferTool>();
-            if (transferTool == null)
-            {
-                UvtLog.Error("[UV1] LightmapTransferTool not found.");
-                return;
-            }
+            var transferTool = ctx.Assets;
 
             foreach (var path in selected)
             {

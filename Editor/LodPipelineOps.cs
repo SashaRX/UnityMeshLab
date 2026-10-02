@@ -73,7 +73,7 @@ namespace SashaRX.UnityMeshLab
             // A group created from unlabelled renderers uses a low value so its only
             // LOD is not culled early. Restore the normal LOD0 transition before
             // appending generated levels; otherwise they start at 0.005 and below.
-            LodGenerationTool.NormalizeSingleLodTransitionForGeneration(newLods, startLod);
+            LodGroupUtility.NormalizeSingleLodTransitionForGeneration(newLods, startLod);
 
             UvProgress.Begin($"Generate LODs ({opts.count} levels)", cancelable: true);
             try
@@ -209,6 +209,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             RegisterNewLodEntries(ctx);
+            ctx.GeneratedLodObjects.RemoveAll(go => go == null);
+            ctx.GeneratedLodObjects.AddRange(result.generatedObjects);
             ctx.ClearAllCaches();
             result.ok = true;
             return result;

@@ -10,6 +10,7 @@ using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
+    [MeshLabTool("collision_mesh", MeshLabLibraries.Collision, MeshLabLibraries.Assets)]
     public class CollisionMeshTool : IUvTool
     {
         UvToolContext ctx;

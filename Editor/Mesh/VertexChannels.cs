@@ -15,6 +15,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Raised after this class writes a mesh's colours or UVs, so cached
         /// views of that mesh (the 3D viewport's encodings) can drop it.</summary>
         internal static event Action<Mesh> Changed;
+        internal static AOTargetChannel? LastAppliedTargetChannel { get; set; }
 
         static void NotifyChanged(Mesh mesh) => Changed?.Invoke(mesh);
 

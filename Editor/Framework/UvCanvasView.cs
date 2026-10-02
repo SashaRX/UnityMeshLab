@@ -81,11 +81,30 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>The entries the canvas currently shows.</summary>
         public List<MeshEntry> Entries(UvToolContext ctx) => EntriesOverride ?? ctx.ForLod(ctx.PreviewLod);
+        internal bool HasPreviewChannel(UvToolContext ctx, int channel)
+        {
+            foreach (var entry in Entries(ctx))
+                if (entry.include && RdUvCached(ctx.DMesh(entry), channel) != null) return true;
+            return false;
+        }
+
+        internal bool EnsurePreviewChannel(UvToolContext ctx)
+        {
+            if (HasPreviewChannel(ctx, ctx.PreviewUvChannel)) return false;
+            for (int channel = 0; channel < 8; ++channel)
+                if (HasPreviewChannel(ctx, channel)) { ctx.PreviewUvChannel = channel; ClearHoverState(); return true; }
+            return false;
+        }
         public int ActiveFillModeIndex;
         public bool FillHidden;
         public bool ShowWireframe = true;
         public bool ShowBorder = true;
         public float FillAlpha = 0.25f;
+        internal MeshViewport3D.Shading InspectionShading;
+        internal Mesh InspectedMesh;
+        internal int InspectedVertex;
+        internal Action<Mesh, int> OnInspectVertex;
+        readonly Dictionary<long, Color32[]> inspectionColors = new Dictionary<long, Color32[]>();
 
         /// <summary>
         /// When non-zero, validation fill/overlay draws only triangles whose TriIssue
@@ -113,6 +132,9 @@ namespace SashaRX.UnityMeshLab
         // Preview
         public PreviewMode CurrentPreviewMode;
         public bool CheckerEnabled;
+        internal bool CheckerColorMode;
+        internal bool CheckerShowR = true;
+        internal bool CheckerShowG = true;
         public float LmExposure = 1f;
 
         // Materials
@@ -136,6 +158,7 @@ namespace SashaRX.UnityMeshLab
 
         public void Init()
         {
+            VertexChannels.Changed += InvalidateInspection;
             var sh = Shader.Find("Hidden/Internal-Colored");
             if (sh == null) return;
             GlMat = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };
@@ -163,6 +186,8 @@ namespace SashaRX.UnityMeshLab
 
         public void Cleanup()
         {
+            VertexChannels.Changed -= InvalidateInspection;
+            inspectionColors.Clear();
             if (canvasRT) { canvasRT.Release(); UnityEngine.Object.DestroyImmediate(canvasRT); canvasRT = null; }
             if (GlMat) UnityEngine.Object.DestroyImmediate(GlMat);
             if (TexMat) UnityEngine.Object.DestroyImmediate(TexMat);
@@ -229,6 +254,21 @@ namespace SashaRX.UnityMeshLab
             float cy = (canvasRect.height - sz) * 0.5f + Pan.y;
 
             HoveredShellDebug = FindShellAtMouse(ctx, draws, canvasRect, cx, cy, sz);
+            var inspectEvent = Event.current;
+            if (InspectedMesh && OnInspectVertex != null && inspectEvent.type == EventType.MouseDown && inspectEvent.button == 0 && inspectEvent.control && canvasRect.Contains(inspectEvent.mousePosition)) {
+                var mouse = inspectEvent.mousePosition - canvasRect.position;
+                float nearest = 144; Mesh picked = null; int pickedVertex = -1;
+                foreach (var draw in draws) {
+                    var uv = RdUvCached(draw.Item1, ctx.PreviewUvChannel);
+                    if (uv == null) continue;
+                    for (int v = 0; v < uv.Length; ++v) {
+                        float d = (mouse - new Vector2(cx + uv[v].x * sz, cy + (1 - uv[v].y) * sz)).sqrMagnitude;
+                        if (d < nearest) { nearest = d; picked = draw.Item1; pickedVertex = v; }
+                    }
+                }
+                if (picked) OnInspectVertex(picked, pickedVertex);
+                inspectEvent.Use();
+            }
             HandleCanvasInput(ctx, canvasRect, baseSz, sz, cx, cy);
 
             if (Event.current.type == EventType.Repaint && GlMat != null)
@@ -281,7 +321,9 @@ namespace SashaRX.UnityMeshLab
                         GlMat.SetPass(0);
                     }
 
-                    if (bgTex == null && (CheckerEnabled || !FillHidden || ctx.PreviewUvChannel == 1))
+                    if (CheckerEnabled && CheckerColorMode)
+                        GlUvColorBg(cx, cy, sz, 0.33333f, occupiedTiles);
+                    else if (bgTex == null && (CheckerEnabled || !FillHidden || ctx.PreviewUvChannel == 1))
                     {
                         float baseAlpha = ctx.PreviewUvChannel == 1 ? 0.24f : (CheckerEnabled ? 0.33333f : FillAlpha * 0.45f);
                         float checkerAlpha = Mathf.Clamp(baseAlpha, 0.06f, 0.33333f);
@@ -314,7 +356,9 @@ namespace SashaRX.UnityMeshLab
 
                         int uN = uvs.Length, fN = tri.Length / 3;
 
-                        if (hasFill)
+                        if (InspectionShading != MeshViewport3D.Shading.Shaded)
+                            GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
+                        else if (hasFill)
                             FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
 
                         HashSet<int> bdr = ShowBorder ? entry.transferState?.borderPrimitiveIds : null;
@@ -329,6 +373,15 @@ namespace SashaRX.UnityMeshLab
                     toolOverlay?.Invoke(this, cx, cy, sz);
 
                     if (SpotMode) GlDrawUvSpot(cx, cy, sz);
+                    if (InspectedMesh) {
+                        var uv = RdUvCached(InspectedMesh, ctx.PreviewUvChannel);
+                        if (uv != null && InspectedVertex >= 0 && InspectedVertex < uv.Length) {
+                            float x = cx + uv[InspectedVertex].x * sz, y = cy + (1 - uv[InspectedVertex].y) * sz;
+                            GL.Begin(GL.LINES); GL.Color(Color.yellow);
+                            GL.Vertex3(x - 5, y, 0); GL.Vertex3(x + 5, y, 0);
+                            GL.Vertex3(x, y - 5, 0); GL.Vertex3(x, y + 5, 0); GL.End();
+                        }
+                    }
                 }
                 catch (Exception ex) { UvtLog.Warn("[UV] GL: " + ex.Message); }
                 finally { if (push) GL.PopMatrix(); }
@@ -354,6 +407,9 @@ namespace SashaRX.UnityMeshLab
         /// the texture (reusing target when its size fits) or null when GL is unavailable.
         /// </summary>
         public RenderTexture RenderUvLayer(UvToolContext ctx, Mesh mesh, MeshEntry entry, RenderTexture target, int size)
+            => RenderUvLayer(ctx, mesh, entry, target, size, true);
+
+        public RenderTexture RenderUvLayer(UvToolContext ctx, Mesh mesh, MeshEntry entry, RenderTexture target, int size, bool drawBorders)
         {
             if (GlMat == null || mesh == null) return null;
             if (target == null || target.width != size || target.height != size)
@@ -379,13 +435,15 @@ namespace SashaRX.UnityMeshLab
                 if (entry != null && entry.renderer == null && bgTex == entry.previewTexture && !CheckerEnabled) bgTex = null;
                 if (bgTex != null)
                 {
-                    float bgAlpha = CheckerEnabled ? 0.5f : 0.95f;
+                    float bgAlpha = CheckerEnabled ? 0.33333f : 0.95f;
                     float bgExposure = CurrentPreviewMode == PreviewMode.Lightmap ? LmExposure : 1f;
                     GlTextureBg(cx, cy, sz, bgTex, Vector2.one, Vector2.zero, bgAlpha, tile, bgExposure);
                     GlMat.SetPass(0);
                 }
+                else if (CheckerEnabled && CheckerColorMode)
+                    GlUvColorBg(cx, cy, sz, 0.33333f, tile);
                 else if (CheckerEnabled)
-                    GlCheckerBg(cx, cy, sz, 8, 0.5f, ctx.PreviewUvChannel == 1, tile);
+                    GlCheckerBg(cx, cy, sz, 8, 0.33333f, ctx.PreviewUvChannel == 1, tile);
 
                 ClearFrameCaches();
                 var uvs = RdUvCached(mesh, ctx.PreviewUvChannel);
@@ -402,8 +460,9 @@ namespace SashaRX.UnityMeshLab
                     }
                     int uN = uvs.Length, fN = tri.Length / 3;
                     bool hasFill = !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
-                    if (hasFill) FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
-                    if (ShowBorder)
+                    if (InspectionShading != MeshViewport3D.Shading.Shaded) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
+                    else if (hasFill) FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
+                    if (ShowBorder && drawBorders)
                     {
                         HashSet<int> bdr = entry?.transferState?.borderPrimitiveIds;
                         if (bdr != null && bdr.Count > 0) GlBdr(cx, cy, sz, uvs, tri, fN, uN, bdr);
@@ -659,6 +718,26 @@ namespace SashaRX.UnityMeshLab
             GL.End();
         }
 
+        void GlUvColorBg(float ox, float oy, float sz, float alpha, HashSet<Vector2Int> tiles)
+        {
+            GL.Begin(GL.QUADS);
+            foreach (var tile in tiles) {
+                float x = ox + tile.x * sz, y = oy - tile.y * sz;
+                ColorVertex(x, y, tile.x, tile.y + 1, alpha);
+                ColorVertex(x + sz, y, tile.x + 1, tile.y + 1, alpha);
+                ColorVertex(x + sz, y + sz, tile.x + 1, tile.y, alpha);
+                ColorVertex(x, y + sz, tile.x, tile.y, alpha);
+            }
+            GL.End();
+        }
+
+        void ColorVertex(float x, float y, float u, float v, float alpha)
+        {
+            var color = CheckerShowR && CheckerShowG ? new Color(u, v, 0, alpha)
+                : new Color(CheckerShowR ? u : v, CheckerShowR ? u : v, CheckerShowR ? u : v, alpha);
+            GL.Color(color); GL.Vertex3(x, y, 0);
+        }
+
         public void GlTextureBg(float ox, float oy, float sz, Texture tex, Vector2 tiling, Vector2 offset, float alpha, HashSet<Vector2Int> occupiedTiles = null, float exposure = 1f)
         {
             if (tex == null || TexMat == null) return;
@@ -703,6 +782,26 @@ namespace SashaRX.UnityMeshLab
             GL.Vertex3(px+crossR, py+crossHalfW, 0); GL.Vertex3(px-crossR, py+crossHalfW, 0);
             GL.Vertex3(px-crossHalfW, py-crossR, 0); GL.Vertex3(px+crossHalfW, py-crossR, 0);
             GL.Vertex3(px+crossHalfW, py+crossR, 0); GL.Vertex3(px-crossHalfW, py+crossR, 0);
+            GL.End();
+        }
+
+        void InvalidateInspection(Mesh mesh) { ClearInspectionCache(); ClearFrameCaches(); }
+        internal void ClearInspectionCache() => inspectionColors.Clear();
+
+        void GlAttributeFill(float ox, float oy, float sz, Mesh mesh, Vector2[] uv, int[] triangles)
+        {
+            long key = ((long)mesh.GetInstanceID() << 8) | (byte)InspectionShading;
+            if (!inspectionColors.TryGetValue(key, out var colors)) {
+                colors = MeshViewport3D.EncodeColors(mesh, InspectionShading);
+                inspectionColors[key] = colors;
+            }
+            GL.Begin(GL.TRIANGLES);
+            foreach (int vertex in triangles) {
+                if (vertex < 0 || vertex >= uv.Length) continue;
+                var color = colors != null ? (Color)colors[vertex] : new Color(.72f, .72f, .72f);
+                color.a = 1;
+                GL.Color(color); GL.Vertex3(ox + uv[vertex].x * sz, oy + (1 - uv[vertex].y) * sz, 0);
+            }
             GL.End();
         }
 
@@ -789,11 +888,11 @@ namespace SashaRX.UnityMeshLab
         public void GlUvBoundary(UvToolContext ctx, float ox, float oy, float sz, Mesh mesh, Vector2[] uv, int[] tri, int uN)
         {
             if (mesh == null || uv == null || tri == null || tri.Length < 3) return;
-            int id = mesh.GetInstanceID();
-            if (!ctx.BoundaryEdgeCache.TryGetValue(id, out int[] pairs))
+            long id = ((long)mesh.GetInstanceID() << 8) ^ (uint)ctx.PreviewUvChannel;
+            if (!ctx.UvBoundaryEdgeCache.TryGetValue(id, out int[] pairs))
             {
-                pairs = UvTopology.BoundaryEdgePairs(tri);
-                ctx.BoundaryEdgeCache[id] = pairs;
+                pairs = UvTopology.UvBoundaryEdgePairs(mesh, ctx.PreviewUvChannel);
+                ctx.UvBoundaryEdgeCache[id] = pairs;
             }
             if (pairs == null || pairs.Length == 0) return;
             GL.Begin(GL.LINES);
@@ -1098,7 +1197,7 @@ namespace SashaRX.UnityMeshLab
 
         Texture ResolveUvPreviewBackgroundTexture(UvToolContext ctx, List<ValueTuple<Mesh, MeshEntry, int>> draws)
         {
-            if (CheckerEnabled) return CheckerTexturePreview.GetCheckerTexture();
+            if (CheckerEnabled) return CheckerColorMode ? null : CheckerTexturePreview.GetCheckerTexture();
             // Tool-made entries carry their own background (a baked base color).
             foreach (var item in draws)
                 if (item.Item2.renderer == null && item.Item2.previewTexture != null) return item.Item2.previewTexture;

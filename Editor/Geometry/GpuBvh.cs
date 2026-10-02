@@ -49,6 +49,10 @@ namespace SashaRX.UnityMeshLab
             this.shader = shader;
             rayKernel = shader.FindKernel("Raycast");
             nearestKernel = shader.FindKernel("Nearest");
+            // FindKernel can return an index even when that kernel failed to compile.
+            // Reject the backend before allocating buffers or reading invalid results.
+            if (!shader.IsSupported(rayKernel) || !shader.IsSupported(nearestKernel))
+                throw new InvalidOperationException("BvhQueries kernels are not supported or failed to compile");
             bvh.GetGPUData(out var gpuNodes, out var gpuTriIndices, out var gpuVerts, out var gpuTris);
             FaceCount = gpuTris.Length / 3;
             nodes = new ComputeBuffer(Math.Max(1, gpuNodes.Length), Marshal.SizeOf<TriangleBvh.GPUNode>()); nodes.SetData(gpuNodes);

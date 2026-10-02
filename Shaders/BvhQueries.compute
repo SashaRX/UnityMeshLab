@@ -35,6 +35,9 @@ void Nearest(uint3 id : SV_DispatchThreadID)
     float4 p = _Points[id.x];
     float4 n = _QueryNormals[id.x];
     BvhNearestHit miss;
-    miss.tri = -1; miss.distSq = 0; miss.point = p.xyz; miss.bary = float3(0, 0, 0);
-    _NearestHits[id.x] = p.w > 0.0 ? BvhNearest(p.xyz, p.w * p.w, _NormalFilter != 0, n.xyz, n.w) : miss;
+    miss.tri = -1; miss.distSq = 0; miss.closestPoint = p.xyz; miss.bary = float3(0, 0, 0);
+    if (p.w > 0.0)
+        _NearestHits[id.x] = BvhNearest(p.xyz, p.w * p.w, _NormalFilter != 0, n.xyz, n.w);
+    else
+        _NearestHits[id.x] = miss;
 }

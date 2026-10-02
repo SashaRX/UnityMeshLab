@@ -75,6 +75,8 @@ namespace SashaRX.UnityMeshLab
         public string ResultName { get; private set; }
         /// <summary>The source root's world scale at capture time; the save carries it.</summary>
         public Vector3 RootScale { get; private set; } = Vector3.one;
+        /// <summary>The source root's world rotation at capture time; the save carries it.</summary>
+        public Quaternion RootRotation { get; private set; } = Quaternion.identity;
         public Action Changed;
 
         public Node Primary
@@ -224,6 +226,7 @@ namespace SashaRX.UnityMeshLab
             hierarchy = options.keepHierarchy;
             ResultName = root.name;
             RootScale = root.transform.lossyScale;
+            RootRotation = root.transform.rotation;
             var rootToWorld = root.transform.localToWorldMatrix;
             var worldToRoot = root.transform.worldToLocalMatrix;
             var captures = new List<Node>();
@@ -315,6 +318,8 @@ namespace SashaRX.UnityMeshLab
             var primary = Primary;
             sourceMesh = BuildMesh(ResultName + "_Source", primary.source.positions, primary.source.indices,
                 primary.source.normals, primary.source.hasColors ? primary.source.colors : null);
+            sourceMesh.uv = primary.source.uv;
+            sourceMesh.tangents = primary.source.tangents;
             voxelMesh = BuildMesh(ResultName + "_Voxel", primary.voxel.positions, primary.voxel.indices);
             trimMaskMesh = primary.trimClasses != null ? BuildTrimMask(ResultName + "_TrimMask", primary.voxelRaw, primary.trimClasses) : null;
             Status = (hierarchy ? $"Remesh: {nodes.Count} node(s), " : "Remesh: ") +

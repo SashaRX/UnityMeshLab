@@ -13,6 +13,13 @@ namespace SashaRX.UnityMeshLab
     /// </summary>
     public class MeshEntry
     {
+        internal MeshEntry PreviewCopy(Mesh displayMesh)
+        {
+            var copy = (MeshEntry)MemberwiseClone();
+            copy.originalMesh = displayMesh;
+            copy.repackedMesh = copy.transferredMesh = null;
+            return copy;
+        }
         public int lodIndex;
         public Renderer renderer;
         public MeshFilter meshFilter;

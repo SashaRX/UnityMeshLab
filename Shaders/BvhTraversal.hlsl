@@ -39,7 +39,7 @@ struct BvhNearestHit
 {
     int    tri;    // face index, -1 = none within range
     float  distSq;
-    float3 point;  // closest point on the face
+    float3 closestPoint;  // closest point on the face ("point" is an HLSL keyword)
     float3 bary;   // weights of vertices 0, 1, 2
 };
 
@@ -184,13 +184,19 @@ BvhRayHit BvhRaycast(float3 origin, float3 dir, float maxDist, bool facingFilter
         bool hitL = BvhRayAabb(origin, invDir, l.bMin, l.bMax, best.t, tl);
         bool hitR = BvhRayAabb(origin, invDir, r.bMin, r.bMax, best.t, tr);
         if (sp + 2 > BVH_MAX_STACK) continue;
-        if (hitL && hitR)
+        // Push each hit child independently. The combined hitL && hitR branch with
+        // two stack writes crashes FXC's optimizer (including Windows SDK 26100).
+        // This keeps the same near-first order without that compiler failure.
+        if (tl <= tr)
         {
-            if (tl <= tr) { stack[sp++] = node.right; stack[sp++] = node.left; }
-            else          { stack[sp++] = node.left;  stack[sp++] = node.right; }
+            if (hitR) stack[sp++] = node.right;
+            if (hitL) stack[sp++] = node.left;
         }
-        else if (hitL) stack[sp++] = node.left;
-        else if (hitR) stack[sp++] = node.right;
+        else
+        {
+            if (hitL) stack[sp++] = node.left;
+            if (hitR) stack[sp++] = node.right;
+        }
     }
     return best;
 }
@@ -200,7 +206,7 @@ BvhRayHit BvhRaycast(float3 origin, float3 dir, float maxDist, bool facingFilter
 BvhNearestHit BvhNearest(float3 q, float maxDistSq, bool normalFilter, float3 qNormal, float dotMin)
 {
     BvhNearestHit best;
-    best.tri = -1; best.distSq = maxDistSq; best.point = q; best.bary = float3(0, 0, 0);
+    best.tri = -1; best.distSq = maxDistSq; best.closestPoint = q; best.bary = float3(0, 0, 0);
     int stack[BVH_MAX_STACK];
     int sp = 0;
     stack[sp++] = 0;
@@ -228,7 +234,7 @@ BvhNearestHit BvhNearest(float3 q, float maxDistSq, bool normalFilter, float3 qN
                 float dSq = dot(closest - q, closest - q);
                 if (dSq < best.distSq)
                 {
-                    best.distSq = dSq; best.tri = f; best.point = closest; best.bary = bary;
+                    best.distSq = dSq; best.tri = f; best.closestPoint = closest; best.bary = bary;
                 }
             }
             continue;

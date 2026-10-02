@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -33,6 +35,12 @@ namespace SashaRX.UnityMeshLab
         // Mesh Lab ▸ Developer.
         public bool showDebugUI;
 
+        // Additive project-local module settings; stable IDs preserve existing assets.
+        public List<string> disabledToolIds = new List<string>();
+        public List<string> disabledLibraryIds = new List<string>();
+        internal static event Action ModulesChanged;
+
+
         static MeshLabProjectSettings s_Instance;
 
         public static MeshLabProjectSettings Instance
@@ -59,7 +67,7 @@ namespace SashaRX.UnityMeshLab
             if (s_Instance == null) return;
             UnityEditorInternal.InternalEditorUtility
                 .SaveToSerializedFileAndForget(
-                    new Object[] { s_Instance }, AssetPath, true);
+                    new UnityEngine.Object[] { s_Instance }, AssetPath, true);
         }
 
         [SettingsProvider]
@@ -102,6 +110,8 @@ namespace SashaRX.UnityMeshLab
                     + "'Assets ▸ Create ▸ Mesh Lab ▸ Sweep Test Suite' action. "
                     + "Off by default for a clean production UI."),
                 inst.showDebugUI);
+
+            DrawModules(inst);
 
             EditorGUILayout.Space(12);
             EditorGUILayout.LabelField("Repack Defaults", EditorStyles.boldLabel);
@@ -174,6 +184,48 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        static void DrawModules(MeshLabProjectSettings settings)
+        {
+            settings.disabledToolIds = settings.disabledToolIds ?? new List<string>();
+            settings.disabledLibraryIds = settings.disabledLibraryIds ?? new List<string>();
+            var registry = new MeshLabModuleRegistry(settings.disabledToolIds, settings.disabledLibraryIds);
+            EditorGUILayout.Space(12);
+            EditorGUILayout.LabelField("Tools & required libraries", EditorStyles.boldLabel);
+            EditorGUI.BeginChangeCheck();
+            foreach (var type in MeshLabModuleRegistry.ToolTypes().OrderBy(t => t.Name))
+            {
+                var metadata = MeshLabModuleRegistry.Metadata(type);
+                if (metadata == null)
+                {
+                    EditorGUILayout.HelpBox(type.Name + ": missing MeshLabTool dependency declaration", MessageType.Warning);
+                    continue;
+                }
+                bool enabled = !settings.disabledToolIds.Contains(metadata.Id);
+                string required = string.Join(", ", registry.RequiredLibraries(type));
+                bool next = EditorGUILayout.ToggleLeft(new GUIContent(type.Name, "Requires: " + required), enabled);
+                SetDisabled(settings.disabledToolIds, metadata.Id, !next);
+                EditorGUILayout.LabelField("    Requires: " + required, EditorStyles.wordWrappedMiniLabel);
+                string reason = registry.ToolUnavailableReason(type);
+                if (next && reason != null) EditorGUILayout.HelpBox(reason, MessageType.Warning);
+            }
+            EditorGUILayout.Space(6);
+            EditorGUILayout.LabelField("Shared libraries", EditorStyles.boldLabel);
+            foreach (var library in MeshLabModuleRegistry.Libraries)
+            {
+                bool enabled = !settings.disabledLibraryIds.Contains(library.Id);
+                bool next = EditorGUILayout.ToggleLeft(new GUIContent(library.Name,
+                    "Required libraries: " + string.Join(", ", library.Requires)), enabled);
+                SetDisabled(settings.disabledLibraryIds, library.Id, !next);
+            }
+            if (EditorGUI.EndChangeCheck()) { Save(); ModulesChanged?.Invoke(); }
+        }
+
+        static void SetDisabled(List<string> disabled, string id, bool value)
+        {
+            if (value) { if (!disabled.Contains(id)) disabled.Add(id); }
+            else disabled.Remove(id);
+        }
+
         // Re-stamp every settable field with the value of a fresh instance —
         // single source of truth, no risk of skipping a future field.
         static void ResetToDefaults()
@@ -191,6 +243,9 @@ namespace SashaRX.UnityMeshLab
                 inst.aoChannelType   = fresh.aoChannelType;
                 inst.aoChannelComp   = fresh.aoChannelComp;
                 inst.showDebugUI     = fresh.showDebugUI;
+                inst.disabledToolIds = fresh.disabledToolIds;
+                inst.disabledLibraryIds = fresh.disabledLibraryIds;
+                ModulesChanged?.Invoke();
                 Save();
             }
             finally
