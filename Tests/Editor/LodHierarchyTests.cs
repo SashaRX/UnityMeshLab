@@ -112,6 +112,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var empty = Node("Empty", null);
             Assert.IsNull(LodHierarchy.CreateFromRenderers(empty, 0.5f, requireRenderers: true, out _));
             Assert.IsNotNull(LodHierarchy.CreateFromRenderers(empty, 0.5f, requireRenderers: false, out _), "the Cleanup button adds an empty group");
+            Assert.AreSame(lg, LodHierarchy.CreateFromRenderers(root, 0.25f, requireRenderers: true, out _), "a root that already has a group keeps it");
+            Assert.AreEqual(.25f, lg.GetLODs()[0].screenRelativeTransitionHeight, "and the group is rewritten");
 
             var parent = Node("Desk", null);
             var s0 = Node("Desk_LOD0", parent.transform, Tris(3));

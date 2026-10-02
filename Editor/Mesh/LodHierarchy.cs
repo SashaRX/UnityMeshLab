@@ -111,7 +111,8 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Adds a LODGroup to <paramref name="root"/> with every renderer below it as LOD0 at
+        /// Gives <paramref name="root"/> a LODGroup (a LODGroup it already has is reused,
+        /// since a GameObject holds at most one) with every renderer below it as LOD0 at
         /// <paramref name="transition"/>. With <paramref name="requireRenderers"/> nothing is
         /// added and null returned when there is no renderer; otherwise the group is added
         /// empty. <paramref name="rendererCount"/> tells how many went in.
@@ -124,7 +125,7 @@ namespace SashaRX.UnityMeshLab
             rendererCount = renderers.Length;
             if (requireRenderers && renderers.Length == 0) return null;
 
-            var lodGroup = Undo.AddComponent<LODGroup>(root);
+            var lodGroup = GroupOn(root);
             if (renderers.Length > 0)
             {
                 lodGroup.SetLODs(new[] { new LOD(transition, renderers) });
@@ -142,13 +143,23 @@ namespace SashaRX.UnityMeshLab
         {
             if (siblings == null || siblings.Count == 0 || siblings[0].go == null || siblings[0].go.transform.parent == null) return null;
             var lodRoot = siblings[0].go.transform.parent.gameObject;
-            var lodGroup = Undo.AddComponent<LODGroup>(lodRoot);
+            var lodGroup = GroupOn(lodRoot);
             var lods = new LOD[siblings.Count];
             for (int i = 0; i < siblings.Count; i++)
                 lods[i] = new LOD(Transition(Transitions.Halving, i, siblings.Count), siblings[i].go.GetComponentsInChildren<Renderer>());
             lodGroup.SetLODs(lods);
             lodGroup.RecalculateBounds();
             return lodGroup;
+        }
+
+        // One LODGroup per GameObject: AddComponent on a root that already has one returns
+        // null (and logs), so the existing component is recorded for Undo and reused.
+        static LODGroup GroupOn(GameObject root)
+        {
+            var existing = root.GetComponent<LODGroup>();
+            if (existing == null) return Undo.AddComponent<LODGroup>(root);
+            Undo.RecordObject(existing, "Create LODGroup");
+            return existing;
         }
 
         /// <summary>
