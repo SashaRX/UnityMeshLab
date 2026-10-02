@@ -27,6 +27,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
@@ -530,7 +531,18 @@ namespace SashaRX.UnityMeshLab
         /// Single-renderer-per-LOD only in PR-2. Multi-renderer support
         /// deferred to PR-3 or later.
         /// </summary>
+        // Sync entry — each native xatlas pack blocks the calling thread
+        // (benchmark sweeps, tests). The interactive Apply menu uses
+        // <see cref="BuildAsync"/> so the editor main thread keeps repainting
+        // and the progress strip's Cancel stays reachable while packs run.
         public static Result Build(LODGroup lg, Options opts)
+            => BuildCoreAsync(lg, opts, interactive: false).GetAwaiter().GetResult();
+
+        /// <summary>Async variant — main thread free during xatlas native packs.</summary>
+        public static Task<Result> BuildAsync(LODGroup lg, Options opts)
+            => BuildCoreAsync(lg, opts, interactive: true);
+
+        static async Task<Result> BuildCoreAsync(LODGroup lg, Options opts, bool interactive)
         {
             var result = new Result();
             if (lg == null) { result.error = "LODGroup is null"; return result; }
@@ -599,7 +611,7 @@ namespace SashaRX.UnityMeshLab
             // operator's scene assets are untouched. The "clean" variant
             // is the one that will drive subsequent stages; the others are
             // diagnostic-only.
-            try { ComputeProxyUv2Variants(meshes[deepest], xforms[deepest], opts, lg.name, result); }
+            try { await ComputeProxyUv2VariantsAsync(meshes[deepest], xforms[deepest], opts, lg.name, result, interactive); }
             catch (Exception ex)
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
@@ -608,7 +620,7 @@ namespace SashaRX.UnityMeshLab
             // PR-3 Stage B: classical xatlas unwrap of each non-deepest
             // LOD independently. Diagnostic only at this stage; Stage D
             // will use these to seed the cascade repack.
-            try { ComputeFineClassicalUnwraps(lg, opts, result); }
+            try { await ComputeFineClassicalUnwrapsAsync(lg, opts, result, interactive); }
             catch (Exception ex)
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
@@ -656,7 +668,7 @@ namespace SashaRX.UnityMeshLab
             // boundary per group). Produces the per-group atlas rects that
             // slice E2 will map every LOD's member shells into. Layout only
             // — no per-LOD UV2 / mesh writing here.
-            try { PackDomainCharts(lg, opts, meshDiag, result); }
+            try { await PackDomainChartsAsync(lg, opts, meshDiag, result, interactive); }
             catch (Exception ex)
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
@@ -1417,12 +1429,18 @@ namespace SashaRX.UnityMeshLab
                     r.proxyUv2Auto, r.proxyTrisAuto);
         }
 
+        // Picks the interactive (EditorApplication.update-driven) or the blocking
+        // pack entry per the caller's mode; call sites await it identically.
+        static Task<RepackResult> RepackSingleByMode(Mesh mesh, RepackOptions opts, bool interactive)
+            => interactive ? XatlasRepack.RepackSingleAsync(mesh, opts)
+                           : Task.FromResult(XatlasRepack.RepackSingle(mesh, opts));
+
         /// <summary>Generate the three proxy UV2 candidates documented at
         /// <see cref="WriteProxyUv2Png"/>. Each populates a pair of
         /// (proxyUv2*, proxyTris*) fields on the Result. Variants that
         /// fail individually log a warning but don't abort the others.</summary>
-        static void ComputeProxyUv2Variants(Mesh deepMesh, Transform deepXform,
-            Options opts, string lgName, Result result)
+        static async Task ComputeProxyUv2VariantsAsync(Mesh deepMesh, Transform deepXform,
+            Options opts, string lgName, Result result, bool interactive)
         {
             if (deepMesh == null) return;
 
@@ -1451,7 +1469,8 @@ namespace SashaRX.UnityMeshLab
                     cleanOpts.resolution   = (uint)opts.atlasResolutionPx;
                     cleanOpts.padding      = (uint)opts.interDomainPaddingPx;
                     cleanOpts.rotateCharts = false;
-                    var packed = XatlasRepack.RepackSingle(clone, cleanOpts).ok
+                    var clean = await RepackSingleByMode(clone, cleanOpts, interactive);
+                    var packed = clean.ok
                         ? clone.uv2 : null;
                     if (packed != null && packed.Length > 0)
                     {
@@ -1482,7 +1501,7 @@ namespace SashaRX.UnityMeshLab
                     clone.name = deepMesh.name + "_proxy_raw";
                     try
                     {
-                        var res = XatlasRepack.RepackSingle(clone, rawOpts);
+                        var res = await RepackSingleByMode(clone, rawOpts, interactive);
                         if (res.ok)
                         {
                             var uvOut = new List<Vector2>();
@@ -1504,13 +1523,12 @@ namespace SashaRX.UnityMeshLab
             // ── Variant 3: true auto-unwrap (positions + normals) ──
             try
             {
-                AutoUnwrapDeepMesh(deepMesh, deepXform, opts,
-                    out var uvAuto, out var trisAuto, out var worldAuto);
-                if (uvAuto != null && trisAuto != null && worldAuto != null)
+                var auto = await AutoUnwrapDeepMeshAsync(deepMesh, deepXform, opts, interactive);
+                if (auto.uv != null && auto.tris != null && auto.worldVerts != null)
                 {
-                    result.proxyUv2Auto        = uvAuto;
-                    result.proxyTrisAuto       = trisAuto;
-                    result.proxyWorldVertsAuto = worldAuto;
+                    result.proxyUv2Auto        = auto.uv;
+                    result.proxyTrisAuto       = auto.tris;
+                    result.proxyWorldVertsAuto = auto.worldVerts;
                 }
             }
             catch (Exception ex)
@@ -1564,7 +1582,7 @@ namespace SashaRX.UnityMeshLab
         /// were unwrapped without any inheritance from the proxy.
         /// Stage D's cascade projection will use these layouts as the
         /// seed for repacking unmatched shells.</summary>
-        static void ComputeFineClassicalUnwraps(LODGroup lg, Options opts, Result r)
+        static async Task ComputeFineClassicalUnwrapsAsync(LODGroup lg, Options opts, Result r, bool interactive)
         {
             if (lg == null) return;
             var lods = lg.GetLODs();
@@ -1608,7 +1626,7 @@ namespace SashaRX.UnityMeshLab
                     packOpts.resolution   = (uint)opts.atlasResolutionPx;
                     packOpts.padding      = (uint)opts.interDomainPaddingPx;
                     packOpts.rotateCharts = false;
-                    var res = XatlasRepack.RepackSingle(clone, packOpts);
+                    var res = await RepackSingleByMode(clone, packOpts, interactive);
                     if (res.ok && clone.uv2 != null && clone.uv2.Length > 0)
                     {
                         r.fineClassicalUv2[li]  = clone.uv2;
@@ -2309,7 +2327,7 @@ namespace SashaRX.UnityMeshLab
         /// normalised [0,1] in this native build (confirmed against
         /// proxy_uv2_auto.png). <c>r.domainAtlasUv</c> / <c>r.domainAtlasTris</c>
         /// back the domains_atlas.png diagnostic.</summary>
-        static void PackDomainCharts(LODGroup lg, Options opts, float meshDiag, Result r)
+        static async Task PackDomainChartsAsync(LODGroup lg, Options opts, float meshDiag, Result r, bool interactive)
         {
             if (r.groups == null || r.groups.Length == 0) return;
             if (r.perLodShells == null) return;
@@ -2457,17 +2475,31 @@ namespace SashaRX.UnityMeshLab
                         $"[HierRepack] Stage E: '{lg.name}' xatlasAddUvMesh err={addErr}");
                     return;
                 }
-                XatlasNative.xatlasComputeCharts();
-                XatlasNative.xatlasPackCharts(
-                    maxChartSize: 0,
-                    padding: (uint)opts.interDomainPaddingPx,
-                    texelsPerUnit: texelsPerUnit,   // fixed → identical texel density
-                    resolution: (uint)opts.atlasResolutionPx,
-                    bilinear: 1,
-                    blockAlign: 0,
-                    bruteForce: 1,
-                    rotateCharts: 0,
-                    rotateChartsToAxis: 0);
+                // fc = one chart per lighting-domain group (faceMaterial), so the
+                // cost preflight sees the real chart count.
+                bool packed = await XatlasRepack.RunNativePackAsync(
+                    fc, (uint)opts.atlasResolutionPx,
+                    () =>
+                    {
+                        XatlasNative.xatlasComputeCharts();
+                        XatlasNative.xatlasPackCharts(
+                            maxChartSize: 0,
+                            padding: (uint)opts.interDomainPaddingPx,
+                            texelsPerUnit: texelsPerUnit,   // fixed → identical texel density
+                            resolution: (uint)opts.atlasResolutionPx,
+                            bilinear: 1,
+                            blockAlign: 0,
+                            bruteForce: 1,
+                            rotateCharts: 0,
+                            rotateChartsToAxis: 0);
+                    },
+                    pumpEditor: interactive);
+                if (!packed)
+                {
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        $"[HierRepack] Stage E: '{lg.name}' domain pack cancelled or over the cost budget — skipped");
+                    return;
+                }
 
                 if (XatlasNative.xatlasGetMeshCount() <= 0) return;
                 int outVc = XatlasNative.xatlasGetOutputVertexCount(0);
@@ -3504,16 +3536,16 @@ namespace SashaRX.UnityMeshLab
         /// per-output-vertex UV2 array and the corresponding output index
         /// buffer. Output index buffer may differ from mesh.triangles —
         /// xatlas can split vertices at chart seams.</summary>
-        static void AutoUnwrapDeepMesh(Mesh mesh, Transform xform, Options opts,
-            out Vector2[] outUv, out int[] outTris, out Vector3[] outWorldVerts)
+        static async Task<(Vector2[] uv, int[] tris, Vector3[] worldVerts)> AutoUnwrapDeepMeshAsync(
+            Mesh mesh, Transform xform, Options opts, bool interactive)
         {
-            outUv = null; outTris = null; outWorldVerts = null;
+            Vector2[] outUv = null; int[] outTris = null; Vector3[] outWorldVerts = null;
             var verts = mesh.vertices;
             var tris  = mesh.triangles;
             var normals = mesh.normals;
             int vc = verts.Length;
             int ic = tris.Length;
-            if (vc == 0 || ic == 0) return;
+            if (vc == 0 || ic == 0) return (null, null, null);
 
             var positionsFlat = new float[vc * 3];
             for (int i = 0; i < vc; i++)
@@ -3545,31 +3577,46 @@ namespace SashaRX.UnityMeshLab
                 {
                     UvtLog.Warn(UvtLog.Category.Benchmark,
                         $"[HierRepack] xatlasAddMesh err={addErr}");
-                    return;
+                    return (null, null, null);
                 }
-                XatlasNative.xatlasComputeCharts();
-                XatlasNative.xatlasPackCharts(
-                    maxChartSize: 0,
-                    padding: (uint)opts.interDomainPaddingPx,
-                    texelsPerUnit: 0f,
-                    resolution: (uint)opts.atlasResolutionPx,
-                    bilinear: 1,
-                    blockAlign: 0,
-                    bruteForce: 1,
-                    // 0 disables the 90° chart-rotation step xatlas runs by
-                    // default for packing density. With rotation ON the
-                    // diagonal triangulation inside each chart flips
-                    // between variants — operator reads it as a "rotated
-                    // UV layout". Keeping natural orientation costs ~5%
-                    // packing efficiency but the diagnostic stays stable.
-                    rotateCharts: 0,
-                    rotateChartsToAxis: 0);
+                // The chart count is only known after ComputeCharts (xatlas builds
+                // the charts itself), so the pack runs without the shell-count
+                // preflight (shellCount 0); progress + cancel still apply.
+                bool packed = await XatlasRepack.RunNativePackAsync(
+                    0, 0,
+                    () =>
+                    {
+                        XatlasNative.xatlasComputeCharts();
+                        XatlasNative.xatlasPackCharts(
+                            maxChartSize: 0,
+                            padding: (uint)opts.interDomainPaddingPx,
+                            texelsPerUnit: 0f,
+                            resolution: (uint)opts.atlasResolutionPx,
+                            bilinear: 1,
+                            blockAlign: 0,
+                            bruteForce: 1,
+                            // 0 disables the 90° chart-rotation step xatlas runs by
+                            // default for packing density. With rotation ON the
+                            // diagonal triangulation inside each chart flips
+                            // between variants — operator reads it as a "rotated
+                            // UV layout". Keeping natural orientation costs ~5%
+                            // packing efficiency but the diagnostic stays stable.
+                            rotateCharts: 0,
+                            rotateChartsToAxis: 0);
+                    },
+                    pumpEditor: interactive);
+                if (!packed)
+                {
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        "[HierRepack] auto-unwrap pack cancelled or over the cost budget");
+                    return (null, null, null);
+                }
 
                 int meshCount = XatlasNative.xatlasGetMeshCount();
-                if (meshCount <= 0) return;
+                if (meshCount <= 0) return (null, null, null);
                 int outVc = XatlasNative.xatlasGetOutputVertexCount(0);
                 int outIc = XatlasNative.xatlasGetOutputIndexCount(0);
-                if (outVc <= 0 || outIc <= 0) return;
+                if (outVc <= 0 || outIc <= 0) return (null, null, null);
 
                 var xref = new uint[outVc];
                 var uvFlat = new float[outVc * 2];
@@ -3594,6 +3641,7 @@ namespace SashaRX.UnityMeshLab
                 for (int i = 0; i < outIc; i++) outTris[i] = (int)outIndsU[i];
             }
             finally { XatlasNative.xatlasDestroy(); }
+            return (outUv, outTris, outWorldVerts);
         }
 
 

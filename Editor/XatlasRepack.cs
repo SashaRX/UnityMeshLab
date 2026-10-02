@@ -839,15 +839,45 @@ namespace SashaRX.UnityMeshLab
                 return Task.FromResult(false);
             }
 
-            var packTask = Task.Run(() =>
-            {
-                XatlasNative.xatlasComputeCharts();
-                XatlasNative.xatlasPackCharts(
-                    maxChartSize, padding, texelsPerUnit, resolution,
-                    bilinear, blockAlign, bruteForce,
-                    rotateCharts, rotateChartsToAxis);
-            });
+            return WaitNativePackAsync(
+                shellCount, internalRes,
+                () =>
+                {
+                    XatlasNative.xatlasComputeCharts();
+                    XatlasNative.xatlasPackCharts(
+                        maxChartSize, padding, texelsPerUnit, resolution,
+                        bilinear, blockAlign, bruteForce,
+                        rotateCharts, rotateChartsToAxis);
+                },
+                pumpEditor);
+        }
 
+        /// <summary>
+        /// Runs a caller-owned native xatlas pack call with the shared progress,
+        /// cancel and cost-budget machinery. The caller owns the xatlas session
+        /// (Create/AddMesh already done) and passes its pack call — including
+        /// <c>xatlasComputeCharts</c> — so all native work stays off the main
+        /// thread. Returns false when the pack was refused by the cost budget,
+        /// failed, or was cancelled; the caller must then skip reading outputs
+        /// and destroy its session.
+        /// </summary>
+        internal static Task<bool> RunNativePackAsync(
+            int shellCount, uint internalRes, Action nativePack, bool pumpEditor = true)
+        {
+            long packCost = ComputePackCost(shellCount, internalRes);
+            if (packCost > kHeuristicCostBudget)
+            {
+                UvtLog.Warn(UvtLog.Category.Repack,
+                    $"[xatlas] Pack cost {packCost / 1_000_000_000L}B ops is past the {kHeuristicCostBudget / 1_000_000_000L}B safety budget — refusing to start pack. Lower the atlas resolution.");
+                return Task.FromResult(false);
+            }
+            return WaitNativePackAsync(shellCount, internalRes, nativePack, pumpEditor);
+        }
+
+        static Task<bool> WaitNativePackAsync(
+            int shellCount, uint internalRes, Action nativePack, bool pumpEditor)
+        {
+            var packTask = Task.Run(nativePack);
             double startTime = EditorApplication.timeSinceStartup;
             // Keep the phase string compact — the strip already shows the
             // outer operation title ("Repack" / "Run Full Pipeline"). Detail
@@ -1014,7 +1044,17 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // Sync entry — blocks the calling thread for the native pack (tests,
+        // sweeps). Interactive callers should use <see cref="RepackSingleAsync"/>
+        // so the editor main thread keeps repainting during xatlas's pack.
         public static RepackResult RepackSingle(Mesh mesh, RepackOptions opts)
+            => RepackSingleCore(mesh, opts, RunPackCancelableSync).GetAwaiter().GetResult();
+
+        /// <summary>Async variant — main thread free during xatlas native pack.</summary>
+        public static Task<RepackResult> RepackSingleAsync(Mesh mesh, RepackOptions opts)
+            => RepackSingleCore(mesh, opts, RunPackCancelableAsyncDelegate);
+
+        static async Task<RepackResult> RepackSingleCore(Mesh mesh, RepackOptions opts, PackFn packFn)
         {
             var result = new RepackResult();
 
@@ -1193,7 +1233,7 @@ namespace SashaRX.UnityMeshLab
                     return result;
                 }
 
-                bool packed = RunPackCancelable(
+                bool packed = await packFn(
                     mesh.name, shells.Count, internalRes, oversample,
                     opts.maxChartSize, internalPad, opts.texelsPerUnit, internalRes,
                     opts.bilinear  ? 1 : 0,
