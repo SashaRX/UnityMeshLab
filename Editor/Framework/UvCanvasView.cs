@@ -379,7 +379,7 @@ namespace SashaRX.UnityMeshLab
                 if (entry != null && entry.renderer == null && bgTex == entry.previewTexture && !CheckerEnabled) bgTex = null;
                 if (bgTex != null)
                 {
-                    float bgAlpha = CheckerEnabled ? 0.5f : (CurrentPreviewMode == PreviewMode.Lightmap ? 0.95f : 0.95f);
+                    float bgAlpha = CheckerEnabled ? 0.5f : 0.95f;
                     float bgExposure = CurrentPreviewMode == PreviewMode.Lightmap ? LmExposure : 1f;
                     GlTextureBg(cx, cy, sz, bgTex, Vector2.one, Vector2.zero, bgAlpha, tile, bgExposure);
                     GlMat.SetPass(0);

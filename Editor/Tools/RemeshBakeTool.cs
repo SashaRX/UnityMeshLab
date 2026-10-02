@@ -27,7 +27,7 @@ namespace SashaRX.UnityMeshLab
         static readonly int[] SampleCounts = { 1, 4, 9, 16 };
 
         GameObject source, lastSelection;
-        RemeshSettings settings = new RemeshSettings();
+        readonly RemeshSettings settings = new RemeshSettings();
         readonly RemeshPipeline pipeline = new RemeshPipeline();
         readonly RemeshCaptureHighlight highlight = new RemeshCaptureHighlight();
         bool highlightCapture;
@@ -36,7 +36,7 @@ namespace SashaRX.UnityMeshLab
         readonly RemeshPreview previews = new RemeshPreview();
         readonly RemeshPreview.Data previewData = new RemeshPreview.Data();
         string saveStatus;
-        UvToolContext ctx; UvCanvasView canvas;
+        UvToolContext ctx;
         // The result mesh as a canvas entry: one stable instance so the canvas's hover
         // and selection survive repaints; its mesh follows the pipeline.
         readonly MeshEntry resultEntry = new MeshEntry { include = true };
@@ -54,9 +54,9 @@ namespace SashaRX.UnityMeshLab
 
         internal void SaveSettings() => EditorPrefs.SetString(SettingsKey, JsonUtility.ToJson(settings));
 
-        public void OnActivate(UvToolContext context, UvCanvasView canvasView)
+        public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
         {
-            ctx = context; canvas = canvasView;
+            this.ctx = ctx;
             FollowSelection();
             Selection.selectionChanged -= FollowSelection;
             Selection.selectionChanged += FollowSelection;
@@ -133,13 +133,13 @@ namespace SashaRX.UnityMeshLab
             int selected = cv.HasSelectedShell && cv.SelectedShell.meshEntry == entry ? cv.SelectedShell.shellId : -1;
             cv.GlFillSh(ctx, cx, cy, sz, mesh, tri.Length / 3, uvs.Length, entry, hover, selected, null);
         }
-        public void OnSceneGUI(SceneView sceneView)
+        public void OnSceneGUI(SceneView sv)
         {
             if (!highlightCapture || !source) return;
             if (highlight.Key != RemeshCaptureHighlight.KeyFor(source, settings)) { highlight.Build(source, settings); RequestRepaint?.Invoke(); }
             highlight.Draw();
         }
-        public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float size) { }
+        public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float sz) { }
 
         string Status => saveStatus ?? pipeline.Status;
 
@@ -402,16 +402,22 @@ namespace SashaRX.UnityMeshLab
             // Preview caches key on mesh instances the run is about to destroy.
             previews.Invalidate();
             saveStatus = null;
-            ShowWhenDone(pipeline.Run(source, settings, from, target), target);
+            _ = ShowWhenDone(pipeline.Run(source, settings, from, target), target);
             // Run() has already changed the sidebar (Cancel button, cleared results);
             // end this event before IMGUI asks for controls the layout pass never
             // registered. Kept synchronous: ExitGUI must unwind this GUI event's stack.
             GUIUtility.ExitGUI();
         }
 
-        async void ShowWhenDone(Task<bool> run, RemeshPipeline.Stage target)
+        // The caller discards the task, so a failure past the pipeline's own catch would
+        // otherwise vanish as an unobserved task exception; it is logged here instead,
+        // as the former async void did through Unity's synchronization context.
+        async Task ShowWhenDone(Task<bool> run, RemeshPipeline.Stage target)
         {
-            if (await run)
+            bool ok;
+            try { ok = await run; }
+            catch (Exception e) { Debug.LogException(e); saveStatus = e.Message; RequestRepaint?.Invoke(); return; }
+            if (ok)
                 previews.Show(target == RemeshPipeline.Stage.Remesh ? RemeshPreview.Stage.Remesh :
                     target == RemeshPipeline.Stage.Simplify ? RemeshPreview.Stage.Simplified : RemeshPreview.Stage.Result);
         }

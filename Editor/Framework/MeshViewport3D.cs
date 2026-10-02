@@ -44,9 +44,18 @@ namespace SashaRX.UnityMeshLab
         int framedKey;
         bool framedOnce;
 
+        static readonly int ColorId = Shader.PropertyToID("_Color");
+        static readonly int UseVertexColorId = Shader.PropertyToID("_UseVertexColor");
+
+        // The orbit stores the drag: x turns around the vertical axis (yaw), y tilts (pitch).
+        Quaternion OrbitRotation()
+        {
+            float pitch = orbit.y, yaw = orbit.x;
+            return Quaternion.Euler(pitch, yaw, 0f);
+        }
+
         PreviewRenderUtility utility;
         Material surface, flat, wire, points, translucent;
-        Bounds contentBounds; bool hasContent;
         Rect currentRect;
         bool drawing;
         readonly Dictionary<long, Mesh> encodedCache = new Dictionary<long, Mesh>();
@@ -66,7 +75,6 @@ namespace SashaRX.UnityMeshLab
         {
             currentRect = rect;
             var bounds = BoundsOf(items, out int key, out bool any);
-            contentBounds = bounds; hasContent = any;
             if (any && (!framedOnce || key != framedKey)) { Frame(bounds); framedKey = key; framedOnce = true; }
             HandleInput(rect, any ? bounds : (Bounds?)null);
             if (Event.current.type != EventType.Repaint) return;
@@ -77,7 +85,7 @@ namespace SashaRX.UnityMeshLab
             var camera = utility.camera;
             camera.clearFlags = CameraClearFlags.SolidColor;
             camera.backgroundColor = Background;
-            var rotation = Quaternion.Euler(orbit.y, orbit.x, 0f);
+            var rotation = OrbitRotation();
             camera.transform.rotation = rotation;
             camera.transform.position = pivot - rotation * Vector3.forward * distance;
             camera.nearClipPlane = Mathf.Max(distance * 0.001f, 1e-4f);
@@ -95,7 +103,7 @@ namespace SashaRX.UnityMeshLab
                         if (Wireframe) DrawWire(item.mesh, item.matrix, Mode == Shading.Shaded ? new Color(0.05f, 0.05f, 0.05f, 1f) : new Color(0.4f, 0.85f, 1f, 1f));
                     }
                 overlay?.Invoke(this);
-                if (hasContent) {
+                if (any) {
                     if (ShowGrid) DrawGrid(bounds);
                     if (ShowAxes) DrawAxes(bounds);
                 }
@@ -118,13 +126,13 @@ namespace SashaRX.UnityMeshLab
                 for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
                     var material = item.materials != null && sub < item.materials.Length ? item.materials[sub] : null;
                     if (material) utility.DrawMesh(mesh, item.matrix, material, sub);
-                    else { surface.SetFloat("_UseVertexColor", 0); surface.SetFloat("_Lit", Lit ? 1 : 0); surface.SetColor("_Color", new Color(0.72f, 0.72f, 0.72f, 1f)); utility.DrawMesh(mesh, item.matrix, surface, sub); }
+                    else { surface.SetFloat(UseVertexColorId, 0); surface.SetFloat("_Lit", Lit ? 1 : 0); surface.SetColor(ColorId, new Color(0.72f, 0.72f, 0.72f, 1f)); utility.DrawMesh(mesh, item.matrix, surface, sub); }
                 }
                 return;
             }
             var encoded = Encoded(mesh, Mode);
             if (!encoded) return;
-            surface.SetFloat("_UseVertexColor", 1); surface.SetColor("_Color", Color.white);
+            surface.SetFloat(UseVertexColorId, 1); surface.SetColor(ColorId, Color.white);
             // Data encodings read better unlit; the headlight stays for vertex colours.
             surface.SetFloat("_Lit", Lit && Mode == Shading.VertexColors ? 1 : 0);
             for (int sub = 0; sub < encoded.subMeshCount; ++sub) utility.DrawMesh(encoded, item.matrix, surface, sub);
@@ -145,7 +153,7 @@ namespace SashaRX.UnityMeshLab
         public void DrawMesh(Mesh mesh, Matrix4x4 matrix, Material material = null, int submesh = -1, MaterialPropertyBlock properties = null)
         {
             if (!drawing || !mesh) return;
-            if (!material) { material = surface; surface.SetFloat("_UseVertexColor", 0); surface.SetFloat("_Lit", 1); surface.SetColor("_Color", new Color(0.72f, 0.72f, 0.72f, 1f)); }
+            if (!material) { material = surface; surface.SetFloat(UseVertexColorId, 0); surface.SetFloat("_Lit", 1); surface.SetColor(ColorId, new Color(0.72f, 0.72f, 0.72f, 1f)); }
             if (submesh >= 0) utility.DrawMesh(mesh, matrix, material, submesh, properties);
             else for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, matrix, material, sub, properties);
         }
@@ -157,7 +165,7 @@ namespace SashaRX.UnityMeshLab
             if (!drawing || !mesh || !material) return;
             var block = Block();
             block.SetTexture("_MainTex", texture ? texture : Texture2D.whiteTexture);
-            block.SetColor("_Color", tint);
+            block.SetColor(ColorId, tint);
             block.SetFloat("_UVChannel", uvChannel);
             for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, matrix, material, sub, block);
         }
@@ -174,7 +182,7 @@ namespace SashaRX.UnityMeshLab
         public void DrawLineMesh(Mesh lines, Matrix4x4 matrix, Color color)
         {
             if (!drawing || !lines) return;
-            var block = Block(); block.SetColor("_Color", color);
+            var block = Block(); block.SetColor(ColorId, color);
             utility.DrawMesh(lines, matrix, wire, 0, block);
         }
 
@@ -184,7 +192,7 @@ namespace SashaRX.UnityMeshLab
         {
             origin = direction = Vector3.zero;
             if (currentRect.width <= 0f || currentRect.height <= 0f || !currentRect.Contains(guiPoint)) return false;
-            var rotation = Quaternion.Euler(orbit.y, orbit.x, 0f);
+            var rotation = OrbitRotation();
             origin = pivot - rotation * Vector3.forward * distance;
             float ndcX = (guiPoint.x - currentRect.x) / currentRect.width * 2f - 1f;
             float ndcY = 1f - (guiPoint.y - currentRect.y) / currentRect.height * 2f;
@@ -297,7 +305,7 @@ namespace SashaRX.UnityMeshLab
         public Material FlatMaterial(Color color, bool lit)
         {
             if (!EnsureResources()) return null;
-            flat.SetColor("_Color", color); flat.SetFloat("_Lit", lit ? 1 : 0); flat.SetFloat("_UseVertexColor", 0);
+            flat.SetColor(ColorId, color); flat.SetFloat("_Lit", lit ? 1 : 0); flat.SetFloat(UseVertexColorId, 0);
             return flat;
         }
 
@@ -332,7 +340,7 @@ namespace SashaRX.UnityMeshLab
                     if (e.button == 2 || (e.button == 0 && e.alt)) {
                         // Pan: screen pixels to world at the pivot's depth.
                         float scale = 2f * distance * Mathf.Tan(15f * Mathf.Deg2Rad) / Mathf.Max(1f, rect.height);
-                        var rotation = Quaternion.Euler(orbit.y, orbit.x, 0f);
+                        var rotation = OrbitRotation();
                         pivot -= (rotation * Vector3.right) * (e.delta.x * scale);
                         pivot += (rotation * Vector3.up) * (e.delta.y * scale);
                     }
@@ -389,7 +397,7 @@ namespace SashaRX.UnityMeshLab
             wire = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             wire.SetFloat("_Lit", 0); wire.SetFloat("_DepthOffset", -1);
             points = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-            points.SetFloat("_Lit", 0); points.SetFloat("_UseVertexColor", 1); points.SetFloat("_DepthOffset", -2);
+            points.SetFloat("_Lit", 0); points.SetFloat(UseVertexColorId, 1); points.SetFloat("_DepthOffset", -2);
             return true;
         }
 

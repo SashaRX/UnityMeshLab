@@ -32,7 +32,7 @@ namespace SashaRX.UnityMeshLab
         const float C_TRAV = 1f, C_INT = 1f;
 
         // Per face, for the build only: bounds and centroid; plus the SAH bin scratch.
-        Vector3[] faceMin, faceMax, faceCentroid;
+        readonly Vector3[] faceMin, faceMax, faceCentroid;
         readonly int[] binCount = new int[BINS], leftCount = new int[BINS - 1], rightCount = new int[BINS - 1];
         readonly float[] leftArea = new float[BINS - 1], rightArea = new float[BINS - 1];
         readonly Vector3[] binMin = new Vector3[BINS], binMax = new Vector3[BINS];
@@ -165,8 +165,6 @@ namespace SashaRX.UnityMeshLab
 
             int bestAxis = -1, bestBin = -1; float bestCost = float.MaxValue;
             Vector3 cExtent = cMax - cMin;
-            var binCount = this.binCount; var leftArea = this.leftArea; var rightArea = this.rightArea;
-            var leftCount = this.leftCount; var rightCount = this.rightCount; var binMin = this.binMin; var binMax = this.binMax;
             for (int axis = 0; axis < 3; axis++)
             {
                 float extent = GetComponent(cExtent, axis);

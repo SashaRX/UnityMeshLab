@@ -40,7 +40,7 @@ namespace SashaRX.UnityMeshLab
             (!canvas.FillHidden && canvas.FillModes.Count > 0) || canvas.ShowBorder || canvas.CheckerEnabled ||
             canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off;
 
-        string LayerKey(UvCanvasView canvas, UvToolContext ctx, Mesh mesh, MeshEntry entry)
+        static string LayerKey(UvCanvasView canvas, UvToolContext ctx, Mesh mesh, MeshEntry entry)
         {
             int selected = canvas.HasSelectedShell && canvas.SelectedShell.meshEntry == entry ? canvas.SelectedShell.shellId : -1;
             return $"{mesh.GetInstanceID()}|{canvas.ActiveFillModeIndex}|{canvas.FillHidden}|{canvas.FillAlpha:F3}|{canvas.ShowBorder}|{canvas.CurrentPreviewMode}|" +
