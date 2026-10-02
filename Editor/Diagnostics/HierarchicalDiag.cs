@@ -60,7 +60,7 @@ namespace SashaRX.UnityMeshLab
         {
             // Diagnostic surface — hidden unless debug UI is enabled, matching
             // the gating applied to the benchmark/sweep entry points.
-            if (!MeshLabProjectSettings.Instance.showDebugUI) return false;
+            if (!DebugUi.Enabled) return false;
             var go = Selection.activeGameObject;
             return go != null && go.GetComponentInParent<LODGroup>() != null;
         }

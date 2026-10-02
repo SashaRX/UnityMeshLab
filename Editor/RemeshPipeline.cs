@@ -445,51 +445,12 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Info("[Remesh] " + Status);
         }
 
-        // Bake health counters (RemeshDiag log category): cage welding, one-sided
-        // border normals, nearest-query fallbacks and normal-map tilt. A loud,
-        // strongly-tilted map on a smooth-ish source is the signature of displaced
-        // projection samples; loud fraction > 5% also warns on its own.
+        // Bake health (RemeshDiag log category): BakeHealth judges the counters the bake
+        // collected and the source/target scale; the pipeline only hands it the node.
         static void LogDiagnostics(Node node, RemeshShape shape)
         {
-            var baked = node.maps; var captured = node.source; var target = node.geometry;
-            // Source and target live in the same capture space by construction; the
-            // diagonal ratio proves it at a glance and catches scale regressions.
-            Vector3 mn = target.positions[0], mx = target.positions[0];
-            foreach (var pv in target.positions) { mn = Vector3.Min(mn, pv); mx = Vector3.Max(mx, pv); }
-            float targetDiagonal = (mx - mn).magnitude;
-            float scaleRatio = targetDiagonal / Mathf.Max(1e-8f, captured.diagonal);
-            string prefix = "[" + node.name + "] ";
-            if (UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag))
-                UvtLog.Info(UvtLog.Category.RemeshDiag, prefix +
-                    $"cage: {baked.weldedPositions:N0} welded positions ({baked.splitCopies:N0} split copies), {baked.cageSides:N0} sides " +
-                    $"({baked.foldedPositions:N0} double-sided positions), {baked.oneSidedNormals:N0} vertices off their cage by >30° (max {baked.maxOneSidedDeg:F0}°), " +
-                    $"reach up to {baked.maxReachRatio:F1}× the projection distance, {baked.zeroNormals:N0} zero normals; " +
-                    $"projection: {baked.rayFallbacks:N0} nearest-fallback samples, {baked.misses:N0} missed texels, front-face filter {(baked.facingFilter ? "on" : "off")}, " +
-                    $"{baked.twoSidedFaces:N0} two-sided source faces; " +
-                    $"normal map tilt: mean {baked.meanTiltDeg:F1}° / max {baked.maxTiltDeg:F0}°, {baked.loudTexels:N0} texels >45°; " +
-                    $"bounds diagonal: source {captured.diagonal:F3} / target {targetDiagonal:F3} (ratio {scaleRatio:F2})");
-            if (baked.zeroNormals > 0)
-                UvtLog.Warn(UvtLog.Category.RemeshDiag, prefix +
-                    baked.zeroNormals + " result vertices have zero normals — their texels bake through zeroed ray directions " +
-                    "and tangent frames. Re-run the UV stage; if it repeats, the remesh produced degenerate faces (lower simplification error or raise voxel resolution).");
-            else if (baked.rayFallbacks > baked.covered * 4 / 5 && baked.covered > 0)
-                UvtLog.Warn(UvtLog.Category.RemeshDiag, prefix +
-                    baked.rayFallbacks.ToString("N0") + " of the projection samples fell back to nearest-point search — the rays " +
-                    "are not hitting the source. Check the projection distance and the hard-edge mode, and rebake.");
-            if (Mathf.Abs(scaleRatio - 1f) > 0.1f)
-                UvtLog.Warn(UvtLog.Category.RemeshDiag, prefix +
-                    $"target/source bounds diagonal ratio is {scaleRatio:F2} — the remeshed mesh no longer matches the source size. " +
-                    "Check voxel resolution, small-part pruning and simplification settings, and rebake.");
-            // A heavy reduction (or a proxy shape) moves the geometry INTO the normal map
-            // on purpose; a strongly tilted map is the correct result there, not a sign
-            // of displaced samples, so the warning only fires on mild decimations.
-            int sourceFaces = captured.indices.Length / 3, targetFaces = target.indices.Length / 3;
-            bool heavyReduction = shape != RemeshShape.LOD0 || targetFaces * 5 < sourceFaces;
-            if (!heavyReduction && baked.loudTexels > baked.covered / 20 && baked.meanTiltDeg > 30f)
-                UvtLog.Warn(UvtLog.Category.RemeshDiag, prefix +
-                    $"{100.0 * baked.loudTexels / Mathf.Max(1, baked.covered):F1}% of texels lean >45° with a {baked.meanTiltDeg:F0}° mean tilt — " +
-                    "the map is dominated by extreme normals. Check the hard-edge mode, projection distance and cage fit, " +
-                    "and compare against the source: fine detail should tilt a map, not saturate it.");
+            BakeHealth.Log(BakeHealth.Build(node.name, node.maps, node.source.diagonal, node.source.indices.Length / 3,
+                node.geometry.positions, node.geometry.indices.Length / 3, shape));
         }
 
         // ── meshes ──

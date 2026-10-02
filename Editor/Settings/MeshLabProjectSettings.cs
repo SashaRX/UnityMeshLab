@@ -94,12 +94,13 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField("Developer", EditorStyles.boldLabel);
             inst.showDebugUI = EditorGUILayout.Toggle(
                 new GUIContent("Show Debug UI",
-                    "When enabled, the UV2 Transfer tool shows diagnostic and "
-                    + "benchmarking sections (Parameter Sweep, Log Filters, UV0 "
-                    + "Analysis & Fix, advanced SymSplit / Repack toggles). "
-                    + "Also reveals 'Mesh Lab ▸ Export FBX Metrics' menu items "
-                    + "and the 'Assets ▸ Create ▸ Mesh Lab ▸ Sweep Test Suite' "
-                    + "action. Off by default for a clean production UI."),
+                    "When enabled, the hub shows the Diagnostics tab (parameter "
+                    + "sweep, benchmark, log filters, hierarchical probe, FBX metrics) "
+                    + "and the UV2 Transfer tool its UV0 Analysis & Fix section and "
+                    + "advanced SymSplit / Repack toggles. Also reveals the "
+                    + "'Mesh Lab ▸ Export FBX Metrics' menu items and the "
+                    + "'Assets ▸ Create ▸ Mesh Lab ▸ Sweep Test Suite' action. "
+                    + "Off by default for a clean production UI."),
                 inst.showDebugUI);
 
             EditorGUILayout.Space(12);

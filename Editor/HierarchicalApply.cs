@@ -98,7 +98,7 @@ namespace SashaRX.UnityMeshLab
         static bool ApplyToSelectedLodGroupValidate()
         {
             // Experimental cascade surface — hidden unless debug UI is enabled.
-            if (!MeshLabProjectSettings.Instance.showDebugUI) return false;
+            if (!DebugUi.Enabled) return false;
             var sel = Selection.activeGameObject;
             return sel != null && sel.GetComponentInParent<LODGroup>() != null;
         }

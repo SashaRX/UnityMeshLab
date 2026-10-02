@@ -128,7 +128,7 @@ namespace SashaRX.UnityMeshLab
         public static IDisposable NewRun(UvToolContext ctx, string label,
             bool splitTargets, SymmetrySplitShells.ThresholdMode symMode)
         {
-            if (!MeshLabProjectSettings.Instance.showDebugUI) return NoOpScope.Instance;
+            if (!DebugUi.Enabled) return NoOpScope.Instance;
             if (Current != null) return NoOpScope.Instance;
             Current = new BenchmarkRecorder(ctx, label, splitTargets, symMode);
             return Current;

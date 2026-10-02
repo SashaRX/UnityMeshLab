@@ -502,8 +502,14 @@ namespace SashaRX.UnityMeshLab
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
 
+            // Debug-only tabs (IUvToolDebugOnly) show with Show Debug UI on; when the
+            // setting goes off while one is active, the hub falls back to the first tab.
+            bool debug = DebugUi.Enabled;
+            if (!debug && activeToolIndex >= 0 && activeToolIndex < tools.Count && tools[activeToolIndex] is IUvToolDebugOnly)
+                SwitchTool(0);
             for (int i = 0; i < tools.Count; i++)
             {
+                if (!debug && tools[i] is IUvToolDebugOnly) continue;
                 var bg = GUI.backgroundColor;
                 if (i == activeToolIndex)
                     GUI.backgroundColor = new Color(.35f, .65f, 1f);
