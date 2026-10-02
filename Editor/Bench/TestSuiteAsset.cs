@@ -147,7 +147,7 @@ namespace SashaRX.UnityMeshLab
             [Tooltip("Probe v3 — per-face stay/promote classification on every fine-LOD face vs the deepest LOD. Output: hier_probe.csv.")]
             public bool hierarchicalProbe = true;
 
-            [Tooltip("Hierarchical Repack dry-run — per-vertex projection classifier, atlas layout. Output: hier_repack.csv (+ atlas PNG when available).")]
+            [Tooltip("Hierarchical Repack dry-run — cascade atlas layout and Stage E metrics. Output: stage_e_metrics.csv plus diagnostic atlas/final-UV2/overlap PNGs.")]
             public bool hierarchicalRepack = true;
 
             [Tooltip("Stage D cascade-threshold sweep — rebuilds each case across the " +

@@ -31,8 +31,8 @@ namespace SashaRX.UnityMeshLab
         /// <summary>When non-null, every BenchmarkRecorder session's
         /// <see cref="WriteArtefacts"/> writes its CSV/JSON/PNG output into
         /// this directory instead of the default <c>BenchmarkReports/</c>
-        /// top level. ExecBenchmark sets this to the per-case directory so
-        /// every cell's artefacts land alongside hier_repack.csv etc.
+        /// top level. Benchmark orchestration sets this to its active output
+        /// directory.
         /// Outside-of-bench callers leave it null.</summary>
         public static string OutputDirectoryOverride;
 
@@ -373,8 +373,8 @@ namespace SashaRX.UnityMeshLab
             // that drove the full path past Windows MAX_PATH = 260 on
             // assets with long lodGroup / modeTag combos, e.g.
             // 02_Wooden_Box_Long/legacy/{long}_png/{file}.png =
-            // ≈290 chars and OS rejects). Parent dir already
-            // discriminates the cell uniquely.
+            // ≈290 chars and OS rejects). Sweep cells currently share this
+            // directory and replace matching renderer/LOD snapshot names.
             int pngCount = 0;
             string pngDir = Path.Combine(dir, "uv2_png");
             Directory.CreateDirectory(pngDir);

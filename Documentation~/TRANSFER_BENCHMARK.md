@@ -249,9 +249,11 @@ product (N = product of array lengths). Each cell:
 3. Runs `ExecFullPipeline("sweep_res{R}_pad{S}_bdr{B}")` — each cell's CSV
    + JSON carry the cell identifier in the filename and as the `runLabel`
    column. BenchmarkRecorder additionally dumps one PNG per recorded mesh
-   into a sibling `{fileBase}_png/` folder, showing the result UV2
+   into the active output's `uv2_png/` folder, showing the result UV2
    (repacked mesh on source LOD, transferred mesh on target LODs) with
-   per-shell coloring — so visual diffs between cells are immediate. To keep
+   per-shell coloring. Sweep cells currently reuse renderer/LOD filenames, so
+   later cells replace earlier snapshots; the PNGs are current-run diagnostics,
+   not reliable per-cell comparison evidence. To keep
    diagnostic output from exhausting Editor resources, each run writes at most
    32 snapshots and skips meshes above 200,000 UV vertices or 600,000 triangle
    indices.
@@ -326,8 +328,8 @@ silencer persisted per user in EditorPrefs
 
 ## Go / Stop criteria (suggested thresholds)
 
-These are rules of thumb — adjust per case in the `TestSuiteAsset` expectations
-list.
+These are rules of thumb. `TestSuiteAsset.expectations` records the intended
+ranges for review, but the current runner does not enforce them automatically.
 
 - **Inverted faces:** 0. Any non-zero = STOP.
 - **Overlap shell pairs (diff-src):** 0 on source LOD. Up to 2 tolerable on

@@ -135,14 +135,11 @@ namespace SashaRX.UnityMeshLab
                 sweepDir = Path.Combine(defaultReportsDir, $"sweep_{sweepStamp}");
             }
             Directory.CreateDirectory(sweepDir);
-            // Per-cell PNG thumbnail dirs now live INSIDE sweepDir alongside
-            // the per-cell CSVs (LightmapTransferTool sets
-            // BenchmarkRecorder.OutputDirectoryOverride = sweepDir before
-            // running cells). Previously they were emitted as siblings of
-            // sweepDir under BenchmarkReports/; index.html linked via
-            // "../<base>_png/<file>". With the new layout the thumbnails
-            // are children of sweepDir, so BuildThumbsCell looks inside it
-            // and the relative link is just "<base>_png/<file>".
+            // PNG thumbnails live in the short shared uv2_png/ directory
+            // under sweepDir. This avoids long Windows paths, but matching
+            // renderer/LOD names are replaced by later cells; until snapshots
+            // are isolated per cell, the gallery must not be treated as
+            // historical visual evidence for every CSV row.
             string reportsDir = sweepDir;
 
             var summaries = new List<RunSummary>(n);
@@ -576,7 +573,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Emit a self-contained <c>index.html</c> gallery into the sweep
         /// directory. One sortable row per run with per-LOD UV2 thumbnails
-        /// linking back into <c>BenchmarkReports/&lt;csvBase&gt;_png/</c>. The
+        /// linking back into the run's <c>uv2_png/</c> directory. The
         /// winner row is highlighted via a <c>winner</c> CSS class. The file
         /// is UTF-8 (no BOM) and uses no external dependencies.
         /// </summary>
@@ -712,13 +709,12 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Resolve the sibling <c>&lt;csvBase&gt;_png/</c> directory for a
+        /// Resolve the run's <c>uv2_png/</c> directory for a
         /// run's CSV and emit the inner HTML for the "UV2 thumbs" cell —
         /// one anchored thumbnail per PNG, sorted by file name so LOD0 lands
         /// before LOD1, LOD2, … Returns <c>&lt;em&gt;(no PNG)&lt;/em&gt;</c>
         /// when the directory is missing or empty.
-        /// PNG dir is always sibling-of-CSV (named <c>&lt;csvBase&gt;_png</c>);
-        /// the link is computed relative to <paramref name="indexDir"/> so the
+        /// The link is computed relative to <paramref name="indexDir"/> so the
         /// gallery works both during a forward sweep (index.html lives next
         /// to PNG dirs) and during rebuild (index.html lives in a separate
         /// sweep_recovered_* folder, PNGs stay beside the original CSVs).

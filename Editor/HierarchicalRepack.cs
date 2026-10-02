@@ -1143,8 +1143,8 @@ namespace SashaRX.UnityMeshLab
         // ─── Public callable for the unified benchmark orchestrator ──
 
         /// <summary>Build the hierarchical atlas for a single LODGroup and write
-        /// the dry-run CSV into <paramref name="outputDir"/> as
-        /// <c>repack.csv</c> plus diagnostic PNGs. Returns the build
+        /// <c>stage_e_metrics.csv</c> plus diagnostic PNGs into
+        /// <paramref name="outputDir"/>. Returns the build
         /// <see cref="Result"/>; the
         /// caller can inspect counters or surface a per-case summary. This is
         /// the entry point used by <c>LightmapTransferTool.ExecBenchmark</c>;
@@ -1154,14 +1154,10 @@ namespace SashaRX.UnityMeshLab
         {
             var result = Build(lg, opts);
             if (!string.IsNullOrEmpty(result.error)) return result;
-            // Diagnostic PNG outputs that survived the legacy purge:
+            // Diagnostic PNG outputs:
             //  • Stage 1   — proxy_uv2_clean/raw/auto.png
             //  • Stage B   — lodN_classical_uv2.png (per fine LOD)
             //  • Stage 2/3 — proxy_samples.png + lodN_proxy_hits.png
-            // Stage 5 single-proxy final_uv2.png, atlas.png, lodN.png
-            // (legacy domain category map) and the dry-run CSV writer
-            // were dependencies of the deleted PR-2 pipeline. They will
-            // come back during plan v2's Stage C/D/E with new layouts.
             WriteProxyUv2Png(outputDir, result);
             WriteFineClassicalUv2Pngs(outputDir, lg, result);
             WriteProxySamplesPng(outputDir, result);
@@ -1187,9 +1183,9 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Stage D threshold sweep — for each
         /// (matchFrac × minHits) grid cell, rebuild the LODGroup with those
         /// cascade thresholds and append one <c>stage_d_sweep.csv</c> row
-        /// per LOD transition per cell. No auto-winner — Stage E (which
-        /// would expose a lightmap-defect scalar) isn't built yet, so the
-        /// CSV's join/new/tiny ratios are the signal.
+        /// per LOD transition per cell. No auto-winner: inspect the Stage D
+        /// join/new/tiny ratios together with the repeated Stage E3 objective
+        /// aggregates.
         ///
         /// The CSV is the deliverable. Per-cell group iso-view PNGs
         /// (<c>lod{N}_groups_mf{F}_mh{H}.png</c>) are written ONLY when
