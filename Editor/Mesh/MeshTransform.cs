@@ -51,9 +51,15 @@ namespace SashaRX.UnityMeshLab
             if (mirrored)
                 for (int sub = 0; sub < mesh.subMeshCount; ++sub)
                 {
-                    var triangles = mesh.GetTriangles(sub);
-                    for (int i = 0; i + 2 < triangles.Length; i += 3) { int tmp = triangles[i + 1]; triangles[i + 1] = triangles[i + 2]; triangles[i + 2] = tmp; }
-                    mesh.SetTriangles(triangles, sub);
+                    // Each submesh keeps its topology; only faces have a winding to flip.
+                    var topology = mesh.GetTopology(sub);
+                    var indices = mesh.GetIndices(sub);
+                    if (topology == MeshTopology.Triangles)
+                        for (int i = 0; i + 2 < indices.Length; i += 3) { int tmp = indices[i + 1]; indices[i + 1] = indices[i + 2]; indices[i + 2] = tmp; }
+                    else if (topology == MeshTopology.Quads)
+                        for (int i = 0; i + 3 < indices.Length; i += 4) { int tmp = indices[i + 1]; indices[i + 1] = indices[i + 3]; indices[i + 3] = tmp; }
+                    else continue;
+                    mesh.SetIndices(indices, topology, sub, calculateBounds: false);
                 }
             mesh.RecalculateBounds();
         }
