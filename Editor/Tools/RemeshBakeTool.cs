@@ -409,9 +409,15 @@ namespace SashaRX.UnityMeshLab
             GUIUtility.ExitGUI();
         }
 
+        // The caller discards the task, so a failure past the pipeline's own catch would
+        // otherwise vanish as an unobserved task exception; it is logged here instead,
+        // as the former async void did through Unity's synchronization context.
         async Task ShowWhenDone(Task<bool> run, RemeshPipeline.Stage target)
         {
-            if (await run)
+            bool ok;
+            try { ok = await run; }
+            catch (Exception e) { Debug.LogException(e); saveStatus = e.Message; RequestRepaint?.Invoke(); return; }
+            if (ok)
                 previews.Show(target == RemeshPipeline.Stage.Remesh ? RemeshPreview.Stage.Remesh :
                     target == RemeshPipeline.Stage.Simplify ? RemeshPreview.Stage.Simplified : RemeshPreview.Stage.Result);
         }
