@@ -323,6 +323,10 @@ namespace SashaRX.UnityMeshLab
                             "long lets a face see across courtyards and costs a full traversal per empty texel."), settings.proxyDepth, 0.01f, 1f);
                     settings.bakeSamples = EditorGUILayout.IntPopup(new GUIContent("Samples per texel", "Supersampling for smoother edges and detail."),
                         settings.bakeSamples, Array.ConvertAll(SampleNames, n => new GUIContent(n)), SampleCounts);
+                    using (new EditorGUI.DisabledScope(!GpuBvh.Supported))
+                        settings.gpuProjection = EditorGUILayout.Toggle(new GUIContent("GPU projection",
+                            GpuBvh.Supported ? "Run the projection rays and nearest-point fallbacks on the GPU (BvhQueries.compute). Same results as the CPU BVH, usually several times faster on large atlases."
+                                             : "This platform has no compute shaders; the bake runs on the CPU."), settings.gpuProjection);
                     settings.transferVertexColor = EditorGUILayout.Toggle("Vertex color (RGB)", settings.transferVertexColor);
                     settings.transferVertexAlpha = EditorGUILayout.Toggle("Vertex alpha", settings.transferVertexAlpha);
                     settings.vertexColorTint = EditorGUILayout.Toggle(new GUIContent("Vertex color tints albedo",

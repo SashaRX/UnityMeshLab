@@ -27,12 +27,100 @@ namespace SashaRX.UnityMeshLab
             public bool facingFilter;
             public int twoSidedFaces;   // source faces whose back counts as surface (two-sided materials)
             public bool beauty;
+            public bool gpu;            // the geometry queries ran on the GPU
         }
 
-        // Thread-safe: no UnityEngine.Object access in this method or the BVH.
-        // beauty (optional) folds the scene lighting into the transferred albedo.
+        // ── Batched bake ──
+        // The bake is one code path with a pluggable query backend. Prepare builds
+        // everything the texel loop needs (coverage, BVH, cage, orientation probe);
+        // the atlas is then processed in bands of rows: BuildRequests turns a band's
+        // covered samples into ray and nearest-point queries, a resolver answers them
+        // (the CPU TriangleBvh in parallel, or GpuBvh in one dispatch per batch), and
+        // EvaluateBand turns the answers into texels. Finish adds the fills, the
+        // diagnostics, the dilation and the vertex colour transfer.
+
+        /// <summary>CPU bake: thread-safe, no UnityEngine.Object access. beauty (optional) folds the scene lighting into the albedo.</summary>
         public static Maps Bake(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents,
             RemeshSettings settings, CancellationToken token, RemeshBeauty beauty = null)
+        {
+            var ctx = Prepare(source, target, tangents, settings, token, beauty);
+            var band = new Band(ctx);
+            for (int y0 = 0; y0 < ctx.size; y0 += ctx.bandRows) {
+                int y1 = Math.Min(ctx.size, y0 + ctx.bandRows);
+                BuildRequests(ctx, band, y0, y1, token);
+                ResolveCpu(ctx, band, token);
+                EvaluateBand(ctx, band, token);
+            }
+            return Finish(ctx, token);
+        }
+
+        /// <summary>
+        /// GPU bake, driven from the main thread: the geometry queries of every band go
+        /// through <paramref name="gpu"/> (a GpuBvh over this bake's source, created by
+        /// <see cref="CreateGpu"/>), everything else runs on workers. Results mean the
+        /// same as <see cref="Bake"/>'s.
+        /// </summary>
+        public static async Task<Maps> BakeAsync(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents,
+            RemeshSettings settings, CancellationToken token, RemeshBeauty beauty, Func<Context, GpuBvh> createGpu)
+        {
+            var ctx = await Task.Run(() => Prepare(source, target, tangents, settings, token, beauty), token);
+            GpuBvh gpu = null;
+            try {
+                gpu = createGpu(ctx);
+                var band = new Band(ctx);
+                for (int y0 = 0; y0 < ctx.size; y0 += ctx.bandRows) {
+                    int y1 = Math.Min(ctx.size, y0 + ctx.bandRows);
+                    await Task.Run(() => BuildRequests(ctx, band, y0, y1, token), token);
+                    if (gpu != null) ResolveGpu(ctx, band, gpu);
+                    else await Task.Run(() => ResolveCpu(ctx, band, token), token);
+                    await Task.Run(() => EvaluateBand(ctx, band, token), token);
+                }
+                ctx.result.gpu = gpu != null;
+                return await Task.Run(() => Finish(ctx, token), token);
+            }
+            finally { gpu?.Dispose(); }
+        }
+
+        /// <summary>The GPU tree for a prepared bake: the source BVH with the oriented face normals and the either-side mask the filters use.</summary>
+        public static GpuBvh CreateGpu(Context ctx) => GpuBvh.TryCreate(ctx.bvh, ctx.faceNormals, ctx.twoSided);
+
+        /// <summary>Everything the texel loop reads; built once per bake by Prepare.</summary>
+        public sealed class Context
+        {
+            public RemeshSource source; public RemeshNative.Geometry target; public Vector4[] tangents;
+            public RemeshSettings settings; public RemeshBeauty beauty;
+            public Maps result; public int size, bandRows; public Vector2[] offsets; public int[] owners;
+            public TriangleBvh bvh; public Cage cage; public bool proxy; public Vector3[] faceDirs; public float depth;
+            public Vector3[] faceNormals;   // source faces, oriented by the winding probe
+            public bool[] twoSided;         // source faces whose back counts (null = none)
+            public bool facingFilter;
+            public bool[] emptyTexels;
+            public int misses, rayFallbacks, empties;
+        }
+
+        /// <summary>One band of rows as queries and answers; arrays are reused across bands.</summary>
+        public sealed class Band
+        {
+            public int y0, y1, count;
+            public int[] rowStart;          // per row of the band (+1 sentinel): first sample index
+            public int[] pixel, face;        // per sample
+            public Vector3[] weights;        // per sample: barycentric on the target face
+            public Vector4[] rayOrigin, rayDir, point, pointNormal;   // queries (w = reach / dotMin)
+            public GpuBvh.RayHit[] rayHit; public GpuBvh.NearestHit[] nearest;
+            public bool[] needNearest;
+
+            public Band(Context ctx)
+            {
+                int capacity = ctx.bandRows * ctx.size * ctx.offsets.Length;
+                rowStart = new int[ctx.bandRows + 1];
+                pixel = new int[capacity]; face = new int[capacity]; weights = new Vector3[capacity];
+                rayOrigin = new Vector4[capacity]; rayDir = new Vector4[capacity]; point = new Vector4[capacity]; pointNormal = new Vector4[capacity];
+                rayHit = new GpuBvh.RayHit[capacity]; nearest = new GpuBvh.NearestHit[capacity]; needNearest = new bool[capacity];
+            }
+        }
+
+        static Context Prepare(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents,
+            RemeshSettings settings, CancellationToken token, RemeshBeauty beauty)
         {
             int size = settings.textureResolution;
             int count = checked(size * size);
@@ -77,10 +165,9 @@ namespace SashaRX.UnityMeshLab
             // accepts source triangles whose normal faces the ray origin. Source winding
             // is not guaranteed to be outward, so a probe orients the normals first;
             // without a clear majority the filter stays off and the bake behaves exactly
-            // as before.
-            // Two-sided source faces (Cull Off / double-sided materials, or the setting)
-            // are surface from behind too: they pass the filter from either side and cast
-            // no vote in the winding probe.
+            // as before. Two-sided source faces (Cull Off / double-sided materials, or the
+            // setting) are surface from behind too: they pass the filter from either side
+            // and cast no vote in the probe.
             var twoSided = source.TwoSidedFaces(settings.sourceBackfaces);
             if (twoSided != null) foreach (bool two in twoSided) if (two) ++result.twoSidedFaces;
             var faceNormals = MeshGeometry.FaceNormals(source.positions, source.indices);
@@ -89,12 +176,27 @@ namespace SashaRX.UnityMeshLab
             if (winding < 0)
                 for (int f = 0; f < faceNormals.Length; ++f) faceNormals[f] = -faceNormals[f];
             result.facingFilter = facingFilter;
-            Vector3[] facing = facingFilter ? faceNormals : null;
-            bool[] eitherSide = facingFilter ? twoSided : null;
-            int misses = 0, rayFallbacks = 0, empties = 0;
-            var emptyTexels = proxy ? new bool[count] : null;
-            Parallel.For(0, size, new ParallelOptions { CancellationToken = token,
-                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, y => {
+            // Bands sized so one band's samples fit a query batch (and a modest amount of memory).
+            int bandRows = Mathf.Clamp(GpuBvh.MaxBatch / Math.Max(1, size * offsets.Length), 1, size);
+            return new Context { source = source, target = target, tangents = tangents, settings = settings, beauty = beauty,
+                result = result, size = size, bandRows = bandRows, offsets = offsets, owners = owners, bvh = bvh, cage = cage,
+                proxy = proxy, faceDirs = faceDirs, depth = depth, faceNormals = faceNormals, twoSided = twoSided,
+                facingFilter = facingFilter, emptyTexels = proxy ? new bool[count] : null };
+        }
+
+        // The band's covered samples as queries: which target face each sample lies on
+        // and where, the ray it casts (origin + reach, direction) and the nearest-point
+        // fallback (point + radius, filter normal). Row-parallel; rows are contiguous.
+        static void BuildRequests(Context ctx, Band band, int y0, int y1, CancellationToken token)
+        {
+            int size = ctx.size, rows = y1 - y0, spp = ctx.offsets.Length;
+            var target = ctx.target; var owners = ctx.owners;
+            band.y0 = y0; band.y1 = y1;
+            // Each row owns a fixed slice of the arrays (size × spp); rowStart records
+            // how much of it the row filled.
+            Parallel.For(0, rows, new ParallelOptions { CancellationToken = token,
+                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, r => {
+                int y = y0 + r, write = r * size * spp;
                 var candidates = new int[9];
                 for (int x = 0; x < size; ++x) {
                     if ((x & 63) == 0) token.ThrowIfCancellationRequested();
@@ -110,26 +212,131 @@ namespace SashaRX.UnityMeshLab
                             int f = owners[yy * size + xx];
                             if (f >= 0 && Array.IndexOf(candidates, f, 0, candidateCount) < 0) candidates[candidateCount++] = f;
                         }
-                    Color color = default, metal = default, ao = default, emission = default;
-                    Vector3 normal = Vector3.zero;
-                    int hits = 0;
-                    foreach (var offset in offsets) {
+                    foreach (var offset in ctx.offsets) {
                         var uv = new Vector2((x + offset.x) / size, (y + offset.y) / size);
                         int face = -1; Vector3 w = default;
                         for (int c = 0; c < candidateCount && face < 0; ++c)
                             if (Inside(target, candidates[c], uv, out w)) face = candidates[c];
                         if (face < 0) continue;
-                    if (!Project(source, target, tangents, cage, bvh, facing, eitherSide, beauty, face, w,
-                            proxy, faceDirs, depth, settings.vertexColorTint,
-                            out var sc, out var sn, out var sm, out var sa, out var se, out var rayFallback)) continue;
-                        if (rayFallback) Interlocked.Increment(ref rayFallbacks);
+                        int a = target.indices[face * 3], b = target.indices[face * 3 + 1], cc = target.indices[face * 3 + 2];
+                        Vector3 p = target.positions[a] * w.x + target.positions[b] * w.y + target.positions[cc] * w.z;
+                        band.pixel[write] = pixel; band.face[write] = face; band.weights[write] = w;
+                        if (ctx.proxy) {
+                            // From just outside the proxy face, inward through the whole
+                            // proxy; the fallback looks for the nearest surface within reach.
+                            Vector3 dir = ctx.faceDirs[face];
+                            float eps = ctx.depth * 1e-4f;
+                            Vector3 origin = p + dir * eps;
+                            band.rayOrigin[write] = new Vector4(origin.x, origin.y, origin.z, ctx.depth);
+                            band.rayDir[write] = new Vector4(-dir.x, -dir.y, -dir.z, 0f);
+                            band.point[write] = new Vector4(p.x, p.y, p.z, ctx.depth);
+                            band.pointNormal[write] = new Vector4(dir.x, dir.y, dir.z, 0f);
+                        }
+                        else {
+                            // From the cage's outer shell back through the surface to the
+                            // inner shell; both fallbacks stay bounded by the cage reach (an
+                            // unbounded filtered query would smear a far part across a gap).
+                            Vector3 rayN = ctx.cage.Direction(face, w);
+                            float reach = ctx.cage.Reach(face, w);
+                            Vector3 origin = p + rayN * reach;
+                            band.rayOrigin[write] = new Vector4(origin.x, origin.y, origin.z, reach * 2f);
+                            band.rayDir[write] = new Vector4(-rayN.x, -rayN.y, -rayN.z, 0f);
+                            band.point[write] = new Vector4(p.x, p.y, p.z, reach);
+                            band.pointNormal[write] = new Vector4(rayN.x, rayN.y, rayN.z, 0f);
+                        }
+                        ++write;
+                    }
+                }
+                band.rowStart[r] = write;   // end of this row's slice (compacted below)
+            });
+            // Compact the per-row slices into one contiguous range, rows in order.
+            int total = 0;
+            for (int r = 0; r < rows; ++r) {
+                int from = r * size * spp, n = band.rowStart[r] - from;
+                if (from != total && n > 0) {
+                    Array.Copy(band.pixel, from, band.pixel, total, n); Array.Copy(band.face, from, band.face, total, n);
+                    Array.Copy(band.weights, from, band.weights, total, n);
+                    Array.Copy(band.rayOrigin, from, band.rayOrigin, total, n); Array.Copy(band.rayDir, from, band.rayDir, total, n);
+                    Array.Copy(band.point, from, band.point, total, n); Array.Copy(band.pointNormal, from, band.pointNormal, total, n);
+                }
+                band.rowStart[r] = total; total += n;
+            }
+            band.rowStart[rows] = total;
+            band.count = total;
+        }
+
+        // CPU resolver: the same two queries per sample the GPU kernel answers, through
+        // the TriangleBvh, in parallel.
+        static void ResolveCpu(Context ctx, Band band, CancellationToken token)
+        {
+            var bvh = ctx.bvh; var facing = ctx.facingFilter ? ctx.faceNormals : null; var either = ctx.facingFilter ? ctx.twoSided : null;
+            Parallel.For(0, band.count, new ParallelOptions { CancellationToken = token,
+                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, i => {
+                Vector4 o = band.rayOrigin[i]; Vector3 d = band.rayDir[i];
+                var hit = facing != null ? bvh.RaycastFacingFiltered(o, d, o.w, facing, either) : bvh.Raycast(o, d, o.w);
+                band.rayHit[i] = new GpuBvh.RayHit { tri = hit.triangleIndex, t = hit.t, u = hit.barycentric.y, v = hit.barycentric.z };
+                if (hit.triangleIndex >= 0) { band.nearest[i].tri = -1; return; }
+                Vector4 q = band.point[i]; Vector3 qn = band.pointNormal[i];
+                var near = facing != null ? bvh.FindNearestNormalFiltered(q, qn, facing, 0f, q.w, either) : bvh.FindNearest(q, q.w);
+                band.nearest[i] = new GpuBvh.NearestHit { tri = near.triangleIndex, distSq = near.distSq, point = near.point, bary = near.barycentric };
+            });
+        }
+
+        // GPU resolver: one ray batch, then one nearest batch for the misses only.
+        static void ResolveGpu(Context ctx, Band band, GpuBvh gpu)
+        {
+            gpu.Raycast(band.rayOrigin, band.rayDir, band.count, ctx.facingFilter, band.rayHit);
+            int pending = 0;
+            for (int i = 0; i < band.count; ++i) {
+                band.nearest[i].tri = -1;
+                bool miss = band.rayHit[i].tri < 0;
+                band.needNearest[i] = miss;
+                // Skipped points carry radius 0 so the kernel answers "none" without traversing.
+                if (!miss) { var q = band.point[i]; band.point[i] = new Vector4(q.x, q.y, q.z, 0f); }
+                else ++pending;
+            }
+            if (pending > 0) gpu.Nearest(band.point, band.pointNormal, band.count, ctx.facingFilter, band.nearest);
+        }
+
+        // Texels from answers: material (and lighting) at every sample's source hit,
+        // averaged per texel; misses are magenta (or "empty" on proxies). Row-parallel.
+        static void EvaluateBand(Context ctx, Band band, CancellationToken token)
+        {
+            int rows = band.y1 - band.y0; var result = ctx.result; var target = ctx.target; var source = ctx.source;
+            bool vertexTint = ctx.settings.vertexColorTint;
+            Parallel.For(0, rows, new ParallelOptions { CancellationToken = token,
+                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, r => {
+                int i = band.rowStart[r], end = band.rowStart[r + 1];
+                int misses = 0, fallbacks = 0, empties = 0;
+                while (i < end) {
+                    int pixel = band.pixel[i];
+                    Color color = default, metal = default, ao = default, emission = default;
+                    Vector3 normal = Vector3.zero;
+                    int hits = 0;
+                    for (; i < end && band.pixel[i] == pixel; ++i) {
+                        int sourceFace; Vector3 sw;
+                        var ray = band.rayHit[i];
+                        if (ray.tri >= 0) { sourceFace = ray.tri; sw = new Vector3(1f - ray.u - ray.v, ray.u, ray.v); }
+                        else {
+                            var near = band.nearest[i];
+                            sourceFace = near.tri; sw = near.bary;
+                            // Non-proxy counts every fallback; a proxy counts only the ones that found something.
+                            if (sourceFace >= 0 || !ctx.proxy) ++fallbacks;
+                        }
+                        if (sourceFace < 0) continue;
+                        int face = band.face[i]; Vector3 w = band.weights[i];
+                        int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
+                        Vector3 n = (target.normals[a] * w.x + target.normals[b] * w.y + target.normals[c] * w.z).normalized;
+                        Vector4 tangent = ctx.tangents[a] * w.x + ctx.tangents[b] * w.y + ctx.tangents[c] * w.z;
+                        Evaluate(source, sourceFace, sw, n, tangent, vertexTint, out var sc, out var sn, out var sm, out var sa, out var se);
+                        if (ctx.beauty != null) sc = BeautyLight(ctx.beauty, source, sourceFace, sw, sc, sm, se).gamma;
                         color += sc.linear; metal += sm; ao += sa; emission += se;
                         normal += new Vector3(sn.r * 2 - 1, sn.g * 2 - 1, sn.b * 2 - 1);
                         ++hits;
                     }
                     if (hits == 0) {
-                        if (proxy) { emptyTexels[pixel] = true; Interlocked.Increment(ref empties); continue; }
-                        Interlocked.Increment(ref misses);
+                        if (ctx.proxy) { ctx.emptyTexels[pixel] = true; ++empties; continue; }
+                        ++misses;
                         result.color[pixel] = new Color32(255, 0, 255, 255);
                         result.normal[pixel] = new Color32(128, 128, 255, 255);
                         result.ao[pixel] = new Color32(255, 255, 255, 255);
@@ -143,11 +350,19 @@ namespace SashaRX.UnityMeshLab
                     result.metal[pixel] = metal * inv; result.ao[pixel] = ao * inv;
                     var e = emission * inv; e.a = 1; result.emission[pixel] = e;
                 }
+                if (misses > 0) Interlocked.Add(ref ctx.misses, misses);
+                if (fallbacks > 0) Interlocked.Add(ref ctx.rayFallbacks, fallbacks);
+                if (empties > 0) Interlocked.Add(ref ctx.empties, empties);
             });
-            result.misses = misses;
-            result.rayFallbacks = rayFallbacks;
-            result.empty = empties;
-            if (proxy && empties > 0) FillEmpty(result, owners, emptyTexels, token);
+        }
+
+        static Maps Finish(Context ctx, CancellationToken token)
+        {
+            var result = ctx.result; var owners = ctx.owners; int count = owners.Length;
+            result.misses = ctx.misses;
+            result.rayFallbacks = ctx.rayFallbacks;
+            result.empty = ctx.empties;
+            if (ctx.proxy && ctx.empties > 0) FillEmpty(result, owners, ctx.emptyTexels, token);
             // Normal-map tilt health: how far encoded normals lean away from the
             // tangent plane's up axis. Loud, strongly-tilted maps on smooth-ish
             // sources are the visual signature of displaced projection samples.
@@ -163,9 +378,9 @@ namespace SashaRX.UnityMeshLab
             result.meanTiltDeg = tiltN > 0 ? (float)(tiltSum / tiltN) : 0;
             result.maxTiltDeg = tiltMax;
             result.loudTexels = loud;
-            Dilate(result, owners, settings.padding, token);
-            if (settings.transferVertexColor || settings.transferVertexAlpha)
-                result.vertexColors = TransferVertexColors(source, target, bvh, settings, token);
+            Dilate(result, owners, ctx.settings.padding, token);
+            if (ctx.settings.transferVertexColor || ctx.settings.transferVertexAlpha)
+                result.vertexColors = TransferVertexColors(ctx.source, ctx.target, ctx.bvh, ctx.settings, token);
             return result;
         }
 
@@ -216,67 +431,6 @@ namespace SashaRX.UnityMeshLab
             int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
             return MeshGeometry.Barycentric(uv, target.uv[a], target.uv[b], target.uv[c], out w) &&
                 w.x >= -1e-6f && w.y >= -1e-6f && w.z >= -1e-6f;
-        }
-
-        // Trace from the destination surface point back to the source and evaluate its
-        // material there. False when neither the ray nor the bounded nearest query hits.
-        // The ray direction and reach come from the cage at the texel's corners; the
-        // tangent frame keeps the (possibly hard) vertex normal so encode matches how
-        // the mesh shades.
-        // facing (when non-null) carries the orientation-consensus source face normals
-        // that keep the ray and the fallback on the side of the surface facing the texel.
-        // proxy: the ray starts just outside the proxy face and travels inward along the
-        // face normal through the whole proxy (depth), first hit wins, no fallback.
-        static bool Project(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents, Cage cage,
-            TriangleBvh bvh, Vector3[] facing, bool[] eitherSide, RemeshBeauty beauty, int face, Vector3 w,
-            bool proxy, Vector3[] faceDirs, float depth, bool vertexTint,
-            out Color color, out Color normal, out Color metal, out Color ao, out Color emission, out bool rayFallback)
-        {
-            int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
-            Vector3 p = target.positions[a] * w.x + target.positions[b] * w.y + target.positions[c] * w.z;
-            Vector3 n = (target.normals[a] * w.x + target.normals[b] * w.y + target.normals[c] * w.z).normalized;
-            Vector4 tangent = tangents[a] * w.x + tangents[b] * w.y + tangents[c] * w.z;
-            int sourceFace; Vector3 sw;
-            rayFallback = false;
-            if (proxy) {
-                Vector3 dir = faceDirs[face];
-                float eps = depth * 1e-4f;
-                var hit = facing != null
-                    ? bvh.RaycastFacingFiltered(p + dir * eps, -dir, depth, facing, eitherSide)
-                    : bvh.Raycast(p + dir * eps, -dir, depth);
-                sourceFace = hit.triangleIndex; sw = hit.barycentric;
-                if (sourceFace < 0) {
-                    var nearest = facing != null
-                        ? bvh.FindNearestNormalFiltered(p, dir, facing, 0f, depth, eitherSide)
-                        : bvh.FindNearest(p, depth);
-                    sourceFace = nearest.triangleIndex; sw = nearest.barycentric;
-                    rayFallback = sourceFace >= 0;
-                }
-            }
-            else {
-                Vector3 rayN = cage.Direction(face, w);
-                float reach = cage.Reach(face, w);
-                var hit = facing != null
-                    ? bvh.RaycastFacingFiltered(p + rayN * reach, -rayN, reach * 2, facing, eitherSide)
-                    : bvh.Raycast(p + rayN * reach, -rayN, reach * 2);
-                sourceFace = hit.triangleIndex; sw = hit.barycentric;
-                if (sourceFace < 0) {
-                    // Both fallbacks stay bounded by the cage reach: an unbounded
-                    // filtered query would smear an unrelated far part across a gap.
-                    var nearest = facing != null
-                        ? bvh.FindNearestNormalFiltered(p, rayN, facing, 0f, reach, eitherSide)
-                        : bvh.FindNearest(p, reach);
-                    sourceFace = nearest.triangleIndex; sw = nearest.barycentric;
-                    rayFallback = true;
-                }
-            }
-            if (sourceFace < 0) {
-                color = normal = metal = ao = emission = default;
-                return false;
-            }
-            Evaluate(source, sourceFace, sw, n, tangent, vertexTint, out color, out normal, out metal, out ao, out emission);
-            if (beauty != null) color = BeautyLight(beauty, source, sourceFace, sw, color, metal, emission).gamma;
-            return true;
         }
 
         // Folds the captured scene lighting into the transferred albedo (all linear).

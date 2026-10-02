@@ -1,30 +1,16 @@
 // VertexAORayTrace.compute — GPU vertex AO via BVH ray tracing.
 // Identical algorithm to CPU path: per-vertex hemisphere sampling with BVH raycast.
 // Two kernels: BakeAO (main ray tracing) and FinalizeAO (compute final values).
+// The tree and its traversal are BvhTraversal.hlsl, bound through GpuBvh.Bind.
 
 #pragma kernel BakeAO
 #pragma kernel FinalizeAO
 
 #define FP_SCALE 100000u
-#define MAX_STACK 32
-#define EPSILON 1e-7
 
-// ── BVH Data ──
-struct BVHNode
-{
-    float3 bMin;
-    float3 bMax;
-    int left;
-    int right;
-    int triStart;
-    int triCount;
-};
-
-StructuredBuffer<BVHNode>  _BVHNodes;
-StructuredBuffer<float3>   _TriVerts;    // world-space triangle vertices
-StructuredBuffer<int>      _TriIndices;  // face index remapping
-StructuredBuffer<int>      _Tris;        // triangle vertex indices (i0,i1,i2,...)
-StructuredBuffer<float3>   _FaceNormals; // per-face normals (for backface culling)
+// The BVH buffers, ray–triangle test and traversal come from the shared include
+// (the same tree GpuBvh uploads for every GPU query in the package).
+#include "BvhTraversal.hlsl"
 
 // ── Per-vertex Data ──
 StructuredBuffer<float3>   _Positions;
@@ -51,103 +37,14 @@ float _BackfaceCulling;
 float _GroundPlane;
 float _GroundY;
 
-// ── Ray-AABB intersection (slab method) ──
-bool RayAABB(float3 origin, float3 invDir, float3 bMin, float3 bMax, float maxT)
-{
-    float3 t1 = (bMin - origin) * invDir;
-    float3 t2 = (bMax - origin) * invDir;
-    float3 tmin3 = min(t1, t2);
-    float3 tmax3 = max(t1, t2);
-    float tmin = max(max(tmin3.x, tmin3.y), max(tmin3.z, 0.0));
-    float tmax = min(min(tmax3.x, tmax3.y), tmax3.z);
-    return tmin <= min(tmax, maxT);
-}
-
-// ── Möller–Trumbore ray-triangle intersection ──
-bool RayTriangle(float3 origin, float3 dir, float3 a, float3 b, float3 c,
-                 out float t, out float3 faceNorm)
-{
-    t = 0;
-    float3 edge1 = b - a;
-    float3 edge2 = c - a;
-    faceNorm = cross(edge1, edge2);
-    float3 h = cross(dir, edge2);
-    float det = dot(edge1, h);
-
-    // Relative to the triangle's scale, like the CPU BVH: millimetre meshes must hit too.
-    if (abs(det) <= 1e-7 * sqrt(dot(edge1, edge1) * dot(edge2, edge2))) return false;
-
-    float invDet = 1.0 / det;
-    float3 s = origin - a;
-    float u = invDet * dot(s, h);
-    if (u < 0.0 || u > 1.0) return false;
-
-    float3 q = cross(s, edge1);
-    float v = invDet * dot(dir, q);
-    if (v < 0.0 || u + v > 1.0) return false;
-
-    t = invDet * dot(edge2, q);
-    return true;
-}
-
-// ── BVH Raycast (iterative with stack) ──
-// Returns: hit distance (or maxDist if no hit), and face normal of hit triangle
+// Closest hit distance (maxDist when nothing is hit) and the hit face's unit normal.
 float BVHRaycast(float3 origin, float3 dir, float maxDist, out float3 hitFaceNorm)
 {
     hitFaceNorm = float3(0, 0, 0);
-    float bestT = maxDist;
-    float3 invDir = float3(
-        abs(dir.x) > EPSILON ? 1.0 / dir.x : 1e20,
-        abs(dir.y) > EPSILON ? 1.0 / dir.y : 1e20,
-        abs(dir.z) > EPSILON ? 1.0 / dir.z : 1e20
-    );
-
-    int stack[MAX_STACK];
-    int stackPtr = 0;
-    stack[stackPtr++] = 0; // root node
-
-    while (stackPtr > 0)
-    {
-        int nodeIdx = stack[--stackPtr];
-        BVHNode node = _BVHNodes[nodeIdx];
-
-        if (!RayAABB(origin, invDir, node.bMin, node.bMax, bestT))
-            continue;
-
-        // Leaf node
-        if (node.left == -1)
-        {
-            for (int i = node.triStart; i < node.triStart + node.triCount; i++)
-            {
-                int f = _TriIndices[i];
-                int i0 = _Tris[f * 3];
-                int i1 = _Tris[f * 3 + 1];
-                int i2 = _Tris[f * 3 + 2];
-
-                float3 a = _TriVerts[i0];
-                float3 b = _TriVerts[i1];
-                float3 c = _TriVerts[i2];
-
-                float t;
-                float3 fn;
-                if (RayTriangle(origin, dir, a, b, c, t, fn) && t >= 0.0 && t < bestT)
-                {
-                    bestT = t;
-                    hitFaceNorm = fn;
-                }
-            }
-            continue;
-        }
-
-        // Internal node — push children
-        if (stackPtr < MAX_STACK - 1)
-        {
-            stack[stackPtr++] = node.right;
-            stack[stackPtr++] = node.left;
-        }
-    }
-
-    return bestT;
+    BvhRayHit hit = BvhRaycast(origin, dir, maxDist, false);
+    if (hit.tri < 0) return maxDist;
+    hitFaceNorm = _FaceNormals[hit.tri];
+    return hit.t;
 }
 
 // ══════════════════════════════════════════════════════════
@@ -204,7 +101,7 @@ void BakeAO(uint3 id : SV_DispatchThreadID)
             // ray, treat it as a miss for occlusion purposes so the ground
             // plane check below still runs (matches original goto semantics).
             bool isBackface = (_BackfaceCulling > 0.5) && (_FlipNormals < 0.5)
-                && (dot(jitteredDir, normalize(hitNorm)) > 0.0);
+                && (dot(jitteredDir, hitNorm) > 0.0);
 
             if (!isBackface)
             {

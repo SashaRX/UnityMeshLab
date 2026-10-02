@@ -67,8 +67,9 @@ namespace SashaRX.UnityMeshLab
             // Kernels
             int bakeKernel, finalKernel;
 
-            // Shared GPU buffers
-            ComputeBuffer bvhNodeBuf, triVertBuf, triIdxBuf, trisBuf, faceNormBuf, dirBuf;
+            // Shared GPU buffers: the tree through GpuBvh, the directions here
+            GpuBvh gpuBvh;
+            ComputeBuffer dirBuf;
 
             // Per-mesh data
             struct MeshSlot
@@ -167,7 +168,6 @@ namespace SashaRX.UnityMeshLab
                     throw new Exception("GPU bake did not receive any readable geometry.");
 
                 var bvh = new TriangleBvh(allVerts.ToArray(), allTris.ToArray());
-                bvh.GetGPUData(out var gpuNodes, out var gpuTriIndices, out var gpuVerts, out var gpuTris);
 
                 var directions = MeshGeometry.SphereDirections(settings.sampleCount);
                 dirCount = directions.Length;
@@ -192,18 +192,9 @@ namespace SashaRX.UnityMeshLab
                     ? combinedBounds.min.y - settings.groundOffset
                     : float.NegativeInfinity;
 
-                // Upload shared BVH data to GPU
-                int nodeStride = System.Runtime.InteropServices.Marshal.SizeOf<TriangleBvh.GPUNode>();
-                bvhNodeBuf = new ComputeBuffer(gpuNodes.Length, nodeStride);
-                bvhNodeBuf.SetData(gpuNodes);
-                triVertBuf = new ComputeBuffer(gpuVerts.Length, 12);
-                triVertBuf.SetData(gpuVerts);
-                triIdxBuf = new ComputeBuffer(gpuTriIndices.Length, 4);
-                triIdxBuf.SetData(gpuTriIndices);
-                trisBuf = new ComputeBuffer(gpuTris.Length, 4);
-                trisBuf.SetData(gpuTris);
-                faceNormBuf = new ComputeBuffer(faceNormals.Length, 12);
-                faceNormBuf.SetData(faceNormals);
+                // Upload the tree once (GpuBvh owns the buffers) and the directions
+                gpuBvh = GpuBvh.TryCreate(bvh, faceNormals);
+                if (gpuBvh == null) throw new Exception("GPU BVH unavailable (compute shaders unsupported or BvhQueries.compute missing).");
                 dirBuf = new ComputeBuffer(directions.Length, 12);
                 dirBuf.SetData(directions);
 
@@ -254,11 +245,7 @@ namespace SashaRX.UnityMeshLab
                         "Console for shader compilation errors.");
                 }
 
-                cs.SetBuffer(bakeKernel, "_BVHNodes", bvhNodeBuf);
-                cs.SetBuffer(bakeKernel, "_TriVerts", triVertBuf);
-                cs.SetBuffer(bakeKernel, "_TriIndices", triIdxBuf);
-                cs.SetBuffer(bakeKernel, "_Tris", trisBuf);
-                cs.SetBuffer(bakeKernel, "_FaceNormals", faceNormBuf);
+                gpuBvh.Bind(cs, bakeKernel);
                 cs.SetBuffer(bakeKernel, "_Directions", dirBuf);
 
                 cs.SetInt("_DirectionCount", dirCount);
@@ -443,13 +430,8 @@ namespace SashaRX.UnityMeshLab
             {
                 EditorApplication.update -= Tick;
 
-                bvhNodeBuf?.Dispose();
-                triVertBuf?.Dispose();
-                triIdxBuf?.Dispose();
-                trisBuf?.Dispose();
-                faceNormBuf?.Dispose();
-                dirBuf?.Dispose();
-                bvhNodeBuf = triVertBuf = triIdxBuf = trisBuf = faceNormBuf = dirBuf = null;
+                gpuBvh?.Dispose(); gpuBvh = null;
+                dirBuf?.Dispose(); dirBuf = null;
 
                 if (slots != null)
                 {
@@ -469,33 +451,6 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static ComputeShader FindComputeShader(string name)
-        {
-            // 1. EditorGUIUtility.Load (Editor Default Resources)
-            var cs = (ComputeShader)EditorGUIUtility.Load(name + ".compute");
-            if (cs != null) return cs;
-
-            // 2. AssetDatabase search by type + name
-            var guids = AssetDatabase.FindAssets($"t:ComputeShader {name}");
-            foreach (var guid in guids)
-            {
-                cs = AssetDatabase.LoadAssetAtPath<ComputeShader>(AssetDatabase.GUIDToAssetPath(guid));
-                if (cs != null) return cs;
-            }
-
-            // 3. Resolve relative to this script (works for UPM packages)
-            var scriptGuids = AssetDatabase.FindAssets("t:Script VertexAOBaker");
-            foreach (var guid in scriptGuids)
-            {
-                string scriptPath = AssetDatabase.GUIDToAssetPath(guid);
-                string editorDir = System.IO.Path.GetDirectoryName(scriptPath);
-                string packageRoot = System.IO.Path.GetDirectoryName(editorDir);
-                string shaderPath = packageRoot + "/Shaders/" + name + ".compute";
-                cs = AssetDatabase.LoadAssetAtPath<ComputeShader>(shaderPath);
-                if (cs != null) return cs;
-            }
-
-            return null;
-        }
+        static ComputeShader FindComputeShader(string name) => ComputeShaders.Find(name);
     }
 }

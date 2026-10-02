@@ -1,0 +1,40 @@
+// BvhQueries.compute — batched TriangleBvh queries on the GPU: one thread per
+// query, the traversal from BvhTraversal.hlsl. GpuBvh (C#) binds the BVH once and
+// streams query batches through; results carry the same meaning as the CPU
+// TriangleBvh.Raycast / FindNearest(NormalFiltered) results.
+#pragma kernel Raycast
+#pragma kernel Nearest
+
+#include "BvhTraversal.hlsl"
+
+StructuredBuffer<float4>          _RayOrigins;    // xyz origin, w = maxDist (<= 0: no query)
+StructuredBuffer<float4>          _RayDirs;       // xyz unit direction
+RWStructuredBuffer<BvhRayHit>     _RayHits;
+
+StructuredBuffer<float4>          _Points;        // xyz query point, w = maxDist (<= 0: no query)
+StructuredBuffer<float4>          _QueryNormals;  // xyz query normal, w = dotMin
+RWStructuredBuffer<BvhNearestHit> _NearestHits;
+
+uint _QueryCount;
+uint _FacingFilter;
+uint _NormalFilter;
+
+[numthreads(64, 1, 1)]
+void Raycast(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _QueryCount) return;
+    float4 o = _RayOrigins[id.x];
+    float3 d = _RayDirs[id.x].xyz;
+    _RayHits[id.x] = BvhRaycast(o.xyz, d, o.w, _FacingFilter != 0);
+}
+
+[numthreads(64, 1, 1)]
+void Nearest(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _QueryCount) return;
+    float4 p = _Points[id.x];
+    float4 n = _QueryNormals[id.x];
+    BvhNearestHit miss;
+    miss.tri = -1; miss.distSq = 0; miss.point = p.xyz; miss.bary = float3(0, 0, 0);
+    _NearestHits[id.x] = p.w > 0.0 ? BvhNearest(p.xyz, p.w * p.w, _NormalFilter != 0, n.xyz, n.w) : miss;
+}

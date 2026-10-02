@@ -420,7 +420,13 @@ namespace SashaRX.UnityMeshLab
                 // thread, and dropped again after the bake — they are float readbacks
                 // and only Beauty needs them.
                 if (nodeBeauty != null) { Report($"Reading lightmaps for {node.name}…"); source.ReadLightmaps(); }
-                try { node.maps = await Task.Run(() => RemeshBaker.Bake(source, target, frame, options, token, nodeBeauty), token); }
+                try {
+                    // GPU: the band loop is driven from here (main thread) so the compute
+                    // dispatches are legal; CPU: the whole bake on a worker.
+                    node.maps = options.gpuProjection && GpuBvh.Supported
+                        ? await RemeshBaker.BakeAsync(source, target, frame, options, token, nodeBeauty, RemeshBaker.CreateGpu)
+                        : await Task.Run(() => RemeshBaker.Bake(source, target, frame, options, token, nodeBeauty), token);
+                }
                 finally { source.ReleaseLightmaps(); }
                 // A re-bake without the transfer must not keep the previous colors.
                 node.mesh.colors = node.maps.vertexColors;
@@ -436,7 +442,7 @@ namespace SashaRX.UnityMeshLab
                 (misses == 0 ? "All covered texels projected." : $"{misses:N0} / {covered:N0} texels missed (magenta). Increase projection distance and rebake.") +
                 (empty > 0 ? $" {empty:N0} proxy texels see no geometry (alpha 0, filled from neighbours)." : "") +
                 (warnings > 0 ? $" {warnings} material warning(s), see Console." : "") +
-                $" Bake {clock.Elapsed.TotalSeconds:F1} s.";
+                $" Bake {clock.Elapsed.TotalSeconds:F1} s ({(primary.maps.gpu ? "GPU" : "CPU")} queries).";
             UvtLog.Info("[Remesh] " + Status);
         }
 

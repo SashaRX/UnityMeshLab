@@ -157,7 +157,14 @@ Before the UV stage the canvas shows the selected model as usual.
    break on hard edges), straightness, roundness, iterations, max island area and
    border length (source units, 0 = unlimited), rotation, 4×4 block alignment and
    brute-force packing. Texture size and padding set the atlas.
-5. **Bake** — projection distance (fraction of the source bounds diagonal),
+5. **Bake** — **GPU projection** (default on where compute shaders exist) runs
+   the geometry queries — the projection rays and the nearest-point fallbacks —
+   on the GPU through `Shaders/BvhQueries.compute`, the same BVH as the CPU with
+   the same filters and the same hit records, so the result is the one the CPU
+   path produces, usually several times faster on large atlases; the atlas is
+   processed in bands of rows (sample requests built on workers, answered in one
+   dispatch per batch, evaluated on workers), and the status says which path
+   ran. Projection distance (fraction of the source bounds diagonal),
    *Samples per texel* (1, 4, 9 or 16; stratified supersampling that also covers
    texels only partly inside an island, for clean chart edges and less aliasing)
    and vertex color transfer: *Vertex color (RGB)* and *Vertex alpha* copy the
@@ -334,9 +341,12 @@ Texture snapshots and Unity mesh/asset APIs stay on the main thread.
   `Editor/Geometry/GpuReadback.cs` — the one GPU → CPU texture readback (blit
   through an optional material or sub-rectangle into a linear temporary, then
   ReadPixels). Spatial queries are `Editor/TriangleBvh.cs` (3D: ray, nearest,
-  normal- and facing-filtered, with the GPU layout the AO compute kernel
-  consumes) and `Editor/TriangleBvh2D.cs` (UV space). No tool carries its own
-  copy of any of these.
+  normal- and facing-filtered, either-side masks) and `Editor/TriangleBvh2D.cs`
+  (UV space); `Editor/Geometry/GpuBvh.cs` is the same tree on the GPU with the
+  same queries in batches (`Shaders/BvhQueries.compute`), and
+  `Shaders/BvhTraversal.hlsl` is the one traversal every compute kernel includes
+  (the vertex-AO kernel binds the tree through `GpuBvh.Bind`). No tool carries
+  its own copy of any of these.
 
 ## Geometry implementation
 

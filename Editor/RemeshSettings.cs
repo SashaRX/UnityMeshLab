@@ -166,6 +166,9 @@ namespace SashaRX.UnityMeshLab
         // traversal per empty texel; a short one keeps each face to what sits behind it.
         public float proxyDepth = 0.1f;
         public int bakeSamples = 4;              // per texel: 1, 4, 9 or 16
+        // Run the bake's geometry queries (projection rays, nearest fallbacks) on the
+        // GPU through BvhQueries.compute; identical results, the CPU BVH otherwise.
+        public bool gpuProjection = true;
         public bool transferVertexColor;
         public bool transferVertexAlpha;
         // Multiply the source albedo by the source vertex color (RGB) while projecting —
