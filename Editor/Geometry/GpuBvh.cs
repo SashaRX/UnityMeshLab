@@ -55,20 +55,31 @@ namespace SashaRX.UnityMeshLab
                 throw new InvalidOperationException("BvhQueries kernels are not supported or failed to compile");
             bvh.GetGPUData(out var gpuNodes, out var gpuTriIndices, out var gpuVerts, out var gpuTris);
             FaceCount = gpuTris.Length / 3;
-            nodes = new ComputeBuffer(Math.Max(1, gpuNodes.Length), Marshal.SizeOf<TriangleBvh.GPUNode>()); nodes.SetData(gpuNodes);
-            triIndices = new ComputeBuffer(Math.Max(1, gpuTriIndices.Length), 4); triIndices.SetData(gpuTriIndices);
-            verts = new ComputeBuffer(Math.Max(1, gpuVerts.Length), 12); verts.SetData(gpuVerts);
-            tris = new ComputeBuffer(Math.Max(1, gpuTris.Length), 4); tris.SetData(gpuTris);
-            // The filters read these per face; unused, they stay 1-element dummies.
-            var n = normals != null && normals.Length == FaceCount ? normals : new Vector3[1];
-            faceNormals = new ComputeBuffer(Math.Max(1, n.Length), 12); faceNormals.SetData(n);
-            uint[] mask = new uint[1];
-            if (either != null && either.Length == FaceCount) {
-                mask = new uint[FaceCount];
-                for (int i = 0; i < FaceCount; ++i) { mask[i] = either[i] ? 1u : 0u; }
-                eitherSideCount = FaceCount;
+            // A ComputeBuffer allocation can throw mid-way (out of GPU memory);
+            // the caller's catch in TryCreate never sees a constructed instance,
+            // so release whatever was already uploaded here instead of leaking it.
+            try
+            {
+                nodes = new ComputeBuffer(Math.Max(1, gpuNodes.Length), Marshal.SizeOf<TriangleBvh.GPUNode>()); nodes.SetData(gpuNodes);
+                triIndices = new ComputeBuffer(Math.Max(1, gpuTriIndices.Length), 4); triIndices.SetData(gpuTriIndices);
+                verts = new ComputeBuffer(Math.Max(1, gpuVerts.Length), 12); verts.SetData(gpuVerts);
+                tris = new ComputeBuffer(Math.Max(1, gpuTris.Length), 4); tris.SetData(gpuTris);
+                // The filters read these per face; unused, they stay 1-element dummies.
+                var n = normals != null && normals.Length == FaceCount ? normals : new Vector3[1];
+                faceNormals = new ComputeBuffer(Math.Max(1, n.Length), 12); faceNormals.SetData(n);
+                uint[] mask = new uint[1];
+                if (either != null && either.Length == FaceCount) {
+                    mask = new uint[FaceCount];
+                    for (int i = 0; i < FaceCount; ++i) { mask[i] = either[i] ? 1u : 0u; }
+                    eitherSideCount = FaceCount;
+                }
+                eitherSide = new ComputeBuffer(Math.Max(1, mask.Length), 4); eitherSide.SetData(mask);
             }
-            eitherSide = new ComputeBuffer(Math.Max(1, mask.Length), 4); eitherSide.SetData(mask);
+            catch
+            {
+                Dispose();
+                throw;
+            }
         }
 
         /// <summary>Binds the tree (nodes, faces, normals, either-side mask) to a kernel that includes BvhTraversal.hlsl.</summary>
