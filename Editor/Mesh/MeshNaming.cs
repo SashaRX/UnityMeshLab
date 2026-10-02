@@ -17,11 +17,14 @@ namespace SashaRX.UnityMeshLab
         public const int MaxLodLevels = 8;
 
         const RegexOptions Ci = RegexOptions.IgnoreCase | RegexOptions.Compiled;
-        static readonly Regex LodSuffix = new Regex(@"^(.*?)([_\-\s]+LOD(\d+))$", Ci);
-        static readonly Regex CollisionSuffix = new Regex(@"[_\-\s]+(?:COL(?:_\w+)?|Collider|Collision)$", Ci);
-        static readonly Regex LodOrCollisionSuffix = new Regex(@"[_\-\s]+(LOD\d+|COL\w*|Collider|Collision)$", Ci);
-        static readonly Regex GroupSuffixes = new Regex(@"(?:[_\-\s]+(?:LOD\d+|COL(?:_Hull\d+)?|Collider|Collision))+$", Ci);
-        static readonly Regex PipelineSuffixes = new Regex(@"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$", RegexOptions.Compiled);
+        // A match timeout bounds the backtracking on a hostile name (an asset name is user
+        // input); every name these patterns see matches in microseconds.
+        static readonly TimeSpan MatchTimeout = TimeSpan.FromSeconds(1);
+        static readonly Regex LodSuffix = new Regex(@"^(.*?)([_\-\s]+LOD(\d+))$", Ci, MatchTimeout);
+        static readonly Regex CollisionSuffix = new Regex(@"[_\-\s]+(?:COL(?:_\w+)?|Collider|Collision)$", Ci, MatchTimeout);
+        static readonly Regex LodOrCollisionSuffix = new Regex(@"[_\-\s]+(LOD\d+|COL\w*|Collider|Collision)$", Ci, MatchTimeout);
+        static readonly Regex GroupSuffixes = new Regex(@"(?:[_\-\s]+(?:LOD\d+|COL(?:_Hull\d+)?|Collider|Collision))+$", Ci, MatchTimeout);
+        static readonly Regex PipelineSuffixes = new Regex(@"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$", RegexOptions.Compiled, MatchTimeout);
 
         /// <summary>True when the name ends with a LOD suffix of any index (valid or not).</summary>
         public static bool HasLodSuffix(string name) => !string.IsNullOrEmpty(name) && LodSuffix.IsMatch(name);
