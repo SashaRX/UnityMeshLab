@@ -67,11 +67,12 @@ strip-parameterization.
 | Piece | Location | What it does |
 | --- | --- | --- |
 | `UvtLog.Category` | `Editor/UvtLog.cs` | Per-subsystem log filter. Toggle in *Pipeline Settings → Log filters*. |
-| `BenchmarkRecorder` | `Editor/BenchmarkRecorder.cs` | Collects per-mesh metrics during `ExecFullPipeline` / `ExecTransferAll`; writes CSV + JSON into `<projectRoot>/BenchmarkReports/` on session end. Only records when *Project Settings ▸ Mesh Lab ▸ Developer ▸ Show Debug UI* is on — with the toggle off `NewRun` returns a no-op scope and no report folder is created. |
+| `BenchmarkRecorder` | `Editor/Bench/BenchmarkRecorder.cs` | Collects per-mesh metrics during `ExecFullPipeline` / `ExecTransferAll`; writes CSV + JSON into `<projectRoot>/BenchmarkReports/` on session end. Only records when *Project Settings ▸ Mesh Lab ▸ Developer ▸ Show Debug UI* is on — with the toggle off `NewRun` returns a no-op scope and no report folder is created. |
 | `SymmetrySplitShells.LastFallbackCount` / `LastTotalSplitCount` | `Editor/SymmetrySplitShells.cs` | Counters read by the recorder. |
 | `GroupedShellTransfer.LastTopologyIterations` / `LastTopologyFixed` / `LastTopologyCapHit` | `Editor/GroupedShellTransfer.cs` | Counters for the Laplacian topology pass. |
 | `UvCanvasView.ValidationFilterMask` | `Editor/Framework/UvCanvasView.cs` | Restricts the validation fill/overlay to selected `TriIssue` bits. |
-| `TestSuiteAsset` | `Editor/Settings/TestSuiteAsset.cs` | ScriptableObject registry of benchmark cases (FBX + LOD path + expected ranges). Create via `Assets → Create → Mesh Lab → Sweep Test Suite`. |
+| `SweepRunner` / `BenchmarkRunner` | `Editor/Bench/SweepRunner.cs`, `Editor/Bench/BenchmarkRunner.cs` | The sweep and the multi-model benchmark as libraries: matrix → cells, per-cell pipeline runs through an `ISweepHost` / `IBenchmarkHost` (the tab implements them), artefact routing, aggregate, manifest, archive. Any tool with an end-to-end pipeline can host them. |
+| `TestSuiteAsset` | `Editor/Bench/TestSuiteAsset.cs` | ScriptableObject registry of benchmark cases (FBX + LOD path + expected ranges). Create via `Assets → Create → Mesh Lab → Sweep Test Suite`. |
 
 ## Metrics (one CSV row per mesh × LOD)
 
