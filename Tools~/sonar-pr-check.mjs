@@ -52,9 +52,12 @@ import { pathToFileURL } from 'node:url';
 //   S4036 "use an absolute path for this command" — the editor launches `git` through
 //         PATH the way every developer tool does; an absolute path would hardcode one
 //         OS's install location, and the launchers already refuse unknown options.
+//   S1133 "remove this deprecated code someday" — an [Obsolete] forwarder IS the
+//         deprecation: it keeps a moved public API compiling for one release cycle, and
+//         the reminder to drop it belongs to the release notes, not a merge gate.
 // Rules switched OFF altogether (S125, S1104, S107, S1168; S1215 in Editor/Bench) live in
 // the scanner's begin step (.github/workflows/sonar-static-analysis.yml), with their reasons.
-export const ADVISORY_RULES = new Set(['csharpsquid:S3776', 'csharpsquid:S3267', 'csharpsquid:S3358', 'csharpsquid:S1075', 'csharpsquid:S4036']);
+export const ADVISORY_RULES = new Set(['csharpsquid:S3776', 'csharpsquid:S3267', 'csharpsquid:S3358', 'csharpsquid:S1075', 'csharpsquid:S4036', 'csharpsquid:S1133']);
 
 export function isAdvisory(finding) {
   return ADVISORY_RULES.has(finding.rule);
