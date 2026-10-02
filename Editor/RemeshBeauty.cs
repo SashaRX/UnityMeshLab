@@ -387,7 +387,7 @@ namespace SashaRX.UnityMeshLab
         // Unity orders candidates by importance, then by volume (the smaller box wins).
         static bool Before(Probe a, Probe b)
         {
-            if (a.importance != b.importance) return a.importance > b.importance;
+            if (!Mathf.Approximately(a.importance, b.importance)) return a.importance > b.importance;
             float va = a.bounded ? a.bounds.size.x * a.bounds.size.y * a.bounds.size.z : float.MaxValue;
             float vb = b.bounded ? b.bounds.size.x * b.bounds.size.y * b.bounds.size.z : float.MaxValue;
             return va < vb;
@@ -424,7 +424,7 @@ namespace SashaRX.UnityMeshLab
             }
             RemeshSource occluded = null;
             try { occluded = RemeshSource.Capture(Matrix4x4.identity, chosen, required: false, geometryOnly: true); }
-            catch (InvalidOperationException) { }
+            catch (InvalidOperationException) { /* no capturable occluder: the bake runs without scene shadows */ }
             if (occluded == null) return null;
             summary = $"{chosen.Count:N0} scene shadow caster(s) within reach, {occluded.indices.Length / 3:N0} triangles" +
                 (skipped > 0 ? $" ({skipped:N0} farthest renderer(s) over the {OccluderTriangleBudget / 1_000_000}M-triangle budget left out)" : "");
