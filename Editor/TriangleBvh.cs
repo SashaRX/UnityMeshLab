@@ -449,14 +449,17 @@ namespace SashaRX.UnityMeshLab
             out float t, out float u, out float v)
         {
             t = 0; u = 0; v = 0;
-            const float EPSILON = 1e-7f;
 
             Vector3 edge1 = b - a;
             Vector3 edge2 = c - a;
             Vector3 h = Vector3.Cross(dir, edge2);
             float det = Vector3.Dot(edge1, h);
 
-            if (det > -EPSILON && det < EPSILON) return false; // parallel
+            // Parallel test relative to the triangle's own scale: |det| ≤ |e1|·|e2|, so an
+            // absolute 1e-7 silently rejected every face of a millimetre-scale mesh
+            // (edges ~1e-4 → det ~1e-8) as "parallel" and the bake missed the whole model.
+            float scale = Mathf.Sqrt(edge1.sqrMagnitude * edge2.sqrMagnitude);
+            if (Mathf.Abs(det) <= 1e-7f * scale) return false;
 
             float invDet = 1f / det;
             Vector3 s = origin - a;

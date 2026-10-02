@@ -1104,113 +1104,41 @@ namespace SashaRX.UnityMeshLab
 
         // ─── Per-vertex projection (PR-2.7 — Frostbite-style) ────────
 
-        /// <summary>Closest point on triangle ABC to query point P. Standard
-        /// Voronoi-region algorithm (Ericson, Real-Time Collision Detection
-        /// ch. 5). No allocations, ~30 ops, branch-heavy.</summary>
-        static Vector3 ClosestPointOnTriangle(Vector3 p, Vector3 a, Vector3 b, Vector3 c)
+        /// <summary>The deepest-LOD mesh as a nearest-surface index: a <see cref="TriangleBvh"/>
+        /// over its non-degenerate faces. Replaces a brute-force scan with per-face
+        /// AABBs (O(N) per query) with the O(log N) query every projecting tool in the
+        /// package shares. Nearest() returns the face index in the input order.</summary>
+        sealed class DeepMeshIndex
         {
-            Vector3 ab = b - a, ac = c - a, ap = p - a;
-            float d1 = Vector3.Dot(ab, ap);
-            float d2 = Vector3.Dot(ac, ap);
-            if (d1 <= 0f && d2 <= 0f) return a;
+            readonly TriangleBvh bvh;
+            readonly int[] faceMap;
 
-            Vector3 bp = p - b;
-            float d3 = Vector3.Dot(ab, bp);
-            float d4 = Vector3.Dot(ac, bp);
-            if (d3 >= 0f && d4 <= d3) return b;
-
-            float vc = d1 * d4 - d3 * d2;
-            if (vc <= 0f && d1 >= 0f && d3 <= 0f)
+            public DeepMeshIndex(Face3D[] faces, Vector3[] worldVerts, int[] rawTris)
             {
-                float v = d1 / (d1 - d3);
-                return a + v * ab;
-            }
-
-            Vector3 cp = p - c;
-            float d5 = Vector3.Dot(ab, cp);
-            float d6 = Vector3.Dot(ac, cp);
-            if (d6 >= 0f && d5 <= d6) return c;
-
-            float vb = d5 * d2 - d1 * d6;
-            if (vb <= 0f && d2 >= 0f && d6 <= 0f)
-            {
-                float w = d2 / (d2 - d6);
-                return a + w * ac;
-            }
-
-            float va = d3 * d6 - d5 * d4;
-            if (va <= 0f && (d4 - d3) >= 0f && (d5 - d6) >= 0f)
-            {
-                float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-                return b + w * (c - b);
-            }
-
-            float denom = 1f / (va + vb + vc);
-            float vv = vb * denom;
-            float ww = vc * denom;
-            return a + ab * vv + ac * ww;
-        }
-
-        /// <summary>Squared distance from point q to AABB [mn, mx]; 0 if inside.
-        /// Used as an early-out filter before the expensive triangle test.</summary>
-        static float SqDistToAabb(Vector3 q, Vector3 mn, Vector3 mx)
-        {
-            float dx = q.x < mn.x ? mn.x - q.x : (q.x > mx.x ? q.x - mx.x : 0f);
-            float dy = q.y < mn.y ? mn.y - q.y : (q.y > mx.y ? q.y - mx.y : 0f);
-            float dz = q.z < mn.z ? mn.z - q.z : (q.z > mx.z ? q.z - mx.z : 0f);
-            return dx * dx + dy * dy + dz * dz;
-        }
-
-        /// <summary>Precomputed per-triangle AABBs for the deepest-LOD mesh —
-        /// pays for itself after ~3 vertex queries vs computing on the fly.</summary>
-        static void BuildDeepAabbs(Vector3[] worldVerts, int[] rawTris,
-            out Vector3[] mins, out Vector3[] maxs)
-        {
-            int n = rawTris.Length / 3;
-            mins = new Vector3[n];
-            maxs = new Vector3[n];
-            for (int f = 0; f < n; f++)
-            {
-                var a = worldVerts[rawTris[f * 3]];
-                var b = worldVerts[rawTris[f * 3 + 1]];
-                var c = worldVerts[rawTris[f * 3 + 2]];
-                mins[f] = Vector3.Min(Vector3.Min(a, b), c);
-                maxs[f] = Vector3.Max(Vector3.Max(a, b), c);
-            }
-        }
-
-        /// <summary>Find the deepest-LOD triangle whose surface is closest to
-        /// world-space query point <paramref name="q"/>. Brute-force scan with
-        /// AABB rejection — O(N) tris per query, but on our worst test models
-        /// (~4k deep tris × ~12k fine verts) totals well under a second. A BVH
-        /// is a follow-up if profiling justifies it. Returns -1 if the deep
-        /// mesh is empty.</summary>
-        static int ProjectVertexToDeepMesh(Vector3 q,
-            Face3D[] deepFaces, Vector3[] deepWorldVerts, int[] deepRawTris,
-            Vector3[] aabbMin, Vector3[] aabbMax, out float bestDist)
-        {
-            int closest = -1;
-            float bestSq = float.MaxValue;
-            int n = deepFaces.Length;
-            for (int f = 0; f < n; f++)
-            {
-                if (deepFaces[f].area <= 0f) continue;
-                if (SqDistToAabb(q, aabbMin[f], aabbMax[f]) >= bestSq) continue;
-                var a = deepWorldVerts[deepRawTris[f * 3]];
-                var b = deepWorldVerts[deepRawTris[f * 3 + 1]];
-                var c = deepWorldVerts[deepRawTris[f * 3 + 2]];
-                Vector3 pt = ClosestPointOnTriangle(q, a, b, c);
-                float dsq = (pt - q).sqrMagnitude;
-                if (dsq < bestSq)
+                var kept = new List<int>(faces.Length);
+                for (int f = 0; f < faces.Length; f++) if (faces[f].area > 0f) kept.Add(f);
+                faceMap = kept.ToArray();
+                if (faceMap.Length == 0) return;
+                var tris = new int[faceMap.Length * 3];
+                for (int i = 0; i < faceMap.Length; i++)
                 {
-                    bestSq = dsq;
-                    closest = f;
+                    int f = faceMap[i];
+                    tris[i * 3] = rawTris[f * 3]; tris[i * 3 + 1] = rawTris[f * 3 + 1]; tris[i * 3 + 2] = rawTris[f * 3 + 2];
                 }
+                bvh = new TriangleBvh(worldVerts, tris);
             }
-            bestDist = closest >= 0 ? Mathf.Sqrt(bestSq) : float.PositiveInfinity;
-            return closest;
-        }
 
+            /// <summary>Face whose surface is closest to q, with the distance; -1 when the mesh is empty.</summary>
+            public int Nearest(Vector3 q, out float distance)
+            {
+                distance = float.PositiveInfinity;
+                if (bvh == null) return -1;
+                var hit = bvh.FindNearest(q);
+                if (hit.triangleIndex < 0) return -1;
+                distance = Mathf.Sqrt(hit.distSq);
+                return faceMap[hit.triangleIndex];
+            }
+        }
 
         // ─── Public callable for the unified benchmark orchestrator ──
 
@@ -1940,8 +1868,7 @@ namespace SashaRX.UnityMeshLab
                     out _, out _);
                 int faceCount = fineFaces.Length;
                 if (faceCount == 0) continue;
-                BuildDeepAabbs(fineWorldVerts, fineRawTris,
-                    out var fineMin, out var fineMax);
+                var fineIndex = new DeepMeshIndex(fineFaces, fineWorldVerts, fineRawTris);
 
                 var proj = new FineLodProjection
                 {
@@ -1964,9 +1891,7 @@ namespace SashaRX.UnityMeshLab
                 for (int sIdx = 0; sIdx < r.proxySamples.Length; sIdx++)
                 {
                     var sm = r.proxySamples[sIdx];
-                    int closestFace = ProjectVertexToDeepMesh(sm.worldPos,
-                        fineFaces, fineWorldVerts, fineRawTris,
-                        fineMin, fineMax, out float dist);
+                    int closestFace = fineIndex.Nearest(sm.worldPos, out float dist);
                     if (closestFace < 0 || dist > distAbsThreshold)
                     {
                         proj.missedSamples++;
@@ -2226,8 +2151,7 @@ namespace SashaRX.UnityMeshLab
                     out _, out _);
                 int fineFaceCount = fineFaces.Length;
                 if (fineFaceCount == 0) continue;
-                BuildDeepAabbs(fineWorld, fineRawTris,
-                    out var fineMin, out var fineMax);
+                var fineIndex = new DeepMeshIndex(fineFaces, fineWorld, fineRawTris);
 
                 // perFineFace[shellId → hits]. List of dicts keeps total
                 // memory proportional to "faces that got any hits".
@@ -2236,9 +2160,7 @@ namespace SashaRX.UnityMeshLab
                 int totalHits = 0, totalMissed = 0;
                 foreach (var sm in samples)
                 {
-                    int closest = ProjectVertexToDeepMesh(sm.pos,
-                        fineFaces, fineWorld, fineRawTris,
-                        fineMin, fineMax, out float dist);
+                    int closest = fineIndex.Nearest(sm.pos, out float dist);
                     if (closest < 0 || dist > distAbsThreshold)
                     {
                         totalMissed++;

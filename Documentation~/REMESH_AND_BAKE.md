@@ -328,6 +328,15 @@ Texture snapshots and Unity mesh/asset APIs stay on the main thread.
 - `Editor/RemeshExporter.cs` — the save: maps, materials, meshes, prefab or FBX,
   one path for the weld and for hierarchy nodes.
 - `Editor/RemeshPreview.cs` — the 3D / UV / Maps previews.
+- `Editor/Geometry/MeshGeometry.cs` — the shared geometry routines every
+  projecting or baking tool uses (face normals, bit-exact position welding,
+  Fibonacci sample directions, 2D barycentrics, point–box distance);
+  `Editor/Geometry/GpuReadback.cs` — the one GPU → CPU texture readback (blit
+  through an optional material or sub-rectangle into a linear temporary, then
+  ReadPixels). Spatial queries are `Editor/TriangleBvh.cs` (3D: ray, nearest,
+  normal- and facing-filtered, with the GPU layout the AO compute kernel
+  consumes) and `Editor/TriangleBvh2D.cs` (UV space). No tool carries its own
+  copy of any of these.
 
 ## Geometry implementation
 

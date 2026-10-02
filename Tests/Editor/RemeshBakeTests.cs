@@ -39,11 +39,42 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void BarycentricSupportsBothWindings()
         {
-            Assert.IsTrue(RemeshBaker.Barycentric(new Vector2(0.2f,0.3f), Vector2.zero, Vector2.right, Vector2.up, out var a));
-            Assert.IsTrue(RemeshBaker.Barycentric(new Vector2(0.2f,0.3f), Vector2.zero, Vector2.up, Vector2.right, out var b));
+            Assert.IsTrue(MeshGeometry.Barycentric(new Vector2(0.2f,0.3f), Vector2.zero, Vector2.right, Vector2.up, out var a));
+            Assert.IsTrue(MeshGeometry.Barycentric(new Vector2(0.2f,0.3f), Vector2.zero, Vector2.up, Vector2.right, out var b));
             Assert.That(a.x, Is.EqualTo(0.5f).Within(1e-5f));
             Assert.That(a.y, Is.EqualTo(b.z).Within(1e-5f));
-            Assert.IsFalse(RemeshBaker.Barycentric(Vector2.zero, Vector2.zero, Vector2.zero, Vector2.zero, out _));
+            Assert.IsFalse(MeshGeometry.Barycentric(Vector2.zero, Vector2.zero, Vector2.zero, Vector2.zero, out _));
+        }
+        [Test]
+        public void BvhRaycastHitsMillimetreScaleTriangles()
+        {
+            // Edges of 1e-4: the old absolute parallel epsilon rejected det ≈ 1e-8 and the
+            // ray passed straight through. The test is relative to the triangle now.
+            float s = 1e-4f;
+            var p = new[] { new Vector3(0,0,0), new Vector3(s,0,0), new Vector3(0,s,0) };
+            var bvh = new TriangleBvh(p, new[] { 0,1,2 });
+            var hit = bvh.Raycast(new Vector3(s*0.25f, s*0.25f, 1f), Vector3.back, 2f);
+            Assert.AreEqual(0, hit.triangleIndex);
+            Assert.That(hit.t, Is.EqualTo(1f).Within(1e-5f));
+            Assert.That(hit.barycentric.x + hit.barycentric.y + hit.barycentric.z, Is.EqualTo(1f).Within(1e-4f));
+            Assert.AreEqual(-1, bvh.Raycast(new Vector3(s*2f, s*2f, 1f), Vector3.back, 2f).triangleIndex, "beside the triangle");
+            Assert.AreEqual(-1, bvh.Raycast(new Vector3(s*0.25f, s*0.25f, 1f), Vector3.right, 2f).triangleIndex, "parallel to it");
+        }
+        [Test]
+        public void MeshGeometryHelpersAgreeWithTheirDefinitions()
+        {
+            var p = new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.zero, Vector3.right };
+            var slots = MeshGeometry.WeldPositions(p, out int count);
+            Assert.AreEqual(3, count); Assert.AreEqual(slots[0], slots[3]); Assert.AreEqual(slots[1], slots[4]); Assert.AreNotEqual(slots[0], slots[2]);
+            var n = MeshGeometry.FaceNormals(p, new[] { 0,1,2, 0,0,1 });
+            Assert.That(Vector3.Angle(n[0], Vector3.forward), Is.LessThan(1e-4f)); Assert.AreEqual(Vector3.zero, n[1]);
+            var dirs = MeshGeometry.SphereDirections(64);
+            Assert.AreEqual(64, dirs.Length);
+            Vector3 sum = Vector3.zero;
+            foreach (var d in dirs) { Assert.That(d.magnitude, Is.EqualTo(1f).Within(1e-5f)); sum += d; }
+            Assert.That(sum.magnitude, Is.LessThan(2f), "evenly spread: the directions nearly cancel");
+            Assert.That(MeshGeometry.SqDistToAabb(new Vector3(2,0,0), Vector3.zero, Vector3.one), Is.EqualTo(1f).Within(1e-6f));
+            Assert.AreEqual(0f, MeshGeometry.SqDistToAabb(new Vector3(0.5f,0.5f,0.5f), Vector3.zero, Vector3.one));
         }
         [Test]
         public void MaterialChannelsRemainSeparateAndEmissionRetainsHdr()

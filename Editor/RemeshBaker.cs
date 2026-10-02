@@ -59,7 +59,7 @@ namespace SashaRX.UnityMeshLab
             bool proxy = settings.sourceShape != RemeshShape.LOD0;
             Vector3[] faceDirs = null; float depth = 0;
             if (proxy) {
-                faceDirs = FaceNormals(target.positions, target.indices);
+                faceDirs = MeshGeometry.FaceNormals(target.positions, target.indices);
                 depth = Mathf.Max(source.diagonal * settings.proxyDepth, source.diagonal * 1e-4f);
             }
             // Projection rays follow the smooth welded "cage" direction, not the vertex
@@ -83,7 +83,7 @@ namespace SashaRX.UnityMeshLab
             // no vote in the winding probe.
             var twoSided = source.TwoSidedFaces(settings.sourceBackfaces);
             if (twoSided != null) foreach (bool two in twoSided) if (two) ++result.twoSidedFaces;
-            var faceNormals = FaceNormals(source.positions, source.indices);
+            var faceNormals = MeshGeometry.FaceNormals(source.positions, source.indices);
             int winding = ProbeWinding(bvh, source.positions, faceNormals, twoSided);
             bool facingFilter = winding != 0;
             if (winding < 0)
@@ -214,7 +214,7 @@ namespace SashaRX.UnityMeshLab
         static bool Inside(RemeshNative.Geometry target, int face, Vector2 uv, out Vector3 w)
         {
             int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
-            return Barycentric(uv, target.uv[a], target.uv[b], target.uv[c], out w) &&
+            return MeshGeometry.Barycentric(uv, target.uv[a], target.uv[b], target.uv[c], out w) &&
                 w.x >= -1e-6f && w.y >= -1e-6f && w.z >= -1e-6f;
         }
 
@@ -377,19 +377,12 @@ namespace SashaRX.UnityMeshLab
             var positions = target.positions; var indices = target.indices;
             int corners = indices.Length, faces = corners / 3;
             // Bit-exact position weld: xatlas and the simplifier copy coordinates exactly.
-            var slots = new int[positions.Length];
-            var map = new System.Collections.Generic.Dictionary<(int, int, int), int>(positions.Length);
-            for (int i = 0; i < positions.Length; ++i) {
-                var p = positions[i];
-                var key = (BitConverter.SingleToInt32Bits(p.x), BitConverter.SingleToInt32Bits(p.y), BitConverter.SingleToInt32Bits(p.z));
-                if (!map.TryGetValue(key, out int slot)) { slot = map.Count; map[key] = slot; }
-                slots[i] = slot;
-            }
+            var slots = MeshGeometry.WeldPositions(positions, out int positionCount);
             // Sides: per position a linked list of clusters; a corner joins the cluster
             // whose running sum its face normal agrees with best (within 120°), else
             // opens a new one. A sum only ever grows (every member has a positive dot
             // with it), so it never cancels the way a plain position weld does.
-            var firstSide = new int[map.Count];
+            var firstSide = new int[positionCount];
             for (int i = 0; i < firstSide.Length; ++i) firstSide[i] = -1;
             var nextSide = new System.Collections.Generic.List<int>();
             var sideSum = new System.Collections.Generic.List<Vector3>();
@@ -434,7 +427,7 @@ namespace SashaRX.UnityMeshLab
             var welded = new RemeshNative.Geometry { normals = (Vector3[])sideDir.Clone(), indices = cornerSide };
             RemeshNative.SmoothNormals(welded, smoothing);
             var cage = new Cage { directions = new Vector3[corners], reach = new float[corners], side = cornerSide,
-                positions = map.Count, sides = sideCount, distance = distance };
+                positions = positionCount, sides = sideCount, distance = distance };
             var deviated = new bool[positions.Length];
             for (int c = 0; c < corners; ++c) {
                 int sd = cornerSide[c], v = indices[c];
@@ -548,16 +541,6 @@ namespace SashaRX.UnityMeshLab
             return colors;
         }
 
-        internal static bool Barycentric(Vector2 p, Vector2 a, Vector2 b, Vector2 c, out Vector3 weights)
-        {
-            Vector2 ab = b - a, ac = c - a, ap = p - a;
-            float det = ab.x * ac.y - ab.y * ac.x;
-            if (Mathf.Abs(det) < 1e-15f) { weights = Vector3.zero; return false; }
-            float v = (ap.x * ac.y - ap.y * ac.x) / det;
-            float w = (ab.x * ap.y - ab.y * ap.x) / det;
-            weights = new Vector3(1 - v - w, v, w); return true;
-        }
-
         internal static void Evaluate(RemeshSource source, int face, Vector3 w, Vector3 targetNormal, Vector4 targetTangent,
             out Color color, out Color normal, out Color metal, out Color ao, out Color emission)
             => Evaluate(source, face, w, targetNormal, targetTangent, false, out color, out normal, out metal, out ao, out emission);
@@ -624,11 +607,9 @@ namespace SashaRX.UnityMeshLab
             float radius = Mathf.Max((mx - mn).magnitude * 0.5f, 1e-6f);
             const int probes = 256;
             int outward = 0, inward = 0;
-            float golden = Mathf.PI * (3f - Mathf.Sqrt(5f));
+            var directions = MeshGeometry.SphereDirections(probes);   // evenly spread, deterministic
             for (int i = 0; i < probes; ++i) {
-                // Fibonacci sphere: evenly spread directions, deterministic.
-                float y = 1f - 2f * (i + 0.5f) / probes, r = Mathf.Sqrt(Mathf.Max(0f, 1f - y * y)), a = golden * i;
-                var dir = new Vector3(Mathf.Cos(a) * r, y, Mathf.Sin(a) * r);
+                var dir = directions[i];
                 var hit = bvh.Raycast(centre + dir * (radius * 2f), -dir, radius * 4f);
                 if (hit.triangleIndex < 0) continue;
                 if (twoSided != null && hit.triangleIndex < twoSided.Length && twoSided[hit.triangleIndex]) continue;
@@ -639,16 +620,6 @@ namespace SashaRX.UnityMeshLab
             int total = outward + inward;
             if (total < 8 || Math.Max(outward, inward) * 10 < total * 7) return 0;
             return outward >= inward ? 1 : -1;
-        }
-
-        static Vector3[] FaceNormals(Vector3[] positions, int[] indices)
-        {
-            var normals = new Vector3[indices.Length / 3];
-            for (int f = 0; f < normals.Length; ++f) {
-                int a = indices[f * 3], b = indices[f * 3 + 1], c = indices[f * 3 + 2];
-                normals[f] = Vector3.Cross(positions[b] - positions[a], positions[c] - positions[a]).normalized;
-            }
-            return normals;
         }
 
         // Proxy "empty" texels take the maps of their nearest hit texel (jump flooding

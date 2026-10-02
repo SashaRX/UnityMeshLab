@@ -31,6 +31,7 @@ See `AGENTS.md` for shared rules that apply to all AI agents.
 - **Entry point:** `Editor/Framework/UvToolHub.cs` — main EditorWindow
 - **Context:** `Editor/Framework/UvToolContext.cs` — shared state
 - **Tools:** `Editor/Tools/` — each implements `IUvTool`
+- **Geometry:** `Editor/Geometry/` — `MeshGeometry` (face normals, welding, sample directions, barycentrics) and `GpuReadback` (the one GPU → CPU texture read); spatial queries in `Editor/TriangleBvh.cs` / `TriangleBvh2D.cs`. Use these; never add a tool-local copy
 - **Native:** `Plugins/` binaries, `Native~/` C++ source
 - **Sidecar:** `Uv2DataAsset` persists UV2/collision data alongside FBX
 

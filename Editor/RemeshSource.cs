@@ -424,19 +424,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         // Weld by exact position so split-normal / UV-seam duplicates share a slot.
-        int[] WeldSlots(out int slotCount)
-        {
-            var slot = new int[positions.Length];
-            var slots = new Dictionary<(int, int, int), int>(positions.Length);
-            for (int i = 0; i < positions.Length; ++i) {
-                var p = positions[i];
-                var key = (BitConverter.SingleToInt32Bits(p.x), BitConverter.SingleToInt32Bits(p.y), BitConverter.SingleToInt32Bits(p.z));
-                if (!slots.TryGetValue(key, out int id)) { id = slots.Count; slots[key] = id; }
-                slot[i] = id;
-            }
-            slotCount = slots.Count;
-            return slot;
-        }
+        int[] WeldSlots(out int slotCount) => MeshGeometry.WeldPositions(positions, out slotCount);
 
         // Union-find over the welded slots joined by the triangles.
         int[] ComponentForest(int[] slot, int slotCount)
@@ -765,24 +753,16 @@ namespace SashaRX.UnityMeshLab
                 if (!cache.TryGetValue(key, out var image)) {
                     bytes += (long)texture.width * texture.height * (hdr ? 16 : 4);
                     if (bytes > 512L * 1024 * 1024) throw new InvalidOperationException("Source texture readback exceeds 512 MiB. Process the model in smaller groups.");
-                    var previous = RenderTexture.active;
-                    var rt = RenderTexture.GetTemporary(texture.width, texture.height, 0, hdr ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
-                    Texture2D copy = null;
+                    blit.SetFloat("_HDR", hdr ? 1 : 0);
+                    blit.SetFloat("_DecodeNormal", normal ? 1 : 0); blit.SetFloat("_ColorMap", color ? 1 : 0);
+                    var copy = GpuReadback.Read(texture, texture.width, texture.height, hdr, blit);
+                    if (!copy) throw new InvalidOperationException(material.name + "." + property + ": GPU readback of '" + texture.name + "' failed.");
                     try {
-                        blit.SetFloat("_HDR", hdr ? 1 : 0);
-                        blit.SetFloat("_DecodeNormal", normal ? 1 : 0); blit.SetFloat("_ColorMap", color ? 1 : 0);
-                        Graphics.Blit(texture, rt, blit);
-                        RenderTexture.active = rt;
-                        copy = new Texture2D(texture.width, texture.height, hdr ? TextureFormat.RGBAFloat : TextureFormat.RGBA32, false, true);
-                        copy.ReadPixels(new Rect(0, 0, texture.width, texture.height), 0, 0); copy.Apply();
                         image = new Image { pixels = hdr ? null : copy.GetPixels32(), hdrPixels = hdr ? copy.GetPixels() : null, srgb = color && !hdr, width = texture.width, height = texture.height,
                             wrapU = texture.wrapModeU, wrapV = texture.wrapModeV };
                         cache.Add(key, image);
                     }
-                    finally {
-                        RenderTexture.active = previous; RenderTexture.ReleaseTemporary(rt);
-                        if (copy) Object.DestroyImmediate(copy);
-                    }
+                    finally { Object.DestroyImmediate(copy); }
                 }
                 map.image = image;
                 return map;

@@ -35,22 +35,10 @@ namespace SashaRX.UnityMeshLab
             var allVertsArr = allVerts.ToArray();
             var allTrisArr = allTris.ToArray();
             var bvh = new TriangleBvh(allVertsArr, allTrisArr);
-            var directions = GenerateSphereDirections(settings.sampleCount);
+            var directions = MeshGeometry.SphereDirections(settings.sampleCount);
 
             // Precompute face normals for backface culling
-            Vector3[] faceNormals = null;
-            if (settings.backfaceCulling)
-            {
-                int faceCount = allTrisArr.Length / 3;
-                faceNormals = new Vector3[faceCount];
-                for (int f = 0; f < faceCount; f++)
-                {
-                    var a = allVertsArr[allTrisArr[f * 3]];
-                    var b = allVertsArr[allTrisArr[f * 3 + 1]];
-                    var c = allVertsArr[allTrisArr[f * 3 + 2]];
-                    faceNormals[f] = Vector3.Cross(b - a, c - a).normalized;
-                }
-            }
+            Vector3[] faceNormals = settings.backfaceCulling ? MeshGeometry.FaceNormals(allVertsArr, allTrisArr) : null;
 
             Bounds combinedBounds = ComputeCombinedBounds(targets);
             float extent = Mathf.Max(combinedBounds.extents.magnitude, 0.0001f);

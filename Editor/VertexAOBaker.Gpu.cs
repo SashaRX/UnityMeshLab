@@ -169,7 +169,7 @@ namespace SashaRX.UnityMeshLab
                 var bvh = new TriangleBvh(allVerts.ToArray(), allTris.ToArray());
                 bvh.GetGPUData(out var gpuNodes, out var gpuTriIndices, out var gpuVerts, out var gpuTris);
 
-                var directions = GenerateSphereDirections(settings.sampleCount);
+                var directions = MeshGeometry.SphereDirections(settings.sampleCount);
                 dirCount = directions.Length;
 
                 // Auto batch size: larger BVH → smaller batches to avoid TDR
@@ -179,16 +179,9 @@ namespace SashaRX.UnityMeshLab
 
                 // Precompute face normals
                 int faceCount = totalTris;
-                var faceNormals = new Vector3[faceCount];
                 var allVertsArr = allVerts.ToArray();
                 var allTrisArr = allTris.ToArray();
-                for (int f = 0; f < faceCount; f++)
-                {
-                    var a = allVertsArr[allTrisArr[f * 3]];
-                    var b = allVertsArr[allTrisArr[f * 3 + 1]];
-                    var c = allVertsArr[allTrisArr[f * 3 + 2]];
-                    faceNormals[f] = Vector3.Cross(b - a, c - a).normalized;
-                }
+                var faceNormals = MeshGeometry.FaceNormals(allVertsArr, allTrisArr);
 
                 Bounds combinedBounds = ComputeCombinedBounds(targets);
                 float extent = Mathf.Max(combinedBounds.extents.magnitude, 0.0001f);

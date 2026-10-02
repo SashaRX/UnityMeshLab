@@ -54,7 +54,7 @@ namespace SashaRX.UnityMeshLab
             var result = new Result { mesh = mesh, classes = new byte[faces] };
             if (faces == 0 || sourceIndices.Length < 3) return result;
             var bvh = new TriangleBvh(sourcePositions, sourceIndices);
-            var sourceNormals = FaceNormals(sourcePositions, sourceIndices);
+            var sourceNormals = MeshGeometry.FaceNormals(sourcePositions, sourceIndices);
             var classes = Classify(mesh, bvh, sourceNormals, maxDistance, token, out int kept);
             // A source wound inside out would reject everything; judge it by its flipped
             // normals instead, and give up (keep all) when neither reading keeps a tenth.
@@ -134,14 +134,7 @@ namespace SashaRX.UnityMeshLab
             var positions = mesh.positions; var indices = mesh.indices;
             int faces = indices.Length / 3;
             if (faces < 2) return 0;
-            var slots = new int[positions.Length];
-            var map = new Dictionary<(int, int, int), int>(positions.Length);
-            for (int i = 0; i < positions.Length; ++i) {
-                var p = positions[i];
-                var key = (BitConverter.SingleToInt32Bits(p.x), BitConverter.SingleToInt32Bits(p.y), BitConverter.SingleToInt32Bits(p.z));
-                if (!map.TryGetValue(key, out int slot)) { slot = map.Count; map[key] = slot; }
-                slots[i] = slot;
-            }
+            var slots = MeshGeometry.WeldPositions(positions, out _);
             // Edge → the faces along it with the direction each traverses it (low→high).
             var edges = new Dictionary<(int, int), List<(int face, bool dir)>>(faces * 3);
             for (int f = 0; f < faces; ++f)
@@ -184,16 +177,6 @@ namespace SashaRX.UnityMeshLab
                 ++flipped;
             }
             return flipped;
-        }
-
-        static Vector3[] FaceNormals(Vector3[] positions, int[] indices)
-        {
-            var normals = new Vector3[indices.Length / 3];
-            for (int f = 0; f < normals.Length; ++f) {
-                int a = indices[f * 3], b = indices[f * 3 + 1], c = indices[f * 3 + 2];
-                normals[f] = Vector3.Cross(positions[b] - positions[a], positions[c] - positions[a]).normalized;
-            }
-            return normals;
         }
     }
 }

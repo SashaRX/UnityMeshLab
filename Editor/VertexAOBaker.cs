@@ -110,7 +110,7 @@ namespace SashaRX.UnityMeshLab
                 return rawAO;
 
             var bvh = new TriangleBvh(allVerts.ToArray(), allTris.ToArray());
-            var directions = GenerateSphereDirections(settings.sampleCount);
+            var directions = MeshGeometry.SphereDirections(settings.sampleCount);
 
             Bounds combinedBounds = ComputeCombinedBounds(targets);
             float extent = Mathf.Max(combinedBounds.extents.magnitude, 0.0001f);
@@ -392,26 +392,6 @@ namespace SashaRX.UnityMeshLab
             var copy = UnityEngine.Object.Instantiate(mesh);
             copy.hideFlags = HideFlags.HideAndDontSave;
             return copy;
-        }
-
-        static Vector3[] GenerateSphereDirections(int count)
-        {
-            // Full sphere via golden spiral — per-vertex dot(dir, normal) filter
-            // selects the correct hemisphere. This ensures all normal orientations
-            // get equal sampling coverage (fixes black artifacts on sideways/downward faces).
-            var dirs = new Vector3[count];
-            float goldenRatio = (1f + Mathf.Sqrt(5f)) / 2f;
-            for (int i = 0; i < count; i++)
-            {
-                float cosTheta = 1f - 2f * (i + 0.5f) / count; // -1 to +1 (full sphere)
-                float sinTheta = Mathf.Sqrt(1f - cosTheta * cosTheta);
-                float phi = 2f * Mathf.PI * i / goldenRatio;
-                dirs[i] = new Vector3(
-                    sinTheta * Mathf.Cos(phi),
-                    cosTheta,
-                    sinTheta * Mathf.Sin(phi));
-            }
-            return dirs;
         }
 
         static Bounds ComputeCombinedBounds(List<(Mesh mesh, Matrix4x4 transform)> meshes)

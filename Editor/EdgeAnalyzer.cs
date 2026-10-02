@@ -89,14 +89,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── 3. Compute face normals for hard edge detection ──
-            var faceNormals = new Vector3[triCount];
-            for (int f = 0; f < triCount; f++)
-            {
-                int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
-                faceNormals[f] = Vector3.Cross(
-                    verts[i1] - verts[i0],
-                    verts[i2] - verts[i0]).normalized;
-            }
+            var faceNormals = MeshGeometry.FaceNormals(verts, tris);
 
             // ── 4. Classify each edge ──
             var report = new EdgeReport();

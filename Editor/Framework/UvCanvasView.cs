@@ -1111,19 +1111,12 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
+        /// <summary>Barycentrics of p in the UV triangle abc, true when p is inside (with a small tolerance).</summary>
         public static bool TryBarycentric(Vector2 p, Vector2 a, Vector2 b, Vector2 c, out Vector3 bary)
         {
-            Vector2 v0 = b - a, v1 = c - a, v2 = p - a;
-            float d00 = Vector2.Dot(v0, v0), d01 = Vector2.Dot(v0, v1), d11 = Vector2.Dot(v1, v1);
-            float d20 = Vector2.Dot(v2, v0), d21 = Vector2.Dot(v2, v1);
-            float denom = d00 * d11 - d01 * d01;
-            if (Mathf.Abs(denom) < 1e-8f) { bary = default; return false; }
-            float v = (d11 * d20 - d01 * d21) / denom;
-            float w = (d00 * d21 - d01 * d20) / denom;
-            float u = 1f - v - w;
-            bary = new Vector3(u, v, w);
+            if (!MeshGeometry.Barycentric(p, a, b, c, out bary)) { bary = default; return false; }
             const float eps = -1e-4f;
-            return u >= eps && v >= eps && w >= eps;
+            return bary.x >= eps && bary.y >= eps && bary.z >= eps;
         }
 
         List<MeshEntry> FilteredEntries(UvToolContext ctx)

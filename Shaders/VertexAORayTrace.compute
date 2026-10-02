@@ -74,7 +74,8 @@ bool RayTriangle(float3 origin, float3 dir, float3 a, float3 b, float3 c,
     float3 h = cross(dir, edge2);
     float det = dot(edge1, h);
 
-    if (abs(det) < EPSILON) return false;
+    // Relative to the triangle's scale, like the CPU BVH: millimetre meshes must hit too.
+    if (abs(det) <= 1e-7 * sqrt(dot(edge1, edge1) * dot(edge2, edge2))) return false;
 
     float invDet = 1.0 / det;
     float3 s = origin - a;

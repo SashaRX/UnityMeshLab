@@ -478,25 +478,11 @@ namespace SashaRX.UnityMeshLab
             var shader = Shader.Find("Hidden/MeshLab/RemeshBeautyEquirect");
             if (!shader || !cube) return null;
             var material = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-            var previous = RenderTexture.active;
-            var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
-            Texture2D copy = null;
             try {
                 material.SetFloat("_Lod", lod);
-                Graphics.Blit(cube, rt, material);
-                RenderTexture.active = rt;
-                copy = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
-                copy.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-                copy.Apply();
-                return copy.GetPixels();
+                return GpuReadback.ReadColors(cube, width, height, material);
             }
-            catch (Exception) { return null; }
-            finally {
-                RenderTexture.active = previous;
-                RenderTexture.ReleaseTemporary(rt);
-                if (copy) Object.DestroyImmediate(copy);
-                Object.DestroyImmediate(material);
-            }
+            finally { Object.DestroyImmediate(material); }
         }
 
         // Six-level equirectangular mip chain (256×128 halving down), mirroring the
@@ -535,6 +521,7 @@ namespace SashaRX.UnityMeshLab
             var region = LightmapRegion(st, lightmap.width, lightmap.height, out Vector4 regionSt);
             bool hdr = lightmap.format == TextureFormat.RGBAFloat || lightmap.format == TextureFormat.RGBAHalf;
             var pixels = ReadRegion(lightmap, region, out int width, out int height);
+            if (pixels == null) throw new InvalidOperationException("GPU readback of lightmap '" + lightmap.name + "' failed.");
             if (!hdr) {
                 bool rgbm = false;
                 int step = Math.Max(1, pixels.Length / 4096);
@@ -588,23 +575,8 @@ namespace SashaRX.UnityMeshLab
         static Color[] ReadRegion(Texture2D texture, Rect region, out int width, out int height)
         {
             RegionSize(region, texture.width, texture.height, out width, out height);
-            var previous = RenderTexture.active;
-            var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGBFloat, RenderTextureReadWrite.Linear);
-            Texture2D copy = null;
-            try {
-                // Blit(scale, offset) samples the source at uv × scale + offset — the region.
-                Graphics.Blit(texture, rt, new Vector2(region.width, region.height), new Vector2(region.x, region.y));
-                RenderTexture.active = rt;
-                copy = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
-                copy.ReadPixels(new Rect(0, 0, width, height), 0, 0);
-                copy.Apply();
-                return copy.GetPixels();
-            }
-            finally {
-                RenderTexture.active = previous;
-                RenderTexture.ReleaseTemporary(rt);
-                if (copy) Object.DestroyImmediate(copy);
-            }
+            // Blit(scale, offset) samples the source at uv × scale + offset — the region.
+            return GpuReadback.ReadColors(texture, width, height, null, new Vector2(region.width, region.height), new Vector2(region.x, region.y));
         }
     }
 }
