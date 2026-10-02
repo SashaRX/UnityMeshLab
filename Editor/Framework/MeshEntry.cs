@@ -112,26 +112,7 @@ namespace SashaRX.UnityMeshLab
             if (faceToShellByMeshAndChannel.TryGetValue(key, out var cached))
                 return cached;
 
-            int faceCount = triangles.Length / 3;
-            var faceToShell = new int[faceCount];
-            for (int i = 0; i < faceToShell.Length; i++) faceToShell[i] = -1;
-
-            try
-            {
-                var shells = UvShellExtractor.Extract(uv, triangles);
-                foreach (var shell in shells)
-                {
-                    if (shell?.faceIndices == null) continue;
-                    foreach (int f in shell.faceIndices)
-                        if (f >= 0 && f < faceToShell.Length)
-                            faceToShell[f] = shell.shellId;
-                }
-            }
-            catch
-            {
-                // Keep -1 mapping when shell extraction fails.
-            }
-
+            var faceToShell = UvTopology.FaceToShell(uv, triangles);
             faceToShellByMeshAndChannel[key] = faceToShell;
             return faceToShell;
         }
