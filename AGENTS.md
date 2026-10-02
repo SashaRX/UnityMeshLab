@@ -31,6 +31,7 @@ The canonical rule set lives in `.claude/skills/`. This file is the top-level po
 - **FBX exporter**: code gated by `#if LIGHTMAP_UV_TOOL_FBX_EXPORTER`.
 - **Regex in `LightmapTransferTool.cs`**: use fully-qualified `System.Text.RegularExpressions.Regex` — no top-level `using`.
 - **Logging**: `UvtLog.Info` / `UvtLog.Warn` / `UvtLog.Error` (prefix `[MeshLab]`).
+- **Sonar findings** (self-hosted SonarQube, `the Sonar runbook in SashaRX/Space (docs/sonar-autofix.md; here the tools live in Tools~/ and the config in ~/.config/meshlab/)`): fixed or left alone, never suppressed — no `NOSONAR`, `#pragma warning disable`, `SuppressMessage`, exclusions or issue status changes to get green.
 
 For mutation safety, package structure, serialization, CI, and release mechanics — consult the relevant skill in `.claude/skills/`, not this file.
 

@@ -24,6 +24,9 @@ on:
       - 'Tools~/**'
       - '*.md'
       - 'package.json'
+  # Manual re-run on any branch (a GITHUB_TOKEN push by a workflow starts no
+  # pull_request run of its own, so a bot commit needs this to get its checks).
+  workflow_dispatch:
 
 jobs:
   meta-files:
@@ -144,3 +147,30 @@ jobs:
 
       - name: Check for identifiers used but never declared
         run: python3 'Tools~/check_undeclared_identifiers.py' Editor Tests
+
+  csharp-compile:
+    name: Compile C# against Unity reference assemblies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('Tools~/compile_check.py') }}
+
+      # The whole package type-checks here with the .NET SDK — no Unity licence —
+      # against the UnityEngine/UnityEditor reference assemblies from NuGet, once
+      # without and once with LIGHTMAP_UV_TOOL_FBX_EXPORTER. This is what the
+      # identifier heuristic above approximates; a real CS error of any kind fails
+      # the job with a file/line annotation. The four 2021-era API gaps the
+      # references have are bridged on copied sources (see the script header).
+      - name: Build Editor and Tests (both FBX define variants)
+        run: python3 'Tools~/compile_check.py'
