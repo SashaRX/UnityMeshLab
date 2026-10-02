@@ -776,49 +776,10 @@ namespace SashaRX.UnityMeshLab
             MeshTransform.BakeMatrix(mesh, matrix);
         }
 
+        // Every renderer below the root named _LOD{n} (meshes can sit inside group
+        // containers): a compact slot list, transitions 1.0 → 0.01.
         void RebuildLodGroupFromNames()
-        {
-            if (ctx.LodGroup == null) return;
-
-            var root = ctx.LodGroup.transform;
-            var colSet = new HashSet<GameObject>(MeshHygieneUtility.FindCollisionObjects(root));
-            var lodChildren = new SortedDictionary<int, List<Renderer>>();
-
-            // Search recursively — meshes can be inside group containers
-            foreach (var r in root.GetComponentsInChildren<Renderer>(true))
-            {
-                if (r == null || r.transform == root) continue;
-                if (colSet.Contains(r.gameObject)) continue;
-
-                if (!MeshHygieneUtility.TryParseLodIndex(r.gameObject.name, out int lodIdx)) continue;
-
-                if (!lodChildren.ContainsKey(lodIdx))
-                    lodChildren[lodIdx] = new List<Renderer>();
-                lodChildren[lodIdx].Add(r);
-            }
-
-            if (lodChildren.Count == 0) return;
-
-            Undo.RecordObject(ctx.LodGroup, "Rebuild LODGroup");
-
-            // Build contiguous LOD array from sorted keys.
-            // Transitions must be strictly descending for Unity's SetLODs.
-            int lodCount = lodChildren.Count;
-            var newLods = new LOD[lodCount];
-            int idx = 0;
-            foreach (var kvp in lodChildren)
-            {
-                float screenHeight;
-                if (lodCount == 1)
-                    screenHeight = 0.01f;
-                else
-                    screenHeight = 1f - ((float)idx / (lodCount - 1)) * 0.99f; // 1.0 → 0.01
-                newLods[idx] = new LOD(screenHeight, kvp.Value.ToArray());
-                idx++;
-            }
-            ctx.LodGroup.SetLODs(newLods);
-            ctx.LodGroup.RecalculateBounds();
-        }
+            => LodHierarchy.RebuildFromNames(ctx.LodGroup, recursive: true, keepEmptySlots: false, LodHierarchy.Transitions.Linear);
 
         // ═══════════════════════════════════════════════════════════
         // Build Pipeline section: Open Prefab → Generate LODs (with
@@ -1531,20 +1492,7 @@ namespace SashaRX.UnityMeshLab
         void AssignCollisionToRoot(Mesh mesh)
         {
             if (ctx.LodGroup == null || mesh == null) return;
-
-            var root = ctx.LodGroup.gameObject;
-            var mc = root.GetComponent<MeshCollider>();
-            if (mc == null)
-            {
-                mc = Undo.AddComponent<MeshCollider>(root);
-                UvtLog.Info($"Added MeshCollider to {root.name}");
-            }
-            else
-            {
-                Undo.RecordObject(mc, "Assign Collision Mesh");
-            }
-
-            mc.sharedMesh = mesh;
+            LodHierarchy.AssignCollider(ctx.LodGroup.gameObject, mesh);
             UvtLog.Info($"Assigned collision mesh: {mesh.name}");
             requestRepaint?.Invoke();
         }
