@@ -119,9 +119,14 @@ namespace SashaRX.UnityMeshLab
                     CopyRendererSettings(e.renderer, mr);
                     created.Add(mr);
                 }
+                if (created.Count == 0)
+                {
+                    UvtLog.Warn($"Split '{e.renderer.name}': every submesh is empty; nothing to split, the object stays.");
+                    continue;
+                }
                 ReplaceInLodGroup(ctx.LodGroup, e.renderer, created, undoLabel);
                 UvtLog.Info($"Split {e.renderer.name}: {subCount} submeshes → {created.Count} objects");
-                Undo.DestroyObjectImmediate(e.renderer.gameObject);
+                RemoveSource(e.renderer.gameObject, undoLabel);
                 split++;
             }
             UvtLog.Info($"Split {split} multi-material mesh(es).");
@@ -146,6 +151,14 @@ namespace SashaRX.UnityMeshLab
                 if (group == null || !group.include || group.entries.Count < 2) continue;
                 var first = group.entries[0];
                 if (first.renderer == null || first.meshFilter == null) continue;
+                var firstMesh = first.originalMesh ?? first.fbxMesh;
+                if (firstMesh == null || !firstMesh.isReadable)
+                {
+                    // The merge lands in the first renderer; if its own geometry cannot be
+                    // read it would be replaced by the others' alone and lost.
+                    UvtLog.Warn($"Merge: '{first.renderer.name}' is not readable; enable Read/Write on its importer. Group skipped.");
+                    continue;
+                }
                 var parts = new List<(Mesh mesh, Matrix4x4 toFirst)>();
                 var destroy = new List<GameObject>();
                 Matrix4x4 worldToFirst = first.renderer.transform.worldToLocalMatrix;
@@ -238,9 +251,11 @@ namespace SashaRX.UnityMeshLab
             return mesh;
         }
 
-        // Every part's vertices and directions carried into the first part's space;
-        // attributes a part lacks are filled with neutral values so the channel survives.
-        static Mesh Combine(List<(Mesh mesh, Matrix4x4 toFirst)> parts, string name)
+        // Every part's vertices and directions carried into the first part's space
+        // (normals by the inverse transpose; a mirroring matrix flips the part's winding
+        // and tangent handedness); attributes a part lacks are filled with neutral values
+        // so the channel survives.
+        internal static Mesh Combine(List<(Mesh mesh, Matrix4x4 toFirst)> parts, string name)
         {
             bool hasNormals = false, hasTangents = false, hasColors = false;
             var hasUv = new bool[8]; var uvDim = new int[8];
@@ -271,13 +286,15 @@ namespace SashaRX.UnityMeshLab
             foreach (var (mesh, toFirst) in parts)
             {
                 int offset = pos.Count, count = mesh.vertexCount;
+                bool mirrored = toFirst.determinant < 0f;
+                var normalMatrix = toFirst.inverse.transpose;
                 var p = mesh.vertices;
                 for (int i = 0; i < count; i++) pos.Add(toFirst.MultiplyPoint3x4(p[i]));
                 if (normals != null)
                 {
                     var n = mesh.normals;
                     bool own = n != null && n.Length == count;
-                    for (int i = 0; i < count; i++) normals.Add(own ? toFirst.MultiplyVector(n[i]).normalized : Vector3.up);
+                    for (int i = 0; i < count; i++) normals.Add(own ? normalMatrix.MultiplyVector(n[i]).normalized : Vector3.up);
                 }
                 if (tangents != null)
                 {
@@ -287,7 +304,7 @@ namespace SashaRX.UnityMeshLab
                     {
                         if (!own) { tangents.Add(new Vector4(1, 0, 0, 1)); continue; }
                         var d = toFirst.MultiplyVector(new Vector3(t[i].x, t[i].y, t[i].z)).normalized;
-                        tangents.Add(new Vector4(d.x, d.y, d.z, t[i].w));
+                        tangents.Add(new Vector4(d.x, d.y, d.z, mirrored ? -t[i].w : t[i].w));
                     }
                 }
                 if (colors != null)
@@ -304,7 +321,10 @@ namespace SashaRX.UnityMeshLab
                     for (int i = 0; i < count; i++) uvs[ch].Add(own ? probe[i] : Vector4.zero);
                 }
                 var t3 = mesh.triangles;
-                for (int i = 0; i < t3.Length; i++) tris.Add(t3[i] + offset);
+                if (mirrored)
+                    for (int i = 0; i + 2 < t3.Length; i += 3) { tris.Add(t3[i] + offset); tris.Add(t3[i + 2] + offset); tris.Add(t3[i + 1] + offset); }
+                else
+                    for (int i = 0; i < t3.Length; i++) tris.Add(t3[i] + offset);
             }
             var merged = new Mesh { name = name, indexFormat = pos.Count > 65535 ? UnityEngine.Rendering.IndexFormat.UInt32 : UnityEngine.Rendering.IndexFormat.UInt16 };
             merged.SetVertices(pos);
@@ -321,6 +341,20 @@ namespace SashaRX.UnityMeshLab
             merged.SetTriangles(tris, 0);
             merged.RecalculateBounds();
             return merged;
+        }
+
+        // The split source goes away with its mesh — unless the node carries children or
+        // components beyond its mesh pair (a collider, a script), in which case the node
+        // stays as their container and only its MeshFilter and MeshRenderer are removed.
+        static void RemoveSource(GameObject source, string undoLabel)
+        {
+            bool keepNode = source.transform.childCount > 0 || source.GetComponents<Component>().Length > 3;
+            if (!keepNode) { Undo.DestroyObjectImmediate(source); return; }
+            var mr = source.GetComponent<MeshRenderer>();
+            var mf = source.GetComponent<MeshFilter>();
+            if (mr != null) Undo.DestroyObjectImmediate(mr);
+            if (mf != null) Undo.DestroyObjectImmediate(mf);
+            UvtLog.Info($"Split '{source.name}': the node stays as a container for its children / other components.");
         }
 
         static UnityEngine.Rendering.VertexAttribute UvAttribute(int channel) => UnityEngine.Rendering.VertexAttribute.TexCoord0 + channel;
