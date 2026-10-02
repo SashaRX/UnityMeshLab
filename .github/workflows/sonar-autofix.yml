@@ -220,8 +220,11 @@ jobs:
           fixer_script="$RUNNER_TEMP/tooling/sonar-fix.sh"
           # .git/ is outside the guard's `git status`: its config, hooks and info are
           # snapshotted here so the guard can prove the fixer left them alone (a planted
-          # hook or fsmonitor would otherwise run inside the push step's git).
+          # hook or fsmonitor would otherwise run inside the push step's git). The tar
+          # proves the archived members unchanged; the sorted path list also proves
+          # nothing was ADDED under those directories, which `tar -df` cannot see.
           tar -cf "$RUNNER_TEMP/git-meta.tar" .git/config .git/hooks .git/info
+          find .git/config .git/hooks .git/info | sort > "$RUNNER_TEMP/git-meta.list"
           # setsid: the fixer and everything it starts share ONE session, and that is
           # how they are stopped together — `timeout` inside sonar-fix.sh moves the CLI
           # into a process group of its own, which a process-group kill would miss.
@@ -289,8 +292,10 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
-          if ! tar -df "$RUNNER_TEMP/git-meta.tar" >/dev/null 2>&1; then
-            echo "::error::The patch changed .git/config, .git/hooks or .git/info; nothing from this run is pushed."
+          find .git/config .git/hooks .git/info | sort > "$RUNNER_TEMP/git-meta.list.now"
+          if ! tar -df "$RUNNER_TEMP/git-meta.tar" >/dev/null 2>&1 \
+             || ! diff -q "$RUNNER_TEMP/git-meta.list" "$RUNNER_TEMP/git-meta.list.now" >/dev/null 2>&1; then
+            echo "::error::The patch changed .git/config, .git/hooks or .git/info (file content or an added/removed path); nothing from this run is pushed."
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             echo "guard=false" >> "$GITHUB_OUTPUT"
             exit 0
