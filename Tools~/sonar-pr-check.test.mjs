@@ -13,6 +13,7 @@ import {
   resolveIssuePath,
   selectNewFindings,
   summaryMarkdown,
+  throwawayRun,
 } from './sonar-pr-check.mjs';
 
 const DIFF = [
@@ -180,4 +181,13 @@ test('advisory rules are reported but never gate: sorted last, counted apart, ke
   const md = summaryMarkdown(found, { title: 'T' });
   assert.match(md, /\*\*1\*\* new finding\(s\) gate this check, \*\*0\*\* severe/);
   assert.match(md, /\*\*2\*\* advisory/);
+});
+
+test('throwaway project keys decode to their PR, run and attempt; other keys and other main projects do not', () => {
+  assert.deepEqual(throwawayRun('SashaRX_UnityMeshLab_pr203_r37001458074_1', 'SashaRX_UnityMeshLab'), { pr: 203, run: '37001458074', attempt: 1 });
+  assert.deepEqual(throwawayRun('A_B_pr7_r12_2'), { pr: 7, run: '12', attempt: 2 });
+  assert.equal(throwawayRun('SashaRX_UnityMeshLab', 'SashaRX_UnityMeshLab'), null, 'the main project itself');
+  assert.equal(throwawayRun('Other_pr1_r2_1', 'SashaRX_UnityMeshLab'), null, 'another main project');
+  assert.equal(throwawayRun('SashaRX_UnityMeshLab_pr1_r2', 'SashaRX_UnityMeshLab'), null, 'no attempt');
+  assert.equal(throwawayRun(undefined), null);
 });

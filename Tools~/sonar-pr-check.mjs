@@ -16,6 +16,7 @@
 //   node Tools~/sonar-pr-check.mjs backlog --project <key> --out-dir <dir> [--max 5]
 //   node Tools~/sonar-pr-check.mjs report --project <key> [--project ...] --out-dir <dir>   (read-only)
 //   node Tools~/sonar-pr-check.mjs delete --project <key> [--project ...]
+//   node Tools~/sonar-pr-check.mjs throwaways --prefix <main project key>   (one key per line)
 //
 // Run it from the root of the checkout whose files the scan saw (`git ls-files` and
 // `git diff` are read there). Sonar component paths are repo-relative here: the .NET
@@ -748,6 +749,46 @@ async function cmdReport(opts) {
   writeStepSummary(report);
 }
 
+// Throwaway project keys carry the run that made them: <key>_pr<N>_r<runId>_<attempt>.
+const THROWAWAY_KEY = /^(.+)_pr(\d+)_r(\d+)_(\d+)$/;
+
+/** The PR, run and attempt a throwaway project key encodes, or null for any other key
+ * (or one made for a different main project when `prefix` is given). */
+export function throwawayRun(key, prefix) {
+  const m = THROWAWAY_KEY.exec(key ?? '');
+  if (!m || (prefix !== undefined && m[1] !== prefix)) {
+    return null;
+  }
+  return { pr: Number(m[2]), run: m[3], attempt: Number(m[4]) };
+}
+
+// Every throwaway project of the main project still on the server, one key per line,
+// oldest run first. A run cancelled between its scan and its delete step leaves one
+// behind; the workflow deletes those whose GitHub run is over. Browse rights suffice.
+async function cmdThrowaways(opts) {
+  if (!opts.prefix) {
+    throw new Error('throwaways: --prefix <main project key> is required');
+  }
+  const keys = [];
+  for (let page = 1; page <= 20; page += 1) {
+    const data = await sonarRequest('/api/components/search', { params: { qualifiers: 'TRK', ps: '500', p: String(page) } });
+    const batch = data.components ?? [];
+    for (const component of batch) {
+      if (throwawayRun(component.key, opts.prefix)) {
+        keys.push(component.key);
+      }
+    }
+    const total = data.paging?.total ?? 0;
+    if (batch.length === 0 || page * 500 >= total) {
+      break;
+    }
+  }
+  keys.sort((a, b) => Number(throwawayRun(a).run) - Number(throwawayRun(b).run) || throwawayRun(a).attempt - throwawayRun(b).attempt);
+  for (const key of keys) {
+    console.log(key);
+  }
+}
+
 // Best-effort: a leftover throwaway project costs disk on the server, not correctness,
 // so a failed delete warns and exits 0.
 async function cmdDelete(opts) {
@@ -775,7 +816,7 @@ async function cmdDelete(opts) {
 async function main(argv) {
   const [command, ...rest] = argv;
   const opts = parseArgs(rest);
-  const commands = { wait: cmdWait, 'pr-findings': cmdPrFindings, backlog: cmdBacklog, report: cmdReport, delete: cmdDelete };
+  const commands = { wait: cmdWait, 'pr-findings': cmdPrFindings, backlog: cmdBacklog, report: cmdReport, delete: cmdDelete, throwaways: cmdThrowaways };
   if (!commands[command]) {
     throw new Error(`usage: sonar-pr-check.mjs <${Object.keys(commands).join('|')}> [options]`);
   }
