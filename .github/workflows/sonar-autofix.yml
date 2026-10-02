@@ -325,6 +325,9 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         if: steps.changes.outputs.has_changes == 'true'
+        env:
+          # A self-hosted runner cannot install into the system /usr/share/dotnet.
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
           dotnet-version: '8.0.x'
 
