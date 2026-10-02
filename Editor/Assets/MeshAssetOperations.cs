@@ -482,7 +482,8 @@ namespace SashaRX.UnityMeshLab
                 var entries = kv.Value;
                 string exportPath;
                 bool groupSucceeded = false;
-                string tempDir = System.IO.Path.GetTempPath();
+                string tempDir = System.IO.Path.Combine(
+                    System.IO.Path.GetDirectoryName(Application.dataPath), "Library", "MeshLab");
                 // Hash the full path so two FBX files with the same filename
                 // (e.g. Assets/A/Chair.fbx and Assets/B/Chair.fbx) get distinct
                 // backup names and never overwrite each other.
@@ -502,6 +503,7 @@ namespace SashaRX.UnityMeshLab
                     string fullMeta = fullSourcePath + ".meta";
                     try
                     {
+                        System.IO.Directory.CreateDirectory(tempDir);
                         System.IO.File.Copy(fullSourcePath, System.IO.Path.Combine(tempDir, fbxBakName + ".bak"), true);
                         if (System.IO.File.Exists(fullMeta))
                             System.IO.File.Copy(fullMeta, System.IO.Path.Combine(tempDir, fbxBakName + ".meta.bak"), true);

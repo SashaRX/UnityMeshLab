@@ -26,7 +26,7 @@ namespace SashaRX.UnityMeshLab
         double _areaPreview;
         bool _hasAreaPreview;
 
-        public Action RequestRepaint { set => requestRepaint = value; }
+        public Action RequestRepaint { get => requestRepaint; set => requestRepaint = value; }
 
         internal static bool IsBruteForcePackAvailable(int internalOversample)
         {
@@ -105,19 +105,18 @@ namespace SashaRX.UnityMeshLab
         Tab tab = Tab.Setup;
 
         // ── UV0 analysis ──
-        Dictionary<int, Uv0Report> uv0Reports = new Dictionary<int, Uv0Report>();
+        readonly Dictionary<int, Uv0Report> uv0Reports = new Dictionary<int, Uv0Report>();
         bool uv0Analyzed, uv0Welded;
 
         // ── Foldouts ──
-        Dictionary<int, bool> lodFoldouts = new Dictionary<int, bool>();
-        Dictionary<int, bool> transferLodFoldouts = new Dictionary<int, bool>();
-        Dictionary<int, bool> reportLodFoldouts = new Dictionary<int, bool>();
-        bool foldOutput = true;
+        readonly Dictionary<int, bool> lodFoldouts = new Dictionary<int, bool>();
+        readonly Dictionary<int, bool> transferLodFoldouts = new Dictionary<int, bool>();
+        readonly Dictionary<int, bool> reportLodFoldouts = new Dictionary<int, bool>();
         bool foldUv0Analysis;
         bool foldValidationOverlay;
         bool splitTargetsInSymmetryStep;
         bool skipSymmetrySplitStep;
-        HashSet<int> lastSymmetrySplitLods = new HashSet<int>();
+        readonly HashSet<int> lastSymmetrySplitLods = new HashSet<int>();
 
         // ── Pipeline stage toggles (Setup tab) ──
         // Each toggle controls whether the corresponding stage runs as part
@@ -158,12 +157,6 @@ namespace SashaRX.UnityMeshLab
         // FireAndForget helper short-circuits if it's already set, so even
         // a stale event reaching the click path can't double-trigger.
         bool _pipelineInFlight;
-
-        // Working meshes UpdateRefs swapped into scene MeshFilters, registered
-        // with Undo.RegisterCreatedObjectUndo. Tracked so ResetWorkingCopies can
-        // destroy exactly those through Undo.DestroyObjectImmediate, keeping the
-        // undo chain free of references to already-destroyed meshes.
-        readonly HashSet<int> undoRegisteredMeshes = new HashSet<int>();
 
         /// <summary>
         /// Schedule a fire-and-forget async pipeline action with: (a) an
@@ -216,25 +209,16 @@ namespace SashaRX.UnityMeshLab
         }
         Vector2 reportScroll;
 
-        // ── LOD generation ──
-        int generateLodCount = 2;
-        float[] generateLodRatios = { 0.5f, 0.25f, 0.125f, 0.0625f };
-        float generateTargetError = 0.01f;
-        float generateUv2Weight = 100f;
-        float generateNormalWeight = 1f;
-        bool generateLockBorder = true;
-        bool generateAddToLodGroup = true;
-
         // ── Sidecar ──
-        string selectedSidecarPath, selectedFbxPath, selectedResetLabel;
+        string selectedSidecarPath, selectedResetLabel;
         int setupLodSelectionId = -1;
         int setupRendererSelectionId = -1;
         bool setupSelectionHasRenderers;
-        List<(GameObject go, int lodIndex, int rendererCount, int triangleCount)> cachedSetupDetectedLods =
+        readonly List<(GameObject go, int lodIndex, int rendererCount, int triangleCount)> cachedSetupDetectedLods =
             new List<(GameObject, int, int, int)>();
 
         // ── Transfer cache ──
-        Dictionary<int, GroupedShellTransfer.SourceShellInfo[]> shellTransformCache =
+        readonly Dictionary<int, GroupedShellTransfer.SourceShellInfo[]> shellTransformCache =
             new Dictionary<int, GroupedShellTransfer.SourceShellInfo[]>();
         sealed class CrossLodHintState
         {
@@ -254,9 +238,6 @@ namespace SashaRX.UnityMeshLab
         // lightmapBackups stores original renderer materials for restoration when
         // lightmap preview is active.
         bool checkerEnabled, shellColorPreviewEnabled;
-        readonly ShellColorModelPreview.PreviewShellCache shellColorPreviewCache =
-            new ShellColorModelPreview.PreviewShellCache();
-        string previewConflictNotice;
         Material lightmapPreviewMat;
         bool lightmapPreviewActive;
         readonly Dictionary<Renderer, Material[]> lightmapBackups = new Dictionary<Renderer, Material[]>();
@@ -1454,7 +1435,6 @@ namespace SashaRX.UnityMeshLab
 
         // Sync entry — used by sweep loops where each cell runs end-to-end
         // before the loop moves on. Editor blocks for the cell duration.
-        void ExecFullPipeline() => ExecFullPipelineImpl("FullPipeline", useAsync: false).GetAwaiter().GetResult();
         void ExecFullPipeline(string runLabel) => ExecFullPipelineImpl(runLabel, useAsync: false).GetAwaiter().GetResult();
 
         // Async entry — button-click path; editor main thread stays responsive.
@@ -1492,15 +1472,6 @@ namespace SashaRX.UnityMeshLab
                     }
             }
         }
-
-        /// <summary>
-        /// Run the auto-tune full pipeline. Returns <c>true</c> when the
-        /// pipeline ran end-to-end and the in-memory per-mesh state reflects
-        /// the just-completed run; returns <c>false</c> when the user
-        /// cancelled mid-flight so the caller can skip artefact recording
-        /// (stale state from a prior run would otherwise be written).
-        /// </summary>
-        bool ExecFullPipelineCore() => ExecFullPipelineCoreImpl(useAsync: false).GetAwaiter().GetResult();
 
         /// <summary>
         /// Rewind every entry's working mesh to a pristine state before a
@@ -1561,6 +1532,13 @@ namespace SashaRX.UnityMeshLab
             uv0Welded = false;
         }
 
+        /// <summary>
+        /// Run the auto-tune full pipeline. Returns <c>true</c> when the
+        /// pipeline ran end-to-end and the in-memory per-mesh state reflects
+        /// the just-completed run; returns <c>false</c> when the user
+        /// cancelled mid-flight so the caller can skip artefact recording
+        /// (stale state from a prior run would otherwise be written).
+        /// </summary>
         async Task<bool> ExecFullPipelineCoreImpl(bool useAsync)
         {
             string version = UnityEditor.PackageManager.PackageInfo
@@ -1709,7 +1687,7 @@ namespace SashaRX.UnityMeshLab
                     else if (ctx.HasRepack)
                     {
                         ctx.HasTransfer = false;
-                        stageOutcome[5] = stageRunTransfer ? StageStatus.Skipped : StageStatus.Skipped;
+                        stageOutcome[5] = StageStatus.Skipped;
                         if (!stageRunTransfer)
                             UvtLog.Info("[Pipeline] Transfer stage SKIPPED by user toggle");
                     }
@@ -1811,11 +1789,6 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
-        // Sync entry — used by sweep / auto-tune internal loops which are
-        // already on the main thread and have their own outer progress scope.
-        // Editor freezes for the pack duration (acceptable for dev tools).
-        void ExecRepack(List<MeshEntry> entries) => ExecRepackImpl(entries, useAsync: false).GetAwaiter().GetResult();
-
         // Async entry — button-click path. Editor main thread is free during
         // xatlas pack so the inline progress strip keeps repainting and Unity
         // never shows the "Hold on / Waiting for Unity's code…" busy dialog.
@@ -1843,7 +1816,13 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        void ExecRepackCore(List<MeshEntry> entries) => ExecRepackCoreImpl(entries, useAsync: false).GetAwaiter().GetResult();
+        // Interactive work yields to the editor. Sweep/benchmark runs use an already
+        // completed task so their synchronous host never waits on the editor context.
+        static Task<RepackResult[]> RepackMeshes(Mesh[] meshes, RepackOptions options, bool useAsync)
+        {
+            if (useAsync) return XatlasRepack.RepackMultiAsync(meshes, options);
+            return Task.FromResult(XatlasRepack.RepackMulti(meshes, options));
+        }
 
         async Task ExecRepackCoreImpl(List<MeshEntry> entries, bool useAsync)
         {
@@ -1919,9 +1898,7 @@ namespace SashaRX.UnityMeshLab
             opts.blockSize = ctx.XatlasBlockSize;
             opts.texelsPerUnit = ctx.XatlasTexelsPerUnit;
 
-            var results = useAsync
-                ? await XatlasRepack.RepackMultiAsync(meshCopies.ToArray(), opts)
-                : XatlasRepack.RepackMulti(meshCopies.ToArray(), opts);
+            var results = await RepackMeshes(meshCopies.ToArray(), opts, useAsync);
             for (int i = 0; i < validEntries.Count; i++)
             {
                 if (!results[i].ok)
@@ -1948,7 +1925,6 @@ namespace SashaRX.UnityMeshLab
             requestRepaint?.Invoke();
         }
 
-        void ExecRepackPerMesh(List<MeshEntry> entries) => ExecRepackPerMeshImpl(entries, useAsync: false).GetAwaiter().GetResult();
         Task ExecRepackPerMeshAsync(List<MeshEntry> entries) => ExecRepackPerMeshImpl(entries, useAsync: true);
 
         async Task ExecRepackPerMeshImpl(List<MeshEntry> entries, bool useAsync)
@@ -1964,7 +1940,6 @@ namespace SashaRX.UnityMeshLab
                 await ExecRepackImpl(kv.Value, useAsync);
         }
 
-        void ExecTransferAll() => ExecTransferAllImpl(useAsync: false).GetAwaiter().GetResult();
         Task ExecTransferAllAsync() => ExecTransferAllImpl(useAsync: true);
 
         async Task ExecTransferAllImpl(bool useAsync)
@@ -2036,8 +2011,14 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        void ExecTransferLod(int tLod) => ExecTransferLodImpl(tLod, useAsync: false).GetAwaiter().GetResult();
-        Task ExecTransferLodAsync(int tLod) => ExecTransferLodImpl(tLod, useAsync: true);
+        static Task<GroupedShellTransfer.TransferResult> TransferMesh(Mesh target, Mesh source,
+            List<GroupedShellTransfer.OverlapSourceHint> overlapHints,
+            List<GroupedShellTransfer.CrossLodMatchHint> matchHints, int atlasWidth, int atlasHeight, bool useAsync)
+        {
+            if (useAsync)
+                return GroupedShellTransfer.TransferAsync(target, source, overlapHints, matchHints, atlasWidth, atlasHeight);
+            return Task.FromResult(GroupedShellTransfer.Transfer(target, source, overlapHints, matchHints, atlasWidth, atlasHeight));
+        }
 
         async Task ExecTransferLodImpl(int tLod, bool useAsync)
         {
@@ -2083,17 +2064,11 @@ namespace SashaRX.UnityMeshLab
                 if (srcInfos == null) continue;
 
                 UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
-                var tr = useAsync
-                    ? await GroupedShellTransfer.TransferAsync(tgtMesh, srcMesh,
-                        hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
-                        hintState.matchHints.Count > 0 ? hintState.matchHints : null,
-                        srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
-                        srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0)
-                    : GroupedShellTransfer.Transfer(tgtMesh, srcMesh,
-                        hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
-                        hintState.matchHints.Count > 0 ? hintState.matchHints : null,
-                        srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
-                        srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0);
+                var tr = await TransferMesh(tgtMesh, srcMesh,
+                    hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
+                    hintState.matchHints.Count > 0 ? hintState.matchHints : null,
+                    srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
+                    srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync);
                 if (tr.uv2 == null) { UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); continue; }
 
                 // Accumulate overlap hints for subsequent LODs
@@ -2179,157 +2154,6 @@ namespace SashaRX.UnityMeshLab
             return setupSelectionHasRenderers;
         }
 
-        void GenerateLods()
-        {
-            if (ctx.LodGroup == null) return;
-
-            var sourceMeshes = new List<(MeshEntry entry, Mesh mesh)>();
-            foreach (var e in ctx.MeshEntries)
-            {
-                if (!e.include || e.lodIndex != ctx.SourceLodIndex) continue;
-                Mesh src = e.repackedMesh ?? e.originalMesh;
-                if (src != null) sourceMeshes.Add((e, src));
-            }
-            if (sourceMeshes.Count == 0) { UvtLog.Error("[GenerateLOD] No source meshes found."); return; }
-
-            string savePath = ctx.PipeSettings.savePath;
-            if (string.IsNullOrEmpty(savePath)) savePath = "Assets/UnityMeshLab/Output";
-            if (!AssetDatabase.IsValidFolder(savePath))
-            {
-                var par = System.IO.Path.GetDirectoryName(savePath);
-                var fld = System.IO.Path.GetFileName(savePath);
-                if (!string.IsNullOrEmpty(par)) AssetDatabase.CreateFolder(par, fld);
-            }
-
-            var lods = ctx.LodGroup.GetLODs();
-            var newLods = new List<LOD>(lods);
-
-            UvProgress.Begin("Generate LODs", cancelable: true);
-            try
-            {
-                for (int lodIdx = 0; lodIdx < generateLodCount; lodIdx++)
-                {
-                    if (UvProgress.CancelRequested) break;
-                    float ratio = generateLodRatios[lodIdx];
-                    var settings = new MeshSimplifier.SimplifySettings
-                    {
-                        targetRatio  = ratio,
-                        targetError  = generateTargetError,
-                        uv2Weight    = generateUv2Weight,
-                        normalWeight = generateNormalWeight,
-                        lockBorder   = generateLockBorder,
-                        uvChannel    = 1
-                    };
-
-                    float progress = (float)lodIdx / generateLodCount;
-                    UvProgress.Report(progress,
-                        $"LOD {lodIdx + 1}/{generateLodCount} (ratio {ratio:P0})");
-
-                    var lodRenderers = new List<Renderer>();
-                    foreach (var (entry, srcMesh) in sourceMeshes)
-                    {
-                        var r = MeshSimplifier.Simplify(srcMesh, settings);
-                        if (!r.ok) { UvtLog.Error($"[GenerateLOD] Failed on {srcMesh.name}: {r.error}"); continue; }
-
-                        string baseName = entry.fbxMesh != null ? entry.fbxMesh.name : srcMesh.name;
-                        baseName = MeshNaming.StripPipelineSuffixes(baseName);
-                        string meshName = baseName + "_LOD" + (ctx.SourceLodIndex + lodIdx + 1);
-                        r.simplifiedMesh.name = meshName;
-                        string assetPath = AssetDatabase.GenerateUniqueAssetPath(savePath + "/" + meshName + ".asset");
-                        AssetDatabase.CreateAsset(r.simplifiedMesh, assetPath);
-                        UvtLog.Info($"[GenerateLOD] {meshName}: {r.originalTriCount} → {r.simplifiedTriCount} tris, saved → {assetPath}");
-
-                        if (generateAddToLodGroup && entry.renderer != null)
-                        {
-                            var go = new GameObject(meshName);
-                            go.transform.SetParent(ctx.LodGroup.transform, false);
-                            go.transform.localPosition = entry.renderer.transform.localPosition;
-                            go.transform.localRotation = entry.renderer.transform.localRotation;
-                            go.transform.localScale    = entry.renderer.transform.localScale;
-                            var mf = go.AddComponent<MeshFilter>();
-                            mf.sharedMesh = r.simplifiedMesh;
-                            var mr = go.AddComponent<MeshRenderer>();
-                            mr.sharedMaterials = entry.renderer.sharedMaterials;
-                            Undo.RegisterCreatedObjectUndo(go, "Generate LOD");
-                            lodRenderers.Add(mr);
-                        }
-                    }
-
-                    if (generateAddToLodGroup && lodRenderers.Count > 0)
-                    {
-                        int newLodIdx = ctx.SourceLodIndex + lodIdx + 1;
-                        float baseHeight = newLods.Count > 0 ? newLods[newLods.Count - 1].screenRelativeTransitionHeight : 0.5f;
-                        float height = baseHeight * 0.5f;
-                        var newLod = new LOD(height, lodRenderers.ToArray());
-                        if (newLodIdx < newLods.Count) newLods.Insert(newLodIdx, newLod);
-                        else newLods.Add(newLod);
-                    }
-                }
-
-                if (generateAddToLodGroup)
-                {
-                    Undo.RecordObject(ctx.LodGroup, "Generate LODs");
-                    ctx.LodGroup.SetLODs(newLods.ToArray());
-                }
-                AssetDatabase.SaveAssets();
-                AssetDatabase.Refresh();
-            }
-            finally { UvProgress.End(); }
-
-            // Add new LOD entries without destroying pipeline state
-            var currentLods2 = ctx.LodGroup.GetLODs();
-            for (int li = 0; li < currentLods2.Length; li++)
-            {
-                if (ctx.MeshEntries.Any(e => e.lodIndex == li)) continue;
-                if (currentLods2[li].renderers == null) continue;
-                foreach (var r in currentLods2[li].renderers)
-                {
-                    if (r == null) continue;
-                    var mf2 = r.GetComponent<MeshFilter>();
-                    if (mf2 == null || mf2.sharedMesh == null) continue;
-                    ctx.MeshEntries.Add(new MeshEntry
-                    {
-                        lodIndex = li, renderer = r, meshFilter = mf2,
-                        originalMesh = mf2.sharedMesh, fbxMesh = mf2.sharedMesh,
-                        meshGroupKey = UvToolContext.ExtractGroupKey(r.name)
-                    });
-                }
-            }
-            ctx.ClearAllCaches();
-            requestRepaint?.Invoke();
-        }
-
-        void SaveAll() => ctx.Assets.SaveAllPublic();
-
-        void UpdateRefs()
-        {
-            if (ctx.LodGroup == null) return;
-            int n = 0;
-            Undo.IncrementCurrentGroup();
-            int undoGroup = Undo.GetCurrentGroup();
-            Undo.SetCurrentGroupName("Update Mesh Refs");
-            try
-            {
-                foreach (var e in ctx.MeshEntries)
-                {
-                    Mesh m = GetResultMesh(e);
-                    if (m == null || e.meshFilter == null) continue;
-                    // Register the working mesh in the same undo group as the swap
-                    // (the HierarchicalApply idiom): Ctrl+Z reverts the MeshFilter and
-                    // destroys the temp mesh together, and redo can never resurrect a
-                    // reference to a mesh a later reset has already destroyed.
-                    if (undoRegisteredMeshes.Add(m.GetInstanceID()))
-                        Undo.RegisterCreatedObjectUndo(m, "Update Mesh Refs (mesh)");
-                    Undo.RecordObject(e.meshFilter, "Update Mesh Refs");
-                    e.meshFilter.sharedMesh = m; n++;
-                    if (PrefabUtility.IsPartOfPrefabInstance(e.meshFilter))
-                        PrefabUtility.RecordPrefabInstancePropertyModifications(e.meshFilter);
-                }
-            }
-            finally { Undo.CollapseUndoOperations(undoGroup); }
-            UvtLog.Info("[Save] " + n + " refs updated");
-        }
-
         // ════════════════════════════════════════════════════════════
         //  Reset Methods
         // ════════════════════════════════════════════════════════════
@@ -2357,7 +2181,6 @@ namespace SashaRX.UnityMeshLab
                 e.shellTransferResult = null;
                 e.wasWelded = e.wasEdgeWelded = e.wasSymmetrySplit = false;
             }
-            undoRegisteredMeshes.Clear();
             ctx.HasRepack = ctx.HasTransfer = false;
             uv0Analyzed = uv0Welded = false;
             uv0Reports.Clear();
@@ -2367,23 +2190,13 @@ namespace SashaRX.UnityMeshLab
             requestRepaint?.Invoke();
         }
 
-        // Meshes UpdateRefs registered with the undo system are destroyed through
-        // Undo.DestroyObjectImmediate so their undo records stay coherent; working
-        // copies that never entered the undo system are destroyed outright.
-        void DestroyWorkingMesh(ref Mesh mesh)
+        static void DestroyWorkingMesh(ref Mesh mesh)
         {
             if (mesh == null) return;
-            if (undoRegisteredMeshes.Remove(mesh.GetInstanceID()))
-                Undo.DestroyObjectImmediate(mesh);
-            else
-                UnityEngine.Object.DestroyImmediate(mesh);
+            UnityEngine.Object.DestroyImmediate(mesh);
             mesh = null;
         }
 
-        /// <summary>
-        /// Deletes sidecar assets (.uv2data) and reimports FBX files to restore
-        /// original UV2 state. Triggers a full Refresh + OnRefresh cycle.
-        /// </summary>
         void ResetUv2FromFbx()
         {
             if (ctx.LodGroup == null) return;
@@ -2414,19 +2227,6 @@ namespace SashaRX.UnityMeshLab
             ctx.Refresh(ctx.LodGroup);
             OnRefresh();
             requestRepaint?.Invoke();
-        }
-
-        void RestoreFbxFromGitMain()
-        {
-            var fbxPaths = SidecarStore.FbxPaths(ctx.MeshEntries);
-            if (fbxPaths.Count == 0)
-            {
-                UvtLog.Warn("[Backup] No FBX paths found in mesh entries");
-                return;
-            }
-
-            foreach (string fbx in fbxPaths)
-                UvToolHub.BackupFbxFromGitMain(fbx);
         }
 
         /// <summary>
@@ -2466,8 +2266,8 @@ namespace SashaRX.UnityMeshLab
 
         void UpdateSelectedSidecar()
         {
-            selectedSidecarPath = selectedFbxPath = selectedResetLabel = null;
-            if (!SidecarStore.TryFindFirst(SidecarStore.FbxPaths(ctx?.MeshEntries), out selectedFbxPath, out selectedSidecarPath))
+            selectedSidecarPath = selectedResetLabel = null;
+            if (!SidecarStore.TryFindFirst(SidecarStore.FbxPaths(ctx?.MeshEntries), out string selectedFbxPath, out selectedSidecarPath))
                 return;
             selectedResetLabel = System.IO.Path.GetFileNameWithoutExtension(selectedFbxPath);
         }
@@ -2969,7 +2769,7 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
-        void ColorBtn(Color col, string l, int h, Action a)
+        static void ColorBtn(Color col, string l, int h, Action a)
         {
             var b = GUI.backgroundColor; GUI.backgroundColor = col;
             if (GUILayout.Button(l, GUILayout.Height(h))) a();

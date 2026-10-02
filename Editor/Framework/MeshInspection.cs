@@ -163,7 +163,11 @@ namespace SashaRX.UnityMeshLab
             var dropped = new List<int>();
             foreach (var pair in copies)
                 if (!pair.Value || !active.Contains(pair.Value.GetInstanceID())) dropped.Add(pair.Key);
-            foreach (int id in dropped) { if (copies[id]) Object.DestroyImmediate(copies[id]); copies.Remove(id); }
+            foreach (int id in dropped)
+            {
+                if (copies[id]) Object.DestroyImmediate(copies[id]);
+                copies.Remove(id);
+            }
             dropped.Clear();
             foreach (int id in reports.Keys) if (!active.Contains(id)) dropped.Add(id);
             foreach (int id in dropped) reports.Remove(id);
