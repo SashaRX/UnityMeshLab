@@ -17,7 +17,7 @@ on:
 permissions: {}
 
 env:
-  SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'http://178.104.156.174:9000' }}
+  SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL || vars.SONAR_HOST_URL || 'http://178.104.156.174:9000' }}
   SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY || 'SashaRX_UnityMeshLab' }}
 
 jobs:
