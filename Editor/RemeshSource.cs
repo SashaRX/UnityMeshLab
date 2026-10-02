@@ -270,7 +270,7 @@ namespace SashaRX.UnityMeshLab
                                 if (sub >= shared.Length || !shared[sub]) throw new InvalidOperationException(renderer.name + " has a missing material.");
                                 if (!materialIds.TryGetValue(shared[sub], out material)) {
                                     material = materials.Count;
-                                    materials.Add(reader.Capture(shared[sub])); materialIds.Add(shared[sub], material);
+                                    materials.Add(reader.ReadSurface(shared[sub])); materialIds.Add(shared[sub], material);
                                 }
                             }
                             var tri = mesh.GetTriangles(sub);
@@ -654,11 +654,11 @@ namespace SashaRX.UnityMeshLab
                     string.Join("; ", parts) + ".");
                 genericShaders.Clear();
             }
-            public Surface Capture(Material m)
+            public Surface ReadSurface(Material m)
             {
                 string shaderName = m.shader ? m.shader.name : "<missing shader>";
                 bool urp = shaderName == "Universal Render Pipeline/Lit";
-                if (!urp && shaderName != "Standard") return CaptureGeneric(m, shaderName);
+                if (!urp && shaderName != "Standard") return ReadGenericSurface(m, shaderName);
                 if ((urp && m.GetFloat("_Surface") != 0) || (!urp && m.GetFloat("_Mode") != 0) || m.IsKeywordEnabled("_ALPHATEST_ON"))
                     warnings.Add(m.name + ": transparency/alpha clipping is ignored; the result is opaque.");
                 if (m.IsKeywordEnabled("_DETAIL_MULX2") || m.IsKeywordEnabled("_DETAIL_SCALED") || m.IsKeywordEnabled("_PARALLAXMAP"))
@@ -686,7 +686,7 @@ namespace SashaRX.UnityMeshLab
             // Any other shader: bake what the common property names expose (base colour,
             // tangent-space normal, scalar metallic/smoothness, occlusion, emission) and
             // say so, instead of refusing the whole model.
-            Surface CaptureGeneric(Material m, string shaderName)
+            Surface ReadGenericSurface(Material m, string shaderName)
             {
                 if (!genericShaders.TryGetValue(shaderName, out var names)) genericShaders[shaderName] = names = new List<string>();
                 names.Add(m.name);

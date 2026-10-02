@@ -12,6 +12,8 @@ namespace SashaRX.UnityMeshLab
 {
     public class LightmapTransferTool : IUvTool, IBenchmarkHost
     {
+        const string CancelButton = "Cancel";
+
         UvToolContext ctx;
         UvCanvasView canvas;
         Action requestRepaint;
@@ -2264,7 +2266,7 @@ namespace SashaRX.UnityMeshLab
             if (!EditorUtility.DisplayDialog("Overwrite FBX (Vertex Colors)",
                 $"Overwrite '{System.IO.Path.GetFileName(sourceFbxPath)}' with current vertex colors?\n\n" +
                 "Only vertex colors will be updated. UV2 and mesh topology stay unchanged.",
-                "Overwrite", "Cancel"))
+                "Overwrite", CancelButton))
                 return;
 
             ExportVertexColorsToFbxCore(sourceFbxPath, ctx.MeshEntries);
@@ -2401,7 +2403,7 @@ namespace SashaRX.UnityMeshLab
                             $"Re-save '{System.IO.Path.GetFileName(sourceFbxPath)}' with intent {intent}?\n\n" +
                             "Channels not in the intent are preserved from the source FBX. " +
                             "Atomic write — original is untouched if export fails.",
-                            "Overwrite", "Cancel"))
+                            "Overwrite", CancelButton))
                         continue;
                 }
                 else
@@ -2596,7 +2598,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     if (!EditorUtility.DisplayDialog("Overwrite Source FBX",
                         "This will overwrite:\n" + sourceFbxPath + "\n\nA backup (.fbx.bak) will be created. Continue?",
-                        "Overwrite", "Cancel"))
+                        "Overwrite", CancelButton))
                     {
                         allGroupsSucceeded = false;
                         continue;
@@ -3094,7 +3096,7 @@ namespace SashaRX.UnityMeshLab
         void ResetPipelineState()
         {
             if (ctx.LodGroup == null) return;
-            if (!EditorUtility.DisplayDialog("Reset Pipeline State", "Delete all sidecars and reset?", "Reset", "Cancel")) return;
+            if (!EditorUtility.DisplayDialog("Reset Pipeline State", "Delete all sidecars and reset?", "Reset", CancelButton)) return;
 
             RestoreAllPreviews();
             var fbxPaths = SidecarStore.FbxPaths(ctx.MeshEntries);
