@@ -465,20 +465,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>Line-list indices of a mesh's unique triangle edges (null above 1M faces).</summary>
-        public static List<int> EdgeIndices(Mesh mesh)
-        {
-            var tris = mesh.triangles;
-            if (tris.Length / 3 > 1000000) return null;
-            var seen = new HashSet<long>();
-            var indices = new List<int>(tris.Length);
-            long stride = mesh.vertexCount;
-            for (int i = 0; i < tris.Length; i += 3)
-                for (int k = 0; k < 3; ++k) {
-                    int a = tris[i + k], b = tris[i + (k + 1) % 3];
-                    if (seen.Add(Math.Min(a, b) * stride + Math.Max(a, b))) { indices.Add(a); indices.Add(b); }
-                }
-            return indices;
-        }
+        public static List<int> EdgeIndices(Mesh mesh) => UvTopology.UniqueEdges(mesh.triangles);
 
         /// <summary>Drops cached encodings and wires (call when source meshes change).</summary>
         public void InvalidateCaches()

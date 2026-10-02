@@ -555,7 +555,7 @@ namespace SashaRX.UnityMeshLab
         public static bool TOk(Vector2[] u, int n, int a, int b, int c) => a>=0&&a<n&&b>=0&&b<n&&c>=0&&c<n && UOk(u[a])&&UOk(u[b])&&UOk(u[c]);
         public static void Vx(float ox, float oy, float sz, Vector2 u) => GL.Vertex3(ox+u.x*sz, oy+(1f-u.y)*sz, 0);
 
-        public static Vector2[] RdUv(Mesh m, int ch) { var l = new List<Vector2>(); m.GetUVs(ch, l); return l.Count > 0 ? l.ToArray() : null; }
+        public static Vector2[] RdUv(Mesh m, int ch) => UvTopology.ReadUv(m, ch);
 
         public Vector2[] RdUvCached(Mesh m, int ch)
         {
@@ -588,19 +588,6 @@ namespace SashaRX.UnityMeshLab
                 case TriangleStatus.Rejected: return cReject;
                 default: return cNone;
             }
-        }
-
-        public static int VoteBestShell(int[] vertToShell, int vertCount, int i0, int i1, int i2)
-        {
-            int s0 = (i0 >= 0 && i0 < vertToShell.Length) ? vertToShell[i0] : -1;
-            int s1 = (i1 >= 0 && i1 < vertToShell.Length) ? vertToShell[i1] : -1;
-            int s2 = (i2 >= 0 && i2 < vertToShell.Length) ? vertToShell[i2] : -1;
-            if (s0 >= 0 && s0 == s1) return s0;
-            if (s0 >= 0 && s0 == s2) return s0;
-            if (s1 >= 0 && s1 == s2) return s1;
-            if (s0 >= 0) return s0;
-            if (s1 >= 0) return s1;
-            return s2;
         }
 
         // ════════════════════════════════════════════════════════════
@@ -789,7 +776,7 @@ namespace SashaRX.UnityMeshLab
             int id = mesh.GetInstanceID();
             if (!ctx.BoundaryEdgeCache.TryGetValue(id, out int[] pairs))
             {
-                pairs = BuildBoundaryEdgePairs(tri);
+                pairs = UvTopology.BoundaryEdgePairs(tri);
                 ctx.BoundaryEdgeCache[id] = pairs;
             }
             if (pairs == null || pairs.Length == 0) return;
@@ -831,7 +818,7 @@ namespace SashaRX.UnityMeshLab
             {
                 int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
                 if (!TOk(uv, uN, a0, a1, a2)) continue;
-                int sh = VoteBestShell(vertShellMap, uN, a0, a1, a2);
+                int sh = UvTopology.VoteBestShell(vertShellMap, a0, a1, a2);
                 Color nc = sh < 0
                     ? new Color(0.3f, 0.3f, 0.3f, FillAlpha)
                     : new Color(pal[sh % pal.Length].r, pal[sh % pal.Length].g, pal[sh % pal.Length].b, FillAlpha * 1.5f);
@@ -910,41 +897,8 @@ namespace SashaRX.UnityMeshLab
             long key = ((long)mesh.GetInstanceID() << 8) ^ (uint)channel;
             if (ctx.PreviewShellDataCache.TryGetValue(key, out var cached)) return cached;
 
-            var uv = RdUvCached(mesh, channel);
-            var triangles = GetTrianglesCached(mesh);
-            if (uv == null || triangles == null || triangles.Length < 3) return null;
-
-            List<UvShell> shells;
-            try { shells = UvShellExtractor.Extract(uv, triangles, computeDescriptors: true); }
-            catch { return null; }
-
-            var faceToShell = new Dictionary<int, int>(triangles.Length / 3);
-            var shellById = new Dictionary<int, UvShell>(shells.Count);
-            var bounds = new Bounds[shells.Count];
-            for (int i = 0; i < shells.Count; i++)
-            {
-                var shell = shells[i];
-                shellById[shell.shellId] = shell;
-                bool hasPoint = false;
-                Bounds b = new Bounds(Vector3.zero, Vector3.zero);
-                foreach (int fi in shell.faceIndices)
-                {
-                    faceToShell[fi] = shell.shellId;
-                    int t0 = fi * 3;
-                    if (t0 + 2 >= triangles.Length) continue;
-                    for (int k = 0; k < 3; k++)
-                    {
-                        int vi = triangles[t0 + k];
-                        if (vi < 0 || vi >= uv.Length) continue;
-                        Vector3 p = uv[vi];
-                        if (!hasPoint) { b = new Bounds(p, Vector3.zero); hasPoint = true; }
-                        else b.Encapsulate(p);
-                    }
-                }
-                bounds[i] = b;
-            }
-
-            cached = new PreviewShellData { shells = shells, faceToShell = faceToShell, shellById = shellById, shellBounds = bounds, triangles = triangles, uvs = uv };
+            cached = UvTopology.BuildShellData(RdUvCached(mesh, channel), GetTrianglesCached(mesh));
+            if (cached == null) return null;
             ctx.PreviewShellDataCache[key] = cached;
             return cached;
         }
@@ -958,15 +912,8 @@ namespace SashaRX.UnityMeshLab
                 long key = ((long)mesh.GetInstanceID() << 8) ^ (uint)channel;
                 if (ctx.OccupiedTilesPerMesh.TryGetValue(key, out var c)) { foreach (var t in c) tiles.Add(t); continue; }
                 var perMesh = new HashSet<Vector2Int>();
-                var uvs = RdUvCached(mesh, channel);
-                if (uvs != null)
-                    for (int i = 0; i < uvs.Length; i++)
-                    {
-                        var u = uvs[i];
-                        if (!UOk(u)) continue;
-                        var tile = new Vector2Int(Mathf.FloorToInt(u.x), Mathf.FloorToInt(u.y));
-                        perMesh.Add(tile); tiles.Add(tile);
-                    }
+                UvTopology.OccupiedTiles(RdUvCached(mesh, channel), perMesh, UOk);
+                tiles.UnionWith(perMesh);
                 ctx.OccupiedTilesPerMesh[key] = perMesh;
             }
             return tiles;
@@ -1130,40 +1077,6 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ════════════════════════════════════════════════════════════
-        //  Boundary Edges
-        // ════════════════════════════════════════════════════════════
-
-        public static int[] BuildBoundaryEdgePairs(int[] tri)
-        {
-            if (tri == null || tri.Length < 3) return Array.Empty<int>();
-            var counts = new Dictionary<ulong, int>(tri.Length);
-            var orient = new Dictionary<ulong, (int a, int b)>(tri.Length);
-            for (int i = 0; i + 2 < tri.Length; i += 3)
-            {
-                AddEdge(tri[i], tri[i+1], counts, orient);
-                AddEdge(tri[i+1], tri[i+2], counts, orient);
-                AddEdge(tri[i+2], tri[i], counts, orient);
-            }
-            var result = new List<int>();
-            foreach (var kv in counts)
-            {
-                if (kv.Value != 1) continue;
-                var e = orient[kv.Key];
-                result.Add(e.a); result.Add(e.b);
-            }
-            return result.ToArray();
-        }
-
-        static void AddEdge(int a, int b, Dictionary<ulong, int> counts, Dictionary<ulong, (int a, int b)> orient)
-        {
-            if (a == b) return;
-            int lo = a < b ? a : b, hi = a < b ? b : a;
-            ulong key = ((ulong)(uint)lo << 32) | (uint)hi;
-            counts.TryGetValue(key, out int c); counts[key] = c + 1;
-            if (!orient.ContainsKey(key)) orient[key] = (a, b);
-        }
-
-        // ════════════════════════════════════════════════════════════
         //  Background Texture
         // ════════════════════════════════════════════════════════════
 
@@ -1226,7 +1139,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     int a = cache.triangles[f*3], b = cache.triangles[f*3+1], c = cache.triangles[f*3+2];
                     if (!TOk(cache.uvs, cache.uvs.Length, a, b, c)) continue;
-                    if (!PointInTriangle(uvPoint, cache.uvs[a], cache.uvs[b], cache.uvs[c])) continue;
+                    if (!UvTopology.PointInTriangle(uvPoint, cache.uvs[a], cache.uvs[b], cache.uvs[c])) continue;
                     if (!cache.faceToShell.TryGetValue(f, out int shellId)) return null;
                     if (!cache.shellById.TryGetValue(shellId, out var shell)) return null;
                     return BuildHit(ctx, item.Item2, mesh, shell, uvPoint, item.Item3);
@@ -1256,14 +1169,6 @@ namespace SashaRX.UnityMeshLab
                 uvChannel = src.uvChannel, hoverUv = src.hoverUv, tileU = src.tileU, tileV = src.tileV,
                 localUv = src.localUv, drawIndex = src.drawIndex
             };
-        }
-
-        public static bool PointInTriangle(Vector2 p, Vector2 a, Vector2 b, Vector2 c)
-        {
-            float s1 = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
-            float s2 = (c.x - b.x) * (p.y - b.y) - (c.y - b.y) * (p.x - b.x);
-            float s3 = (a.x - c.x) * (p.y - c.y) - (a.y - c.y) * (p.x - c.x);
-            return !((s1 < 0f || s2 < 0f || s3 < 0f) && (s1 > 0f || s2 > 0f || s3 > 0f));
         }
 
         void DrawShellDebugOverlay(Rect canvasRect)

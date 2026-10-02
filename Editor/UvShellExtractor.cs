@@ -80,41 +80,13 @@ namespace SashaRX.UnityMeshLab
             if (vertCount > 0) centroid /= vertCount;
             desc.uv0Centroid = centroid;
 
-            // Boundary length — sum of edges that appear only once
-            var edgeCounts = new Dictionary<ulong, int>();
-            var edgeUvs = new Dictionary<ulong, (int a, int b)>();
-            foreach (int fi in shell.faceIndices)
-            {
-                int i0 = triangles[fi * 3], i1 = triangles[fi * 3 + 1], i2 = triangles[fi * 3 + 2];
-                AddEdgeForBoundary(i0, i1, edgeCounts, edgeUvs);
-                AddEdgeForBoundary(i1, i2, edgeCounts, edgeUvs);
-                AddEdgeForBoundary(i2, i0, edgeCounts, edgeUvs);
-            }
-            float bndLen = 0f;
-            foreach (var kv in edgeCounts)
-            {
-                if (kv.Value == 1)
-                {
-                    var e = edgeUvs[kv.Key];
-                    if (e.a < uvs.Length && e.b < uvs.Length)
-                        bndLen += Vector2.Distance(uvs[e.a], uvs[e.b]);
-                }
-            }
-            desc.boundaryLength = bndLen;
+            // Boundary length — the edges that appear only once in the shell's faces
+            desc.boundaryLength = UvTopology.BoundaryLength(uvs, triangles, shell.faceIndices);
 
             desc.stableHash = ComputeHash(desc.uv0Area, desc.uv0Centroid, desc.boundaryLength, desc.faceCount);
             return desc;
         }
 
-        static void AddEdgeForBoundary(int a, int b, Dictionary<ulong, int> counts, Dictionary<ulong, (int, int)> uvs)
-        {
-            if (a == b) return;
-            int lo = a < b ? a : b, hi = a < b ? b : a;
-            ulong key = ((ulong)(uint)lo << 32) | (uint)hi;
-            counts.TryGetValue(key, out int c);
-            counts[key] = c + 1;
-            if (!uvs.ContainsKey(key)) uvs[key] = (a, b);
-        }
     }
 
     public class UvShell
