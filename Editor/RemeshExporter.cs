@@ -316,8 +316,13 @@ namespace SashaRX.UnityMeshLab
 
         static byte[] Encode(RemeshBaker.Maps maps, int index)
         {
-            if (index == EmissionMap) return TextureAssets.EncodeExr(maps.emission, maps.size, maps.size);
-            return TextureAssets.EncodePng(index == 0 ? maps.color : index == 1 ? maps.normal : index == 2 ? maps.metal : maps.ao, maps.size, maps.size);
+            var bytes = index == EmissionMap
+                ? TextureAssets.EncodeExr(maps.emission, maps.size, maps.size)
+                : TextureAssets.EncodePng(index == 0 ? maps.color : index == 1 ? maps.normal : index == 2 ? maps.metal : maps.ao, maps.size, maps.size);
+            // A missing or mis-sized buffer is a bake bug; say which map, and let the
+            // export roll its folder back as it does for every other failure.
+            if (bytes == null) throw new InvalidOperationException($"Map '{MapNames[index]}' has no {maps.size}×{maps.size} pixel buffer to write.");
+            return bytes;
         }
     }
 }
