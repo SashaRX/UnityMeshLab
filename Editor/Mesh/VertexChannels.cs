@@ -3,6 +3,7 @@
 // whole-colour-array operations the variant export and the AO preview need. Vertex AO
 // baking, the transfer tool's export, the sidecar and the variant painter each decoded
 // the channel enum and poked colors32 / GetUVs themselves; this is the one place.
+using System;
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
@@ -11,6 +12,12 @@ namespace SashaRX.UnityMeshLab
 {
     internal static class VertexChannels
     {
+        /// <summary>Raised after this class writes a mesh's colours or UVs, so cached
+        /// views of that mesh (the 3D viewport's encodings) can drop it.</summary>
+        internal static event Action<Mesh> Changed;
+
+        static void NotifyChanged(Mesh mesh) => Changed?.Invoke(mesh);
+
         // ── channel decoding ──
 
         /// <summary>True for the four vertex colour components.</summary>
@@ -129,6 +136,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 mesh.SetUVs(uvIdx, uvs);
             }
+            NotifyChanged(mesh);
         }
 
         /// <summary>
@@ -192,6 +200,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < arr.Length; i++) arr[i] = color32;
             mesh.colors32 = arr;
             EditorUtility.SetDirty(mesh);
+            NotifyChanged(mesh);
         }
 
         /// <summary>The mesh's colours at its vertex count, or null when it has none (for <see cref="RestoreColors"/>).</summary>
@@ -202,13 +211,16 @@ namespace SashaRX.UnityMeshLab
             return c != null && c.Length == mesh.vertexCount ? c : null;
         }
 
-        /// <summary>Puts a <see cref="SnapshotColors"/> result back; null clears the colours to black. With Undo and SetDirty.</summary>
+        /// <summary>Puts a <see cref="SnapshotColors"/> result back; a null snapshot (the mesh
+        /// had no colours) removes the colour stream again rather than leaving one behind.
+        /// With Undo and SetDirty.</summary>
         internal static void RestoreColors(Mesh mesh, Color32[] snapshot, string undoLabel)
         {
             if (mesh == null) return;
             if (undoLabel != null) Undo.RecordObject(mesh, undoLabel);
-            mesh.colors32 = snapshot ?? new Color32[mesh.vertexCount];
+            mesh.colors32 = snapshot ?? Array.Empty<Color32>();
             EditorUtility.SetDirty(mesh);
+            NotifyChanged(mesh);
         }
     }
 }

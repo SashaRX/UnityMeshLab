@@ -263,7 +263,8 @@ Before the UV stage the canvas shows the selected model as usual.
    of padding); a region above 2048² texels is downsampled to fit, and the
    float readbacks are released when the bake ends — the capture itself keeps
    just the texture references, so Materials bakes never touch the lightmaps.
-   The saved material becomes **Unlit/Texture** with that one map (the other maps
+   The saved material becomes the pipeline's unlit shader (**Unlit/Texture** in
+   Built-in, **Universal Render Pipeline/Unlit** in URP) with that one map (the other maps
    still export alongside); the 3D preview renders beauty results unlit, exactly
    like the saved material.
    Bakery setups work through the same path: its HDR colour map decodes directly

@@ -594,6 +594,22 @@ namespace SashaRX.UnityMeshLab
         //  GL Draw Methods
         // ════════════════════════════════════════════════════════════
 
+        // ── The helpers that lived on this view before Editor/Uv/UvTopology.cs and
+        //    Editor/Mesh/MeshAccess.cs: public forwarders so code compiled against them
+        //    keeps building; new code calls the libraries. ──
+        [Obsolete("Use UvTopology.VoteBestShell(vertToShell, i0, i1, i2); vertCount is the index bound it checked.")]
+        public static int VoteBestShell(int[] vertToShell, int vertCount, int i0, int i1, int i2)
+            => UvTopology.VoteBestShell(vertToShell, i0 < vertCount ? i0 : -1, i1 < vertCount ? i1 : -1, i2 < vertCount ? i2 : -1);
+
+        [Obsolete("Use UvTopology.BoundaryEdgePairs(tri).")]
+        public static int[] BuildBoundaryEdgePairs(int[] tri) => UvTopology.BoundaryEdgePairs(tri);
+
+        [Obsolete("Use UvTopology.PointInTriangle(p, a, b, c).")]
+        public static bool PointInTriangle(Vector2 p, Vector2 a, Vector2 b, Vector2 c) => UvTopology.PointInTriangle(p, a, b, c);
+
+        [Obsolete("Use MeshAccess.ReadableCopy(src).")]
+        public static Mesh MakeReadableCopy(Mesh src) => MeshAccess.ReadableCopy(src);
+
         public void GlGrid(float ox, float oy, float sz, HashSet<Vector2Int> occupiedTiles = null)
         {
             GL.Begin(GL.LINES);

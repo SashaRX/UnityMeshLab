@@ -112,7 +112,7 @@ namespace SashaRX.UnityMeshLab.Tests
             VertexChannels.RestoreColors(mesh, snap, null);
             Assert.AreEqual(255, mesh.colors32[2].r);
             VertexChannels.RestoreColors(mesh, null, null);
-            Assert.AreEqual(0, mesh.colors32[2].r, "a null snapshot clears to black");
+            Assert.AreEqual(0, mesh.colors32.Length, "a null snapshot removes the colour stream");
         }
     }
 }

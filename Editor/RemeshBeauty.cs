@@ -44,7 +44,7 @@ namespace SashaRX.UnityMeshLab
             public float importance, blendDistance;
         }
 
-        struct Directional { public Vector3 dir; public Color color; public float shadowStrength; public int cullingMask; }
+        struct Directional { public Vector3 dir; public Color color; public float shadowStrength; public int cullingMask; public bool bakedDirect; }
         struct Local
         {
             public Vector3 pos, axis;         // world space (axis used when spot)
@@ -52,6 +52,7 @@ namespace SashaRX.UnityMeshLab
             public float rangeSqr, range, innerCos, outerCos, shadowStrength;
             public bool spot;
             public int cullingMask;
+            public bool bakedDirect;          // Subtractive mixed light: lightmapped receivers carry its direct term already
         }
 
         const int AmbientW = 32, AmbientH = 16;
@@ -70,8 +71,10 @@ namespace SashaRX.UnityMeshLab
         readonly Vector3 viewPosition;        // world space; specular is baked for this vantage
         Matrix4x4 localToWorld, worldToLocal;
         TriangleBvh bvh;                      // capture-space source BVH, bound by the bake before workers run
+        RemeshSource sourceGeometry;          // its faces' renderer layers, for the lights' culling masks
         readonly TriangleBvh occluders;       // world-space scene shadow casters (other renderers, sibling nodes)
-        float shadowEpsilon;
+        readonly RemeshSource occluderGeometry;
+        float shadowEpsilon, shadowEpsilonWorld;
         /// <summary>What the scene shadow snapshot holds, for the bake status.</summary>
         internal readonly string occluderSummary;
 
@@ -86,8 +89,12 @@ namespace SashaRX.UnityMeshLab
             foreach (var light in Object.FindObjectsByType<Light>(FindObjectsSortMode.None)) {
                 if (!light.enabled || !light.gameObject.activeInHierarchy) continue;
                 // Baked-only lights live in the lightmap; including them again would
-                // double-count. URP has no subtractive mode, so Mixed direct is realtime.
-                if (light.bakingOutput.lightmapBakeType == LightmapBakeType.Baked) continue;
+                // double-count. A Mixed light's direct term is realtime, except under
+                // Subtractive mixed lighting, where the lightmap carries it for static
+                // receivers (dynamic ones still get it realtime): see Direct.
+                var baking = light.bakingOutput;
+                if (baking.lightmapBakeType == LightmapBakeType.Baked) continue;
+                bool bakedDirect = baking.lightmapBakeType == LightmapBakeType.Mixed && baking.mixedLightingMode == MixedLightingMode.Subtractive;
                 Color color = light.color.linear * light.intensity;
                 float shadowStrength = light.shadows == LightShadows.None ? 0f : light.shadowStrength;
                 // The light's culling mask decides per captured renderer (layer) whether
@@ -96,19 +103,19 @@ namespace SashaRX.UnityMeshLab
                 if (light.type == LightType.Directional) {
                     dirList.Add(new Directional {
                         dir = -(light.transform.rotation * Vector3.forward).normalized,
-                        color = color, shadowStrength = shadowStrength, cullingMask = mask,
+                        color = color, shadowStrength = shadowStrength, cullingMask = mask, bakedDirect = bakedDirect,
                     });
                 }
                 else if (light.type == LightType.Point) {
                     locList.Add(new Local { pos = light.transform.position, color = color,
-                        rangeSqr = light.range * light.range, range = light.range, shadowStrength = shadowStrength, cullingMask = mask });
+                        rangeSqr = light.range * light.range, range = light.range, shadowStrength = shadowStrength, cullingMask = mask, bakedDirect = bakedDirect });
                 }
                 else if (light.type == LightType.Spot) {
                     float outer = light.spotAngle * 0.5f * Mathf.Deg2Rad;
                     float inner = Mathf.Min(light.innerSpotAngle * 0.5f * Mathf.Deg2Rad, outer - 1e-4f);
                     locList.Add(new Local { pos = light.transform.position, axis = light.transform.forward.normalized,
                         color = color, rangeSqr = light.range * light.range, range = light.range,
-                        innerCos = Mathf.Cos(inner), outerCos = Mathf.Cos(outer), spot = true, shadowStrength = shadowStrength, cullingMask = mask });
+                        innerCos = Mathf.Cos(inner), outerCos = Mathf.Cos(outer), spot = true, shadowStrength = shadowStrength, cullingMask = mask, bakedDirect = bakedDirect });
                 }
             }
             directionals = dirList.ToArray();
@@ -170,7 +177,7 @@ namespace SashaRX.UnityMeshLab
             // Shadow rays also test the rest of the scene: a neighbouring building, a
             // canopy, or a sibling keep-hierarchy node shadows the source in the game, and
             // the source's own BVH cannot see them.
-            occluders = CaptureOccluders(root, out occluderSummary);
+            occluders = CaptureOccluders(root, out occluderSummary, out occluderGeometry);
 
             // Specular is view-dependent; bake it for the scene view camera's vantage
             // when one is open, else a three-quarter view of the object.
@@ -187,7 +194,7 @@ namespace SashaRX.UnityMeshLab
         internal RemeshBeauty ForSpace(Matrix4x4 spaceToWorld, float sourceDiagonal)
         {
             var copy = (RemeshBeauty)MemberwiseClone();
-            copy.bvh = null;
+            copy.bvh = null; copy.sourceGeometry = null;
             copy.SetSpace(spaceToWorld, sourceDiagonal);
             return copy;
         }
@@ -197,10 +204,14 @@ namespace SashaRX.UnityMeshLab
             localToWorld = spaceToWorld;
             worldToLocal = spaceToWorld.inverse;
             shadowEpsilon = Mathf.Max(sourceDiagonal * 2e-3f, 1e-5f);
+            float scale = Mathf.Max(((Vector3)spaceToWorld.GetColumn(0)).magnitude,
+                Mathf.Max(((Vector3)spaceToWorld.GetColumn(1)).magnitude, ((Vector3)spaceToWorld.GetColumn(2)).magnitude));
+            shadowEpsilonWorld = Mathf.Max(shadowEpsilon * scale, 1e-5f);
         }
 
-        /// <summary>The bake's source BVH (capture space), used for direct-light shadow rays.</summary>
-        internal void BindShadows(TriangleBvh sourceBvh) => bvh = sourceBvh;
+        /// <summary>The bake's source BVH (capture space) and the source it was built from
+        /// (its faces' renderer layers), used for direct-light shadow rays.</summary>
+        internal void BindShadows(TriangleBvh sourceBvh, RemeshSource source) { bvh = sourceBvh; sourceGeometry = source; }
 
         Vector3 WorldNormal(Vector3 n) => worldToLocal.transpose.MultiplyVector(n).normalized;
 
@@ -208,8 +219,10 @@ namespace SashaRX.UnityMeshLab
         internal Color Direct(Vector3 p, Vector3 n) => Direct(p, n, 0);
 
         /// <summary>Direct light at a source point on a renderer of the given GameObject
-        /// layer: lights whose culling mask excludes the layer neither light nor shadow it.</summary>
-        internal Color Direct(Vector3 p, Vector3 n, int layer)
+        /// layer: lights whose culling mask excludes the layer neither light nor shadow it,
+        /// and a lightmapped receiver skips the Subtractive mixed lights its lightmap
+        /// already carries.</summary>
+        internal Color Direct(Vector3 p, Vector3 n, int layer, bool lightmapped = false)
         {
             var sum = Color.black;
             int layerBit = 1 << (layer & 31);
@@ -218,17 +231,17 @@ namespace SashaRX.UnityMeshLab
             Vector3 originWorld = localToWorld.MultiplyPoint3x4(origin);
             for (int i = 0; i < directionals.Length; ++i) {
                 var d = directionals[i];
-                if ((d.cullingMask & layerBit) == 0) continue;
+                if ((d.cullingMask & layerBit) == 0 || (d.bakedDirect && lightmapped)) continue;
                 float ndl = Vector3.Dot(nw, d.dir);
                 if (ndl <= 0f) continue;
                 float shadow = d.shadowStrength > 0f
-                    ? Shadow(origin, worldToLocal.MultiplyVector(d.dir).normalized, float.MaxValue, originWorld, d.dir, float.MaxValue) * d.shadowStrength : 0f;
+                    ? Shadow(origin, worldToLocal.MultiplyVector(d.dir).normalized, float.MaxValue, originWorld, d.dir, float.MaxValue, d.cullingMask) * d.shadowStrength : 0f;
                 if (shadow >= 1f) continue;
                 sum += d.color * (ndl * (1f - shadow));
             }
             for (int i = 0; i < locals.Length; ++i) {
                 var l = locals[i];
-                if ((l.cullingMask & layerBit) == 0) continue;
+                if ((l.cullingMask & layerBit) == 0 || (l.bakedDirect && lightmapped)) continue;
                 Vector3 toLight = l.pos - pw;
                 float distSq = toLight.sqrMagnitude;
                 if (distSq > l.rangeSqr || distSq < 1e-10f) continue;
@@ -252,7 +265,7 @@ namespace SashaRX.UnityMeshLab
                     Vector3 toLightLocal = worldToLocal.MultiplyPoint3x4(l.pos) - p;
                     Vector3 toLightWorld = l.pos - originWorld;
                     shadow = Shadow(origin, toLightLocal.normalized, toLightLocal.magnitude,
-                        originWorld, toLightWorld.normalized, toLightWorld.magnitude) * l.shadowStrength;
+                        originWorld, toLightWorld.normalized, toLightWorld.magnitude, l.cullingMask) * l.shadowStrength;
                 }
                 sum += l.color * (weight * attenuation * (1f - shadow));
             }
@@ -354,12 +367,35 @@ namespace SashaRX.UnityMeshLab
         // ── plumbing ──
 
         // The source's own BVH in capture space, then the scene's shadow casters in
-        // world space (the same segment, expressed in each space).
-        float Shadow(Vector3 origin, Vector3 dir, float maxDist, Vector3 originWorld, Vector3 dirWorld, float maxWorld)
+        // world space (the same segment, expressed in each space). A caster on a layer
+        // the light's culling mask excludes casts no shadow for that light, as in the
+        // game's shadow pass, so the ray steps past such hits.
+        float Shadow(Vector3 origin, Vector3 dir, float maxDist, Vector3 originWorld, Vector3 dirWorld, float maxWorld, int cullingMask)
         {
-            if (bvh != null && bvh.Raycast(origin, dir, maxDist).triangleIndex >= 0) return 1f;
-            if (occluders != null && occluders.Raycast(originWorld, dirWorld, maxWorld).triangleIndex >= 0) return 1f;
+            if (Occluded(bvh, sourceGeometry, origin, dir, maxDist, cullingMask, shadowEpsilon)) return 1f;
+            if (Occluded(occluders, occluderGeometry, originWorld, dirWorld, maxWorld, cullingMask, shadowEpsilonWorld)) return 1f;
             return 0f;
+        }
+
+        static bool Occluded(TriangleBvh tree, RemeshSource geometry, Vector3 origin, Vector3 dir, float maxDist, int cullingMask, float epsilon)
+        {
+            if (tree == null) return false;
+            float travelled = 0f;
+            while (travelled < maxDist) {
+                var hit = tree.Raycast(origin, dir, maxDist - travelled);
+                if (hit.triangleIndex < 0) return false;
+                if (geometry == null || (cullingMask & (1 << (FaceLayer(geometry, hit.triangleIndex) & 31))) != 0) return true;
+                float step = hit.t + epsilon;
+                origin += dir * step; travelled += step;
+            }
+            return false;
+        }
+
+        // The GameObject layer of a captured face: the renderer it came from.
+        static int FaceLayer(RemeshSource geometry, int face)
+        {
+            if (geometry.vertexRenderer == null || geometry.rendererLayer == null) return 0;
+            return geometry.rendererLayer[geometry.vertexRenderer[geometry.indices[face * 3]]];
         }
 
         // Unity's probe blending, per sample: a probe's weight is 1 inside its box and
@@ -397,9 +433,9 @@ namespace SashaRX.UnityMeshLab
         // (geometry only). Nearest to the source first, up to a triangle budget so a city
         // block does not turn one bake into a scene-wide BVH build.
         const long OccluderTriangleBudget = 4_000_000;
-        static TriangleBvh CaptureOccluders(GameObject root, out string summary)
+        static TriangleBvh CaptureOccluders(GameObject root, out string summary, out RemeshSource geometry)
         {
-            summary = "";
+            summary = ""; geometry = null;
             var casters = RemeshSource.CollectSceneShadowCasters();
             if (casters.Count == 0) return null;
             Bounds world = ComputeWorldBounds(root);
@@ -426,6 +462,7 @@ namespace SashaRX.UnityMeshLab
             try { occluded = RemeshSource.Capture(Matrix4x4.identity, chosen, required: false, geometryOnly: true); }
             catch (InvalidOperationException) { /* no capturable occluder: the bake runs without scene shadows */ }
             if (occluded == null) return null;
+            geometry = occluded;
             summary = $"{chosen.Count:N0} scene shadow caster(s) within reach, {occluded.indices.Length / 3:N0} triangles" +
                 (skipped > 0 ? $" ({skipped:N0} farthest renderer(s) over the {OccluderTriangleBudget / 1_000_000}M-triangle budget left out)" : "");
             return new TriangleBvh(occluded.positions, occluded.indices);

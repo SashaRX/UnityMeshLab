@@ -944,7 +944,7 @@ namespace SashaRX.UnityMeshLab
                 GUI.Label(new Rect(rect.xMax + 6, rect.y + 4, 60, 16), "Tab", new GUIStyle(EditorStyles.miniLabel) { normal = { textColor = new Color(0.6f, 0.62f, 0.66f) } });
         }
 
-        // ── The 3D shading row along the top of the viewport (UV channels only where a mesh carries them). ──
+        // ── The 3D shading row along the top of the viewport (Normals, Tangents and UV channels only where a mesh carries them). ──
         static Rect ShadingRowRect(Rect viewportRect) => new Rect(viewportRect.x + 8, viewportRect.y + 8, viewportRect.width - 16, 24);
         readonly List<MeshViewport3D.Shading> shadingRow = new List<MeshViewport3D.Shading>();
         readonly List<string> shadingRowLabels = new List<string>();
@@ -955,6 +955,8 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < MeshViewport3D.ShadingNames.Length; i++)
             {
                 var mode = (MeshViewport3D.Shading)i;
+                if (mode == MeshViewport3D.Shading.Normals && !AnyMeshHas(UnityEngine.Rendering.VertexAttribute.Normal)) continue;
+                if (mode == MeshViewport3D.Shading.Tangents && !AnyMeshHas(UnityEngine.Rendering.VertexAttribute.Tangent)) continue;
                 if (mode >= MeshViewport3D.Shading.UV0 && !AnyMeshHasUv(mode - MeshViewport3D.Shading.UV0)) continue;
                 shadingRow.Add(mode); shadingRowLabels.Add(MeshViewport3D.ShadingNames[i]);
             }
@@ -1120,6 +1122,13 @@ namespace SashaRX.UnityMeshLab
                 viewport.FrameContent();
 
             DrawToolbarTail();
+        }
+
+        bool AnyMeshHas(UnityEngine.Rendering.VertexAttribute attribute)
+        {
+            foreach (var item in viewportItems)
+                if (item.mesh != null && item.mesh.HasVertexAttribute(attribute)) return true;
+            return false;
         }
 
         bool AnyMeshHasUv(int channel)

@@ -135,7 +135,7 @@ namespace SashaRX.UnityMeshLab
             var bvh = new TriangleBvh(source.positions, source.indices);
             token.ThrowIfCancellationRequested();
             result.beauty = beauty != null;
-            if (beauty != null) beauty.BindShadows(bvh);
+            if (beauty != null) beauty.BindShadows(bvh, source);
             float distance = source.diagonal * settings.projectionDistance;
             // Proxy shapes (boxes, hull) are far from the surface they stand for, so
             // their texels look INWARD along the face normal through the whole proxy —
@@ -464,7 +464,7 @@ namespace SashaRX.UnityMeshLab
             Color lit;
             if (lightmapId >= 0 && source.lightmaps != null && lightmapId < source.lightmaps.Length) {
                 Vector2 uv2 = source.uv2[a] * w.x + source.uv2[b] * w.y + source.uv2[c] * w.z;
-                lit = albedoLinear * (beauty.SampleLightmap(source.lightmaps[lightmapId], uv2, n) + beauty.Direct(p, n, layer)) + emission;
+                lit = albedoLinear * (beauty.SampleLightmap(source.lightmaps[lightmapId], uv2, n) + beauty.Direct(p, n, layer, lightmapped: true)) + emission;
             }
             else {
                 lit = albedoLinear * (beauty.Direct(p, n, layer) + beauty.Ambient(n)) + emission;

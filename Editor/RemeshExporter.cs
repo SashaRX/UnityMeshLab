@@ -79,7 +79,8 @@ namespace SashaRX.UnityMeshLab
             var temporary = new List<Object>();
             try {
                 // Beauty bakes fold the lighting into the BaseColor; the result shades
-                // Unlit (pipeline-agnostic) instead of Standard/URP-Lit.
+                // with the pipeline's Unlit (Built-in Unlit/Texture, URP Unlit) instead
+                // of Standard / URP Lit.
                 bool unlit = pipeline.Primary.maps.beauty;
                 var shader = ResolveShader(unlit, out bool urp);
                 string guid = AssetDatabase.CreateFolder(parentFolder, Path.GetFileName(folder));
@@ -223,10 +224,11 @@ namespace SashaRX.UnityMeshLab
         static Shader ResolveShader(bool unlit, out bool urp)
         {
             var pipeline = GraphicsSettings.currentRenderPipeline;
-            urp = !unlit && pipeline != null;
+            urp = pipeline != null;
             if (urp && !pipeline.GetType().Name.Contains("Universal"))
                 throw new InvalidOperationException("Result materials support Built-in and URP; HDRP export is not implemented.");
-            string shaderName = unlit ? "Unlit/Texture" : urp ? "Universal Render Pipeline/Lit" : "Standard";
+            string shaderName = unlit ? (urp ? "Universal Render Pipeline/Unlit" : "Unlit/Texture")
+                : urp ? "Universal Render Pipeline/Lit" : "Standard";
             var shader = Shader.Find(shaderName);
             if (!shader) throw new InvalidOperationException("Result shader is unavailable: " + shaderName);
             return shader;
@@ -284,7 +286,8 @@ namespace SashaRX.UnityMeshLab
             if (unlit) {
                 // One lit texture in, one texture out — the other maps still export
                 // alongside for reference, but nothing samples them.
-                material.SetTexture("_MainTex", Map(0));
+                material.SetTexture(urp ? "_BaseMap" : "_MainTex", Map(0));
+                if (urp) material.SetColor("_BaseColor", Color.white);
                 return material;
             }
             material.SetTexture(urp ? "_BaseMap" : "_MainTex", Map(0));

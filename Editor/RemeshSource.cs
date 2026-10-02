@@ -209,14 +209,22 @@ namespace SashaRX.UnityMeshLab
                         }
                         if (triangleSubmeshes < mesh.subMeshCount)
                             reader.warnings.Add(renderer.name + ": " + (mesh.subMeshCount - triangleSubmeshes) + " non-triangle submesh(es) skipped.");
-                        if (mesh.uv.Length != mesh.vertexCount) {
+                        // A geometry-only capture (scene shadow casters, the Scene highlight)
+                        // needs positions and triangles alone: a mesh without UV0 casts
+                        // shadows in the game and keeps doing so here.
+                        bool hasUv0 = mesh.uv.Length == mesh.vertexCount;
+                        if (!hasUv0 && !geometryOnly) {
                             reader.warnings.Add(renderer.name + ": no source UV0 for material transfer, skipped.");
                             continue;
                         }
                         if (mesh.normals.Length != mesh.vertexCount) mesh.RecalculateNormals();
-                        if (mesh.tangents.Length != mesh.vertexCount) mesh.RecalculateTangents();
+                        if (hasUv0 && mesh.tangents.Length != mesh.vertexCount) mesh.RecalculateTangents();
                         var p = mesh.vertices; var n = mesh.normals; var t = mesh.tangents;
-                        if (t.Length != p.Length) throw new InvalidOperationException(renderer.name + " has no valid tangent frame.");
+                        if (t.Length != p.Length) {
+                            if (!geometryOnly) throw new InvalidOperationException(renderer.name + " has no valid tangent frame.");
+                            t = new Vector4[p.Length];
+                            for (int i = 0; i < t.Length; ++i) t[i] = new Vector4(1, 0, 0, 1);
+                        }
                         var transform = worldToSpace * renderer.localToWorldMatrix;
                         if (Mathf.Abs(transform.determinant) < 1e-12f) throw new InvalidOperationException("Zero-scale source transform.");
                         var normalTransform = transform.inverse.transpose;
@@ -233,7 +241,8 @@ namespace SashaRX.UnityMeshLab
                             tt = (tt - nn * Vector3.Dot(nn, tt)).normalized;
                             tangents.Add(new Vector4(tt.x, tt.y, tt.z, t[i].w * sign));
                         }
-                        uv.AddRange(mesh.uv);
+                        if (hasUv0) uv.AddRange(mesh.uv);
+                        else for (int i = 0; i < p.Length; ++i) uv.Add(Vector2.zero);
                         // Beauty bakes sample the renderer's baked lightmap at its UV2;
                         // only the reference is kept here (see ReadLightmaps).
                         var lmUv = mesh.uv2;

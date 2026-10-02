@@ -62,6 +62,8 @@ namespace SashaRX.UnityMeshLab
         readonly Dictionary<int, Mesh> wireCache = new Dictionary<int, Mesh>();
         readonly List<Mesh> frameMeshes = new List<Mesh>();   // transient meshes built for this frame
 
+        public MeshViewport3D() { VertexChannels.Changed += InvalidateMesh; }
+
         public Rect LastRect => currentRect;
         public Camera Camera => utility?.camera;
 
@@ -483,8 +485,23 @@ namespace SashaRX.UnityMeshLab
             encodedCache.Clear(); wireCache.Clear();
         }
 
+        /// <summary>Drops the cached encodings of one mesh (its colours or UVs were written),
+        /// so the next frame encodes the new data instead of showing the pre-edit clone.</summary>
+        public void InvalidateMesh(Mesh mesh)
+        {
+            if (!mesh) return;
+            long id = (long)mesh.GetInstanceID() << 8;
+            for (int mode = 0; mode < ShadingNames.Length; ++mode) {
+                long key = id | (byte)mode;
+                if (!encodedCache.TryGetValue(key, out var clone)) continue;
+                if (clone) Object.DestroyImmediate(clone);
+                encodedCache.Remove(key);
+            }
+        }
+
         public void Dispose()
         {
+            VertexChannels.Changed -= InvalidateMesh;
             InvalidateCaches();
             utility?.Cleanup(); utility = null;
             if (surface) Object.DestroyImmediate(surface);
