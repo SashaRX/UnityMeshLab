@@ -76,6 +76,31 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
+        /// <summary>The axis-aligned box that encloses <paramref name="bounds"/> after <paramref name="matrix"/> (all eight corners carried through).</summary>
+        public static Bounds TransformBounds(Bounds bounds, Matrix4x4 matrix)
+        {
+            Vector3 c = bounds.center, e = bounds.extents;
+            var mn = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
+            var mx = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
+            for (int ix = -1; ix <= 1; ix += 2)
+                for (int iy = -1; iy <= 1; iy += 2)
+                    for (int iz = -1; iz <= 1; iz += 2)
+                    {
+                        Vector3 w = matrix.MultiplyPoint3x4(c + Vector3.Scale(e, new Vector3(ix, iy, iz)));
+                        mn = Vector3.Min(mn, w); mx = Vector3.Max(mx, w);
+                    }
+            return new Bounds((mn + mx) * 0.5f, mx - mn);
+        }
+
+        /// <summary>Distance between two boxes; 0 when they touch or overlap.</summary>
+        public static float BoundsDistance(Bounds a, Bounds b)
+        {
+            float dx = Mathf.Max(0f, Mathf.Max(a.min.x - b.max.x, b.min.x - a.max.x));
+            float dy = Mathf.Max(0f, Mathf.Max(a.min.y - b.max.y, b.min.y - a.max.y));
+            float dz = Mathf.Max(0f, Mathf.Max(a.min.z - b.max.z, b.min.z - a.max.z));
+            return Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
         /// <summary>Squared distance from q to the box [min, max]; 0 inside.</summary>
         public static float SqDistToAabb(Vector3 q, Vector3 min, Vector3 max)
         {

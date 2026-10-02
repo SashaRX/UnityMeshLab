@@ -192,7 +192,7 @@ namespace SashaRX.UnityMeshLab
                             if (!filter || !filter.sharedMesh) continue;
                             // An Instantiate clone of a Read/Write-disabled import carries no CPU data,
                             // but editor code can still read the imported asset; copy from that.
-                            mesh = UvCanvasView.MakeReadableCopy(filter.sharedMesh);
+                            mesh = MeshAccess.ReadableCopy(filter.sharedMesh);
                         }
                         else continue;
                         // Non-triangle submeshes (curtain lines, quad exports) drop out of the

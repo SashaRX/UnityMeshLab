@@ -773,31 +773,7 @@ namespace SashaRX.UnityMeshLab
                 Undo.RecordObject(mf, "Bake Transform");
                 mf.sharedMesh = mesh;
             }
-
-            var verts = mesh.vertices;
-            var normals = mesh.normals;
-            for (int i = 0; i < verts.Length; i++)
-            {
-                verts[i] = matrix.MultiplyPoint3x4(verts[i]);
-                if (normals != null && i < normals.Length)
-                    normals[i] = matrix.MultiplyVector(normals[i]).normalized;
-            }
-            mesh.SetVertices(verts);
-            if (normals != null && normals.Length > 0)
-                mesh.SetNormals(normals);
-
-            var tangents = mesh.tangents;
-            if (tangents != null && tangents.Length > 0)
-            {
-                for (int i = 0; i < tangents.Length; i++)
-                {
-                    Vector3 tVec = matrix.MultiplyVector(
-                        new Vector3(tangents[i].x, tangents[i].y, tangents[i].z)).normalized;
-                    tangents[i] = new Vector4(tVec.x, tVec.y, tVec.z, tangents[i].w);
-                }
-                mesh.tangents = tangents;
-            }
-            mesh.RecalculateBounds();
+            MeshTransform.BakeMatrix(mesh, matrix);
         }
 
         void RebuildLodGroupFromNames()

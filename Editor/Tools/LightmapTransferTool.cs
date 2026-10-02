@@ -1500,7 +1500,7 @@ namespace SashaRX.UnityMeshLab
                 if (!e.include || e.originalMesh == null) continue;
                 if (e.originalMesh == e.fbxMesh)
                 {
-                    e.originalMesh = UvCanvasView.MakeReadableCopy(e.fbxMesh);
+                    e.originalMesh = MeshAccess.ReadableCopy(e.fbxMesh);
                     e.originalMesh.name = e.fbxMesh.name + "_wc";
                 }
                 var optResult = MeshOptimizer.Optimize(e.originalMesh);
@@ -1542,7 +1542,7 @@ namespace SashaRX.UnityMeshLab
                 // is what normally clones the fbx mesh).
                 if (e.originalMesh == e.fbxMesh)
                 {
-                    e.originalMesh = UvCanvasView.MakeReadableCopy(e.fbxMesh);
+                    e.originalMesh = MeshAccess.ReadableCopy(e.fbxMesh);
                     e.originalMesh.name = e.fbxMesh.name + "_wc";
                 }
                 var welded = Uv0Analyzer.UvEdgeWeld(e.originalMesh);
@@ -1573,7 +1573,7 @@ namespace SashaRX.UnityMeshLab
                 if (!e.include || e.lodIndex != ctx.SourceLodIndex) continue;
                 if (e.originalMesh == e.fbxMesh)
                 {
-                    e.originalMesh = UvCanvasView.MakeReadableCopy(e.fbxMesh);
+                    e.originalMesh = MeshAccess.ReadableCopy(e.fbxMesh);
                     e.originalMesh.name = e.fbxMesh.name + "_wc";
                 }
                 var uv0 = e.originalMesh.uv;
@@ -1599,7 +1599,7 @@ namespace SashaRX.UnityMeshLab
                     if (!e.include || e.lodIndex == ctx.SourceLodIndex) continue;
                     if (e.originalMesh == e.fbxMesh)
                     {
-                        e.originalMesh = UvCanvasView.MakeReadableCopy(e.fbxMesh);
+                        e.originalMesh = MeshAccess.ReadableCopy(e.fbxMesh);
                         e.originalMesh.name = e.fbxMesh.name + "_wc";
                     }
                     var uv0 = e.originalMesh.uv;
@@ -2929,7 +2929,7 @@ namespace SashaRX.UnityMeshLab
                 if (UvProgress.CancelRequested) break;
                 if (tgt.originalMesh == tgt.fbxMesh)
                 {
-                    tgt.originalMesh = UvCanvasView.MakeReadableCopy(tgt.fbxMesh);
+                    tgt.originalMesh = MeshAccess.ReadableCopy(tgt.fbxMesh);
                     tgt.originalMesh.name = tgt.fbxMesh.name + "_wc";
                 }
 
@@ -5429,36 +5429,7 @@ namespace SashaRX.UnityMeshLab
         /// changing the visual result. Handles vertices, normals, and tangents.
         /// </summary>
         static void BakeTransformIntoMesh(Mesh mesh, Transform t)
-        {
-            if (mesh == null || !mesh.isReadable) return;
-
-            var localMatrix = Matrix4x4.TRS(t.localPosition, t.localRotation, t.localScale);
-            var verts = mesh.vertices;
-            var normals = mesh.normals;
-
-            for (int i = 0; i < verts.Length; i++)
-            {
-                verts[i] = localMatrix.MultiplyPoint3x4(verts[i]);
-                if (normals != null && i < normals.Length)
-                    normals[i] = localMatrix.MultiplyVector(normals[i]).normalized;
-            }
-            mesh.SetVertices(verts);
-            if (normals != null && normals.Length > 0)
-                mesh.SetNormals(normals);
-
-            var tangents = mesh.tangents;
-            if (tangents != null && tangents.Length > 0)
-            {
-                for (int i = 0; i < tangents.Length; i++)
-                {
-                    Vector3 tVec = localMatrix.MultiplyVector(
-                        new Vector3(tangents[i].x, tangents[i].y, tangents[i].z)).normalized;
-                    tangents[i] = new Vector4(tVec.x, tVec.y, tVec.z, tangents[i].w);
-                }
-                mesh.tangents = tangents;
-            }
-            mesh.RecalculateBounds();
-        }
+            => MeshTransform.BakeMatrix(mesh, Matrix4x4.TRS(t.localPosition, t.localRotation, t.localScale));
 
         /// <summary>
         /// After FBX reimport, re-link scene MeshFilter/MeshCollider/SkinnedMeshRenderer
@@ -6336,20 +6307,7 @@ namespace SashaRX.UnityMeshLab
             return found;
         }
 
-        static Bounds TransformBounds(Bounds b, Matrix4x4 m)
-        {
-            Vector3 c = b.center, e = b.extents;
-            Vector3 mn = new Vector3(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
-            Vector3 mx = new Vector3(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
-            for (int ix = -1; ix <= 1; ix += 2)
-            for (int iy = -1; iy <= 1; iy += 2)
-            for (int iz = -1; iz <= 1; iz += 2)
-            {
-                Vector3 w = m.MultiplyPoint3x4(c + Vector3.Scale(e, new Vector3(ix, iy, iz)));
-                mn = Vector3.Min(mn, w); mx = Vector3.Max(mx, w);
-            }
-            return new Bounds((mn + mx) * 0.5f, mx - mn);
-        }
+        static Bounds TransformBounds(Bounds b, Matrix4x4 m) => MeshGeometry.TransformBounds(b, m);
 
         static bool RayTriMT(Ray ray, Vector3 v0, Vector3 v1, Vector3 v2, out float t, out float u, out float v)
         {

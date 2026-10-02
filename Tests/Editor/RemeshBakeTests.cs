@@ -146,6 +146,13 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(sum.magnitude, Is.LessThan(2f), "evenly spread: the directions nearly cancel");
             Assert.That(MeshGeometry.SqDistToAabb(new Vector3(2,0,0), Vector3.zero, Vector3.one), Is.EqualTo(1f).Within(1e-6f));
             Assert.AreEqual(0f, MeshGeometry.SqDistToAabb(new Vector3(0.5f,0.5f,0.5f), Vector3.zero, Vector3.one));
+            // A box carried through a 90° yaw and a translation stays axis-aligned and the right size.
+            var yaw90 = new Matrix4x4(new Vector4(0, 0, -1, 0), new Vector4(0, 1, 0, 0), new Vector4(1, 0, 0, 0), new Vector4(10, 0, 0, 1));
+            var yawed = MeshGeometry.TransformBounds(new Bounds(Vector3.zero, new Vector3(2, 1, 4)), yaw90);
+            Assert.That((yawed.center - new Vector3(10, 0, 0)).magnitude, Is.LessThan(1e-4f));
+            Assert.That((yawed.size - new Vector3(4, 1, 2)).magnitude, Is.LessThan(1e-4f));
+            Assert.That(MeshGeometry.BoundsDistance(new Bounds(Vector3.zero, Vector3.one), new Bounds(new Vector3(3, 0, 0), Vector3.one)), Is.EqualTo(2f).Within(1e-6f));
+            Assert.AreEqual(0f, MeshGeometry.BoundsDistance(new Bounds(Vector3.zero, Vector3.one), new Bounds(new Vector3(0.5f, 0, 0), Vector3.one)));
         }
         [Test]
         public void MaterialChannelsRemainSeparateAndEmissionRetainsHdr()

@@ -1753,25 +1753,7 @@ namespace SashaRX.UnityMeshLab
             return matrix.MultiplyPoint3x4(mesh.bounds.center);
         }
 
-        static Bounds TransformBounds(Bounds localBounds, Matrix4x4 matrix)
-        {
-            var corners = new[]
-            {
-                new Vector3(localBounds.min.x, localBounds.min.y, localBounds.min.z),
-                new Vector3(localBounds.max.x, localBounds.min.y, localBounds.min.z),
-                new Vector3(localBounds.min.x, localBounds.max.y, localBounds.min.z),
-                new Vector3(localBounds.max.x, localBounds.max.y, localBounds.min.z),
-                new Vector3(localBounds.min.x, localBounds.min.y, localBounds.max.z),
-                new Vector3(localBounds.max.x, localBounds.min.y, localBounds.max.z),
-                new Vector3(localBounds.min.x, localBounds.max.y, localBounds.max.z),
-                new Vector3(localBounds.max.x, localBounds.max.y, localBounds.max.z)
-            };
-
-            Bounds worldBounds = new Bounds(matrix.MultiplyPoint3x4(corners[0]), Vector3.zero);
-            for (int i = 1; i < corners.Length; i++)
-                worldBounds.Encapsulate(matrix.MultiplyPoint3x4(corners[i]));
-            return worldBounds;
-        }
+        static Bounds TransformBounds(Bounds localBounds, Matrix4x4 matrix) => MeshGeometry.TransformBounds(localBounds, matrix);
 
         static bool IsWithinOccluderRange(
             Bounds targetBounds,
@@ -1814,13 +1796,7 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
-        static float BoundsDistance(Bounds a, Bounds b)
-        {
-            float dx = Mathf.Max(0f, Mathf.Max(a.min.x - b.max.x, b.min.x - a.max.x));
-            float dy = Mathf.Max(0f, Mathf.Max(a.min.y - b.max.y, b.min.y - a.max.y));
-            float dz = Mathf.Max(0f, Mathf.Max(a.min.z - b.max.z, b.min.z - a.max.z));
-            return Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
-        }
+        static float BoundsDistance(Bounds a, Bounds b) => MeshGeometry.BoundsDistance(a, b);
 
         void StoreBatchStats(List<LodBakeBatch> batches)
         {

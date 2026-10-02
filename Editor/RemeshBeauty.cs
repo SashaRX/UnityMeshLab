@@ -459,16 +459,7 @@ namespace SashaRX.UnityMeshLab
 
         static int Wrap(int v, int size) => v < 0 ? v + size : v >= size ? v - size : v;
 
-        static Bounds ComputeWorldBounds(GameObject root)
-        {
-            bool any = false;
-            var bounds = new Bounds();
-            foreach (var renderer in root.GetComponentsInChildren<Renderer>()) {
-                if (!any) { bounds = renderer.bounds; any = true; }
-                else bounds.Encapsulate(renderer.bounds);
-            }
-            return any ? bounds : new Bounds(root.transform.position, Vector3.one);
-        }
+        static Bounds ComputeWorldBounds(GameObject root) => MeshTransform.WorldBounds(root, new Bounds(root.transform.position, Vector3.one));
 
         // Cubemap → equirect readback through Hidden/MeshLab/RemeshBeautyEquirect
         // (directions in world axes, linear). lod samples the probe's own prefiltered
