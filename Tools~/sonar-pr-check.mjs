@@ -37,6 +37,23 @@ import { pathToFileURL } from 'node:url';
 
 // ── Pure core (unit-tested in tools/sonar-pr-check.test.mjs) ─────────────────────
 
+// Rules whose findings are REPORTED (annotation, summary, findings.json) but do not gate
+// the PR check and are not handed to the fixer: structural style in an editor tool whose
+// big methods are its UI and pipeline loops, not defects a PR should be stopped on.
+//   S3776 cognitive complexity — the library series moves whole methods between files,
+//         so every moved method counts as new code; a 15-point limit on IMGUI draw
+//         methods and bake loops is a backlog, not a merge gate.
+//   S3267 "use the Where/Select LINQ method" — allocation-free loops are deliberate in
+//         per-vertex / per-face code.
+//   S3358 nested ternary — a readability preference the repo does not share.
+// Rules switched OFF altogether (S125, S1104, S107, S1168) live in the scanner's begin
+// step (.github/workflows/sonar-static-analysis.yml), with their reasons.
+export const ADVISORY_RULES = new Set(['csharpsquid:S3776', 'csharpsquid:S3267', 'csharpsquid:S3358']);
+
+export function isAdvisory(finding) {
+  return ADVISORY_RULES.has(finding.rule);
+}
+
 const IMPACT_RANK = { BLOCKER: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 };
 const LEGACY_RANK = { BLOCKER: 0, CRITICAL: 1, MAJOR: 2, MINOR: 3, INFO: 4 };
 
@@ -210,12 +227,14 @@ export function normalizeIssue(issue, knownFiles) {
     message: issue.message ?? '',
     severe: isSevere(issue),
     rank: severityRank(issue),
+    advisory: ADVISORY_RULES.has(issue.rule ?? ''),
   };
 }
 
 // Severe first: the fixer only gets the first 12.
 export function sortFindings(findings) {
-  return [...findings].sort((a, b) => (Number(b.severe) - Number(a.severe))
+  return [...findings].sort((a, b) => (Number(Boolean(a.advisory)) - Number(Boolean(b.advisory)))
+    || (Number(b.severe) - Number(a.severe))
     || (a.rank - b.rank)
     || a.path.localeCompare(b.path)
     || ((a.line ?? 0) - (b.line ?? 0))
@@ -251,9 +270,9 @@ export function escapeProperty(s) {
 
 export function annotationLines(findings) {
   return findings.map((f) => {
-    const kind = f.severe ? 'error' : 'warning';
+    const kind = f.severe && !f.advisory ? 'error' : 'warning';
     const where = f.line === null ? `file=${escapeProperty(f.path)}` : `file=${escapeProperty(f.path)},line=${f.line}`;
-    const title = escapeProperty(`Sonar ${f.rule} (${f.label})`);
+    const title = escapeProperty(`Sonar ${f.rule} (${f.label}${f.advisory ? ', advisory' : ''})`);
     return `::${kind} ${where},title=${title}::${escapeData(f.message)}`;
   });
 }
@@ -264,7 +283,7 @@ function mdCell(s) {
 }
 
 export function summaryMarkdown(findings, { title, note }) {
-  const severe = findings.filter((f) => f.severe).length;
+  const severe = findings.filter((f) => f.severe && !f.advisory).length;
   const out = [`## ${title}`, ''];
   if (note) {
     out.push(note, '');
@@ -273,11 +292,15 @@ export function summaryMarkdown(findings, { title, note }) {
     out.push('No new findings on the lines this PR changes.', '');
     return out.join('\n');
   }
-  out.push(`**${findings.length}** new finding(s), **${severe}** severe (security / reliability / high).`, '');
+  const gating = findings.filter((f) => !f.advisory);
+  const advisory = findings.filter((f) => f.advisory);
+  out.push(`**${gating.length}** new finding(s) gate this check, **${severe}** severe (security / reliability / high); `
+    + `**${advisory.length}** advisory (reported, not gating).`, '');
   out.push('| | Severity | Rule | Location | Message |', '|---|---|---|---|---|');
-  for (const f of findings) {
+  for (const f of [...gating, ...advisory]) {
     const where = f.line === null ? f.path : `${f.path}:${f.line}`;
-    out.push(`| ${f.severe ? '❌' : '⚠️'} | ${mdCell(f.label)} | ${mdCell(f.rule)} | ${mdCell(where)} | ${mdCell(f.message)} |`);
+    const mark = f.advisory ? 'ℹ️' : (f.severe ? '❌' : '⚠️');
+    out.push(`| ${mark} | ${mdCell(f.label)} | ${mdCell(f.rule)} | ${mdCell(where)} | ${mdCell(f.message)} |`);
   }
   out.push('');
   return out.join('\n');
@@ -638,12 +661,14 @@ async function cmdPrFindings(opts) {
     issues.push(...found);
   }
   const findings = selectNewFindings(issues, changed, files);
-  const selected = findings.slice(0, max);
+  const gating = findings.filter((f) => !f.advisory);
+  const selected = gating.slice(0, max);
   const summary = summaryMarkdown(findings, {
     title: 'Sonar PR Check (self-hosted SonarQube)',
-    note: `Issues of the throwaway PR projects (${opts.project.join(', ')}) on lines this PR adds or modifies; `
-      + 'any new finding fails the check, like the server gate (new_violations > 0); '
-      + '❌ = security / reliability / BLOCKER-HIGH maintainability.',
+    note: `Issues of the throwaway PR project (${opts.project.join(', ')}) on lines this PR adds or modifies; `
+      + 'any new gating finding fails the check, like the server gate (new_violations > 0); '
+      + '❌ = security / reliability / BLOCKER-HIGH maintainability, ℹ️ = advisory rule '
+      + `(${[...ADVISORY_RULES].map((r) => r.split(':')[1]).join(', ')}: reported, not gating).`,
   });
   const meta = { mode: 'pr', pr: Number(opts.pr ?? 0), base: git(['rev-parse', opts.base]).trim(), head: git(['rev-parse', head]).trim(), projects: opts.project };
   writeBundle(opts['out-dir'], meta, findings, selected, buildFixPrompt(selected, { mode: 'pr', prNumber: opts.pr }), summary);
@@ -652,9 +677,10 @@ async function cmdPrFindings(opts) {
   }
   writeStepSummary(summary);
   setOutputs({
-    total: findings.length,
-    severe: findings.filter((f) => f.severe).length,
-    has_findings: findings.length > 0 ? 'true' : 'false',
+    total: gating.length,
+    severe: gating.filter((f) => f.severe).length,
+    advisory: findings.length - gating.length,
+    has_findings: gating.length > 0 ? 'true' : 'false',
   });
 }
 

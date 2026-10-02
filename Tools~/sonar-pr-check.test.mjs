@@ -6,6 +6,7 @@ import {
   buildFixPrompt,
   escapeData,
   groupByRule,
+  isAdvisory,
   isSevere,
   parseUnifiedDiff,
   reportMarkdown,
@@ -159,4 +160,24 @@ test('reportMarkdown: totals, triaged counts, rule names and hotspots; cells esc
   assert.match(md, /\| ts:S1 \| Name &lt;one&gt; \| 1 \| 0 \|/);
   assert.match(md, /use a \\\| b/);
   assert.match(md, /\| ts:S5332 \| encrypt-data \| LOW \| tools\/x\.mjs \| http \|/);
+});
+
+test('advisory rules are reported but never gate: sorted last, counted apart, kept out of the error annotations', () => {
+  const changed = new Map([['Editor/A.cs', { added: false, lines: new Set([1, 2, 3]) }]]);
+  const known = new Set(['Editor/A.cs']);
+  const issues = [
+    { key: 'cx', component: 'P:Editor/A.cs', line: 1, rule: 'csharpsquid:S3776', impacts: [{ softwareQuality: 'MAINTAINABILITY', severity: 'HIGH' }], message: 'complex' },
+    { key: 'smell', component: 'P:Editor/A.cs', line: 2, rule: 'csharpsquid:S1172', impacts: [{ softwareQuality: 'MAINTAINABILITY', severity: 'MEDIUM' }], message: 'unused' },
+    { key: 'linq', component: 'P:Editor/A.cs', line: 3, rule: 'csharpsquid:S3267', impacts: [{ softwareQuality: 'MAINTAINABILITY', severity: 'LOW' }], message: 'where' },
+  ];
+  const found = selectNewFindings(issues, changed, known);
+  assert.deepEqual(found.map((f) => f.key), ['smell', 'cx', 'linq']);
+  assert.equal(isAdvisory(found[1]), true);
+  assert.equal(found[0].advisory, false);
+  const [cxLine] = annotationLines([found[1]]);
+  assert.match(cxLine, /^::warning /);
+  assert.match(cxLine, /advisory/);
+  const md = summaryMarkdown(found, { title: 'T' });
+  assert.match(md, /\*\*1\*\* new finding\(s\) gate this check, \*\*0\*\* severe/);
+  assert.match(md, /\*\*2\*\* advisory/);
 });

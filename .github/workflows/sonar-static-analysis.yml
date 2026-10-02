@@ -16,7 +16,9 @@ name: SonarQube
 #                        plays no part — publishes them (annotations, job summary, the
 #                        `sonar-pr-findings-<N>` artifact), deletes the project, and
 #                        gates: ANY new finding on a changed line reds the check, like
-#                        the server gate's new_violations > 0.
+#                        the server gate's new_violations > 0 — except the ADVISORY rules
+#                        (Tools~/sonar-pr-check.mjs: S3776, S3267, S3358), reported but
+#                        not gating, and the rules switched off in the begin step below.
 #                        A PR that changes the Sonar workflows or tools checks every open
 #                        PR instead of only itself (the tooling is proven on the queue;
 #                        only the triggering PR's own findings gate that run).
@@ -224,7 +226,26 @@ jobs:
           else
             NAME="Mesh Lab"; QG_WAIT=true
           fi
+          # Rules switched off as a whole, decided once here rather than issue by issue
+          # (Tools~/sonar-pr-check.mjs holds the ADVISORY rules, reported but not gating):
+          #   S125  commented-out code — matches this repo's prose comments (formulae,
+          #         operator names, the pipeline's step-by-step notes).
+          #   S1104 public fields — the tool context, settings and recorder rows are
+          #         plain data holders in the Unity editor style.
+          #   S107  too many parameters — the geometry math takes vectors as scalars on
+          #         purpose (no per-call allocation).
+          #   S1168 return null instead of an empty collection — null means "absent"
+          #         (no such UV channel, no colours, encode failed) throughout the code
+          #         base and every caller tests for it; an empty collection would erase
+          #         the difference between "none" and "empty".
+          IGNORE_IDS="s125,s1104,s107,s1168"
+          IGNORE_ARGS=""
+          for id in s125 s1104 s107 s1168; do
+            IGNORE_ARGS="$IGNORE_ARGS /d:sonar.issue.ignore.multicriteria.$id.ruleKey=csharpsquid:${id^^} /d:sonar.issue.ignore.multicriteria.$id.resourceKey=**/*"
+          done
           cd "$out"
+          # IGNORE_ARGS is deliberately word-split into flags.
+          # shellcheck disable=SC2086
           dotnet sonarscanner begin \
             /k:"$KEY" \
             /n:"$NAME" \
@@ -234,6 +255,8 @@ jobs:
             /d:sonar.scm.disabled=true \
             /d:sonar.exclusions="Shims/**" \
             /d:sonar.cs.file.suffixes=".cs" \
+            /d:sonar.issue.ignore.multicriteria="$IGNORE_IDS" \
+            $IGNORE_ARGS \
             /d:sonar.qualitygate.wait="$QG_WAIT"
           dotnet build MeshLab.sln -nologo -v q --no-incremental -p:MeshLabFbx=true
           dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN" 2>&1 | tee "$RUNNER_TEMP/sonar-end.log"
@@ -299,6 +322,7 @@ jobs:
           FINDINGS: ${{ steps.findings.outcome }}
           TOTAL: ${{ steps.findings.outputs.total }}
           SEVERE: ${{ steps.findings.outputs.severe }}
+          ADVISORY: ${{ steps.findings.outputs.advisory }}
           GATES: ${{ matrix.gate }}
         run: |
           if [ "$FINDINGS" != "success" ]; then
@@ -307,13 +331,13 @@ jobs:
           fi
           if [ "${TOTAL:-0}" != "0" ]; then
             if [ "$GATES" = "true" ]; then
-              echo "::error::$TOTAL new Sonar finding(s) on lines this PR changes ($SEVERE severe) — see the job summary."
+              echo "::error::$TOTAL new gating Sonar finding(s) on lines this PR changes ($SEVERE severe, ${ADVISORY:-0} advisory besides) — see the job summary."
               exit 1
             fi
-            echo "::warning::$LABEL: $TOTAL new Sonar finding(s) on its changed lines ($SEVERE severe); that PR's own check gates it."
+            echo "::warning::$LABEL: $TOTAL new gating Sonar finding(s) on its changed lines ($SEVERE severe, ${ADVISORY:-0} advisory besides); that PR's own check gates it."
             exit 0
           fi
-          echo "Sonar PR check passed: no new findings on the lines this PR changes."
+          echo "Sonar PR check passed: no new gating findings on the lines this PR changes (${ADVISORY:-0} advisory)."
 
       # WHY the gate said what it said (main only): the per-condition verdicts.
       - name: Summarize the main analysis
