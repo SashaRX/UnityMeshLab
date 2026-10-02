@@ -85,7 +85,7 @@ namespace SashaRX.UnityMeshLab
                 if (dim <= 2)
                 {
                     var uv = new List<Vector2>(); src.GetUVs(ch, uv);
-                    if (uv.Count > 0 && !IsAllZero2(uv)) dst.SetUVs(ch, uv);
+                    if (uv.Count > 0) dst.SetUVs(ch, uv);
                 }
                 else if (dim == 3)
                 {
@@ -98,21 +98,27 @@ namespace SashaRX.UnityMeshLab
                     if (uv.Count > 0) dst.SetUVs(ch, uv);
                 }
             }
+            // Indices at their own topology: a quad or line submesh stays one.
             dst.subMeshCount = src.subMeshCount;
-            for (int s = 0; s < src.subMeshCount; s++) dst.SetTriangles(src.GetTriangles(s), s);
+            for (int s = 0; s < src.subMeshCount; s++)
+                dst.SetIndices(src.GetIndices(s), src.GetTopology(s), s, calculateBounds: false);
             dst.bounds = src.bounds;
         }
 
         // The classic vertex getters log "Not allowed to access" and return EMPTY arrays
         // on a Read/Write-disabled import (the capture then finds no triangles at all);
         // MeshData is served by the engine regardless of the readable flag. Bone weights
-        // have no MeshData accessor — skinned capture bakes through the renderer instead.
+        // and bind poses have no MeshData accessor, so a skinned Read/Write-disabled
+        // mesh copies without its skinning — said once per copy, since nothing here can
+        // do better (skinned capture bakes through the renderer instead).
         static Mesh MakeReadableCopyFromMeshData(Mesh src, Mesh dst)
         {
             using (var dataArray = Mesh.AcquireReadOnlyMeshData(src))
             {
                 var md = dataArray[0];
                 int count = md.vertexCount;
+                if (md.HasVertexAttribute(VertexAttribute.BlendWeight) || md.HasVertexAttribute(VertexAttribute.BlendIndices))
+                    UvtLog.Warn($"[MeshAccess] '{src.name}' is skinned and Read/Write-disabled: the readable copy carries no bone weights or bind poses. Enable Read/Write on its importer if the copy must stay skinned.");
                 dst.SetVertices(ReadVertices(md, count));
                 if (md.HasVertexAttribute(VertexAttribute.Normal)) dst.SetNormals(ReadVectors3(md, count));
                 if (md.HasVertexAttribute(VertexAttribute.Tangent)) dst.SetTangents(ReadVectors4(md, count));
@@ -125,7 +131,7 @@ namespace SashaRX.UnityMeshLab
                     if (dim <= 2)
                     {
                         var uv = ReadUV2(md, ch, count);
-                        if (uv.Length > 0 && !IsAllZero2(new List<Vector2>(uv))) dst.SetUVs(ch, new List<Vector2>(uv));
+                        if (uv.Length > 0) dst.SetUVs(ch, new List<Vector2>(uv));
                     }
                     else if (dim == 3)
                     {
@@ -176,9 +182,10 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Color32[] ReadColors(Mesh.MeshData md, int count)
+        // Float colours: a Color32 read would quantise a float or HDR colour stream.
+        static Color[] ReadColors(Mesh.MeshData md, int count)
         {
-            using (var buffer = new NativeArray<Color32>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
+            using (var buffer = new NativeArray<Color>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
             {
                 md.GetColors(buffer);
                 return buffer.ToArray();
@@ -222,11 +229,5 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static bool IsAllZero2(List<Vector2> uv)
-        {
-            for (int i = 0; i < uv.Count; i++)
-                if (uv[i].x != 0f || uv[i].y != 0f) return false;
-            return true;
-        }
     }
 }
