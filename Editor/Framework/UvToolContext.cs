@@ -259,15 +259,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Strip trailing LOD/COL suffixes to get a stable group key.
         /// </summary>
-        public static string ExtractGroupKey(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return name;
-            return System.Text.RegularExpressions.Regex.Replace(
-                name,
-                @"(?:[_\-\s]+(?:LOD\d+|COL(?:_Hull\d+)?|Collider|Collision))+$",
-                "",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        }
+        public static string ExtractGroupKey(string name) => MeshNaming.GroupKey(name);
 
         /// <summary>
         /// Cleans up LOD slots: always removes null renderers from within a slot.

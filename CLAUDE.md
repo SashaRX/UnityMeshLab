@@ -37,7 +37,7 @@ See `AGENTS.md` for shared rules that apply to all AI agents.
 
 ## Key Patterns
 
-- LOD siblings: `baseName[_-\s]LOD{N}` regex, case-insensitive
-- Mesh group key: `UvToolContext.ExtractGroupKey()` strips LOD/COL suffixes
+- Names: `Editor/Mesh/MeshNaming.cs` is the only reader of the naming rules — LOD suffix `baseName[_-\s]LOD{N}` (case-insensitive, index < 8), collision suffixes (`_COL`, `_COL_Hull{N}`, `_Collider`, `_Collision`), pipeline suffixes, group key. Never write a LOD/COL regex in a tool
+- Mesh group key: `MeshNaming.GroupKey()` (forwarded by `UvToolContext.ExtractGroupKey()`) strips LOD/COL suffixes
 - FBX export: clone prefab → replace meshes → add LOD/COL → `ModelExporter.ExportObjects`
 - Sidecar: generate → save to `_uv2data.asset` → export to FBX (non-destructive)

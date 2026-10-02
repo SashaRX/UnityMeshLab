@@ -578,7 +578,7 @@ namespace SashaRX.UnityMeshLab
                 else if (renderer is MeshRenderer && renderer.TryGetComponent<MeshFilter>(out var filter)) mesh = filter.sharedMesh;
                 else continue;
                 if (!mesh) continue;
-                if (MeshHygieneUtility.IsCollisionNodeName(renderer.name) || MeshHygieneUtility.IsCollisionNodeName(mesh.name)) continue;
+                if (MeshNaming.IsCollision(renderer.name) || MeshNaming.IsCollision(mesh.name)) continue;
                 if (lod0Only && (IsHigherLodName(renderer.name) || IsHigherLodName(mesh.name))) continue;
                 result.Add(renderer);
             }
@@ -612,24 +612,13 @@ namespace SashaRX.UnityMeshLab
                 else if (renderer is MeshRenderer && renderer.TryGetComponent<MeshFilter>(out var filter)) mesh = filter.sharedMesh;
                 else continue;
                 if (!mesh) continue;
-                if (MeshHygieneUtility.IsCollisionNodeName(renderer.name) || MeshHygieneUtility.IsCollisionNodeName(mesh.name)) continue;
+                if (MeshNaming.IsCollision(renderer.name) || MeshNaming.IsCollision(mesh.name)) continue;
                 result.Add(renderer);
             }
             return result;
         }
 
-        internal static bool IsHigherLodName(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return false;
-            int at = name.LastIndexOf("_LOD", StringComparison.OrdinalIgnoreCase);
-            if (at < 0 || at + 4 >= name.Length) return false;
-            int level = 0;
-            for (int i = at + 4; i < name.Length; ++i) {
-                if (name[i] < '0' || name[i] > '9') return false;
-                level = level * 10 + (name[i] - '0');
-            }
-            return level > 0;
-        }
+        internal static bool IsHigherLodName(string name) => MeshNaming.LodIndex(name) > 0;
 
         sealed class Reader : IDisposable
         {

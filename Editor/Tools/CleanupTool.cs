@@ -1209,9 +1209,7 @@ namespace SashaRX.UnityMeshLab
                 if (child.GetComponent<Renderer>() == null) continue;
 
                 // Check if name has LOD suffix
-                bool hasLodSuffix = System.Text.RegularExpressions.Regex.IsMatch(
-                    child.name, @"_LOD\d+$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                bool hasLodSuffix = MeshNaming.HasLodSuffix(child.name);
 
                 // If prefab available, check if this child doesn't exist in prefab
                 bool orphanedFromPrefab = prefabChildNames != null && !prefabChildNames.Contains(child.name);
@@ -1287,9 +1285,7 @@ namespace SashaRX.UnityMeshLab
                     foreach (var r in currentLods[0].renderers)
                     {
                         if (r == null) continue;
-                        bool hasLodSuffix = System.Text.RegularExpressions.Regex.IsMatch(
-                            r.name, @"[_\-\s]+LOD\d+$",
-                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        bool hasLodSuffix = MeshNaming.HasLodSuffix(r.name);
                         if (!hasLodSuffix)
                         {
                             sceneIssues.Add(new SceneIssue
@@ -2096,15 +2092,7 @@ namespace SashaRX.UnityMeshLab
                 // submesh child reuses these to build `{srcName}_{matName}{lodSuffix}`,
                 // keeping `_LOD{N}` at the END for ExtractGroupKey compatibility.
                 string srcName = e.renderer.name;
-                string lodSuffix = "";
-                var lodMatch = System.Text.RegularExpressions.Regex.Match(
-                    srcName, @"([_\-\s]+LOD\d+)$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (lodMatch.Success)
-                {
-                    lodSuffix = lodMatch.Value;
-                    srcName = srcName.Substring(0, srcName.Length - lodSuffix.Length);
-                }
+                srcName = MeshNaming.SplitLodSuffix(srcName, out string lodSuffix);
 
                 // Warn if material count doesn't line up with submeshes — slots beyond
                 // the shorter of the two would be silently unassigned otherwise.
@@ -2407,11 +2395,7 @@ namespace SashaRX.UnityMeshLab
                 // Build merged mesh name — always include LOD suffix from group
                 string mergeSrcName = firstEntry.renderer.name;
                 // Strip existing LOD suffix if present
-                var mergeLodMatch = System.Text.RegularExpressions.Regex.Match(
-                    mergeSrcName, @"([_\-\s]+LOD\d+)$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (mergeLodMatch.Success)
-                    mergeSrcName = mergeSrcName.Substring(0, mergeSrcName.Length - mergeLodMatch.Value.Length);
+                mergeSrcName = MeshNaming.StripLod(mergeSrcName);
                 string mergedName = $"{mergeSrcName}_LOD{group.lodIndex}";
 
                 // Build merged mesh
@@ -2564,15 +2548,7 @@ namespace SashaRX.UnityMeshLab
                         {
                             // Compute output names (same logic as FixMeshSplitByMaterial)
                             string srcName = sc.entry.renderer.name;
-                            string lodSuffix = "";
-                            var lodMatch = System.Text.RegularExpressions.Regex.Match(
-                                srcName, @"([_\-\s]+LOD\d+)$",
-                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                            if (lodMatch.Success)
-                            {
-                                lodSuffix = lodMatch.Value;
-                                srcName = srcName.Substring(0, srcName.Length - lodSuffix.Length);
-                            }
+                            srcName = MeshNaming.SplitLodSuffix(srcName, out string lodSuffix);
 
                             EditorGUILayout.LabelField("      Remove:", EditorStyles.miniLabel);
                             EditorGUILayout.LabelField($"        {sc.entry.renderer.name}", EditorStyles.miniLabel);
