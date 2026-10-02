@@ -17,7 +17,7 @@ name: SonarQube
 #                        `sonar-pr-findings-<N>` artifact), deletes the project, and
 #                        gates: ANY new finding on a changed line reds the check, like
 #                        the server gate's new_violations > 0 — except the ADVISORY rules
-#                        (Tools~/sonar-pr-check.mjs: S3776, S3267, S3358), reported but
+#                        (Tools~/sonar-pr-check.mjs: S3776, S3267, S3358, S1075), reported but
 #                        not gating, and the rules switched off in the begin step below.
 #                        A PR that changes the Sonar workflows or tools checks every open
 #                        PR instead of only itself (the tooling is proven on the queue;

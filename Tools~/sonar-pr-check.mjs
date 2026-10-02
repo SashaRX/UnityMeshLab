@@ -46,9 +46,12 @@ import { pathToFileURL } from 'node:url';
 //   S3267 "use the Where/Select LINQ method" — allocation-free loops are deliberate in
 //         per-vertex / per-face code.
 //   S3358 nested ternary — a readability preference the repo does not share.
+//   S1075 hardcoded path delimiter — Unity asset paths ("Assets/…") are not OS paths:
+//         AssetDatabase takes forward slashes on every platform, Path.Combine would
+//         hand it backslashes on Windows.
 // Rules switched OFF altogether (S125, S1104, S107, S1168) live in the scanner's begin
 // step (.github/workflows/sonar-static-analysis.yml), with their reasons.
-export const ADVISORY_RULES = new Set(['csharpsquid:S3776', 'csharpsquid:S3267', 'csharpsquid:S3358']);
+export const ADVISORY_RULES = new Set(['csharpsquid:S3776', 'csharpsquid:S3267', 'csharpsquid:S3358', 'csharpsquid:S1075']);
 
 export function isAdvisory(finding) {
   return ADVISORY_RULES.has(finding.rule);
