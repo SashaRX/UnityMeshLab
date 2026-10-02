@@ -1,0 +1,101 @@
+name: SonarQube
+
+# Analyses the package's C# on the self-hosted SonarQube and publishes the result
+# to its project. Runs on pushes to main and on demand only: the server runs the
+# Community edition, whose analysis is one branch per project — a pull-request
+# scan would overwrite main's picture rather than decorate the PR.
+#
+# Secrets / variables (repository settings):
+#   SONAR_TOKEN     — secret, a project or global analysis token from the server.
+#   SONAR_HOST_URL  — variable, optional; defaults to the Mesh Lab server below.
+#   SONAR_PROJECT_KEY — variable, optional; defaults to SashaRX_UnityMeshLab.
+#
+# The C# build is the licence-free one from Tools~/compile_check.py: sources are
+# copied into .compile-check/ (reference-gap substitutions keep line numbers), so
+# issues carry the repo-relative path and line; SCM blame is off for that reason.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Editor/**'
+      - 'Tests/**'
+      - 'Tools~/compile_check.py'
+      - '.github/workflows/sonar.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyse:
+    name: Scan with dotnet-sonarscanner
+    runs-on: ubuntu-latest
+    env:
+      SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'http://178.104.156.174:9000' }}
+      SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY || 'SashaRX_UnityMeshLab' }}
+    steps:
+      - name: Probe token
+        id: probe
+        env:
+          HAS_TOKEN: ${{ secrets.SONAR_TOKEN != '' }}
+        run: |
+          echo "has-token=$HAS_TOKEN" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::notice::SONAR_TOKEN is not configured — add a SonarQube analysis token as a repository secret to enable the scan."
+            echo "### SonarQube scan skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "No \`SONAR_TOKEN\` secret. Create a token on the server (My Account ▸ Security) and add it under Settings ▸ Secrets ▸ Actions." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: steps.probe.outputs.has-token == 'true'
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        if: steps.probe.outputs.has-token == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-dotnet@v4
+        if: steps.probe.outputs.has-token == 'true'
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Cache NuGet packages and the scanner
+        if: steps.probe.outputs.has-token == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nuget/packages
+            ~/.sonar/cache
+          key: sonar-${{ runner.os }}-${{ hashFiles('Tools~/compile_check.py', '.github/workflows/sonar.yml') }}
+
+      - name: Install dotnet-sonarscanner
+        if: steps.probe.outputs.has-token == 'true'
+        run: dotnet tool install --global dotnet-sonarscanner
+
+      - name: Prepare the licence-free build
+        if: steps.probe.outputs.has-token == 'true'
+        run: python3 'Tools~/compile_check.py' --prepare-only
+
+      - name: Begin, build, end
+        if: steps.probe.outputs.has-token == 'true'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        working-directory: .compile-check
+        run: |
+          dotnet sonarscanner begin \
+            /k:"$SONAR_PROJECT_KEY" \
+            /n:"Mesh Lab" \
+            /v:"$(jq -r .version ../package.json)" \
+            /d:sonar.host.url="$SONAR_HOST_URL" \
+            /d:sonar.token="$SONAR_TOKEN" \
+            /d:sonar.scm.disabled=true \
+            /d:sonar.exclusions="Shims/**" \
+            /d:sonar.cs.file.suffixes=".cs"
+          dotnet build MeshLab.sln -nologo -v q --no-incremental -p:MeshLabFbx=true
+          dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
