@@ -557,6 +557,7 @@ namespace SashaRX.UnityMeshLab
             if (!TryPrepareHierarchyExportPath(sourceFbxPath, overwriteSource,
                     out string exportPath, out string tempDir, out string fullSourcePath, out string fbxBakName)) return false;
             bool groupSucceeded = false;
+            bool exportFailed = false;
 
             // Overwrite: lock the import settings BEFORE the export, so no extra
             // post-export reimport lets a third-party importer (Bakery) touch UV2
@@ -612,7 +613,7 @@ namespace SashaRX.UnityMeshLab
                     batch.OverwrittenFbxPaths.Add(sourceFbxPath);
                 }
             }
-            catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); groupSucceeded = false; }
+            catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); exportFailed = true; }
             finally
             {
                 UnityEngine.Object.DestroyImmediate(tempRoot);
@@ -629,7 +630,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             if (overwriteSource) StoreHierarchyExportSidecars(sourceFbxPath, entries, groupSucceeded, batch);
-            return groupSucceeded;
+            return groupSucceeded && !exportFailed;
         }
 
         static bool TryPrepareHierarchyExportPath(string sourceFbxPath, bool overwriteSource,
