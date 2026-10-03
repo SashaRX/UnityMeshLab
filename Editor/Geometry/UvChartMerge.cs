@@ -720,11 +720,15 @@ namespace SashaRX.UnityMeshLab
                 uint source = xref[o];
                 if (source >= (uint)packed.Length) return false;
                 var value = new Vector2(uv[o * 2], uv[o * 2 + 1]);
-                // Component-exact on purpose: Unity's Vector2 == is epsilon-based.
+                // Bit-pattern compare on purpose: the same input vertex must carry one
+                // identical UV. Unity's Vector2 == is epsilon-based and float ==/!=/Equals
+                // is banned outright (S1244), so equality goes through the int bits; any
+                // NaN is an anomaly that must revert rather than pass.
                 if (assigned[source])
                 {
                     if (float.IsNaN(value.x) || float.IsNaN(value.y) ||
-                        !packed[source].x.Equals(value.x) || !packed[source].y.Equals(value.y)) return false;
+                        BitConverter.SingleToInt32Bits(packed[source].x) != BitConverter.SingleToInt32Bits(value.x) ||
+                        BitConverter.SingleToInt32Bits(packed[source].y) != BitConverter.SingleToInt32Bits(value.y)) return false;
                 }
                 else
                 {
