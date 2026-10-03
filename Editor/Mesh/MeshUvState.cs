@@ -7,15 +7,14 @@ namespace SashaRX.UnityMeshLab
     /// not retain destroyed meshes; this state is not written to imported assets.</summary>
     internal static class MeshUvState
     {
-        sealed class DraftMarker { }
-        static readonly ConditionalWeakTable<Mesh, DraftMarker> DraftMeshes = new ConditionalWeakTable<Mesh, DraftMarker>();
+        static readonly ConditionalWeakTable<Mesh, object> DraftMeshes = new ConditionalWeakTable<Mesh, object>();
 
         internal static bool IsDraft(Mesh mesh) => !ReferenceEquals(mesh, null) && DraftMeshes.TryGetValue(mesh, out _);
 
         internal static void SetDraft(Mesh mesh, bool draft)
         {
             if (ReferenceEquals(mesh, null)) return;
-            if (draft) DraftMeshes.GetValue(mesh, _ => new DraftMarker());
+            if (draft) DraftMeshes.GetValue(mesh, _ => new object());
             else DraftMeshes.Remove(mesh);
         }
     }

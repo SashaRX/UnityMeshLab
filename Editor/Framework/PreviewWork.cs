@@ -25,9 +25,12 @@ namespace SashaRX.UnityMeshLab
             activeApply = null;
             cancellation?.Cancel();
             if (subscribed) return;
-            EditorApplication.update += Tick;
+            Subscribe(Tick);
             subscribed = true;
         }
+
+        static void Subscribe(EditorApplication.CallbackFunction callback) => EditorApplication.update += callback;
+        static void RemoveSubscription(EditorApplication.CallbackFunction callback) => EditorApplication.update -= callback;
 
         void Tick()
         {
@@ -61,7 +64,7 @@ namespace SashaRX.UnityMeshLab
         void Unsubscribe()
         {
             if (!subscribed) return;
-            EditorApplication.update -= Tick;
+            RemoveSubscription(Tick);
             subscribed = false;
         }
 
