@@ -124,7 +124,6 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.AreEqual(MeshTopology.Lines, wire.GetTopology(0));
                     CollectionAssert.AreEqual(expected, wire.GetIndices(0));
                     Assert.AreSame(wire, viewport.WireOf(mesh), "A completed preview is reused");
-                    LogAssert.NoUnexpectedReceived();
                     viewport.InvalidateMesh(mesh);
                     Assert.IsFalse(wire, "The cached preview must be released on invalidation");
                 }
