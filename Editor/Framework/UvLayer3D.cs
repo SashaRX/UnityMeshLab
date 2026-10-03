@@ -164,7 +164,12 @@ namespace SashaRX.UnityMeshLab
                 if (scale < 1e-12f) continue;
                 localDir /= scale;
                 var bvh = canvas.GetPreviewBvh(ctx, item.mesh, ctx.PreviewUvChannel);
-                if (bvh == null || canvas.GetPreviewShellCache(ctx, item.mesh, ctx.PreviewUvChannel) == null) { pending = true; continue; }
+                if (bvh == null || canvas.GetPreviewShellCache(ctx, item.mesh, ctx.PreviewUvChannel) == null) {
+                    long previewKey = ((long)item.mesh.GetInstanceID() << 8) ^ (uint)ctx.PreviewUvChannel;
+                    // A cached null is a completed, unusable result, not a pending worker.
+                    if (!ctx.PreviewShellDataCache.ContainsKey(previewKey)) pending = true;
+                    continue;
+                }
                 var ray = bvh.Raycast(localOrigin, localDir, float.MaxValue);
                 if (ray.triangleIndex < 0) continue;
                 Vector3 hitWorld = item.matrix.MultiplyPoint3x4(localOrigin + localDir * ray.t);

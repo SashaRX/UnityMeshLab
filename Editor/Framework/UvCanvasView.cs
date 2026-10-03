@@ -183,10 +183,16 @@ namespace SashaRX.UnityMeshLab
         int lastHitShellId = -1;
         const int TRI_PICK_BUDGET = 6000;
 
+        static void SetPreviewUpdates(EditorApplication.CallbackFunction callback, bool enabled)
+        {
+            EditorApplication.update -= callback;
+            if (enabled) EditorApplication.update += callback;
+        }
+
         public void Init()
         {
             disposed = false;
-            EditorApplication.update += PollPreviewJobs;
+            SetPreviewUpdates(PollPreviewJobs, true);
             VertexChannels.Changed += InvalidateInspection;
             var sh = Shader.Find("Hidden/Internal-Colored");
             if (sh == null) return;
@@ -216,7 +222,7 @@ namespace SashaRX.UnityMeshLab
         public void Cleanup()
         {
             disposed = true;
-            EditorApplication.update -= PollPreviewJobs;
+            SetPreviewUpdates(PollPreviewJobs, false);
             ClearFrameCaches();
             ForgetUvSpotPointer(); PreviewReady = null;
             VertexChannels.Changed -= InvalidateInspection;
@@ -962,8 +968,8 @@ namespace SashaRX.UnityMeshLab
                 if (selected < 0 && hovered < 0) continue;
                 var cache = GetPreviewShellCache(ctx, item.Item1, ctx.PreviewUvChannel);
                 if (cache == null) continue;
-                if (selected >= 0) GlOutlineShell(x, y, size, cache.uvs, cache.triangles, cache.uvs.Length, cache, selected, new Color(1f, .95f, .2f, .95f));
-                if (hovered >= 0 && hovered != selected) GlOutlineShell(x, y, size, cache.uvs, cache.triangles, cache.uvs.Length, cache, hovered, new Color(.25f, 1f, .95f, .85f));
+                if (selected >= 0) GlOutlineShell(x, y, size, cache.uvs, cache.triangles, cache.uvs.Length, cache, selected, new Color(1f, .95f, .2f, .95f), ctx, item.Item2);
+                if (hovered >= 0 && hovered != selected) GlOutlineShell(x, y, size, cache.uvs, cache.triangles, cache.uvs.Length, cache, hovered, new Color(.25f, 1f, .95f, .85f), ctx, item.Item2);
             }
         }
 
@@ -1030,6 +1036,10 @@ namespace SashaRX.UnityMeshLab
         }
 
         public void GlOutlineShell(float ox, float oy, float sz, Vector2[] uv, int[] t, int uN, PreviewShellData cache, int shellId, Color color)
+            => GlOutlineShell(ox, oy, sz, uv, t, uN, cache, shellId, color, null, null);
+
+        void GlOutlineShell(float ox, float oy, float sz, Vector2[] uv, int[] t, int uN, PreviewShellData cache, int shellId, Color color,
+            UvToolContext ctx, MeshEntry entry)
         {
             if (cache == null || cache.shellById == null) return;
             if (!cache.shellById.TryGetValue(shellId, out var shell)) return;
@@ -1039,9 +1049,12 @@ namespace SashaRX.UnityMeshLab
             {
                 int a0=t[fi*3],a1=t[fi*3+1],a2=t[fi*3+2];
                 if (!TOk(uv,uN,a0,a1,a2)) continue;
-                Vx(ox,oy,sz,uv[a0]); Vx(ox,oy,sz,uv[a1]);
-                Vx(ox,oy,sz,uv[a1]); Vx(ox,oy,sz,uv[a2]);
-                Vx(ox,oy,sz,uv[a2]); Vx(ox,oy,sz,uv[a0]);
+                Vector2 p0 = ctx == null ? uv[a0] : DisplayUv(ctx, entry, uv[a0]);
+                Vector2 p1 = ctx == null ? uv[a1] : DisplayUv(ctx, entry, uv[a1]);
+                Vector2 p2 = ctx == null ? uv[a2] : DisplayUv(ctx, entry, uv[a2]);
+                Vx(ox,oy,sz,p0); Vx(ox,oy,sz,p1);
+                Vx(ox,oy,sz,p1); Vx(ox,oy,sz,p2);
+                Vx(ox,oy,sz,p2); Vx(ox,oy,sz,p0);
             }
             GL.End();
         }
@@ -1250,7 +1263,7 @@ namespace SashaRX.UnityMeshLab
             }
             return new PreviewResult { shells = shells, tiles = tiles, colors = colors, vertexShells = vertexShells, descriptors = descriptors,
                 boundaries = UvTopology.UvBoundaryEdgePairs(vertices, uv, triangles),
-                bvh = shells != null ? new TriangleBvh(vertices, triangles) : null };
+                bvh = new TriangleBvh(vertices, triangles) };
         }
 
         public PreviewShellData GetPreviewShellCache(UvToolContext ctx, Mesh mesh, int channel)

@@ -114,7 +114,7 @@ namespace SashaRX.UnityMeshLab
                 options.Validate();
                 Matrix4x4 worldToSource = root.transform.worldToLocalMatrix, placement = root.transform.localToWorldMatrix;
                 var source = RemeshSource.Capture(worldToSource, RemeshSource.CollectRenderers(root, lod0Only), aoOnly: true, aoReadbackSettings: options);
-                await source.TextureReadbacks; token.ThrowIfCancellationRequested();
+                await GpuReadback.AwaitReadbacks(source.TextureReadbacks, token);
                 for (int i = 0; i < entries.Length; ++i) {
                     token.ThrowIfCancellationRequested();
                     var entry = entries[i]; var mesh = entry.originalMesh;

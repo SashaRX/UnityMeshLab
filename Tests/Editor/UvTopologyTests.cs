@@ -5,6 +5,7 @@ using System.Diagnostics;
 using NUnit.Framework;
 using UnityEngine.TestTools;
 using UnityEngine;
+using UnityEditor;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
@@ -318,6 +319,72 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsFalse(UvTopology.HasUv(m, 1));
             }
             finally { Object.DestroyImmediate(m); }
+        }
+        static Mesh AuditTriangle() => new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up },
+            uv = new[] { Vector2.zero, Vector2.right, Vector2.up }, triangles = new[] { 0, 1, 2 } };
+        static IEnumerator Drain(UvCanvasView canvas, System.Func<bool> done)
+        {
+            double deadline = EditorApplication.timeSinceStartup + 10;
+            while (!done() && EditorApplication.timeSinceStartup < deadline) { canvas.PollPreviewJobs(); yield return null; }
+            Assert.IsTrue(done(), "preview completion");
+        }
+        [UnityTest]
+        public IEnumerator OtherChannelPreservesCurrentShellColors()
+        {
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.right, Vector3.one, Vector3.up },
+                uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.right, Vector2.one, Vector2.up },
+                uv2 = new[] { Vector2.zero, Vector2.right, Vector2.up, new Vector2(2, 0), new Vector2(3, 1), new Vector2(2, 1) },
+                triangles = new[] { 0, 1, 2, 3, 4, 5 } };
+            var ctx = new UvToolContext { PreviewUvChannel = 1 }; var canvas = new UvCanvasView();
+            try {
+                long key = ((long)mesh.GetInstanceID() << 8) | 1;
+                canvas.GetPreviewShellCache(ctx, mesh, 1);
+                yield return Drain(canvas, () => ctx.PreviewShellDataCache.ContainsKey(key));
+                var entry = new MeshEntry { originalMesh = mesh }; var shell = ctx.PreviewShellDataCache[key].shells[0];
+                int before = canvas.GetShellColorKey(ctx, shell, entry);
+                canvas.GetUv0ShellMap(ctx, mesh);
+                yield return Drain(canvas, () => ctx.Uv0ShellMapCache.ContainsKey(mesh.GetInstanceID()));
+                int after = canvas.GetShellColorKey(ctx, shell, entry);
+                Assert.AreEqual(before, after, "UV0 completion must preserve the displayed UV1 shell color");
+            }
+            finally { canvas.Cleanup(); UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+        [UnityTest]
+        public IEnumerator MissingUv0RequestPreservesValidUv1Bvh()
+        {
+            var mesh = AuditTriangle(); mesh.uv2 = mesh.uv; mesh.uv = null;
+            var ctx = new UvToolContext { PreviewUvChannel = 1 }; var canvas = new UvCanvasView();
+            try {
+                long key = ((long)mesh.GetInstanceID() << 8) | 1;
+                canvas.GetPreviewShellCache(ctx, mesh, 1);
+                yield return Drain(canvas, () => ctx.PreviewShellDataCache.ContainsKey(key));
+                Assert.IsNotNull(canvas.GetPreviewBvh(ctx, mesh, 1));
+                canvas.GetUv0ShellMap(ctx, mesh);
+                yield return Drain(canvas, () => ctx.Uv0ShellMapCache.ContainsKey(mesh.GetInstanceID()));
+                Assert.IsNotNull(canvas.GetPreviewBvh(ctx, mesh, 1), "UV0 without shells must not destroy the usable geometry BVH");
+                Assert.IsNotNull(canvas.GetPreviewShellCache(ctx, mesh, 1));
+            }
+            finally { canvas.Cleanup(); UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+        [UnityTest]
+        public IEnumerator CachedNullOnAnUnrelatedMeshDoesNotBlock3DPicking()
+        {
+            var good = AuditTriangle(); var bad = AuditTriangle(); var canvas = new UvCanvasView(); var ctx = new UvToolContext { PreviewUvChannel = 0 };
+            using (var viewport = new MeshViewport3D { ViewProjection = MeshViewport3D.Projection.XY })
+            using (var layer = new UvLayer3D())
+            try {
+                long key = (long)good.GetInstanceID() << 8;
+                canvas.GetPreviewShellCache(ctx, good, 0);
+                yield return Drain(canvas, () => ctx.PreviewShellDataCache.ContainsKey(key));
+                viewport.Frame(new Bounds(new Vector3(.5f, .5f, 0), new Vector3(1, 1, .1f)));
+                typeof(MeshViewport3D).GetField("currentRect", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).SetValue(viewport, new Rect(0, 0, 100, 100));
+                var entries = new[] { new MeshEntry { originalMesh = good }, new MeshEntry { originalMesh = bad } };
+                var items = new[] { new MeshViewport3D.Item(good, Matrix4x4.identity), new MeshViewport3D.Item(bad, Matrix4x4.Translate(Vector3.right * 100)) };
+                Assert.IsTrue(layer.Pick(viewport, canvas, ctx, new Vector2(45, 55), new[] { items[0] }, new[] { entries[0] }, out _, out _, out _));
+                ctx.PreviewShellDataCache[(long)bad.GetInstanceID() << 8] = null; ctx.PreviewBvhCache[bad.GetInstanceID()] = null;
+                Assert.IsTrue(layer.Pick(viewport, canvas, ctx, new Vector2(45, 55), items, entries, out _, out _, out _), "Completed unusable data must not block picking on a ready mesh");
+            }
+            finally { canvas.Cleanup(); UnityEngine.Object.DestroyImmediate(good); UnityEngine.Object.DestroyImmediate(bad); }
         }
     }
 }

@@ -667,7 +667,13 @@ namespace SashaRX.UnityMeshLab
                 if (!shader || !shader.isSupported) throw new InvalidOperationException("Remesh readback shader is unavailable.");
                 blit = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             }
-            public void Dispose() { Object.DestroyImmediate(blit); }
+            public void Dispose()
+            {
+                // Capture can fail before transferring Readbacks to its caller. Never
+                // wait here: GPU callbacks release their textures even after failure.
+                if (pending.Count > 0) _ = GpuReadback.ObserveFailure(Readbacks);
+                Object.DestroyImmediate(blit);
+            }
             public readonly List<string> warnings = new List<string>();
             // Materials on shaders other than Standard / URP Lit, grouped by shader: one
             // summary line per capture instead of one warning per material.

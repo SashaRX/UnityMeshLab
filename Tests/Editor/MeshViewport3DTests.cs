@@ -387,5 +387,44 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             finally { Object.DestroyImmediate(mesh); }
         }
+        [TestCase(false)]
+        [TestCase(true)]
+        public void LightmapSpotOutlineUsesTheRendererAtlasTransform(bool selected)
+        {
+            var mesh = Quad(); mesh.uv2 = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
+            var root = new GameObject("Lightmap spot outline");
+            var renderer = root.AddComponent<MeshRenderer>();
+            renderer.lightmapIndex = 0; renderer.lightmapScaleOffset = new Vector4(.25f, .25f, .5f, .25f);
+            var entry = new MeshEntry { originalMesh = mesh, renderer = renderer };
+            var context = new UvToolContext { PreviewUvChannel = 1 };
+            var canvas = new UvCanvasView { SpotMode = true, CurrentPreviewMode = UvCanvasView.PreviewMode.Lightmap };
+            context.PreviewShellDataCache[((long)mesh.GetInstanceID() << 8) | 1] = UvTopology.BuildShellData(mesh.uv2, mesh.triangles);
+            var target = new RenderTexture(128, 128, 0, RenderTextureFormat.ARGB32); target.Create();
+            var pixels = new Texture2D(128, 128, TextureFormat.RGBA32, false, true);
+            var previous = RenderTexture.active;
+            try {
+                canvas.Init();
+                canvas.ApplySpotHit(true, new ShellUvHit { meshEntry = entry, shellId = 0 }, null);
+                if (selected) Assert.IsTrue(canvas.SelectSpotHover());
+                RenderTexture.active = target; GL.Clear(true, true, Color.clear);
+                GL.PushMatrix();
+                try {
+                    GL.LoadPixelMatrix(0, 128, 128, 0); canvas.GlMat.SetPass(0);
+                    typeof(UvCanvasView).GetMethod("DrawSpotOutlines", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                        .Invoke(canvas, new object[] { context, new List<System.ValueTuple<Mesh, MeshEntry, int>> { (mesh, entry, 0) }, 0f, 0f, 128f });
+                }
+                finally { GL.PopMatrix(); }
+                pixels.ReadPixels(new Rect(0, 0, 128, 128), 0, 0); pixels.Apply();
+                float green = 0;
+                for (int y = 47; y <= 49; ++y)
+                    for (int x = 63; x <= 65; ++x) green = Mathf.Max(green, pixels.GetPixel(x, y).g);
+                Assert.That(green, Is.GreaterThan(.7f), "Spot outlines must follow the scaled, offset lightmap UVs");
+            }
+            finally {
+                RenderTexture.active = previous; canvas.Cleanup(); target.Release();
+                Object.DestroyImmediate(target); Object.DestroyImmediate(pixels); Object.DestroyImmediate(root); Object.DestroyImmediate(mesh);
+            }
+        }
+
     }
 }

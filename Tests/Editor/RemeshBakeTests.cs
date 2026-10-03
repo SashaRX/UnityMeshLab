@@ -1050,5 +1050,35 @@ namespace SashaRX.UnityMeshLab.Tests
             // No seeds at all: everything stays unassigned.
             foreach (var n in RemeshBaker.NearestSeeds(new bool[16], 4, CancellationToken.None)) Assert.AreEqual(-1, n);
         }
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator TextureReadbackWaitCancelsWithoutWaitingForGpuCompletion()
+        {
+            var gpu = new System.Threading.Tasks.TaskCompletionSource<bool>();
+            using (var cancellation = new CancellationTokenSource()) {
+                var wait = GpuReadback.AwaitReadbacks(gpu.Task, cancellation.Token);
+                Assert.IsFalse(wait.IsCompleted);
+                cancellation.Cancel();
+                var deadline = EditorApplication.timeSinceStartup + 3;
+                while (!wait.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(wait.IsCanceled, "Cancel must release the AO panel while GPU readback is still pending");
+                Assert.IsFalse(gpu.Task.IsCompleted, "GPU callbacks still own their cleanup");
+                gpu.SetException(new InvalidOperationException("Late GPU failure"));
+                yield return null;
+                Assert.IsTrue(wait.IsCanceled);
+            }
+        }
+
+        [Test]
+        public void TextureReadbackFailureStillReachesTheCaller()
+        {
+            var failure = new InvalidOperationException("GPU readback failed");
+            var readback = System.Threading.Tasks.Task.FromException(failure);
+            var wait = GpuReadback.AwaitReadbacks(readback, CancellationToken.None);
+            Assert.AreSame(failure, Assert.Throws<InvalidOperationException>(() => wait.GetAwaiter().GetResult()));
+            var observer = GpuReadback.ObserveFailure(readback);
+            Assert.IsTrue(observer.IsCompleted);
+            Assert.DoesNotThrow(() => observer.GetAwaiter().GetResult());
+        }
+
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -48,6 +49,27 @@ namespace SashaRX.UnityMeshLab
                 RenderTexture.active = previous;
                 RenderTexture.ReleaseTemporary(rt);
             }
+        }
+
+        /// <summary>Observe abandoned readbacks while their callbacks retain responsibility for GPU cleanup.</summary>
+        internal static Task ObserveFailure(Task task)
+            => task.ContinueWith(failed => { _ = failed.Exception; }, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+        /// <summary>Cancel the caller's wait without blocking or cancelling the GPU cleanup callback.</summary>
+        internal static async Task AwaitReadbacks(Task readbacks, CancellationToken token)
+        {
+            if (token.CanBeCanceled && !readbacks.IsCompleted) {
+                var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                using (token.Register(() => cancelled.TrySetResult(true))) {
+                    if (await Task.WhenAny(readbacks, cancelled.Task) != readbacks) {
+                        _ = ObserveFailure(readbacks);
+                        token.ThrowIfCancellationRequested();
+                    }
+                }
+            }
+            await readbacks;
+            token.ThrowIfCancellationRequested();
         }
 
         /// <summary>Submit on the main thread; complete after GPU readback without waiting for the GPU.</summary>
