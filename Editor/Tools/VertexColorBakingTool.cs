@@ -14,7 +14,7 @@ using UnityEditor;
 namespace SashaRX.UnityMeshLab
 {
     [MeshLabTool("vertex_color_baking", MeshLabLibraries.Baking, MeshLabLibraries.Assets)]
-    public class VertexColorBakingTool : IUvTool, IUvToolAssetLifecycle
+    public class VertexColorBakingTool : IUvTool, IUvToolAssetLifecycle, IUvTool3D, IUvToolUvContent
     {
         UvToolContext ctx;
         UvCanvasView canvas;
@@ -32,7 +32,7 @@ namespace SashaRX.UnityMeshLab
         static readonly int[] resolutions     = { 256, 512, 1024 };
         static readonly string[] resLabels    = { "256", "512", "1024" };
         static readonly string[] channelTypeNames = { "Vertex Color", "UV0", "UV1", "UV2", "UV3", "UV4" };
-        static readonly string[] colorCompNames  = { "R", "G", "B", "A" };
+        static readonly string[] colorCompNames  = { "R", "G", "B", "A", "RGB" };
         static readonly string[] uvCompNames     = { "X", "Y" };
         static readonly string[] occluderModeLabels = { "Self Only", "Same Root + Nearby" };
 
@@ -47,7 +47,7 @@ namespace SashaRX.UnityMeshLab
         float groundOffset   = 0.01f;
         AOTargetChannel TargetChannel =>
             channelType == 0
-                ? (AOTargetChannel)channelComp
+                ? (channelComp == 4 ? AOTargetChannel.VertexColorRGB : (AOTargetChannel)channelComp)
                 : (AOTargetChannel)(4 + (channelType - 1) * 2 + channelComp);
 
         string TargetChannelName => VertexChannels.Name(TargetChannel);
@@ -91,9 +91,10 @@ namespace SashaRX.UnityMeshLab
         int selectedSubmeshIndex;
 
         // ── Bake Kind (AO vs Solid Color) ──
-        internal enum BakeKind { AO = 0, SolidColor = 1 }
+        internal enum BakeKind { AO = 0, SolidColor = 1, TextureAO = 2 }
         BakeKind bakeKind = BakeKind.AO;
-        static readonly string[] bakeKindLabels = { "AO", "Solid Color" };
+        static readonly string[] bakeKindLabels = { "Vertex AO", "Solid Color", "Texture AO" };
+        readonly TextureAoBakePanel textureAo = new TextureAoBakePanel();
 
         // ── Solid Color variants (batch export) ──
         List<VariantExportPipeline.Variant> variants = new List<VariantExportPipeline.Variant>
@@ -167,6 +168,7 @@ namespace SashaRX.UnityMeshLab
         {
             this.ctx = ctx;
             this.canvas = canvas;
+            textureAo.Activate(() => requestRepaint?.Invoke());
             EditorApplication.hierarchyChanged += OnEditorHierarchyChanged;
         }
 
@@ -175,6 +177,7 @@ namespace SashaRX.UnityMeshLab
 
         public void OnDeactivate()
         {
+            textureAo.Deactivate();
             EditorApplication.hierarchyChanged -= OnEditorHierarchyChanged;
             CancelGpuJob();
             RestorePreview();
@@ -189,6 +192,7 @@ namespace SashaRX.UnityMeshLab
 
         public void OnRefresh()
         {
+            textureAo.Clear();
             CancelGpuJob();
             RestorePreview();
             ClearResults();
@@ -482,7 +486,7 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.Space(4);
 
             EditorGUILayout.BeginHorizontal();
-            EditorGUILayout.PrefixLabel(new GUIContent("Target", "Channel to store AO values."));
+            EditorGUILayout.PrefixLabel(new GUIContent("Target", "Channel to store AO values. RGB writes the same AO to R, G and B, preserving alpha."));
             channelType = EditorGUILayout.Popup(channelType, channelTypeNames);
             var compNames = channelType == 0 ? colorCompNames : uvCompNames;
             if (channelComp >= compNames.Length) channelComp = 0;
@@ -587,6 +591,11 @@ namespace SashaRX.UnityMeshLab
                 DrawApplyFilters();
                 DrawApplyAndExportRow();
             }
+            else if (bakeKind == BakeKind.TextureAO) {
+                var targets = ActiveEntries().Where(e => e.include && e.originalMesh && e.renderer &&
+                    (hierarchyMode || e.lodIndex == ctx.PreviewLod)).ToList();
+                textureAo.Draw(targets, ResolveOccluderRoot(targets));
+            }
             else // BakeKind.SolidColor
             {
                 DrawSolidColorSettings();
@@ -595,6 +604,12 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        public bool GetUvContent(List<MeshEntry> entries)
+            => bakeKind == BakeKind.TextureAO && textureAo.GetUvContent(entries);
+        public bool Get3DContent(List<MeshViewport3D.Item> items)
+            => bakeKind == BakeKind.TextureAO && textureAo.Get3DContent(items);
+        public void OnDraw3D(MeshViewport3D view) { }
+
         void DrawBakeKindSelector()
         {
             EditorGUI.BeginChangeCheck();
@@ -602,7 +617,7 @@ namespace SashaRX.UnityMeshLab
             if (EditorGUI.EndChangeCheck())
             {
                 bakeKind = (BakeKind)newKind;
-                if (bakeKind == BakeKind.SolidColor && previewActive)
+                if (bakeKind != BakeKind.AO && previewActive)
                     RestorePreview();
                 requestRepaint?.Invoke();
             }

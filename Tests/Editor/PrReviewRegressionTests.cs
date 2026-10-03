@@ -79,24 +79,31 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(7, ctx.PreviewUvChannel);
         }
 
-        [Test]
-        public void RenderingCopyRetainsCanonicalEntryAndCurrentPipelineState()
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator RenderingCopyRetainsCanonicalEntryAndCurrentPipelineState()
         {
             var authored = Plane(); var readable = Plane(); var repacked = Plane();
             readable.uv2 = readable.uv;
             var entry = new MeshEntry { originalMesh = authored };
             var ctx = new UvToolContext { PreviewUvChannel = 1 };
             ctx.MeshEntries.Add(entry);
-            var canvas = new UvCanvasView { EntriesOverride = new List<MeshEntry> { entry } };
-            canvas.DisplayMeshes[entry] = readable;
-            Assert.AreSame(readable, canvas.DisplayMesh(ctx, entry));
-            ShellUvHit hit = default;
-            Assert.IsTrue(canvas.TryPickUvHit(ctx, new Vector2(.1f, .2f), ref hit));
-            Assert.AreSame(entry, hit.meshEntry);
-            entry.repackedMesh = repacked;
-            canvas.DisplayMeshes.Clear();
-            Assert.AreSame(repacked, canvas.DisplayMesh(ctx, entry));
-            canvas.Cleanup();
+            var canvas = new UvCanvasView { EntriesOverride = new List<MeshEntry> { entry }, SpotMode = true };
+            try {
+                canvas.DisplayMeshes[entry] = readable;
+                Assert.AreSame(readable, canvas.DisplayMesh(ctx, entry));
+                canvas.UpdateUvSpot(ctx, new Vector2(.1f, .2f), select: true);
+                double deadline = UnityEditor.EditorApplication.timeSinceStartup + 15;
+                while (!canvas.HasSelectedShell && UnityEditor.EditorApplication.timeSinceStartup < deadline) {
+                    canvas.PollPreviewJobs(); yield return null;
+                }
+                Assert.IsTrue(canvas.HasSelectedShell, "A pending click resolves when the readable preview snapshot is ready");
+                Assert.AreSame(entry, canvas.SelectedShell.meshEntry);
+                Assert.IsNotNull(canvas.SelectedShellDebug, "Spot details use the displayed readable mesh");
+                entry.repackedMesh = repacked;
+                canvas.DisplayMeshes.Clear();
+                Assert.AreSame(repacked, canvas.DisplayMesh(ctx, entry));
+            }
+            finally { canvas.Cleanup(); }
         }
 
         [Test]

@@ -50,6 +50,8 @@ namespace SashaRX.UnityMeshLab
         readonly List<MeshEntry> viewportEntries = new List<MeshEntry>();   // parallel to viewportItems; null for tool content
         readonly List<MeshEntry> uvContentEntries = new List<MeshEntry>();  // a tool's own UV canvas content (IUvToolUvContent)
         int uvContentKey;
+        Vector2 viewportSpotPointer;
+        bool viewportSpotPointerValid, selectViewportSpotWhenReady;
         Rect canvasArea;   // the canvas column's content rect, from the last repaint
 
         // ── Layout ──
@@ -113,6 +115,7 @@ namespace SashaRX.UnityMeshLab
             canvas = new UvCanvasView();
             canvas.Init();
             canvas.RequestRepaint = Repaint;
+            canvas.PreviewReady = OnPreviewReady;
             viewport = new MeshViewport3D { RequestRepaint = Repaint };
             uvLayer = new UvLayer3D();
             inspection = new MeshInspection();
@@ -436,7 +439,6 @@ namespace SashaRX.UnityMeshLab
                 EditorGUILayout.BeginVertical(GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
                 canvas.OnGUI(ctx,
                     ActiveTool != null ? (Action<UvCanvasView, float, float, float>)ActiveTool.OnDrawCanvasOverlay : null);
-                GUILayout.FlexibleSpace();
                 EditorGUILayout.EndVertical();
                 if (Event.current.type == EventType.Repaint) canvasArea = GUILayoutUtility.GetLastRect();
                 DrawCanvasModeSwitch(canvasArea);
@@ -861,13 +863,13 @@ namespace SashaRX.UnityMeshLab
                 if (!canvas.SpotMode) canvas.ClearHoverState();
                 SceneView.RepaintAll();
             }
-            canvas.LockSelection = GUILayout.Toggle(canvas.LockSelection, "Lock", EditorStyles.toolbarButton, GUILayout.Width(40));
+            bool lockNext = GUILayout.Toggle(canvas.LockSelection, "Lock", EditorStyles.toolbarButton, GUILayout.Width(40));
+            if (lockNext != canvas.LockSelection) canvas.SetSelectionLock(lockNext);
             using (new EditorGUI.DisabledScope(!canvas.HasSelectedShell))
             {
                 if (GUILayout.Button("Clear", EditorStyles.toolbarButton, GUILayout.Width(42)))
                 {
-                    canvas.HasSelectedShell = false;
-                    canvas.SelectedShellDebug = null;
+                    canvas.ClearSpotSelection();
                 }
             }
 
@@ -1016,6 +1018,8 @@ namespace SashaRX.UnityMeshLab
             if (canvas3D == on) return;
             canvas3D = on;
             EditorPrefs.SetBool(Canvas3DPref, on);
+            viewportSpotPointerValid = false; selectViewportSpotWhenReady = false;
+            canvas.ForgetUvSpotPointer();
             // Hover belongs to the view it was picked in; selection carries over.
             canvas.HasHoveredShell = false; canvas.HoveredShellDebug = null; canvas.HoverHitValid = false;
             if (on) viewport?.FrameContent();
@@ -1101,6 +1105,8 @@ namespace SashaRX.UnityMeshLab
 
         void InvalidateViewportCaches(bool clearInspection = true)
         {
+            viewportSpotPointerValid = false; selectViewportSpotWhenReady = false;
+            canvas?.ClearFrameCaches();
             uvLayer?.Invalidate();
             viewport?.InvalidateCaches();
             if (clearInspection) inspection?.Clear(); else inspection?.InvalidateData();
@@ -1109,43 +1115,47 @@ namespace SashaRX.UnityMeshLab
 
         // Spot mode in 3D: the face under the mouse (camera ray against the context
         // meshes) feeds the same hover/selection state the UV canvas and the tools read.
+        void OnPreviewReady()
+        {
+            if (canvas3D && canvas.SpotMode && viewportSpotPointerValid && !canvas.SpotSelectionLocked)
+                RefreshViewportSpot();
+        }
+
+        void RefreshViewportSpot()
+        {
+            if (canvas.SpotSelectionLocked) return;
+            bool found = uvLayer.Pick(viewport, canvas, ctx, viewportSpotPointer, viewportItems, viewportEntries,
+                out var hit, out var debug, out var world);
+            canvas.ApplySpotHit(found, hit, debug, world);
+            if (selectViewportSpotWhenReady && found) {
+                canvas.SelectSpotHover(); selectViewportSpotWhenReady = false;
+            }
+        }
+
         void HandleViewportSpot(Rect rect)
         {
-            if (!canvas.SpotMode) return;
+            if (!canvas.SpotMode) { viewportSpotPointerValid = false; return; }
             var e = Event.current;
-            bool inside = rect.Contains(e.mousePosition);
-            if (!inside)
-            {
-                if (!canvas.LockSelection && canvas.HasHoveredShell) { canvas.HasHoveredShell = false; canvas.HoveredShellDebug = null; Repaint(); }
+            if (!UvCanvasView.IsSpotInput(e.type)) return;
+            if (!rect.Contains(e.mousePosition)) {
+                viewportSpotPointerValid = false; selectViewportSpotWhenReady = false;
+                if (!canvas.SpotSelectionLocked) canvas.ClearSpotHover();
                 return;
             }
-            if (e.type != EventType.MouseMove && e.type != EventType.MouseDown && e.type != EventType.MouseDrag) return;
-            if (!canvas.LockSelection)
-            {
-                if (uvLayer.Pick(viewport, canvas, ctx, e.mousePosition, viewportItems, viewportEntries, out var hit, out var debug, out var world))
-                {
-                    canvas.HoveredShell = hit; canvas.HasHoveredShell = true; canvas.HoveredShellDebug = debug;
-                    canvas.HoveredShellId = hit.shellId; canvas.UvSpot = hit.uvHit; canvas.HoverHitValid = true; canvas.HoverWorldPos = world;
-                    canvas.CanvasSpotUv = hit.uvHit; canvas.CanvasSpotValid = true;
-                }
-                else
-                {
-                    canvas.HasHoveredShell = false; canvas.HoveredShellDebug = null; canvas.HoverHitValid = false; canvas.CanvasSpotValid = false;
-                }
+            bool select = e.type == EventType.MouseDown && e.button == 0 && !e.alt;
+            if (!canvas.SpotSelectionLocked) {
+                viewportSpotPointer = e.mousePosition; viewportSpotPointerValid = true;
+                selectViewportSpotWhenReady = select;
+                RefreshViewportSpot();
                 Repaint(); SceneView.RepaintAll();
             }
-            if (e.type == EventType.MouseDown && e.button == 0 && !e.alt)
-            {
-                if (canvas.HasHoveredShell) { canvas.SelectedShell = canvas.HoveredShell; canvas.HasSelectedShell = true; }
-                else if (!canvas.LockSelection) canvas.HasSelectedShell = false;
-                canvas.SelectedShellDebug = canvas.HoveredShellDebug != null ? UvCanvasView.CloneHit(canvas.HoveredShellDebug) : null;
-                if (e.clickCount == 2 && canvas.HasSelectedShell)
-                {
+            if (select) {
+                if (e.clickCount == 2 && canvas.HasSelectedShell) {
                     try { canvas.OnDoubleClickShell?.Invoke(canvas.SelectedShell); }
                     catch (Exception ex) { UvtLog.Error($"[3D] Double-click shell focus failed: {ex.Message}"); }
-                    e.Use();
                 }
-                Repaint(); SceneView.RepaintAll();
+                // Surface selection consumes the left click before orbit input sees it.
+                e.Use();
             }
         }
 

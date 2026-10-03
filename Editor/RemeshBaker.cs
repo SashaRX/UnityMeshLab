@@ -26,6 +26,7 @@ namespace SashaRX.UnityMeshLab
             public float maxOneSidedDeg, meanTiltDeg, maxTiltDeg, maxReachRatio;
             public bool facingFilter;
             public int twoSidedFaces;   // source faces whose back counts as surface (two-sided materials)
+            public bool sourceAO;
             public bool beauty;
             public bool gpu;            // the geometry queries ran on the GPU
         }
@@ -89,6 +90,7 @@ namespace SashaRX.UnityMeshLab
         {
             public RemeshSource source; public RemeshNative.Geometry target; public Vector4[] tangents;
             public RemeshSettings settings; public RemeshBeauty beauty;
+            internal SourceAoBaker aoBaker;
             public Maps result; public int size, bandRows; public Vector2[] offsets; public int[] owners;
             public TriangleBvh bvh; public Cage cage; public bool proxy; public Vector3[] faceDirs; public float depth;
             public Vector3[] faceNormals;   // source faces, oriented by the winding probe
@@ -122,6 +124,7 @@ namespace SashaRX.UnityMeshLab
         static Context Prepare(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents,
             RemeshSettings settings, CancellationToken token, RemeshBeauty beauty)
         {
+            settings.Validate();
             int size = settings.textureResolution;
             int count = checked(size * size);
             var result = new Maps { size = size, color = new Color32[count], normal = new Color32[count],
@@ -176,10 +179,12 @@ namespace SashaRX.UnityMeshLab
             if (winding < 0)
                 for (int f = 0; f < faceNormals.Length; ++f) faceNormals[f] = -faceNormals[f];
             result.facingFilter = facingFilter;
+            result.sourceAO = settings.bakeSourceAO;
+            var aoBaker = settings.bakeSourceAO ? new SourceAoBaker(source, bvh, faceNormals, twoSided, settings.sourceAO) : null;
             // Bands sized so one band's samples fit a query batch (and a modest amount of memory).
             int bandRows = Mathf.Clamp(GpuBvh.MaxBatch / Math.Max(1, size * offsets.Length), 1, size);
             return new Context { source = source, target = target, tangents = tangents, settings = settings, beauty = beauty,
-                result = result, size = size, bandRows = bandRows, offsets = offsets, owners = owners, bvh = bvh, cage = cage,
+                result = result, aoBaker = aoBaker, size = size, bandRows = bandRows, offsets = offsets, owners = owners, bvh = bvh, cage = cage,
                 proxy = proxy, faceDirs = faceDirs, depth = depth, faceNormals = faceNormals, twoSided = twoSided,
                 facingFilter = facingFilter, emptyTexels = proxy ? new bool[count] : null };
         }
@@ -329,6 +334,11 @@ namespace SashaRX.UnityMeshLab
                         Vector3 n = (target.normals[a] * w.x + target.normals[b] * w.y + target.normals[c] * w.z).normalized;
                         Vector4 tangent = ctx.tangents[a] * w.x + ctx.tangents[b] * w.y + ctx.tangents[c] * w.z;
                         Evaluate(source, sourceFace, sw, n, tangent, vertexTint, out var sc, out var sn, out var sm, out var sa, out var se);
+                        if (ctx.aoBaker != null) {
+                            float computedAO = ctx.aoBaker.Sample(sourceFace, sw, pixel, token);
+                            if (ctx.settings.multiplySourceAO) computedAO *= sa.g;
+                            sa = new Color(computedAO, computedAO, computedAO, 1);
+                        }
                         if (ctx.beauty != null) sc = BeautyLight(ctx.beauty, source, sourceFace, sw, sc, sm, se).gamma;
                         color += sc.linear; metal += sm; ao += sa; emission += se;
                         normal += new Vector3(sn.r * 2 - 1, sn.g * 2 - 1, sn.b * 2 - 1);
@@ -714,14 +724,7 @@ namespace SashaRX.UnityMeshLab
                 linear = new Color(linear.r * vc.r, linear.g * vc.g, linear.b * vc.b, linear.a);
             }
             color = linear.gamma; color.a = 1;
-            var n = (source.normals[a] * w.x + source.normals[b] * w.y + source.normals[c] * w.z).normalized;
-            var t = source.tangents[a] * w.x + source.tangents[b] * w.y + source.tangents[c] * w.z;
-            if (surface.normal.image != null) {
-                var sample = surface.normal.Sample(uv, new Color(0.5f, 0.5f, 1));
-                float nx = (sample.r * 2 - 1) * surface.normalScale, ny = (sample.g * 2 - 1) * surface.normalScale;
-                Basis(n, t, out var st, out var sb);
-                n = (st * nx + sb * ny + n * Mathf.Sqrt(Mathf.Max(0, 1 - nx * nx - ny * ny))).normalized;
-            }
+            var n = SourceNormal(source, face, w, true);
             Basis(targetNormal, targetTangent, out var tt, out var tb);
             normal = new Color(Vector3.Dot(n, tt) * 0.5f + 0.5f, Vector3.Dot(n, tb) * 0.5f + 0.5f,
                 Vector3.Dot(n, targetNormal) * 0.5f + 0.5f, 1);
@@ -732,6 +735,22 @@ namespace SashaRX.UnityMeshLab
             ao = new Color(occlusion, occlusion, occlusion, 1);
             emission = surface.emission.Sample(uv, Color.white) * surface.emissionTint;
             emission.a = 1;
+        }
+
+        internal static Vector3 SourceNormal(RemeshSource source, int face, Vector3 w, bool useNormalMap)
+        {
+            int a = source.indices[face * 3], b = source.indices[face * 3 + 1], c = source.indices[face * 3 + 2];
+            var n = MeshGeometry.UnitDirection(source.normals[a] * w.x + source.normals[b] * w.y + source.normals[c] * w.z);
+            if (n.sqrMagnitude < 1e-12f)
+                n = MeshGeometry.UnitDirection(Vector3.Cross(source.positions[b] - source.positions[a], source.positions[c] - source.positions[a]));
+            var surface = source.materials[source.faceMaterials[face]];
+            if (!useNormalMap || surface.normal.image == null) return n;
+            Vector2 uv = source.uv[a] * w.x + source.uv[b] * w.y + source.uv[c] * w.z;
+            var tangent = source.tangents[a] * w.x + source.tangents[b] * w.y + source.tangents[c] * w.z;
+            var sample = surface.normal.Sample(uv, new Color(.5f, .5f, 1));
+            float nx = (sample.r * 2 - 1) * surface.normalScale, ny = (sample.g * 2 - 1) * surface.normalScale;
+            Basis(n, tangent, out var t, out var bAxis);
+            return MeshGeometry.UnitDirection(t * nx + bAxis * ny + n * Mathf.Sqrt(Mathf.Max(0, 1 - nx * nx - ny * ny)));
         }
 
         static void Basis(Vector3 n, Vector4 tangent, out Vector3 t, out Vector3 b)

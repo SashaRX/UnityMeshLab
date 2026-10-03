@@ -24,6 +24,7 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TestCase(AOTargetChannel.VertexColorR, true, 0, -1, -1, "Vertex Color R")]
         [TestCase(AOTargetChannel.VertexColorA, true, 3, -1, -1, "Vertex Color A")]
+        [TestCase(AOTargetChannel.VertexColorRGB, true, -1, -1, -1, "Vertex Color RGB")]
         [TestCase(AOTargetChannel.UV0_X, false, -1, 0, 0, "UV0 X")]
         [TestCase(AOTargetChannel.UV2_Y, false, -1, 2, 1, "UV2 Y")]
         [TestCase(AOTargetChannel.UV4_Y, false, -1, 4, 1, "UV4 Y")]
@@ -50,6 +51,55 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(127f / 255f, back[1], 1e-6f);
             VertexChannels.Write(mesh, new[] { 1f, 1f, 1f, 1f }, AOTargetChannel.VertexColorA);
             Assert.AreEqual(127, mesh.colors32[1].g, "a write to A leaves G alone");
+        }
+
+        [Test]
+        public void RgbAoWritesAllThreeComponentsAndPreservesAlphaAndUvs()
+        {
+            var before = new[] { new Color32(1, 2, 3, 10), new Color32(4, 5, 6, 20),
+                new Color32(7, 8, 9, 30), new Color32(10, 11, 12, 40) };
+            mesh.colors32 = before;
+            var uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
+            mesh.uv = uv;
+            VertexAOBaker.WriteToChannel(mesh, new[] { -1f, .5f, 1f, 2f }, AOTargetChannel.VertexColorRGB);
+            var colors = mesh.colors32;
+            var expected = new byte[] { 0, 127, 255, 255 };
+            for (int i = 0; i < colors.Length; ++i) {
+                Assert.AreEqual(new Color32(expected[i], expected[i], expected[i], before[i].a), colors[i]);
+            }
+            CollectionAssert.AreEqual(uv, mesh.uv);
+            var back = VertexChannels.Read(mesh, AOTargetChannel.VertexColorRGB);
+            for (int i = 0; i < back.Length; ++i) Assert.AreEqual(expected[i] / 255f, back[i], 1e-6f);
+            Assert.IsFalse(SidecarStore.AoUvTarget.From(AOTargetChannel.VertexColorRGB).IsSet,
+                "RGB is a color target, so export must not treat it as another UV set");
+        }
+
+        [Test]
+        public void RgbAoDefaultsToOpaqueAndSubmeshWritePreservesUntouchedVertices()
+        {
+            Assert.IsNull(VertexChannels.Read(mesh, AOTargetChannel.VertexColorRGB));
+            VertexChannels.Write(mesh, new[] { .5f, .5f, .5f, .5f }, AOTargetChannel.VertexColorRGB);
+            Assert.AreEqual(new Color32(127, 127, 127, 255), mesh.colors32[0]);
+            var before = mesh.colors32;
+            before[0] = new Color32(21, 42, 63, 84);
+            before[1].a = 17;
+            mesh.colors32 = before;
+            Assert.IsTrue(VertexChannels.WriteSubmesh(mesh, new[] { 0f, 0f, 0f, 0f }, AOTargetChannel.VertexColorRGB, 1));
+            Assert.AreEqual(before[0], mesh.colors32[0], "vertex outside selected submesh is unchanged");
+            Assert.AreEqual(new Color32(0, 0, 0, 17), mesh.colors32[1]);
+            Assert.AreEqual(new Color32(0, 0, 0, 255), mesh.colors32[3]);
+        }
+
+        [Test]
+        public void RgbSelectionMapsToAppendedChannelWithoutRenumberingUvs()
+        {
+            Assert.AreEqual(4, (int)AOTargetChannel.UV0_X);
+            Assert.AreEqual(13, (int)AOTargetChannel.UV4_Y);
+            var tool = new VertexColorBakingTool();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            typeof(VertexColorBakingTool).GetField("channelType", flags).SetValue(tool, 0);
+            typeof(VertexColorBakingTool).GetField("channelComp", flags).SetValue(tool, 4);
+            Assert.AreEqual(AOTargetChannel.VertexColorRGB, typeof(VertexColorBakingTool).GetProperty("TargetChannel", flags).GetValue(tool));
         }
 
         [Test]

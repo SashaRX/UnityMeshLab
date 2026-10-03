@@ -24,7 +24,7 @@ namespace SashaRX.UnityMeshLab
 
         // ── Vertex AO defaults ──
         public int aoChannelType;   // 0=VertexColor, 1-5=UV0-UV4
-        public int aoChannelComp;   // 0=R/X, 1=G/Y, 2=B, 3=A
+        public int aoChannelComp;   // 0=R/X, 1=G/Y, 2=B, 3=A, 4=RGB
 
         // ── Developer UI ──
         // When true, the UV2 Transfer tool exposes diagnostic / benchmarking
@@ -85,7 +85,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static readonly string[] channelTypeNames = { "Vertex Color", "UV0", "UV1", "UV2", "UV3", "UV4" };
-        static readonly string[] colorCompNames   = { "R", "G", "B", "A" };
+        static readonly string[] colorCompNames   = { "R", "G", "B", "A", "RGB" };
         static readonly string[] uvCompNames      = { "X", "Y" };
 
         static void OnGUI(string searchContext)

@@ -1,4 +1,7 @@
+using System;
+using System.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
 
 namespace SashaRX.UnityMeshLab
@@ -45,6 +48,35 @@ namespace SashaRX.UnityMeshLab
                 RenderTexture.active = previous;
                 RenderTexture.ReleaseTemporary(rt);
             }
+        }
+
+        /// <summary>Submit on the main thread; complete after GPU readback without waiting for the GPU.</summary>
+        public static Task<Color32[]> ReadPixels32Async(Texture source, int width, int height, Material material = null)
+        {
+            if (!source || width < 1 || height < 1) throw new ArgumentException("A valid source texture is required.");
+            if (!SystemInfo.supportsAsyncGPUReadback)
+                throw new NotSupportedException("Texture AO requires asynchronous GPU readback on this graphics device.");
+            var completion = new TaskCompletionSource<Color32[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var previous = RenderTexture.active;
+            var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            try {
+                if (material) Graphics.Blit(source, rt, material);
+                else Graphics.Blit(source, rt);
+                AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, request => {
+                    try {
+                        if (request.hasError) completion.TrySetException(new InvalidOperationException("Asynchronous source texture readback failed."));
+                        else completion.TrySetResult(request.GetData<Color32>().ToArray());
+                    }
+                    catch (Exception exception) { completion.TrySetException(exception); }
+                    finally { RenderTexture.ReleaseTemporary(rt); }
+                });
+            }
+            catch {
+                RenderTexture.ReleaseTemporary(rt);
+                throw;
+            }
+            finally { RenderTexture.active = previous; }
+            return completion.Task;
         }
 
         /// <summary>Linear float pixels of the source (or of its sub-rectangle) at width × height; null when the blit failed.</summary>

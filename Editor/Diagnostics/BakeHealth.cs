@@ -51,8 +51,9 @@ namespace SashaRX.UnityMeshLab
                 $"bounds diagonal: source {sourceDiagonal:F3} / target {r.targetDiagonal:F3} (ratio {r.scaleRatio:F2})";
 
             if (baked.zeroNormals > 0)
-                r.Warnings.Add(baked.zeroNormals + " result vertices have zero normals — their texels bake through zeroed ray directions " +
-                    "and tangent frames. Re-run the UV stage; if it repeats, the remesh produced degenerate faces (lower simplification error or raise voxel resolution).");
+                r.Warnings.Add(baked.zeroNormals + " result vertices have zero normals — projection rays use the face-based cage, " +
+                    "but their shading/tangent frames remain invalid. Re-run the UV stage; if it repeats, inspect degenerate faces " +
+                    "(lower simplification error or raise voxel resolution).");
             else if (baked.rayFallbacks > baked.covered * 4 / 5 && baked.covered > 0)
                 r.Warnings.Add(baked.rayFallbacks.ToString("N0") + " of the projection samples fell back to nearest-point search — the rays " +
                     "are not hitting the source. Check the projection distance and the hard-edge mode, and rebake.");

@@ -169,6 +169,9 @@ namespace SashaRX.UnityMeshLab
         // Run the bake's geometry queries (projection rays, nearest fallbacks) on the
         // GPU through BvhQueries.compute; identical results, the CPU BVH otherwise.
         public bool gpuProjection = true;
+        public bool bakeSourceAO;
+        public bool multiplySourceAO;
+        public SourceAoSettings sourceAO = new SourceAoSettings();
         public bool transferVertexColor;
         public bool transferVertexAlpha;
         // Multiply the source albedo by the source vertex color (RGB) while projecting —
@@ -188,6 +191,10 @@ namespace SashaRX.UnityMeshLab
 
         public void Validate()
         {
+            if (bakeSourceAO) {
+                if (sourceAO == null) throw new ArgumentException("Source AO settings are missing.");
+                sourceAO.Validate();
+            }
             if (voxelResolution < 4 || voxelResolution > 256 || targetTriangles < 0 || targetTriangles > 5000000 ||
                 !Finite(maximumError) || maximumError < 0 || maximumError > 1 ||
                 !Finite(normalCrease) || normalCrease < 0 || normalCrease > 180 ||

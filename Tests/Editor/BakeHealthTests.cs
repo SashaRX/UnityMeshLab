@@ -39,7 +39,7 @@ namespace SashaRX.UnityMeshLab.Tests
             StringAssert.Contains("120 welded positions", r.Summary);
             StringAssert.Contains("8 split copies", r.Summary);
             StringAssert.Contains("front-face filter on", r.Summary);
-            StringAssert.Contains("ratio 1.00", r.Summary);
+            StringAssert.Contains($"ratio {1f:F2}", r.Summary);
         }
 
         [Test]
@@ -48,7 +48,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var r = BakeHealth.Build("n", Healthy(), Diag, 100, Cube(1.5f), 100, RemeshShape.LOD0);
             Assert.AreEqual(1.5f, r.scaleRatio, 1e-4f);
             Assert.AreEqual(1, r.Warnings.Count);
-            StringAssert.Contains("ratio is 1.50", r.Warnings[0]);
+            StringAssert.Contains($"ratio is {1.5f:F2}", r.Warnings[0]);
 
             var ok = BakeHealth.Build("n", Healthy(), Diag, 100, Cube(1.05f), 100, RemeshShape.LOD0);
             Assert.IsEmpty(ok.Warnings, "5% is within the tolerance");
@@ -61,6 +61,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var r = BakeHealth.Build("n", m, Diag, 100, Cube(1f), 100, RemeshShape.LOD0);
             Assert.AreEqual(1, r.Warnings.Count);
             StringAssert.Contains("3 result vertices have zero normals", r.Warnings[0]);
+            StringAssert.Contains("projection rays use the face-based cage", r.Warnings[0]);
+            StringAssert.DoesNotContain("zeroed ray directions", r.Warnings[0]);
         }
 
         [Test]
@@ -86,7 +88,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var mild = BakeHealth.Build("n", m, Diag, 1000, Cube(1f), 500, RemeshShape.LOD0);
             Assert.IsFalse(mild.heavyReduction);
             Assert.AreEqual(1, mild.Warnings.Count);
-            StringAssert.Contains("6.0% of texels lean >45°", mild.Warnings[0]);
+            StringAssert.Contains($"{6f:F1}% of texels lean >45°", mild.Warnings[0]);
 
             var heavy = BakeHealth.Build("n", m, Diag, 1000, Cube(1f), 199, RemeshShape.LOD0);
             Assert.IsTrue(heavy.heavyReduction, "under a fifth of the faces");
@@ -107,7 +109,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var r = BakeHealth.Build("n", Healthy(), Diag, 100, new Vector3[0], 0, RemeshShape.LOD0);
             Assert.AreEqual(0f, r.targetDiagonal);
             Assert.AreEqual(0f, r.scaleRatio);
-            Assert.IsTrue(r.Warnings.Any(w => w.Contains("ratio is 0.00")));
+            Assert.IsTrue(r.Warnings.Any(w => w.Contains($"ratio is {0f:F2}")));
         }
     }
 }

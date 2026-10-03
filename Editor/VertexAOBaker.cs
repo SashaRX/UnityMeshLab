@@ -14,7 +14,9 @@ namespace SashaRX.UnityMeshLab
     {
         VertexColorR, VertexColorG, VertexColorB, VertexColorA,
         UV0_X, UV0_Y, UV1_X, UV1_Y, UV2_X, UV2_Y,
-        UV3_X, UV3_Y, UV4_X, UV4_Y
+        UV3_X, UV3_Y, UV4_X, UV4_Y,
+        // Append to preserve the existing UV channel values.
+        VertexColorRGB = 14
     }
 
     public enum AOBakeType

@@ -22,7 +22,6 @@ namespace SashaRX.UnityMeshLab
         static readonly Color WireShaded = new Color(0.05f, 0.05f, 0.05f, 1f);
 
         readonly Dictionary<int, Layer> layers = new Dictionary<int, Layer>();
-        readonly Dictionary<int, TriangleBvh> bvhs = new Dictionary<int, TriangleBvh>();
         readonly Dictionary<long, Mesh> shellMeshes = new Dictionary<long, Mesh>();
         readonly Dictionary<long, Mesh> boundaryMeshes = new Dictionary<long, Mesh>();
         Material overlay;
@@ -47,7 +46,7 @@ namespace SashaRX.UnityMeshLab
         static string LayerKey(UvCanvasView canvas, UvToolContext ctx, Mesh mesh, MeshEntry entry)
         {
             int selected = canvas.HasSelectedShell && canvas.SelectedShell.meshEntry == entry ? canvas.SelectedShell.shellId : -1;
-            return $"{mesh.GetInstanceID()}|{canvas.ActiveFillModeIndex}|{canvas.FillHidden}|{canvas.FillAlpha:F3}|{canvas.ShowBorder}|{canvas.CurrentPreviewMode}|" +
+            return $"{mesh.GetInstanceID()}|{canvas.PreviewRevision}|{canvas.ActiveFillModeIndex}|{canvas.FillHidden}|{canvas.FillAlpha:F3}|{canvas.ShowBorder}|{canvas.CurrentPreviewMode}|" +
                    $"{canvas.CheckerEnabled}|{canvas.CheckerColorMode}|{canvas.CheckerShowR}|{canvas.CheckerShowG}|{canvas.LmExposure:F2}|{ctx.PreviewUvChannel}|{(int)canvas.ValidationFilterMask}|{selected}";
         }
 
@@ -82,8 +81,10 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (canvas.ShowBorder) {
                     long boundaryKey = ((long)item.mesh.GetInstanceID() << 8) ^ (uint)ctx.PreviewUvChannel;
-                    if (!boundaryMeshes.TryGetValue(boundaryKey, out var boundary))
-                        boundaryMeshes[boundaryKey] = boundary = BuildBoundaryMesh(item.mesh, ctx.PreviewUvChannel);
+                    if (!boundaryMeshes.TryGetValue(boundaryKey, out var boundary)) {
+                        var pairs = canvas.GetPreviewBoundary(ctx, item.mesh, ctx.PreviewUvChannel);
+                        if (pairs != null) boundaryMeshes[boundaryKey] = boundary = BuildBoundaryMesh(item.mesh, pairs);
+                    }
                     if (boundary) view.DrawLineMesh(boundary, item.matrix, new Color(1f, .35f, .05f, .9f));
                 }
                 if (canvas.SpotMode && EnsureMaterial())
@@ -106,7 +107,11 @@ namespace SashaRX.UnityMeshLab
         internal static Mesh BuildBoundaryMesh(Mesh source, int channel)
         {
             if (!MeshInspection.HasOnlyTriangles(source)) return null;
-            var pairs = UvTopology.UvBoundaryEdgePairs(source, channel);
+            return BuildBoundaryMesh(source, UvTopology.UvBoundaryEdgePairs(source, channel));
+        }
+
+        static Mesh BuildBoundaryMesh(Mesh source, int[] pairs)
+        {
             if (pairs.Length == 0) return null;
             var mesh = new Mesh { name = source.name + "_UvBoundary", hideFlags = HideFlags.HideAndDontSave,
                 indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
@@ -147,6 +152,7 @@ namespace SashaRX.UnityMeshLab
             hit = default; debug = null; world = Vector3.zero;
             if (!view.TryScreenRay(guiPoint, out var origin, out var direction)) return false;
             float bestDistance = float.MaxValue; int bestItem = -1, bestFace = -1; Vector3 bestBary = Vector3.zero;
+            bool pending = false;
             for (int i = 0; i < items.Count && i < entries.Count; i++)
             {
                 var item = items[i];
@@ -157,15 +163,16 @@ namespace SashaRX.UnityMeshLab
                 float scale = localDir.magnitude;
                 if (scale < 1e-12f) continue;
                 localDir /= scale;
-                var bvh = BvhOf(canvas, item.mesh);
-                if (bvh == null) continue;
+                var bvh = canvas.GetPreviewBvh(ctx, item.mesh, ctx.PreviewUvChannel);
+                if (bvh == null || canvas.GetPreviewShellCache(ctx, item.mesh, ctx.PreviewUvChannel) == null) { pending = true; continue; }
                 var ray = bvh.Raycast(localOrigin, localDir, float.MaxValue);
                 if (ray.triangleIndex < 0) continue;
                 Vector3 hitWorld = item.matrix.MultiplyPoint3x4(localOrigin + localDir * ray.t);
                 float distance = (hitWorld - origin).magnitude;
                 if (distance < bestDistance) { bestDistance = distance; bestItem = i; bestFace = ray.triangleIndex; bestBary = ray.barycentric; world = hitWorld; }
             }
-            if (bestItem < 0) return false;
+            // A pending foreground mesh must not let a click lock an occluded rear mesh.
+            if (pending || bestItem < 0) return false;
             var mesh = items[bestItem].mesh; var entry = entries[bestItem];
             var uvs = canvas.RdUvCached(mesh, ctx.PreviewUvChannel);
             var tris = canvas.GetTrianglesCached(mesh);
@@ -174,21 +181,11 @@ namespace SashaRX.UnityMeshLab
             if (a >= uvs.Length || b >= uvs.Length || c >= uvs.Length) return false;
             Vector2 uv = uvs[a] * bestBary.x + uvs[b] * bestBary.y + uvs[c] * bestBary.z;
             var cache = canvas.GetPreviewShellCache(ctx, mesh, ctx.PreviewUvChannel);
-            int shellId = -1; UvShell shell = null;
-            if (cache != null && cache.faceToShell.TryGetValue(bestFace, out shellId)) cache.shellById.TryGetValue(shellId, out shell);
+            if (cache == null || !cache.faceToShell.TryGetValue(bestFace, out int shellId) ||
+                !cache.shellById.TryGetValue(shellId, out var shell)) return false;
             hit = new ShellUvHit { meshEntry = entry, shellId = shellId, faceIndex = bestFace, uvHit = uv, barycentric = bestBary };
             debug = shell != null ? canvas.MakeHit(ctx, entry, mesh, shell, uv) : null;
             return true;
-        }
-
-        TriangleBvh BvhOf(UvCanvasView canvas, Mesh mesh)
-        {
-            int id = mesh.GetInstanceID();
-            if (bvhs.TryGetValue(id, out var bvh)) return bvh;
-            var tris = canvas.GetTrianglesCached(mesh);
-            bvh = tris != null && tris.Length >= 3 ? new TriangleBvh(mesh.vertices, tris) : null;
-            bvhs[id] = bvh;
-            return bvh;
         }
 
         /// <summary>Drops everything derived from the meshes (call when the mesh entries change).</summary>
@@ -196,7 +193,6 @@ namespace SashaRX.UnityMeshLab
         {
             foreach (var layer in layers.Values) if (layer.texture) { layer.texture.Release(); Object.DestroyImmediate(layer.texture); }
             layers.Clear();
-            bvhs.Clear();
             foreach (var mesh in shellMeshes.Values) if (mesh) Object.DestroyImmediate(mesh);
             shellMeshes.Clear();
             foreach (var mesh in boundaryMeshes.Values) if (mesh) Object.DestroyImmediate(mesh);

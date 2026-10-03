@@ -349,7 +349,7 @@ namespace SashaRX.UnityMeshLab
                 if (font.TryGetValue(ch, out var glyph))
                 {
                     // Shadow
-                    DrawGlyph(tex, glyph, cx + scale, y - scale, scale, new Color(0,0,0,0.7f));
+                    DrawGlyph(tex, glyph, cx + scale, y - scale, scale, Color.black);
                     // Foreground
                     DrawGlyph(tex, glyph, cx, y, scale, col);
                     cx += 6 * scale;

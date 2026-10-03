@@ -245,6 +245,7 @@ namespace SashaRX.UnityMeshLab
         public readonly FaceToShellCache UvPreviewShellCache = new FaceToShellCache();
         public readonly Dictionary<int, SourceMeshData> SrcCache = new Dictionary<int, SourceMeshData>();
         public readonly Dictionary<int, int[]> BoundaryEdgeCache = new Dictionary<int, int[]>();
+        internal readonly Dictionary<int, TriangleBvh> PreviewBvhCache = new Dictionary<int, TriangleBvh>();
         internal readonly Dictionary<long, int[]> UvBoundaryEdgeCache = new Dictionary<long, int[]>();
         public readonly Dictionary<long, PreviewShellData> PreviewShellDataCache = new Dictionary<long, PreviewShellData>();
         public readonly Dictionary<long, HashSet<Vector2Int>> OccupiedTilesPerMesh = new Dictionary<long, HashSet<Vector2Int>>();
@@ -253,6 +254,7 @@ namespace SashaRX.UnityMeshLab
             = new Dictionary<int, (int[] vertToShell, ShellDescriptor[] descs)>();
 
         /// <summary>Lazy-invalidation flag for shell color fill mode. Set true on any cache clear; checked by the canvas fill renderer.</summary>
+        internal int PreviewCacheVersion;
         public bool ShellColorKeyCacheDirty = true;
         public bool PostResetColoring;
 
@@ -299,6 +301,8 @@ namespace SashaRX.UnityMeshLab
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
             BoundaryEdgeCache.Clear();
+            ++PreviewCacheVersion;
+            PreviewBvhCache.Clear();
             UvBoundaryEdgeCache.Clear();
             UvPreviewShellCache.Clear();
             PreviewShellDataCache.Clear();
@@ -375,6 +379,8 @@ namespace SashaRX.UnityMeshLab
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
             BoundaryEdgeCache.Clear();
+            ++PreviewCacheVersion;
+            PreviewBvhCache.Clear();
             UvBoundaryEdgeCache.Clear();
             UvPreviewShellCache.Clear();
             PreviewShellDataCache.Clear();
@@ -423,6 +429,8 @@ namespace SashaRX.UnityMeshLab
         {
             SrcCache.Clear();
             BoundaryEdgeCache.Clear();
+            ++PreviewCacheVersion;
+            PreviewBvhCache.Clear();
             UvBoundaryEdgeCache.Clear();
             UvPreviewShellCache.Clear();
             PreviewShellDataCache.Clear();

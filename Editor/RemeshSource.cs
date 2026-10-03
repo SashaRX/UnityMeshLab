@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -11,6 +12,9 @@ namespace SashaRX.UnityMeshLab
     internal sealed class RemeshSource
     {
         const string EmissionMapProperty = "_EmissionMap";
+
+        // AO-only async captures must finish texture readbacks before workers use the snapshot.
+        internal Task TextureReadbacks = Task.CompletedTask;
 
         public Vector3[] positions, normals;
         public Vector4[] tangents;
@@ -147,7 +151,7 @@ namespace SashaRX.UnityMeshLab
         /// matrix is worldToSpace. Returns null when they contribute no triangles and
         /// required is false; throws otherwise.
         /// </summary>
-        public static RemeshSource Capture(Matrix4x4 worldToSpace, IList<Renderer> renderers, bool required = true, bool geometryOnly = false)
+        public static RemeshSource Capture(Matrix4x4 worldToSpace, IList<Renderer> renderers, bool required = true, bool geometryOnly = false, bool aoOnly = false, RemeshSettings aoReadbackSettings = null)
         {
             var positions = new List<Vector3>(); var normals = new List<Vector3>();
             var tangents = new List<Vector4>(); var uv = new List<Vector2>(); var colors = new List<Color>();
@@ -160,7 +164,8 @@ namespace SashaRX.UnityMeshLab
             var lightmapIds = new Dictionary<(Texture2D, Texture2D, Vector4), int>();
             var vertexRenderer = new List<int>(); var rendererToSpace = new List<Matrix4x4>(); var rendererLayer = new List<int>();
             string[] warnings;
-            using (var reader = new Reader()) {
+            Task textureReadbacks = Task.CompletedTask;
+            using (var reader = new Reader(aoOnly ? aoReadbackSettings : null)) {
                 foreach (var renderer in renderers) {
                     // One hostile mesh (line submeshes, no UV0, an unreadable import)
                     // must cost its own exclusion, never the whole scene-block capture:
@@ -213,7 +218,7 @@ namespace SashaRX.UnityMeshLab
                         // needs positions and triangles alone: a mesh without UV0 casts
                         // shadows in the game and keeps doing so here.
                         bool hasUv0 = mesh.uv.Length == mesh.vertexCount;
-                        if (!hasUv0 && !geometryOnly) {
+                        if (!hasUv0 && !geometryOnly && !aoOnly) {
                             reader.warnings.Add(renderer.name + ": no source UV0 for material transfer, skipped.");
                             continue;
                         }
@@ -221,7 +226,7 @@ namespace SashaRX.UnityMeshLab
                         if (hasUv0 && mesh.tangents.Length != mesh.vertexCount) mesh.RecalculateTangents();
                         var p = mesh.vertices; var n = mesh.normals; var t = mesh.tangents;
                         if (t.Length != p.Length) {
-                            if (!geometryOnly) throw new InvalidOperationException(renderer.name + " has no valid tangent frame.");
+                            if (!geometryOnly && !aoOnly) throw new InvalidOperationException(renderer.name + " has no valid tangent frame.");
                             t = new Vector4[p.Length];
                             for (int i = 0; i < t.Length; ++i) t[i] = new Vector4(1, 0, 0, 1);
                         }
@@ -276,10 +281,19 @@ namespace SashaRX.UnityMeshLab
                                 if (materials.Count == 0) materials.Add(new Surface());
                             }
                             else {
-                                if (sub >= shared.Length || !shared[sub]) throw new InvalidOperationException(renderer.name + " has a missing material.");
-                                if (!materialIds.TryGetValue(shared[sub], out material)) {
+                                Material authored = sub < shared.Length ? shared[sub] : null;
+                                if (!authored && !aoOnly) throw new InvalidOperationException(renderer.name + " has a missing material.");
+                                if (aoOnly && (!authored || !hasUv0)) {
+                                    // AO geometry needs neither material nor UV. Only the
+                                    // source normal/AO maps require UV0; never sample them
+                                    // at a fabricated zero UV on a mesh without that stream.
                                     material = materials.Count;
-                                    materials.Add(reader.ReadSurface(shared[sub])); materialIds.Add(shared[sub], material);
+                                    materials.Add(reader.ReadAoSurface(authored, false));
+                                }
+                                else if (!materialIds.TryGetValue(authored, out material)) {
+                                    material = materials.Count;
+                                    materials.Add(aoOnly ? reader.ReadAoSurface(authored, true) : reader.ReadSurface(authored));
+                                    materialIds.Add(authored, material);
                                 }
                             }
                             var tri = mesh.GetTriangles(sub);
@@ -312,6 +326,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 reader.FlushWarnings();
                 warnings = reader.warnings.ToArray();
+                textureReadbacks = reader.Readbacks;
             }
             if (indices.Count == 0) {
                 if (!required) return null;
@@ -323,7 +338,7 @@ namespace SashaRX.UnityMeshLab
             return new RemeshSource { positions = positions.ToArray(), normals = normals.ToArray(), tangents = tangents.ToArray(),
                 uv = uv.ToArray(), uv2 = uv2.ToArray(), colors = colors.ToArray(), hasColors = hasColors, indices = indices.ToArray(), faceMaterials = faces.ToArray(),
                 faceLightmaps = faceLightmaps.ToArray(), lightmapRefs = lightmapRefs.ToArray(), materials = materials.ToArray(),
-                diagonal = bounds.size.magnitude, warnings = warnings,
+                diagonal = bounds.size.magnitude, warnings = warnings, TextureReadbacks = textureReadbacks,
                 vertexRenderer = vertexRenderer.ToArray(), rendererToSpace = rendererToSpace.ToArray(), rendererLayer = rendererLayer.ToArray() };
         }
 
@@ -640,8 +655,14 @@ namespace SashaRX.UnityMeshLab
             readonly Dictionary<(Texture, bool, bool, bool), Image> cache = new Dictionary<(Texture, bool, bool, bool), Image>();
             readonly Material blit;
             long bytes;
-            public Reader()
+            readonly bool asyncTextures, readNormals, readAO;
+            readonly List<Task> pending = new List<Task>();
+            public Task Readbacks => Task.WhenAll(pending);
+            public Reader(RemeshSettings aoSettings = null)
             {
+                asyncTextures = aoSettings != null;
+                readNormals = aoSettings == null || aoSettings.sourceAO.normalMap;
+                readAO = aoSettings == null || aoSettings.multiplySourceAO;
                 var shader = Shader.Find("Hidden/MeshLab/RemeshReadback");
                 if (!shader || !shader.isSupported) throw new InvalidOperationException("Remesh readback shader is unavailable.");
                 blit = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
@@ -663,6 +684,19 @@ namespace SashaRX.UnityMeshLab
                     string.Join("; ", parts) + ".");
                 genericShaders.Clear();
             }
+            public Surface ReadAoSurface(Material material, bool hasUv)
+            {
+                string normal = material ? First(material, "_BumpMap", "_NormalMap") : null;
+                return new Surface {
+                    color = new Map(), metal = new Map(), emission = new Map(),
+                    normal = readNormals && hasUv && normal != null ? ReadMap(material, normal, false, true) : new Map(),
+                    ao = readAO && hasUv && material ? ReadMap(material, "_OcclusionMap", false) : new Map(),
+                    tint = Color.white, normalScale = material ? FloatOr(material, 1, "_BumpScale", "_NormalScale") : 1,
+                    aoStrength = material ? FloatOr(material, 1, "_OcclusionStrength") : 1,
+                    twoSided = material && IsTwoSided(material)
+                };
+            }
+
             public Surface ReadSurface(Material m)
             {
                 string shaderName = m.shader ? m.shader.name : "<missing shader>";
@@ -742,6 +776,11 @@ namespace SashaRX.UnityMeshLab
                 foreach (var name in names) if (m.HasProperty(name)) return m.GetFloat(name);
                 return fallback;
             }
+            static async Task PopulatePixels(Image image, Task<Color32[]> readback)
+            {
+                image.pixels = await readback;
+            }
+
             Map ReadMap(Material material, string property, bool color, bool normal = false, bool enabled = true, bool hdr = false)
             {
                 var map = new Map();
@@ -759,6 +798,14 @@ namespace SashaRX.UnityMeshLab
                     if (bytes > 512L * 1024 * 1024) throw new InvalidOperationException("Source texture readback exceeds 512 MiB. Process the model in smaller groups.");
                     blit.SetFloat("_HDR", hdr ? 1 : 0);
                     blit.SetFloat("_DecodeNormal", normal ? 1 : 0); blit.SetFloat("_ColorMap", color ? 1 : 0);
+                    if (asyncTextures && !hdr) {
+                        image = new Image { srgb = color, width = texture.width, height = texture.height,
+                            wrapU = texture.wrapModeU, wrapV = texture.wrapModeV };
+                        pending.Add(PopulatePixels(image, GpuReadback.ReadPixels32Async(texture, texture.width, texture.height, blit)));
+                        cache.Add(key, image);
+                        map.image = image;
+                        return map;
+                    }
                     var copy = GpuReadback.Read(texture, texture.width, texture.height, hdr, blit);
                     if (!copy) throw new InvalidOperationException(material.name + "." + property + ": GPU readback of '" + texture.name + "' failed.");
                     try {
