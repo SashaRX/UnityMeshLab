@@ -11,10 +11,11 @@
 // plus the acceptor's seam faces after snapping, and runs a full triangle-triangle
 // overlap test (edge-edge crossings included, seam contact excluded). User island
 // area/border limits are respected in source units. Merged charts are re-packed
-// through the xatlas UvMesh bridge, and every UV rotation — the merge fit and the
-// per-chart pack transform — is applied to the tangent frame exactly, so the bake
-// basis keeps matching the atlas. Any ambiguity rolls the geometry back to the
-// pre-merge snapshot.
+// through the xatlas UvMesh bridge and their tangent frames are rebuilt from the
+// final atlas layout — that covers the fit rotation, the seam snap's per-vertex
+// displacement and the packer's per-axis ceil stretch alike, none of which a
+// rotated stale tangent can represent. Any ambiguity rolls the geometry back to
+// the pre-merge snapshot.
 //
 // Author: SashaRX.UnityMeshLab
 
@@ -38,7 +39,6 @@ namespace SashaRX.UnityMeshLab
         internal const float MaxMeanStretch = 1.15f;
         internal const float MaxWorstStretch = 4f;
         const float StretchSlack = 1.1f;       // ...and never >10% worse than the same faces pre-merge
-        const float PackFitTolerance = 1e-3f;  // pack transforms are exact similarities; residual is numerical noise
         const float ContainmentEps = 1e-6f;
         const uint OrphanChart = 0xFFFFFFFFu;
 
@@ -60,9 +60,10 @@ namespace SashaRX.UnityMeshLab
             int smallChartSnapshot = geometry.smallChartCount;
             try
             {
-                int merged = MergeCharts(geometry, settings, token);
+                var mergedCharts = new HashSet<int>();
+                int merged = MergeCharts(geometry, settings, token, mergedCharts);
                 if (merged <= 0) return;
-                if (!Repack(geometry, settings, token))
+                if (!Repack(geometry, settings, token, mergedCharts))
                     throw new InvalidOperationException("the re-pack rejected the merged charts");
                 var post = UvChartQuality.Measure(geometry, token);
                 if (!post.Improves(preMerge, preMerge))
@@ -86,8 +87,10 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Greedy merge rounds over adjacent chart pairs followed by id
         /// compaction. Mutates `geometry` (uv/charts/chartCount/smallChartCount)
-        /// only through accepted merges. Returns the accepted merge count.</summary>
-        internal static int MergeCharts(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token)
+        /// only through accepted merges; tangents are left for the post-pack rebuild.
+        /// `mergedChartIds` collects the compacted ids of charts that absorbed or were
+        /// absorbed. Returns the accepted merge count.</summary>
+        internal static int MergeCharts(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token, HashSet<int> mergedChartIds)
         {
             int faceCount = geometry.indices.Length / 3;
             var faceChart = new int[faceCount];
@@ -191,7 +194,7 @@ namespace SashaRX.UnityMeshLab
                     token.ThrowIfCancellationRequested();
                     if (TryMergePair(geometry, faceChart, slots, slotVertex, edgeFaces, pair.Item1, pair.Item2,
                             adjacency[pair], chartFaces, chartVerts, chartArea, chartBoundary, chartUvMin, chartUvMax,
-                            settings, token))
+                            settings, mergedChartIds, token))
                     {
                         ++merged;
                         accepted = true;
@@ -203,7 +206,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (!accepted) break;
             }
-            if (merged > 0) CompactChartIds(geometry, faceChart, faceCount);
+            if (merged > 0) CompactChartIds(geometry, faceChart, faceCount, mergedChartIds);
             return merged;
         }
 
@@ -222,18 +225,19 @@ namespace SashaRX.UnityMeshLab
         static bool TryMergePair(RemeshNative.Geometry g, int[] faceChart, int[] slots, int[] slotVertex,
             Dictionary<long, List<int>> edgeFaces, int chartA, int chartB, List<long> seamKeys,
             List<int>[] chartFaces, List<int>[] chartVerts, float[] chartArea, float[] chartBoundary,
-            Vector2[] chartUvMin, Vector2[] chartUvMax, RemeshSettings settings, CancellationToken token)
+            Vector2[] chartUvMin, Vector2[] chartUvMax, RemeshSettings settings, HashSet<int> mergedChartIds,
+            CancellationToken token)
         {
-            // Slot → vertex maps for both charts; the intersection is the seam. Every
+            // Slot → vertex maps per chart; the intersection is the seam. Every
             // shared position is snapped, not only edge-seam ones — a corner shared
             // without a shared edge would otherwise leave a UV split inside the chart
             // and xatlas would split it again.
-            var acceptorSlots = new Dictionary<int, int>(chartVerts[chartA].Count);
-            foreach (int v in chartVerts[chartA]) acceptorSlots[slots[v]] = v;
-            var moverSlots = new Dictionary<int, int>(chartVerts[chartB].Count);
-            foreach (int v in chartVerts[chartB]) moverSlots[slots[v]] = v;
+            var slotsA = new Dictionary<int, int>(chartVerts[chartA].Count);
+            foreach (int v in chartVerts[chartA]) slotsA[slots[v]] = v;
+            var slotsB = new Dictionary<int, int>(chartVerts[chartB].Count);
+            foreach (int v in chartVerts[chartB]) slotsB[slots[v]] = v;
             var seamSlotList = new List<int>();
-            foreach (var kv in acceptorSlots) if (moverSlots.ContainsKey(kv.Key)) seamSlotList.Add(kv.Key);
+            foreach (var kv in slotsA) if (slotsB.ContainsKey(kv.Key)) seamSlotList.Add(kv.Key);
             seamSlotList.Sort();
             float seamLength = 0f;
             foreach (long key in seamKeys) seamLength += EdgeLength(g.positions, slotVertex, key);
@@ -245,7 +249,11 @@ namespace SashaRX.UnityMeshLab
                 token.ThrowIfCancellationRequested();
                 int acceptor = dir == 0 ? chartA : chartB;
                 int mover = dir == 0 ? chartB : chartA;
-                if (EvaluateDirection(g, faceChart, slots, edgeFaces, acceptorSlots, moverSlots, seamSlotList, seamKeys,
+                // The slot maps follow the direction: the acceptor's UVs are the fit
+                // target, the mover's seam copies are the ones transformed and snapped.
+                var acceptorSlotOf = dir == 0 ? slotsA : slotsB;
+                var moverSlotOf = dir == 0 ? slotsB : slotsA;
+                if (EvaluateDirection(g, faceChart, slots, edgeFaces, acceptorSlotOf, moverSlotOf, seamSlotList, seamKeys,
                         chartFaces, chartArea, chartBoundary, chartUvMin, chartUvMax,
                         acceptor, mover, seamLength, settings, out var candidate) &&
                     (!haveBest || Better(candidate, best)))
@@ -259,9 +267,10 @@ namespace SashaRX.UnityMeshLab
             // Re-apply the winning transform from the pristine UVs (evaluations restore).
             var moverVerts = chartVerts[best.mover];
             ApplySimilarity(g, moverVerts, best.cos, best.sin, best.scale, best.offset);
-            SnapSeam(g, seamSlotList, acceptorSlots, moverSlots);
-            RotateTangents(g.tangents, g.normals, moverVerts, best.cos, best.sin);
+            SnapSeam(g, seamSlotList, best.acceptor == chartA ? slotsA : slotsB, best.acceptor == chartA ? slotsB : slotsA);
             foreach (int f in chartFaces[best.mover]) faceChart[f] = best.acceptor;
+            mergedChartIds.Add(best.acceptor);
+            mergedChartIds.Add(best.mover);
             return true;
         }
 
@@ -341,6 +350,11 @@ namespace SashaRX.UnityMeshLab
                     passes = false;
             }
             if (passes && !OverlapFree(g, slots, chartFaces[acceptor], moverFaces)) passes = false;
+            // The snap is not a similarity: it moves individual boundary vertices, so a
+            // tightly folded mover can overlap itself without flipping a face or
+            // tripping the stretch gate. Faces sharing an edge or a welded corner stay
+            // legal (the seam and its corner fans); only true crossings reject.
+            if (passes && !OverlapFree(g, slots, moverFaces, moverFaces)) passes = false;
 
             for (int i = 0; i < moverVerts.Count; ++i) g.uv[moverVerts[i]] = backup[i]; // restore, bit-exact
             if (!passes) return false;
@@ -367,31 +381,21 @@ namespace SashaRX.UnityMeshLab
             foreach (int slot in seamSlots) g.uv[moverSlotOf[slot]] = g.uv[acceptorSlotOf[slot]];
         }
 
-        /// <summary>Rotates tangent frames for the given vertices by θ (the UV rotation
-        /// of a merge fit or pack transform). For uv' = R(θ)·uv the tangent follows
-        /// T' = cosθ·T − sinθ·B with the true bitangent B = w·(N×T); handedness w is
-        /// preserved. Zero tangents are left for OrthogonalizeTangents to rebuild.</summary>
-        internal static void RotateTangents(Vector4[] tangents, Vector3[] normals, List<int> vertices, float cos, float sin)
-        {
-            if (tangents == null || normals == null) return;
-            foreach (int v in vertices)
-            {
-                Vector4 t4 = tangents[v];
-                var t = new Vector3(t4.x, t4.y, t4.z);
-                if (t.sqrMagnitude < 1e-12f) continue;
-                var bitangent = Vector3.Cross(normals[v], t) * (t4.w < 0f ? -1f : 1f);
-                var rotated = t * cos - bitangent * sin;
-                tangents[v] = new Vector4(rotated.x, rotated.y, rotated.z, t4.w < 0f ? -1f : 1f);
-            }
-        }
-
-        static void CompactChartIds(RemeshNative.Geometry geometry, int[] faceChart, int faceCount)
+        static void CompactChartIds(RemeshNative.Geometry geometry, int[] faceChart, int faceCount, HashSet<int> mergedChartIds)
         {
             var seen = new bool[geometry.chartCount];
             foreach (int chart in faceChart) seen[chart] = true;
             var remap = new int[geometry.chartCount];
             int next = 0;
             for (int c = 0; c < remap.Length; ++c) remap[c] = seen[c] ? next++ : -1;
+            var remapped = new HashSet<int>();
+            foreach (int id in mergedChartIds)
+            {
+                int mapped = remap[id];
+                if (mapped >= 0) remapped.Add(mapped);
+            }
+            mergedChartIds.Clear();
+            foreach (int id in remapped) mergedChartIds.Add(id);
             for (int f = 0; f < faceCount; ++f) faceChart[f] = remap[faceChart[f]];
             for (int f = 0; f < faceCount; ++f)
                 for (int k = 0; k < 3; ++k)
@@ -424,7 +428,7 @@ namespace SashaRX.UnityMeshLab
                 double fx = from[i].x - cf.x, fy = from[i].y - cf.y;
                 double tx = to[i].x - ct.x, ty = to[i].y - ct.y;
                 p += tx * fx + ty * fy;
-                q += tx * fy - ty * fx;
+                q += ty * fx - tx * fy;
                 denom += fx * fx + fy * fy;
             }
             if (denom < 1e-20) return false;
@@ -623,10 +627,10 @@ namespace SashaRX.UnityMeshLab
         // ── Re-pack through the xatlas UvMesh bridge ────────────────────────
 
         /// <summary>Feeds the merged charts to xatlas (one faceMaterial per chart) and
-        /// re-packs. Writes the packed UVs back and follows the per-chart pack transform
-        /// with the tangent frames. False — with the geometry untouched — on any anomaly
-        /// (busy session, refused pack, unexpected output shape).</summary>
-        static bool Repack(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token)
+        /// re-packs. Writes the packed UVs back and rebuilds the merged charts' tangent
+        /// frames from the final layout. False — with the geometry untouched — on any
+        /// anomaly (busy session, refused pack, unexpected output shape).</summary>
+        static bool Repack(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token, HashSet<int> mergedCharts)
         {
             int vertexCount = geometry.positions.Length;
             int faceCount = geometry.indices.Length / 3;
@@ -648,7 +652,6 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < geometry.indices.Length; ++i) indices[i] = (uint)geometry.indices[i];
             var faceMaterials = new uint[faceCount];
             for (int f = 0; f < faceCount; ++f) faceMaterials[f] = (uint)faceChart[f];
-            var prePackUv = (Vector2[])geometry.uv.Clone();
 
             if (!XatlasRepack.TryAcquireNativeSession())
             {
@@ -659,13 +662,13 @@ namespace SashaRX.UnityMeshLab
             {
                 int rotate = settings.packRotate ? 1 : 0;
                 if (PackSession(geometry, settings, flatUv, indices, faceMaterials, rotate, rotate) &&
-                    ReadPackedUv(geometry, prePackUv, token)) return true;
+                    ReadPackedUv(geometry, token, mergedCharts)) return true;
                 // Both rotation flags are separate xatlas knobs; a rotate placement is the
                 // one way a per-input-vertex UV can come back ambiguous. Fresh session —
                 // a second PackCharts on a packed atlas is not a defined state.
                 token.ThrowIfCancellationRequested();
                 if (PackSession(geometry, settings, flatUv, indices, faceMaterials, 0, 0) &&
-                    ReadPackedUv(geometry, prePackUv, token)) return true;
+                    ReadPackedUv(geometry, token, mergedCharts)) return true;
                 UvtLog.Warn("[Remesh] Chart merge re-pack did not map back cleanly; reverting.");
                 return false;
             }
@@ -699,9 +702,9 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>Maps the pack output back: exactly one consistent UV per input
-        /// vertex, no orphans, and a chart count that still matches. The per-chart
-        /// pre-pack → post-pack similarity drives the tangent frames.</summary>
-        static bool ReadPackedUv(RemeshNative.Geometry geometry, Vector2[] prePackUv, CancellationToken token)
+        /// vertex, no orphans, and a chart count that still matches. The merged charts'
+        /// tangents are rebuilt from the packed layout afterwards.</summary>
+        static bool ReadPackedUv(RemeshNative.Geometry geometry, CancellationToken token, HashSet<int> mergedCharts)
         {
             token.ThrowIfCancellationRequested();
             if (XatlasNative.xatlasGetMeshCount() == 0) return false;
@@ -737,45 +740,58 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             for (int i = 0; i < packed.Length; ++i) if (!assigned[i]) return false;
-            if (!ApplyPackTransforms(geometry, prePackUv, packed, token)) return false;
             geometry.uv = packed;
+            RebuildChartTangents(geometry, mergedCharts, token);
             return true;
         }
 
-        /// <summary>The packer places each chart with its own similarity (scale +
-        /// optional rotation + translation). Fit it per chart from the pre-pack UVs and
-        /// turn every tangent of the chart by the recovered angle; a residual above
-        /// numerical noise means the output is not a similarity — reject.</summary>
-        internal static bool ApplyPackTransforms(RemeshNative.Geometry geometry, Vector2[] prePackUv, Vector2[] packedUv, CancellationToken token)
+        /// <summary>Rebuilds the tangent frames of the merged charts from the final
+        /// atlas layout: per-face Lengyel tangents, area-weighted accumulation, one
+        /// orthonormal frame per vertex with handedness from the accumulated bitangent.
+        /// Deriving from the final UVs is the only thing that stays correct through
+        /// everything the merge did — the fit rotation, the seam snap's per-vertex
+        /// displacement, and the packer's per-chart per-axis ceil stretch, which is not
+        /// a similarity a rotated stale tangent could track. Degenerate faces leave the
+        /// old tangent; untouched charts keep their native meshoptimizer frames.</summary>
+        internal static void RebuildChartTangents(RemeshNative.Geometry g, HashSet<int> chartIds, CancellationToken token)
         {
-            if (geometry.tangents == null || geometry.normals == null) return true;
-            for (int chart = 0; chart < geometry.chartCount; ++chart)
+            if (g.tangents == null || g.normals == null || chartIds.Count == 0) return;
+            var tan = new Vector3[g.positions.Length];
+            var bit = new Vector3[g.positions.Length];
+            var touched = new bool[g.positions.Length];
+            for (int f = 0; f < g.indices.Length; f += 3)
             {
-                token.ThrowIfCancellationRequested();
-                var verts = new List<int>();
-                Vector2 min = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
-                Vector2 max = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
-                for (int v = 0; v < geometry.charts.Length; ++v)
-                    if (geometry.charts[v] == chart)
-                    {
-                        verts.Add(v);
-                        min = Vector2.Min(min, prePackUv[v]);
-                        max = Vector2.Max(max, prePackUv[v]);
-                    }
-                if (verts.Count < 2) return false;
-                var from = new Vector2[verts.Count];
-                var to = new Vector2[verts.Count];
-                for (int i = 0; i < verts.Count; ++i)
-                {
-                    from[i] = prePackUv[verts[i]];
-                    to[i] = packedUv[verts[i]];
-                }
-                if (!FitSimilarity(from, to, out float cos, out float sin, out float _, out Vector2 _, out float residual))
-                    return false;
-                if (residual > PackFitTolerance * Mathf.Max((max - min).magnitude, 1e-6f)) return false;
-                RotateTangents(geometry.tangents, geometry.normals, verts, cos, sin);
+                if ((f & 4095) == 0) token.ThrowIfCancellationRequested();
+                int i0 = g.indices[f * 3], i1 = g.indices[f * 3 + 1], i2 = g.indices[f * 3 + 2];
+                if (!chartIds.Contains(g.charts[i0])) continue;
+                Vector3 e1 = g.positions[i1] - g.positions[i0];
+                Vector3 e2 = g.positions[i2] - g.positions[i0];
+                float weight = Vector3.Cross(e1, e2).magnitude; // 2× face area
+                if (weight <= 0f) continue;
+                Vector2 d1 = g.uv[i1] - g.uv[i0];
+                Vector2 d2 = g.uv[i2] - g.uv[i0];
+                float det = d1.x * d2.y - d2.x * d1.y;
+                if (Mathf.Abs(det) < 1e-12f) continue;
+                // Solve [T|B] from Q = s·T + t·B per Lengyel. det carries the UV winding,
+                // so a flipped face contributes an oppositely signed frame that cancels
+                // out instead of corrupting the vertex.
+                var faceT = (d2.y * e1 - d1.y * e2) / det * weight;
+                var faceB = (d1.x * e2 - d2.x * e1) / det * weight;
+                tan[i0] += faceT; bit[i0] += faceB; touched[i0] = true;
+                tan[i1] += faceT; bit[i1] += faceB; touched[i1] = true;
+                tan[i2] += faceT; bit[i2] += faceB; touched[i2] = true;
             }
-            return true;
+            for (int v = 0; v < touched.Length; ++v)
+            {
+                if (!touched[v] || tan[v].sqrMagnitude < 1e-12f) continue;
+                var n = g.normals[v];
+                if (n.sqrMagnitude < 1e-12f) continue;
+                var t = tan[v] - n * Vector3.Dot(n, tan[v]);
+                if (t.sqrMagnitude < 1e-12f) continue;
+                t = MeshGeometry.UnitDirection(t);
+                float handedness = Vector3.Dot(bit[v], Vector3.Cross(n, t)) < 0f ? -1f : 1f;
+                g.tangents[v] = new Vector4(t.x, t.y, t.z, handedness);
+            }
         }
 
         // ── Small helpers ───────────────────────────────────────────────────

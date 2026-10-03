@@ -194,7 +194,8 @@ namespace SashaRX.UnityMeshLab.Tests
         public void AdjacentPatchesMergeIntoOneChartWithBitExactSeam()
         {
             var geometry = TwoPatchGeometry(30f, 1f, new Vector2(0.5f, 0.5f));
-            int merged = UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None);
+            var mergedCharts = new HashSet<int>();
+            int merged = UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None, mergedCharts);
 
             Assert.AreEqual(1, merged);
             Assert.AreEqual(1, geometry.chartCount);
@@ -205,8 +206,15 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(geometry.uv[2].x, geometry.uv[5].x);
             Assert.AreEqual(geometry.uv[2].y, geometry.uv[5].y);
             Assert.IsTrue(UvChartQuality.Measure(geometry, CancellationToken.None).valid);
-            // Chart 1 authored at +30°, merge fit rotates it back −30°: every tangent
-            // of the merged chart must land on the natural frame.
+            // The merge moves UVs only; tangents are rebuilt afterwards from the final
+            // layout (Apply does it after the pack), so the authored frames survive
+            // MergeCharts untouched.
+            for (int v = 0; v < 8; ++v)
+                Assert.That(geometry.tangents[v], Is.EqualTo(v < 4 ? PlaneTangent(0f) : PlaneTangent(30f)).Within(1e-4));
+            // Rebuilding from the final (natural) layout returns every former chart-1
+            // vertex to the natural frame — the fit rotation, snap and any pack
+            // stretch are all folded into the rebuild.
+            UvChartMerge.RebuildChartTangents(geometry, mergedCharts, CancellationToken.None);
             for (int v = 0; v < 8; ++v)
                 Assert.That(geometry.tangents[v], Is.EqualTo(PlaneTangent(0f)).Within(1e-4));
         }
@@ -215,7 +223,7 @@ namespace SashaRX.UnityMeshLab.Tests
         public void MergingNonNeighborIdsLeavesNoHolesAfterCompaction()
         {
             var geometry = ThreePatchGeometry(); // chart 2 fails the density gate on purpose
-            int merged = UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None);
+            int merged = UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None, new HashSet<int>());
 
             Assert.GreaterOrEqual(merged, 1);
             Assert.AreEqual(2, geometry.chartCount);
@@ -234,7 +242,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 new Vector2(Density, 0), new Vector2(Density, Density),
                 new Vector2(-0.5f * Density, 0.5f * Density), new Vector2(-0.5f * Density, 0.25f * Density),
             });
-            int merged = UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None);
+            int merged = UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None, new HashSet<int>());
 
             Assert.AreEqual(0, merged);
             Assert.AreEqual(2, geometry.chartCount);
@@ -245,7 +253,7 @@ namespace SashaRX.UnityMeshLab.Tests
         public void DensityMismatchBeyondTwoTimesRejectsTheMerge()
         {
             var geometry = TwoPatchGeometry(0f, 3f);
-            Assert.AreEqual(0, UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None));
+            Assert.AreEqual(0, UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None, new HashSet<int>()));
             Assert.AreEqual(2, geometry.chartCount);
         }
 
@@ -253,7 +261,7 @@ namespace SashaRX.UnityMeshLab.Tests
         public void BentSeamShearBeyondResidualGateRejectsTheMerge()
         {
             var geometry = LSeamGeometry(0.5f);
-            Assert.AreEqual(0, UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None));
+            Assert.AreEqual(0, UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None, new HashSet<int>()));
             Assert.AreEqual(2, geometry.chartCount);
         }
 
@@ -261,7 +269,7 @@ namespace SashaRX.UnityMeshLab.Tests
         public void BentSeamShearWithinResidualGateMerges()
         {
             var geometry = LSeamGeometry(0.02f);
-            Assert.AreEqual(1, UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None));
+            Assert.AreEqual(1, UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None, new HashSet<int>()));
             Assert.AreEqual(1, geometry.chartCount);
             Assert.IsTrue(UvChartQuality.Measure(geometry, CancellationToken.None).valid);
         }
@@ -271,15 +279,15 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             var geometry = TwoPatchGeometry(); // combined 3D area 2, merged border 6
             var limits = new RemeshSettings { maxChartArea = 1.5f };
-            Assert.AreEqual(0, UvChartMerge.MergeCharts(geometry, limits, CancellationToken.None));
+            Assert.AreEqual(0, UvChartMerge.MergeCharts(geometry, limits, CancellationToken.None, new HashSet<int>()));
 
             geometry = TwoPatchGeometry();
             limits = new RemeshSettings { maxChartBoundary = 5.5f };
-            Assert.AreEqual(0, UvChartMerge.MergeCharts(geometry, limits, CancellationToken.None));
+            Assert.AreEqual(0, UvChartMerge.MergeCharts(geometry, limits, CancellationToken.None, new HashSet<int>()));
 
             geometry = TwoPatchGeometry();
             limits = new RemeshSettings { maxChartArea = 2f, maxChartBoundary = 6f };
-            Assert.AreEqual(1, UvChartMerge.MergeCharts(geometry, limits, CancellationToken.None));
+            Assert.AreEqual(1, UvChartMerge.MergeCharts(geometry, limits, CancellationToken.None, new HashSet<int>()));
         }
 
         [Test]
@@ -288,8 +296,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var settings = new RemeshSettings();
             var first = TwoPatchGeometry(33.7f, 1f, new Vector2(0.3f, 0.7f));
             var second = TwoPatchGeometry(33.7f, 1f, new Vector2(0.3f, 0.7f));
-            int firstMerged = UvChartMerge.MergeCharts(first, settings, CancellationToken.None);
-            int secondMerged = UvChartMerge.MergeCharts(second, settings, CancellationToken.None);
+            int firstMerged = UvChartMerge.MergeCharts(first, settings, CancellationToken.None, new HashSet<int>());
+            int secondMerged = UvChartMerge.MergeCharts(second, settings, CancellationToken.None, new HashSet<int>());
 
             Assert.AreEqual(firstMerged, secondMerged);
             Assert.AreEqual(first.chartCount, second.chartCount);
@@ -302,36 +310,24 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
-        // ── tangent transforms ──────────────────────────────────────────────
+        // ── tangent rebuild ─────────────────────────────────────────────────
 
         [Test]
-        public void TangentRotationMatchesTheUvFrame()
+        public void RebuiltTangentsFollowTheFinalAtlasLayoutIncludingSnappedSeams()
         {
-            var tangents = new[] { PlaneTangent(0f), PlaneTangent(0f) };
-            var normals = new[] { Vector3.up, Vector3.up };
-            var vertices = new List<int> { 0, 1 };
-            // +90°: u′ = −v ⇒ ∂P/∂u′ = −(0,0,1) — the first-principles check.
-            UvChartMerge.RotateTangents(tangents, normals, vertices, 0f, 1f);
-            Assert.That(tangents[0], Is.EqualTo(new Vector4(0f, 0f, -1f, -1f)));
-            UvChartMerge.RotateTangents(tangents, normals, vertices, Mathf.Cos(Mathf.Deg2Rad * -90f), Mathf.Sin(Mathf.Deg2Rad * -90f));
-            Assert.That(tangents[0], Is.EqualTo(PlaneTangent(0f)));
-        }
-
-        [Test]
-        public void PackTransformFitRotatesTangentsAndRejectsNonSimilarity()
-        {
-            var geometry = TwoPatchGeometry();
-            var pre = (Vector2[])geometry.uv.Clone();
-            for (int i = 0; i < geometry.uv.Length; ++i) geometry.uv[i] = Rotate(pre[i], 45f);
-            Assert.IsTrue(UvChartMerge.ApplyPackTransforms(geometry, pre, geometry.uv, CancellationToken.None));
+            // The chart is laid out with a per-vertex snap displacement baked in (the
+            // mover's seam copies carry the acceptor's values, its interior keeps the
+            // fitted similarity) — a state no rotated stale tangent represents, but the
+            // rebuild must resolve to the natural frame of the final UVs.
+            var geometry = TwoPatchGeometry(30f, 1f, new Vector2(0.5f, 0.5f));
+            var mergedCharts = new HashSet<int>();
+            UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None, mergedCharts);
+            CollectionAssert.AreEquivalent(new[] { 0 }, mergedCharts, "the merged chart id is reported compacted");
             for (int v = 0; v < 8; ++v)
-                Assert.That(geometry.tangents[v], Is.EqualTo(PlaneTangent(45f)).Within(1e-4));
-
-            var sheared = TwoPatchGeometry();
-            var preSheared = (Vector2[])sheared.uv.Clone();
-            for (int i = 0; i < sheared.uv.Length; ++i)
-                sheared.uv[i] = new Vector2(preSheared[i].x + 0.3f * preSheared[i].y, preSheared[i].y);
-            Assert.IsFalse(UvChartMerge.ApplyPackTransforms(sheared, preSheared, sheared.uv, CancellationToken.None));
+                geometry.tangents[v] = PlaneTangent(174f); // garbage in
+            UvChartMerge.RebuildChartTangents(geometry, mergedCharts, CancellationToken.None);
+            for (int v = 0; v < 8; ++v)
+                Assert.That(geometry.tangents[v], Is.EqualTo(PlaneTangent(0f)).Within(1e-3), "vertex " + v);
         }
 
         // ── end-to-end with the native unwrap ───────────────────────────────

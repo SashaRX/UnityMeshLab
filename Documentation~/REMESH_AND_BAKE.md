@@ -193,11 +193,13 @@ Before the UV stage the canvas shows the selected model as usual.
    the acceptor's UVs, and the merge is accepted only within bounded seam
    residual (≤ 0.02 of the acceptor's UV size), texel-density change (≤ 2×),
    the island area/border limits, a full UV-triangle overlap test (contact along
-   the new seam is allowed) and the same stretch bounds the fragmentation search
-   uses. Tangent frames follow every UV rotation — the merge fit and the
-   per-chart pack transform alike — merged charts are re-packed through xatlas,
-   and any anomaly reverts to the unmerged unwrap. Adds one xatlas pack pass on
-   the worker.
+   the new seam is allowed, and the moved chart is also checked against itself
+   after the snap) and the same stretch bounds the fragmentation search uses.
+   Merged charts are re-packed through xatlas with their tangent frames rebuilt
+   from the final atlas layout — covering the fit rotation, the seam snap's
+   per-vertex displacement and the packer's per-axis stretch alike — and any
+   anomaly reverts to the unmerged unwrap. Adds one xatlas pack pass on the
+   worker.
    Baking first fills that padding, then applies **Dilation radius (px)**
    (default 64, 0 disables the extra pass). Dilation extends all maps into the
    remaining background from the nearest filled pixel within the additional
