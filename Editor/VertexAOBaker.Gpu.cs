@@ -326,9 +326,10 @@ namespace SashaRX.UnityMeshLab
                 catch (Exception ex)
                 {
                     UvtLog.Error($"[Vertex AO] GPU bake error: {ex.Message}");
-                    phase = Phase.Done;
+                    bool cancelled = phase == Phase.Cancelling;
+                    phase = cancelled ? Phase.Cancelled : Phase.Done;
                     Cleanup();
-                    onError?.Invoke(ex.Message);
+                    if (!cancelled) onError?.Invoke(ex.Message);
                 }
             }
 
@@ -456,9 +457,10 @@ namespace SashaRX.UnityMeshLab
             {
                 UvtLog.Error($"[Vertex AO] GPU bake stalled: {what} did not complete " +
                              $"within {kReadbackTimeoutSec:F0}s — releasing buffers.");
-                phase = Phase.Done;
+                bool cancelled = phase == Phase.Cancelling;
+                phase = cancelled ? Phase.Cancelled : Phase.Done;
                 Cleanup();
-                onError?.Invoke($"GPU {what} timed out.");
+                if (!cancelled) onError?.Invoke($"GPU {what} timed out.");
             }
 
             void Cleanup()

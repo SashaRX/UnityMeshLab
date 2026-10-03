@@ -78,13 +78,30 @@ namespace SashaRX.UnityMeshLab
         /// each frame from <see cref="IUvToolUvContent"/>.
         /// </summary>
         public List<MeshEntry> EntriesOverride;
+        // Rendering copies are kept separately so callbacks retain the canonical entry.
+        internal readonly Dictionary<MeshEntry, Mesh> DisplayMeshes = new Dictionary<MeshEntry, Mesh>();
+        internal Mesh DisplayMesh(UvToolContext ctx, MeshEntry entry)
+        {
+            if (entry == null) return null;
+            return DisplayMeshes.TryGetValue(entry, out var mesh) ? mesh : ctx.DMesh(entry);
+        }
+
+        internal Vector2 DisplayUv(UvToolContext ctx, MeshEntry entry, Vector2 uv)
+        {
+            if (CurrentPreviewMode != PreviewMode.Lightmap || ctx.PreviewUvChannel != 1 || entry?.renderer == null || entry.renderer.lightmapIndex < 0) return uv;
+            var so = entry.renderer.lightmapScaleOffset;
+            return new Vector2(uv.x * so.x + so.z, uv.y * so.y + so.w);
+        }
 
         /// <summary>The entries the canvas currently shows.</summary>
         public List<MeshEntry> Entries(UvToolContext ctx) => EntriesOverride ?? ctx.ForLod(ctx.PreviewLod);
         internal bool HasPreviewChannel(UvToolContext ctx, int channel)
         {
             foreach (var entry in Entries(ctx))
-                if (entry.include && RdUvCached(ctx.DMesh(entry), channel) != null) return true;
+            {
+                var mesh = DisplayMesh(ctx, entry);
+                if (mesh != null && RdUvCached(mesh, channel) != null) return true;
+            }
             return false;
         }
 
@@ -188,6 +205,7 @@ namespace SashaRX.UnityMeshLab
         {
             VertexChannels.Changed -= InvalidateInspection;
             inspectionColors.Clear();
+            DisplayMeshes.Clear();
             if (canvasRT) { canvasRT.Release(); UnityEngine.Object.DestroyImmediate(canvasRT); canvasRT = null; }
             if (GlMat) UnityEngine.Object.DestroyImmediate(GlMat);
             if (TexMat) UnityEngine.Object.DestroyImmediate(TexMat);
@@ -239,7 +257,7 @@ namespace SashaRX.UnityMeshLab
                     string eKey = ee[i].meshGroupKey ?? (ee[i].renderer != null ? ee[i].renderer.name : null);
                     if (eKey != canvasGroupKeys[ctx.IsolatedMeshGroup]) continue;
                 }
-                Mesh m = ctx.DMesh(ee[i]);
+                Mesh m = DisplayMesh(ctx, ee[i]);
                 if (m != null) draws.Add(new ValueTuple<Mesh, MeshEntry, int>(m, ee[i], i));
             }
             if (draws.Count == 0) { HoveredShellDebug = null; return; }
@@ -262,7 +280,8 @@ namespace SashaRX.UnityMeshLab
                     var uv = RdUvCached(draw.Item1, ctx.PreviewUvChannel);
                     if (uv == null) continue;
                     for (int v = 0; v < uv.Length; ++v) {
-                        float d = (mouse - new Vector2(cx + uv[v].x * sz, cy + (1 - uv[v].y) * sz)).sqrMagnitude;
+                        var displayed = DisplayUv(ctx, draw.Item2, uv[v]);
+                        float d = (mouse - new Vector2(cx + displayed.x * sz, cy + (1 - displayed.y) * sz)).sqrMagnitude;
                         if (d < nearest) { nearest = d; picked = draw.Item1; pickedVertex = v; }
                     }
                 }
@@ -347,16 +366,15 @@ namespace SashaRX.UnityMeshLab
 
                         if (CurrentPreviewMode == PreviewMode.Lightmap && ctx.PreviewUvChannel == 1 && entry.renderer != null && entry.renderer.lightmapIndex >= 0)
                         {
-                            var so = entry.renderer.lightmapScaleOffset;
                             var transformed = new Vector2[uvs.Length];
                             for (int vi = 0; vi < uvs.Length; vi++)
-                                transformed[vi] = new Vector2(uvs[vi].x * so.x + so.z, uvs[vi].y * so.y + so.w);
+                                transformed[vi] = DisplayUv(ctx, entry, uvs[vi]);
                             uvs = transformed;
                         }
 
                         int uN = uvs.Length, fN = tri.Length / 3;
 
-                        if (InspectionShading != MeshViewport3D.Shading.Shaded)
+                        if (!FillHidden && InspectionShading != MeshViewport3D.Shading.Shaded)
                             GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
                         else if (hasFill)
                             FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
@@ -376,7 +394,9 @@ namespace SashaRX.UnityMeshLab
                     if (InspectedMesh) {
                         var uv = RdUvCached(InspectedMesh, ctx.PreviewUvChannel);
                         if (uv != null && InspectedVertex >= 0 && InspectedVertex < uv.Length) {
-                            float x = cx + uv[InspectedVertex].x * sz, y = cy + (1 - uv[InspectedVertex].y) * sz;
+                            var entry = draws.FirstOrDefault(draw => draw.Item1 == InspectedMesh).Item2;
+                            var displayed = DisplayUv(ctx, entry, uv[InspectedVertex]);
+                            float x = cx + displayed.x * sz, y = cy + (1 - displayed.y) * sz;
                             GL.Begin(GL.LINES); GL.Color(Color.yellow);
                             GL.Vertex3(x - 5, y, 0); GL.Vertex3(x + 5, y, 0);
                             GL.Vertex3(x, y - 5, 0); GL.Vertex3(x, y + 5, 0); GL.End();
@@ -467,15 +487,14 @@ namespace SashaRX.UnityMeshLab
             if (uvs == null || tri == null) return;
             if (CurrentPreviewMode == PreviewMode.Lightmap && ctx.PreviewUvChannel == 1 && entry?.renderer != null && entry.renderer.lightmapIndex >= 0)
             {
-                var so = entry.renderer.lightmapScaleOffset;
                 var transformed = new Vector2[uvs.Length];
                 for (int vi = 0; vi < uvs.Length; vi++)
-                    transformed[vi] = new Vector2(uvs[vi].x * so.x + so.z, uvs[vi].y * so.y + so.w);
+                    transformed[vi] = DisplayUv(ctx, entry, uvs[vi]);
                 uvs = transformed;
             }
             int uN = uvs.Length, fN = tri.Length / 3;
             bool hasFill = !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
-            if (InspectionShading != MeshViewport3D.Shading.Shaded) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
+            if (!FillHidden && InspectionShading != MeshViewport3D.Shading.Shaded) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
             else if (hasFill) FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
             if (ShowBorder && drawBorders)
             {
@@ -585,7 +604,7 @@ namespace SashaRX.UnityMeshLab
             bool any = false;
             foreach (var entry in ee)
             {
-                Mesh m = ctx.DMesh(entry);
+                Mesh m = DisplayMesh(ctx, entry);
                 if (m == null) continue;
                 var uvs = RdUv(m, ctx.PreviewUvChannel);
                 if (uvs == null) continue;
@@ -1084,7 +1103,7 @@ namespace SashaRX.UnityMeshLab
         public int GetShellColorKey(UvToolContext ctx, UvShell shell, MeshEntry entry)
         {
             int meshId = 0;
-            var mesh = entry != null ? ctx.DMesh(entry) : null;
+            var mesh = entry != null ? DisplayMesh(ctx, entry) : null;
             if (mesh != null) meshId = mesh.GetInstanceID();
             long cacheKey = ((long)meshId << 32) | (uint)shell.shellId;
             if (!ctx.ShellColorKeyCacheDirty && ctx.ShellColorKeyCache.TryGetValue(cacheKey, out int cc)) return cc;
@@ -1136,7 +1155,7 @@ namespace SashaRX.UnityMeshLab
             ShellUvHit fallback = default;
             foreach (var entry in ee)
             {
-                Mesh mesh = ctx.DMesh(entry);
+                Mesh mesh = DisplayMesh(ctx, entry);
                 if (mesh == null) continue;
                 var cache = GetPreviewShellCache(ctx, mesh, ctx.PreviewUvChannel);
                 if (cache == null || cache.shells == null) continue;
@@ -1157,7 +1176,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (checkedTri >= TRI_PICK_BUDGET) break;
             }
-            if (fallbackAssigned) { hit = fallback; var m = ctx.DMesh(fallback.meshEntry); lastHitMeshId = m != null ? m.GetInstanceID() : -1; lastHitShellId = fallback.shellId; return true; }
+            if (fallbackAssigned) { hit = fallback; var m = DisplayMesh(ctx, fallback.meshEntry); lastHitMeshId = m != null ? m.GetInstanceID() : -1; lastHitShellId = fallback.shellId; return true; }
             return false;
         }
 

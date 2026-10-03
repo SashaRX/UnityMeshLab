@@ -551,7 +551,13 @@ namespace SashaRX.UnityMeshLab
             var pairs = new List<int>();
             for (int sub = 0; sub < mesh.subMeshCount; ++sub)
                 AppendEdges(pairs, mesh.GetIndices(sub), mesh.GetTopology(sub));
-            return pairs;
+            var unique = new List<int>();
+            var seen = new HashSet<ulong>();
+            for (int i = 0; i + 1 < pairs.Count; i += 2) {
+                uint a = (uint)Mathf.Min(pairs[i], pairs[i + 1]), b = (uint)Mathf.Max(pairs[i], pairs[i + 1]);
+                if (seen.Add(((ulong)a << 32) | b)) { unique.Add(pairs[i]); unique.Add(pairs[i + 1]); }
+            }
+            return unique;
         }
 
         static void AppendEdges(List<int> pairs, int[] indices, MeshTopology topology)

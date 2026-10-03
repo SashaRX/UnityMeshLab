@@ -12,7 +12,13 @@ namespace SashaRX.UnityMeshLab
     {
         readonly Dictionary<int, Mesh> copies = new Dictionary<int, Mesh>();
         readonly Dictionary<int, string> reports = new Dictionary<int, string>();
-        readonly Dictionary<int, TriangleBvh> bvhs = new Dictionary<int, TriangleBvh>();
+        sealed class PickData
+        {
+            public Vector3[] vertices;
+            public int[] triangles;
+            public TriangleBvh bvh;
+        }
+        readonly Dictionary<int, PickData> bvhs = new Dictionary<int, PickData>();
         int sampledMesh, sampledVertex = -1;
         string sampledValues;
         Vector3 sampledPosition;
@@ -132,18 +138,30 @@ namespace SashaRX.UnityMeshLab
                 var mesh = items[i].mesh;
                 if (!mesh || !HasOnlyTriangles(mesh)) continue;
                 int id = mesh.GetInstanceID();
-                if (!bvhs.TryGetValue(id, out var bvh)) bvhs[id] = bvh = new TriangleBvh(mesh.vertices, mesh.triangles);
+                var positions = mesh.vertices;
+                var triangles = mesh.triangles;
+                if (!bvhs.TryGetValue(id, out var data) || !SameValues(data.vertices, positions) || !SameValues(data.triangles, triangles))
+                    bvhs[id] = data = new PickData { vertices = positions, triangles = triangles, bvh = new TriangleBvh(positions, triangles) };
                 var inverse = items[i].matrix.inverse;
-                var hit = bvh.Raycast(inverse.MultiplyPoint3x4(origin), inverse.MultiplyVector(direction), float.MaxValue);
+                var hit = data.bvh.Raycast(inverse.MultiplyPoint3x4(origin), inverse.MultiplyVector(direction), float.MaxValue);
                 // Keep the local direction unnormalised: t remains the world ray parameter.
                 if (hit.triangleIndex < 0 || hit.t >= nearest) continue;
-                var tri = mesh.triangles; var b = hit.barycentric;
+                var tri = data.triangles; var b = hit.barycentric;
                 int corner = b.y >= b.z ? 1 : 2;
                 if (b.x >= b.y && b.x >= b.z) corner = 0;
                 vertex = tri[hit.triangleIndex * 3 + corner];
                 nearest = hit.t; itemIndex = i;
             }
             return itemIndex >= 0;
+        }
+
+        static bool SameValues<T>(T[] previous, T[] current)
+        {
+            if (previous.Length != current.Length) return false;
+            var comparer = EqualityComparer<T>.Default;
+            for (int i = 0; i < previous.Length; ++i)
+                if (!comparer.Equals(previous[i], current[i])) return false;
+            return true;
         }
 
         internal static bool HasOnlyTriangles(Mesh mesh)

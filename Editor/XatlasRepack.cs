@@ -203,13 +203,13 @@ namespace SashaRX.UnityMeshLab
         /// <see cref="RepackResult.error"/> rather than an exception, because
         /// every caller consumes the result-based contract.
         /// </summary>
-        static bool TryAcquireNativeSession()
+        internal static bool TryAcquireNativeSession()
         {
             return System.Threading.Interlocked.CompareExchange(
                 ref s_nativeSessionInFlight, 1, 0) == 0;
         }
 
-        static void ReleaseNativeSession()
+        internal static void ReleaseNativeSession()
             => System.Threading.Volatile.Write(ref s_nativeSessionInFlight, 0);
 
         const uint ORPHAN_CHART = uint.MaxValue;

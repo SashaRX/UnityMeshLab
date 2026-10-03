@@ -634,6 +634,7 @@ namespace SashaRX.UnityMeshLab
             // cross-LOD containment. The scalar that threshold sweeps
             // optimise and the reliability gate the Apply menu reports.
             RunBuildStage(() => ComputeStageEMetrics(lg, opts, result), lg.name, "stage E3 metrics failed");
+            if (UvProgress.CancelRequested) result.error = "Cancelled";
             return result;
         }
 
@@ -669,12 +670,14 @@ namespace SashaRX.UnityMeshLab
 
         static void RunBuildStage(Action stage, string groupName, string failureLabel)
         {
+            if (UvProgress.CancelRequested) return;
             try { stage(); }
             catch (Exception ex) { LogBuildStageFailure(groupName, failureLabel, ex); }
         }
 
         static async Task RunBuildStageAsync(Func<Task> stage, string groupName, string failureLabel)
         {
+            if (UvProgress.CancelRequested) return;
             try { await stage(); }
             catch (Exception ex) { LogBuildStageFailure(groupName, failureLabel, ex); }
         }
@@ -1437,6 +1440,7 @@ namespace SashaRX.UnityMeshLab
         static async Task ComputeCleanProxyAsync(Mesh deepMesh, Transform deepXform,
             Options opts, string lgName, Result result, bool interactive)
         {
+            if (UvProgress.CancelRequested) return;
             // ── Variant 1: clean (sym-split + ARAP + pack) ──
             if (deepMesh.uv != null && deepMesh.uv.Length > 0)
             {
@@ -1485,6 +1489,7 @@ namespace SashaRX.UnityMeshLab
         static async Task ComputeRawProxyAsync(Mesh deepMesh, Transform deepXform,
             Options opts, string lgName, Result result, bool interactive)
         {
+            if (UvProgress.CancelRequested) return;
             // ── Variant 2: raw (UV0 → pack only) ──
             if (deepMesh.uv != null && deepMesh.uv.Length > 0)
             {
@@ -1523,6 +1528,7 @@ namespace SashaRX.UnityMeshLab
         static async Task ComputeAutoProxyAsync(Mesh deepMesh, Transform deepXform,
             Options opts, string lgName, Result result, bool interactive)
         {
+            if (UvProgress.CancelRequested) return;
             // ── Variant 3: true auto-unwrap (positions + normals) ──
             try
             {
@@ -1604,6 +1610,7 @@ namespace SashaRX.UnityMeshLab
 
             for (int li = 0; li < lodCount; li++)
             {
+                if (UvProgress.CancelRequested) break;
                 if (li == deepest) continue;
                 await ComputeClassicalLodUnwrapAsync(lods[li], li, lg.name, opts, r, interactive);
             }
@@ -2368,9 +2375,11 @@ namespace SashaRX.UnityMeshLab
             var idxArr = input.idxList.ToArray();
             var faceMatArr = input.faceMatList.ToArray();
 
-            XatlasNative.xatlasCreate();
+            if (!XatlasRepack.TryAcquireNativeSession())
+                throw new InvalidOperationException("An xatlas repack operation is already in progress.");
             try
             {
+                XatlasNative.xatlasCreate();
                 int addErr = XatlasNative.xatlasAddUvMesh(uvArr, (uint)vc, idxArr,
                     (uint)ic, faceMatArr, (uint)fc);
                 if (addErr != 0)
@@ -2407,7 +2416,10 @@ namespace SashaRX.UnityMeshLab
 
                 ReadDomainPackOutput(lg.name, opts, r, input, texelsPerUnit);
             }
-            finally { XatlasNative.xatlasDestroy(); }
+            finally {
+                try { XatlasNative.xatlasDestroy(); }
+                finally { XatlasRepack.ReleaseNativeSession(); }
+            }
         }
 
         sealed class DomainLodGeometry
@@ -3627,9 +3639,11 @@ namespace SashaRX.UnityMeshLab
             var indicesU = new uint[ic];
             for (int i = 0; i < ic; i++) indicesU[i] = (uint)tris[i];
 
-            XatlasNative.xatlasCreate();
+            if (!XatlasRepack.TryAcquireNativeSession())
+                throw new InvalidOperationException("An xatlas repack operation is already in progress.");
             try
             {
+                XatlasNative.xatlasCreate();
                 int addErr = XatlasNative.xatlasAddMesh(positionsFlat, normalsFlat,
                     (uint)vc, indicesU, (uint)ic);
                 if (addErr != 0)
@@ -3699,7 +3713,10 @@ namespace SashaRX.UnityMeshLab
                 outTris = new int[outIc];
                 for (int i = 0; i < outIc; i++) outTris[i] = (int)outIndsU[i];
             }
-            finally { XatlasNative.xatlasDestroy(); }
+            finally {
+                try { XatlasNative.xatlasDestroy(); }
+                finally { XatlasRepack.ReleaseNativeSession(); }
+            }
             return (outUv, outTris, outWorldVerts);
         }
 

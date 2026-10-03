@@ -126,15 +126,27 @@ namespace SashaRX.UnityMeshLab
             return FindNamedLodChildren(go.transform.parent, baseName);
         }
 
+        internal static bool HasAmbiguousLodChains(GameObject root)
+        {
+            if (root == null || MeshNaming.HasLodSuffix(root.name)) return false;
+            var names = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < root.transform.childCount; ++i)
+                if (MeshNaming.TryParseLod(root.transform.GetChild(i).name, out var name, out _)) names.Add(name);
+            return names.Count > 1;
+        }
+
         static List<(GameObject go, int lodIndex)> FindNamedLodChildren(Transform parent, string baseName)
         {
             if (parent == null) return null;
             var results = new List<(GameObject, int)>();
+            string chain = baseName;
             for (int i = 0; i < parent.childCount; i++)
             {
                 var child = parent.GetChild(i).gameObject;
                 if (!MeshNaming.TryParseLod(child.name, out string childBase, out int lodIndex)) continue;
                 if (baseName != null && !string.Equals(childBase, baseName, System.StringComparison.OrdinalIgnoreCase)) continue;
+                if (chain != null && baseName == null && !string.Equals(childBase, chain, System.StringComparison.OrdinalIgnoreCase)) return null;
+                chain = childBase;
                 results.Add((child, lodIndex));
             }
             results.Sort((a, b) => a.Item2.CompareTo(b.Item2));
@@ -192,6 +204,8 @@ namespace SashaRX.UnityMeshLab
             }
             Undo.RecordObject(ctx.LodGroup, "Clear Generated LODs");
             ctx.LodGroup.SetLODs(cleanedLods.ToArray());
+            if (PrefabUtility.IsPartOfPrefabInstance(ctx.LodGroup))
+                PrefabUtility.RecordPrefabInstancePropertyModifications(ctx.LodGroup);
         }
 
         static List<Renderer> RemainingLodRenderers(LOD lod, HashSet<GameObject> generatedSet)

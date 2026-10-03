@@ -116,7 +116,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void AttributeColorsRenderIntoUvLayoutUsingTheSameEncodingAs3D()
         {
-            var mesh = Quad(); var canvas = new UvCanvasView { FillHidden = true, ShowBorder = false,
+            var mesh = Quad(); var canvas = new UvCanvasView { FillHidden = false, ShowBorder = false,
                 InspectionShading = MeshViewport3D.Shading.Normals };
             RenderTexture layer = null; Texture2D pixels = null;
             var previous = RenderTexture.active;

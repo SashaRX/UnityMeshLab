@@ -57,17 +57,14 @@ namespace SashaRX.UnityMeshLab
                     var imp = AssetImporter.GetAtPath(p) as ModelImporter;
                     if (imp == null) continue;
                     if (imp.generateSecondaryUV) imp.generateSecondaryUV = false;
-                    Uv2AssetPostprocessor.bypassPaths.Add(p);
-                    imp.SaveAndReimport();
+                    FbxExport.ReimportWithoutSidecars(p, imp.SaveAndReimport);
                 }
                 foreach (var e in ctx.MeshEntries)
                 {
                     if (e.meshFilter != null && e.meshFilter.sharedMesh != null)
                         e.fbxMesh = e.meshFilter.sharedMesh;
                 }
-                Uv2AssetPostprocessor.bypassPaths.Clear();
             }
-
         }
 
         HashSet<string> ApplySourceFbxPaths()
@@ -310,7 +307,7 @@ namespace SashaRX.UnityMeshLab
             {
                 totalCount++;
                 string sourceFbxPath = kv.Key;
-                var entries = kv.Value.Select(p => p.entry).ToList();
+                var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
                 if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath)) continue;
 
                 RestoreAllPreviews();
@@ -539,7 +536,7 @@ namespace SashaRX.UnityMeshLab
 #endif
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-        sealed class HierarchyExportBatch
+        internal sealed class HierarchyExportBatch
         {
             public readonly HashSet<string> OverwrittenFbxPaths = new HashSet<string>();
             public readonly Dictionary<string, List<MeshUv2Entry>> TransientReplayEntriesByPath = new Dictionary<string, List<MeshUv2Entry>>();
@@ -556,81 +553,88 @@ namespace SashaRX.UnityMeshLab
         {
             if (!TryPrepareHierarchyExportPath(sourceFbxPath, overwriteSource,
                     out string exportPath, out string tempDir, out string fullSourcePath, out string fbxBakName)) return false;
-            bool groupSucceeded = false;
-            bool exportFailed = false;
+            return ExportHierarchyGroupPrepared(sourceFbxPath, entries, overwriteSource, batch, exportPath, tempDir, fullSourcePath, fbxBakName);
+        }
 
-            // Overwrite: lock the import settings BEFORE the export, so no extra
-            // post-export reimport lets a third-party importer (Bakery) touch UV2
-            // before the user validates. lockForFbxOverwrite normalises topology and
-            // scale (keepQuads, useFileScale, globalScale=1.0) so the round-trip is
-            // 1:1 metres and keeps quads.
-            if (overwriteSource)
-                Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true, lockForFbxOverwrite: true);
+        internal Action<string, GameObject> HierarchyWriter;
+        internal Func<string, GameObject> HierarchyPrefabLoader;
 
-            // The FBX Exporter needs readable meshes (notably _COL meshes without
-            // sidecar data).
-            var srcImporter = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
-            bool madeReadable = false;
-            if (!overwriteSource && srcImporter != null && !srcImporter.isReadable)
-            {
-                srcImporter.isReadable = true;
-                Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
-                srcImporter.SaveAndReimport();
-                madeReadable = true;
-            }
-
-            // Clone the FBX hierarchy and replace only the meshes.
-            var fbxPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(sourceFbxPath);
-            if (fbxPrefab == null) { UvtLog.Error("[FBX Export] Cannot load FBX prefab: " + sourceFbxPath); return false; }
-            var tempRoot = UnityEngine.Object.Instantiate(fbxPrefab);
-            tempRoot.name = fbxPrefab.name;
-            FbxExport.PromoteRootMeshToLod0Child(tempRoot);
-
-            // Temporary meshes of this group — export copies, transform-baked copies,
-            // stripped collision meshes, sidecar hulls. They only ever live on
-            // tempRoot and are destroyed once the export finished.
+        internal bool ExportHierarchyGroupPrepared(string sourceFbxPath, List<(MeshEntry entry, Mesh resultMesh)> entries,
+            bool overwriteSource, HierarchyExportBatch batch, string exportPath, string tempDir, string fullSourcePath, string backupName)
+        {
+            bool written = false, failed = false, madeReadable = false;
+            GameObject tempRoot = null;
+            ModelImporter importer = null;
             var tempMeshes = new List<Mesh>();
             try
             {
-                int collisionMeshCount = PrepareExportHierarchy(tempRoot, sourceFbxPath, entries, tempMeshes, batch);
-
-                FbxExport.Write(exportPath, tempRoot);
-                int totalExported = entries.Count + collisionMeshCount;
-                UvtLog.Info("[FBX Export] Exported (binary) " + totalExported + " mesh(es) -> " + exportPath);
-                groupSucceeded = true;
-                // Restore original .meta from temp backup
                 if (overwriteSource)
+                    Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true, lockForFbxOverwrite: true);
+                importer = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
+                if (!overwriteSource && importer != null && !importer.isReadable)
                 {
-                    string metaBak = System.IO.Path.Combine(tempDir, fbxBakName + ".meta.bak");
-                    if (System.IO.File.Exists(metaBak))
-                    {
-                        System.IO.File.Copy(metaBak, fullSourcePath + ".meta", true);
-                        System.IO.File.Delete(metaBak);
-                    }
-                    string fbxBak = System.IO.Path.Combine(tempDir, fbxBakName + ".bak");
-                    if (System.IO.File.Exists(fbxBak))
-                        System.IO.File.Delete(fbxBak);
-                    batch.OverwrittenFbxPaths.Add(sourceFbxPath);
+                    madeReadable = true;
+                    importer.isReadable = true;
+                    FbxExport.ReimportWithoutSidecars(sourceFbxPath, importer.SaveAndReimport);
                 }
+                var prefab = HierarchyPrefabLoader != null ? HierarchyPrefabLoader(sourceFbxPath) : AssetDatabase.LoadAssetAtPath<GameObject>(sourceFbxPath);
+                if (prefab == null) throw new InvalidOperationException("Cannot load FBX prefab: " + sourceFbxPath);
+                tempRoot = UnityEngine.Object.Instantiate(prefab);
+                tempRoot.name = prefab.name;
+                FbxExport.PromoteRootMeshToLod0Child(tempRoot);
+                int collisions = PrepareExportHierarchy(tempRoot, sourceFbxPath, entries, tempMeshes, batch);
+                if (HierarchyWriter != null) HierarchyWriter(exportPath, tempRoot);
+                else FbxExport.Write(exportPath, tempRoot);
+                written = true;
+                if (overwriteSource) batch.OverwrittenFbxPaths.Add(sourceFbxPath);
+                UvtLog.Info($"[FBX Export] Exported (binary) {entries.Count + collisions} mesh(es) -> {exportPath}");
             }
-            catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); exportFailed = true; }
+            catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); failed = true; }
             finally
             {
-                UnityEngine.Object.DestroyImmediate(tempRoot);
+                if (tempRoot != null) UnityEngine.Object.DestroyImmediate(tempRoot);
                 FbxExport.DestroyTempMeshes(tempMeshes);
+                if (overwriteSource)
+                    failed |= !RestoreHierarchyBackup(tempDir, backupName, fullSourcePath, sourceFbxPath, written);
+                if (madeReadable && importer != null)
+                    failed |= !RestoreHierarchyReadability(importer, sourceFbxPath);
             }
+            // A completed write needs replay even if restoring its importer metadata failed.
+            if (overwriteSource && written) StoreHierarchyExportSidecars(sourceFbxPath, entries, true, batch);
+            return written && !failed;
+        }
 
-            // Restore isReadable if we changed it (non-overwrite path only;
-            // overwrite path restores .meta from backup automatically).
-            if (madeReadable && !overwriteSource && srcImporter != null)
+        static bool RestoreHierarchyReadability(ModelImporter importer, string path)
+        {
+            try {
+                importer.isReadable = false;
+                FbxExport.ReimportWithoutSidecars(path, importer.SaveAndReimport);
+                return true;
+            }
+            catch (Exception ex) {
+                UvtLog.Error("[FBX Export] Readability restore failed: " + ex.Message);
+                return false;
+            }
+        }
+
+        internal static bool RestoreHierarchyBackup(string directory, string name, string fullSourcePath, string assetPath, bool written)
+        {
+            string fbxBackup = System.IO.Path.Combine(directory, name + ".bak");
+            string metaBackup = System.IO.Path.Combine(directory, name + ".meta.bak");
+            try
             {
-                srcImporter.isReadable = false;
-                Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
-                srcImporter.SaveAndReimport();
+                if (!written) System.IO.File.Copy(fbxBackup, fullSourcePath, true);
+                if (System.IO.File.Exists(metaBackup)) System.IO.File.Copy(metaBackup, fullSourcePath + ".meta", true);
+                if (!written && !string.IsNullOrEmpty(assetPath))
+                    FbxExport.ReimportWithoutSidecars(assetPath, () => AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate));
+                if (System.IO.File.Exists(metaBackup)) System.IO.File.Delete(metaBackup);
+                if (System.IO.File.Exists(fbxBackup)) System.IO.File.Delete(fbxBackup);
+                return true;
             }
-
-            if (overwriteSource) StoreHierarchyExportSidecars(sourceFbxPath, entries, groupSucceeded, batch);
-            return groupSucceeded && !exportFailed;
+            catch (Exception ex) {
+                UvtLog.Error($"[FBX Export] Backup restore failed; copies kept in {directory}: {ex.Message}");
+                return false;
+            }
         }
 
         static bool TryPrepareHierarchyExportPath(string sourceFbxPath, bool overwriteSource,

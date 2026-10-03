@@ -394,12 +394,13 @@ namespace SashaRX.UnityMeshLab
             // A tool may put its own output in the UV canvas (the Remesh & Bake result);
             // resolved every frame so it follows the tool's stages and tab switches.
             uvContentEntries.Clear();
-            canvas.EntriesOverride = ActiveTool is IUvToolUvContent uvContent && uvContent.GetUvContent(uvContentEntries) ? uvContentEntries : null;
+            toolOwnsUvContent = ActiveTool is IUvToolUvContent uvContent && uvContent.GetUvContent(uvContentEntries);
+            canvas.EntriesOverride = toolOwnsUvContent ? uvContentEntries : null;
             CollectViewportItems();
             canvas.EntriesOverride = viewportEntries;
-            int contentKey = canvas.EntriesOverride != null ? 1 : 0;
+            int contentKey = toolOwnsUvContent ? 1 : 0;
             foreach (var entry in viewportEntries) {
-                var mesh = ctx.DMesh(entry);
+                var mesh = canvas.DisplayMesh(ctx, entry);
                 unchecked { contentKey = (contentKey * 31 + (mesh ? mesh.GetInstanceID() : 0)) * 31 + entry.GetHashCode(); }
             }
             if (uvContentKey != contentKey) {
@@ -1026,6 +1027,7 @@ namespace SashaRX.UnityMeshLab
         List<MeshViewport3D.Item> CollectViewportItems()
         {
             viewportItems.Clear(); viewportEntries.Clear();
+            canvas.DisplayMeshes.Clear();
             if (ActiveTool is IUvTool3D tool3D && tool3D.Get3DContent(viewportItems))
             {
                 viewportItems.RemoveAll(item => !item.mesh);
@@ -1046,7 +1048,6 @@ namespace SashaRX.UnityMeshLab
             List<string> groupKeys = canvas.EntriesOverride == null && ctx.RepackPerMesh && ctx.IsolatedMeshGroup >= 0 ? ctx.BuildGroupKeys(ctx.PreviewLod) : null;
             foreach (var e in canvas.Entries(ctx))
             {
-                if (!e.include) continue;
                 if (groupKeys != null && ctx.IsolatedMeshGroup < groupKeys.Count)
                 {
                     string key = e.meshGroupKey ?? (e.renderer != null ? e.renderer.name : null);
@@ -1061,6 +1062,8 @@ namespace SashaRX.UnityMeshLab
             PrepareInspectionEntries();
             return viewportItems;
         }
+
+        bool toolOwnsUvContent;
 
         void PrepareInspectionEntries()
         {
@@ -1079,22 +1082,18 @@ namespace SashaRX.UnityMeshLab
         {
             var key = (item.mesh.GetInstanceID(), entry?.GetHashCode() ?? 0);
             readable = inspection.Readable(item.mesh);
-            if (entry == null || readable != item.mesh) {
-                active.Add(key);
-                if (!inspectionEntries.TryGetValue(key, out var proxy)) {
-                    proxy = CreateInspectionProxy(item, entry, readable);
-                    inspectionEntries[key] = proxy;
-                }
-                proxy.originalMesh = readable;
-                return proxy;
+            if (entry != null) {
+                canvas.DisplayMeshes[entry] = readable;
+                return entry;
             }
-            return entry;
-        }
-
-        static MeshEntry CreateInspectionProxy(MeshViewport3D.Item item, MeshEntry entry, Mesh readable)
-        {
-            var proxy = entry != null ? entry.PreviewCopy(readable) : new MeshEntry { originalMesh = readable };
-            if (entry == null && item.materials != null)
+            active.Add(key);
+            if (!inspectionEntries.TryGetValue(key, out var proxy)) {
+                proxy = new MeshEntry();
+                inspectionEntries[key] = proxy;
+            }
+            proxy.originalMesh = readable;
+            proxy.previewTexture = null;
+            if (item.materials != null)
                 foreach (var material in item.materials)
                     if (material && material.HasProperty("_MainTex") && material.mainTexture) { proxy.previewTexture = material.mainTexture; break; }
             return proxy;
@@ -1324,12 +1323,12 @@ namespace SashaRX.UnityMeshLab
             // ── Status info ──
             var ee = canvas.Entries(ctx);
             int tV = 0, tT = 0;
-            foreach (var e in ee) { Mesh m = ctx.DMesh(e); if (m == null) continue; tV += m.vertexCount; tT += m.triangles.Length / 3; }
+            foreach (var e in ee) { Mesh m = canvas.DisplayMesh(ctx, e); if (m == null) continue; tV += m.vertexCount; tT += m.triangles.Length / 3; }
             string hoverInfo = canvas.HoverHitValid
                 ? $" | UV:{canvas.UvSpot.x:F3},{canvas.UvSpot.y:F3} S:{canvas.HoveredShellId}"
                 : (canvas.SpotMode ? " | UV:--" : string.Empty);
-            string what = canvas.EntriesOverride != null ? (ActiveTool?.ToolName ?? "Mesh") + " result" : "LOD" + ctx.PreviewLod + " " + ee.Count + "m";
-            EditorGUILayout.LabelField(what + " V:" + tV + " T:" + tT + " " + (ctx.PreviewUvChannel == 0 ? "UV0" : "UV1") + hoverInfo, EditorStyles.miniLabel);
+            string what = toolOwnsUvContent ? (ActiveTool?.ToolName ?? "Mesh") + " result" : "LOD" + ctx.PreviewLod + " " + ee.Count + "m";
+            EditorGUILayout.LabelField(what + " V:" + tV + " T:" + tT + " " + ("UV" + ctx.PreviewUvChannel) + hoverInfo, EditorStyles.miniLabel);
 
             GUILayout.FlexibleSpace();
 

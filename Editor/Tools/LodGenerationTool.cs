@@ -126,6 +126,10 @@ namespace SashaRX.UnityMeshLab
                     CreateLodGroup(siblings);
                 GUI.backgroundColor = bgc;
             }
+            else if (LodGroupUtility.HasAmbiguousLodChains(selected))
+            {
+                EditorGUILayout.HelpBox("Multiple LOD chains detected. Select a mesh from the chain to create its LODGroup.", MessageType.Info);
+            }
             else if (selected != null && SelectionHasRenderers(selected))
             {
                 EditorGUILayout.HelpBox(

@@ -154,7 +154,8 @@ namespace SashaRX.UnityMeshLab
             if (renderer is SkinnedMeshRenderer skin) {
                 var posed = new Mesh { name = skin.sharedMesh.name, hideFlags = HideFlags.HideAndDontSave };
                 ownedSourceMeshes.Add(posed);
-                skin.BakeMesh(posed);
+                // Compensate renderer scale; Get3DContent applies its matrix once.
+                skin.BakeMesh(posed, true);
                 CopySkinAttributes(skin.sharedMesh, posed);
                 return posed;
             }

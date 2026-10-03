@@ -367,6 +367,28 @@ namespace SashaRX.UnityMeshLab
         // inherited from the source FBX asset on disk via clone-and-snapshot.
         // ─────────────────────────────────────────────────────────────────
 
+        internal static void ReimportWithoutSidecars(string path, Action import)
+        {
+            bool added = Uv2AssetPostprocessor.bypassPaths.Add(path);
+            try { import(); }
+            finally { if (added) Uv2AssetPostprocessor.bypassPaths.Remove(path); }
+        }
+
+        internal static Dictionary<string, Snapshot> BuildChannelSnapshots(IEnumerable<MeshEntry> entries, FbxExportIntent intent)
+        {
+            var snapshots = new Dictionary<string, Snapshot>(StringComparer.Ordinal);
+            foreach (var entry in entries)
+            {
+                if (entry == null || !entry.include) continue;
+                var source = entry.originalMesh ?? entry.fbxMesh;
+                var donor = entry.repackedMesh ?? entry.transferredMesh ?? source;
+                var identity = entry.fbxMesh ?? source;
+                string name = identity != null ? identity.name : null;
+                if (donor != null && !string.IsNullOrEmpty(name)) snapshots[name] = BuildSnapshot(donor, intent);
+            }
+            return snapshots;
+        }
+
         internal sealed class Snapshot
         {
             public int vertexCount;
@@ -483,8 +505,7 @@ namespace SashaRX.UnityMeshLab
                 if (importer == null || (!readable && !quads)) return;
                 if (readable) importer.isReadable = false;
                 if (quads) importer.keepQuads = false;
-                Uv2AssetPostprocessor.bypassPaths.Add(path);
-                importer.SaveAndReimport();
+                ReimportWithoutSidecars(path, importer.SaveAndReimport);
             }
         }
 
@@ -579,14 +600,7 @@ namespace SashaRX.UnityMeshLab
             // Snapshot pre-export. Phase 1 can trigger a reimport that resets the shared
             // FBX sub-asset buffers in place — keying by sub-asset name lets us find the
             // original data after the reimport.
-            var snapshots = new Dictionary<string, Snapshot>(StringComparer.Ordinal);
-            foreach (var e in entries)
-            {
-                if (e == null || !e.include) continue;
-                Mesh sm = e.originalMesh ?? e.fbxMesh;
-                if (sm == null || string.IsNullOrEmpty(sm.name)) continue;
-                snapshots[sm.name] = BuildSnapshot(sm, intent);
-            }
+            var snapshots = BuildChannelSnapshots(entries, intent);
             if (snapshots.Count == 0)
             {
                 UvtLog.Warn($"[FBX Export] No source meshes had data for intent {intent}.");
@@ -620,8 +634,7 @@ namespace SashaRX.UnityMeshLab
                         { srcImporter.keepQuads = true; needsReimport = true; }
                     if (needsReimport)
                     {
-                        Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
-                        srcImporter.SaveAndReimport();
+                        ReimportWithoutSidecars(sourceFbxPath, srcImporter.SaveAndReimport);
                     }
                 }
             }
@@ -632,8 +645,7 @@ namespace SashaRX.UnityMeshLab
                 // clone reimport and put it back at exit.
                 srcImporter.keepQuads = true;
                 importerRestore.RestoreQuads(srcImporter);
-                Uv2AssetPostprocessor.bypassPaths.Add(sourceFbxPath);
-                srcImporter.SaveAndReimport();
+                ReimportWithoutSidecars(sourceFbxPath, srcImporter.SaveAndReimport);
             }
 
             // ── Phase 2: clone and overwrite ──

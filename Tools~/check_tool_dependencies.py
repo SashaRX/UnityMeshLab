@@ -13,7 +13,8 @@ import tempfile
 LITERALS_AND_COMMENTS = re.compile(
     r'/\*[\s\S]*?\*/|//[^\r\n]*|@"(?:""|[^"])*"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\''
 )
-TOOL = re.compile(r'(?:public|internal)\s+(?:(?:sealed|abstract)\s+)?class\s+(\w+)[^\n{]*:\s*[^\n{]*\bIUvTool\b')
+TOOL = re.compile(r'(?:(?:public|internal|private|protected|sealed|abstract|static|partial|new)\s+)*class\s+(\w+)[^{;]*:\s*[^{;]*\bIUvTool\b')
+ATTRIBUTES = re.compile(r'(?:\[[^\]]*\]\s*)+$')
 
 
 def scan(root):
@@ -27,7 +28,8 @@ def scan(root):
         for declaration in TOOL.finditer(code):
             name = declaration.group(1)
             owners[name] = path
-            if not re.search(r'\[MeshLabTool\b[^\]]*\]\s*$', code[:declaration.start()]):
+            attributes = ATTRIBUTES.search(code[:declaration.start()])
+            if attributes is None or not re.search(r'\bMeshLabTool(?:Attribute)?\b', attributes.group()):
                 findings.append((path, code.count('\n', 0, declaration.start()) + 1,
                                  f'{name} needs a MeshLabTool library dependency declaration'))
     for name, owner in owners.items():
@@ -58,6 +60,12 @@ def main():
             assert any('direct dependency' in item[2] for item in scan(root)[1]), 'Concrete tool references must fail'
             tool.write_text('public class Tab : IUvTool {}', encoding='utf-8')
             assert any('declaration' in item[2] for item in scan(root)[1]), 'Undeclared tools must fail'
+            for modifiers in ('public partial', 'internal sealed partial', 'private', ''):
+                tool.write_text(f'[MeshLabTool("tab")][Obsolete] {modifiers} class Tab :\n BaseClass,\n IUvTool {{}}', encoding='utf-8')
+                library.write_text('class Library {}', encoding='utf-8')
+                assert 'Tab' in scan(root)[0] and not scan(root)[1], modifiers
+                library.write_text('class Library { Tab tool; }', encoding='utf-8')
+                assert scan(root)[1], f'Multi-line {modifiers} tool dependencies must fail'
         print('tool dependency guard self-test passed')
         return 0
     owners, findings = scan(args.editor_root)
