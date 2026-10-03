@@ -28,8 +28,21 @@ namespace SashaRX.UnityMeshLab
         internal sealed class IndexedMesh
         {
             public Vector3[] positions;
+            public Vector3[] normals;
+            public Vector2[] uv;
+            public bool draftUv; // temporary planar UV0, not a completed unwrap
             public int[] indices;
             public int TriangleCount => indices.Length / 3;
+
+            internal IndexedMesh PrepareChannels(CancellationToken token = default)
+            {
+                normals = MeshGeometry.AveragedNormals(positions, indices, token);
+                if (uv == null || uv.Length != positions.Length) {
+                    uv = MeshGeometry.NormalizedXYUv(positions, token);
+                    draftUv = true;
+                }
+                return this;
+            }
         }
 
         /// <summary>Unwrapped result: split vertices with normals, UV0, meshoptimizer tangents and xatlas chart ids.</summary>
@@ -40,6 +53,8 @@ namespace SashaRX.UnityMeshLab
             public Vector4[] tangents;
             public int[] indices, charts;
             public int chartCount;
+            public bool draftUv;
+            public int originalChartCount, originalSmallChartCount, smallChartCount;
         }
 
         public static void CheckAvailable()
@@ -66,7 +81,7 @@ namespace SashaRX.UnityMeshLab
                     out handle, out uint vertexCount, out uint indexCount);
                 token.ThrowIfCancellationRequested();
                 if (code != 0) throw new InvalidOperationException("Voxel remesh failed: " + Error(code));
-                return CopyMesh(handle, vertexCount, indexCount);
+                return CopyMesh(handle, vertexCount, indexCount).PrepareChannels(token);
             }
             finally { if (handle != IntPtr.Zero) MeshSimplifier.meshLabMeshDestroy(handle); }
         }
@@ -82,14 +97,13 @@ namespace SashaRX.UnityMeshLab
                     (settings.preserveFolds ? 4u : 0u) | (settings.pruneSmallParts ? 16u : 0u)
             };
             var result = MeshSimplifier.SimplifyGeometry(input.positions, input.indices, options, token, out error);
-            return new IndexedMesh { positions = result.positions, indices = result.indices };
+            return new IndexedMesh { positions = result.positions, indices = result.indices }.PrepareChannels(token);
         }
 
         public static Geometry Unwrap(IndexedMesh input, RemeshSettings settings, CancellationToken token)
         {
             settings.Validate();
             token.ThrowIfCancellationRequested();
-            bool angle = settings.hardEdges == RemeshHardEdges.Angle || settings.hardEdges == RemeshHardEdges.UvIslandsAndAngle;
             // Matches ParseUnwrapOptions in Native~/src/remesh.cpp.
             float[] options = {
                 settings.maxChartArea, settings.maxChartBoundary, settings.chartNormalDeviation, settings.chartRoundness,
@@ -97,10 +111,48 @@ namespace SashaRX.UnityMeshLab
                 settings.textureResolution, settings.padding, 0, 1,
                 settings.packBlockAlign ? 1 : 0, settings.packBruteForce ? 1 : 0, settings.packRotate ? 1 : 0, settings.packRotate ? 1 : 0,
             };
+            var result = UnwrapWithOptions(input, options, token);
+            var original = UvChartQuality.Measure(result, token);
+            var best = original;
+            if (settings.reduceUvFragmentation && result.chartCount > 1) {
+                // More iterations or a larger maxCost alone can create MORE slivers
+                // after parameterization. Compare actual output instead. Keep the
+                // user's chart-size limits and packing in every trial. Final normal
+                // settings never change the charting input.
+                foreach (float straightness in new[] { 6f, 10f }) {
+                    var trial = (float[])options.Clone();
+                    trial[2] = 2; trial[3] = .01f; trial[4] = straightness;
+                    // 1000 is xatlas's explicit seam constraint, not a preference.
+                    trial[5] = options[5] >= 1000 ? options[5] : 4;
+                    trial[7] = 5; trial[8] = 1;
+                    bool same = true;
+                    for (int i = 0; i < options.Length; ++i) if (trial[i] != options[i]) { same = false; break; }
+                    if (same) continue;
+                    token.ThrowIfCancellationRequested();
+                    Geometry candidate;
+                    try { candidate = UnwrapWithOptions(input, trial, token); }
+                    catch (InvalidOperationException error) {
+                        UvtLog.Warn("[Remesh] UV fragmentation alternative failed; keeping the current unwrap. " + error.Message);
+                        continue;
+                    }
+                    var quality = UvChartQuality.Measure(candidate, token);
+                    if (!quality.Improves(best, original)) continue;
+                    result = candidate; best = quality;
+                }
+            }
+            result.originalChartCount = original.charts;
+            result.originalSmallChartCount = original.smallCharts;
+            result.smallChartCount = best.smallCharts;
+            RemeshNormals.ApplyFinal(result, settings, token);
+            return result;
+        }
+
+        static Geometry UnwrapWithOptions(IndexedMesh input, float[] options, CancellationToken token)
+        {
             IntPtr handle = IntPtr.Zero;
             try {
                 int code = meshLabUnwrap(MeshSimplifier.PackPositions(input.positions), (uint)input.positions.Length, input.indices, (uint)input.indices.Length,
-                    angle ? settings.normalCrease * Mathf.Deg2Rad : Mathf.PI, 0f,
+                    Mathf.PI, 0f,
                     options, (uint)options.Length, out handle, out uint vertexCount, out uint indexCount, out uint charts);
                 token.ThrowIfCancellationRequested();
                 if (code != 0) throw new InvalidOperationException("UV unwrap failed: " + Error(code));
@@ -117,52 +169,18 @@ namespace SashaRX.UnityMeshLab
                     result.uv[i] = new Vector2(data[i * 16 + 6], data[i * 16 + 7]);
                     result.tangents[i] = new Vector4(data[i * 16 + 8], data[i * 16 + 9], data[i * 16 + 10], data[i * 16 + 11]);
                 }
-                // Normals are regenerated from the split geometry after the UV cut, so
-                // every hard-edge source behaves the same: crease splits and chart
-                // borders are already vertex splits, no face crosses one, and the
-                // weighting follows the Blender Weighted Normal analog modes. The
-                // native meshopt normals are kept as a fallback: a vertex whose
-                // accumulation degenerates restores them instead of casting zero
-                // rays through the bake (they respect the same crease splits and
-                // are smooth across chart borders — a soft edge beats a dead one).
-                var nativeNormals = new Vector3[vertexCount];
-                for (int i = 0; i < vertexCount; ++i) nativeNormals[i] = result.normals[i];
-                bool islandHardEdges = settings.hardEdges == RemeshHardEdges.UvIslands || settings.hardEdges == RemeshHardEdges.UvIslandsAndAngle;
-                var groups = GenerateSplitNormals(result, settings.normalWeighting, islandHardEdges ? null : nativeNormals);
-                int healedNormals = 0;
-                for (int i = 0; i < vertexCount; ++i)
-                    if (result.normals[i].sqrMagnitude < 1e-12f) {
-                        result.normals[i] = nativeNormals[i];
-                        if (nativeNormals[i].sqrMagnitude > 1e-12f) ++healedNormals;
-                    }
-                int zeroNormals = 0;
-                for (int i = 0; i < vertexCount; ++i)
-                    if (result.normals[i].sqrMagnitude < 1e-12f) ++zeroNormals;
-                if (healedNormals > 0)
-                    UvtLog.Warn("[Remesh] " + healedNormals + " of " + vertexCount +
-                        " split normals degenerated to zero (cancelling or degenerate faces); restored the native smooth normal on them — hard edges may soften there.");
-                if (zeroNormals > 0)
-                    UvtLog.Warn("[Remesh] " + zeroNormals + " of " + vertexCount +
-                        " split normals are still zero (the native output was zero as well); their rays fall back to the welded cage.");
-                // Normal smoothing runs after UV generation so it works the same for
-                // every hard-edge source: in the island modes crease splits and chart
-                // borders are vertex splits no edge crosses, so the pass stops at hard
-                // edges by construction; the other modes smooth over the welded groups.
-                SmoothNormals(result, settings.normalSmoothing, groups);
-                // The native tangents were generated against the native normals; the
-                // final normals differ (weighting, island borders, smoothing), so the
-                // saved frame is re-orthogonalized the way the bake's Basis() reads it.
-                OrthogonalizeTangents(result);
+                // Native charting always uses averaged normals (crease PI).
+                // Final normal weighting, crease splits and smoothing run once,
+                // after the best UV result has been selected.
                 return result;
             }
             finally { if (handle != IntPtr.Zero) meshLabRemeshDestroy(handle); }
         }
 
         // Regenerates vertex normals from the split geometry after the UV cut.
-        // xatlas splits vertices along every chart border and the native normals
-        // split them along crease edges, so accumulating face normals per output
-        // vertex smooths inside every split group and leaves its border hard —
-        // creases and island borders alike. Weighting follows the Blender
+        // xatlas splits vertices along chart borders. RemeshNormals adds crease
+        // splits only AFTER charting, then supplies the corner-fan normal groups.
+        // Weighting follows the Blender
         // Weighted Normal analog: face area (meshopt's own accumulation),
         // corner angle, or both multiplied together.
         // The degeneracy gate is RELATIVE to the strongest accumulation on the
@@ -174,10 +192,10 @@ namespace SashaRX.UnityMeshLab
         internal static void GenerateSplitNormals(Geometry geometry, RemeshNormalWeighting weighting)
             => GenerateSplitNormals(geometry, weighting, null);
 
-        // With smoothAcross given (the native, pre-chart normals), vertices that xatlas
+        // With smoothAcross given (the native averaged normals), vertices that xatlas
         // duplicated along chart borders are accumulated together again: copies at one
-        // position whose native normals agree (same crease group) share one normal, so
-        // Smooth stays smooth across islands and Angle hardens only its creases.
+        // position whose native normals agree share one normal, so Smooth stays
+        // smooth across islands. Angle uses explicit corner-fan groups instead.
         // Returns the per-vertex normal group (null when every vertex is its own).
         internal static int[] GenerateSplitNormals(Geometry geometry, RemeshNormalWeighting weighting, Vector3[] smoothAcross)
         {
@@ -195,6 +213,18 @@ namespace SashaRX.UnityMeshLab
                     if (!map.TryGetValue(key, out int g)) { g = groups++; map[key] = g; }
                     group[i] = g;
                 }
+            }
+            GenerateGroupedNormals(geometry, weighting, group);
+            return group;
+        }
+
+        internal static void GenerateGroupedNormals(Geometry geometry, RemeshNormalWeighting weighting, int[] group)
+        {
+            var p = geometry.positions;
+            int groups = p.Length;
+            if (group != null) {
+                groups = 0;
+                foreach (int g in group) groups = Math.Max(groups, g + 1);
             }
             int G(int v) => group == null ? v : group[v];
             var sum = new Vector3[groups];
@@ -233,7 +263,6 @@ namespace SashaRX.UnityMeshLab
                 else if (geometry.normals[i].sqrMagnitude < 1e-12f)
                     geometry.normals[i] = MeshGeometry.UnitDirection(strongestFace[g]);
             }
-            return group;
         }
 
         // Gram-Schmidt every tangent against the final vertex normal, keeping its

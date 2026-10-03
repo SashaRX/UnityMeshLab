@@ -1844,21 +1844,24 @@ namespace SashaRX.UnityMeshLab
                 case UvCanvasView.PreviewMode.Shells3D:
                 {
                     var shellEntries = new List<(Renderer renderer, Mesh sourceMesh)>();
-                    foreach (var e in ctx.ForLod(ctx.PreviewLod))
+                    bool hasShellUv = canvas.HasPreviewChannel(ctx, ctx.PreviewUvChannel);
+                    foreach (var e in canvas.Entries(ctx))
                     {
                         if (!e.include || e.renderer == null) continue;
-                        Mesh mesh = e.transferredMesh ?? e.repackedMesh ?? e.originalMesh ?? e.fbxMesh;
+                        Mesh mesh = ctx.DMesh(e);
                         if (mesh != null) shellEntries.Add((e.renderer, mesh));
                     }
-                    if (shellEntries.Count > 0)
+                    if (hasShellUv)
                     {
-                        var cache = new ShellColorModelPreview.PreviewShellCache();
-                        ShellColorModelPreview.Apply(shellEntries, shellPalette, cache);
+                        if (shellEntries.Count > 0) {
+                            var cache = new ShellColorModelPreview.PreviewShellCache(ctx.PreviewUvChannel);
+                            ShellColorModelPreview.Apply(shellEntries, shellPalette, cache);
+                        }
                     }
                     else
                     {
                         canvas.CurrentPreviewMode = UvCanvasView.PreviewMode.Off;
-                        UvtLog.Warn("[Shells3D] No meshes for current LOD.");
+                        UvtLog.Warn($"[Shells3D] No meshes with UV{ctx.PreviewUvChannel}.");
                     }
                     break;
                 }

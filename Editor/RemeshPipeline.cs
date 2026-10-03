@@ -151,8 +151,8 @@ namespace SashaRX.UnityMeshLab
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
-                    $"{s.maxChartArea}|{s.maxChartBoundary}|{s.packRotate}|{s.packBlockAlign}|{s.packBruteForce}";
-                default: return $"{s.bakeMode}|{s.projectionDistance}|{s.cageSmoothing:F3}|{s.cageFit}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}|{s.sourceBackfaces}|{s.bakeSourceAO}|{s.multiplySourceAO}|{s.sourceAO?.Key}";
+                    $"{s.maxChartArea}|{s.maxChartBoundary}|{s.packRotate}|{s.packBlockAlign}|{s.packBruteForce}|{s.reduceUvFragmentation}";
+                default: return $"{s.bakeMode}|{s.projectionDistance}|{s.cageSmoothing:F3}|{s.cageFit}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}|{s.sourceBackfaces}|{s.bakeSourceAO}|{s.multiplySourceAO}|{s.sourceAO?.Key}|{s.dilationRadius}";
             }
         }
 
@@ -232,12 +232,13 @@ namespace SashaRX.UnityMeshLab
             var captures = new List<Node>();
             if (!hierarchy) {
                 captures.Add(new Node { name = root.name, spaceToWorld = rootToWorld,
-                    source = RemeshSource.Capture(worldToRoot, renderers) });
+                    source = RemeshSource.Capture(worldToRoot, renderers, asyncTextures: true) });
             }
             else {
                 // One node per renderer, each in its own TRS space relative to the root;
                 // children are their own nodes, so nothing is captured twice.
                 for (int i = 0; i < renderers.Count; ++i) {
+                    await Task.Yield();
                     var renderer = renderers[i];
                     token.ThrowIfCancellationRequested();
                     Report($"Reading {renderer.name} ({i + 1}/{renderers.Count})…");
@@ -245,13 +246,18 @@ namespace SashaRX.UnityMeshLab
                     var node = new Node { name = renderer.name, localPosition = toRoot.GetColumn(3),
                         localRotation = toRoot.rotation, localScale = toRoot.lossyScale };
                     node.spaceToWorld = rootToWorld * Matrix4x4.TRS(node.localPosition, node.localRotation, node.localScale);
-                    node.source = RemeshSource.Capture(node.spaceToWorld.inverse, new[] { renderer }, required: false);
+                    node.source = RemeshSource.Capture(node.spaceToWorld.inverse, new[] { renderer }, required: false, asyncTextures: true);
                     if (node.source == null) { UvtLog.Warn(LogPrefix + renderer.name + ": nothing to remesh, skipped."); continue; }
                     captures.Add(node);
                 }
                 if (captures.Count == 0) throw new InvalidOperationException("Every captured node was empty; nothing to remesh.");
             }
             long sourceTriangles = 0, resultTriangles = 0, trimmedFaces = 0, flippedFaces = 0, twoSidedFaces = 0; int warnings = 0, droppedSmall = 0, droppedThin = 0;
+            Report("Reading source textures…");
+            // Drain submitted GPU reads before cancellation releases the capture.
+            // The editor keeps ticking instead of blocking in Texture2D.ReadPixels.
+            foreach (var node in captures) await node.source.TextureReadbacks;
+            token.ThrowIfCancellationRequested();
             var shape = options.sourceShape;
             // Part filter first, whatever the shape: small pieces and rods whose section
             // the voxel grid cannot carry (bolts, pipes, cables, railings) only add voxel
@@ -259,11 +265,18 @@ namespace SashaRX.UnityMeshLab
             for (int i = captures.Count - 1; i >= 0; --i) {
                 var node = captures[i];
                 int gridResolution = shape == RemeshShape.Hull ? options.hullResolution : options.voxelResolution;
-                if (!node.source.FilterSmallParts(options.minPartSize, options.minRodVoxels, gridResolution, out int small, out int thin)) {
+                Report($"Filtering parts of {node.name}…");
+                var filtered = await Task.Run(() => {
+                    token.ThrowIfCancellationRequested();
+                    bool keep = node.source.FilterSmallParts(options.minPartSize, options.minRodVoxels, gridResolution, out int small, out int thin);
+                    token.ThrowIfCancellationRequested();
+                    return (keep, small, thin);
+                }, token);
+                if (!filtered.keep) {
                     if (hierarchy) { UvtLog.Warn(LogPrefix + node.name + ": every part is below the size/thickness filter, skipped."); captures.RemoveAt(i); continue; }
                     UvtLog.Warn("[Remesh] Every part is below the size/thickness filter; the filter was not applied.");
                 }
-                droppedSmall += small; droppedThin += thin;
+                droppedSmall += filtered.small; droppedThin += filtered.thin;
             }
             if (captures.Count == 0) throw new InvalidOperationException("Every node fell below the part filter; nothing to remesh.");
             for (int i = 0; i < captures.Count; ++i) {
@@ -317,10 +330,9 @@ namespace SashaRX.UnityMeshLab
             CapturedSource = root;
             var primary = Primary;
             sourceMesh = BuildMesh(ResultName + "_Source", primary.source.positions, primary.source.indices,
-                primary.source.normals, primary.source.hasColors ? primary.source.colors : null);
-            sourceMesh.uv = primary.source.uv;
+                primary.source.normals, primary.source.hasColors ? primary.source.colors : null, primary.source.uv);
             sourceMesh.tangents = primary.source.tangents;
-            voxelMesh = BuildMesh(ResultName + "_Voxel", primary.voxel.positions, primary.voxel.indices);
+            voxelMesh = BuildMesh(ResultName + "_Voxel", primary.voxel.positions, primary.voxel.indices, primary.voxel.normals, uv: primary.voxel.uv, draftUv: primary.voxel.draftUv);
             trimMaskMesh = primary.trimClasses != null ? BuildTrimMask(ResultName + "_TrimMask", primary.voxelRaw, primary.trimClasses) : null;
             Status = (hierarchy ? $"Remesh: {nodes.Count} node(s), " : "Remesh: ") +
                 $"{sourceTriangles:N0} → {resultTriangles:N0} triangles" +
@@ -390,7 +402,7 @@ namespace SashaRX.UnityMeshLab
             }
             token.ThrowIfCancellationRequested();
             var primary = Primary;
-            simplifiedMesh = BuildMesh(ResultName + "_Simplified", primary.simplified.positions, primary.simplified.indices);
+            simplifiedMesh = BuildMesh(ResultName + "_Simplified", primary.simplified.positions, primary.simplified.indices, primary.simplified.normals, uv: primary.simplified.uv, draftUv: primary.simplified.draftUv);
             Status = (hierarchy ? $"Simplify: {nodes.Count} node(s), " : "Simplify: ") + $"{before:N0} → {after:N0} triangles.";
         }
 
@@ -399,7 +411,7 @@ namespace SashaRX.UnityMeshLab
         async Task RunUnwrap(RemeshSettings options, CancellationToken token)
         {
             if (!Has(Stage.Simplify)) throw new InvalidOperationException("Run the simplify stage first.");
-            long charts = 0, vertices = 0;
+            long charts = 0, vertices = 0, originalCharts = 0, smallCharts = 0, originalSmallCharts = 0;
             for (int i = 0; i < nodes.Count; ++i) {
                 var node = nodes[i];
                 token.ThrowIfCancellationRequested();
@@ -409,9 +421,14 @@ namespace SashaRX.UnityMeshLab
                 if (node.mesh) Object.DestroyImmediate(node.mesh);
                 node.mesh = BuildResultMesh(node.name + "_LOD0", node.geometry, out node.tangents);
                 charts += node.geometry.chartCount; vertices += node.geometry.positions.Length;
+                originalCharts += node.geometry.originalChartCount;
+                smallCharts += node.geometry.smallChartCount; originalSmallCharts += node.geometry.originalSmallChartCount;
             }
             token.ThrowIfCancellationRequested();
-            Status = (hierarchy ? $"Unwrap: {nodes.Count} node(s), " : "Unwrap: ") + $"{charts:N0} islands, {vertices:N0} vertices.";
+            Status = (hierarchy ? $"Unwrap: {nodes.Count} node(s), " : "Unwrap: ") +
+                (charts < originalCharts ? $"{originalCharts:N0} → {charts:N0} islands" : $"{charts:N0} islands") +
+                (smallCharts < originalSmallCharts ? $", small (≤8 tris): {originalSmallCharts:N0} → {smallCharts:N0}" : $", {smallCharts:N0} small (≤8 tris)") +
+                $", {vertices:N0} vertices.";
         }
 
         async Task RunBake(GameObject root, RemeshSettings options, CancellationToken token)
@@ -482,8 +499,12 @@ namespace SashaRX.UnityMeshLab
         internal static Mesh BuildResultMesh(string name, RemeshNative.Geometry unwrapped, out Vector4[] tangents)
         {
             var mesh = new Mesh { name = name, indexFormat = IndexFormat.UInt32, hideFlags = HideFlags.HideAndDontSave };
+            bool missingUv = unwrapped.uv == null || unwrapped.uv.Length != unwrapped.positions.Length;
             mesh.vertices = unwrapped.positions; mesh.normals = unwrapped.normals;
             mesh.uv = unwrapped.uv; mesh.triangles = unwrapped.indices;
+            MeshGeometry.EnsureMeshChannels(mesh);
+            if (missingUv) { unwrapped.uv = mesh.uv; unwrapped.draftUv = true; }
+            MeshUvState.SetDraft(mesh, unwrapped.draftUv);
             mesh.RecalculateBounds();
             bool anyTangent = false;
             if (unwrapped.tangents != null)
@@ -498,11 +519,13 @@ namespace SashaRX.UnityMeshLab
             return mesh;
         }
 
-        static Mesh BuildMesh(string name, Vector3[] positions, int[] indices, Vector3[] normals = null, Color[] colors = null)
+        internal static Mesh BuildMesh(string name, Vector3[] positions, int[] indices, Vector3[] normals = null, Color[] colors = null, Vector2[] uv = null, bool draftUv = false)
         {
             var mesh = new Mesh { name = name, indexFormat = IndexFormat.UInt32, hideFlags = HideFlags.HideAndDontSave };
             mesh.vertices = positions; mesh.triangles = indices;
-            if (normals != null) mesh.normals = normals; else mesh.RecalculateNormals();
+            mesh.normals = MeshGeometry.NormalsOrFallback(positions, indices, normals);
+            mesh.uv = uv != null && uv.Length == positions.Length ? uv : MeshGeometry.NormalizedXYUv(positions);
+            MeshUvState.SetDraft(mesh, draftUv || uv == null || uv.Length != positions.Length);
             if (colors != null) mesh.colors = colors;
             mesh.RecalculateBounds();
             return mesh;

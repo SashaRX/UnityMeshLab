@@ -400,6 +400,8 @@ namespace SashaRX.UnityMeshLab
 
                         if (AttributeFillVisible)
                             GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
+                        else if (CurrentPreviewMode == PreviewMode.Shells3D)
+                            GlFillSh(ctx, cx, cy, sz, mesh, fN, uN, entry, -1, -1, uvs);
                         else if (hasFill)
                             FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
 
@@ -520,6 +522,7 @@ namespace SashaRX.UnityMeshLab
             int uN = uvs.Length, fN = tri.Length / 3;
             bool hasFill = !CheckerEnabled && !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
             if (!CheckerEnabled && AttributeFillVisible) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
+            else if (CurrentPreviewMode == PreviewMode.Shells3D) GlFillSh(ctx, cx, cy, sz, mesh, fN, uN, entry, -1, -1, uvs);
             else if (hasFill) FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
             if (ShowBorder && drawBorders)
             {
@@ -945,7 +948,8 @@ namespace SashaRX.UnityMeshLab
                 Color c = pal[UvHashUtil.NonNegativeColorKey(colorKey) % pal.Length];
                 if (s.shellId == selectedShellId)
                     c = Color.Lerp(c, Color.white, 0.45f);
-                c.a = s.shellId == selectedShellId ? Mathf.Clamp01(FillAlpha * 1.85f) : FillAlpha;
+                c.a = CurrentPreviewMode == PreviewMode.Shells3D ? 1f :
+                    s.shellId == selectedShellId ? Mathf.Clamp01(FillAlpha * 1.85f) : FillAlpha;
                 GL.Color(c);
                 foreach (int f in s.faceIndices)
                 {
@@ -1439,6 +1443,7 @@ namespace SashaRX.UnityMeshLab
         Texture ResolveUvPreviewBackgroundTexture(UvToolContext ctx, List<ValueTuple<Mesh, MeshEntry, int>> draws)
         {
             if (CheckerEnabled) return CheckerColorMode ? null : CheckerTexturePreview.GetCheckerTexture();
+            if (CurrentPreviewMode == PreviewMode.Shells3D) return null;
             // Tool-made entries carry their own background (a baked base color).
             foreach (var item in draws)
                 if (item.Item2.renderer == null && item.Item2.previewTexture != null) return item.Item2.previewTexture;

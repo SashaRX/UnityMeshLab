@@ -6,6 +6,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -66,7 +67,14 @@ namespace SashaRX.UnityMeshLab
         Rect currentRect;
         bool drawing;
         readonly Dictionary<long, Mesh> encodedCache = new Dictionary<long, Mesh>();
-        readonly Dictionary<int, Mesh> wireCache = new Dictionary<int, Mesh>();
+        sealed class WirePreview
+        {
+            public Mesh mesh;
+            public int vertexCount;
+            public readonly PreviewWork<WireData> work = new PreviewWork<WireData>("[3D] Wire preview");
+        }
+        sealed class WireData { public Vector3[] vertices; public List<int> indices; public string name; }
+        readonly Dictionary<int, WirePreview> wireCache = new Dictionary<int, WirePreview>();
         readonly List<Mesh> frameMeshes = new List<Mesh>();   // transient meshes built for this frame
 
         public MeshViewport3D() { VertexChannels.Changed += InvalidateMesh; }
@@ -527,33 +535,62 @@ namespace SashaRX.UnityMeshLab
 
         static byte Byte(float signed) => (byte)Mathf.Clamp(Mathf.RoundToInt((signed * 0.5f + 0.5f) * 255f), 0, 255);
 
-        Mesh WireOf(Mesh mesh)
+        internal Mesh WireOf(Mesh mesh)
         {
             int key = mesh.GetInstanceID();
-            if (wireCache.TryGetValue(key, out var cached) && cached) {
-                if (cached.vertexCount == mesh.vertexCount) return cached;
-                Object.DestroyImmediate(cached);
+            if (wireCache.TryGetValue(key, out var cached)) {
+                if (cached.vertexCount == mesh.vertexCount) return cached.mesh;
+                cached.work.Dispose();
+                if (cached.mesh) Object.DestroyImmediate(cached.mesh);
             }
-            var indices = EdgeIndices(mesh);
-            Mesh edges = null;
-            if (indices != null) {
-                edges = new Mesh { name = mesh.name + "_Wire", hideFlags = HideFlags.HideAndDontSave, indexFormat = IndexFormat.UInt32 };
-                edges.vertices = mesh.vertices;
-                edges.SetIndices(indices, MeshTopology.Lines, 0);
-            }
-            wireCache[key] = edges;
-            return edges;
+            var preview = new WirePreview { vertexCount = mesh.vertexCount };
+            wireCache[key] = preview;
+            preview.work.Enqueue(() => {
+                if (!mesh) return token => null;
+                var vertices = mesh.vertices;
+                string name = mesh.name + "_Wire";
+                SnapshotIndices(mesh, out var submeshes, out var topology);
+                return token => new WireData { name = name, vertices = vertices,
+                    indices = EdgeIndices(submeshes, topology, token) };
+            }, data => {
+                if (!mesh || data == null) return;
+                var edges = new Mesh { name = data.name, hideFlags = HideFlags.HideAndDontSave, indexFormat = IndexFormat.UInt32 };
+                preview.mesh = edges;
+                edges.vertices = data.vertices;
+                edges.SetIndices(data.indices, MeshTopology.Lines, 0);
+                RequestRepaint?.Invoke();
+            });
+            return null;
         }
 
         /// <summary>Line-list indices of a mesh's unique triangle edges (null above 1M faces).</summary>
         public static List<int> EdgeIndices(Mesh mesh)
         {
+            SnapshotIndices(mesh, out var indices, out var topology);
+            return EdgeIndices(indices, topology, CancellationToken.None);
+        }
+
+        static void SnapshotIndices(Mesh mesh, out int[][] indices, out MeshTopology[] topology)
+        {
+            indices = new int[mesh.subMeshCount][];
+            topology = new MeshTopology[indices.Length];
+            for (int sub = 0; sub < indices.Length; ++sub) {
+                indices[sub] = mesh.GetIndices(sub);
+                topology[sub] = mesh.GetTopology(sub);
+            }
+        }
+
+        static List<int> EdgeIndices(int[][] submeshes, MeshTopology[] topology, CancellationToken token)
+        {
             var pairs = new List<int>();
-            for (int sub = 0; sub < mesh.subMeshCount; ++sub)
-                AppendEdges(pairs, mesh.GetIndices(sub), mesh.GetTopology(sub));
+            for (int sub = 0; sub < submeshes.Length; ++sub) {
+                token.ThrowIfCancellationRequested();
+                AppendEdges(pairs, submeshes[sub], topology[sub]);
+            }
             var unique = new List<int>();
             var seen = new HashSet<ulong>();
             for (int i = 0; i + 1 < pairs.Count; i += 2) {
+                if ((i & 4095) == 0) token.ThrowIfCancellationRequested();
                 uint a = (uint)Mathf.Min(pairs[i], pairs[i + 1]), b = (uint)Mathf.Max(pairs[i], pairs[i + 1]);
                 if (seen.Add(((ulong)a << 32) | b)) { unique.Add(pairs[i]); unique.Add(pairs[i + 1]); }
             }
@@ -582,7 +619,10 @@ namespace SashaRX.UnityMeshLab
         public void InvalidateCaches()
         {
             foreach (var mesh in encodedCache.Values) if (mesh) Object.DestroyImmediate(mesh);
-            foreach (var mesh in wireCache.Values) if (mesh) Object.DestroyImmediate(mesh);
+            foreach (var preview in wireCache.Values) {
+                preview.work.Dispose();
+                if (preview.mesh) Object.DestroyImmediate(preview.mesh);
+            }
             encodedCache.Clear(); wireCache.Clear();
         }
 
@@ -591,6 +631,11 @@ namespace SashaRX.UnityMeshLab
         public void InvalidateMesh(Mesh mesh)
         {
             if (!mesh) return;
+            if (wireCache.TryGetValue(mesh.GetInstanceID(), out var preview)) {
+                preview.work.Dispose();
+                if (preview.mesh) Object.DestroyImmediate(preview.mesh);
+                wireCache.Remove(mesh.GetInstanceID());
+            }
             long id = (long)mesh.GetInstanceID() << 8;
             for (int mode = 0; mode < ShadingNames.Length; ++mode) {
                 long key = id | (byte)mode;

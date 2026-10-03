@@ -28,6 +28,10 @@ namespace SashaRX.UnityMeshLab
             return mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord0 + channel);
         }
 
+        /// <summary>Channel data usable as a completed unwrap, excluding draft UV0.</summary>
+        internal static bool HasFinalUv(Mesh mesh, int channel)
+            => HasUv(mesh, channel) && (channel != 0 || !MeshUvState.IsDraft(mesh));
+
         // ── edges ──
 
         // Weld only vertices agreeing in BOTH position and the displayed UV channel.

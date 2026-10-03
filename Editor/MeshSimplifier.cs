@@ -35,6 +35,7 @@ namespace SashaRX.UnityMeshLab
             public bool ok;
             public string error;
             public Mesh simplifiedMesh;
+            public bool draftUv;
             public int originalTriCount;
             public int simplifiedTriCount;
             public float resultError;
@@ -316,11 +317,14 @@ namespace SashaRX.UnityMeshLab
             for (int s = 0; s < subCount; s++)
                 outMesh.SetTriangles(submeshTriangles[s], s);
 
+            MeshGeometry.EnsureMeshChannels(outMesh);
+            if (MeshUvState.IsDraft(sourceMesh)) MeshUvState.SetDraft(outMesh, true);
             outMesh.RecalculateBounds();
             outMesh.UploadMeshData(false);
 
             result.ok = true;
             result.simplifiedMesh = outMesh;
+            result.draftUv = MeshUvState.IsDraft(outMesh);
             result.originalTriCount = totalOrigTris;
             result.simplifiedTriCount = totalSimplTris;
 

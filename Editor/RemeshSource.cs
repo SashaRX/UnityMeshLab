@@ -13,7 +13,7 @@ namespace SashaRX.UnityMeshLab
     {
         const string EmissionMapProperty = "_EmissionMap";
 
-        // AO-only async captures must finish texture readbacks before workers use the snapshot.
+        // Async captures must finish texture readbacks before workers use the snapshot.
         internal Task TextureReadbacks = Task.CompletedTask;
 
         public Vector3[] positions, normals;
@@ -50,6 +50,9 @@ namespace SashaRX.UnityMeshLab
         public void ReleaseLightmaps() { lightmaps = null; }
         public Surface[] materials;
         public float diagonal;
+        // World-horizontal floor expressed in the capture space, including FBX
+        // axis conversion and nonuniform scale. It is a plane normal, not a direction.
+        internal Vector3 groundNormal = Vector3.up;
         public string[] warnings = Array.Empty<string>();
         // Which captured renderer each vertex came from, and that renderer's local →
         // capture-space matrix: the oriented-box shape measures every renderer's
@@ -151,7 +154,8 @@ namespace SashaRX.UnityMeshLab
         /// matrix is worldToSpace. Returns null when they contribute no triangles and
         /// required is false; throws otherwise.
         /// </summary>
-        public static RemeshSource Capture(Matrix4x4 worldToSpace, IList<Renderer> renderers, bool required = true, bool geometryOnly = false, bool aoOnly = false, RemeshSettings aoReadbackSettings = null)
+        public static RemeshSource Capture(Matrix4x4 worldToSpace, IList<Renderer> renderers, bool required = true,
+            bool geometryOnly = false, bool aoOnly = false, RemeshSettings aoReadbackSettings = null, bool asyncTextures = false)
         {
             var positions = new List<Vector3>(); var normals = new List<Vector3>();
             var tangents = new List<Vector4>(); var uv = new List<Vector2>(); var colors = new List<Color>();
@@ -165,7 +169,7 @@ namespace SashaRX.UnityMeshLab
             var vertexRenderer = new List<int>(); var rendererToSpace = new List<Matrix4x4>(); var rendererLayer = new List<int>();
             string[] warnings;
             Task textureReadbacks = Task.CompletedTask;
-            using (var reader = new Reader(aoOnly ? aoReadbackSettings : null)) {
+            using (var reader = new Reader(aoOnly ? aoReadbackSettings : null, asyncTextures)) {
                 foreach (var renderer in renderers) {
                     // One hostile mesh (line submeshes, no UV0, an unreadable import)
                     // must cost its own exclusion, never the whole scene-block capture:
@@ -192,6 +196,7 @@ namespace SashaRX.UnityMeshLab
                             skin.bones = Array.Empty<Transform>();
                             skin.bones = bones;
                             skin.BakeMesh(mesh, true);
+                            MeshUvState.SetDraft(mesh, MeshUvState.IsDraft(skin.sharedMesh));
                             if (skin.sharedMesh) mesh.name = skin.sharedMesh.name;
                         }
                         else if (renderer is MeshRenderer) {
@@ -217,9 +222,11 @@ namespace SashaRX.UnityMeshLab
                         // A geometry-only capture (scene shadow casters, the Scene highlight)
                         // needs positions and triangles alone: a mesh without UV0 casts
                         // shadows in the game and keeps doing so here.
-                        bool hasUv0 = mesh.uv.Length == mesh.vertexCount;
+                        bool hasUv0 = UvTopology.HasFinalUv(mesh, 0) && mesh.uv.Length == mesh.vertexCount;
                         if (!hasUv0 && !geometryOnly && !aoOnly) {
-                            reader.warnings.Add(renderer.name + ": no source UV0 for material transfer, skipped.");
+                            reader.warnings.Add(renderer.name + (MeshUvState.IsDraft(mesh)
+                                ? ": source UV0 is draft; unwrap before material transfer, skipped."
+                                : ": no source UV0 for material transfer, skipped."));
                             continue;
                         }
                         if (mesh.normals.Length != mesh.vertexCount) mesh.RecalculateNormals();
@@ -338,7 +345,8 @@ namespace SashaRX.UnityMeshLab
             return new RemeshSource { positions = positions.ToArray(), normals = normals.ToArray(), tangents = tangents.ToArray(),
                 uv = uv.ToArray(), uv2 = uv2.ToArray(), colors = colors.ToArray(), hasColors = hasColors, indices = indices.ToArray(), faceMaterials = faces.ToArray(),
                 faceLightmaps = faceLightmaps.ToArray(), lightmapRefs = lightmapRefs.ToArray(), materials = materials.ToArray(),
-                diagonal = bounds.size.magnitude, warnings = warnings, TextureReadbacks = textureReadbacks,
+                diagonal = bounds.size.magnitude, groundNormal = worldToSpace.inverse.transpose.MultiplyVector(Vector3.up).normalized,
+                warnings = warnings, TextureReadbacks = textureReadbacks,
                 vertexRenderer = vertexRenderer.ToArray(), rendererToSpace = rendererToSpace.ToArray(), rendererLayer = rendererLayer.ToArray() };
         }
 
@@ -581,7 +589,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             if (tris.Count == 0) return null;
-            return new RemeshNative.IndexedMesh { positions = vertices.ToArray(), indices = tris.ToArray() };
+            return new RemeshNative.IndexedMesh { positions = vertices.ToArray(), indices = tris.ToArray() }.PrepareChannels();
         }
 
         /// <summary>
@@ -658,9 +666,9 @@ namespace SashaRX.UnityMeshLab
             readonly bool asyncTextures, readNormals, readAO;
             readonly List<Task> pending = new List<Task>();
             public Task Readbacks => Task.WhenAll(pending);
-            public Reader(RemeshSettings aoSettings = null)
+            public Reader(RemeshSettings aoSettings = null, bool asynchronous = false)
             {
-                asyncTextures = aoSettings != null;
+                asyncTextures = asynchronous || aoSettings != null;
                 readNormals = aoSettings == null || aoSettings.sourceAO.normalMap;
                 readAO = aoSettings == null || aoSettings.multiplySourceAO;
                 var shader = Shader.Find("Hidden/MeshLab/RemeshReadback");
@@ -787,6 +795,11 @@ namespace SashaRX.UnityMeshLab
                 image.pixels = await readback;
             }
 
+            static async Task PopulateHdrPixels(Image image, Task<Color[]> readback)
+            {
+                image.hdrPixels = await readback;
+            }
+
             Map ReadMap(Material material, string property, bool color, bool normal = false, bool enabled = true, bool hdr = false)
             {
                 var map = new Map();
@@ -804,10 +817,12 @@ namespace SashaRX.UnityMeshLab
                     if (bytes > 512L * 1024 * 1024) throw new InvalidOperationException("Source texture readback exceeds 512 MiB. Process the model in smaller groups.");
                     blit.SetFloat("_HDR", hdr ? 1 : 0);
                     blit.SetFloat("_DecodeNormal", normal ? 1 : 0); blit.SetFloat("_ColorMap", color ? 1 : 0);
-                    if (asyncTextures && !hdr) {
-                        image = new Image { srgb = color, width = texture.width, height = texture.height,
+                    if (asyncTextures && SystemInfo.supportsAsyncGPUReadback) {
+                        image = new Image { srgb = color && !hdr, width = texture.width, height = texture.height,
                             wrapU = texture.wrapModeU, wrapV = texture.wrapModeV };
-                        pending.Add(PopulatePixels(image, GpuReadback.ReadPixels32Async(texture, texture.width, texture.height, blit)));
+                        pending.Add(hdr
+                            ? PopulateHdrPixels(image, GpuReadback.ReadColorsAsync(texture, texture.width, texture.height, blit))
+                            : PopulatePixels(image, GpuReadback.ReadPixels32Async(texture, texture.width, texture.height, blit)));
                         cache.Add(key, image);
                         map.image = image;
                         return map;

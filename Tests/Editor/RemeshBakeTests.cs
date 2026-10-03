@@ -9,6 +9,399 @@ namespace SashaRX.UnityMeshLab.Tests
     public class RemeshBakeTests
     {
         static RemeshSource.Map Map() => new RemeshSource.Map();
+
+        [Test]
+        public void FragmentationSettingMigratesWithoutReplacingManualChartSettings()
+        {
+            var settings = new RemeshSettings { chartMaxCost = 9, chartIterations = 7, reduceUvFragmentation = false };
+            string json = JsonUtility.ToJson(settings);
+            Assert.IsFalse(RemeshSettings.FromSavedJson(json).reduceUvFragmentation);
+            string legacy = json.Replace("\"reduceUvFragmentation\":false,", "");
+            Assert.IsFalse(legacy.Contains("\"reduceUvFragmentation\""));
+            var restored = RemeshSettings.FromSavedJson(legacy);
+            Assert.IsTrue(restored.reduceUvFragmentation);
+            Assert.AreEqual(9, restored.chartMaxCost); Assert.AreEqual(7, restored.chartIterations);
+            foreach (RemeshPipeline.Stage stage in new[] { RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Simplify,
+                RemeshPipeline.Stage.Unwrap, RemeshPipeline.Stage.Bake }) {
+                string before = RemeshPipeline.Key(stage, settings, null);
+                settings.reduceUvFragmentation = true;
+                Assert.AreEqual(stage == RemeshPipeline.Stage.Unwrap, before != RemeshPipeline.Key(stage, settings, null), stage.ToString());
+                settings.reduceUvFragmentation = false;
+            }
+        }
+
+        [TestCase(.000001f)]
+        [TestCase(1f)]
+        [TestCase(1000000f)]
+        public void ChartStretchIsScaleIndependentAndRejectsCollapsedOrFlippedFaces(float scale)
+        {
+            var geometry = new RemeshNative.Geometry {
+                positions = new[] { Vector3.zero, Vector3.right * scale, Vector3.one * scale, Vector3.up * scale },
+                uv = new[] { Vector2.zero, new Vector2(2, 0), new Vector2(2, 1), Vector2.up },
+                indices = new[] { 0, 1, 3 }, charts = new int[4], chartCount = 1,
+            };
+            var quality = UvChartQuality.Measure(geometry, CancellationToken.None);
+            Assert.IsTrue(quality.valid); Assert.AreEqual(1, quality.smallCharts);
+            Assert.That(quality.meanStretch, Is.EqualTo(2).Within(1e-5));
+            Assert.That(quality.maxStretch, Is.EqualTo(2).Within(1e-5));
+            geometry.uv[3] = Vector2.right;
+            Assert.IsFalse(UvChartQuality.Measure(geometry, CancellationToken.None).valid);
+            geometry.uv[3] = Vector2.up;
+            geometry.indices = new[] { 0, 1, 3, 3, 1, 0 };
+            Assert.IsFalse(UvChartQuality.Measure(geometry, CancellationToken.None).valid);
+            using (var cancellation = new CancellationTokenSource()) {
+                cancellation.Cancel();
+                Assert.Throws<OperationCanceledException>(() => UvChartQuality.Measure(geometry, cancellation.Token));
+            }
+        }
+
+        [Test]
+        public void FewerChartsCannotTradeForMoreSmallFragmentsOrExcessiveStretch()
+        {
+            var original = new UvChartQuality(10, 5, 1, 2, true);
+            Assert.IsTrue(new UvChartQuality(9, 4, 1.14, 3.9, true).Improves(original, original));
+            Assert.IsTrue(new UvChartQuality(10, 4, 1, 2, true).Improves(original, original));
+            Assert.IsFalse(new UvChartQuality(9, 6, 1, 2, true).Improves(original, original));
+            Assert.IsFalse(new UvChartQuality(11, 4, 1, 2, true).Improves(original, original));
+            Assert.IsFalse(original.Improves(original, original));
+            Assert.IsFalse(new UvChartQuality(9, 4, 1.16, 2, true).Improves(original, original));
+            Assert.IsFalse(new UvChartQuality(9, 4, 1, 4.01, true).Improves(original, original));
+            Assert.IsFalse(new UvChartQuality(9, 4, 1, 2, false).Improves(original, original));
+        }
+
+        [TestCase(RemeshHardEdges.Smooth)]
+        [TestCase(RemeshHardEdges.UvIslands)]
+        public void NativeFragmentationSearchReducesCurvedSurfaceChartsWithoutChangingTriangles(RemeshHardEdges hardEdges)
+        {
+            RequireRemeshNative();
+            const int cells = 12, stride = cells + 1;
+            var p = new Vector3[stride * stride]; var t = new int[cells * cells * 6];
+            for (int y = 0; y <= cells; ++y)
+                for (int x = 0; x <= cells; ++x) {
+                    float u = x / (float)cells, v = y / (float)cells;
+                    p[y * stride + x] = new Vector3(u, .2f * Mathf.Sin(u * Mathf.PI * 2) * Mathf.Sin(v * Mathf.PI * 2), v);
+                }
+            for (int y = 0; y < cells; ++y)
+                for (int x = 0; x < cells; ++x) {
+                    int a = y * stride + x, f = (y * cells + x) * 6;
+                    t[f] = a; t[f + 1] = a + stride; t[f + 2] = a + 1;
+                    t[f + 3] = a + 1; t[f + 4] = a + stride; t[f + 5] = a + stride + 1;
+                }
+            var input = new RemeshNative.IndexedMesh { positions = p, indices = t };
+            var settings = new RemeshSettings { hardEdges = hardEdges, textureResolution = 512, chartMaxCost = .1f,
+                chartStraightness = 0, reduceUvFragmentation = false };
+            string configured = JsonUtility.ToJson(settings);
+            var original = RemeshNative.Unwrap(input, settings, CancellationToken.None);
+            settings.reduceUvFragmentation = true;
+            var result = RemeshNative.Unwrap(input, settings, CancellationToken.None);
+            Assert.Less(result.chartCount, original.chartCount);
+            Assert.LessOrEqual(result.smallChartCount, original.smallChartCount);
+            Assert.AreEqual(original.chartCount, result.originalChartCount);
+            Assert.AreEqual(t.Length, result.indices.Length);
+            var before = UvChartQuality.Measure(original, CancellationToken.None);
+            Assert.IsTrue(UvChartQuality.Measure(result, CancellationToken.None).Improves(before, before));
+            for (int i = 0; i < t.Length; ++i)
+                Assert.AreEqual(original.positions[original.indices[i]], result.positions[result.indices[i]], "Every source corner stays in place");
+            foreach (var uv in result.uv) { Assert.That(uv.x, Is.InRange(0f, 1f)); Assert.That(uv.y, Is.InRange(0f, 1f)); }
+            var mesh = new Mesh();
+            try {
+                mesh.vertices = result.positions; mesh.triangles = result.indices; mesh.uv = result.uv;
+                var report = TransferValidator.Validate(mesh, result.uv);
+                TransferValidator.DetectUv2Overlaps(mesh, result.uv, report);
+                Assert.AreEqual(0, report.zeroAreaCount); Assert.AreEqual(0, report.oobCount);
+                Assert.AreEqual(0, report.overlapShellPairs + report.overlapSameSrcPairs);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+            settings.reduceUvFragmentation = false;
+            Assert.AreEqual(configured, JsonUtility.ToJson(settings), "The search must not overwrite manual options");
+        }
+
+        static void RequireRemeshNative()
+        {
+            try { RemeshNative.CheckAvailable(); }
+            catch (InvalidOperationException error) when (error.InnerException is DllNotFoundException || error.InnerException is EntryPointNotFoundException || error.InnerException is BadImageFormatException) {
+                Assert.Ignore("Remesh native plugin unavailable: " + error.Message);
+            }
+        }
+
+        [Test]
+        public void NativeFragmentationSearchKeepsAtlasWhenFinalCreasesChange()
+        {
+            RequireRemeshNative();
+            float bend = 20 * Mathf.Deg2Rad;
+            var fold = new RemeshNative.IndexedMesh {
+                positions = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up,
+                    new Vector3(0, -Mathf.Cos(bend), Mathf.Sin(bend)), new Vector3(1, -Mathf.Cos(bend), Mathf.Sin(bend)) },
+                indices = new[] { 0, 1, 2, 0, 2, 3, 1, 0, 4, 1, 4, 5 },
+            };
+            var settings = new RemeshSettings { hardEdges = RemeshHardEdges.Angle, normalCrease = 10,
+                normalSmoothing = 0, chartNormalSeam = 1000, chartMaxCost = .1f, textureResolution = 512 };
+            settings.hardEdges = RemeshHardEdges.Smooth;
+            var smooth = RemeshNative.Unwrap(fold, settings, CancellationToken.None);
+            settings.hardEdges = RemeshHardEdges.Angle;
+            var result = RemeshNative.Unwrap(fold, settings, CancellationToken.None);
+            Assert.AreEqual(smooth.chartCount, result.chartCount, "Final crease normals must not add atlas seams");
+            for (int c = 0; c < result.indices.Length; ++c) {
+                int a = smooth.indices[c], b = result.indices[c];
+                Assert.AreEqual(smooth.positions[a], result.positions[b]);
+                Assert.AreEqual(smooth.uv[a], result.uv[b]);
+                Assert.AreEqual(smooth.charts[a], result.charts[b]);
+            }
+            int shared = -1;
+            for (int i = 0; i < result.positions.Length; ++i) {
+                if (result.positions[i] != Vector3.zero) continue;
+                if (shared < 0) { shared = i; continue; }
+                if (Vector3.Dot(result.normals[shared], result.normals[i]) < Mathf.Cos(10 * Mathf.Deg2Rad)) {
+                    Assert.Less(Vector3.Dot(result.normals[shared], result.normals[i]), Mathf.Cos(10 * Mathf.Deg2Rad));
+                    shared = -2; break;
+                }
+            }
+            Assert.AreEqual(-2, shared, "The final mesh must keep both crease-normal groups without requiring a UV seam");
+            var plane = new RemeshNative.IndexedMesh {
+                positions = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up },
+                indices = new[] { 0, 1, 2, 0, 2, 3 },
+            };
+            settings.reduceUvFragmentation = false;
+            var manual = RemeshNative.Unwrap(plane, settings, CancellationToken.None);
+            settings.reduceUvFragmentation = true;
+            var compact = RemeshNative.Unwrap(plane, settings, CancellationToken.None);
+            Assert.AreEqual(1, compact.chartCount);
+            CollectionAssert.AreEqual(manual.uv, compact.uv); CollectionAssert.AreEqual(manual.indices, compact.indices);
+            CollectionAssert.AreEqual(manual.normals, compact.normals); CollectionAssert.AreEqual(manual.tangents, compact.tangents);
+        }
+
+        [TestCase(1)]
+        [TestCase(7)]
+        [TestCase(16)]
+        [TestCase(31)]
+        public void DilationNearestPixelsMatchExactDistanceIncludingTies(int size)
+        {
+            var random = new System.Random(1729 + size);
+            for (int pass = 0; pass < 12; ++pass) {
+                var filled = new int[size * size]; var seeds = new System.Collections.Generic.List<int>();
+                for (int i = 0; i < filled.Length; ++i) {
+                    bool seed = pass == 1 || pass > 1 && random.Next(5) == 0;
+                    filled[i] = seed ? i : -1;
+                    if (seed) seeds.Add(i);
+                }
+                var nearest = TextureDilation.NearestFilled(filled, size, CancellationToken.None);
+                for (int i = 0; i < nearest.Length; ++i) {
+                    int expected = -1; long best = long.MaxValue;
+                    foreach (int seed in seeds) {
+                        long dx = i % size - seed % size, dy = i / size - seed / size;
+                        long distance = dx * dx + dy * dy;
+                        if (distance < best) { best = distance; expected = seed; }
+                    }
+                    Assert.AreEqual(expected, nearest[i], $"size={size}, pass={pass}, pixel={i}");
+                }
+            }
+        }
+
+        static RemeshBaker.Maps EmptyDilationMaps(int size) => new RemeshBaker.Maps {
+            size = size, color = new Color32[size * size], normal = new Color32[size * size],
+            metal = new Color32[size * size], ao = new Color32[size * size], emission = new Color[size * size] };
+
+        static void DilationSeed(RemeshBaker.Maps maps, int i, byte red, byte alpha)
+        {
+            maps.color[i] = new Color32(red, 70, 220, alpha);
+            maps.normal[i] = new Color32(red, 144, 230, 255);
+            maps.metal[i] = new Color32(191, 22, 31, 83);
+            maps.ao[i] = new Color32(41, 41, 41, 255);
+            maps.emission[i] = new Color(8, 2, .5f, .25f);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void DilationAddsCircularRadiusAfterPaddingAndPreservesEveryChannel(bool transparent)
+        {
+            const int size = 13, center = 6 * size + 6;
+            var maps = EmptyDilationMaps(size); maps.covered = 1; maps.misses = 2;
+            DilationSeed(maps, center, 207, transparent ? (byte)0 : (byte)193);
+            var owners = new int[size * size]; Array.Fill(owners, -1); owners[center] = 0;
+            var originalOwners = (int[])owners.Clone();
+            RemeshBaker.PadAndDilate(maps, owners, 1, 2, CancellationToken.None);
+            for (int y = 0; y < size; ++y)
+                for (int x = 0; x < size; ++x) {
+                    int i = y * size + x;
+                    int dx = Math.Max(0, Math.Abs(x - 6) - 1), dy = Math.Max(0, Math.Abs(y - 6) - 1);
+                    bool extended = dx * dx + dy * dy <= 4;
+                    Assert.AreEqual(extended ? maps.color[center] : default, maps.color[i], "color " + i);
+                    Assert.AreEqual(extended ? maps.normal[center] : default, maps.normal[i], "normal " + i);
+                    Assert.AreEqual(extended ? maps.metal[center] : default, maps.metal[i], "packed channels " + i);
+                    Assert.AreEqual(extended ? maps.ao[center] : default, maps.ao[i], "AO " + i);
+                    Assert.AreEqual(extended ? maps.emission[center] : default, maps.emission[i], "HDR " + i);
+                }
+            CollectionAssert.AreEqual(originalOwners, owners, "The pass does not change UV coverage or chart ownership");
+            Assert.AreEqual(1, maps.covered); Assert.AreEqual(2, maps.misses);
+            Assert.AreEqual(transparent ? 0 : 193, maps.color[center].a);
+            Assert.AreEqual(8f, maps.emission[center].r);
+        }
+
+        [Test]
+        public void DilationCopiesNearestIslandWithoutBlendingAndCanBeDisabled()
+        {
+            const int size = 17, left = 8 * size + 4, right = 8 * size + 12;
+            var maps = EmptyDilationMaps(size);
+            DilationSeed(maps, left, 35, 255); DilationSeed(maps, right, 220, 255);
+            var owners = new int[size * size]; Array.Fill(owners, -1); owners[left] = 0; owners[right] = 1;
+            RemeshBaker.PadAndDilate(maps, owners, 1, 3, CancellationToken.None);
+            Assert.AreEqual(maps.normal[left], maps.normal[8 * size + 7]);
+            Assert.AreEqual(maps.normal[left], maps.normal[8 * size + 8], "Equidistant borders use a stable seed");
+            Assert.AreEqual(maps.normal[right], maps.normal[8 * size + 9]);
+            Assert.AreEqual(maps.color[left], maps.color[8 * size + 8]);
+            var paddingOnly = EmptyDilationMaps(size); DilationSeed(paddingOnly, left, 35, 255);
+            owners[right] = -1;
+            RemeshBaker.PadAndDilate(paddingOnly, owners, 1, 0, CancellationToken.None);
+            Assert.AreEqual(paddingOnly.normal[left], paddingOnly.normal[8 * size + 5]);
+            Assert.AreEqual(default(Color32), paddingOnly.normal[8 * size + 6]);
+        }
+
+        [Test]
+        public void DilationSettingsPersistMigrateAndOnlyInvalidateBake()
+        {
+            var settings = new RemeshSettings { padding = 4, textureResolution = 1024 };
+            Assert.AreEqual(64, settings.dilationRadius);
+            string legacy = JsonUtility.ToJson(settings).Replace("\"dilationRadius\":64,", "");
+            Assert.IsFalse(legacy.Contains("\"dilationRadius\""));
+            var restored = RemeshSettings.FromSavedJson(legacy);
+            Assert.AreEqual(64, restored.dilationRadius); Assert.AreEqual(4, restored.padding); Assert.AreEqual(1024, restored.textureResolution);
+            foreach (RemeshPipeline.Stage stage in new[] { RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Simplify,
+                RemeshPipeline.Stage.Unwrap, RemeshPipeline.Stage.Bake }) {
+                string before = RemeshPipeline.Key(stage, settings, null);
+                settings.dilationRadius = 128;
+                string after = RemeshPipeline.Key(stage, settings, null);
+                Assert.AreEqual(stage == RemeshPipeline.Stage.Bake, before != after, stage.ToString());
+                settings.dilationRadius = 64;
+            }
+            settings.dilationRadius = 0;
+            Assert.AreEqual(0, RemeshSettings.FromSavedJson(JsonUtility.ToJson(settings)).dilationRadius);
+            Assert.DoesNotThrow(settings.Validate);
+            settings.dilationRadius = -1; Assert.Throws<ArgumentException>(settings.Validate);
+            settings.dilationRadius = RemeshSettings.MaxDilationRadius + 1; Assert.Throws<ArgumentException>(settings.Validate);
+            using (var cancellation = new CancellationTokenSource()) {
+                cancellation.Cancel();
+                Assert.Throws<OperationCanceledException>(() => TextureDilation.NearestFilled(new[] { 0 }, 1, cancellation.Token));
+            }
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator CpuAndGpuBakesApplyDilationToExistingUvAo()
+        {
+            var source = Source();
+            var target = new RemeshNative.Geometry { positions = source.positions, normals = source.normals,
+                indices = source.indices, tangents = source.tangents,
+                uv = new[] { new Vector2(8.1f / 64, 8.1f / 64), new Vector2(8.9f / 64, 8.1f / 64), new Vector2(8.1f / 64, 8.9f / 64) } };
+            var settings = new RemeshSettings { textureResolution = 64, bakeSamples = 1, padding = 1,
+                dilationRadius = 0, bakeSourceAO = true, gpuProjection = false };
+            settings.sourceAO.groundPlane = false; settings.sourceAO.samples = 16;
+            var padding = RemeshBaker.Bake(source, target, source.tangents, settings, CancellationToken.None);
+            Assert.AreEqual(default(Color32), padding.ao[11 + 8 * 64]);
+            settings.dilationRadius = 3;
+            var cpu = TextureAoBakePanel.BakeMaps(source, target, settings, CancellationToken.None);
+            double deadline = EditorApplication.timeSinceStartup + 10;
+            while (!cpu.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+            Assert.IsTrue(cpu.IsCompleted);
+            Assert.IsFalse(cpu.IsFaulted, cpu.Exception?.ToString());
+            Assert.AreEqual(cpu.Result.ao[8 + 8 * 64], cpu.Result.ao[11 + 8 * 64]);
+            Assert.AreEqual(padding.covered, cpu.Result.covered); Assert.AreEqual(padding.misses, cpu.Result.misses);
+            if (!SourceAoBaker.GpuSupported) yield break;
+            settings.gpuProjection = true;
+            var gpu = TextureAoBakePanel.BakeMaps(source, target, settings, CancellationToken.None);
+            while (!gpu.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+            Assert.IsTrue(gpu.IsCompleted);
+            Assert.IsFalse(gpu.IsFaulted, gpu.Exception?.ToString());
+            Assert.IsTrue(gpu.Result.gpu); Assert.IsTrue(gpu.Result.gpuAO);
+            CollectionAssert.AreEqual(cpu.Result.ao, gpu.Result.ao);
+            CollectionAssert.AreEqual(cpu.Result.normal, gpu.Result.normal);
+            CollectionAssert.AreEqual(cpu.Result.color, gpu.Result.color);
+            CollectionAssert.AreEqual(cpu.Result.metal, gpu.Result.metal);
+            CollectionAssert.AreEqual(cpu.Result.emission, gpu.Result.emission);
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator GpuQueriesAsyncPreserveBatchOffsetsAndDrainCancellation()
+        {
+            if (!GpuBvh.Supported || !SystemInfo.supportsAsyncGPUReadback) Assert.Ignore("Async GPU queries unavailable on this device.");
+            var source = Source(); var bvh = new TriangleBvh(source.positions, source.indices);
+            using (var gpu = GpuBvh.TryCreate(bvh, new[] { Vector3.forward })) {
+                Assert.IsNotNull(gpu);
+                const int count = 16401; // crosses the asynchronous dispatch boundary
+                var origins = new Vector4[count]; var directions = new Vector4[count];
+                var points = new Vector4[count]; var normals = new Vector4[count];
+                var hits = new GpuBvh.RayHit[count]; var nearest = new GpuBvh.NearestHit[count];
+                for (int i = 0; i < count; ++i) {
+                    origins[i] = i % 2 == 0 ? new Vector4(.2f, .2f, 1, 2) : new Vector4(2, 2, 1, 2);
+                    directions[i] = (Vector4)Vector3.back;
+                    points[i] = i % 2 == 0 ? new Vector4(.2f, .2f, .5f, 1) : new Vector4(8, 8, .5f, .1f);
+                    normals[i] = (Vector4)Vector3.forward;
+                }
+                var rays = gpu.RaycastAsync(origins, directions, count, true, hits, CancellationToken.None);
+                Assert.IsFalse(rays.IsCompleted, "GPU results are awaited instead of synchronously read back");
+                double deadline = EditorApplication.timeSinceStartup + 10;
+                while (!rays.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(rays.IsCompleted); Assert.IsFalse(rays.IsFaulted, rays.Exception?.ToString());
+                var near = gpu.NearestAsync(points, normals, count, true, nearest, CancellationToken.None);
+                while (!near.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(near.IsCompleted); Assert.IsFalse(near.IsFaulted, near.Exception?.ToString());
+                for (int i = 0; i < count; ++i) {
+                    Assert.AreEqual(i % 2 == 0 ? 0 : -1, hits[i].tri, "ray " + i);
+                    Assert.AreEqual(i % 2 == 0 ? 0 : -1, nearest[i].tri, "nearest " + i);
+                }
+                foreach (int i in new[] { 0, 16382, 16384, 16400 }) {
+                    Assert.That(hits[i].t, Is.EqualTo(1f).Within(1e-5f));
+                    Assert.That(nearest[i].distSq, Is.EqualTo(.25f).Within(1e-5f));
+                }
+                using (var cancellation = new CancellationTokenSource()) {
+                    var cancelled = gpu.RaycastAsync(origins, directions, count, false, hits, cancellation.Token);
+                    cancellation.Cancel();
+                    while (!cancelled.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                    Assert.IsTrue(cancelled.IsCanceled, "Cancellation waits until the submitted GPU readback has drained");
+                }
+                var reused = gpu.RaycastAsync(origins, directions, 1, false, hits, CancellationToken.None);
+                while (!reused.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(reused.IsCompleted); Assert.IsFalse(reused.IsFaulted, reused.Exception?.ToString());
+                Assert.AreEqual(0, hits[0].tri, "The same buffers remain usable after cancellation");
+            }
+        }
+
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator AsyncRemeshCapturePreservesByteMapsAndHdrEmission()
+        {
+            if (!SystemInfo.supportsAsyncGPUReadback) Assert.Ignore("Graphics device has no async readback.");
+            var root = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            var material = new Material(Shader.Find("Standard"));
+            var color = new Texture2D(2, 2, TextureFormat.RGBA32, false, true);
+            var emission = new Texture2D(2, 2, TextureFormat.RGBAFloat, false, true);
+            try {
+                color.SetPixels(new[] { Color.red, Color.green, Color.blue, Color.white }); color.Apply();
+                emission.SetPixels(new[] { new Color(4, 2, 1, 1), Color.black, Color.white, new Color(8, 1, 2, 1) }); emission.Apply();
+                material.mainTexture = color; material.color = Color.white;
+                material.EnableKeyword("_EMISSION"); material.SetColor("_EmissionColor", Color.white);
+                material.SetTexture("_EmissionMap", emission);
+                var renderer = root.GetComponent<Renderer>(); renderer.sharedMaterial = material;
+                var expected = RemeshSource.Capture(Matrix4x4.identity, new[] { renderer });
+                var captured = RemeshSource.Capture(Matrix4x4.identity, new[] { renderer }, asyncTextures: true);
+                double deadline = EditorApplication.timeSinceStartup + 10;
+                while (!captured.TextureReadbacks.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(captured.TextureReadbacks.IsCompleted);
+                Assert.IsFalse(captured.TextureReadbacks.IsFaulted, captured.TextureReadbacks.Exception?.ToString());
+                var actual = captured.materials[0]; var original = expected.materials[0];
+                CollectionAssert.AreEqual(original.color.image.pixels, actual.color.image.pixels);
+                Assert.IsFalse(actual.emission.image.srgb);
+                for (int i = 0; i < original.emission.image.hdrPixels.Length; ++i) {
+                    Assert.That(actual.emission.image.hdrPixels[i].r, Is.EqualTo(original.emission.image.hdrPixels[i].r).Within(1e-5f));
+                    Assert.That(actual.emission.image.hdrPixels[i].g, Is.EqualTo(original.emission.image.hdrPixels[i].g).Within(1e-5f));
+                    Assert.That(actual.emission.image.hdrPixels[i].b, Is.EqualTo(original.emission.image.hdrPixels[i].b).Within(1e-5f));
+                }
+                Assert.That(actual.emission.image.hdrPixels[0].r, Is.GreaterThan(1f));
+            }
+            finally {
+                UnityEngine.Object.DestroyImmediate(root); UnityEngine.Object.DestroyImmediate(material);
+                UnityEngine.Object.DestroyImmediate(color); UnityEngine.Object.DestroyImmediate(emission);
+            }
+        }
+
         [TestCase(1f, false, false)]
         [TestCase(1f, true, false)]
         [TestCase(1f, true, true)]
@@ -283,18 +676,50 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
         [Test]
-        public void MultisamplingCoversThinChartEdges()
+        [TestCase(1)]
+        [TestCase(16)]
+        public void ConservativeCoveragePreservesChartsBetweenSampleCentres(int samples)
         {
             var source=Source();
-            // A band between texel centres at 64² (row 6 centre is v=0.1016): centre-only
-            // sampling sees no texel at all, 4×4 samples at v=0.1035 do.
+            // A band narrower than a texel: preserve it even without a sample hit.
             var sliver=new RemeshNative.Geometry { positions=source.positions, normals=source.normals,
                 uv=new[] { new Vector2(0.1f,0.103f), new Vector2(0.9f,0.103f), new Vector2(0.9f,0.104f) }, indices=source.indices };
-            Assert.Throws<InvalidOperationException>(() => RemeshBaker.Bake(source,sliver,source.tangents,
-                new RemeshSettings { textureResolution=64,padding=1,bakeSamples=1 },CancellationToken.None));
-            var super=RemeshBaker.Bake(source,sliver,source.tangents,new RemeshSettings { textureResolution=64,padding=1,bakeSamples=16 },CancellationToken.None);
+            var super=RemeshBaker.Bake(source,sliver,source.tangents,new RemeshSettings { textureResolution=64,padding=1,bakeSamples=samples },CancellationToken.None);
             Assert.That(super.covered, Is.GreaterThan(0));
             Assert.That(super.misses, Is.Zero);
+            Assert.AreEqual(255, super.ao[6 * 64 + 40].g);
+            Assert.AreEqual(255, super.ao[6 * 64 + 40].a);
+        }
+
+        [TestCase(1, .02f)]
+        [TestCase(4, .02f)]
+        [TestCase(16, .02f)]
+        [TestCase(1, .000003f)]
+        [TestCase(4, .000003f)]
+        [TestCase(16, .000003f)]
+        public void TinyCentredChartAlwaysEvaluatesItsCoveredTexel(int samples, float halfWidth)
+        {
+            var source = Source();
+            var target = new RemeshNative.Geometry { positions = source.positions, normals = source.normals,
+                uv = new[] { new Vector2(8.5f - halfWidth, 8.5f - halfWidth) / 64, new Vector2(8.5f + halfWidth, 8.5f - halfWidth) / 64,
+                    new Vector2(8.5f, 8.5f + halfWidth) / 64 }, indices = source.indices };
+            var maps = RemeshBaker.Bake(source, target, source.tangents, new RemeshSettings {
+                textureResolution = 64, padding = 1, bakeSamples = samples, bakeSourceAO = true }, CancellationToken.None);
+            Assert.AreEqual(1, maps.covered);
+            Assert.AreEqual(0, maps.misses);
+            Assert.AreEqual(new Color32(255, 255, 255, 255), maps.ao[8 * 64 + 8], "coverage is an evaluated surface, never a black padding seed");
+        }
+
+        [Test]
+        public void ConservativeCoverageRejectsZeroAreaAndOutOfAtlasCharts()
+        {
+            var source = Source();
+            var target = new RemeshNative.Geometry { positions = source.positions, normals = source.normals,
+                uv = new[] { Vector2.zero, Vector2.zero, Vector2.zero }, indices = source.indices };
+            var settings = new RemeshSettings { textureResolution = 64, padding = 1 };
+            Assert.Throws<InvalidOperationException>(() => RemeshBaker.Bake(source, target, source.tangents, settings, CancellationToken.None));
+            target.uv = new[] { new Vector2(2, 2), new Vector2(3, 2), new Vector2(2, 3) };
+            Assert.Throws<InvalidOperationException>(() => RemeshBaker.Bake(source, target, source.tangents, settings, CancellationToken.None));
         }
         [Test]
         public void VertexColorAndAlphaTransferIndependently()
@@ -864,6 +1289,37 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(disabledStrength, Is.EqualTo(smooth).Within(1e-5f), "material normal strength is respected");
         }
 
+        [TestCase(90f, false)]
+        [TestCase(-90f, true)]
+        public void SourceAoFloorUsesViewportWorldUpUnderRotatedScaledFbxRoot(float angle, bool facesUp)
+        {
+            var root = new GameObject("Rotated AO root");
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up },
+                triangles = new[] { 0, 1, 2 }, normals = new[] { Vector3.forward, Vector3.forward, Vector3.forward } };
+            try {
+                root.transform.SetPositionAndRotation(new Vector3(5, 12, -7), Quaternion.Euler(angle, 0, 0));
+                root.transform.localScale = new Vector3(-2, 3, .5f);
+                root.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var renderer = root.AddComponent<MeshRenderer>();
+                var source = RemeshSource.Capture(root.transform.worldToLocalMatrix, new[] { renderer }, aoOnly: true);
+                // Carrying the capture-space plane normal back to world space must
+                // produce the viewport's Y-up, even with nonuniform mirrored scale.
+                var worldNormal = root.transform.worldToLocalMatrix.transpose.MultiplyVector(source.groundNormal).normalized;
+                Assert.That(Vector3.Dot(worldNormal, Vector3.up), Is.GreaterThan(.9999f));
+                var settings = new SourceAoSettings { groundPlane = true, groundOffset = .01f,
+                    normalMap = false, samples = 512, radius = 1, binaryHit = true };
+                var bvh = new TriangleBvh(source.positions, source.indices);
+                var normals = MeshGeometry.FaceNormals(source.positions, source.indices);
+                float ao = new SourceAoBaker(source, bvh, normals, null, settings).Sample(0, new Vector3(.5f, .25f, .25f), 7, CancellationToken.None);
+                if (facesUp) Assert.That(ao, Is.GreaterThan(.99f), "floor cannot occlude an upward hemisphere");
+                else Assert.That(ao, Is.LessThan(.05f), "downward hemisphere faces the horizontal floor");
+                settings.groundPlane = false;
+                Assert.That(new SourceAoBaker(source, bvh, normals, null, settings).Sample(0,
+                    new Vector3(.5f, .25f, .25f), 7, CancellationToken.None), Is.GreaterThan(.99f));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
         [Test]
         public void TextureBakeCanRecalculateAoOrMultiplyTheSourceMap()
         {
@@ -906,6 +1362,101 @@ namespace SashaRX.UnityMeshLab.Tests
             key = RemeshPipeline.Key(RemeshPipeline.Stage.Bake, settings, null);
             settings.sourceAO.normalMap = false;
             Assert.AreNotEqual(key, RemeshPipeline.Key(RemeshPipeline.Stage.Bake, settings, null));
+        }
+
+        static System.Collections.IEnumerator AwaitBakeTask(System.Threading.Tasks.Task task)
+        {
+            double deadline = EditorApplication.timeSinceStartup + 30;
+            while (!task.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+            Assert.IsTrue(task.IsCompleted, "asynchronous bake must finish without blocking the editor");
+            Assert.IsFalse(task.IsFaulted, task.Exception?.ToString());
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceAoGpuMatchesCpuNormalMapsFloorAndTwoSidedFiltering()
+        {
+            if (!SourceAoBaker.GpuSupported) Assert.Ignore("GPU AO needs compute shaders and async readback.");
+            Assert.AreEqual(32, System.Runtime.InteropServices.Marshal.SizeOf<SourceAoBaker.SurfacePoint>());
+            var source = AoSource(true);
+            source.groundNormal = new Vector3(0, .5f, .5f).normalized;
+            source.materials[0].normal.image = new RemeshSource.Image { width = 1, height = 1,
+                pixels = new[] { new Color32(230, 128, 255, 255) }, wrapU = TextureWrapMode.Clamp, wrapV = TextureWrapMode.Clamp };
+            var bvh = new TriangleBvh(source.positions, source.indices);
+            var normals = MeshGeometry.FaceNormals(source.positions, source.indices);
+            for (int variant = 0; variant < 4; ++variant) {
+                var settings = new SourceAoSettings { samples = 128, radius = 1, groundPlane = true,
+                    binaryHit = (variant & 1) != 0, cosineWeighted = (variant & 2) == 0,
+                    backfaceCulling = (variant & 1) == 0, normalMap = (variant & 2) == 0 };
+                var twoSided = variant == 2 ? new[] { false, true, true } : null;
+                var sampler = new SourceAoBaker(source, bvh, normals, twoSided, settings);
+                using (var tree = GpuBvh.TryCreate(bvh, normals, twoSided))
+                using (var gpu = sampler.TryCreateGpu(tree)) {
+                    Assert.IsNotNull(gpu, "Source AO shader must compile on this GPU");
+                    var points = new SourceAoBaker.SurfacePoint[5]; var expected = new float[5]; var actual = new float[5];
+                    for (int i = 0; i < 4; ++i) {
+                        var w = new Vector3(.25f + i * .05f, .25f, .5f - i * .05f);
+                        int seed = i == 3 ? -1 : i * 379;
+                        points[i] = sampler.SamplePoint(0, w, seed);
+                        expected[i] = sampler.Sample(0, w, seed, CancellationToken.None);
+                    }
+                    expected[4] = 1; // invalid normal: unoccluded on both backends
+                    var task = gpu.SampleAsync(points, points.Length, actual, CancellationToken.None);
+                    yield return AwaitBakeTask(task);
+                    for (int i = 0; i < actual.Length; ++i)
+                        Assert.That(actual[i], Is.EqualTo(expected[i]).Within(1e-4f), $"variant {variant}, sample {i}");
+                }
+            }
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator SourceAoGpuCancellationDrainsDispatchAndAllowsNextBatch()
+        {
+            if (!SourceAoBaker.GpuSupported) Assert.Ignore("GPU AO needs compute shaders and async readback.");
+            var source = AoSource(true); var bvh = new TriangleBvh(source.positions, source.indices);
+            var normals = MeshGeometry.FaceNormals(source.positions, source.indices);
+            var sampler = new SourceAoBaker(source, bvh, normals, null, new SourceAoSettings { samples = 1024 });
+            using (var tree = GpuBvh.TryCreate(bvh, normals))
+            using (var gpu = sampler.TryCreateGpu(tree))
+            using (var cts = new CancellationTokenSource()) {
+                Assert.IsNotNull(gpu);
+                var points = new SourceAoBaker.SurfacePoint[SourceAoBaker.Gpu.PointBatch + 1];
+                var values = new float[points.Length];
+                for (int i = 0; i < points.Length; ++i) points[i] = sampler.SamplePoint(0, new Vector3(.25f, .25f, .5f), i);
+                var task = gpu.SampleAsync(points, points.Length, values, cts.Token);
+                cts.Cancel();
+                yield return AwaitBakeTask(task);
+                Assert.IsTrue(task.IsCanceled, "cancel after a queued dispatch, drain readback before cleanup");
+                task = gpu.SampleAsync(points, 1, values, CancellationToken.None);
+                yield return AwaitBakeTask(task);
+                Assert.That(values[0], Is.EqualTo(sampler.Sample(0, new Vector3(.25f, .25f, .5f), 0, CancellationToken.None)).Within(1e-4f));
+            }
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator TextureAoBackendSelectionRoutesCpuGpuAndFallback()
+        {
+            var source = Source();
+            var target = new RemeshNative.Geometry { positions = source.positions, normals = source.normals,
+                uv = source.uv, indices = source.indices, tangents = source.tangents };
+            var options = new RemeshSettings { textureResolution = 64, padding = 1, bakeSourceAO = true,
+                gpuProjection = false, sourceAO = new SourceAoSettings { samples = 16 } };
+            var cpuTask = TextureAoBakePanel.BakeMaps(source, target, options, CancellationToken.None);
+            yield return AwaitBakeTask(cpuTask);
+            Assert.IsFalse(cpuTask.Result.gpu); Assert.IsFalse(cpuTask.Result.gpuAO);
+            Assert.AreEqual("CPU", TextureAoBakePanel.BackendLabel(cpuTask.Result));
+            options.gpuProjection = true;
+            var gpuTask = TextureAoBakePanel.BakeMaps(source, target, options, CancellationToken.None);
+            yield return AwaitBakeTask(gpuTask);
+            Assert.AreEqual(SourceAoBaker.GpuSupported, gpuTask.Result.gpuAO);
+            Assert.AreEqual(SourceAoBaker.GpuSupported, gpuTask.Result.gpu);
+            CollectionAssert.AreEqual(cpuTask.Result.ao, gpuTask.Result.ao, "open source has identical AO on either device");
+            var fallbackTask = RemeshBaker.BakeAsync(source, target, source.tangents, options, CancellationToken.None,
+                null, _ => null, gpuSourceAO: true);
+            yield return AwaitBakeTask(fallbackTask);
+            Assert.IsFalse(fallbackTask.Result.gpuAO); Assert.IsFalse(fallbackTask.Result.gpu);
+            Assert.AreEqual("CPU", TextureAoBakePanel.BackendLabel(fallbackTask.Result));
+            CollectionAssert.AreEqual(cpuTask.Result.ao, fallbackTask.Result.ao);
+            Assert.AreEqual("CPU AO / GPU projection", TextureAoBakePanel.BackendLabel(new RemeshBaker.Maps { gpu = true }));
         }
 
         [Test]
@@ -1026,17 +1577,56 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void TextureAoPngEncodingRunsOnWorkerAndPreservesLinearBytes()
+        public void TextureAoTgaRleEncodingRunsOnWorkerAndPreservesPixelsAndRows()
         {
-            var pixels = new[] { new Color32(64, 64, 64, 255) };
-            var bytes = System.Threading.Tasks.Task.Run(() => ImageConversion.EncodeArrayToPNG(pixels,
-                UnityEngine.Experimental.Rendering.GraphicsFormat.R8G8B8A8_UNorm, 1, 1)).GetAwaiter().GetResult();
-            var texture = new Texture2D(1, 1, TextureFormat.RGBA32, false, true);
-            try {
-                Assert.IsTrue(texture.LoadImage(bytes));
-                Assert.AreEqual(pixels[0], texture.GetPixels32()[0], "AO is raw linear data, no gamma conversion");
+            const int width = 260, height = 2;
+            var pixels = new Color32[width * height];
+            for (int i = 0; i < width; ++i) pixels[i] = new Color32(64, 32, 16, 255);
+            for (int i = width; i < pixels.Length; ++i) pixels[i] = new Color32((byte)i, (byte)(i * 3), (byte)(i * 7), 255);
+            var bytes = System.Threading.Tasks.Task.Run(() => TextureAoBakePanel.EncodeTgaRle(pixels, width, height)).GetAwaiter().GetResult();
+            Assert.AreEqual(10, bytes[2], "RLE true-colour TGA");
+            Assert.AreEqual(24, bytes[16]); Assert.AreEqual(0, bytes[17], "bottom-left origin");
+            Assert.AreEqual(width, bytes[12] | bytes[13] << 8);
+            Assert.AreEqual(height, bytes[14] | bytes[15] << 8);
+            Assert.That(bytes.Length, Is.LessThan(18 + pixels.Length * 3));
+            int cursor = 18, written = 0, runs = 0, raws = 0;
+            while (written < pixels.Length) {
+                byte packet = bytes[cursor++]; int count = (packet & 127) + 1;
+                Assert.That(written % width + count, Is.LessThanOrEqualTo(width), "packets cannot cross scanlines");
+                bool run = (packet & 128) != 0;
+                if (run) ++runs; else ++raws;
+                for (int i = 0; i < count; ++i) {
+                    var p = new Color32(bytes[cursor + 2], bytes[cursor + 1], bytes[cursor], 255);
+                    Assert.AreEqual(pixels[written++], p, "linear BGR bytes, preserved bottom-up rows");
+                    if (!run || i == count - 1) cursor += 3;
+                }
             }
-            finally { UnityEngine.Object.DestroyImmediate(texture); }
+            Assert.AreEqual(bytes.Length, cursor); Assert.GreaterOrEqual(runs, 3); Assert.GreaterOrEqual(raws, 3);
+            Assert.Throws<ArgumentException>(() => TextureAoBakePanel.EncodeTgaRle(pixels, 1, 1));
+            using (var cts = new CancellationTokenSource()) {
+                cts.Cancel();
+                Assert.Throws<OperationCanceledException>(() => TextureAoBakePanel.EncodeTgaRle(pixels, width, height, cts.Token));
+            }
+        }
+
+        [Test]
+        public void TextureAoTgaRleImportsIntoUnityAsLinearTexture()
+        {
+            string path = "Assets/AO_RLE_" + Guid.NewGuid().ToString("N") + ".tga";
+            var pixels = new[] { new Color32(64, 32, 16, 255), new Color32(64, 32, 16, 255), new Color32(12, 90, 210, 255),
+                new Color32(20, 40, 60, 255), new Color32(50, 80, 110, 255), new Color32(170, 190, 220, 255) };
+            try {
+                System.IO.File.WriteAllBytes(System.IO.Path.GetFullPath(path), TextureAoBakePanel.EncodeTgaRle(pixels, 3, 2));
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                TextureAssets.Configure(path, TextureAssets.Kind.Linear, 64, mipmaps: false);
+                var importer = (TextureImporter)AssetImporter.GetAtPath(path);
+                Assert.IsFalse(importer.sRGBTexture);
+                importer.isReadable = true; importer.npotScale = TextureImporterNPOTScale.None; importer.SaveAndReimport();
+                var texture = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+                Assert.IsNotNull(texture); Assert.AreEqual(3, texture.width); Assert.AreEqual(2, texture.height);
+                CollectionAssert.AreEqual(pixels, texture.GetPixels32());
+            }
+            finally { AssetDatabase.DeleteAsset(path); }
         }
 
         [Test]

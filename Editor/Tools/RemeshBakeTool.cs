@@ -52,7 +52,7 @@ namespace SashaRX.UnityMeshLab
         {
             string json = EditorPrefs.GetString(SettingsKey, "");
             if (!string.IsNullOrEmpty(json)) {
-                var restored = JsonUtility.FromJson<RemeshSettings>(json);
+                var restored = RemeshSettings.FromSavedJson(json);
                 if (restored != null) settings = restored;
             }
             pipeline.Changed = () => { saveStatus = null; RequestRepaint?.Invoke(); };
@@ -194,7 +194,11 @@ namespace SashaRX.UnityMeshLab
         // Hub context (LODGroup selection, Undo) does not feed this tool: the source
         // snapshot is captured when the remesh stage runs, so a running bake must not be cancelled here.
         public void OnRefresh() { InvalidateSourcePreview(); }
-        public void OnDrawToolbarExtra() { }
+        public void OnDrawToolbarExtra()
+        {
+            if (!previews.IsSource && MeshUvState.IsDraft(previews.DisplayMesh(previewData)))
+                GUILayout.Label(new GUIContent("Draft UV0", "Temporary normalized XY; unwrap before UV-dependent processing or baking."), EditorStyles.miniLabel);
+        }
         public void OnDrawStatusBar() { GUILayout.Label(Status, EditorStyles.miniLabel); }
         // The canvas's UV mode shows the selected stage, including the source before
         // any stages run, and the result's atlas once Normals & UV ran: the same
@@ -375,7 +379,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (StageHeader(RemeshPipeline.Stage.Unwrap)) {
                     settings.hardEdges = (RemeshHardEdges)EditorGUILayout.EnumPopup(new GUIContent("Hard edges",
-                        "Angle: crease angle. UV islands: hard along island borders, smooth inside. The crease choice also feeds xatlas charting."), settings.hardEdges);
+                        "Final normals after unwrap. Angle: crease angle. UV islands: hard along island borders, smooth inside. These modes do not change UV charting."), settings.hardEdges);
                     bool angle = settings.hardEdges == RemeshHardEdges.Angle || settings.hardEdges == RemeshHardEdges.UvIslandsAndAngle;
                     using (new EditorGUI.DisabledScope(!angle))
                         settings.normalCrease = EditorGUILayout.Slider("Crease angle", settings.normalCrease, 0, 180);
@@ -390,6 +394,10 @@ namespace SashaRX.UnityMeshLab
                     settings.textureResolution = EditorGUILayout.IntPopup("Texture size", settings.textureResolution,
                         new[] { "512", "1024", "2048", "4096" }, new[] { 512, 1024, 2048, 4096 });
                     settings.padding = EditorGUILayout.IntSlider("Atlas padding", settings.padding, 1, 32);
+                    settings.reduceUvFragmentation = EditorGUILayout.Toggle(new GUIContent("Reduce UV fragmentation",
+                        "Compare the current chart settings with two alternatives; keep fewer islands and small fragments only within bounded UV stretch. " +
+                        "Crease edges, island size limits and packing stay as configured. Adds up to two unwrap passes on the worker."),
+                        settings.reduceUvFragmentation);
                     chartFold = EditorGUILayout.Foldout(chartFold, "Islands & packing", true);
                     if (chartFold) {
                         using (new EditorGUI.IndentLevelScope()) {
@@ -431,6 +439,9 @@ namespace SashaRX.UnityMeshLab
                             "long lets a face see across courtyards and costs a full traversal per empty texel."), settings.proxyDepth, 0.01f, 1f);
                     settings.bakeSamples = EditorGUILayout.IntPopup(new GUIContent("Samples per texel", "Supersampling for smoother edges and detail."),
                         settings.bakeSamples, Array.ConvertAll(SampleNames, n => new GUIContent(n)), SampleCounts);
+                    settings.dilationRadius = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Dilation radius (px)",
+                        "After atlas padding, extend every baked map from its nearest filled pixel by this additional radius. 0 keeps padding alone."),
+                        settings.dilationRadius), 0, RemeshSettings.MaxDilationRadius);
                     using (new EditorGUI.DisabledScope(!GpuBvh.Supported))
                         settings.gpuProjection = EditorGUILayout.Toggle(new GUIContent("GPU projection",
                             GpuBvh.Supported ? "Run the projection rays and nearest-point fallbacks on the GPU (BvhQueries.compute). Same results as the CPU BVH, usually several times faster on large atlases."

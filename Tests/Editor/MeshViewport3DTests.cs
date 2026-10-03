@@ -1,11 +1,105 @@
 using NUnit.Framework;
+using System.Collections;
 using System.Collections.Generic;
+using System.Threading;
+using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
     public class MeshViewport3DTests
     {
+        [UnityTest]
+        public IEnumerator PreviewPreparationRunsOnWorkerAndCoalescesSupersededRequests()
+        {
+            int mainThread = Thread.CurrentThread.ManagedThreadId, workerThread = 0, snapshotThread = 0;
+            int heartbeats = 0; bool supersededPrepared = false;
+            var applied = new List<int>();
+            EditorApplication.CallbackFunction heartbeat = () => ++heartbeats;
+            using (var started = new ManualResetEventSlim())
+            using (var release = new ManualResetEventSlim())
+            using (var work = new PreviewWork<int>("test preview")) {
+                EditorApplication.update += heartbeat;
+                try {
+                    work.Enqueue(() => {
+                        snapshotThread = Thread.CurrentThread.ManagedThreadId;
+                        return token => {
+                            workerThread = Thread.CurrentThread.ManagedThreadId;
+                            started.Set(); release.Wait(token);
+                            return 1;
+                        };
+                    }, applied.Add);
+                    Assert.IsFalse(started.IsSet, "Enqueue must leave preparation out of the GUI callback");
+                    double deadline = EditorApplication.timeSinceStartup + 10;
+                    while (!started.IsSet && EditorApplication.timeSinceStartup < deadline) yield return null;
+                    Assert.IsTrue(started.IsSet);
+                    Assert.AreEqual(mainThread, snapshotThread);
+                    Assert.AreNotEqual(mainThread, workerThread);
+                    int before = heartbeats;
+                    for (int i = 0; i < 3; ++i) yield return null;
+                    Assert.Greater(heartbeats, before, "Editor updates continue while preview preparation waits");
+                    work.Enqueue(() => { supersededPrepared = true; return token => 2; }, applied.Add);
+                    work.Enqueue(() => token => 3, applied.Add);
+                    release.Set();
+                    while (work.IsPending && EditorApplication.timeSinceStartup < deadline) yield return null;
+                    Assert.IsFalse(work.IsPending);
+                    Assert.IsFalse(supersededPrepared);
+                    CollectionAssert.AreEqual(new[] { 3 }, applied, "A superseded worker never publishes stale preview data");
+                }
+                finally { release.Set(); EditorApplication.update -= heartbeat; }
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator ClosingPreviewCancelsRunningWorkerWithoutPublishing()
+        {
+            using (var started = new ManualResetEventSlim())
+            using (var finished = new ManualResetEventSlim())
+            using (var work = new PreviewWork<int>("test preview")) {
+                bool applied = false;
+                work.Enqueue(() => token => {
+                    started.Set();
+                    try { token.WaitHandle.WaitOne(); token.ThrowIfCancellationRequested(); return 1; }
+                    finally { finished.Set(); }
+                }, value => applied = true);
+                double deadline = EditorApplication.timeSinceStartup + 10;
+                while (!started.IsSet && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(started.IsSet);
+                work.Dispose();
+                while (!finished.IsSet && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(finished.IsSet, "Closing must signal cancellation to a running worker");
+                for (int i = 0; i < 3; ++i) yield return null;
+                Assert.IsFalse(applied);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator WirePreviewIsDeferredAndInvalidationCancelsPendingUpload()
+        {
+            var mesh = Quad();
+            using (var viewport = new MeshViewport3D())
+            try {
+                int repaints = 0; viewport.RequestRepaint = () => ++repaints;
+                Assert.IsNull(viewport.WireOf(mesh), "First paint queues a snapshot instead of building wire edges");
+                Mesh wire = null;
+                double deadline = EditorApplication.timeSinceStartup + 10;
+                while (!wire && EditorApplication.timeSinceStartup < deadline) { yield return null; wire = viewport.WireOf(mesh); }
+                Assert.IsTrue(wire);
+                Assert.AreEqual(MeshTopology.Lines, wire.GetTopology(0));
+                CollectionAssert.AreEqual(MeshViewport3D.EdgeIndices(mesh), wire.GetIndices(0));
+                CollectionAssert.AreEqual(mesh.vertices, wire.vertices);
+                Assert.AreEqual(1, repaints);
+                viewport.InvalidateMesh(mesh);
+                Assert.IsFalse(wire, "Uploaded preview meshes are released on invalidation");
+                Assert.IsNull(viewport.WireOf(mesh));
+                viewport.InvalidateCaches();
+                for (int i = 0; i < 5; ++i) yield return null;
+                Assert.AreEqual(1, repaints, "A cancelled pending upload cannot repaint a closed or changed view");
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
         [Test]
         public void InspectionWorksWithoutUvNormalsOrTangents()
         {
@@ -236,6 +330,58 @@ namespace SashaRX.UnityMeshLab.Tests
                 if (pixels) Object.DestroyImmediate(pixels);
                 Object.DestroyImmediate(mesh);
             }
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator ShellPreviewColorsToolMeshWithoutRendererOrFillCallbacks()
+        {
+            var mesh = Quad();
+            var canvas = new UvCanvasView { CurrentPreviewMode = UvCanvasView.PreviewMode.Shells3D,
+                FillHidden = true, ShowBorder = false };
+            var context = new UvToolContext { PreviewUvChannel = 0 };
+            RenderTexture layer = null; Texture2D pixels = null;
+            var previous = RenderTexture.active;
+            try {
+                mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
+                var entry = new MeshEntry { originalMesh = mesh, include = true, previewTexture = Texture2D.blackTexture };
+                canvas.Init();
+                double deadline = UnityEditor.EditorApplication.timeSinceStartup + 10;
+                while (canvas.GetPreviewShellCache(context, mesh, 0) == null && UnityEditor.EditorApplication.timeSinceStartup < deadline) {
+                    canvas.PollPreviewJobs(); yield return null;
+                }
+                Assert.IsNotNull(canvas.GetPreviewShellCache(context, mesh, 0), "async shell cache completes");
+                layer = canvas.RenderUvLayer(context, mesh, entry, null, 64, drawBorders: false);
+                RenderTexture.active = layer;
+                pixels = new Texture2D(64, 64, TextureFormat.RGBA32, false);
+                pixels.ReadPixels(new Rect(0, 0, 64, 64), 0, 0); pixels.Apply();
+                Color color = pixels.GetPixel(16, 16);
+                Assert.That(color.a, Is.GreaterThan(.99f), "shell mode is opaque, independent of the tool's fill modes");
+                Assert.That(Mathf.Max(color.r, Mathf.Max(color.g, color.b)), Is.GreaterThan(.1f), "AO black texture cannot hide shell colours");
+                Assert.That(Mathf.Max(color.r, Mathf.Max(color.g, color.b)) - Mathf.Min(color.r, Mathf.Min(color.g, color.b)),
+                    Is.GreaterThan(.05f), "shell surface has a palette colour");
+            }
+            finally {
+                RenderTexture.active = previous; canvas.Cleanup();
+                if (layer) { layer.Release(); Object.DestroyImmediate(layer); }
+                if (pixels) Object.DestroyImmediate(pixels);
+                Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [Test]
+        public void SceneShellCacheUsesRequestedPreviewUvChannel()
+        {
+            var mesh = Quad();
+            try {
+                mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
+                mesh.SetUVs(2, new List<Vector2> { Vector2.one, Vector2.one + Vector2.right,
+                    Vector2.one + Vector2.up, Vector2.one * 2 });
+                var uv0 = new ShellColorModelPreview.PreviewShellCache(0).GetOrBuild(mesh);
+                var uv2 = new ShellColorModelPreview.PreviewShellCache(2).GetOrBuild(mesh);
+                Assert.AreEqual(uv0[0], uv0[1], "continuous chart");
+                Assert.AreNotEqual(uv0[0], uv2[0], "shell colour key is taken from the requested channel");
+            }
+            finally { Object.DestroyImmediate(mesh); }
         }
 
         static Mesh Quad()

@@ -124,22 +124,32 @@ Before the UV stage the canvas shows the selected model as usual.
    alone decide. *Light/Strong* regularization evens out triangle sizes instead.
    *Preserve folds* keeps sharp creases; *Remove small parts* drops tiny
    disconnected pieces. Turn *Simplify* off to unwrap the voxel mesh as is.
+   Generated intermediate geometry (voxel, trim, boxes and simplify) always
+   carries averaged, area-weighted normals. Missing UV0 is filled with local
+   X/Y normalized independently to 0–1 (a flat axis maps to 0.5). These planar
+   UVs are temporary channel data; the unwrap stage replaces them with the
+   real atlas before UV-dependent normal modes or baking run.
+   They carry a `draftUv` flag in stage geometry and transient mesh metadata,
+   exposed by the preview's `MeshEntry.draftUv` and shown as **Draft UV0**.
+   A completed xatlas unwrap clears this flag. Final normals and bake reject
+   draft target UVs; `UvTopology.HasFinalUv` distinguishes them from usable
+   channel data without hiding them from the UV preview.
 4. **Normals & UV** — *Hard edges* (defaults to *UV islands*):
    - *Smooth* — no hard edges.
    - *Angle* — edges sharper than *Crease angle*. On coarse organic
-     decimations most edges exceed the crease, which reads as fully faceted
-     and also feeds xatlas the crease-split normals as seams, shattering the
-     atlas into slivers — prefer *UV islands* for baked results.
+     decimations a low crease angle can make the final shading faceted.
    - *UV islands* — hard exactly along UV island borders, smooth inside each
      island (the usual choice for baked normal maps).
    - *UV islands + angle* — both.
 
-   Whichever mode is active, the vertex normals and tangents are regenerated
-   **after** the UV cut: normals accumulate weighted face normals over the split
-   geometry (smooth inside every split group, hard across creases and island
-   borders alike), and tangents come from meshoptimizer's MikkT-compatible
-   generator over the final atlas layout — one basis for the bake, the preview
-   and the saved mesh. *Normal weighting* selects the accumulation weight
+   Whichever mode is active, xatlas receives averaged normals. The final
+   *Hard edges*, *Normal weighting* and *Normal smoothing* settings run
+   **after** the atlas is selected. Angle modes then split vertices into
+   normal fans without moving any triangle corner or changing its UV or chart.
+   Normals accumulate weighted face normals inside the selected groups;
+   tangents come from meshoptimizer's MikkT-compatible generator over the atlas
+   and are re-orthogonalized against the final normals — one basis for the bake,
+   the preview and the saved mesh. *Normal weighting* selects the accumulation weight
    (Blender Weighted Normal analog): face area, corner angle, or both.
 
    *Normal smoothing* (0–10) is applied **after** UV generation, so it behaves
@@ -157,6 +167,27 @@ Before the UV stage the canvas shows the selected model as usual.
    break on hard edges), straightness, roundness, iterations, max island area and
    border length (source units, 0 = unlimited), rotation, 4×4 block alignment and
    brute-force packing. Texture size and padding set the atlas.
+   **Reduce UV fragmentation** is enabled by default, including restored settings.
+   It compares the requested unwrap with up to two chart-growth alternatives
+   (max cost 5, normal deviation 2, roundness 0.01, normal seam 4, one iteration,
+   straightness 6 or 10). It accepts a result only if neither the total island
+   count nor the number of small islands (up to eight triangles) increases and
+   at least one decreases. Area-weighted mean conformal stretch must stay below
+   the greater of 1.15 or 110% of the original value; worst stretch must stay
+   below the greater of 4 or 110% of the original value. Collapsed or flipped
+   triangles within a chart reject the alternative. A normal seam weight of
+   1000 (an explicit seam constraint) remains unchanged. Explicit island
+   area/border limits, packing and mesh geometry are preserved. Final normal
+   creases do not add chart seams. The work
+   runs on the unwrap worker, with cancellation between native passes; the
+   status reports before/after island counts. Turn it off to use only the
+   manually configured chart settings. Automatic charting still chooses its
+   own seams; this control does not specify anatomical seams on a head or suit.
+   Baking first fills that padding, then applies **Dilation radius (px)**
+   (default 64, 0 disables the extra pass). Dilation extends all maps into the
+   remaining background from the nearest filled pixel within the additional
+   radius, without changing island pixels or averaging normal-map directions.
+   It also applies to Texture AO and is included in previews and saved maps.
 5. **Bake** — **GPU projection** (default on where compute shaders exist) runs
    the geometry queries — the projection rays and the nearest-point fallbacks —
    on the GPU through `Shaders/BvhQueries.compute`, the same BVH as the CPU with
@@ -356,7 +387,7 @@ Texture snapshots and Unity mesh/asset APIs stay on the main thread.
 (`9e1f07b159d3cb777f1c67ed31fc11fd117986f4`, 2026-09-25), pinned by full commit SHA.
 Staged exports (ABI 3) run voxel remesh + position weld (`meshLabVoxelRemesh`),
 simplifyWithUpdate with the selected regularize/fold/prune options plus degenerate
-cleanup (`meshLabSimplify`), and crease-aware normal generation + xatlas unwrap
+cleanup (`meshLabSimplify`), and averaged normal generation + xatlas unwrap
 with explicit chart/pack options (`meshLabUnwrap`, which also returns each
 vertex's island). The original one-shot `meshLabRemeshBuild` remains for the
 native tests. The unwrap vertex layout is sixteen float32 values — position,
@@ -364,14 +395,16 @@ normal, UV0, tangent (xyz direction plus ±1 handedness) — with the tangent
 regenerated by `meshopt_generateTangents` (MikkT-compatible) from the final
 atlas layout, so the bake, the preview and the saved mesh all encode against
 one basis; corners that disagree duplicate their vertex.
-The vertex normals themselves are regenerated in C# **after** the UV cut from
-the split geometry. In the UV-island modes every output vertex is its own
-normal group: crease splits and chart borders are already vertex splits and no
-face crosses one, so the accumulation smooths inside every island and stays
-hard across creases and island borders alike. In *Smooth* and *Angle* the
-copies xatlas duplicated along chart borders are grouped back together by
-position and native (pre-chart, crease-split) normal, so islands stay smooth
-and only the crease edges harden; normal smoothing runs over the same groups.
+Every generated intermediate mesh receives averaged normals and missing UV0
+gets normalized local XY. The native unwrap runs with crease PI and smoothing
+zero, independent of the final normal settings. `Editor/Geometry/RemeshNormals.cs`
+applies those settings in C# **after** UV generation and candidate selection.
+*Smooth* groups chart-border copies by position and native averaged normal;
+*UV islands* accumulates within the native vertex splits. Angle modes build
+connected corner fans across manifold edges below the crease threshold, with
+the combined mode also stopping at chart borders. Render vertices shared by
+different fans are duplicated with their position, UV, chart and tangent
+handedness preserved. Normal smoothing runs over the same normal groups.
 The *Normal weighting* option selects the accumulation weight — face area
 (meshopt's own), corner angle, or both multiplied (the Blender Weighted
 Normal modifier analog). Tangents are re-orthogonalized against the final

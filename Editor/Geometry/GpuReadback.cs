@@ -74,20 +74,28 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Submit on the main thread; complete after GPU readback without waiting for the GPU.</summary>
         public static Task<Color32[]> ReadPixels32Async(Texture source, int width, int height, Material material = null)
+            => ReadPixelsAsync<Color32>(source, width, height, RenderTextureFormat.ARGB32, TextureFormat.RGBA32, material);
+
+        /// <summary>Linear HDR pixels, with the same asynchronous lifetime as the byte readback.</summary>
+        public static Task<Color[]> ReadColorsAsync(Texture source, int width, int height, Material material = null)
+            => ReadPixelsAsync<Color>(source, width, height, RenderTextureFormat.ARGBFloat, TextureFormat.RGBAFloat, material);
+
+        static Task<T[]> ReadPixelsAsync<T>(Texture source, int width, int height, RenderTextureFormat renderFormat,
+            TextureFormat pixelFormat, Material material) where T : struct
         {
             if (!source || width < 1 || height < 1) throw new ArgumentException("A valid source texture is required.");
             if (!SystemInfo.supportsAsyncGPUReadback)
-                throw new NotSupportedException("Texture AO requires asynchronous GPU readback on this graphics device.");
-            var completion = new TaskCompletionSource<Color32[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+                throw new NotSupportedException("Asynchronous texture readback is unavailable on this graphics device.");
+            var completion = new TaskCompletionSource<T[]>(TaskCreationOptions.RunContinuationsAsynchronously);
             var previous = RenderTexture.active;
-            var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var rt = RenderTexture.GetTemporary(width, height, 0, renderFormat, RenderTextureReadWrite.Linear);
             try {
                 if (material) Graphics.Blit(source, rt, material);
                 else Graphics.Blit(source, rt);
-                AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, request => {
+                AsyncGPUReadback.Request(rt, 0, pixelFormat, request => {
                     try {
                         if (request.hasError) completion.TrySetException(new InvalidOperationException("Asynchronous source texture readback failed."));
-                        else completion.TrySetResult(request.GetData<Color32>().ToArray());
+                        else completion.TrySetResult(request.GetData<T>().ToArray());
                     }
                     catch (Exception exception) { completion.TrySetException(exception); }
                     finally { RenderTexture.ReleaseTemporary(rt); }

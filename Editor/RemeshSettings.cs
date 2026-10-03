@@ -125,12 +125,14 @@ namespace SashaRX.UnityMeshLab
         // 3 · Normals & UV
         // UV islands is the bake-oriented default: smooth inside every island,
         // hard only along island borders, and the normal map carries the detail.
-        // On coarse organic decimations an angle crease reads as fully faceted
-        // and also feeds xatlas crease-split normals as seams, which shatters
-        // the atlas into slivers.
+        // Final shading settings run after unwrap. Intermediate geometry and
+        // the xatlas input use averaged normals, independent of these modes.
         public RemeshHardEdges hardEdges = RemeshHardEdges.UvIslands;
         public float normalCrease = 60;
         public float normalSmoothing = 1;
+        // Compare the requested chart settings with two bounded alternatives and
+        // keep fewer islands only within bounded UV stretch.
+        public bool reduceUvFragmentation = true;
         // Regenerated after the UV cut, weighted per this mode (Blender Weighted
         // Normal analog); smooth inside every split group, hard across every split.
         public RemeshNormalWeighting normalWeighting = RemeshNormalWeighting.FaceArea;
@@ -166,6 +168,9 @@ namespace SashaRX.UnityMeshLab
         // traversal per empty texel; a short one keeps each face to what sits behind it.
         public float proxyDepth = 0.1f;
         public int bakeSamples = 4;              // per texel: 1, 4, 9 or 16
+        // Additional pixel radius after atlas padding; 0 keeps padding alone.
+        internal const int DefaultDilationRadius = 64, MaxDilationRadius = 8192;
+        public int dilationRadius = DefaultDilationRadius;
         // Run the bake's geometry queries (projection rays, nearest fallbacks) on the
         // GPU through BvhQueries.compute; identical results, the CPU BVH otherwise.
         public bool gpuProjection = true;
@@ -189,6 +194,18 @@ namespace SashaRX.UnityMeshLab
         // own scaling. Off: the saved transform carries the source's scale instead.
         public bool normalizeSize = true;
 
+        internal static RemeshSettings FromSavedJson(string json)
+        {
+            var restored = UnityEngine.JsonUtility.FromJson<RemeshSettings>(json);
+            // Older EditorPrefs have no radius. Preserve every existing field and
+            // enable the new pass, while an explicitly saved 0 still disables it.
+            if (restored != null && json.IndexOf("\"dilationRadius\"", StringComparison.Ordinal) < 0)
+                restored.dilationRadius = DefaultDilationRadius;
+            if (restored != null && json.IndexOf("\"reduceUvFragmentation\"", StringComparison.Ordinal) < 0)
+                restored.reduceUvFragmentation = true;
+            return restored;
+        }
+
         public void Validate()
         {
             if (bakeSourceAO) {
@@ -204,6 +221,7 @@ namespace SashaRX.UnityMeshLab
                 chartIterations < 1 || chartIterations > 16 || !NonNegative(maxChartArea) || !NonNegative(maxChartBoundary) ||
                 textureResolution < 64 || textureResolution > 8192 || (textureResolution & (textureResolution - 1)) != 0 ||
                 padding < 1 || padding > 32 || !Finite(projectionDistance) || projectionDistance <= 0 || projectionDistance > 1 ||
+                dilationRadius < 0 || dilationRadius > MaxDilationRadius ||
                 !Finite(cageSmoothing) || cageSmoothing < 0 || cageSmoothing > 10 ||
                 !Finite(proxyDepth) || proxyDepth < 0.005f || proxyDepth > 1 ||
                 (bakeSamples != 1 && bakeSamples != 4 && bakeSamples != 9 && bakeSamples != 16) ||

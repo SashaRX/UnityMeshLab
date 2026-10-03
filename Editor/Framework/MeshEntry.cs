@@ -31,6 +31,9 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public Mesh originalMesh;
 
+        /// <summary>UV0 is temporary planar data, awaiting a real unwrap.</summary>
+        public bool draftUv => MeshUvState.IsDraft(originalMesh);
+
         /// <summary>
         /// The imported FBX asset mesh — owned by the Unity asset database.
         /// Never destroyed by the tool. Set once during Refresh, never changes.

@@ -52,7 +52,7 @@ namespace SashaRX.UnityMeshLab
         {
             int faces = mesh.indices.Length / 3;
             var result = new Result { mesh = mesh, classes = new byte[faces] };
-            if (faces == 0 || sourceIndices.Length < 3) return result;
+            if (faces == 0 || sourceIndices.Length < 3) { result.mesh.PrepareChannels(token); return result; }
             var bvh = new TriangleBvh(sourcePositions, sourceIndices);
             var sourceNormals = MeshGeometry.FaceNormals(sourcePositions, sourceIndices);
             var classes = Classify(mesh, bvh, sourceNormals, maxDistance, token, out int kept);
@@ -62,12 +62,13 @@ namespace SashaRX.UnityMeshLab
                 for (int i = 0; i < sourceNormals.Length; ++i) sourceNormals[i] = -sourceNormals[i];
                 var flipped = Classify(mesh, bvh, sourceNormals, maxDistance, token, out int keptFlipped);
                 if (keptFlipped > kept) { classes = flipped; kept = keptFlipped; }
-                if (kept * 10 < faces) { result.gaveUp = true; return result; }
+                if (kept * 10 < faces) { result.gaveUp = true; result.mesh.PrepareChannels(token); return result; }
             }
             result.classes = classes;
             result.removed = faces - kept;
             if (result.removed > 0) result.mesh = Compact(mesh, classes, kept);
             result.flipped = OrientConsistently(result.mesh);
+            result.mesh.PrepareChannels(token);
             return result;
         }
 

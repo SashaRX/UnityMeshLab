@@ -12,6 +12,43 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
     /// Native~ ctest battery and the DllNotFoundException-skipping stage tests.</summary>
     public sealed class RemeshHierarchyTests
     {
+        [UnityTest]
+        public IEnumerator CagePreviewDefersWorkAndKeepsLatestDistance()
+        {
+            var mesh = TriangleMesh();
+            using (var preview = new RemeshPreview())
+            try {
+                var data = new RemeshPreview.Data { geometry = new RemeshNative.Geometry {
+                    positions = mesh.vertices, indices = mesh.triangles, normals = mesh.normals },
+                    cageDistance = .1f, cageSmoothing = 2f };
+                var outerField = typeof(RemeshPreview).GetField("cageOuter", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                var innerField = typeof(RemeshPreview).GetField("cageInner", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                int repaints = 0; preview.RequestRepaint = () => ++repaints;
+                preview.PrepareCage(mesh, data);
+                Assert.IsNull(outerField.GetValue(preview), "Drawing must not synchronously build a cage");
+                data.cageDistance = .2f; preview.PrepareCage(mesh, data);
+                Mesh outer = null, inner = null;
+                double deadline = EditorApplication.timeSinceStartup + 10;
+                while (!outer && EditorApplication.timeSinceStartup < deadline) {
+                    yield return null;
+                    outer = (Mesh)outerField.GetValue(preview); inner = (Mesh)innerField.GetValue(preview);
+                }
+                Assert.IsTrue(outer); Assert.IsTrue(inner);
+                Assert.AreEqual(1, repaints);
+                Assert.That(outer.vertices[0].z, Is.EqualTo(.2f).Within(1e-6f));
+                Assert.That(inner.vertices[0].z, Is.EqualTo(-.2f).Within(1e-6f));
+                Assert.AreEqual(6, outer.GetIndexCount(0));
+                preview.Invalidate();
+                Assert.IsFalse(outer); Assert.IsFalse(inner);
+                preview.PrepareCage(mesh, data);
+                preview.Dispose();
+                for (int i = 0; i < 5; ++i) yield return null;
+                Assert.IsNull(outerField.GetValue(preview));
+                Assert.AreEqual(1, repaints, "Disposed cage work cannot upload after the tool closes");
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
         [Test]
         public void SkinnedSourcePreviewKeepsSkinAttributesAndReleasesItsPoseMesh()
         {
@@ -119,7 +156,10 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                     var canvas = new UvCanvasView { EntriesOverride = entries };
                     canvas.EnsurePreviewChannel(context);
                     bool hasUv = canvas.HasPreviewChannel(context, 0);
-                    Assert.AreEqual(stage == RemeshPreview.Stage.Source || stage == RemeshPreview.Stage.Result, hasUv);
+                    Assert.IsTrue(hasUv, "Every stage supplies UV0, including temporary planar UVs");
+                    Assert.AreEqual(items[0].mesh.vertexCount, items[0].mesh.normals.Length);
+                    Assert.AreEqual(stage == RemeshPreview.Stage.Remesh || stage == RemeshPreview.Stage.Simplified,
+                        entries[0].draftUv, "Draft UV provenance follows the displayed stage mesh");
                     if (hasUv) {
                         Assert.IsTrue(canvas.HasPreviewChannel(context, context.PreviewUvChannel));
                         if (stage == RemeshPreview.Stage.Source) {
@@ -128,7 +168,8 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                         }
                         else Assert.AreEqual(0, context.PreviewUvChannel);
                     }
-                    else Assert.IsNull(entries[0].previewTexture, "no baked map on a stage without UVs");
+                    if (stage == RemeshPreview.Stage.Remesh || stage == RemeshPreview.Stage.Simplified)
+                        Assert.IsNull(entries[0].previewTexture, "temporary planar UVs must not display the baked atlas map");
                 }
             }
             finally {
