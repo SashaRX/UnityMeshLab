@@ -203,13 +203,13 @@ namespace SashaRX.UnityMeshLab
         /// <see cref="RepackResult.error"/> rather than an exception, because
         /// every caller consumes the result-based contract.
         /// </summary>
-        static bool TryAcquireNativeSession()
+        internal static bool TryAcquireNativeSession()
         {
             return System.Threading.Interlocked.CompareExchange(
                 ref s_nativeSessionInFlight, 1, 0) == 0;
         }
 
-        static void ReleaseNativeSession()
+        internal static void ReleaseNativeSession()
             => System.Threading.Volatile.Write(ref s_nativeSessionInFlight, 0);
 
         const uint ORPHAN_CHART = uint.MaxValue;
@@ -839,45 +839,79 @@ namespace SashaRX.UnityMeshLab
                 return Task.FromResult(false);
             }
 
-            var packTask = Task.Run(() =>
-            {
-                XatlasNative.xatlasComputeCharts();
-                XatlasNative.xatlasPackCharts(
-                    maxChartSize, padding, texelsPerUnit, resolution,
-                    bilinear, blockAlign, bruteForce,
-                    rotateCharts, rotateChartsToAxis);
-            });
+            return WaitNativePackAsync(
+                shellCount, internalRes,
+                () =>
+                {
+                    XatlasNative.xatlasComputeCharts();
+                    XatlasNative.xatlasPackCharts(
+                        maxChartSize, padding, texelsPerUnit, resolution,
+                        bilinear, blockAlign, bruteForce,
+                        rotateCharts, rotateChartsToAxis);
+                },
+                pumpEditor);
+        }
 
-            double startTime = EditorApplication.timeSinceStartup;
+        /// <summary>
+        /// Runs a caller-owned native xatlas pack call with the shared progress,
+        /// cancel and cost-budget machinery. The caller owns the xatlas session
+        /// (Create/AddMesh already done) and passes its pack call — including
+        /// <c>xatlasComputeCharts</c> — so all native work stays off the main
+        /// thread. Returns false when the pack was refused by the cost budget,
+        /// failed, or was cancelled; the caller must then skip reading outputs
+        /// and destroy its session.
+        /// </summary>
+        internal static Task<bool> RunNativePackAsync(
+            int shellCount, uint internalRes, Action nativePack, bool pumpEditor = true)
+        {
+            long packCost = ComputePackCost(shellCount, internalRes);
+            if (packCost > kHeuristicCostBudget)
+            {
+                UvtLog.Warn(UvtLog.Category.Repack,
+                    $"[xatlas] Pack cost {packCost / 1_000_000_000L}B ops is past the {kHeuristicCostBudget / 1_000_000_000L}B safety budget — refusing to start pack. Lower the atlas resolution.");
+                return Task.FromResult(false);
+            }
+            return WaitNativePackAsync(shellCount, internalRes, nativePack, pumpEditor);
+        }
+
+        static Task<bool> WaitNativePackAsync(
+            int shellCount, uint internalRes, Action nativePack, bool pumpEditor)
+        {
+            var packTask = Task.Run(nativePack);
             // Keep the phase string compact — the strip already shows the
             // outer operation title ("Repack" / "Run Full Pipeline"). Detail
             // carries the live metrics (shells, elapsed).
             UvProgress.SetPhase("xatlas pack", fraction: -1f);
 
-            if (!pumpEditor)
-            {
-                // Headless / sync path — block on the calling thread. Used by
-                // tests and by sweep loops where the caller is already a sync
-                // method that cannot await without leaking async machinery.
-                bool cancelled = false;
-                while (!packTask.IsCompleted)
-                {
-                    double elapsed = EditorApplication.timeSinceStartup - startTime;
-                    UvProgress.Report(-1f, $"{shellCount} shells @ {internalRes}²");
-                    if (UvProgress.CancelRequested) { cancelled = true; break; }
-                    System.Threading.Thread.Sleep(80);
-                }
-                try { packTask.Wait(); }
-                catch (Exception ex)
-                {
-                    UvtLog.Error(UvtLog.Category.Repack, $"[xatlas] Pack task failed: {ex.Message}");
-                    return Task.FromResult(false);
-                }
-                if (cancelled)
-                    UvtLog.Warn(UvtLog.Category.Repack, "[xatlas] Pack cancelled by user (xatlas finished its in-flight operation; result discarded)");
-                return Task.FromResult(!cancelled);
-            }
+            return pumpEditor ? PollNativePackInteractive(packTask, shellCount, internalRes)
+                : Task.FromResult(WaitNativePackSync(packTask, shellCount, internalRes));
+        }
 
+        static bool WaitNativePackSync(Task packTask, int shellCount, uint internalRes)
+        {
+            // Headless / sync path — block on the calling thread. Used by
+            // tests and by sweep loops where the caller is already a sync
+            // method that cannot await without leaking async machinery.
+            bool cancelled = false;
+            while (!packTask.IsCompleted)
+            {
+                UvProgress.Report(-1f, $"{shellCount} shells @ {internalRes}²");
+                if (UvProgress.CancelRequested) { cancelled = true; break; }
+                System.Threading.Thread.Sleep(80);
+            }
+            try { packTask.Wait(); }
+            catch (Exception ex)
+            {
+                UvtLog.Error(UvtLog.Category.Repack, $"[xatlas] Pack task failed: {ex.Message}");
+                return false;
+            }
+            if (cancelled)
+                UvtLog.Warn(UvtLog.Category.Repack, "[xatlas] Pack cancelled by user (xatlas finished its in-flight operation; result discarded)");
+            return !cancelled;
+        }
+
+        static Task<bool> PollNativePackInteractive(Task packTask, int shellCount, uint internalRes)
+        {
             // Interactive path — drive polling from EditorApplication.update so
             // the editor main thread is never blocked while xatlas's native
             // pack runs. The continuation that completes the TCS also runs on
@@ -890,7 +924,6 @@ namespace SashaRX.UnityMeshLab
             {
                 try
                 {
-                    double elapsed = EditorApplication.timeSinceStartup - startTime;
                     UvProgress.Report(-1f, $"{shellCount} shells @ {internalRes}²");
 
                     if (!cancelledFlag && UvProgress.CancelRequested)
@@ -1014,7 +1047,17 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // Sync entry — blocks the calling thread for the native pack (tests,
+        // sweeps). Interactive callers should use <see cref="RepackSingleAsync"/>
+        // so the editor main thread keeps repainting during xatlas's pack.
         public static RepackResult RepackSingle(Mesh mesh, RepackOptions opts)
+            => RepackSingleCore(mesh, opts, RunPackCancelableSync).GetAwaiter().GetResult();
+
+        /// <summary>Async variant — main thread free during xatlas native pack.</summary>
+        public static Task<RepackResult> RepackSingleAsync(Mesh mesh, RepackOptions opts)
+            => RepackSingleCore(mesh, opts, RunPackCancelableAsyncDelegate);
+
+        static async Task<RepackResult> RepackSingleCore(Mesh mesh, RepackOptions opts, PackFn packFn)
         {
             var result = new RepackResult();
 
@@ -1060,12 +1103,7 @@ namespace SashaRX.UnityMeshLab
             result.flippedShells = NormalizeShellWinding(uv0, tris, shells);
 
             // ── Flatten UV0 ──
-            float[] uvFlat = new float[vertCount * 2];
-            for (int i = 0; i < vertCount; i++)
-            {
-                uvFlat[i * 2]     = uv0[i].x;
-                uvFlat[i * 2 + 1] = uv0[i].y;
-            }
+            float[] uvFlat = FlattenUvCoordinates(uv0, vertCount);
 
             // ── Pre-pack pipeline ──
             // Two stages:
@@ -1080,33 +1118,7 @@ namespace SashaRX.UnityMeshLab
             // scale only fought ARAP's per-shell output. Operates on the
             // local uvFlat copy; mesh.uv is untouched.
 
-            if (opts.reparameterizeStretchedShells)
-            {
-                int stretchedFound = 0, converged = 0, skipped = 0;
-                for (int si = 0; si < shells.Count; si++)
-                {
-                    var shell = shells[si];
-                    if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
-                    float l2 = ShellQuality.ComputeL2Stretch(shell, tris, positions, uvFlat);
-                    if (float.IsNaN(l2) || l2 < opts.stretchThreshold) continue;
-                    stretchedFound++;
-                    var shellTriIndices = shell.faceIndices?.ToArray() ?? new int[0];
-                    if (shellTriIndices.Length == 0) { skipped++; continue; }
-                    if (ArapParameterization.Reparameterize(
-                            positions, tris, shellTriIndices, shell.vertexIndices,
-                            uvFlat, opts.arapIterations, out int _initFlipped))
-                    {
-                        converged++;
-                        UvtLog.Verbose(UvtLog.Category.Repack,
-                            $"[Repack] ARAP: shell {si} L²={l2:F2} (>{opts.stretchThreshold:F2}) → reparameterized");
-                    }
-                    else
-                        skipped++;
-                }
-                if (stretchedFound > 0)
-                    UvtLog.Info(UvtLog.Category.Repack,
-                        $"[Repack] ARAP: reparameterized {converged}/{stretchedFound} stretched shells (L²>{opts.stretchThreshold:F2}, skipped {skipped})");
-            }
+            if (opts.reparameterizeStretchedShells) ReparameterizeStretchedShells(opts, shells, tris, positions, uvFlat);
 
             if (opts.normalizeTexelDensity)
             {
@@ -1152,9 +1164,7 @@ namespace SashaRX.UnityMeshLab
             // overlapping tiles" mode that collapsed tile-instances into one
             // shared chart was removed because it produced incorrect baked
             // lighting for instanced parts.
-            uint[] indices = new uint[tris.Length];
-            for (int i = 0; i < tris.Length; i++)
-                indices[i] = (uint)tris[i];
+            uint[] indices = NativeTriangleIndices(tris);
             uint[] xatlasFaceShellIds = faceShellIds;
             uint   xatlasFaceCount    = (uint)faceCount;
 
@@ -1193,7 +1203,7 @@ namespace SashaRX.UnityMeshLab
                     return result;
                 }
 
-                bool packed = RunPackCancelable(
+                bool packed = await packFn(
                     mesh.name, shells.Count, internalRes, oversample,
                     opts.maxChartSize, internalPad, opts.texelsPerUnit, internalRes,
                     opts.bilinear  ? 1 : 0,
@@ -1220,103 +1230,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info(UvtLog.Category.Repack,
                     $"xatlas pack '{mesh.name}': req={opts.resolution}, actual={result.atlasWidth}x{result.atlasHeight}, charts={result.chartCount}");
 
-                // ── Get raw output data ──
-                int outVertCount  = XatlasNative.xatlasGetOutputVertexCount(0);
-                int outIndexCount = XatlasNative.xatlasGetOutputIndexCount(0);
-
-                if (outVertCount == 0 || outIndexCount == 0)
-                {
-                    result.error = $"xatlas output empty: verts={outVertCount}, idx={outIndexCount}";
-                    return result;
-                }
-
-                uint[]  outXref  = new uint[outVertCount];
-                float[] outUV    = new float[outVertCount * 2];
-                uint[]  outChart = new uint[outVertCount];
-                uint[]  outIdx   = new uint[outIndexCount];
-
-                XatlasNative.xatlasGetOutputVertexData(0, outXref, outUV, outChart, outVertCount);
-                XatlasNative.xatlasGetOutputIndices(0, outIdx, outIndexCount);
-
-                LogRawXatlasDensity(outUV, outChart, outIdx, outVertCount, outIndexCount, mesh.name);
-
-                // ── C#-side UV2 assignment ──
-                Vector2[] uv2;
-                uint[] vertChartId;
-                int conflicts;
-                AssignUv2(vertCount, faceCount, tris,
-                          outVertCount, outXref, outUV, outChart,
-                          outIndexCount, outIdx,
-                          out uv2, out vertChartId, out conflicts);
-
-                result.conflictVertices = conflicts;
-
-                LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postAssign]");
-
-                // ── Post-process: fix orphan vertices ──
-                int orphanVerts, orphanTris, snapped;
-                FixOrphanVertices(uv2, tris, vertChartId, out orphanVerts, out orphanTris, out snapped);
-                result.orphanVertices = orphanVerts;
-                result.orphanTriangles = orphanTris;
-                result.snappedVertices = snapped;
-
-                LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postOrphan]");
-
-                // ── Diagnostic: top longest UV2 edges (after fix) ──
-                DiagnoseLongestEdges(uv2, tris, faceShellIds, vertChartId, 10);
-
-                if (opts.postPackDensityCorrection)
-                {
-                    ApplyPostPackDensityCorrection(uv2, tris, positions, shells, vertChartId, mesh.name);
-                    LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postCorrection]");
-                }
-
-                // ── Border padding inset ──
-                if (opts.borderPadding > 0 && result.atlasWidth > 0)
-                {
-                    // Inset is computed against user-facing resolution, not the
-                    // oversampled internal atlas dims — otherwise border pixels
-                    // become sub-pixel in the final lightmap.
-                    uint refAtlasW = opts.resolution > 0 ? opts.resolution : result.atlasWidth;
-                    uint refAtlasH = opts.resolution > 0 ? opts.resolution : result.atlasHeight;
-                    ApplyBorderInset(uv2, opts.borderPadding, refAtlasW, refAtlasH);
-                    LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postBorder]");
-                }
-
-                // ── Apply UV2 (channel 1 — Unity lightmap channel, mesh.uv2) ──
-                int clampedOutOfUnit = 0;
-                if (opts.clampLightmapToUnit)
-                    clampedOutOfUnit = ClampUvsToUnit(uv2);
-                mesh.SetUVs(1, uv2);
-                if (clampedOutOfUnit > 0)
-                    UvtLog.Verbose(UvtLog.Category.Repack,
-                        $"Clamped {clampedOutOfUnit} UV2 vert(s) into [0,1]");
-                result.ok = true;
-
-                double coverage = ComputeUv2CoverageFraction(uv2, tris);
-                UvtLog.Info(UvtLog.Category.Repack,
-                    $"Atlas utilization: {coverage * 100.0:F1}% of [0,1]² covered ({shells.Count} shells)");
-
-                LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [final]");
-
-                // ── Stats ──
-                int nonZero = 0;
-                float minU = float.MaxValue, maxU = float.MinValue;
-                float minV = float.MaxValue, maxV = float.MinValue;
-                for (int i = 0; i < vertCount; i++)
-                {
-                    if (uv2[i].sqrMagnitude > 1e-12f)
-                    {
-                        nonZero++;
-                        if (uv2[i].x < minU) minU = uv2[i].x;
-                        if (uv2[i].x > maxU) maxU = uv2[i].x;
-                        if (uv2[i].y < minV) minV = uv2[i].y;
-                        if (uv2[i].y > maxV) maxV = uv2[i].y;
-                    }
-                }
-
-                UvtLog.Verbose($"[xatlas] '{mesh.name}': atlas={result.atlasWidth}x{result.atlasHeight}, " +
-                          $"charts={result.chartCount}, conflicts={conflicts}, orphans={orphanVerts}");
+                ReadSingleRepackOutput(mesh, opts, ref result, tris, positions, shells, faceShellIds);
             }
             finally
             {
@@ -1325,6 +1239,142 @@ namespace SashaRX.UnityMeshLab
             }
 
             return result;
+        }
+
+        static float[] FlattenUvCoordinates(Vector2[] uv0, int vertCount)
+        {
+            var uvFlat = new float[vertCount * 2];
+            for (int i = 0; i < vertCount; i++)
+            {
+                uvFlat[i * 2]     = uv0[i].x;
+                uvFlat[i * 2 + 1] = uv0[i].y;
+            }
+
+            return uvFlat;
+        }
+
+        static uint[] NativeTriangleIndices(int[] tris)
+        {
+            uint[] indices = new uint[tris.Length];
+            for (int i = 0; i < tris.Length; i++)
+                indices[i] = (uint)tris[i];
+            return indices;
+        }
+
+        static void ReparameterizeStretchedShells(RepackOptions opts, List<UvShell> shells, int[] tris, Vector3[] positions, float[] uvFlat)
+        {
+            int stretchedFound = 0, converged = 0, skipped = 0;
+            for (int si = 0; si < shells.Count; si++)
+            {
+                var shell = shells[si];
+                if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
+                float l2 = ShellQuality.ComputeL2Stretch(shell, tris, positions, uvFlat);
+                if (float.IsNaN(l2) || l2 < opts.stretchThreshold) continue;
+                stretchedFound++;
+                var shellTriIndices = shell.faceIndices?.ToArray() ?? new int[0];
+                if (shellTriIndices.Length == 0) { skipped++; continue; }
+                if (ArapParameterization.Reparameterize(
+                        positions, tris, shellTriIndices, shell.vertexIndices,
+                        uvFlat, opts.arapIterations, out _))
+                {
+                    converged++;
+                    UvtLog.Verbose(UvtLog.Category.Repack,
+                        $"[Repack] ARAP: shell {si} L²={l2:F2} (>{opts.stretchThreshold:F2}) → reparameterized");
+                }
+                else
+                    skipped++;
+            }
+            if (stretchedFound > 0)
+                UvtLog.Info(UvtLog.Category.Repack,
+                    $"[Repack] ARAP: reparameterized {converged}/{stretchedFound} stretched shells (L²>{opts.stretchThreshold:F2}, skipped {skipped})");
+        }
+
+        static void ReadSingleRepackOutput(Mesh mesh, RepackOptions opts, ref RepackResult result,
+            int[] tris, Vector3[] positions, List<UvShell> shells, uint[] faceShellIds)
+        {
+            // ── Get raw output data ──
+            int vertCount = mesh.vertexCount;
+            int faceCount = tris.Length / 3;
+            int outVertCount  = XatlasNative.xatlasGetOutputVertexCount(0);
+            int outIndexCount = XatlasNative.xatlasGetOutputIndexCount(0);
+
+            if (outVertCount == 0 || outIndexCount == 0)
+            {
+                result.error = $"xatlas output empty: verts={outVertCount}, idx={outIndexCount}";
+                return;
+            }
+
+            uint[]  outXref  = new uint[outVertCount];
+            float[] outUV    = new float[outVertCount * 2];
+            uint[]  outChart = new uint[outVertCount];
+            uint[]  outIdx   = new uint[outIndexCount];
+
+            XatlasNative.xatlasGetOutputVertexData(0, outXref, outUV, outChart, outVertCount);
+            XatlasNative.xatlasGetOutputIndices(0, outIdx, outIndexCount);
+
+            LogRawXatlasDensity(outUV, outChart, outIdx, outVertCount, outIndexCount, mesh.name);
+
+            // ── C#-side UV2 assignment ──
+            Vector2[] uv2;
+            uint[] vertChartId;
+            int conflicts;
+            AssignUv2(vertCount, faceCount, tris,
+                      outVertCount, outXref, outUV, outChart,
+                      outIndexCount, outIdx,
+                      out uv2, out vertChartId, out conflicts);
+
+            result.conflictVertices = conflicts;
+
+            LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postAssign]");
+
+            // ── Post-process: fix orphan vertices ──
+            int orphanVerts, orphanTris, snapped;
+            FixOrphanVertices(uv2, tris, vertChartId, out orphanVerts, out orphanTris, out snapped);
+            result.orphanVertices = orphanVerts;
+            result.orphanTriangles = orphanTris;
+            result.snappedVertices = snapped;
+
+            LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postOrphan]");
+
+            // ── Diagnostic: top longest UV2 edges (after fix) ──
+            DiagnoseLongestEdges(uv2, tris, faceShellIds, vertChartId, 10);
+
+            if (opts.postPackDensityCorrection)
+            {
+                ApplyPostPackDensityCorrection(uv2, tris, positions, shells, vertChartId, mesh.name);
+                LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postCorrection]");
+            }
+
+            // ── Border padding inset ──
+            if (opts.borderPadding > 0 && result.atlasWidth > 0)
+            {
+                // Inset is computed against user-facing resolution, not the
+                // oversampled internal atlas dims — otherwise border pixels
+                // become sub-pixel in the final lightmap.
+                uint refAtlasW = opts.resolution > 0 ? opts.resolution : result.atlasWidth;
+                uint refAtlasH = opts.resolution > 0 ? opts.resolution : result.atlasHeight;
+                ApplyBorderInset(uv2, opts.borderPadding, refAtlasW, refAtlasH);
+                LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postBorder]");
+            }
+
+            // ── Apply UV2 (channel 1 — Unity lightmap channel, mesh.uv2) ──
+            int clampedOutOfUnit = 0;
+            if (opts.clampLightmapToUnit)
+                clampedOutOfUnit = ClampUvsToUnit(uv2);
+            mesh.SetUVs(1, uv2);
+            if (clampedOutOfUnit > 0)
+                UvtLog.Verbose(UvtLog.Category.Repack,
+                    $"Clamped {clampedOutOfUnit} UV2 vert(s) into [0,1]");
+            result.ok = true;
+
+            double coverage = ComputeUv2CoverageFraction(uv2, tris);
+            UvtLog.Info(UvtLog.Category.Repack,
+                $"Atlas utilization: {coverage * 100.0:F1}% of [0,1]² covered ({shells.Count} shells)");
+
+            LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [final]");
+
+            UvtLog.Verbose($"[xatlas] '{mesh.name}': atlas={result.atlasWidth}x{result.atlasHeight}, " +
+                      $"charts={result.chartCount}, conflicts={conflicts}, orphans={orphanVerts}");
         }
 
         // Delegate signature for the pack step — lets RepackMultiCore share

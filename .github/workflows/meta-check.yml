@@ -148,6 +148,12 @@ jobs:
       - name: Check for identifiers used but never declared
         run: python3 'Tools~/check_undeclared_identifiers.py' Editor Tests
 
+      - name: Test the tool dependency guard
+        run: python3 'Tools~/check_tool_dependencies.py' --self-test
+
+      - name: Check tool and library dependency boundaries
+        run: python3 'Tools~/check_tool_dependencies.py'
+
   csharp-compile:
     name: Compile C# against Unity reference assemblies
     runs-on: ubuntu-latest

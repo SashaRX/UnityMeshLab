@@ -9,6 +9,7 @@ using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
+    [MeshLabTool("cleanup", MeshLabLibraries.Geometry, MeshLabLibraries.Simplification, MeshLabLibraries.Assets)]
     public class CleanupTool : IUvTool
     {
         UvToolContext ctx;

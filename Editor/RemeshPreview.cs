@@ -21,6 +21,8 @@ namespace SashaRX.UnityMeshLab
         internal sealed class Data
         {
             public readonly Mesh[] meshes = new Mesh[4]; // indexed by Stage
+            public int sourceVertices, sourceTriangles;
+            public Matrix4x4 spaceToWorld = Matrix4x4.identity;
             public RemeshNative.Geometry geometry;
             public RemeshBaker.Maps maps;
             public Texture2D baseColor;
@@ -48,6 +50,7 @@ namespace SashaRX.UnityMeshLab
         readonly Texture2D[] mapTextures = new Texture2D[5];
 
         public void Show(Stage value) { stage = value; }
+        internal bool IsSource => stage == Stage.Source;
 
         public void Draw(Data data)
         {
@@ -97,8 +100,10 @@ namespace SashaRX.UnityMeshLab
             using (new EditorGUI.DisabledScope(!result || data.geometry == null))
                 cageView = EditorGUILayout.ToggleLeft(new GUIContent("Cage shells", "Result stage: the projection limits — every corner pushed ±its reach along its cage direction; orange where the rays start, blue where they end."), cageView);
             var mesh = data.meshes[(int)stage];
-            EditorGUILayout.LabelField(mesh ? $"{mesh.vertexCount:N0} vertices · {Triangles(mesh):N0} triangles" : "Run this stage to preview it.",
-                EditorStyles.miniLabel);
+            string meshSummary = mesh ? $"{mesh.vertexCount:N0} vertices · {Triangles(mesh):N0} triangles" : "Run this stage to preview it.";
+            if (stage == Stage.Source && data.sourceVertices > 0)
+                meshSummary = $"{data.sourceVertices:N0} vertices · {data.sourceTriangles:N0} triangles";
+            EditorGUILayout.LabelField(meshSummary, EditorStyles.miniLabel);
             if (ShowTrimMask(data))
                 EditorGUILayout.LabelField("Trim mask: green kept · red back of a sheet (opposite normal) · orange rim / no source within reach", EditorStyles.wordWrappedMiniLabel);
             var g = data.geometry;
@@ -114,7 +119,7 @@ namespace SashaRX.UnityMeshLab
 
         // The mesh the 3D view shows for the stage: the trim mask stands in for the
         // trimmed remesh while its toggle is on.
-        Mesh DisplayMesh(Data data) => ShowTrimMask(data) ? data.trimMask : data.meshes[(int)stage];
+        internal Mesh DisplayMesh(Data data) => ShowTrimMask(data) ? data.trimMask : data.meshes[(int)stage];
 
         public bool Fill3D(Data data, List<MeshViewport3D.Item> items)
         {
@@ -137,7 +142,7 @@ namespace SashaRX.UnityMeshLab
             surface.SetColor("_Color", Color.white);
             var materials = new Material[mesh.subMeshCount];
             for (int sub = 0; sub < materials.Length; ++sub) materials[sub] = surface;
-            items.Add(new MeshViewport3D.Item(mesh, Matrix4x4.identity, materials));
+            items.Add(new MeshViewport3D.Item(mesh, data.spaceToWorld, materials));
             return true;
         }
 
@@ -187,8 +192,8 @@ namespace SashaRX.UnityMeshLab
                 cageInner = CageShell(mesh, geometry, cage, -1f, "Inner", folds);
                 cageMeshId = id; cageKey = key;
             }
-            if (cageOuter) view.DrawLineMesh(cageOuter, Matrix4x4.identity, new Color(1f, 0.55f, 0.15f, 0.9f));
-            if (cageInner) view.DrawLineMesh(cageInner, Matrix4x4.identity, new Color(0.35f, 0.6f, 1f, 0.45f));
+            if (cageOuter) view.DrawLineMesh(cageOuter, data.spaceToWorld, new Color(1f, 0.55f, 0.15f, 0.9f));
+            if (cageInner) view.DrawLineMesh(cageInner, data.spaceToWorld, new Color(0.35f, 0.6f, 1f, 0.45f));
         }
 
         static Mesh CageShell(Mesh mesh, RemeshNative.Geometry geometry, RemeshBaker.Cage cage, float sign, string suffix, TriangleBvh folds)

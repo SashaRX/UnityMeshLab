@@ -1,5 +1,5 @@
 // DiagnosticsTool.cs — the Diagnostics tab: parameter sweep and multi-model benchmark
-// (run through the UV2 Transfer tab's pipeline), report rebuild, log filters, the
+// (run through the shared UV workflow library), report rebuild, log filters, the
 // hierarchical probe and the FBX metrics export. Shown only with Project Settings ▸
 // Mesh Lab ▸ Developer ▸ Show Debug UI; the production tabs stay clean.
 using System;
@@ -9,9 +9,12 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
 {
+    [MeshLabTool("diagnostics", MeshLabLibraries.Bench, MeshLabLibraries.Assets)]
     public sealed class DiagnosticsTool : IUvTool, IUvToolDebugOnly
     {
         UvToolContext ctx;
+        UvTransferWorkflow workflow;
+        UvCanvasView workflowCanvas;
 
         TestSuiteAsset sweepSuite;
         bool foldBench = true, foldLogFilters = true, foldReports = true;
@@ -21,9 +24,21 @@ namespace SashaRX.UnityMeshLab
         public int ToolOrder => 90;
         public Action RequestRepaint { get; set; }
 
-        public void OnActivate(UvToolContext ctx, UvCanvasView canvas) { this.ctx = ctx; }
-        public void OnDeactivate() { }
-        public void OnRefresh() { }
+        public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
+        {
+            this.ctx = ctx;
+            workflowCanvas = new UvCanvasView();
+            workflowCanvas.Init();
+            workflow = new UvTransferWorkflow { RequestRepaint = RequestRepaint };
+            workflow.OnActivate(ctx, workflowCanvas);
+        }
+        public void OnDeactivate()
+        {
+            workflow?.OnDeactivate();
+            workflowCanvas?.Cleanup();
+            workflow = null; workflowCanvas = null;
+        }
+        public void OnRefresh() => workflow?.OnRefresh();
         public void OnDrawToolbarExtra() { }
         public void OnDrawStatusBar() { }
         public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float sz) { }
@@ -41,22 +56,14 @@ namespace SashaRX.UnityMeshLab
             DrawReports();
         }
 
-        // The sweep and the benchmark run the UV2 Transfer tab's pipeline; that tab is the
-        // host (context, symmetry mode, working copies, the pipeline itself).
-        static IBenchmarkHost FindHost()
-        {
-            var hubs = Resources.FindObjectsOfTypeAll<UvToolHub>();
-            return hubs.Length > 0 ? hubs[0].FindTool<LightmapTransferTool>() as IBenchmarkHost : null;
-        }
-
         void DrawBench()
         {
             foldBench = EditorGUILayout.Foldout(foldBench, "Parameter sweep & benchmark", true);
             if (!foldBench) return;
-            var host = FindHost();
+            IBenchmarkHost host = workflow;
             if (host == null)
             {
-                EditorGUILayout.HelpBox("The UV2 Transfer tab was not found; it hosts the pipeline the sweep runs.", MessageType.Warning);
+                EditorGUILayout.HelpBox("The UV transfer library is unavailable.", MessageType.Warning);
                 return;
             }
             sweepSuite = (TestSuiteAsset)EditorGUILayout.ObjectField("Sweep suite", sweepSuite, typeof(TestSuiteAsset), false);

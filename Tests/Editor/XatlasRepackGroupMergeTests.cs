@@ -264,18 +264,8 @@ namespace SashaRX.UnityMeshLab.Tests
     public class LightmapTransferToolUiTests
     {
         static bool ValidateSweep(TestSuiteAsset.SweepMatrix sweep, out int cells, out string error)
-        {
-            var method = typeof(LightmapTransferTool).GetMethod(
-                "TryValidateSweep",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-            Assert.IsNotNull(method, "Sweep validation should remain available as a testable preflight");
-
-            object[] args = { sweep, new UvToolContext(), 0, null };
-            bool valid = (bool)method.Invoke(null, args);
-            cells = (int)args[2];
-            error = (string)args[3];
-            return valid;
-        }
+            => SweepRunner.TryValidate(sweep, new UvToolContext(),
+                SymmetrySplitShells.ThresholdMode.LegacyFixed, out cells, out error);
 
         [Test]
         public void SweepValidation_RejectsUnsafeNativePackingValues()
@@ -316,38 +306,28 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void BruteForceOption_IsUnavailable_WhenInternalOversampleIsAboveOne()
         {
-            var method = typeof(LightmapTransferTool).GetMethod(
-                "IsBruteForcePackAvailable",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-            Assert.IsNotNull(method, "LightmapTransferTool should expose the brute-force UI availability rule as a testable helper");
-
-            Assert.IsTrue((bool)method.Invoke(null, new object[] { 1 }));
-            Assert.IsTrue((bool)method.Invoke(null, new object[] { 0 }));
-            Assert.IsFalse((bool)method.Invoke(null, new object[] { 2 }));
-            Assert.IsFalse((bool)method.Invoke(null, new object[] { 4 }));
+            Assert.IsTrue(UvTransferWorkflow.IsBruteForcePackAvailable(1));
+            Assert.IsTrue(UvTransferWorkflow.IsBruteForcePackAvailable(0));
+            Assert.IsFalse(UvTransferWorkflow.IsBruteForcePackAvailable(2));
+            Assert.IsFalse(UvTransferWorkflow.IsBruteForcePackAvailable(4));
         }
 
         [Test]
         public void TransferTargetDetection_IgnoresSourceOnlySelection()
         {
-            var method = typeof(LightmapTransferTool).GetMethod(
-                "HasIncludedTransferTargets",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-            Assert.IsNotNull(method, "LightmapTransferTool should expose target detection as a testable helper");
-
             var sourceOnly = new List<MeshEntry>
             {
                 new MeshEntry { lodIndex = 0, include = true, originalMesh = new Mesh() }
             };
             try
             {
-                Assert.IsFalse((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
+                Assert.IsFalse(UvTransferWorkflow.HasIncludedTransferTargets(sourceOnly, 0));
 
                 sourceOnly.Add(new MeshEntry { lodIndex = 1, include = false, originalMesh = new Mesh() });
-                Assert.IsFalse((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
+                Assert.IsFalse(UvTransferWorkflow.HasIncludedTransferTargets(sourceOnly, 0));
 
                 sourceOnly[1].include = true;
-                Assert.IsTrue((bool)method.Invoke(null, new object[] { sourceOnly, 0 }));
+                Assert.IsTrue(UvTransferWorkflow.HasIncludedTransferTargets(sourceOnly, 0));
             }
             finally
             {
@@ -359,15 +339,10 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void ApplyUv2_IsAvailable_AfterSourceOnlyRepack()
         {
-            var method = typeof(LightmapTransferTool).GetMethod(
-                "CanApplyUv2",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-            Assert.IsNotNull(method, "LightmapTransferTool should expose the Apply UV2 availability rule as a testable helper");
-
-            Assert.IsTrue((bool)method.Invoke(null, new object[] { true, false }),
+            Assert.IsTrue(UvTransferWorkflow.CanApplyUv2(true, false),
                 "A source-only repack must remain applyable when transfer is skipped.");
-            Assert.IsTrue((bool)method.Invoke(null, new object[] { false, true }));
-            Assert.IsFalse((bool)method.Invoke(null, new object[] { false, false }));
+            Assert.IsTrue(UvTransferWorkflow.CanApplyUv2(false, true));
+            Assert.IsFalse(UvTransferWorkflow.CanApplyUv2(false, false));
         }
 
         [Test]

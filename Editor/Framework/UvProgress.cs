@@ -244,6 +244,7 @@ namespace SashaRX.UnityMeshLab
                     status   = status,
                 };
                 _snapshot.active = false;
+                System.Threading.Volatile.Write(ref _cancelFlag, 0);
                 Notify(force: true);
             }
         }

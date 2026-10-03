@@ -42,7 +42,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var sm = new TestSuiteAsset.SweepMatrix
             {
                 atlasResolutions = new[] { 256, 512 }, shellPaddingPxVariants = new[] { 2 }, borderPaddingPxVariants = new[] { 0 },
-                arapIterationsVariants = new[] { 0 }, stretchThresholdVariants = new[] { 1.5f }, internalOversampleVariants = new[] { 0 },
+                arapIterationsVariants = new[] { 0 }, stretchThresholdVariants = new[] { 1.5f }, internalOversampleVariants = new[] { 1 },
                 symSplitThresholdModeVariants = new[] { SymmetrySplitShells.ThresholdMode.LegacyFixed, SymmetrySplitShells.ThresholdMode.Adaptive },
             };
             Assert.IsTrue(SweepRunner.TryValidate(sm, Context(), SymmetrySplitShells.ThresholdMode.LegacyFixed, out int count, out string error), error);
@@ -50,7 +50,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var cells = SweepRunner.Resolve(sm, Context(), SymmetrySplitShells.ThresholdMode.LegacyFixed).Cells().ToList();
             Assert.AreEqual(new[] { 256, 256, 512, 512 }, cells.Select(c => c.atlasRes).ToArray());
             Assert.AreEqual(SymmetrySplitShells.ThresholdMode.Adaptive, cells[1].symMode);
-            Assert.AreEqual(1, cells[0].oversample, "a suite oversample of 0 runs, labels and records as 1");
+            Assert.AreEqual(1, cells[0].oversample, "the validated oversample runs, labels and records as 1");
             Assert.AreEqual("sweep_res256_pad2_bdr0_arap0_stretch1p50_os1_symlegacy", cells[0].Label);
             Assert.AreEqual("sweep_res512_pad2_bdr0_arap0_stretch1p50_os1_symadaptive", cells[3].Label);
             Assert.IsFalse(cells[0].Config.arapEnabled);
@@ -68,6 +68,10 @@ namespace SashaRX.UnityMeshLab.Tests
             sm = new TestSuiteAsset.SweepMatrix { stretchThresholdVariants = new[] { float.NaN } };
             Assert.IsFalse(SweepRunner.TryValidate(sm, ctx, SymmetrySplitShells.ThresholdMode.LegacyFixed, out _, out error));
             StringAssert.Contains("stretch threshold", error);
+
+            sm = new TestSuiteAsset.SweepMatrix { internalOversampleVariants = new[] { 0 } };
+            Assert.IsFalse(SweepRunner.TryValidate(sm, ctx, SymmetrySplitShells.ThresholdMode.LegacyFixed, out _, out error));
+            StringAssert.Contains("internal oversample 0", error);
 
             sm = new TestSuiteAsset.SweepMatrix { shellPaddingPxVariants = Enumerable.Range(0, SweepRunner.MaxValuesPerDimension + 1).ToArray() };
             Assert.IsFalse(SweepRunner.TryValidate(sm, ctx, SymmetrySplitShells.ThresholdMode.LegacyFixed, out _, out error));

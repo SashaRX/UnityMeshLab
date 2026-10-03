@@ -186,7 +186,7 @@ namespace SashaRX.UnityMeshLab
                             var bones = skin.bones;
                             skin.bones = Array.Empty<Transform>();
                             skin.bones = bones;
-                            skin.BakeMesh(mesh);
+                            skin.BakeMesh(mesh, true);
                             if (skin.sharedMesh) mesh.name = skin.sharedMesh.name;
                         }
                         else if (renderer is MeshRenderer) {

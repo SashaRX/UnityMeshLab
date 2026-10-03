@@ -14,6 +14,22 @@ namespace SashaRX.UnityMeshLab
     /// </summary>
     internal static class MeshGeometry
     {
+        // Unity's Vector3.Normalize applies an absolute 1e-5 length cutoff. Area
+        // vectors of valid millimetre-scale triangles are much smaller than that.
+        // Callers decide degeneracy before normalizing; preserve every nonzero direction.
+        internal static Vector3 UnitDirection(Vector3 vector)
+        {
+            float length = vector.magnitude;
+            return length > 0f ? vector / length : Vector3.zero;
+        }
+
+        internal static float CornerAngle(Vector3 u, Vector3 v)
+        {
+            var a = UnitDirection(u); var b = UnitDirection(v);
+            if (a == Vector3.zero || b == Vector3.zero) return 0f;
+            return Mathf.Acos(Mathf.Clamp(Vector3.Dot(a, b), -1f, 1f));
+        }
+
         /// <summary>Unit face normals from the winding (Unity front = Cross(b − a, c − a)); zero for degenerate faces.</summary>
         public static Vector3[] FaceNormals(Vector3[] positions, int[] indices)
         {

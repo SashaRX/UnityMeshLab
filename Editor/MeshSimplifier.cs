@@ -8,7 +8,7 @@ using UnityEngine.Rendering;
 
 namespace SashaRX.UnityMeshLab
 {
-    public static class MeshSimplifier
+    public static partial class MeshSimplifier
     {
         public struct SimplifySettings
         {

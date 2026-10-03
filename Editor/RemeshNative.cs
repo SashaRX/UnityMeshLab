@@ -17,15 +17,6 @@ namespace SashaRX.UnityMeshLab
         static extern int meshLabVoxelRemesh(float[] positions, uint vertexCount, int[] indices, uint indexCount,
             int resolution, uint flags, out IntPtr handle, out uint vertices, out uint outputIndices);
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-        static extern int meshLabSimplify(float[] positions, uint vertexCount, int[] indices, uint indexCount,
-            uint targetTriangles, float error, uint flags, out IntPtr handle, out uint vertices, out uint outputIndices,
-            out float resultError);
-        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-        static extern int meshLabMeshCopy(IntPtr handle, [Out] float[] positions, uint vertexCapacity,
-            [Out] int[] indices, uint indexCapacity);
-        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-        static extern void meshLabMeshDestroy(IntPtr handle);
-        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         static extern int meshLabUnwrap(float[] positions, uint vertexCount, int[] indices, uint indexCount,
             float crease, float smoothing, float[] options, uint optionCount,
             out IntPtr handle, out uint vertices, out uint outputIndices, out uint charts);
@@ -70,33 +61,28 @@ namespace SashaRX.UnityMeshLab
             token.ThrowIfCancellationRequested();
             IntPtr handle = IntPtr.Zero;
             try {
-                int code = meshLabVoxelRemesh(Pack(positions), (uint)positions.Length, indices, (uint)indices.Length,
+                int code = meshLabVoxelRemesh(MeshSimplifier.PackPositions(positions), (uint)positions.Length, indices, (uint)indices.Length,
                     settings.voxelResolution, (settings.solve ? 1u : 0u) | (settings.shell ? 2u : 0u),
                     out handle, out uint vertexCount, out uint indexCount);
                 token.ThrowIfCancellationRequested();
                 if (code != 0) throw new InvalidOperationException("Voxel remesh failed: " + Error(code));
                 return CopyMesh(handle, vertexCount, indexCount);
             }
-            finally { if (handle != IntPtr.Zero) meshLabMeshDestroy(handle); }
+            finally { if (handle != IntPtr.Zero) MeshSimplifier.meshLabMeshDestroy(handle); }
         }
 
         public static IndexedMesh Simplify(IndexedMesh input, RemeshSettings settings, CancellationToken token, out float error)
         {
             settings.Validate();
-            token.ThrowIfCancellationRequested();
-            uint flags = (settings.regularize == RemeshRegularize.Light ? 1u : 0u) |
-                (settings.regularize == RemeshRegularize.Strong ? 2u : 0u) |
-                (settings.preserveFolds ? 4u : 0u) | (settings.pruneSmallParts ? 16u : 0u);
-            IntPtr handle = IntPtr.Zero;
-            try {
-                int code = meshLabSimplify(Pack(input.positions), (uint)input.positions.Length, input.indices,
-                    (uint)input.indices.Length, (uint)settings.targetTriangles, settings.maximumError, flags,
-                    out handle, out uint vertexCount, out uint indexCount, out error);
-                token.ThrowIfCancellationRequested();
-                if (code != 0) throw new InvalidOperationException("Simplification failed: " + Error(code));
-                return CopyMesh(handle, vertexCount, indexCount);
-            }
-            finally { if (handle != IntPtr.Zero) meshLabMeshDestroy(handle); }
+            var options = new MeshSimplifier.GeometrySettings {
+                targetTriangles = settings.targetTriangles,
+                maximumError = settings.maximumError,
+                flags = (settings.regularize == RemeshRegularize.Light ? 1u : 0u) |
+                    (settings.regularize == RemeshRegularize.Strong ? 2u : 0u) |
+                    (settings.preserveFolds ? 4u : 0u) | (settings.pruneSmallParts ? 16u : 0u)
+            };
+            var result = MeshSimplifier.SimplifyGeometry(input.positions, input.indices, options, token, out error);
+            return new IndexedMesh { positions = result.positions, indices = result.indices };
         }
 
         public static Geometry Unwrap(IndexedMesh input, RemeshSettings settings, CancellationToken token)
@@ -113,7 +99,7 @@ namespace SashaRX.UnityMeshLab
             };
             IntPtr handle = IntPtr.Zero;
             try {
-                int code = meshLabUnwrap(Pack(input.positions), (uint)input.positions.Length, input.indices, (uint)input.indices.Length,
+                int code = meshLabUnwrap(MeshSimplifier.PackPositions(input.positions), (uint)input.positions.Length, input.indices, (uint)input.indices.Length,
                     angle ? settings.normalCrease * Mathf.Deg2Rad : Mathf.PI, 0f,
                     options, (uint)options.Length, out handle, out uint vertexCount, out uint indexCount, out uint charts);
                 token.ThrowIfCancellationRequested();
@@ -220,7 +206,7 @@ namespace SashaRX.UnityMeshLab
                 Vector3 ab = p[b] - p[a], ac = p[c] - p[a], bc = p[c] - p[b];
                 Vector3 n = Vector3.Cross(ab, ac); // |n| = 2 * face area
                 if (!byAngle) { sum[ga] += n; sum[gb] += n; sum[gc] += n; continue; }
-                Vector3 face = n.sqrMagnitude > 1e-30f ? n.normalized : Vector3.zero;
+                Vector3 face = n.sqrMagnitude > 1e-30f ? MeshGeometry.UnitDirection(n) : Vector3.zero;
                 float angleA = CornerAngle(ab, ac), angleB = CornerAngle(-ab, bc), angleC = CornerAngle(-ac, -bc);
                 if (byArea) { sum[ga] += n * angleA; sum[gb] += n * angleB; sum[gc] += n * angleC; }
                 else { sum[ga] += face * angleA; sum[gb] += face * angleB; sum[gc] += face * angleC; }
@@ -232,7 +218,7 @@ namespace SashaRX.UnityMeshLab
             }
             float floor = maxSq * 1e-12f;
             for (int i = 0; i < p.Length; ++i)
-                if (sum[G(i)].sqrMagnitude > floor) geometry.normals[i] = sum[G(i)].normalized;
+                if (sum[G(i)].sqrMagnitude > floor) geometry.normals[i] = MeshGeometry.UnitDirection(sum[G(i)]);
             return group;
         }
 
@@ -255,9 +241,7 @@ namespace SashaRX.UnityMeshLab
         // Angle between two edge directions meeting at a corner, in radians.
         static float CornerAngle(Vector3 u, Vector3 v)
         {
-            float lengths = u.magnitude * v.magnitude;
-            if (lengths < 1e-20f) return 0;
-            return Mathf.Acos(Mathf.Clamp(Vector3.Dot(u, v) / lengths, -1f, 1f));
+            return MeshGeometry.CornerAngle(u, v);
         }
 
         // Port of meshopt's generateNormals smoothing pass, run on the split unwrap
@@ -317,23 +301,10 @@ namespace SashaRX.UnityMeshLab
             delta[b] -= d; edges[b] += 1f;
         }
 
-        static float[] Pack(Vector3[] positions)
-        {
-            var packed = new float[checked(positions.Length * 3)];
-            for (int i = 0; i < positions.Length; ++i) {
-                packed[i * 3] = positions[i].x; packed[i * 3 + 1] = positions[i].y; packed[i * 3 + 2] = positions[i].z;
-            }
-            return packed;
-        }
-
         static IndexedMesh CopyMesh(IntPtr handle, uint vertexCount, uint indexCount)
         {
-            var data = new float[checked((int)vertexCount * 3)];
-            var result = new IndexedMesh { positions = new Vector3[vertexCount], indices = new int[indexCount] };
-            if (meshLabMeshCopy(handle, data, vertexCount, result.indices, indexCount) != 0)
-                throw new InvalidOperationException("Remesh output copy failed.");
-            for (int i = 0; i < vertexCount; ++i) result.positions[i] = new Vector3(data[i * 3], data[i * 3 + 1], data[i * 3 + 2]);
-            return result;
+            var result = MeshSimplifier.CopyGeometry(handle, vertexCount, indexCount);
+            return new IndexedMesh { positions = result.positions, indices = result.indices };
         }
 
         static string Error(int code)

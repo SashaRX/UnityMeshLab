@@ -603,7 +603,10 @@ namespace SashaRX.UnityMeshLab
             }
 
             float denomSum = va + vb + vc;
-            if (denomSum < 1e-10f)
+            // This denominator scales with the fourth power of edge length. An
+            // absolute cutoff classified valid millimetre triangles as degenerate,
+            // returning a vertex instead of the surface and exceeding the trim reach.
+            if (!(denomSum > 0f))
             {
                 // Degenerate triangle — return nearest vertex
                 float da = (p - a).sqrMagnitude;

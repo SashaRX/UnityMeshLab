@@ -13,7 +13,8 @@ using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
-    public class VertexColorBakingTool : IUvTool
+    [MeshLabTool("vertex_color_baking", MeshLabLibraries.Baking, MeshLabLibraries.Assets)]
+    public class VertexColorBakingTool : IUvTool, IUvToolAssetLifecycle
     {
         UvToolContext ctx;
         UvCanvasView canvas;
@@ -143,8 +144,8 @@ namespace SashaRX.UnityMeshLab
 
         // ── Lifecycle ──
 
-        internal static VertexColorBakingTool ActiveInstance { get; private set; }
-        internal static AOTargetChannel? LastAppliedTargetChannel { get; private set; }
+        internal static AOTargetChannel? LastAppliedTargetChannel
+        { get => VertexChannels.LastAppliedTargetChannel; private set => VertexChannels.LastAppliedTargetChannel = value; }
 
         class LodBakeBatch
         {
@@ -166,9 +167,11 @@ namespace SashaRX.UnityMeshLab
         {
             this.ctx = ctx;
             this.canvas = canvas;
-            ActiveInstance = this;
             EditorApplication.hierarchyChanged += OnEditorHierarchyChanged;
         }
+
+        public void BeforeAssetWrite() => RestorePreview();
+        public void AfterAssetWrite() => OnRefresh();
 
         public void OnDeactivate()
         {
@@ -742,18 +745,7 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            var hub = Resources.FindObjectsOfTypeAll<UvToolHub>();
-            if (hub.Length == 0)
-            {
-                UvtLog.Error("[Vertex Colors] UvToolHub not found.");
-                return;
-            }
-            var fbxExporter = hub[0].FindTool<LightmapTransferTool>();
-            if (fbxExporter == null)
-            {
-                UvtLog.Error("[Vertex Colors] LightmapTransferTool not found.");
-                return;
-            }
+            var fbxExporter = ctx.Assets;
 
             var sourcePrefab = ResolveSourcePrefab();
             if (sourcePrefab == null)
@@ -974,15 +966,7 @@ namespace SashaRX.UnityMeshLab
             GUI.backgroundColor = new Color(.4f, .7f, .95f);
             if (GUILayout.Button("Overwrite FBX (Vertex Colors)", GUILayout.Height(22)))
             {
-                var hub = Resources.FindObjectsOfTypeAll<UvToolHub>();
-                if (hub.Length > 0)
-                {
-                    var transferTool = hub[0].FindTool<LightmapTransferTool>();
-                    if (transferTool != null)
-                        transferTool.ExportVertexColorsToFbx();
-                    else
-                        UvtLog.Error("[Vertex AO] LightmapTransferTool not found.");
-                }
+                ctx.Assets.ExportVertexColorsToFbx();
             }
             GUI.backgroundColor = bgc;
         }
@@ -1070,14 +1054,7 @@ namespace SashaRX.UnityMeshLab
                 "Overwrite", "Cancel"))
                 return;
 
-            var hub = Resources.FindObjectsOfTypeAll<UvToolHub>();
-            if (hub.Length == 0) return;
-            var transferTool = hub[0].FindTool<LightmapTransferTool>();
-            if (transferTool == null)
-            {
-                UvtLog.Error("[Vertex AO] LightmapTransferTool not found.");
-                return;
-            }
+            var transferTool = ctx.Assets;
 
             foreach (var path in selected)
             {

@@ -10,6 +10,7 @@ using UnityEditor.SceneManagement;
 
 namespace SashaRX.UnityMeshLab
 {
+    [MeshLabTool("prefab_builder", MeshLabLibraries.Simplification, MeshLabLibraries.Hierarchy, MeshLabLibraries.Assets, MeshLabLibraries.Collision)]
     public class PrefabBuilderTool : IUvTool, IUvTool3D
     {
         UvToolContext ctx;
@@ -1012,14 +1013,7 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            var hubs = Resources.FindObjectsOfTypeAll<UvToolHub>();
-            var hub = hubs != null && hubs.Length > 0 ? hubs[0] : null;
-            var transferTool = hub != null ? hub.FindTool<LightmapTransferTool>() : null;
-            if (transferTool == null)
-            {
-                UvtLog.Error("[Build] UV2 Transfer tool not found — cannot export FBX.");
-                return;
-            }
+            var transferTool = ctx.Assets;
             // Build pipeline tracks which channels its operations touched
             // since the last refresh. If nothing was tracked we conservatively
             // fall back to the wide path (intent=All) — Save can be hit

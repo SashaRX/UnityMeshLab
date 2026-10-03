@@ -16,7 +16,9 @@ namespace SashaRX.UnityMeshLab
     public sealed class MeshViewport3D : IDisposable
     {
         /// <summary>How the content's surfaces are coloured.</summary>
-        public enum Shading { Shaded, VertexColors, Normals, Tangents, UV0, UV1, UV2, UV3 }
+        public enum Shading { Shaded, VertexColors, Normals, Tangents, UV0, UV1, UV2, UV3,
+            UV4, UV5, UV6, UV7, Positions, TangentSign, ColorAlpha, BoneWeights, BoneIndices }
+        public enum Projection { Perspective, XY, XZ, YZ }
 
         /// <summary>One mesh to show: its matrix (any common space) and the materials the
         /// Shaded mode draws it with (null or short arrays fall back to a lit grey).</summary>
@@ -28,9 +30,11 @@ namespace SashaRX.UnityMeshLab
             public Item(Mesh mesh, Matrix4x4 matrix, Material[] materials = null) { this.mesh = mesh; this.matrix = matrix; this.materials = materials; }
         }
 
-        public static readonly string[] ShadingNames = { "Shaded", "Vert Colors", "Normals", "Tangents", "UV0", "UV1", "UV2", "UV3" };
+        public static readonly string[] ShadingNames = { "Surface", "Vertex colors", "Normals", "Tangents", "UV0", "UV1", "UV2", "UV3",
+            "UV4", "UV5", "UV6", "UV7", "Positions", "Tangent sign", "Color alpha", "Dominant bone weight", "Dominant bone index" };
 
         public Shading Mode = Shading.Shaded;
+        public Projection ViewProjection;
         public bool Wireframe;
         public bool Lit = true;
         public bool ShowGrid = true, ShowAxes = true;
@@ -50,6 +54,9 @@ namespace SashaRX.UnityMeshLab
         // The orbit stores the drag: x turns around the vertical axis (yaw), y tilts (pitch).
         Quaternion OrbitRotation()
         {
+            if (ViewProjection == Projection.XY) return Quaternion.identity;
+            if (ViewProjection == Projection.XZ) return Quaternion.Euler(90, 0, 0);
+            if (ViewProjection == Projection.YZ) return Quaternion.Euler(0, -90, 0);
             float pitch = orbit.y, yaw = orbit.x;
             return Quaternion.Euler(pitch, yaw, 0f);
         }
@@ -87,6 +94,8 @@ namespace SashaRX.UnityMeshLab
             var camera = utility.camera;
             camera.clearFlags = CameraClearFlags.SolidColor;
             camera.backgroundColor = Background;
+            camera.orthographic = ViewProjection != Projection.Perspective;
+            camera.orthographicSize = distance * Mathf.Tan(15f * Mathf.Deg2Rad);
             var rotation = OrbitRotation();
             camera.transform.rotation = rotation;
             camera.transform.position = pivot - rotation * Vector3.forward * distance;
@@ -128,7 +137,7 @@ namespace SashaRX.UnityMeshLab
                 for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
                     var material = item.materials != null && sub < item.materials.Length ? item.materials[sub] : null;
                     if (material) utility.DrawMesh(mesh, item.matrix, material, sub);
-                    else { surface.SetFloat(UseVertexColorId, 0); surface.SetFloat("_Lit", Lit ? 1 : 0); surface.SetColor(ColorId, new Color(0.72f, 0.72f, 0.72f, 1f)); utility.DrawMesh(mesh, item.matrix, surface, sub); }
+                    else utility.DrawMesh(mesh, item.matrix, surface, sub, SurfaceBlock(mesh, false));
                 }
                 return;
             }
@@ -136,14 +145,12 @@ namespace SashaRX.UnityMeshLab
             if (!encoded) {
                 // The mesh lacks the mode's data (a mesh without tangents next to ones that
                 // have them): draw it as the neutral grey Shaded uses, never let it vanish.
-                surface.SetFloat(UseVertexColorId, 0); surface.SetFloat("_Lit", Lit ? 1 : 0); surface.SetColor(ColorId, new Color(0.72f, 0.72f, 0.72f, 1f));
-                for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, item.matrix, surface, sub);
+                var fallback = SurfaceBlock(mesh, false);
+                for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, item.matrix, surface, sub, fallback);
                 return;
             }
-            surface.SetFloat(UseVertexColorId, 1); surface.SetColor(ColorId, Color.white);
-            // Data encodings read better unlit; the headlight stays for vertex colours.
-            surface.SetFloat("_Lit", Lit && Mode == Shading.VertexColors ? 1 : 0);
-            for (int sub = 0; sub < encoded.subMeshCount; ++sub) utility.DrawMesh(encoded, item.matrix, surface, sub);
+            var data = SurfaceBlock(mesh, true);
+            for (int sub = 0; sub < encoded.subMeshCount; ++sub) utility.DrawMesh(encoded, item.matrix, surface, sub, data);
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -155,13 +162,21 @@ namespace SashaRX.UnityMeshLab
         // materials — otherwise the last value set would paint every queued draw.
         readonly List<MaterialPropertyBlock> frameBlocks = new List<MaterialPropertyBlock>();
         MaterialPropertyBlock Block() { var block = new MaterialPropertyBlock(); frameBlocks.Add(block); return block; }
+        MaterialPropertyBlock SurfaceBlock(Mesh mesh, bool encoded)
+        {
+            var block = Block();
+            block.SetFloat(UseVertexColorId, encoded ? 1 : 0);
+            block.SetFloat("_Lit", !encoded && Lit && mesh.HasVertexAttribute(VertexAttribute.Normal) ? 1 : 0);
+            block.SetColor(ColorId, encoded ? Color.white : new Color(.72f, .72f, .72f, 1));
+            return block;
+        }
 
         /// <summary>Draws a mesh with the given material (null = the viewport's lit grey),
         /// optionally with per-draw properties.</summary>
         public void DrawMesh(Mesh mesh, Matrix4x4 matrix, Material material = null, int submesh = -1, MaterialPropertyBlock properties = null)
         {
             if (!drawing || !mesh) return;
-            if (!material) { material = surface; surface.SetFloat(UseVertexColorId, 0); surface.SetFloat("_Lit", 1); surface.SetColor(ColorId, new Color(0.72f, 0.72f, 0.72f, 1f)); }
+            if (!material) { material = surface; properties = properties ?? SurfaceBlock(mesh, false); }
             if (submesh >= 0) utility.DrawMesh(mesh, matrix, material, submesh, properties);
             else for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, matrix, material, sub, properties);
         }
@@ -206,6 +221,11 @@ namespace SashaRX.UnityMeshLab
             float ndcY = 1f - (guiPoint.y - currentRect.y) / currentRect.height * 2f;
             float tanHalf = Mathf.Tan(15f * Mathf.Deg2Rad);
             float aspect = currentRect.width / currentRect.height;
+            if (ViewProjection != Projection.Perspective) {
+                origin += rotation * new Vector3(ndcX * distance * tanHalf * aspect, ndcY * distance * tanHalf, 0);
+                direction = rotation * Vector3.forward;
+                return true;
+            }
             direction = (rotation * new Vector3(ndcX * tanHalf * aspect, ndcY * tanHalf, 1f)).normalized;
             return true;
         }
@@ -240,11 +260,14 @@ namespace SashaRX.UnityMeshLab
         // content's size, fading toward the rim, every fifth line brighter.
         void DrawGrid(Bounds bounds)
         {
-            float step = NiceStep(Mathf.Max(bounds.size.x, bounds.size.z) / 8f);
+            bool xy = ViewProjection == Projection.XY, yz = ViewProjection == Projection.YZ;
+            float sx = yz ? bounds.size.z : bounds.size.x, sy = xy || yz ? bounds.size.y : bounds.size.z;
+            float ex = yz ? bounds.extents.z : bounds.extents.x, ey = xy || yz ? bounds.extents.y : bounds.extents.z;
+            float step = NiceStep(Mathf.Max(sx, sy) / 8f);
             if (step <= 0f) return;
-            int half = Mathf.Clamp(Mathf.CeilToInt(Mathf.Max(bounds.extents.x, bounds.extents.z) * 2.5f / step), 4, 60);
-            float y = bounds.min.y - radius * 0.002f;
-            float cx = Mathf.Round(bounds.center.x / step) * step, cz = Mathf.Round(bounds.center.z / step) * step;
+            int half = Mathf.Clamp(Mathf.CeilToInt(Mathf.Max(ex, ey) * 2.5f / step), 4, 60);
+            float cx = Mathf.Round((yz ? bounds.center.z : bounds.center.x) / step) * step;
+            float cz = Mathf.Round((xy || yz ? bounds.center.y : bounds.center.z) / step) * step;
             float reach = half * step;
             var pairs = new List<Vector3>(half * 8 + 4); var colors = new List<Color>(half * 4 + 2);
             var tone = new Color(0.62f, 0.70f, 0.82f);
@@ -253,10 +276,17 @@ namespace SashaRX.UnityMeshLab
                 float fade = 1f - Mathf.Abs(o) / reach;
                 float a = (i % 5 == 0 ? 0.40f : 0.18f) * fade;
                 var c = new Color(tone.r, tone.g, tone.b, a);
-                pairs.Add(new Vector3(cx + o, y, cz - reach)); pairs.Add(new Vector3(cx + o, y, cz + reach)); colors.Add(c);
-                pairs.Add(new Vector3(cx - reach, y, cz + o)); pairs.Add(new Vector3(cx + reach, y, cz + o)); colors.Add(c);
+                pairs.Add(GridPoint(cx + o, cz - reach)); pairs.Add(GridPoint(cx + o, cz + reach)); colors.Add(c);
+                pairs.Add(GridPoint(cx - reach, cz + o)); pairs.Add(GridPoint(cx + reach, cz + o)); colors.Add(c);
             }
             DrawLines(pairs, colors, Matrix4x4.identity);
+
+            Vector3 GridPoint(float x, float y)
+            {
+                if (xy) return new Vector3(x, y, bounds.max.z + radius * .002f);
+                if (yz) return new Vector3(bounds.min.x - radius * .002f, y, x);
+                return new Vector3(x, bounds.min.y - radius * .002f, y);
+            }
         }
 
         // The pivot's axes: X red, Y green, Z blue, a quarter of the content radius long.
@@ -295,7 +325,8 @@ namespace SashaRX.UnityMeshLab
             var vertices = new Vector3[positions.Count * 4]; var vertexColors = new Color[vertices.Length]; var indices = new int[positions.Count * 6];
             for (int i = 0; i < positions.Count; ++i) {
                 Vector3 world = matrix.MultiplyPoint3x4(positions[i]);
-                float half = sizePixels * 0.5f * pixelsToWorld * Mathf.Max(1e-4f, Vector3.Dot(world - camera.transform.position, camera.transform.forward));
+                float half = camera.orthographic ? sizePixels * camera.orthographicSize / Mathf.Max(1f, currentRect.height)
+                    : sizePixels * 0.5f * pixelsToWorld * Mathf.Max(1e-4f, Vector3.Dot(world - camera.transform.position, camera.transform.forward));
                 int v = i * 4, t = i * 6;
                 vertices[v] = world - right * half - up * half; vertices[v + 1] = world + right * half - up * half;
                 vertices[v + 2] = world + right * half + up * half; vertices[v + 3] = world - right * half + up * half;
@@ -352,7 +383,7 @@ namespace SashaRX.UnityMeshLab
                         pivot -= (rotation * Vector3.right) * (e.delta.x * scale);
                         pivot += (rotation * Vector3.up) * (e.delta.y * scale);
                     }
-                    else { orbit += e.delta * 0.5f; orbit.y = Mathf.Clamp(orbit.y, -89f, 89f); }
+                    else if (ViewProjection == Projection.Perspective) { orbit += e.delta * 0.5f; orbit.y = Mathf.Clamp(orbit.y, -89f, 89f); }
                     e.Use(); RequestRepaint?.Invoke();
                     break;
                 case EventType.MouseUp:
@@ -437,6 +468,31 @@ namespace SashaRX.UnityMeshLab
             if (n == 0) return null;
             var colors = new Color32[n];
             switch (mode) {
+                case Shading.Shaded: return null;
+                case Shading.Positions: {
+                    var positions = mesh.vertices; var bounds = mesh.bounds;
+                    for (int i = 0; i < n; ++i) {
+                        var p = positions[i] - bounds.min; var size = bounds.size;
+                        colors[i] = new Color(size.x > 0 ? p.x / size.x : .5f,
+                            size.y > 0 ? p.y / size.y : .5f, size.z > 0 ? p.z / size.z : .5f, 1);
+                    }
+                    return colors;
+                }
+                case Shading.ColorAlpha: {
+                    var c = mesh.colors;
+                    if (c.Length != n) return null;
+                    for (int i = 0; i < n; ++i) colors[i] = new Color(c[i].a, c[i].a, c[i].a, 1);
+                    return colors;
+                }
+                case Shading.TangentSign: {
+                    var t = mesh.tangents;
+                    if (t.Length != n) return null;
+                    for (int i = 0; i < n; ++i) colors[i] = t[i].w < 0 ? new Color32(255, 80, 40, 255) : new Color32(40, 180, 255, 255);
+                    return colors;
+                }
+                case Shading.BoneWeights:
+                case Shading.BoneIndices:
+                    return MeshInspection.SkinColors(mesh, mode == Shading.BoneIndices);
                 case Shading.VertexColors: {
                     var c = mesh.colors32;
                     if (c == null || c.Length != n) for (int i = 0; i < n; ++i) colors[i] = new Color32(200, 200, 200, 255);
@@ -457,6 +513,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 default: {
                     int channel = mode - Shading.UV0;
+                    if (channel < 0 || channel > 7) return null;
                     var uv = new List<Vector2>(); mesh.GetUVs(channel, uv);
                     if (uv.Count != n) return null;
                     for (int i = 0; i < n; ++i) {
@@ -489,7 +546,37 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>Line-list indices of a mesh's unique triangle edges (null above 1M faces).</summary>
-        public static List<int> EdgeIndices(Mesh mesh) => UvTopology.UniqueEdges(mesh.triangles);
+        public static List<int> EdgeIndices(Mesh mesh)
+        {
+            var pairs = new List<int>();
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                AppendEdges(pairs, mesh.GetIndices(sub), mesh.GetTopology(sub));
+            var unique = new List<int>();
+            var seen = new HashSet<ulong>();
+            for (int i = 0; i + 1 < pairs.Count; i += 2) {
+                uint a = (uint)Mathf.Min(pairs[i], pairs[i + 1]), b = (uint)Mathf.Max(pairs[i], pairs[i + 1]);
+                if (seen.Add(((ulong)a << 32) | b)) { unique.Add(pairs[i]); unique.Add(pairs[i + 1]); }
+            }
+            return unique;
+        }
+
+        static void AppendEdges(List<int> pairs, int[] indices, MeshTopology topology)
+        {
+            switch (topology) {
+                case MeshTopology.Triangles:
+                    var edges = UvTopology.UniqueEdges(indices);
+                    if (edges != null) pairs.AddRange(edges);
+                    break;
+                case MeshTopology.Lines: pairs.AddRange(indices); break;
+                case MeshTopology.LineStrip:
+                    for (int i = 1; i < indices.Length; ++i) { pairs.Add(indices[i - 1]); pairs.Add(indices[i]); }
+                    break;
+                case MeshTopology.Quads:
+                    for (int i = 0; i + 3 < indices.Length; i += 4)
+                        for (int k = 0; k < 4; ++k) { pairs.Add(indices[i + k]); pairs.Add(indices[i + (k + 1) % 4]); }
+                    break;
+            }
+        }
 
         /// <summary>Drops cached encodings and wires (call when source meshes change).</summary>
         public void InvalidateCaches()

@@ -99,7 +99,7 @@ namespace SashaRX.UnityMeshLab
         // exported FBX as "no meshes" and fail. A single Refresh at the
         // end keeps the project view in sync without batching imports.
         public static IList<Result> ExportVariants(
-            LightmapTransferTool fbxExporter,
+            MeshAssetOperations fbxExporter,
             string sourceFbxPath,
             GameObject sourcePrefab,
             IList<MeshEntry> entries,
@@ -178,7 +178,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static Result ExportSingleVariant(
-            LightmapTransferTool fbxExporter,
+            MeshAssetOperations fbxExporter,
             string sourceFbxPath,
             GameObject sourcePrefab,
             IList<MeshEntry> entries,

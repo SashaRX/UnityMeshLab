@@ -113,7 +113,9 @@ namespace SashaRX.UnityMeshLab
             return Split(mesh, shells, 0.10f);
         }
 
-        public static int Split(Mesh mesh, List<UvShell> shells, float separationThreshold = 0.10f)
+        // No default value here: it would overlap the 2-arg overload above
+        // (Sonar csharpsquid:S3427) — that overload already supplies 0.10f.
+        public static int Split(Mesh mesh, List<UvShell> shells, float separationThreshold)
         {
             var splits = DetectBinarySplits(mesh, shells);
             if (splits.Count == 0) return 0;

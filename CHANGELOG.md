@@ -5,8 +5,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- Universal mesh inspection shares the 2D/3D layout, projection, attribute shading and numeric vertex data, including UV0–UV7, skin weights and meshes without UVs. Remesh source meshes are inspectable before baking; checker and UV island borders work in 3D.
+- Tools declare required libraries through `MeshLabTool`; project settings control module availability without resetting unrelated active tools. CI checks tool dependency boundaries.
+
 ### Changed
+- Split shared UV setup/quality panels, pipeline auto-tune, Hier UV2 packing and FBX import/export into explicit stages. Preserve native session cleanup, cancellation, import replay, Undo ordering and allocation-free inspection loops.
+- Shared export, UV workflow and meshoptimizer simplification live in libraries independently of tool tabs. LOD generation batches the common simplifier; generated results are tracked by the context for export cleanup.
 - Removed the obsolete standalone Python/BAT sweep-gallery generator. It only understood the retired flat `BenchmarkReports/*_sweep_*.csv` + `{csvBase}_png/` layout; sweeps now generate their own `index.html` in the current nested run layout. Benchmark documentation and hierarchical-repack artefact descriptions now name the files the current code actually writes.
+
+### Fixed
+- Address CodeRabbit/Graphify findings: restore failed FBX overwrites and importer state, export computed channels, isolate all xatlas sessions, keep GPU cancellation terminal, preserve canonical inspection entries, align lightmap picking and fill visibility, deduplicate wire edges and retain prefab LOD overrides. Skinned source previews apply renderer scale once.
+- GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
+- Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
 ## [1.1.0] - 2026-10-02
 

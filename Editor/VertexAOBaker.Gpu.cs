@@ -85,6 +85,12 @@ namespace SashaRX.UnityMeshLab
             AsyncGPUReadbackRequest cancellationBarrier;
             bool hasCancellationBarrier;
 
+            // AsyncGPUReadback has no completion guarantee (device loss can
+            // strand a request); polling phases time out instead of pinning
+            // the job — and its buffers — forever.
+            const double kReadbackTimeoutSec = 120.0;
+            double stallStart;
+
             // Direction batching
             int dirCount;
             int dirBatchSize;
@@ -140,7 +146,12 @@ namespace SashaRX.UnityMeshLab
                 this.onComplete = onComplete;
                 this.onError = onError;
 
-                Prepare(targets, occluders);
+                // Prepare can throw after buffers and readable copies were
+                // already allocated (missing kernels, a rejected ComputeBuffer).
+                // The job never reaches Start()/Tick() then, so nothing else
+                // would release them — clean up here instead of leaking.
+                try { Prepare(targets, occluders); }
+                catch { Cleanup(); throw; }
             }
 
             void Prepare(
@@ -289,6 +300,7 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 phase = Phase.Cancelling;
+                stallStart = EditorApplication.timeSinceStartup;
             }
 
             void Tick()
@@ -314,9 +326,10 @@ namespace SashaRX.UnityMeshLab
                 catch (Exception ex)
                 {
                     UvtLog.Error($"[Vertex AO] GPU bake error: {ex.Message}");
-                    phase = Phase.Done;
+                    bool cancelled = phase == Phase.Cancelling;
+                    phase = cancelled ? Phase.Cancelled : Phase.Done;
                     Cleanup();
-                    onError?.Invoke(ex.Message);
+                    if (!cancelled) onError?.Invoke(ex.Message);
                 }
             }
 
@@ -367,6 +380,7 @@ namespace SashaRX.UnityMeshLab
                     readbackRequests[i] = AsyncGPUReadback.Request(slot.resultBuf);
                 }
 
+                stallStart = EditorApplication.timeSinceStartup;
                 phase = Phase.ReadingBack;
             }
 
@@ -381,7 +395,12 @@ namespace SashaRX.UnityMeshLab
                         break;
                     }
                 }
-                if (!allDone) return;
+                if (!allDone)
+                {
+                    if (EditorApplication.timeSinceStartup - stallStart > kReadbackTimeoutSec)
+                        FailStalled("result readback");
+                    return;
+                }
 
                 // All readbacks complete — extract results
                 var result = new Dictionary<Mesh, float[]>();
@@ -411,19 +430,37 @@ namespace SashaRX.UnityMeshLab
             void TickCancelling()
             {
                 if (hasCancellationBarrier && !cancellationBarrier.done)
+                {
+                    if (EditorApplication.timeSinceStartup - stallStart > kReadbackTimeoutSec)
+                        FailStalled("cancellation barrier readback");
                     return;
+                }
 
                 if (readbackRequests != null)
                 {
                     for (int i = 0; i < readbackRequests.Length; i++)
                     {
                         if (!readbackRequests[i].done)
+                        {
+                            if (EditorApplication.timeSinceStartup - stallStart > kReadbackTimeoutSec)
+                                FailStalled("final readback during cancel");
                             return;
+                        }
                     }
                 }
 
                 phase = Phase.Cancelled;
                 Cleanup();
+            }
+
+            void FailStalled(string what)
+            {
+                UvtLog.Error($"[Vertex AO] GPU bake stalled: {what} did not complete " +
+                             $"within {kReadbackTimeoutSec:F0}s — releasing buffers.");
+                bool cancelled = phase == Phase.Cancelling;
+                phase = cancelled ? Phase.Cancelled : Phase.Done;
+                Cleanup();
+                if (!cancelled) onError?.Invoke($"GPU {what} timed out.");
             }
 
             void Cleanup()

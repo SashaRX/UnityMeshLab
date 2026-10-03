@@ -11,6 +11,7 @@ namespace SashaRX.UnityMeshLab
     /// right-sidebar previews and the save action. The stage work itself lives in
     /// <see cref="RemeshPipeline"/>, the export in <see cref="RemeshExporter"/>.
     /// </summary>
+    [MeshLabTool("remesh_bake", MeshLabLibraries.Remesh, MeshLabLibraries.Baking, MeshLabLibraries.Assets)]
     public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvToolUvContent
     {
         public string ToolName => "Remesh & Bake";
@@ -40,6 +41,11 @@ namespace SashaRX.UnityMeshLab
         // The result mesh as a canvas entry: one stable instance so the canvas's hover
         // and selection survive repaints; its mesh follows the pipeline.
         readonly MeshEntry resultEntry = new MeshEntry { include = true };
+        readonly List<MeshEntry> sourceEntries = new List<MeshEntry>();
+        readonly List<Renderer> sourceRenderers = new List<Renderer>();
+        readonly List<Mesh> ownedSourceMeshes = new List<Mesh>();
+        GameObject previewSourceRoot;
+        bool sourcePreviewDirty = true, previewLod0Only;
         internal GameObject Source => source;
 
         public RemeshBakeTool()
@@ -59,6 +65,7 @@ namespace SashaRX.UnityMeshLab
             this.ctx = ctx;
             FollowSelection();
             FollowSelectionChanges(FollowSelection, true);
+            EditorApplication.hierarchyChanged += InvalidateSourcePreview;
             previews.RequestRepaint = () => RequestRepaint?.Invoke();
             // Result/preview objects carry HideAndDontSave, so they survive scene loads but
             // would leak across a domain reload once this instance is discarded.
@@ -87,6 +94,8 @@ namespace SashaRX.UnityMeshLab
             pipeline.Dispose();
             highlight.Dispose();
             EditorApplication.hierarchyChanged -= InvalidateHighlight;
+            EditorApplication.hierarchyChanged -= InvalidateSourcePreview;
+            ClearSourcePreview();
         }
 
         // Source root follows the hierarchy selection, as the status text asks. A pick
@@ -103,15 +112,92 @@ namespace SashaRX.UnityMeshLab
             var group = selected.GetComponentInParent<LODGroup>();
             var root = group ? group.gameObject : selected;
             if (!root.GetComponentInChildren<MeshRenderer>() && !root.GetComponentInChildren<SkinnedMeshRenderer>()) return;
-            source = root;
+            SetSource(root);
             RequestRepaint?.Invoke();
+        }
+        internal void SetSource(GameObject root)
+        {
+            if (source == root) return;
+            source = root;
+            InvalidateSourcePreview();
+        }
+
+        void InvalidateSourcePreview() { sourcePreviewDirty = true; RequestRepaint?.Invoke(); }
+
+        internal void ClearSourcePreview()
+        {
+            foreach (var mesh in ownedSourceMeshes) if (mesh) UnityEngine.Object.DestroyImmediate(mesh);
+            ownedSourceMeshes.Clear(); sourceEntries.Clear(); sourceRenderers.Clear();
+            previewData.sourceVertices = previewData.sourceTriangles = 0;
+            previewSourceRoot = null; sourcePreviewDirty = true;
+        }
+
+        void EnsureSourcePreview()
+        {
+            var root = source ? source : pipeline.CapturedSource;
+            if (!sourcePreviewDirty && root == previewSourceRoot && settings.lod0Only == previewLod0Only) return;
+            ClearSourcePreview();
+            previewSourceRoot = root; previewLod0Only = settings.lod0Only; sourcePreviewDirty = false;
+            if (!root) return;
+            foreach (var renderer in RemeshSource.CollectRenderers(root, settings.lod0Only)) {
+                Mesh mesh = ReadSourcePreviewMesh(renderer);
+                // Preview copies never substitute meshes in the scene's renderers.
+                sourceEntries.Add(new MeshEntry { originalMesh = mesh, fbxMesh = mesh, previewTexture = SourcePreviewTexture(renderer) });
+                sourceRenderers.Add(renderer);
+                previewData.sourceVertices += mesh.vertexCount;
+                previewData.sourceTriangles += TriangleCount(mesh);
+            }
+        }
+
+        Mesh ReadSourcePreviewMesh(Renderer renderer)
+        {
+            if (renderer is SkinnedMeshRenderer skin) {
+                var posed = new Mesh { name = skin.sharedMesh.name, hideFlags = HideFlags.HideAndDontSave };
+                ownedSourceMeshes.Add(posed);
+                // Compensate renderer scale; Get3DContent applies its matrix once.
+                skin.BakeMesh(posed, true);
+                CopySkinAttributes(skin.sharedMesh, posed);
+                return posed;
+            }
+            var mesh = MeshAccess.Readable(renderer.GetComponent<MeshFilter>().sharedMesh, out bool isCopy);
+            if (isCopy) ownedSourceMeshes.Add(mesh);
+            return mesh;
+        }
+
+        static void CopySkinAttributes(Mesh sourceMesh, Mesh posed)
+        {
+            // BakeMesh supplies deformed channels, but omits authored skin attributes.
+            var authored = MeshAccess.Readable(sourceMesh, out bool authoredCopy);
+            try {
+                posed.bindposes = authored.bindposes;
+                using (var counts = authored.GetBonesPerVertex())
+                using (var weights = authored.GetAllBoneWeights())
+                    if (weights.Length > 0) posed.SetBoneWeights(counts, weights);
+            }
+            finally { if (authoredCopy) UnityEngine.Object.DestroyImmediate(authored); }
+        }
+
+        static Texture SourcePreviewTexture(Renderer renderer)
+        {
+            foreach (var material in renderer.sharedMaterials)
+                if (material && material.HasProperty("_MainTex") && material.mainTexture) return material.mainTexture;
+            return null;
+        }
+
+        static int TriangleCount(Mesh mesh)
+        {
+            int count = 0;
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                if (mesh.GetTopology(sub) == MeshTopology.Triangles) count += (int)mesh.GetIndexCount(sub) / 3;
+            return count;
         }
         // Hub context (LODGroup selection, Undo) does not feed this tool: the source
         // snapshot is captured when the remesh stage runs, so a running bake must not be cancelled here.
-        public void OnRefresh() { }
+        public void OnRefresh() { InvalidateSourcePreview(); }
         public void OnDrawToolbarExtra() { }
         public void OnDrawStatusBar() { GUILayout.Label(Status, EditorStyles.miniLabel); }
-        // The canvas's UV mode shows the result's atlas once Normals & UV ran: the same
+        // The canvas's UV mode shows the selected stage, including the source before
+        // any stages run, and the result's atlas once Normals & UV ran: the same
         // shells, wire, border and spot picking as any mesh, over the baked base color
         // (checker when the canvas asks for it). "Islands" tints every UV shell.
         public IEnumerable<UvCanvasView.FillModeEntry> GetFillModes()
@@ -122,10 +208,14 @@ namespace SashaRX.UnityMeshLab
 
         public bool GetUvContent(List<MeshEntry> entries)
         {
-            var mesh = pipeline.ResultMesh;
-            if (!mesh) return false;
+            SyncPreviewData();
+            if (previews.IsSource) { entries.AddRange(sourceEntries); return true; }
+            var mesh = previews.DisplayMesh(previewData);
+            // A captured stage without UVs is still this tool's content. Do not
+            // silently fall back to the source LOD behind the user's chosen stage.
+            if (!mesh) return pipeline.Nodes.Count > 0;
             resultEntry.originalMesh = resultEntry.fbxMesh = mesh;
-            resultEntry.previewTexture = pipeline.BaseColorPreview;
+            resultEntry.previewTexture = mesh == pipeline.ResultMesh ? pipeline.BaseColorPreview : null;
             entries.Add(resultEntry);
             return true;
         }
@@ -184,12 +274,15 @@ namespace SashaRX.UnityMeshLab
 
         void SyncPreviewData()
         {
+            if (pipeline.Nodes.Count == 0) previews.Show(RemeshPreview.Stage.Source);
+            if (previews.IsSource) EnsureSourcePreview();
             previewData.meshes[(int)RemeshPreview.Stage.Source] = pipeline.SourceMesh;
             previewData.meshes[(int)RemeshPreview.Stage.Remesh] = pipeline.VoxelMesh;
             previewData.meshes[(int)RemeshPreview.Stage.Simplified] = pipeline.SimplifiedMesh;
             previewData.meshes[(int)RemeshPreview.Stage.Result] = pipeline.ResultMesh;
             previewData.geometry = pipeline.Geometry; previewData.maps = pipeline.Maps; previewData.baseColor = pipeline.BaseColorPreview;
             previewData.trimMask = pipeline.TrimMaskMesh;
+            previewData.spaceToWorld = pipeline.Primary?.spaceToWorld ?? Matrix4x4.identity;
             // Live from the current settings so the cage preview reflects projection
             // distance changes before a re-bake; zero until a source snapshot exists.
             previewData.cageDistance = pipeline.SourceDiagonal * settings.projectionDistance;
@@ -199,11 +292,19 @@ namespace SashaRX.UnityMeshLab
         }
 
         // The shared 3D canvas shows the selected pipeline stage (in capture space) with
-        // the right sidebar's surface and overlay toggles; before the remesh stage ran it
-        // falls back to the hub's view of the selected model.
+        // the right sidebar's surface and overlay toggles. Source shows the original
+        // hierarchy with all UV channels, also before any stage runs.
         public bool Get3DContent(List<MeshViewport3D.Item> items)
         {
             SyncPreviewData();
+            if (previews.IsSource) {
+                for (int i = 0; i < sourceEntries.Count; ++i) {
+                    var renderer = sourceRenderers[i];
+                    if (renderer) items.Add(new MeshViewport3D.Item(sourceEntries[i].originalMesh,
+                        renderer.localToWorldMatrix, renderer.sharedMaterials));
+                }
+                return true;
+            }
             return previews.Fill3D(previewData, items);
         }
 
@@ -214,7 +315,7 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField("High-poly → Low-poly", EditorStyles.boldLabel);
             bool busy = pipeline.IsRunning;
             using (new EditorGUI.DisabledScope(busy)) {
-                source = (GameObject)EditorGUILayout.ObjectField("Source root", source, typeof(GameObject), true);
+                SetSource((GameObject)EditorGUILayout.ObjectField("Source root", source, typeof(GameObject), true));
                 using (new EditorGUI.DisabledScope(!source || UvProgress.IsActive))
                     if (GUILayout.Button("Run all stages", GUILayout.Height(26))) Start(RemeshPipeline.Stage.Bake, true);
 

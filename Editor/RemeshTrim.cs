@@ -90,7 +90,7 @@ namespace SashaRX.UnityMeshLab
                 Vector3 pa = mesh.positions[a], pb = mesh.positions[b], pc = mesh.positions[c];
                 Vector3 normal = Vector3.Cross(pb - pa, pc - pa);
                 if (normal.sqrMagnitude < 1e-30f) { classes[f] = Rim; return; }   // degenerate: drop
-                normal.Normalize();
+                normal = MeshGeometry.UnitDirection(normal);
                 Vector3 centroid = (pa + pb + pc) / 3f;
                 if (bvh.FindNearestNormalFiltered(centroid, normal, sourceNormals, MinDot, maxDistance).triangleIndex >= 0) {
                     classes[f] = Kept; Interlocked.Increment(ref count); return;

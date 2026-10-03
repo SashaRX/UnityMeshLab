@@ -28,6 +28,28 @@ namespace SashaRX.UnityMeshLab
     /// </summary>
     public class UvToolContext
     {
+        MeshAssetOperations assets;
+        /// <summary>Saving/export belongs to this window's context, independently of any tab.</summary>
+        public MeshAssetOperations Assets => assets ?? (assets = new MeshAssetOperations(this));
+        readonly Dictionary<GameObject, List<GameObject>> generatedLods = new Dictionary<GameObject, List<GameObject>>();
+        readonly List<GameObject> unboundGeneratedLods = new List<GameObject>();
+        internal readonly Dictionary<GameObject, Mesh> GeneratedLodMeshes = new Dictionary<GameObject, Mesh>();
+        internal List<GameObject> GeneratedLodObjects
+        {
+            get
+            {
+                if (!LodGroup) return unboundGeneratedLods;
+                // Rebuilding the LODGroup component keeps the same root and ownership.
+                var root = LodGroup.gameObject;
+                if (!generatedLods.TryGetValue(root, out var objects))
+                {
+                    objects = new List<GameObject>();
+                    generatedLods.Add(root, objects);
+                }
+                return objects;
+            }
+        }
+
         // ── Selection ──
         public LODGroup LodGroup;
         public int SourceLodIndex;
@@ -223,6 +245,7 @@ namespace SashaRX.UnityMeshLab
         public readonly FaceToShellCache UvPreviewShellCache = new FaceToShellCache();
         public readonly Dictionary<int, SourceMeshData> SrcCache = new Dictionary<int, SourceMeshData>();
         public readonly Dictionary<int, int[]> BoundaryEdgeCache = new Dictionary<int, int[]>();
+        internal readonly Dictionary<long, int[]> UvBoundaryEdgeCache = new Dictionary<long, int[]>();
         public readonly Dictionary<long, PreviewShellData> PreviewShellDataCache = new Dictionary<long, PreviewShellData>();
         public readonly Dictionary<long, HashSet<Vector2Int>> OccupiedTilesPerMesh = new Dictionary<long, HashSet<Vector2Int>>();
         public readonly Dictionary<long, int> ShellColorKeyCache = new Dictionary<long, int>();
@@ -276,6 +299,7 @@ namespace SashaRX.UnityMeshLab
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
             BoundaryEdgeCache.Clear();
+            UvBoundaryEdgeCache.Clear();
             UvPreviewShellCache.Clear();
             PreviewShellDataCache.Clear();
             OccupiedTilesPerMesh.Clear();
@@ -351,6 +375,7 @@ namespace SashaRX.UnityMeshLab
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
             BoundaryEdgeCache.Clear();
+            UvBoundaryEdgeCache.Clear();
             UvPreviewShellCache.Clear();
             PreviewShellDataCache.Clear();
             OccupiedTilesPerMesh.Clear();
@@ -398,6 +423,7 @@ namespace SashaRX.UnityMeshLab
         {
             SrcCache.Clear();
             BoundaryEdgeCache.Clear();
+            UvBoundaryEdgeCache.Clear();
             UvPreviewShellCache.Clear();
             PreviewShellDataCache.Clear();
             OccupiedTilesPerMesh.Clear();

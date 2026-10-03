@@ -9,6 +9,73 @@ namespace SashaRX.UnityMeshLab.Tests
     public class RemeshBakeTests
     {
         static RemeshSource.Map Map() => new RemeshSource.Map();
+        [TestCase(1f, false, false)]
+        [TestCase(1f, true, false)]
+        [TestCase(1f, true, true)]
+        [TestCase(0.0001f, false, false)]
+        [TestCase(0.0001f, true, false)]
+        [TestCase(0.0001f, true, true)]
+        public void GpuBvhMatchesCpuHitsMissesAndFilters(float scale, bool filtered, bool twoSided)
+        {
+            if (!GpuBvh.Supported) Assert.Ignore("Compute shaders unavailable on this device.");
+            // Enough separated faces to exercise internal nodes and both child orders.
+            var vertices = new Vector3[48]; var indices = new int[48];
+            var normals = new Vector3[16]; var either = new bool[16];
+            for (int f = 0; f < 16; ++f) {
+                var origin = new Vector3((f % 4) * 2, (f / 4) * 2, 0) * scale;
+                vertices[f * 3] = origin;
+                vertices[f * 3 + 1] = origin + Vector3.right * scale;
+                vertices[f * 3 + 2] = origin + Vector3.up * scale;
+                for (int j = 0; j < 3; ++j) indices[f * 3 + j] = f * 3 + j;
+                normals[f] = Vector3.forward; either[f] = twoSided;
+            }
+            var bvh = new TriangleBvh(vertices, indices);
+            using (var gpu = GpuBvh.TryCreate(bvh, normals, either)) {
+                Assert.IsNotNull(gpu, "GPU query kernels must compile and be supported.");
+                var origins = new[] {
+                    new Vector4(.25f, .25f, 1, 2) * scale,
+                    new Vector4(6.25f, 6.25f, 1, 2) * scale,
+                    new Vector4(.25f, .25f, -1, 2) * scale,
+                    new Vector4(10, 10, 1, 2) * scale,
+                    new Vector4(.25f, .25f, 1, 0) * scale };
+                var dirs = new[] { (Vector4)Vector3.back, (Vector4)Vector3.back,
+                    (Vector4)Vector3.forward, (Vector4)Vector3.back, (Vector4)Vector3.back };
+                var hits = new GpuBvh.RayHit[origins.Length];
+                gpu.Raycast(origins, dirs, hits.Length, filtered, hits);
+                for (int i = 0; i < hits.Length; ++i) {
+                    var o = origins[i];
+                    var cpu = filtered ? bvh.RaycastFacingFiltered(o, dirs[i], o.w, normals, either)
+                        : bvh.Raycast(o, dirs[i], o.w);
+                    Assert.AreEqual(cpu.triangleIndex, hits[i].tri, "ray " + i);
+                    if (hits[i].tri < 0) continue;
+                    Assert.That(hits[i].t, Is.EqualTo(cpu.t).Within(scale * 1e-4f));
+                    Assert.That(hits[i].u, Is.EqualTo(cpu.barycentric.y).Within(1e-4f));
+                    Assert.That(hits[i].v, Is.EqualTo(cpu.barycentric.z).Within(1e-4f));
+                }
+                var points = new[] {
+                    new Vector4(.25f, .25f, .25f, .5f) * scale,
+                    new Vector4(6.25f, 6.25f, .25f, .5f) * scale,
+                    new Vector4(.25f, .25f, -.25f, .5f) * scale,
+                    new Vector4(10, 10, 1, .5f) * scale,
+                    new Vector4(.25f, .25f, .25f, 0) * scale };
+                var queryNormals = new[] { (Vector4)Vector3.forward, (Vector4)Vector3.forward,
+                    (Vector4)Vector3.back, (Vector4)Vector3.forward, (Vector4)Vector3.forward };
+                var nearest = new GpuBvh.NearestHit[points.Length];
+                gpu.Nearest(points, queryNormals, nearest.Length, filtered, nearest);
+                for (int i = 0; i < nearest.Length; ++i) {
+                    var q = points[i];
+                    if (q.w == 0) { Assert.AreEqual(-1, nearest[i].tri, "skipped query"); continue; }
+                    var cpu = filtered ? bvh.FindNearestNormalFiltered(q, queryNormals[i], normals, 0f, q.w, either)
+                        : bvh.FindNearest(q, q.w);
+                    Assert.AreEqual(cpu.triangleIndex, nearest[i].tri, "nearest " + i);
+                    if (nearest[i].tri < 0) continue;
+                    Assert.That(nearest[i].distSq, Is.EqualTo(cpu.distSq).Within(scale * scale * 1e-4f));
+                    Assert.That((nearest[i].point - cpu.point).magnitude, Is.LessThan(scale * 1e-4f));
+                    Assert.That((nearest[i].bary - cpu.barycentric).magnitude, Is.LessThan(1e-4f));
+                }
+            }
+        }
+
         static RemeshSource Source()
         {
             return new RemeshSource {
@@ -246,14 +313,17 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(alpha[1].g, Is.EqualTo(1).Within(1e-4f));
             Assert.That(alpha[1].r, Is.EqualTo(1).Within(1e-4f));
         }
-        [Test]
-        public void CageKeepsDoubleSidedSheetApart()
+        [TestCase(1f)]
+        [TestCase(0.001f)]
+        [TestCase(0.0001f)]
+        public void CageKeepsDoubleSidedSheetApart(float scale)
         {
             // A quad with both windings on the SAME four vertices: a wall thinner than a
             // voxel after the simplifier collapsed its slab. A position weld sums the two
             // sides to nothing; the sided cage gives every front corner +z and every back
             // corner -z, with a uniform reach when no source is given.
             var p=new[] { Vector3.zero, Vector3.right, new Vector3(1,1,0), Vector3.up };
+            for (int i = 0; i < p.Length; ++i) p[i] *= scale;
             var sheet=new RemeshNative.Geometry { positions=p, normals=new Vector3[4], indices=new[] { 0,1,2, 0,2,3, 0,2,1, 0,3,2 } };
             var cage=RemeshBaker.BuildCage(sheet, 0.1f, 2f, null);
             for (int c=0;c<6;++c) Assert.That(Vector3.Angle(cage.directions[c], Vector3.forward), Is.LessThan(0.01f), "front corner "+c);
@@ -264,13 +334,16 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(cage.Direction(0, new Vector3(0.2f,0.3f,0.5f)).z, Is.GreaterThan(0.99f));
             Assert.That(cage.Reach(2, new Vector3(0.2f,0.3f,0.5f)), Is.EqualTo(0.1f).Within(1e-6f));
         }
-        [Test]
-        public void CageWeldsSplitCopiesAcrossACrease()
+        [TestCase(1f)]
+        [TestCase(0.001f)]
+        [TestCase(0.0001f)]
+        public void CageWeldsSplitCopiesAcrossACrease(float scale)
         {
             // The 90° fold split along its shared edge (a chart border): the copies at one
             // position agree within 120°, so they share one side whose direction is the
             // average of both faces, and the sheet's far corners keep their own face.
             var p=new[] { Vector3.zero, Vector3.right, Vector3.forward, Vector3.up, Vector3.zero, Vector3.right };
+            for (int i = 0; i < p.Length; ++i) p[i] *= scale;
             var fold=new RemeshNative.Geometry { positions=p, normals=new Vector3[6], indices=new[] { 0,1,2, 5,4,3 } };
             RemeshNative.GenerateSplitNormals(fold, RemeshNormalWeighting.FaceArea);
             var cage=RemeshBaker.BuildCage(fold, 0.1f, 0f, null);
@@ -284,7 +357,7 @@ namespace SashaRX.UnityMeshLab.Tests
             // Every direction leaves the front of its own face.
             for (int c=0;c<6;++c) {
                 int f=c/3; int a=fold.indices[f*3], b=fold.indices[f*3+1], d=fold.indices[f*3+2];
-                var fn=Vector3.Cross(p[b]-p[a], p[d]-p[a]).normalized;
+                var fn=MeshGeometry.UnitDirection(Vector3.Cross(p[b]-p[a], p[d]-p[a]));
                 Assert.That(Vector3.Dot(cage.directions[c], fn), Is.GreaterThan(RemeshBaker.Cage.MinFacing));
             }
             Assert.AreEqual(4, cage.oneSided, "all four split copies along the crease sit 45° off the welded cage");
@@ -482,6 +555,54 @@ namespace SashaRX.UnityMeshLab.Tests
             var sheetN = new[] { Vector3.back, Vector3.back };
             Assert.AreEqual(0, RemeshBaker.ProbeWinding(new TriangleBvh(sheet, sheetTri), sheet, sheetN));
         }
+        [TestCase(1f)]
+        [TestCase(0.001f)]
+        [TestCase(0.0001f)]
+        public void NearestPointStaysOnSmallTriangleInterior(float scale)
+        {
+            var p = new Vector3(.25f, .25f, .25f) * scale;
+            var closest = TriangleBvh.ClosestPointOnTriangle(p, Vector3.zero,
+                Vector3.right * scale, Vector3.up * scale, out var bary);
+            Assert.That((closest - new Vector3(.25f, .25f, 0) * scale).magnitude, Is.LessThan(scale * 1e-5f));
+            Assert.That((bary - new Vector3(.5f, .25f, .25f)).magnitude, Is.LessThan(1e-5f));
+        }
+
+        [TestCase(1f)]
+        [TestCase(0.001f)]
+        [TestCase(0.0001f)]
+        public void SmallScaleTrimKeepsFrontAndDropsBack(float scale)
+        {
+            var p = new[] { Vector3.zero, Vector3.right * scale, Vector3.up * scale };
+            var mesh = new RemeshNative.IndexedMesh { positions = p, indices = new[] { 0, 1, 2, 0, 2, 1 } };
+            var trimmed = RemeshTrim.Trim(mesh, p, new[] { 0, 1, 2 }, scale * 0.1f, CancellationToken.None);
+            Assert.IsFalse(trimmed.gaveUp);
+            Assert.AreEqual(1, trimmed.removed);
+            Assert.AreEqual(RemeshTrim.Kept, trimmed.classes[0]);
+            Assert.AreEqual(RemeshTrim.Back, trimmed.classes[1]);
+            Assert.AreEqual(1, trimmed.mesh.TriangleCount);
+        }
+
+        [TestCase(RemeshNormalWeighting.FaceArea)]
+        [TestCase(RemeshNormalWeighting.CornerAngle)]
+        [TestCase(RemeshNormalWeighting.FaceAreaAndCornerAngle)]
+        public void SplitNormalsPreserveDirectionsAtSmallScales(RemeshNormalWeighting weighting)
+        {
+            var vertices = new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.forward };
+            Vector3[] expected = null;
+            foreach (float scale in new[] { 1f, 0.001f, 0.0001f }) {
+                var p = new Vector3[vertices.Length];
+                for (int i = 0; i < p.Length; ++i) p[i] = vertices[i] * scale;
+                var geometry = new RemeshNative.Geometry { positions = p, normals = new Vector3[p.Length],
+                    indices = new[] { 0, 1, 2, 0, 3, 1 } };
+                RemeshNative.GenerateSplitNormals(geometry, weighting);
+                if (expected == null) expected = (Vector3[])geometry.normals.Clone();
+                for (int i = 0; i < p.Length; ++i) {
+                    Assert.That(geometry.normals[i].magnitude, Is.EqualTo(1f).Within(1e-5f));
+                    Assert.That(Vector3.Dot(geometry.normals[i], expected[i]), Is.GreaterThan(0.99999f));
+                }
+            }
+        }
+
         [Test]
         public void TrimKeepsTheSideTheSourceHasAndDropsTheSlabsBackAndRims()
         {

@@ -555,11 +555,11 @@ namespace SashaRX.UnityMeshLab
                     Vector3 e2 = positions[indices[f * 3 + (k + 2) % 3]] - positions[v];
                     // Area × corner angle: meshopt's accumulation and Blender's weighted
                     // normal in one, so decimation slivers barely steer the direction.
-                    Vector3 contribution = cross * (Vector3.Angle(e1, e2) * Mathf.Deg2Rad);
+                    Vector3 contribution = cross * MeshGeometry.CornerAngle(e1, e2);
                     int best = -1; float bestDot = float.NegativeInfinity;
                     for (int sd = firstSide[slot]; sd >= 0; sd = nextSide[sd]) {
                         Vector3 sum = sideSum[sd];
-                        float dot = sum.sqrMagnitude > 1e-30f && fn.sqrMagnitude > 0f ? Vector3.Dot(sum.normalized, fn) : 1f;
+                        float dot = sum.sqrMagnitude > 1e-30f && fn.sqrMagnitude > 0f ? Vector3.Dot(MeshGeometry.UnitDirection(sum), fn) : 1f;
                         if (dot > Cage.SideCos && dot > bestDot) { best = sd; bestDot = dot; }
                     }
                     if (best < 0) {
@@ -574,7 +574,7 @@ namespace SashaRX.UnityMeshLab
             int sideCount = sideSum.Count;
             var sideDir = new Vector3[sideCount];
             for (int sd = 0; sd < sideCount; ++sd)
-                sideDir[sd] = sideSum[sd].sqrMagnitude > 1e-30f ? sideSum[sd].normalized : Vector3.zero;
+                sideDir[sd] = sideSum[sd].sqrMagnitude > 1e-30f ? MeshGeometry.UnitDirection(sideSum[sd]) : Vector3.zero;
             // Laplacian smoothing over the SIDE connectivity: the corners of a face all
             // sit on compatible sides, so the pass flows through chart borders and
             // creases of one surface and never across to the other side of a sheet.

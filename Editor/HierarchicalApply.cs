@@ -15,6 +15,8 @@
 //      CollapseUndoOperations so a single Ctrl+Z reverses the whole
 //      apply.
 
+using System;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
 
@@ -44,54 +46,93 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            var opts = HierarchicalRepack.Options.Default;
-            var result = HierarchicalRepack.Build(lg, opts);
-            if (!string.IsNullOrEmpty(result.error))
-            {
-                EditorUtility.DisplayDialog("Hier UV2",
-                    $"Build failed on '{lg.name}':\n{result.error}",
-                    "OK");
-                return;
-            }
+            // Fire-and-forget async build: the xatlas packs inside Build run off
+            // the main thread (XatlasRepack.RunNativePackAsync), so the editor
+            // keeps repainting and the Background Tasks strip's Cancel stays
+            // reachable — the old sync Build froze both for the whole pack.
+            // Continuations resume on the main thread through Unity's
+            // synchronization context, so the Undo group and dialogs below stay
+            // on the right thread.
+            UvProgress.Begin($"Hier UV2 ({lg.name})", cancelable: true);
+            _ = ApplyAsync(lg);
+        }
 
-            HierarchicalRepack.BuildFinalMeshes(lg, result);
-            int applyCount = ApplyFinalMeshesToLodGroup(lg, result);
-
-            if (applyCount == 0)
+        static async Task ApplyAsync(LODGroup lg)
+        {
+            bool failed = false;
+            try
             {
-                EditorUtility.DisplayDialog("Hier UV2",
-                    "No final meshes were produced for any LOD on this group.\n" +
-                    "Check the Console for stage-specific warnings.",
-                    "OK");
-                return;
-            }
+                var result = await HierarchicalRepack.BuildAsync(lg, HierarchicalRepack.Options.Default);
 
-            // Stage E3 headline so the operator sees atlas quality without
-            // digging through the Console (full table: stage_e_metrics.csv
-            // in benchmark runs, per-LOD lines in the log).
-            string e3Note = "";
-            if (result.stageEMetrics != null)
-            {
-                int overlapPx = 0, unplaced = 0, misaligned = 0;
-                foreach (var m in result.stageEMetrics)
+                // A cancelled pack makes later stages skip with warnings but no
+                // error string — never apply a partial atlas to the scene.
+                if (UvProgress.CancelRequested)
                 {
-                    overlapPx += m.overlapTexels;
-                    unplaced += m.unplacedFaces;
-                    misaligned += m.misalignedGroups;
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        $"[HierRepack] Apply cancelled on '{lg.name}' — nothing applied.");
+                    return;
                 }
-                e3Note = $"\nAtlas check: overlap {overlapPx} texel(s), " +
-                    $"unplaced faces {unplaced}, misaligned domains {misaligned}." +
-                    (unplaced > 0 || misaligned > 0
-                        ? "\nWARNING: non-zero defects — see Console for per-LOD detail."
-                        : "");
-            }
+                if (!string.IsNullOrEmpty(result.error))
+                {
+                    EditorUtility.DisplayDialog("Hier UV2",
+                        $"Build failed on '{lg.name}':\n{result.error}",
+                        "OK");
+                    return;
+                }
 
-            UvtLog.Info(UvtLog.Category.Benchmark,
-                $"[HierRepack] Applied UV2 to '{lg.name}' ({applyCount} LODs). Ctrl+Z to revert.");
-            EditorUtility.DisplayDialog("Hier UV2",
-                $"Applied hierarchical UV2 to {applyCount} LOD(s) on '{lg.name}'.\n" +
-                "Use Ctrl+Z to revert." + e3Note,
-                "OK");
+                HierarchicalRepack.BuildFinalMeshes(lg, result);
+                int applyCount = ApplyFinalMeshesToLodGroup(lg, result);
+
+                if (applyCount == 0)
+                {
+                    EditorUtility.DisplayDialog("Hier UV2",
+                        "No final meshes were produced for any LOD on this group.\n" +
+                        "Check the Console for stage-specific warnings.",
+                        "OK");
+                    return;
+                }
+
+                // Stage E3 headline so the operator sees atlas quality without
+                // digging through the Console (full table: stage_e_metrics.csv
+                // in benchmark runs, per-LOD lines in the log).
+                string e3Note = "";
+                if (result.stageEMetrics != null)
+                {
+                    int overlapPx = 0, unplaced = 0, misaligned = 0;
+                    foreach (var m in result.stageEMetrics)
+                    {
+                        overlapPx += m.overlapTexels;
+                        unplaced += m.unplacedFaces;
+                        misaligned += m.misalignedGroups;
+                    }
+                    e3Note = $"\nAtlas check: overlap {overlapPx} texel(s), " +
+                        $"unplaced faces {unplaced}, misaligned domains {misaligned}." +
+                        (unplaced > 0 || misaligned > 0
+                            ? "\nWARNING: non-zero defects — see Console for per-LOD detail."
+                            : "");
+                }
+
+                UvtLog.Info(UvtLog.Category.Benchmark,
+                    $"[HierRepack] Applied UV2 to '{lg.name}' ({applyCount} LODs). Ctrl+Z to revert.");
+                EditorUtility.DisplayDialog("Hier UV2",
+                    $"Applied hierarchical UV2 to {applyCount} LOD(s) on '{lg.name}'.\n" +
+                    "Use Ctrl+Z to revert." + e3Note,
+                    "OK");
+            }
+            catch (Exception ex)
+            {
+                failed = true;
+                UvtLog.Error($"[HierRepack] Apply failed on '{lg.name}': {ex.Message}");
+                EditorUtility.DisplayDialog("Hier UV2",
+                    $"Apply failed on '{lg.name}':\n{ex.Message}",
+                    "OK");
+            }
+            finally
+            {
+                if (failed) UvProgress.Fail("Hier UV2 apply failed");
+                else if (UvProgress.CancelRequested) UvProgress.Cancel();
+                else UvProgress.End();
+            }
         }
 
         [MenuItem(kMenuPath, true)]

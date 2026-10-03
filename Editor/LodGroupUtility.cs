@@ -116,5 +116,122 @@ namespace SashaRX.UnityMeshLab
             }
             return copy;
         }
+        internal static List<(GameObject go, int lodIndex)> FindLodSiblings(GameObject go)
+        {
+            if (go == null) return null;
+            if (!MeshNaming.HasLodSuffix(go.name))
+                return FindNamedLodChildren(go.transform, null);
+            // An invalid suffix cannot become an index in the LODGroup.
+            if (!MeshNaming.TryParseLod(go.name, out string baseName, out _)) return null;
+            return FindNamedLodChildren(go.transform.parent, baseName);
+        }
+
+        internal static bool HasAmbiguousLodChains(GameObject root)
+        {
+            if (root == null || MeshNaming.HasLodSuffix(root.name)) return false;
+            var names = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < root.transform.childCount; ++i)
+                if (MeshNaming.TryParseLod(root.transform.GetChild(i).name, out var name, out _)) names.Add(name);
+            return names.Count > 1;
+        }
+
+        static List<(GameObject go, int lodIndex)> FindNamedLodChildren(Transform parent, string baseName)
+        {
+            if (parent == null) return null;
+            var results = new List<(GameObject, int)>();
+            string chain = baseName;
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                var child = parent.GetChild(i).gameObject;
+                if (!MeshNaming.TryParseLod(child.name, out string childBase, out int lodIndex)) continue;
+                if (baseName != null && !string.Equals(childBase, baseName, System.StringComparison.OrdinalIgnoreCase)) continue;
+                if (chain != null && baseName == null && !string.Equals(childBase, chain, System.StringComparison.OrdinalIgnoreCase)) return null;
+                chain = childBase;
+                results.Add((child, lodIndex));
+            }
+            results.Sort((a, b) => a.Item2.CompareTo(b.Item2));
+            return results.Count > 0 ? results : null;
+        }
+
+        internal static LODGroup CreateLodGroupStatic(List<(GameObject go, int lodIndex)> siblings)
+            => LodHierarchy.CreateFromSiblings(siblings);
+
+        internal static void NormalizeSingleLodTransitionForGeneration(List<LOD> lods, int startLod)
+        {
+            if (startLod != 1 || lods.Count != 1 ||
+                !Mathf.Approximately(lods[0].screenRelativeTransitionHeight, 0.01f))
+                return;
+
+            lods[0] = new LOD(0.5f, lods[0].renderers);
+        }
+
+        internal static LODGroup CreateLodGroupFromRenderers(GameObject root)
+            => LodHierarchy.CreateFromRenderers(root, 0.01f, requireRenderers: true, out _);
+
+        static bool IsMeshReferenced(Mesh mesh)
+        {
+            foreach (var filter in Resources.FindObjectsOfTypeAll<MeshFilter>())
+                if (filter.sharedMesh == mesh) return true;
+            foreach (var renderer in Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>())
+                if (renderer.sharedMesh == mesh) return true;
+            return false;
+        }
+
+        internal static void ClearGeneratedLods(UvToolContext ctx)
+        {
+            if (ctx.GeneratedLodObjects.Count == 0) return;
+            int undoGroup = Undo.GetCurrentGroup();
+            RemoveGeneratedLodSlots(ctx);
+            DestroyGeneratedLodObjects(ctx);
+            Undo.CollapseUndoOperations(undoGroup);
+            ctx.GeneratedLodObjects.Clear();
+            if (ctx.LodGroup != null) ctx.Refresh(ctx.LodGroup);
+        }
+
+        static void RemoveGeneratedLodSlots(UvToolContext ctx)
+        {
+            if (ctx.LodGroup == null) return;
+            var generatedSet = new HashSet<GameObject>();
+            foreach (var go in ctx.GeneratedLodObjects)
+                if (go != null) generatedSet.Add(go);
+            if (generatedSet.Count == 0) return;
+            var cleanedLods = new List<LOD>();
+            foreach (var lod in ctx.LodGroup.GetLODs())
+            {
+                var remaining = RemainingLodRenderers(lod, generatedSet);
+                if (remaining.Count > 0)
+                    cleanedLods.Add(new LOD(lod.screenRelativeTransitionHeight, remaining.ToArray()) { fadeTransitionWidth = lod.fadeTransitionWidth });
+            }
+            Undo.RecordObject(ctx.LodGroup, "Clear Generated LODs");
+            ctx.LodGroup.SetLODs(cleanedLods.ToArray());
+            if (PrefabUtility.IsPartOfPrefabInstance(ctx.LodGroup))
+                PrefabUtility.RecordPrefabInstancePropertyModifications(ctx.LodGroup);
+        }
+
+        static List<Renderer> RemainingLodRenderers(LOD lod, HashSet<GameObject> generatedSet)
+        {
+            var remaining = new List<Renderer>();
+            if (lod.renderers == null) return remaining;
+            foreach (var renderer in lod.renderers)
+                if (renderer != null && !generatedSet.Contains(renderer.gameObject)) remaining.Add(renderer);
+            return remaining;
+        }
+
+        static void DestroyGeneratedLodObjects(UvToolContext ctx)
+        {
+            var ownedMeshes = new HashSet<Mesh>();
+            foreach (var go in ctx.GeneratedLodObjects)
+            {
+                if (ctx.GeneratedLodMeshes.TryGetValue(go, out var mesh))
+                {
+                    if (mesh && !EditorUtility.IsPersistent(mesh)) ownedMeshes.Add(mesh);
+                    ctx.GeneratedLodMeshes.Remove(go);
+                }
+                if (go != null) Undo.DestroyObjectImmediate(go);
+            }
+            foreach (var mesh in ownedMeshes)
+                if (!IsMeshReferenced(mesh)) Undo.DestroyObjectImmediate(mesh);
+        }
+
     }
 }

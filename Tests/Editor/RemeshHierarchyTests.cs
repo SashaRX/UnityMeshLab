@@ -1,6 +1,9 @@
 using System.Collections.Generic;
+using System.Collections;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace SashaRX.UnityMeshLab.Tests.Editor
 {
@@ -9,6 +12,188 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
     /// Native~ ctest battery and the DllNotFoundException-skipping stage tests.</summary>
     public sealed class RemeshHierarchyTests
     {
+        [Test]
+        public void SkinnedSourcePreviewKeepsSkinAttributesAndReleasesItsPoseMesh()
+        {
+            var root = new GameObject("skin source preview");
+            var mesh = new Mesh { name = "skin source" };
+            var tool = new RemeshBakeTool();
+            Mesh posed = null;
+            try {
+                mesh.vertices = new[] { Vector3.zero, Vector3.right, Vector3.up };
+                mesh.triangles = new[] { 0, 1, 2 };
+                mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.up };
+                mesh.bindposes = new[] { Matrix4x4.identity };
+                mesh.boneWeights = new[] {
+                    new BoneWeight { boneIndex0 = 0, weight0 = 1 }, new BoneWeight { boneIndex0 = 0, weight0 = 1 },
+                    new BoneWeight { boneIndex0 = 0, weight0 = 1 } };
+                var skin = root.AddComponent<SkinnedMeshRenderer>();
+                skin.sharedMesh = mesh; skin.bones = new[] { root.transform }; skin.rootBone = root.transform;
+                tool.SetSource(root);
+                var entries = new List<MeshEntry>(); var items = new List<MeshViewport3D.Item>();
+                Assert.IsTrue(tool.GetUvContent(entries)); Assert.IsTrue(tool.Get3DContent(items));
+                Assert.AreEqual(1, entries.Count);
+                posed = entries[0].originalMesh;
+                Assert.AreNotSame(mesh, posed); Assert.AreSame(posed, items[0].mesh);
+                using (var inspection = new MeshInspection())
+                    Assert.IsTrue(MeshInspection.Supports(posed, MeshViewport3D.Shading.BoneWeights), inspection.Report(posed) + inspection.VertexValues(posed, 0));
+                Assert.IsNotNull(MeshViewport3D.EncodeColors(posed, MeshViewport3D.Shading.BoneIndices));
+                CollectionAssert.AreEqual(mesh.uv, posed.uv);
+                tool.ClearSourcePreview();
+                Assert.IsFalse(posed, "owned pose mesh is destroyed");
+                Assert.IsTrue(mesh, "the original skin mesh remains intact");
+                Assert.AreSame(mesh, skin.sharedMesh);
+            }
+            finally { tool.ClearSourcePreview(); Object.DestroyImmediate(root); Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
+        public void SourceUvPreviewIsAvailableBeforeRemeshingAndFollowsSourceRoot()
+        {
+            var root = new GameObject("source UV hierarchy");
+            var first = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var second = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var other = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            var original = first.GetComponent<MeshFilter>().sharedMesh;
+            var mesh = Object.Instantiate(original);
+            var tool = new RemeshBakeTool();
+            try {
+                first.transform.SetParent(root.transform); second.transform.SetParent(root.transform);
+                first.transform.localRotation = Quaternion.Euler(45, 25, 10);
+                second.transform.localPosition = Vector3.right * 2;
+                mesh.uv2 = mesh.uv;
+                mesh.SetUVs(7, new List<Vector2>(mesh.uv));
+                first.GetComponent<MeshFilter>().sharedMesh = mesh;
+                tool.SetSource(root);
+                var entries = new List<MeshEntry>(); var items = new List<MeshViewport3D.Item>();
+                Assert.IsTrue(tool.GetUvContent(entries));
+                Assert.IsTrue(tool.Get3DContent(items));
+                Assert.AreEqual(2, entries.Count); Assert.AreEqual(2, items.Count);
+                var canvas = new UvCanvasView { EntriesOverride = entries };
+                var context = new UvToolContext();
+                Assert.IsTrue(canvas.HasPreviewChannel(context, 0));
+                Assert.IsTrue(canvas.HasPreviewChannel(context, 1));
+                Assert.IsTrue(canvas.HasPreviewChannel(context, 7));
+                for (int i = 0; i < entries.Count; ++i) Assert.AreSame(entries[i].originalMesh, items[i].mesh);
+                var index = items.FindIndex(item => item.mesh == mesh);
+                Assert.That(index, Is.GreaterThanOrEqualTo(0));
+                Assert.AreEqual(first.transform.localToWorldMatrix, items[index].matrix);
+                Assert.AreSame(mesh, first.GetComponent<MeshFilter>().sharedMesh);
+                // Switching the source field must replace the preview instead of
+                // showing meshes inherited from the hub or the previous root.
+                tool.SetSource(other); entries.Clear(); items.Clear();
+                Assert.IsTrue(tool.GetUvContent(entries)); Assert.IsTrue(tool.Get3DContent(items));
+                Assert.AreEqual(1, entries.Count); Assert.AreEqual(1, items.Count);
+                Assert.AreSame(other.GetComponent<MeshFilter>().sharedMesh, entries[0].originalMesh);
+                tool.ClearSourcePreview();
+                Assert.IsTrue(mesh, "a readable original remains owned by its source");
+            }
+            finally {
+                tool.ClearSourcePreview();
+                Object.DestroyImmediate(root); Object.DestroyImmediate(other); Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator RemeshToolUsesSameStageMeshForUvAnd3D()
+        {
+            var source = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var tool = new RemeshBakeTool();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var pipeline = (RemeshPipeline)typeof(RemeshBakeTool).GetField("pipeline", flags).GetValue(tool);
+            var preview = (RemeshPreview)typeof(RemeshBakeTool).GetField("previews", flags).GetValue(tool);
+            try {
+                var settings = new RemeshSettings { sourceShape = RemeshShape.BoundingBox,
+                    simplify = false, textureResolution = 64, bakeSamples = 1, minPartSize = 0, minRodVoxels = 0 };
+                var run = pipeline.Run(source, settings, RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Bake);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                foreach (RemeshPreview.Stage stage in System.Enum.GetValues(typeof(RemeshPreview.Stage))) {
+                    preview.Show(stage);
+                    var entries = new List<MeshEntry>(); var items = new List<MeshViewport3D.Item>();
+                    Assert.IsTrue(tool.GetUvContent(entries));
+                    Assert.IsTrue(tool.Get3DContent(items));
+                    Assert.AreEqual(1, entries.Count);
+                    Assert.AreSame(items[0].mesh, entries[0].originalMesh, stage.ToString());
+                    var context = new UvToolContext { PreviewUvChannel = 1 };
+                    var canvas = new UvCanvasView { EntriesOverride = entries };
+                    canvas.EnsurePreviewChannel(context);
+                    bool hasUv = canvas.HasPreviewChannel(context, 0);
+                    Assert.AreEqual(stage == RemeshPreview.Stage.Source || stage == RemeshPreview.Stage.Result, hasUv);
+                    if (hasUv) {
+                        Assert.IsTrue(canvas.HasPreviewChannel(context, context.PreviewUvChannel));
+                        if (stage == RemeshPreview.Stage.Source) {
+                            Assert.AreSame(source.GetComponent<MeshFilter>().sharedMesh, entries[0].originalMesh);
+                            CollectionAssert.AreEqual(source.GetComponent<MeshFilter>().sharedMesh.uv2, entries[0].originalMesh.uv2);
+                        }
+                        else Assert.AreEqual(0, context.PreviewUvChannel);
+                    }
+                    else Assert.IsNull(entries[0].previewTexture, "no baked map on a stage without UVs");
+                }
+            }
+            finally {
+                tool.ClearSourcePreview(); preview.Dispose(); pipeline.Dispose(); Object.DestroyImmediate(source);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator RotatedSourceKeepsOrientationInPreviewAndSavedPrefab()
+        {
+            const string folder = "Assets/MeshLabOrientationRegression";
+            Assert.IsFalse(AssetDatabase.IsValidFolder(folder), "test folder must be unused");
+            AssetDatabase.CreateFolder("Assets", "MeshLabOrientationRegression");
+            var parent = new GameObject("RotatedParent");
+            var source = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            source.transform.SetParent(parent.transform, false);
+            parent.transform.rotation = Quaternion.Euler(0, 25, 15);
+            parent.transform.localScale = Vector3.one * 2;
+            var expectedRotation = Quaternion.identity;
+            try {
+                for (int mode = 0; mode < 3; ++mode) {
+                    source.name = "Orientation" + mode;
+                    source.transform.localRotation = Quaternion.Euler(-90, 0, 0);
+                    source.transform.localScale = Vector3.one * .01f;
+                    expectedRotation = source.transform.rotation;
+                    var settings = new RemeshSettings { sourceShape = RemeshShape.BoundingBox,
+                        keepHierarchy = mode == 2, normalizeSize = mode != 0,
+                        simplify = false, textureResolution = 64, bakeSamples = 1,
+                        minPartSize = 0, minRodVoxels = 0 };
+                    using (var pipeline = new RemeshPipeline())
+                    using (var preview = new RemeshPreview()) {
+                        var run = pipeline.Run(source, settings, RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Bake);
+                        while (!run.IsCompleted) yield return null;
+                        Assert.IsTrue(run.Result, pipeline.Status);
+                        Assert.IsTrue(UvTopology.HasUv(pipeline.SourceMesh, 0), "captured source preview retains UV0");
+                        Assert.That(Quaternion.Angle(expectedRotation, pipeline.RootRotation), Is.LessThan(.01f));
+                        var data = new RemeshPreview.Data { spaceToWorld = pipeline.Primary.spaceToWorld };
+                        data.meshes[0] = pipeline.SourceMesh; data.meshes[1] = pipeline.VoxelMesh;
+                        data.meshes[2] = pipeline.SimplifiedMesh; data.meshes[3] = pipeline.ResultMesh;
+                        foreach (RemeshPreview.Stage stage in System.Enum.GetValues(typeof(RemeshPreview.Stage))) {
+                            preview.Show(stage);
+                            var items = new List<MeshViewport3D.Item>();
+                            Assert.IsTrue(preview.Fill3D(data, items), stage.ToString());
+                            Assert.That(Quaternion.Angle(expectedRotation, items[0].matrix.rotation), Is.LessThan(.01f));
+                            var vertex = items[0].mesh.vertices[0];
+                            Assert.That((items[0].matrix.MultiplyPoint3x4(vertex) -
+                                pipeline.Primary.spaceToWorld.MultiplyPoint3x4(vertex)).magnitude, Is.LessThan(1e-6f));
+                        }
+                        // Saving uses the captured transform even if the source changes later.
+                        source.transform.rotation = Quaternion.identity;
+                        RemeshExporter.Export(pipeline, settings, folder);
+                        string path = folder + "/" + source.name + "_Remesh/" + source.name + ".prefab";
+                        var saved = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                        Assert.IsNotNull(saved);
+                        Assert.That(Quaternion.Angle(expectedRotation, saved.transform.localRotation), Is.LessThan(.01f));
+                        Assert.That(saved.transform.localPosition, Is.EqualTo(Vector3.zero));
+                    }
+                }
+            }
+            finally {
+                Object.DestroyImmediate(parent);
+                AssetDatabase.DeleteAsset(folder);
+            }
+        }
+
         static Mesh TriangleMesh()
         {
             var mesh = new Mesh { name = "TestTriangle" };

@@ -11,6 +11,7 @@ using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
+    [MeshLabTool("lod_generation", MeshLabLibraries.Simplification, MeshLabLibraries.Hierarchy, MeshLabLibraries.Assets)]
     public class LodGenerationTool : IUvTool
     {
         UvToolContext ctx;
@@ -33,15 +34,13 @@ namespace SashaRX.UnityMeshLab
 
         // ── Results ──
         List<GeneratedLodInfo> lastResults = new List<GeneratedLodInfo>();
-        List<GameObject> generatedObjects = new List<GameObject>();
+        List<GameObject> generatedObjects => ctx.GeneratedLodObjects;
         int cachedLodSelectionId = -1;
         int cachedRendererSelectionId = -1;
         List<(GameObject go, int lodIndex, int rendererCount, int triangleCount)> cachedDetectedLods =
             new List<(GameObject, int, int, int)>();
         bool cachedSelectionHasRenderers;
 
-        // Static accessor for cross-tool cleanup (e.g., after FBX export)
-        internal static LodGenerationTool ActiveInstance { get; private set; }
 
         struct GeneratedLodInfo
         {
@@ -57,7 +56,6 @@ namespace SashaRX.UnityMeshLab
         {
             this.ctx = ctx;
             this.canvas = canvas;
-            ActiveInstance = this;
         }
 
         public void OnDeactivate() { }
@@ -127,6 +125,10 @@ namespace SashaRX.UnityMeshLab
                 if (GUILayout.Button("Create LODGroup", GUILayout.Height(28)))
                     CreateLodGroup(siblings);
                 GUI.backgroundColor = bgc;
+            }
+            else if (LodGroupUtility.HasAmbiguousLodChains(selected))
+            {
+                EditorGUILayout.HelpBox("Multiple LOD chains detected. Select a mesh from the chain to create its LODGroup.", MessageType.Info);
             }
             else if (selected != null && SelectionHasRenderers(selected))
             {
@@ -388,47 +390,8 @@ namespace SashaRX.UnityMeshLab
 
         internal void ClearGeneratedLods()
         {
-            if (generatedObjects.Count == 0 && lastResults.Count == 0) return;
-
-            int undoGroup = Undo.GetCurrentGroup();
-
-            // Remove LOD slots that reference generated objects
-            if (ctx.LodGroup != null)
-            {
-                var lods = ctx.LodGroup.GetLODs();
-                var generatedSet = new HashSet<GameObject>();
-                foreach (var go in generatedObjects)
-                    if (go != null) generatedSet.Add(go);
-
-                var cleanedLods = new List<LOD>();
-                foreach (var lod in lods)
-                {
-                    if (lod.renderers == null || lod.renderers.Length == 0) continue;
-                    bool anyGenerated = false;
-                    foreach (var r in lod.renderers)
-                        if (r != null && generatedSet.Contains(r.gameObject))
-                        { anyGenerated = true; break; }
-                    if (!anyGenerated) cleanedLods.Add(lod);
-                }
-
-                if (cleanedLods.Count != lods.Length)
-                {
-                    Undo.RecordObject(ctx.LodGroup, "Clear Generated LODs");
-                    ctx.LodGroup.SetLODs(cleanedLods.ToArray());
-                }
-            }
-
-            // Destroy generated GameObjects (top-level ones destroy children too)
-            foreach (var go in generatedObjects)
-                if (go != null) Undo.DestroyObjectImmediate(go);
-
-            Undo.CollapseUndoOperations(undoGroup);
-
-            generatedObjects.Clear();
+            LodGroupUtility.ClearGeneratedLods(ctx);
             lastResults.Clear();
-
-            if (ctx.LodGroup != null)
-                ctx.Refresh(ctx.LodGroup);
             requestRepaint?.Invoke();
         }
 
@@ -452,7 +415,6 @@ namespace SashaRX.UnityMeshLab
             var result = LodPipelineOps.Generate(ctx, startLod, opts);
             if (!result.ok) { UvtLog.Error($"[GenerateLOD] {result.error}"); return; }
 
-            generatedObjects.AddRange(result.generatedObjects);
             foreach (var info in result.perLod)
             {
                 lastResults.Add(new GeneratedLodInfo
@@ -488,66 +450,10 @@ namespace SashaRX.UnityMeshLab
         /// base name but with different LOD indices. Returns null if the name doesn't
         /// match the LOD pattern.
         /// </summary>
-        internal static List<(GameObject go, int lodIndex)> FindLodSiblings(GameObject go)
-        {
-            if (go == null) return null;
-
-            // Trailing LOD suffix (_LOD0, -LOD1, " LOD2"): the one naming rule, MeshNaming.
-            if (MeshNaming.HasLodSuffix(go.name))
-            {
-                if (!MeshNaming.TryParseLod(go.name, out string baseName, out _))
-                    return null;   // an index the LODGroup cannot hold
-
-                // Selected object has LOD suffix — search siblings
-                var parent = go.transform.parent;
-                if (parent == null) return null;
-
-                var results = new List<(GameObject, int)>();
-                for (int i = 0; i < parent.childCount; i++)
-                {
-                    var child = parent.GetChild(i).gameObject;
-                    if (MeshNaming.TryParseLod(child.name, out string childBase, out int lodIndex)
-                        && string.Equals(childBase, baseName, System.StringComparison.OrdinalIgnoreCase))
-                        results.Add((child, lodIndex));
-                }
-
-                results.Sort((a, b) => a.Item2.CompareTo(b.Item2));
-                return results.Count > 0 ? results : null;
-            }
-
-            // Selected object does NOT have LOD suffix — search its children
-            // Handles prefab pattern: Parent (Pallet_13) → Children (Pallet_LOD0, Pallet_LOD1, ...)
-            var childResults = new List<(GameObject, int)>();
-            for (int i = 0; i < go.transform.childCount; i++)
-            {
-                var child = go.transform.GetChild(i).gameObject;
-                if (MeshNaming.TryParseLod(child.name, out _, out int lodIndex))
-                    childResults.Add((child, lodIndex));
-            }
-
-            if (childResults.Count > 0)
-            {
-                childResults.Sort((a, b) => a.Item2.CompareTo(b.Item2));
-                return childResults;
-            }
-
-            return null;
-        }
-
-        internal static LODGroup CreateLodGroupStatic(List<(GameObject go, int lodIndex)> siblings)
-            => LodHierarchy.CreateFromSiblings(siblings);
-
-        internal static void NormalizeSingleLodTransitionForGeneration(List<LOD> lods, int startLod)
-        {
-            if (startLod != 1 || lods.Count != 1 ||
-                !Mathf.Approximately(lods[0].screenRelativeTransitionHeight, 0.01f))
-                return;
-
-            lods[0] = new LOD(0.5f, lods[0].renderers);
-        }
-
-        internal static LODGroup CreateLodGroupFromRenderers(GameObject root)
-            => LodHierarchy.CreateFromRenderers(root, 0.01f, requireRenderers: true, out _);
+        internal static List<(GameObject go, int lodIndex)> FindLodSiblings(GameObject go) => LodGroupUtility.FindLodSiblings(go);
+        internal static LODGroup CreateLodGroupStatic(List<(GameObject go, int lodIndex)> siblings) => LodGroupUtility.CreateLodGroupStatic(siblings);
+        internal static void NormalizeSingleLodTransitionForGeneration(List<LOD> lods, int startLod) => LodGroupUtility.NormalizeSingleLodTransitionForGeneration(lods, startLod);
+        internal static LODGroup CreateLodGroupFromRenderers(GameObject root) => LodGroupUtility.CreateLodGroupFromRenderers(root);
 
         void CreateLodGroup(List<(GameObject go, int lodIndex)> siblings)
         {

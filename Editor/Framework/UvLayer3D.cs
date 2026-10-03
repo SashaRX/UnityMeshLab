@@ -1,6 +1,6 @@
 // UvLayer3D.cs — the UV viewer laid over the model in the 3D canvas: the active fill
-// mode, borders and preview background rendered per mesh into a UV-space texture
-// and drawn through the preview UV channel; the canvas's wire toggle as true 3D
+// mode and preview background rendered per mesh into a UV-space texture
+// and drawn through the preview UV channel; UV borders and wire as true 3D
 // lines; spot-mode picking (ray → face → shell) feeding the same hover/selection
 // state the UV canvas and the tools read; hovered/selected shells highlighted on
 // the surface.
@@ -24,7 +24,11 @@ namespace SashaRX.UnityMeshLab
         readonly Dictionary<int, Layer> layers = new Dictionary<int, Layer>();
         readonly Dictionary<int, TriangleBvh> bvhs = new Dictionary<int, TriangleBvh>();
         readonly Dictionary<long, Mesh> shellMeshes = new Dictionary<long, Mesh>();
+        readonly Dictionary<long, Mesh> boundaryMeshes = new Dictionary<long, Mesh>();
         Material overlay;
+
+        public UvLayer3D() { VertexChannels.Changed += InvalidateMesh; }
+        void InvalidateMesh(Mesh mesh) => Invalidate();
 
         bool EnsureMaterial()
         {
@@ -37,14 +41,14 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>True when any part of the UV viewer would show on the model.</summary>
         static bool LayerVisible(UvCanvasView canvas) =>
-            (!canvas.FillHidden && canvas.FillModes.Count > 0) || canvas.ShowBorder || canvas.CheckerEnabled ||
+            (!canvas.FillHidden && canvas.FillModes.Count > 0) || canvas.CheckerEnabled ||
             canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off;
 
         static string LayerKey(UvCanvasView canvas, UvToolContext ctx, Mesh mesh, MeshEntry entry)
         {
             int selected = canvas.HasSelectedShell && canvas.SelectedShell.meshEntry == entry ? canvas.SelectedShell.shellId : -1;
             return $"{mesh.GetInstanceID()}|{canvas.ActiveFillModeIndex}|{canvas.FillHidden}|{canvas.FillAlpha:F3}|{canvas.ShowBorder}|{canvas.CurrentPreviewMode}|" +
-                   $"{canvas.CheckerEnabled}|{canvas.LmExposure:F2}|{ctx.PreviewUvChannel}|{(int)canvas.ValidationFilterMask}|{selected}";
+                   $"{canvas.CheckerEnabled}|{canvas.CheckerColorMode}|{canvas.CheckerShowR}|{canvas.CheckerShowG}|{canvas.LmExposure:F2}|{ctx.PreviewUvChannel}|{(int)canvas.ValidationFilterMask}|{selected}";
         }
 
         /// <summary>Draws the UV viewer over every context item (an item without an entry is
@@ -52,7 +56,7 @@ namespace SashaRX.UnityMeshLab
         public void Draw(MeshViewport3D view, UvCanvasView canvas, UvToolContext ctx,
             IReadOnlyList<MeshViewport3D.Item> items, IReadOnlyList<MeshEntry> entries)
         {
-            bool layerVisible = LayerVisible(canvas) && EnsureMaterial();
+            bool layerVisible = view.Mode == MeshViewport3D.Shading.Shaded && LayerVisible(canvas) && EnsureMaterial();
             // Many meshes share the window's memory budget: smaller layers past two dozen.
             int size = items.Count > 24 ? 512 : LayerSize;
             for (int i = 0; i < items.Count; i++)
@@ -64,17 +68,23 @@ namespace SashaRX.UnityMeshLab
                 // tool content included; the UV layer and spot picking need an entry.
                 if (canvas.ShowWireframe) view.DrawWire(item.mesh, item.matrix, WireShaded);
                 if (entry == null) continue;
-                if (layerVisible)
+                if (layerVisible && UvTopology.HasUv(item.mesh, ctx.PreviewUvChannel) && MeshInspection.HasOnlyTriangles(item.mesh))
                 {
                     int id = item.mesh.GetInstanceID();
                     string key = LayerKey(canvas, ctx, item.mesh, entry);
                     if (!layers.TryGetValue(id, out var layer)) layers[id] = layer = new Layer();
                     if (layer.key != key || layer.texture == null)
                     {
-                        layer.texture = canvas.RenderUvLayer(ctx, item.mesh, entry, layer.texture, size);
+                        layer.texture = canvas.RenderUvLayer(ctx, item.mesh, entry, layer.texture, size, drawBorders: false);
                         layer.key = key;
                     }
                     if (layer.texture) view.DrawTextured(item.mesh, item.matrix, overlay, layer.texture, Color.white, ctx.PreviewUvChannel);
+                }
+                if (canvas.ShowBorder) {
+                    long boundaryKey = ((long)item.mesh.GetInstanceID() << 8) ^ (uint)ctx.PreviewUvChannel;
+                    if (!boundaryMeshes.TryGetValue(boundaryKey, out var boundary))
+                        boundaryMeshes[boundaryKey] = boundary = BuildBoundaryMesh(item.mesh, ctx.PreviewUvChannel);
+                    if (boundary) view.DrawLineMesh(boundary, item.matrix, new Color(1f, .35f, .05f, .9f));
                 }
                 if (canvas.SpotMode && EnsureMaterial())
                 {
@@ -91,6 +101,18 @@ namespace SashaRX.UnityMeshLab
         {
             var mesh = ShellMesh(canvas, ctx, item.mesh, shellId);
             if (mesh) view.DrawTextured(mesh, item.matrix, overlay, null, color, 0);
+        }
+
+        internal static Mesh BuildBoundaryMesh(Mesh source, int channel)
+        {
+            if (!MeshInspection.HasOnlyTriangles(source)) return null;
+            var pairs = UvTopology.UvBoundaryEdgePairs(source, channel);
+            if (pairs.Length == 0) return null;
+            var mesh = new Mesh { name = source.name + "_UvBoundary", hideFlags = HideFlags.HideAndDontSave,
+                indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+            mesh.vertices = source.vertices;
+            mesh.SetIndices(pairs, MeshTopology.Lines, 0);
+            return mesh;
         }
 
         // The faces of one shell as a mesh of their own (positions only), cached.
@@ -128,7 +150,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < items.Count && i < entries.Count; i++)
             {
                 var item = items[i];
-                if (!item.mesh || entries[i] == null) continue;
+                if (!item.mesh || entries[i] == null || !MeshInspection.HasOnlyTriangles(item.mesh) || !UvTopology.HasUv(item.mesh, ctx.PreviewUvChannel)) continue;
                 var toLocal = item.matrix.inverse;
                 Vector3 localOrigin = toLocal.MultiplyPoint3x4(origin);
                 Vector3 localDir = toLocal.MultiplyVector(direction);
@@ -177,10 +199,13 @@ namespace SashaRX.UnityMeshLab
             bvhs.Clear();
             foreach (var mesh in shellMeshes.Values) if (mesh) Object.DestroyImmediate(mesh);
             shellMeshes.Clear();
+            foreach (var mesh in boundaryMeshes.Values) if (mesh) Object.DestroyImmediate(mesh);
+            boundaryMeshes.Clear();
         }
 
         public void Dispose()
         {
+            VertexChannels.Changed -= InvalidateMesh;
             Invalidate();
             if (overlay) Object.DestroyImmediate(overlay);
             overlay = null;
