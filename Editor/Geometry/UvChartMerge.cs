@@ -762,7 +762,8 @@ namespace SashaRX.UnityMeshLab
             for (int f = 0; f < g.indices.Length; f += 3)
             {
                 if ((f & 4095) == 0) token.ThrowIfCancellationRequested();
-                int i0 = g.indices[f * 3], i1 = g.indices[f * 3 + 1], i2 = g.indices[f * 3 + 2];
+                // f walks index space in steps of three — no second ×3 here.
+                int i0 = g.indices[f], i1 = g.indices[f + 1], i2 = g.indices[f + 2];
                 if (!chartIds.Contains(g.charts[i0])) continue;
                 Vector3 e1 = g.positions[i1] - g.positions[i0];
                 Vector3 e2 = g.positions[i2] - g.positions[i0];
