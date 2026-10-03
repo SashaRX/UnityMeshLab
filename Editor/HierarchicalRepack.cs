@@ -1541,6 +1541,11 @@ namespace SashaRX.UnityMeshLab
                     result.proxyWorldVertsAuto = auto.worldVerts;
                 }
             }
+            catch (InvalidOperationException ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] proxy auto-unwrap skipped on '{lgName}': {ex.Message}");
+            }
             catch (Exception ex)
             {
                 // xatlasAddMesh missing from the DLL = DllNotFoundException /
@@ -2376,8 +2381,10 @@ namespace SashaRX.UnityMeshLab
             var idxArr = input.idxList.ToArray();
             var faceMatArr = input.faceMatList.ToArray();
 
-            if (!XatlasRepack.TryAcquireNativeSession())
-                throw new InvalidOperationException("An xatlas repack operation is already in progress.");
+            if (!XatlasRepack.TryAcquireNativeSession()) {
+                r.error = "An xatlas repack operation is already in progress.";
+                return;
+            }
             try
             {
                 XatlasNative.xatlasCreate();

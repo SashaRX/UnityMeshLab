@@ -61,6 +61,11 @@ namespace SashaRX.UnityMeshLab.Tests
             mesh.SetTriangles(new[] { 0, 1, 2 }, 0);
             mesh.SetTriangles(new[] { 0, 2, 3 }, 1);
             Assert.That(MeshViewport3D.EdgeIndices(mesh), Has.Count.EqualTo(10));
+            using (var inspection = new MeshInspection()) {
+                var items = new[] { new MeshViewport3D.Item(mesh, Matrix4x4.identity) };
+                Assert.IsTrue(inspection.Pick(items, new Vector3(.1f, .8f, -2), Vector3.forward, out _, out int vertex));
+                Assert.AreEqual(3, vertex, "Picking must retain triangle indices from every submesh");
+            }
         }
 
         [Test]
@@ -353,20 +358,26 @@ namespace SashaRX.UnityMeshLab.Tests
             try {
                 var method = typeof(HierarchicalRepack).GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static);
                 object[] args;
+                HierarchicalRepack.Result result = null;
                 if (methodName == "AutoUnwrapDeepMeshAsync") args = new object[] { mesh, root.transform, HierarchicalRepack.Options.Default, false };
                 else {
                     root.AddComponent<MeshFilter>().sharedMesh = mesh;
                     var renderer = root.AddComponent<MeshRenderer>();
                     var group = root.AddComponent<LODGroup>();
                     group.SetLODs(new[] { new LOD(.5f, new Renderer[] { renderer }) });
-                    var result = new HierarchicalRepack.Result {
+                    result = new HierarchicalRepack.Result {
                         groups = new[] { new HierarchicalRepack.LightingDomainGroup { groupId = 0, canonicalLod = 0, canonicalShellId = 0 } },
                         perLodShells = new[] { new[] { new HierarchicalRepack.Shell3D { faceIndices = new List<int> { 0, 1 }, totalArea = 1 } } }
                     };
                     args = new object[] { group, HierarchicalRepack.Options.Default, 1f, result, false };
                 }
                 var task = (System.Threading.Tasks.Task)method.Invoke(null, args);
-                Assert.Throws<InvalidOperationException>(() => task.GetAwaiter().GetResult());
+                if (result == null) Assert.Throws<InvalidOperationException>(() => task.GetAwaiter().GetResult());
+                else {
+                    task.GetAwaiter().GetResult();
+                    StringAssert.Contains("already in progress", result.error);
+                    Assert.IsNull(result.domainAtlasUv);
+                }
                 Assert.IsFalse(XatlasRepack.TryAcquireNativeSession(), "A rejected/no-op caller must not release another operation's lease");
             }
             finally { XatlasRepack.ReleaseNativeSession(); }
@@ -381,9 +392,12 @@ namespace SashaRX.UnityMeshLab.Tests
             var weights = new BoneWeight[4]; for (int i = 0; i < weights.Length; ++i) weights[i] = new BoneWeight { boneIndex0 = 0, weight0 = 1 };
             mesh.boneWeights = weights;
             var skin = root.AddComponent<SkinnedMeshRenderer>(); skin.sharedMesh = mesh; skin.bones = new[] { root.transform }; skin.rootBone = root.transform;
+            var material = new Material(Shader.Find("Standard")); owned.Add(material); skin.sharedMaterial = material;
             var tool = new RemeshBakeTool();
             try {
                 tool.SetSource(root); var items = new List<MeshViewport3D.Item>(); Assert.IsTrue(tool.Get3DContent(items));
+                var captured = RemeshSource.Capture(root, false);
+                Assert.That((captured.positions[1] - mesh.vertices[1]).magnitude, Is.LessThan(1e-5f), "Capture and preview must apply renderer scale once");
                 Assert.That((items[0].matrix.MultiplyPoint3x4(items[0].mesh.vertices[1]) - root.transform.localToWorldMatrix.MultiplyPoint3x4(mesh.vertices[1])).magnitude, Is.LessThan(1e-5f));
             }
             finally { tool.ClearSourcePreview(); }

@@ -19,6 +19,9 @@ namespace SashaRX.UnityMeshLab
             public TriangleBvh bvh;
         }
         readonly Dictionary<int, PickData> bvhs = new Dictionary<int, PickData>();
+        readonly List<Vector3> pickPositions = new List<Vector3>();
+        readonly List<int> pickTriangles = new List<int>();
+        readonly List<int> pickSubmeshTriangles = new List<int>();
         int sampledMesh, sampledVertex = -1;
         string sampledValues;
         Vector3 sampledPosition;
@@ -138,10 +141,9 @@ namespace SashaRX.UnityMeshLab
                 var mesh = items[i].mesh;
                 if (!mesh || !HasOnlyTriangles(mesh)) continue;
                 int id = mesh.GetInstanceID();
-                var positions = mesh.vertices;
-                var triangles = mesh.triangles;
-                if (!bvhs.TryGetValue(id, out var data) || !SameValues(data.vertices, positions) || !SameValues(data.triangles, triangles))
-                    bvhs[id] = data = new PickData { vertices = positions, triangles = triangles, bvh = new TriangleBvh(positions, triangles) };
+                ReadPickGeometry(mesh);
+                if (!bvhs.TryGetValue(id, out var data) || !SameValues(data.vertices, pickPositions) || !SameValues(data.triangles, pickTriangles))
+                    bvhs[id] = data = BuildPickData();
                 var inverse = items[i].matrix.inverse;
                 var hit = data.bvh.Raycast(inverse.MultiplyPoint3x4(origin), inverse.MultiplyVector(direction), float.MaxValue);
                 // Keep the local direction unnormalised: t remains the world ray parameter.
@@ -155,9 +157,26 @@ namespace SashaRX.UnityMeshLab
             return itemIndex >= 0;
         }
 
-        static bool SameValues<T>(T[] previous, T[] current)
+        void ReadPickGeometry(Mesh mesh)
         {
-            if (previous.Length != current.Length) return false;
+            mesh.GetVertices(pickPositions);
+            pickTriangles.Clear();
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                mesh.GetTriangles(pickSubmeshTriangles, sub);
+                pickTriangles.AddRange(pickSubmeshTriangles);
+            }
+        }
+
+        PickData BuildPickData()
+        {
+            var vertices = pickPositions.ToArray();
+            var triangles = pickTriangles.ToArray();
+            return new PickData { vertices = vertices, triangles = triangles, bvh = new TriangleBvh(vertices, triangles) };
+        }
+
+        static bool SameValues<T>(T[] previous, List<T> current)
+        {
+            if (previous.Length != current.Count) return false;
             var comparer = EqualityComparer<T>.Default;
             for (int i = 0; i < previous.Length; ++i)
                 if (!comparer.Equals(previous[i], current[i])) return false;

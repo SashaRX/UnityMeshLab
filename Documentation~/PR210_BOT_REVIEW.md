@@ -50,3 +50,13 @@ Across 20 distinct actionable findings (14 open inline threads, four outside-dif
 - Earlier temporary baseline parity checks remain documented in SONAR_ADVISORY_REVIEW.md and are not counted in the 251-test run.
 
 Graphify at f9b0bef was neutral and explicitly verified no PR-changed functions. Its older review reported partial coverage and no reproducing execution or proof for these findings. These statuses are not treated as formal correctness evidence.
+
+## Follow-up review at 17099bd
+
+The additional domain-pack finding is confirmed and fixed: a busy global atlas sets result.error instead of returning a success-shaped result without UV2. The corresponding occupied-session regression asserts the error and that the other session retains its lease. The related auto-unwrap logging nitpick is addressed separately from DLL-unavailable errors.
+
+The picking allocation nitpick is addressed with reusable vertex/index lists; arrays are allocated only when rebuilding the BVH. MeshInspection.Pick is used for explicit Ctrl+clicks, while hover uses UvLayer3D.Pick. Full comparison remains necessary: counts/bounds cannot detect equal-sized edits, including changes without bounds recalculation. The geometry-mutation regression covers that contract.
+
+The same renderer-scale compensation is also applied in RemeshSource.Capture. The skin regression checks both captured root-local positions and the world-space preview so source capture and inspection agree.
+
+CodeRabbit's non-blocking docstring coverage metric is left as a documentation suggestion; boilerplate was not added to hundreds of private helpers.
