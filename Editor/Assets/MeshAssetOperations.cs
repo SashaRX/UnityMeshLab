@@ -583,8 +583,7 @@ namespace SashaRX.UnityMeshLab
                 tempRoot.name = prefab.name;
                 FbxExport.PromoteRootMeshToLod0Child(tempRoot);
                 int collisions = PrepareExportHierarchy(tempRoot, sourceFbxPath, entries, tempMeshes, batch);
-                if (HierarchyWriter != null) HierarchyWriter(exportPath, tempRoot);
-                else FbxExport.Write(exportPath, tempRoot);
+                WriteHierarchyExport(exportPath, tempRoot);
                 written = true;
                 if (overwriteSource) batch.OverwrittenFbxPaths.Add(sourceFbxPath);
                 UvtLog.Info($"[FBX Export] Exported (binary) {entries.Count + collisions} mesh(es) -> {exportPath}");
@@ -602,6 +601,12 @@ namespace SashaRX.UnityMeshLab
             // A completed write needs replay even if restoring its importer metadata failed.
             if (overwriteSource && written) StoreHierarchyExportSidecars(sourceFbxPath, entries, true, batch);
             return written && !failed;
+        }
+
+        void WriteHierarchyExport(string path, GameObject root)
+        {
+            if (HierarchyWriter != null) HierarchyWriter(path, root);
+            else FbxExport.Write(path, root);
         }
 
         static bool RestoreHierarchyReadability(ModelImporter importer, string path)

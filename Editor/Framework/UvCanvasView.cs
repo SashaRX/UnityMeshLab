@@ -118,6 +118,7 @@ namespace SashaRX.UnityMeshLab
         public bool ShowBorder = true;
         public float FillAlpha = 0.25f;
         internal MeshViewport3D.Shading InspectionShading;
+        bool AttributeFillVisible => !FillHidden && InspectionShading != MeshViewport3D.Shading.Shaded;
         internal Mesh InspectedMesh;
         internal int InspectedVertex;
         internal Action<Mesh, int> OnInspectVertex;
@@ -374,7 +375,7 @@ namespace SashaRX.UnityMeshLab
 
                         int uN = uvs.Length, fN = tri.Length / 3;
 
-                        if (!FillHidden && InspectionShading != MeshViewport3D.Shading.Shaded)
+                        if (AttributeFillVisible)
                             GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
                         else if (hasFill)
                             FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
@@ -494,7 +495,7 @@ namespace SashaRX.UnityMeshLab
             }
             int uN = uvs.Length, fN = tri.Length / 3;
             bool hasFill = !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
-            if (!FillHidden && InspectionShading != MeshViewport3D.Shading.Shaded) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
+            if (AttributeFillVisible) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
             else if (hasFill) FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
             if (ShowBorder && drawBorders)
             {

@@ -1429,10 +1429,12 @@ namespace SashaRX.UnityMeshLab
         static async Task ComputeProxyUv2VariantsAsync(Mesh deepMesh, Transform deepXform,
             Options opts, string lgName, Result result, bool interactive)
         {
-            if (deepMesh == null) return;
+            if (deepMesh == null || UvProgress.CancelRequested) return;
 
             await ComputeCleanProxyAsync(deepMesh, deepXform, opts, lgName, result, interactive);
+            if (UvProgress.CancelRequested) return;
             await ComputeRawProxyAsync(deepMesh, deepXform, opts, lgName, result, interactive);
+            if (UvProgress.CancelRequested) return;
             await ComputeAutoProxyAsync(deepMesh, deepXform, opts, lgName, result, interactive);
             SelectActiveProxy(opts, result);
         }
@@ -1440,7 +1442,6 @@ namespace SashaRX.UnityMeshLab
         static async Task ComputeCleanProxyAsync(Mesh deepMesh, Transform deepXform,
             Options opts, string lgName, Result result, bool interactive)
         {
-            if (UvProgress.CancelRequested) return;
             // ── Variant 1: clean (sym-split + ARAP + pack) ──
             if (deepMesh.uv != null && deepMesh.uv.Length > 0)
             {
@@ -3602,6 +3603,17 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        static float[] FlattenVectors(Vector3[] values)
+        {
+            var flat = new float[values.Length * 3];
+            for (int i = 0; i < values.Length; ++i) {
+                flat[i * 3] = values[i].x;
+                flat[i * 3 + 1] = values[i].y;
+                flat[i * 3 + 2] = values[i].z;
+            }
+            return flat;
+        }
+
         /// <summary>Drive xatlasAddMesh + ComputeCharts + PackCharts on a
         /// raw 3D mesh (positions + normals + indices). Returns the packed
         /// per-output-vertex UV2 array and the corresponding output index
@@ -3618,24 +3630,8 @@ namespace SashaRX.UnityMeshLab
             int ic = tris.Length;
             if (vc == 0 || ic == 0) return (null, null, null);
 
-            var positionsFlat = new float[vc * 3];
-            for (int i = 0; i < vc; i++)
-            {
-                positionsFlat[i * 3 + 0] = verts[i].x;
-                positionsFlat[i * 3 + 1] = verts[i].y;
-                positionsFlat[i * 3 + 2] = verts[i].z;
-            }
-            float[] normalsFlat = null;
-            if (normals != null && normals.Length == vc)
-            {
-                normalsFlat = new float[vc * 3];
-                for (int i = 0; i < vc; i++)
-                {
-                    normalsFlat[i * 3 + 0] = normals[i].x;
-                    normalsFlat[i * 3 + 1] = normals[i].y;
-                    normalsFlat[i * 3 + 2] = normals[i].z;
-                }
-            }
+            var positionsFlat = FlattenVectors(verts);
+            float[] normalsFlat = normals != null && normals.Length == vc ? FlattenVectors(normals) : null;
             var indicesU = new uint[ic];
             for (int i = 0; i < ic; i++) indicesU[i] = (uint)tris[i];
 
