@@ -133,6 +133,10 @@ namespace SashaRX.UnityMeshLab
         // Compare the requested chart settings with two bounded alternatives and
         // keep fewer islands only within bounded UV stretch.
         public bool reduceUvFragmentation = true;
+        // Merge adjacent islands after the unwrap when their seam aligns within bounded
+        // stretch and texel density, then re-pack the atlas. Deterministic; off while
+        // the chart-merge experiment runs (Documentation~/EXPERIMENTS.md).
+        public bool mergeCharts;
         // Regenerated after the UV cut, weighted per this mode (Blender Weighted
         // Normal analog); smooth inside every split group, hard across every split.
         public RemeshNormalWeighting normalWeighting = RemeshNormalWeighting.FaceArea;

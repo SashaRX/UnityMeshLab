@@ -3,6 +3,39 @@
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v0.15.39 (2026-04-07)
 
+## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
+
+- **Вопрос:** можно ли существенно сократить xatlas-фрагментацию (число островов и мелких
+  обломков) вообще без source-features и без нового parameterizer — только пост-обработкой
+  выходных чартов?
+- **Изменение:** переключатель **Merge charts** (off по умолчанию) в Remesh & Bake → Unwrap.
+  После выбора лучшей развёртки (включая «Reduce UV fragmentation») `UvChartMerge.Apply`
+  детерминированно, раундами, пробует слить соседние пары чартов: Procrustes-подобие
+  (поворот + uniform scale + перенос, без зеркала) UV движущегося чарта по швовым вершинам,
+  затем бит-точный снап шва к UV принимающего — xatlas соединяет чарты по UV-colocal,
+  `faceMaterial` только разделяет, поэтому почти равный шов после repack снова распадётся на
+  два острова. Гейты приёмки: residual шва ≤ 0.02 относительно диагонали UV bbox принимающего;
+  scale фита в [0.5, 2] (texel density); `maxChartArea`/`maxChartBoundary` пользователя
+  (boundary объединения = boundaryA + boundaryB − 2·seamLength3D); полный tri-tri overlap-тест
+  (пересечения рёбер + strict containment, контакт вдоль нового шва разрешён); локальное
+  растяжение после снапа на гранях движущегося чарта и швовых гранях принимающего:
+  mean ≤ max(1.15, pre·1.1), worst ≤ max(4, pre·1.1), без флипов. Тангенты следуют каждому
+  повороту UV — и merge-фиту, и per-chart pack transform (иначе бейк-базис разойдётся с
+  атласом). Слитые чарты перепаковываются через xatlas UvMesh bridge (`faceMaterial` = id
+  чарта, ComputeCharts + PackCharts; retry с обоими rotation-флагами off при неоднозначном
+  маппинге). Финальный гейт — `UvChartQuality.Measure(...).Improves(preMerge, preMerge)`;
+  любая неоднозначность — откат к снапшоту. ID чартов после раундов компактируются в 0..N−1.
+- **Не трогается:** native ABI и вендоренный xatlas; `originalChartCount` /
+  `originalSmallChartCount` (это бейслайн до оптимизаторов); настройки чарта пользователя.
+- **Протокол A/B:** сначала простая модель (куб/симметричная), затем регрессия на Playground
+  LODGroup; ≥10 повторов; метрики: islands, small islands (≤8 tris), mean/max stretch, время
+  стадии Unwrap; baseline — тот же unwrap с выключенным переключателем.
+- **GO-критерий:** islands ↓ ≥10% на Playground-наборе при `meanStretch ≤ max(1.15, orig·1.1)`,
+  `maxStretch ≤ max(4, orig·1.1)`, 10/10 байт-в-байт детерминизм UV и TransferValidator без overlaps.
+- **STOP-критерий:** рост stretch за гейтами, недетерминизм, деградация бейка по швам →
+  revert без компенсаций.
+- **Статус:** реализация (PR Exp #1); измерения по протоколу — до мержа.
+
 ## Эксперимент 2026-08-06 — Самодостаточная нормализация winding в repack
 
 - **Проблема:** standalone `Repack All` и отключаемый Weld в full pipeline

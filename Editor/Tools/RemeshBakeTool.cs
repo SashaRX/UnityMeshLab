@@ -398,6 +398,10 @@ namespace SashaRX.UnityMeshLab
                         "Compare the current chart settings with two alternatives; keep fewer islands and small fragments only within bounded UV stretch. " +
                         "Crease edges, island size limits and packing stay as configured. Adds up to two unwrap passes on the worker."),
                         settings.reduceUvFragmentation);
+                    settings.mergeCharts = EditorGUILayout.Toggle(new GUIContent("Merge charts",
+                        "Deterministically merges adjacent island pairs whose seam UVs align within bounded stretch and texel density, " +
+                        "respecting max island area/border, then re-packs the atlas. Adds one xatlas pack pass on the worker."),
+                        settings.mergeCharts);
                     chartFold = EditorGUILayout.Foldout(chartFold, "Islands & packing", true);
                     if (chartFold) {
                         using (new EditorGUI.IndentLevelScope()) {

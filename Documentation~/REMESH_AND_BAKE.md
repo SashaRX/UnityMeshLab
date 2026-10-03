@@ -186,6 +186,18 @@ Before the UV stage the canvas shows the selected model as usual.
    status reports before/after island counts. Turn it off to use only the
    manually configured chart settings. Automatic charting still chooses its
    own seams; this control does not specify anatomical seams on a head or suit.
+   **Merge charts** (off by default) runs after the fragmentation search and
+   deterministically merges adjacent island pairs: a Procrustes similarity
+   (rotation + uniform scale + translation, no mirror) fits one chart's UVs onto
+   its neighbour through the seam vertices, the seam is snapped bit-exact onto
+   the acceptor's UVs, and the merge is accepted only within bounded seam
+   residual (≤ 0.02 of the acceptor's UV size), texel-density change (≤ 2×),
+   the island area/border limits, a full UV-triangle overlap test (contact along
+   the new seam is allowed) and the same stretch bounds the fragmentation search
+   uses. Tangent frames follow every UV rotation — the merge fit and the
+   per-chart pack transform alike — merged charts are re-packed through xatlas,
+   and any anomaly reverts to the unmerged unwrap. Adds one xatlas pack pass on
+   the worker.
    Baking first fills that padding, then applies **Dilation radius (px)**
    (default 64, 0 disables the extra pass). Dilation extends all maps into the
    remaining background from the nearest filled pixel within the additional
