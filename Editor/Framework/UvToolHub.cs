@@ -1323,7 +1323,17 @@ namespace SashaRX.UnityMeshLab
             // ── Status info ──
             var ee = canvas.Entries(ctx);
             int tV = 0, tT = 0;
-            foreach (var e in ee) { Mesh m = canvas.DisplayMesh(ctx, e); if (m == null) continue; tV += m.vertexCount; tT += m.triangles.Length / 3; }
+            foreach (var e in ee)
+            {
+                Mesh m = canvas.DisplayMesh(ctx, e);
+                if (m == null)
+                {
+                    continue;
+                }
+
+                tV += m.vertexCount;
+                tT += m.triangles.Length / 3;
+            }
             string hoverInfo = canvas.HoverHitValid
                 ? $" | UV:{canvas.UvSpot.x:F3},{canvas.UvSpot.y:F3} S:{canvas.HoveredShellId}"
                 : (canvas.SpotMode ? " | UV:--" : string.Empty);
