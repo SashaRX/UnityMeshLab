@@ -247,7 +247,7 @@ namespace SashaRX.UnityMeshLab
                 int mover = dir == 0 ? chartB : chartA;
                 if (EvaluateDirection(g, faceChart, slots, edgeFaces, acceptorSlots, moverSlots, seamSlotList, seamKeys,
                         chartFaces, chartArea, chartBoundary, chartUvMin, chartUvMax,
-                        acceptor, mover, seamLength, settings, out var candidate, token) &&
+                        acceptor, mover, seamLength, settings, out var candidate) &&
                     (!haveBest || Better(candidate, best)))
                 {
                     best = candidate;
@@ -282,7 +282,7 @@ namespace SashaRX.UnityMeshLab
             Dictionary<int, int> moverSlotOf, List<int> seamSlots, List<long> seamKeys,
             List<int>[] chartFaces, float[] chartArea, float[] chartBoundary,
             Vector2[] chartUvMin, Vector2[] chartUvMax, int acceptor, int mover, float seamLength,
-            RemeshSettings settings, out Candidate candidate, CancellationToken token)
+            RemeshSettings settings, out Candidate candidate)
         {
             candidate = default;
             if (seamSlots.Count < 2) return false;
@@ -658,13 +658,13 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 int rotate = settings.packRotate ? 1 : 0;
-                if (PackSession(geometry, settings, flatUv, indices, faceMaterials, rotate, rotate, token) &&
+                if (PackSession(geometry, settings, flatUv, indices, faceMaterials, rotate, rotate) &&
                     ReadPackedUv(geometry, prePackUv, token)) return true;
                 // Both rotation flags are separate xatlas knobs; a rotate placement is the
                 // one way a per-input-vertex UV can come back ambiguous. Fresh session —
                 // a second PackCharts on a packed atlas is not a defined state.
                 token.ThrowIfCancellationRequested();
-                if (PackSession(geometry, settings, flatUv, indices, faceMaterials, 0, 0, token) &&
+                if (PackSession(geometry, settings, flatUv, indices, faceMaterials, 0, 0) &&
                     ReadPackedUv(geometry, prePackUv, token)) return true;
                 UvtLog.Warn("[Remesh] Chart merge re-pack did not map back cleanly; reverting.");
                 return false;
@@ -676,7 +676,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static bool PackSession(RemeshNative.Geometry geometry, RemeshSettings settings, float[] flatUv, uint[] indices,
-            uint[] faceMaterials, int rotateCharts, int rotateToAxis, CancellationToken token)
+            uint[] faceMaterials, int rotateCharts, int rotateToAxis)
         {
             XatlasNative.xatlasCreate();
             try
@@ -723,7 +723,8 @@ namespace SashaRX.UnityMeshLab
                 // Component-exact on purpose: Unity's Vector2 == is epsilon-based.
                 if (assigned[source])
                 {
-                    if (packed[source].x != value.x || packed[source].y != value.y) return false;
+                    if (float.IsNaN(value.x) || float.IsNaN(value.y) ||
+                        !packed[source].x.Equals(value.x) || !packed[source].y.Equals(value.y)) return false;
                 }
                 else
                 {
