@@ -19,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.4] - 2026-10-03
+
+### Fixed
+- 2D and 3D shell previews use the selected UV channel for matching colors; cached colors remain correct when switching channels and returning to an earlier channel.
+- Texture AO uses the viewport floor orientation, covers thin UV triangles, offers CPU/GPU baking and exports RLE TGA. Remesh prepares wires, cages and GPU readbacks without blocking repaint; all baked maps receive a separate dilation pass after padding. UV generation compares bounded alternatives to reduce fragments, while intermediate normals/UV0 remain complete and draft UV0 is rejected until final normals and baking can use the real atlas.
+
 ## [1.1.0] - 2026-10-02
 
 ### Changed

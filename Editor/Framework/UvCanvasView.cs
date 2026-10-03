@@ -400,6 +400,8 @@ namespace SashaRX.UnityMeshLab
 
                         if (AttributeFillVisible)
                             GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
+                        else if (CurrentPreviewMode == PreviewMode.Shells3D)
+                            GlFillSh(ctx, cx, cy, sz, mesh, fN, uN, entry, -1, -1, uvs);
                         else if (hasFill)
                             FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
 
@@ -520,6 +522,7 @@ namespace SashaRX.UnityMeshLab
             int uN = uvs.Length, fN = tri.Length / 3;
             bool hasFill = !CheckerEnabled && !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
             if (!CheckerEnabled && AttributeFillVisible) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
+            else if (CurrentPreviewMode == PreviewMode.Shells3D) GlFillSh(ctx, cx, cy, sz, mesh, fN, uN, entry, -1, -1, uvs);
             else if (hasFill) FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
             if (ShowBorder && drawBorders)
             {
@@ -945,7 +948,9 @@ namespace SashaRX.UnityMeshLab
                 Color c = pal[UvHashUtil.NonNegativeColorKey(colorKey) % pal.Length];
                 if (s.shellId == selectedShellId)
                     c = Color.Lerp(c, Color.white, 0.45f);
-                c.a = s.shellId == selectedShellId ? Mathf.Clamp01(FillAlpha * 1.85f) : FillAlpha;
+                c.a = FillAlpha;
+                if (CurrentPreviewMode == PreviewMode.Shells3D) c.a = 1f;
+                else if (s.shellId == selectedShellId) c.a = Mathf.Clamp01(FillAlpha * 1.85f);
                 GL.Color(c);
                 foreach (int f in s.faceIndices)
                 {
@@ -1227,12 +1232,10 @@ namespace SashaRX.UnityMeshLab
                     var uv = RdUv(mesh, request.channel);
                     var triangles = mesh.triangles;
                     var vertices = mesh.vertices;
-                    var colorUv = request.channel == 1 ? uv : RdUv(mesh, 1);
-                    if (colorUv == null || colorUv.Length != vertices.Length) colorUv = request.channel == 0 ? uv : RdUv(mesh, 0);
                     cachedUvs[request.key] = uv;
                     cachedTriangles[mesh.GetInstanceID()] = triangles;
                     activePreview = request;
-                    previewTask = Task.Run(() => PreparePreview(vertices, uv, triangles, colorUv));
+                    previewTask = Task.Run(() => PreparePreview(vertices, uv, triangles));
                 }
                 catch (Exception ex) {
                     RemoveQueuedPreview(request);
@@ -1242,7 +1245,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static PreviewResult PreparePreview(Vector3[] vertices, Vector2[] uv, int[] triangles, Vector2[] colorUv)
+        static PreviewResult PreparePreview(Vector3[] vertices, Vector2[] uv, int[] triangles)
         {
             var shells = UvTopology.BuildShellData(uv, triangles);
             var tiles = new HashSet<Vector2Int>();
@@ -1256,11 +1259,12 @@ namespace SashaRX.UnityMeshLab
                 descriptors = new ShellDescriptor[shells.shells.Count];
                 for (int i = 0; i < shells.shells.Count; ++i) {
                     var shell = shells.shells[i];
-                    colors[shell.shellId] = ShellBBoxHash(shell, colorUv);
+                    colors[shell.shellId] = ShellBBoxHash(shell, uv);
                     descriptors[i] = shell.descriptor;
                     foreach (int vertex in shell.vertexIndices) if (vertex >= 0 && vertex < vertexShells.Length) vertexShells[vertex] = i;
                 }
             }
+            if (shells != null) shells.colorKeys = colors;
             return new PreviewResult { shells = shells, tiles = tiles, colors = colors, vertexShells = vertexShells, descriptors = descriptors,
                 boundaries = UvTopology.UvBoundaryEdgePairs(vertices, uv, triangles),
                 bvh = new TriangleBvh(vertices, triangles) };
@@ -1336,8 +1340,11 @@ namespace SashaRX.UnityMeshLab
             int meshId = 0;
             var mesh = entry != null ? DisplayMesh(ctx, entry) : null;
             if (mesh != null) meshId = mesh.GetInstanceID();
-            long cacheKey = ((long)meshId << 32) | (uint)shell.shellId;
-            if (ctx.ShellColorKeyCache.TryGetValue(cacheKey, out int cc)) return cc;
+            // Each UV channel owns its colors together with its shell topology.
+            // Switching back to a cached channel must not reuse another channel's keys.
+            long cacheKey = ((long)meshId << 8) ^ (uint)ctx.PreviewUvChannel;
+            if (ctx.PreviewShellDataCache.TryGetValue(cacheKey, out var cached) &&
+                cached.colorKeys != null && cached.colorKeys.TryGetValue(shell.shellId, out int cc)) return cc;
 
             // Always use UV bounding-box hash for maximum cross-LOD consistency.
             // Previous strategies (shellTransferResult, UV0 shell map) produced
@@ -1439,6 +1446,7 @@ namespace SashaRX.UnityMeshLab
         Texture ResolveUvPreviewBackgroundTexture(UvToolContext ctx, List<ValueTuple<Mesh, MeshEntry, int>> draws)
         {
             if (CheckerEnabled) return CheckerColorMode ? null : CheckerTexturePreview.GetCheckerTexture();
+            if (CurrentPreviewMode == PreviewMode.Shells3D) return null;
             // Tool-made entries carry their own background (a baked base color).
             foreach (var item in draws)
                 if (item.Item2.renderer == null && item.Item2.previewTexture != null) return item.Item2.previewTexture;

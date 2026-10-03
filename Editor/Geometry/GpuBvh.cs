@@ -1,6 +1,9 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace SashaRX.UnityMeshLab
 {
@@ -23,6 +26,7 @@ namespace SashaRX.UnityMeshLab
         public struct NearestHit { public int tri; public float distSq; public Vector3 point, bary; } // 32 bytes
 
         public const int MaxBatch = 1 << 20;
+        const int AsyncBatch = 16384;
 
         public static bool Supported => SystemInfo.supportsComputeShaders;
 
@@ -103,18 +107,37 @@ namespace SashaRX.UnityMeshLab
         {
             for (int start = 0; start < count; start += MaxBatch) {
                 int n = Math.Min(MaxBatch, count - start);
-                Ensure(n);
-                rayOrigins.SetData(origins, start, 0, n);
-                rayDirs.SetData(dirs, start, 0, n);
-                Bind(shader, rayKernel);
-                shader.SetBuffer(rayKernel, "_RayOrigins", rayOrigins);
-                shader.SetBuffer(rayKernel, "_RayDirs", rayDirs);
-                shader.SetBuffer(rayKernel, "_RayHits", rayHits);
-                shader.SetInt("_QueryCount", n);
-                shader.SetInt("_FacingFilter", facingFilter ? 1 : 0);
-                shader.Dispatch(rayKernel, (n + 63) / 64, 1, 1);
+                DispatchRays(origins, dirs, start, n, facingFilter);
                 rayHits.GetData(results, start, 0, n);
             }
+        }
+
+        /// <summary>Sequential main-thread batches; cancellation drains the current
+        /// readback before returning so the caller can safely dispose or reuse buffers.</summary>
+        public async Task RaycastAsync(Vector4[] origins, Vector4[] dirs, int count, bool facingFilter,
+            RayHit[] results, CancellationToken token)
+        {
+            for (int start = 0; start < count; start += AsyncBatch) {
+                token.ThrowIfCancellationRequested();
+                int n = Math.Min(AsyncBatch, count - start);
+                DispatchRays(origins, dirs, start, n, facingFilter);
+                await ReadAsync(rayHits, n, results, start);
+                token.ThrowIfCancellationRequested();
+            }
+        }
+
+        void DispatchRays(Vector4[] origins, Vector4[] dirs, int start, int n, bool facingFilter)
+        {
+            Ensure(n);
+            rayOrigins.SetData(origins, start, 0, n);
+            rayDirs.SetData(dirs, start, 0, n);
+            Bind(shader, rayKernel);
+            shader.SetBuffer(rayKernel, "_RayOrigins", rayOrigins);
+            shader.SetBuffer(rayKernel, "_RayDirs", rayDirs);
+            shader.SetBuffer(rayKernel, "_RayHits", rayHits);
+            shader.SetInt("_QueryCount", n);
+            shader.SetInt("_FacingFilter", facingFilter ? 1 : 0);
+            shader.Dispatch(rayKernel, (n + 63) / 64, 1, 1);
         }
 
         /// <summary>
@@ -126,18 +149,50 @@ namespace SashaRX.UnityMeshLab
         {
             for (int start = 0; start < count; start += MaxBatch) {
                 int n = Math.Min(MaxBatch, count - start);
-                Ensure(n);
-                points.SetData(pts, start, 0, n);
-                queryNormals.SetData(normals, start, 0, n);
-                Bind(shader, nearestKernel);
-                shader.SetBuffer(nearestKernel, "_Points", points);
-                shader.SetBuffer(nearestKernel, "_QueryNormals", queryNormals);
-                shader.SetBuffer(nearestKernel, "_NearestHits", nearestHits);
-                shader.SetInt("_QueryCount", n);
-                shader.SetInt("_NormalFilter", normalFilter ? 1 : 0);
-                shader.Dispatch(nearestKernel, (n + 63) / 64, 1, 1);
+                DispatchNearest(pts, normals, start, n, normalFilter);
                 nearestHits.GetData(results, start, 0, n);
             }
+        }
+
+        public async Task NearestAsync(Vector4[] pts, Vector4[] normals, int count, bool normalFilter,
+            NearestHit[] results, CancellationToken token)
+        {
+            for (int start = 0; start < count; start += AsyncBatch) {
+                token.ThrowIfCancellationRequested();
+                int n = Math.Min(AsyncBatch, count - start);
+                DispatchNearest(pts, normals, start, n, normalFilter);
+                await ReadAsync(nearestHits, n, results, start);
+                token.ThrowIfCancellationRequested();
+            }
+        }
+
+        void DispatchNearest(Vector4[] pts, Vector4[] normals, int start, int n, bool normalFilter)
+        {
+            Ensure(n);
+            points.SetData(pts, start, 0, n);
+            queryNormals.SetData(normals, start, 0, n);
+            Bind(shader, nearestKernel);
+            shader.SetBuffer(nearestKernel, "_Points", points);
+            shader.SetBuffer(nearestKernel, "_QueryNormals", queryNormals);
+            shader.SetBuffer(nearestKernel, "_NearestHits", nearestHits);
+            shader.SetInt("_QueryCount", n);
+            shader.SetInt("_NormalFilter", normalFilter ? 1 : 0);
+            shader.Dispatch(nearestKernel, (n + 63) / 64, 1, 1);
+        }
+
+        static Task ReadAsync<T>(ComputeBuffer buffer, int count, T[] results, int start) where T : struct
+        {
+            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            AsyncGPUReadback.Request(buffer, count * buffer.stride, 0, request => {
+                try {
+                    if (request.hasError) throw new InvalidOperationException("GPU BVH readback failed.");
+                    var data = request.GetData<T>();
+                    for (int i = 0; i < count; ++i) results[start + i] = data[i];
+                    completion.TrySetResult(true);
+                }
+                catch (Exception exception) { completion.TrySetException(exception); }
+            });
+            return completion.Task;
         }
 
         void Ensure(int n)

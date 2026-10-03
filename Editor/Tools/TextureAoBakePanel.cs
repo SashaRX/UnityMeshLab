@@ -6,7 +6,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.Experimental.Rendering;
 using Object = UnityEngine.Object;
 
 namespace SashaRX.UnityMeshLab
@@ -21,14 +20,15 @@ namespace SashaRX.UnityMeshLab
             internal RemeshNative.Geometry geometry;
             internal Matrix4x4 placement;
             internal RemeshBaker.Maps maps;
-            internal byte[] png;
+            internal byte[] tga;
             internal Mesh mesh;
             internal Texture2D texture;
             internal Material material;
             internal MeshEntry entry;
         }
         readonly RemeshSettings settings = new RemeshSettings { bakeSourceAO = true, textureResolution = 512,
-            bakeSamples = 1, padding = 4, gpuProjection = false, vertexColorTint = false };
+            bakeSamples = 1, padding = 4, gpuProjection = true, vertexColorTint = false };
+        static readonly string[] backendLabels = { "CPU", "GPU" };
         readonly List<Result> results = new List<Result>();
         GameObject sourceRoot;
         int uvChannel, resultIndex, generation;
@@ -74,9 +74,16 @@ namespace SashaRX.UnityMeshLab
                 sourceRoot = (GameObject)EditorGUILayout.ObjectField(new GUIContent("AO source root", "High-detail source with its original materials. Empty: the selected model root."), sourceRoot, typeof(GameObject), true);
                 lod0Only = EditorGUILayout.Toggle("Source LOD0 only", lod0Only);
                 uvChannel = EditorGUILayout.IntSlider("Target UV channel", uvChannel, 0, 7);
+                settings.gpuProjection = EditorGUILayout.Popup(new GUIContent("Bake device", "Device for projection and AO ray tracing."),
+                    settings.gpuProjection ? 1 : 0, backendLabels) == 1;
+                if (settings.gpuProjection && !SourceAoBaker.GpuSupported)
+                    EditorGUILayout.HelpBox("GPU AO is unavailable on this device. The bake will use CPU.", MessageType.Info);
                 settings.textureResolution = EditorGUILayout.IntPopup("Texture size", settings.textureResolution,
                     new[] { "256", "512", "1024", "2048" }, new[] { 256, 512, 1024, 2048 });
                 settings.padding = EditorGUILayout.IntSlider("Padding", settings.padding, 1, 32);
+                settings.dilationRadius = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Dilation radius (px)",
+                    "After padding, extend AO from its nearest filled pixel by this additional radius. 0 keeps padding alone."),
+                    settings.dilationRadius), 0, RemeshSettings.MaxDilationRadius);
                 settings.bakeSamples = EditorGUILayout.IntPopup("Samples per texel", settings.bakeSamples, new[] { "1", "4", "9", "16" }, new[] { 1, 4, 9, 16 });
                 settings.projectionDistance = EditorGUILayout.Slider("Projection / bounds", settings.projectionDistance, .001f, .2f);
                 DrawSourceSettings(settings.sourceAO);
@@ -95,7 +102,7 @@ namespace SashaRX.UnityMeshLab
             var selected = results[resultIndex];
             if (selected.texture) GUILayout.Label(selected.texture, GUILayout.Width(180), GUILayout.Height(180));
             using (new EditorGUI.DisabledScope(running))
-                if (GUILayout.Button("Save selected AO PNG")) _ = Save(selected);
+                if (GUILayout.Button("Save selected AO TGA (RLE)")) _ = Save(selected);
         }
 
         async Task Bake(MeshEntry[] entries, GameObject root)
@@ -107,7 +114,8 @@ namespace SashaRX.UnityMeshLab
             var completed = new List<Result>();
             try {
                 // Leave OnGUI before reading meshes/materials; all rasterization,
-                // BVH traversal, normal-map sampling and PNG encoding run on workers.
+                // CPU sampling/encoding runs on workers; GPU dispatch and asynchronous
+                // AO readback run on the editor thread without blocking for AO results.
                 status = "Capturing source…"; repaint?.Invoke();
                 await Task.Yield(); token.ThrowIfCancellationRequested();
                 var options = JsonUtility.FromJson<RemeshSettings>(JsonUtility.ToJson(settings));
@@ -125,9 +133,8 @@ namespace SashaRX.UnityMeshLab
                     Matrix4x4 toSource = worldToSource * entry.renderer.localToWorldMatrix;
                     await Task.Run(() => TransformTarget(geometry, toSource), token);
                     var item = new Result { name = entry.renderer.name, geometry = geometry, placement = placement };
-                    item.maps = await Task.Run(() => RemeshBaker.Bake(source, geometry, geometry.tangents, options, token), token);
-                    item.png = await Task.Run(() => ImageConversion.EncodeArrayToPNG(item.maps.ao, GraphicsFormat.R8G8B8A8_UNorm,
-                        (uint)item.maps.size, (uint)item.maps.size), token);
+                    item.maps = await BakeMaps(source, geometry, options, token);
+                    item.tga = await Task.Run(() => EncodeTgaRle(item.maps.ao, item.maps.size, item.maps.size, token), token);
                     completed.Add(item);
                 }
                 token.ThrowIfCancellationRequested();
@@ -147,7 +154,9 @@ namespace SashaRX.UnityMeshLab
                 results.AddRange(completed);
                 completed.Clear();
                 int misses = results.Sum(r => r.maps.misses);
-                status = $"Texture AO: {results.Count} map(s), {misses} projection misses. Preview uses target UV{uvChannel}.";
+                string backend = string.Join(", ", results.Select(r => BackendLabel(r.maps)).Distinct());
+                status = $"Texture AO ({backend}): {results.Count} map(s), {misses} projection misses. Preview uses target UV{uvChannel}.";
+                if (options.gpuProjection && results.Any(r => !r.maps.gpuAO)) status += " GPU AO unavailable; used CPU fallback.";
                 UvtLog.Info("[Texture AO] " + status);
             }
             catch (OperationCanceledException) { if (version == generation) status = "Texture AO cancelled."; }
@@ -159,10 +168,24 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        internal static Task<RemeshBaker.Maps> BakeMaps(RemeshSource source, RemeshNative.Geometry geometry,
+            RemeshSettings options, CancellationToken token)
+            => options.gpuProjection && SourceAoBaker.GpuSupported
+                ? RemeshBaker.BakeAsync(source, geometry, geometry.tangents, options, token, null, RemeshBaker.CreateGpu, gpuSourceAO: true)
+                : Task.Run(() => RemeshBaker.Bake(source, geometry, geometry.tangents, options, token), token);
+
+        internal static string BackendLabel(RemeshBaker.Maps maps)
+        {
+            if (maps.gpuAO) return "GPU";
+            return maps.gpu ? "CPU AO / GPU projection" : "CPU";
+        }
+
         internal static RemeshNative.Geometry CaptureTarget(Mesh mesh, int channel)
         {
             var readable = MeshAccess.Readable(mesh, out bool copy);
             try {
+                if (channel == 0 && MeshUvState.IsDraft(readable))
+                    throw new InvalidOperationException($"'{mesh.name}' has draft UV0. Unwrap it before texture AO baking.");
                 var uv = UvTopology.ReadUv(readable, channel);
                 if (uv == null || uv.Length != readable.vertexCount) throw new InvalidOperationException($"'{mesh.name}' has no complete UV{channel} stream.");
                 return new RemeshNative.Geometry { positions = readable.vertices, indices = readable.triangles,
@@ -197,18 +220,55 @@ namespace SashaRX.UnityMeshLab
 
         async Task Save(Result result)
         {
-            string path = EditorUtility.SaveFilePanelInProject("Save texture AO", result.name + "_AO", "png", "Save linear AO texture.");
+            string path = EditorUtility.SaveFilePanelInProject("Save texture AO", result.name + "_AO", "tga", "Save linear AO texture with RLE compression.");
             if (string.IsNullOrEmpty(path)) return;
             running = true;
             try {
-                string absolute = Path.GetFullPath(path); byte[] png = result.png;
-                await Task.Run(() => File.WriteAllBytes(absolute, png), CancellationToken.None);
+                string absolute = Path.GetFullPath(path); byte[] tga = result.tga;
+                await Task.Run(() => File.WriteAllBytes(absolute, tga), CancellationToken.None);
                 AssetDatabase.ImportAsset(path);
                 TextureAssets.Configure(path, TextureAssets.Kind.Linear, result.maps.size);
                 status = "Saved linear AO: " + path;
             }
             catch (Exception ex) { status = ex.Message; UvtLog.Error("[Texture AO] Save failed: " + ex.Message); }
             finally { running = false; repaint?.Invoke(); }
+        }
+
+        // True-colour TGA, image type 10, 24-bit BGR, bottom-left origin. Packets
+        // stay within scanlines and contain at most 128 pixels. AO is linear data;
+        // no gamma conversion or coverage alpha is written into the saved texture.
+        internal static byte[] EncodeTgaRle(Color32[] pixels, int width, int height, CancellationToken token = default)
+        {
+            if (pixels == null || width < 1 || width > ushort.MaxValue || height < 1 || height > ushort.MaxValue ||
+                pixels.Length != checked(width * height)) throw new ArgumentException("Invalid TGA dimensions or pixels.");
+            using (var stream = new MemoryStream())
+            using (var writer = new BinaryWriter(stream)) {
+                var header = new byte[18]; header[2] = 10; header[16] = 24;
+                header[12] = (byte)width; header[13] = (byte)(width >> 8);
+                header[14] = (byte)height; header[15] = (byte)(height >> 8);
+                writer.Write(header);
+                bool Same(int a, int b) => pixels[a].r == pixels[b].r && pixels[a].g == pixels[b].g && pixels[a].b == pixels[b].b;
+                void Pixel(int i) { var p = pixels[i]; writer.Write(p.b); writer.Write(p.g); writer.Write(p.r); }
+                for (int y = 0; y < height; ++y) {
+                    token.ThrowIfCancellationRequested();
+                    int i = y * width, end = i + width;
+                    while (i < end) {
+                        int count = 1;
+                        while (count < 128 && i + count < end && Same(i, i + count)) ++count;
+                        if (count > 1) { writer.Write((byte)(0x80 | (count - 1))); Pixel(i); }
+                        else {
+                            while (count < 128 && i + count < end) {
+                                if (i + count + 1 < end && Same(i + count, i + count + 1)) break;
+                                ++count;
+                            }
+                            writer.Write((byte)(count - 1));
+                            for (int j = 0; j < count; ++j) Pixel(i + j);
+                        }
+                        i += count;
+                    }
+                }
+                return stream.ToArray();
+            }
         }
 
         internal bool GetUvContent(List<MeshEntry> entries)

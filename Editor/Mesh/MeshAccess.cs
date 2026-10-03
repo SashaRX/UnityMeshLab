@@ -38,6 +38,7 @@ namespace SashaRX.UnityMeshLab
         {
             var dst = new Mesh();
             dst.indexFormat = src.indexFormat;
+            MeshUvState.SetDraft(dst, MeshUvState.IsDraft(src));
             if (!src.isReadable) {
                 try {
                     return MakeReadableCopyFromMeshData(src, dst);

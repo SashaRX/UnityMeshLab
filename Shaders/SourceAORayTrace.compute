@@ -1,0 +1,60 @@
+// Source AO at projected texel hits. Matches SourceAoBaker.Sample, including
+// source normal-map hemispheres, geometric offsets and the world-horizontal floor.
+#pragma kernel BakeAO
+#pragma kernel FinalizeAO
+#include "BvhTraversal.hlsl"
+
+struct SurfacePoint
+{
+    float3 origin;
+    uint seed;
+    float3 normal;
+    float padding;
+};
+StructuredBuffer<SurfacePoint> _SourcePoints;
+StructuredBuffer<float3> _Directions;
+RWStructuredBuffer<float2> _AOCounters;
+RWStructuredBuffer<float> _AOResult;
+uint _PointCount, _DirStart, _DirEnd;
+float _MaxDist, _MinHitDist, _Intensity;
+float _CosineWeighted, _BinaryHit, _BackfaceCulling, _GroundPlane;
+float3 _GroundNormal;
+float _GroundHeight;
+
+[numthreads(64, 1, 1)]
+void BakeAO(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _PointCount) return;
+    SurfacePoint surface = _SourcePoints[id.x];
+    float angle = (float)((surface.seed * 2654435761u) % 360u) * 0.017453292519943;
+    float cosine = cos(angle), sine = sin(angle);
+    float total = 0, occluded = 0;
+    for (uint i = _DirStart; i < _DirEnd; ++i)
+    {
+        float3 d = _Directions[i];
+        d = float3(d.x * cosine - d.z * sine, d.y, d.x * sine + d.z * cosine);
+        float ndot = dot(d, surface.normal);
+        if (ndot <= 0) continue;
+        float weight = _CosineWeighted > .5 ? ndot : 1;
+        total += weight;
+        BvhRayHit hit = BvhRaycast(surface.origin, d, _MaxDist, _BackfaceCulling > .5);
+        float reach = hit.tri >= 0 && hit.t > _MinHitDist ? hit.t : _MaxDist;
+        float groundDot = dot(_GroundNormal, d);
+        if (_GroundPlane > .5 && groundDot < -.001)
+        {
+            float ground = (_GroundHeight - dot(_GroundNormal, surface.origin)) / groundDot;
+            if (ground > 0) reach = min(reach, ground);
+        }
+        if (reach < _MaxDist) occluded += weight * (_BinaryHit > .5 ? 1 : 1 - reach / _MaxDist);
+    }
+    _AOCounters[id.x] += float2(occluded, total);
+}
+
+[numthreads(64, 1, 1)]
+void FinalizeAO(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _PointCount) return;
+    float2 counts = _AOCounters[id.x];
+    float ao = counts.y > 0 ? 1 - counts.x / counts.y : 1;
+    _AOResult[id.x] = pow(saturate(ao), _Intensity);
+}

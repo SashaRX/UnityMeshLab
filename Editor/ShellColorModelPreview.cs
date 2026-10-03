@@ -20,6 +20,14 @@ namespace SashaRX.UnityMeshLab
         public sealed class PreviewShellCache
         {
             readonly Dictionary<int, int[]> triangleShellIdsByMesh = new Dictionary<int, int[]>();
+            readonly int uvChannel;
+
+            public PreviewShellCache() { uvChannel = -1; }
+            public PreviewShellCache(int channel)
+            {
+                if (channel < 0 || channel > 7) throw new System.ArgumentOutOfRangeException(nameof(channel));
+                uvChannel = channel;
+            }
 
             public int[] GetOrBuild(Mesh mesh)
             {
@@ -29,14 +37,14 @@ namespace SashaRX.UnityMeshLab
                 if (triangleShellIdsByMesh.TryGetValue(id, out var cached))
                     return cached;
 
-                int[] mapping = BuildTriangleShellIds(mesh);
+                int[] mapping = BuildTriangleShellIds(mesh, uvChannel);
                 triangleShellIdsByMesh[id] = mapping;
                 return mapping;
             }
 
             public void Clear() => triangleShellIdsByMesh.Clear();
 
-            static int[] BuildTriangleShellIds(Mesh mesh)
+            static int[] BuildTriangleShellIds(Mesh mesh, int channel)
             {
                 if (mesh == null) return null;
 
@@ -49,8 +57,10 @@ namespace SashaRX.UnityMeshLab
                 // structure across LODs. UV0 topology changes between LODs due to
                 // face removal during simplification, causing shells to split/merge.
                 var uv2List = new List<Vector2>();
-                mesh.GetUVs(1, uv2List);
-                Vector2[] uv = uv2List.Count == mesh.vertexCount ? uv2List.ToArray() : mesh.uv;
+                mesh.GetUVs(channel < 0 ? 1 : channel, uv2List);
+                Vector2[] uv = null;
+                if (uv2List.Count == mesh.vertexCount) uv = uv2List.ToArray();
+                else if (channel < 0) uv = mesh.uv;
                 if (uv == null || uv.Length != mesh.vertexCount)
                     return new int[faceCount];
 

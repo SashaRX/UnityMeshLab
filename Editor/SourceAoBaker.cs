@@ -31,14 +31,15 @@ namespace SashaRX.UnityMeshLab
 
     // Immutable, array-only bake context: the same hemisphere weighting / distance
     // falloff as Vertex AO, evaluated at source hits instead of result vertices.
-    internal sealed class SourceAoBaker
+    internal sealed partial class SourceAoBaker
     {
         readonly RemeshSource source;
         readonly TriangleBvh bvh;
         readonly Vector3[] faceNormals, directions;
         readonly bool[] twoSided;
         readonly SourceAoSettings settings;
-        readonly float distance, offset, groundY;
+        readonly Vector3 groundNormal;
+        readonly float distance, offset, groundHeight;
 
         internal SourceAoBaker(RemeshSource source, TriangleBvh bvh, Vector3[] faceNormals, bool[] twoSided, SourceAoSettings settings)
         {
@@ -48,23 +49,19 @@ namespace SashaRX.UnityMeshLab
             directions = MeshGeometry.SphereDirections(settings.samples);
             distance = Mathf.Max(source.diagonal * settings.radius, 1e-8f);
             offset = Mathf.Max(source.diagonal * settings.bias, 1e-10f);
-            float minY = float.PositiveInfinity;
-            foreach (var p in source.positions) minY = Mathf.Min(minY, p.y);
-            groundY = minY - source.diagonal * settings.groundOffset;
+            groundNormal = source.groundNormal;
+            float minHeight = float.PositiveInfinity;
+            foreach (var p in source.positions) minHeight = Mathf.Min(minHeight, Vector3.Dot(groundNormal, p));
+            groundHeight = minHeight - source.diagonal * settings.groundOffset;
         }
 
         internal float Sample(int face, Vector3 weights, int seed, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
-            int a = source.indices[face * 3], b = source.indices[face * 3 + 1], c = source.indices[face * 3 + 2];
-            Vector3 geometric = faceNormals[face];
-            Vector3 normal = RemeshBaker.SourceNormal(source, face, weights, settings.normalMap);
-            if (normal.sqrMagnitude < 1e-12f) normal = geometric;
-            if (geometric.sqrMagnitude < 1e-12f || normal.sqrMagnitude < 1e-12f) return 1f;
-            // Offset by geometric normal: normal-map tilt must not push an origin
-            // inside the surface and turn the source itself into false occlusion.
-            Vector3 origin = source.positions[a] * weights.x + source.positions[b] * weights.y + source.positions[c] * weights.z + geometric * offset;
-            float angle = (unchecked((uint)seed * 2654435761u) % 360) * Mathf.Deg2Rad;
+            var point = SamplePoint(face, weights, seed);
+            Vector3 normal = point.normal, origin = point.origin;
+            if (normal.sqrMagnitude < 1e-12f) return 1f;
+            float angle = (unchecked(point.seed * 2654435761u) % 360) * Mathf.Deg2Rad;
             float cos = Mathf.Cos(angle), sin = Mathf.Sin(angle), total = 0, occluded = 0;
             for (int i = 0; i < directions.Length; ++i) {
                 if ((i & 31) == 0) token.ThrowIfCancellationRequested();
@@ -76,14 +73,29 @@ namespace SashaRX.UnityMeshLab
                 total += weight;
                 var hit = settings.backfaceCulling ? bvh.RaycastFacingFiltered(origin, d, distance, faceNormals, twoSided) : bvh.Raycast(origin, d, distance);
                 float reach = hit.triangleIndex >= 0 && hit.t > offset * .1f ? hit.t : float.PositiveInfinity;
-                if (settings.groundPlane && d.y < -.001f) {
-                    float ground = (groundY - origin.y) / d.y;
+                float groundDot = Vector3.Dot(groundNormal, d);
+                if (settings.groundPlane && groundDot < -.001f) {
+                    float ground = (groundHeight - Vector3.Dot(groundNormal, origin)) / groundDot;
                     if (ground > 0) reach = Mathf.Min(reach, ground);
                 }
                 if (reach < distance) occluded += weight * (settings.binaryHit ? 1f : 1f - reach / distance);
             }
             float ao = total > 0 ? 1f - occluded / total : 1f;
             return Mathf.Pow(Mathf.Clamp01(ao), settings.intensity);
+        }
+
+        // CPU and GPU use the same source normal-map sample and geometric offset.
+        internal SurfacePoint SamplePoint(int face, Vector3 weights, int seed)
+        {
+            int a = source.indices[face * 3], b = source.indices[face * 3 + 1], c = source.indices[face * 3 + 2];
+            Vector3 geometric = faceNormals[face];
+            Vector3 normal = RemeshBaker.SourceNormal(source, face, weights, settings.normalMap);
+            if (normal.sqrMagnitude < 1e-12f) normal = geometric;
+            if (geometric.sqrMagnitude < 1e-12f || normal.sqrMagnitude < 1e-12f) return default;
+            // Offset by geometric normal: normal-map tilt must not push an origin
+            // inside the surface and turn the source itself into false occlusion.
+            Vector3 origin = source.positions[a] * weights.x + source.positions[b] * weights.y + source.positions[c] * weights.z + geometric * offset;
+            return new SurfacePoint { origin = origin, normal = normal, seed = unchecked((uint)seed) };
         }
     }
 }

@@ -29,6 +29,7 @@ namespace SashaRX.UnityMeshLab
             public bool sourceAO;
             public bool beauty;
             public bool gpu;            // the geometry queries ran on the GPU
+            public bool gpuAO;          // source AO rays ran on the GPU
         }
 
         // ── Batched bake ──
@@ -62,24 +63,40 @@ namespace SashaRX.UnityMeshLab
         /// same as <see cref="Bake"/>'s.
         /// </summary>
         public static async Task<Maps> BakeAsync(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents,
-            RemeshSettings settings, CancellationToken token, RemeshBeauty beauty, Func<Context, GpuBvh> createGpu)
+            RemeshSettings settings, CancellationToken token, RemeshBeauty beauty, Func<Context, GpuBvh> createGpu, bool gpuSourceAO = false)
         {
             var ctx = await Task.Run(() => Prepare(source, target, tangents, settings, token, beauty), token);
             GpuBvh gpu = null;
+            SourceAoBaker.Gpu aoGpu = null;
             try {
-                gpu = createGpu(ctx);
-                var band = new Band(ctx);
+                token.ThrowIfCancellationRequested();
+                gpu = SystemInfo.supportsAsyncGPUReadback ? createGpu(ctx) : null;
+                if (gpuSourceAO) aoGpu = ctx.aoBaker?.TryCreateGpu(gpu);
+                bool useAoGpu = aoGpu != null;
+                var band = await Task.Run(() => {
+                    var prepared = new Band(ctx);
+                    if (useAoGpu) {
+                        prepared.aoPoints = new SourceAoBaker.SurfacePoint[prepared.pixel.Length];
+                        prepared.aoValues = new float[prepared.pixel.Length];
+                    }
+                    return prepared;
+                }, token);
                 for (int y0 = 0; y0 < ctx.size; y0 += ctx.bandRows) {
                     int y1 = Math.Min(ctx.size, y0 + ctx.bandRows);
                     await Task.Run(() => BuildRequests(ctx, band, y0, y1, token), token);
-                    if (gpu != null) ResolveGpu(ctx, band, gpu);
+                    if (gpu != null) await ResolveGpuAsync(ctx, band, gpu, token);
                     else await Task.Run(() => ResolveCpu(ctx, band, token), token);
+                    if (aoGpu != null) {
+                        await Task.Run(() => PrepareAoPoints(ctx, band, token), token);
+                        await aoGpu.SampleAsync(band.aoPoints, band.count, band.aoValues, token);
+                    }
                     await Task.Run(() => EvaluateBand(ctx, band, token), token);
                 }
                 ctx.result.gpu = gpu != null;
+                ctx.result.gpuAO = aoGpu != null;
                 return await Task.Run(() => Finish(ctx, token), token);
             }
-            finally { gpu?.Dispose(); }
+            finally { aoGpu?.Dispose(); gpu?.Dispose(); }
         }
 
         /// <summary>The GPU tree for a prepared bake: the source BVH with the oriented face normals and the either-side mask the filters use.</summary>
@@ -110,6 +127,8 @@ namespace SashaRX.UnityMeshLab
             public Vector4[] rayOrigin, rayDir, point, pointNormal;   // queries (w = reach / dotMin)
             public GpuBvh.RayHit[] rayHit; public GpuBvh.NearestHit[] nearest;
             public bool[] needNearest;
+            internal SourceAoBaker.SurfacePoint[] aoPoints;
+            internal float[] aoValues;
 
             public Band(Context ctx)
             {
@@ -124,6 +143,7 @@ namespace SashaRX.UnityMeshLab
         static Context Prepare(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents,
             RemeshSettings settings, CancellationToken token, RemeshBeauty beauty)
         {
+            if (target.draftUv) throw new InvalidOperationException("Bake requires an unwrapped atlas; UV0 is still draft.");
             settings.Validate();
             int size = settings.textureResolution;
             int count = checked(size * size);
@@ -161,7 +181,7 @@ namespace SashaRX.UnityMeshLab
             // The cage is per corner and per side (see Cage), so a double-sided sheet
             // projects each face from its own side, and its reach is fitted to where
             // the source actually is when the settings ask for it.
-            var cage = BuildCage(target, distance, settings.cageSmoothing, settings.cageFit && !proxy ? bvh : null, result);
+            var cage = BuildCage(target, distance, settings.cageSmoothing, settings.cageFit && !proxy ? bvh : null, result, token);
             // Front-face filter for the projection rays: a plain closest-hit raycast
             // travels 2×distance THROUGH the target and can pierce a thin wall, sampling
             // the far side's texture (periodic mirrored/garbled patches). The filter only
@@ -203,6 +223,7 @@ namespace SashaRX.UnityMeshLab
                 MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, r => {
                 int y = y0 + r, write = r * size * spp;
                 var candidates = new int[9];
+                var polygon = new Vector2[8]; var scratch = new Vector2[8];
                 for (int x = 0; x < size; ++x) {
                     if ((x & 63) == 0) token.ThrowIfCancellationRequested();
                     int pixel = y * size + x;
@@ -217,11 +238,23 @@ namespace SashaRX.UnityMeshLab
                             int f = owners[yy * size + xx];
                             if (f >= 0 && Array.IndexOf(candidates, f, 0, candidateCount) < 0) candidates[candidateCount++] = f;
                         }
-                    foreach (var offset in ctx.offsets) {
-                        var uv = new Vector2((x + offset.x) / size, (y + offset.y) / size);
+                    int pixelStart = write;
+                    for (int sample = 0; sample <= spp; ++sample) {
                         int face = -1; Vector3 w = default;
-                        for (int c = 0; c < candidateCount && face < 0; ++c)
-                            if (Inside(target, candidates[c], uv, out w)) face = candidates[c];
+                        if (sample < spp) {
+                            var offset = ctx.offsets[sample];
+                            var uv = new Vector2((x + offset.x) / size, (y + offset.y) / size);
+                            for (int c = 0; c < candidateCount && face < 0; ++c)
+                                if (Inside(target, candidates[c], uv, out w)) face = candidates[c];
+                        }
+                        else {
+                            // A covered sliver can miss every stratified sample, even
+                            // when its centre has an owner. Sample inside the clipped
+                            // triangle so an unevaluated black texel is never a padding seed.
+                            if (write != pixelStart) break;
+                            if (Inside(target, owners[pixel], new Vector2((x + .5f) / size, (y + .5f) / size), out w) ||
+                                CoveredPoint(target, owners[pixel], x, y, size, polygon, scratch, out w)) face = owners[pixel];
+                        }
                         if (face < 0) continue;
                         int a = target.indices[face * 3], b = target.indices[face * 3 + 1], cc = target.indices[face * 3 + 2];
                         Vector3 p = target.positions[a] * w.x + target.positions[b] * w.y + target.positions[cc] * w.z;
@@ -288,19 +321,34 @@ namespace SashaRX.UnityMeshLab
         }
 
         // GPU resolver: one ray batch, then one nearest batch for the misses only.
-        static void ResolveGpu(Context ctx, Band band, GpuBvh gpu)
+        static async Task ResolveGpuAsync(Context ctx, Band band, GpuBvh gpu, CancellationToken token)
         {
-            gpu.Raycast(band.rayOrigin, band.rayDir, band.count, ctx.facingFilter, band.rayHit);
-            int pending = 0;
-            for (int i = 0; i < band.count; ++i) {
-                band.nearest[i].tri = -1;
-                bool miss = band.rayHit[i].tri < 0;
-                band.needNearest[i] = miss;
-                // Skipped points carry radius 0 so the kernel answers "none" without traversing.
-                if (!miss) { var q = band.point[i]; band.point[i] = new Vector4(q.x, q.y, q.z, 0f); }
-                else ++pending;
-            }
-            if (pending > 0) gpu.Nearest(band.point, band.pointNormal, band.count, ctx.facingFilter, band.nearest);
+            await gpu.RaycastAsync(band.rayOrigin, band.rayDir, band.count, ctx.facingFilter, band.rayHit, token);
+            int pending = await Task.Run(() => {
+                int misses = 0;
+                for (int i = 0; i < band.count; ++i) {
+                    if ((i & 255) == 0) token.ThrowIfCancellationRequested();
+                    band.nearest[i].tri = -1;
+                    bool miss = band.rayHit[i].tri < 0;
+                    band.needNearest[i] = miss;
+                    // Skipped points carry radius 0 so the kernel answers "none" without traversing.
+                    if (!miss) { var q = band.point[i]; band.point[i] = new Vector4(q.x, q.y, q.z, 0f); }
+                    else ++misses;
+                }
+                return misses;
+            }, token);
+            if (pending > 0) await gpu.NearestAsync(band.point, band.pointNormal, band.count, ctx.facingFilter, band.nearest, token);
+        }
+
+        static void PrepareAoPoints(Context ctx, Band band, CancellationToken token)
+        {
+            Parallel.For(0, band.count, new ParallelOptions { CancellationToken = token,
+                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, i => {
+                var hit = band.rayHit[i];
+                int face = hit.tri >= 0 ? hit.tri : band.nearest[i].tri;
+                Vector3 weights = hit.tri >= 0 ? new Vector3(1 - hit.u - hit.v, hit.u, hit.v) : band.nearest[i].bary;
+                band.aoPoints[i] = face >= 0 ? ctx.aoBaker.SamplePoint(face, weights, band.pixel[i]) : default;
+            });
         }
 
         // Texels from answers: material (and lighting) at every sample's source hit,
@@ -335,7 +383,7 @@ namespace SashaRX.UnityMeshLab
                         Vector4 tangent = ctx.tangents[a] * w.x + ctx.tangents[b] * w.y + ctx.tangents[c] * w.z;
                         Evaluate(source, sourceFace, sw, n, tangent, vertexTint, out var sc, out var sn, out var sm, out var sa, out var se);
                         if (ctx.aoBaker != null) {
-                            float computedAO = ctx.aoBaker.Sample(sourceFace, sw, pixel, token);
+                            float computedAO = band.aoValues != null ? band.aoValues[i] : ctx.aoBaker.Sample(sourceFace, sw, pixel, token);
                             if (ctx.settings.multiplySourceAO) computedAO *= sa.g;
                             sa = new Color(computedAO, computedAO, computedAO, 1);
                         }
@@ -388,7 +436,7 @@ namespace SashaRX.UnityMeshLab
             result.meanTiltDeg = tiltN > 0 ? (float)(tiltSum / tiltN) : 0;
             result.maxTiltDeg = tiltMax;
             result.loudTexels = loud;
-            Dilate(result, owners, ctx.settings.padding, token);
+            PadAndDilate(result, owners, ctx.settings.padding, ctx.settings.dilationRadius, token);
             if (ctx.settings.transferVertexColor || ctx.settings.transferVertexAlpha)
                 result.vertexColors = TransferVertexColors(ctx.source, ctx.target, ctx.bvh, ctx.settings, token);
             return result;
@@ -404,9 +452,8 @@ namespace SashaRX.UnityMeshLab
             return offsets;
         }
 
-        // A texel is owned by the face under its centre. With multisampling, texels whose
-        // centre misses every face but that some sample hits are owned too (conservative
-        // coverage), so thin charts and chart edges are not lost.
+        // Prefer centre/sample ownership, then exact triangle/texel intersection.
+        // Coverage cannot depend on whether a thin chart contains a sample centre.
         static int[] Rasterize(RemeshNative.Geometry target, int size, Vector2[] offsets, CancellationToken token)
         {
             var owners = new int[size * size];
@@ -414,6 +461,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < owners.Length; ++i) owners[i] = -1;
             for (int face = 0; face < target.indices.Length / 3; ++face) {
                 token.ThrowIfCancellationRequested();
+                var polygon = new Vector2[8]; var scratch = new Vector2[8];
                 int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
                 Vector2 ua = target.uv[a], ub = target.uv[b], uc = target.uv[c];
                 int x0 = Mathf.Clamp(Mathf.FloorToInt(Mathf.Min(ua.x, Mathf.Min(ub.x, uc.x)) * size), 0, size - 1);
@@ -426,11 +474,13 @@ namespace SashaRX.UnityMeshLab
                         if (Inside(target, face, new Vector2((x + 0.5f) / size, (y + 0.5f) / size), out _)) {
                             owners[pixel] = face; centred[pixel] = true;
                         }
-                        else if (offsets.Length > 1 && !centred[pixel] && owners[pixel] < 0)
+                        else if (!centred[pixel] && owners[pixel] < 0) {
                             foreach (var offset in offsets)
                                 if (Inside(target, face, new Vector2((x + offset.x) / size, (y + offset.y) / size), out _)) {
                                     owners[pixel] = face; break;
                                 }
+                            if (owners[pixel] < 0 && CoveredPoint(target, face, x, y, size, polygon, scratch, out _)) owners[pixel] = face;
+                        }
                     }
             }
             return owners;
@@ -441,6 +491,48 @@ namespace SashaRX.UnityMeshLab
             int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
             return MeshGeometry.Barycentric(uv, target.uv[a], target.uv[b], target.uv[c], out w) &&
                 w.x >= -1e-6f && w.y >= -1e-6f && w.z >= -1e-6f;
+        }
+
+        // Clip the UV triangle to the texel square (Sutherland-Hodgman). Averaging
+        // the resulting convex polygon's vertices gives a sample inside both.
+        static bool CoveredPoint(RemeshNative.Geometry target, int face, int x, int y, int size,
+            Vector2[] polygon, Vector2[] scratch, out Vector3 weights)
+        {
+            weights = default;
+            for (int i = 0; i < 3; ++i) polygon[i] = target.uv[target.indices[face * 3 + i]] * size;
+            int count = 3;
+            for (int edge = 0; edge < 4 && count > 0; ++edge) {
+                int axis = edge / 2;
+                bool minimum = (edge & 1) == 0;
+                float boundary = (axis == 0 ? x : y) + (minimum ? 0 : 1);
+                int written = 0;
+                Vector2 previous = polygon[count - 1];
+                float previousDistance = (previous[axis] - boundary) * (minimum ? 1 : -1);
+                for (int i = 0; i < count; ++i) {
+                    Vector2 current = polygon[i];
+                    float currentDistance = (current[axis] - boundary) * (minimum ? 1 : -1);
+                    if (currentDistance != 0 && previousDistance != 0 && (currentDistance >= 0) != (previousDistance >= 0))
+                        scratch[written++] = previous + (current - previous) * (previousDistance / (previousDistance - currentDistance));
+                    if (currentDistance >= 0) scratch[written++] = current;
+                    previous = current; previousDistance = currentDistance;
+                }
+                count = written;
+                var swap = polygon; polygon = scratch; scratch = swap;
+            }
+            if (count < 3) return false;
+            float area = 0; Vector2 sum = Vector2.zero;
+            for (int i = 0; i < count; ++i) {
+                sum += polygon[i];
+                Vector2 a = polygon[i] - polygon[0], b = polygon[(i + 1) % count] - polygon[0];
+                area += a.x * b.y - a.y * b.x;
+            }
+            if (area == 0f) return false; // edge/point contact has no coverage
+            int ia = target.indices[face * 3], ib = target.indices[face * 3 + 1], ic = target.indices[face * 3 + 2];
+            if (!MeshGeometry.Barycentric(sum / (count * size), target.uv[ia], target.uv[ib], target.uv[ic], out weights)) return false;
+            // Roundoff on a very narrow chart must not extrapolate beyond its surface.
+            weights = Vector3.Max(weights, Vector3.zero);
+            weights /= weights.x + weights.y + weights.z;
+            return true;
         }
 
         // Folds the captured scene lighting into the transferred albedo (all linear).
@@ -536,8 +628,10 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        internal static Cage BuildCage(RemeshNative.Geometry target, float distance, float smoothing, TriangleBvh source, Maps diag = null)
+        internal static Cage BuildCage(RemeshNative.Geometry target, float distance, float smoothing, TriangleBvh source,
+            Maps diag = null, CancellationToken token = default)
         {
+            token.ThrowIfCancellationRequested();
             var positions = target.positions; var indices = target.indices;
             int corners = indices.Length, faces = corners / 3;
             // Bit-exact position weld: xatlas and the simplifier copy coordinates exactly.
@@ -554,6 +648,7 @@ namespace SashaRX.UnityMeshLab
             var cornerSide = new int[corners];
             var faceNormal = new Vector3[faces];
             for (int f = 0; f < faces; ++f) {
+                if ((f & 255) == 0) token.ThrowIfCancellationRequested();
                 int a = indices[f * 3], b = indices[f * 3 + 1], c = indices[f * 3 + 2];
                 Vector3 cross = Vector3.Cross(positions[b] - positions[a], positions[c] - positions[a]);
                 float area2 = cross.magnitude;
@@ -594,6 +689,7 @@ namespace SashaRX.UnityMeshLab
                 positions = positionCount, sides = sideCount, distance = distance };
             var deviated = new bool[positions.Length];
             for (int c = 0; c < corners; ++c) {
+                if ((c & 255) == 0) token.ThrowIfCancellationRequested();
                 int sd = cornerSide[c], v = indices[c];
                 Vector3 fn = faceNormal[c / 3];
                 Vector3 d = welded.normals[sd];
@@ -615,7 +711,7 @@ namespace SashaRX.UnityMeshLab
             for (int slot = 0; slot < firstSide.Length; ++slot)
                 if (firstSide[slot] >= 0 && nextSide[firstSide[slot]] >= 0) ++cage.folded;
             cage.maxReach = distance;
-            if (source != null && distance > 0f) FitReach(cage, welded.normals, sideDir, sideVertex, positions, source);
+            if (source != null && distance > 0f) FitReach(cage, welded.normals, sideDir, sideVertex, positions, source, token);
             if (diag != null) {
                 diag.weldedPositions = cage.positions;
                 diag.splitCopies = positions.Length - cage.positions;
@@ -638,12 +734,13 @@ namespace SashaRX.UnityMeshLab
         // the ray cannot. Smoothed over the side connectivity, never below a side's own
         // measured need, so the shells stay shells instead of spiking per vertex.
         static void FitReach(Cage cage, Vector3[] smoothed, Vector3[] sideDir, System.Collections.Generic.List<int> sideVertex,
-            Vector3[] positions, TriangleBvh source)
+            Vector3[] positions, TriangleBvh source, CancellationToken token)
         {
             float distance = cage.distance, range = distance * Cage.FitRange;
             int sides = sideDir.Length;
             var need = new float[sides];
             for (int sd = 0; sd < sides; ++sd) {
+                if ((sd & 255) == 0) token.ThrowIfCancellationRequested();
                 Vector3 d = smoothed[sd].sqrMagnitude > 1e-20f ? smoothed[sd] : sideDir[sd];
                 Vector3 p = positions[sideVertex[sd]];
                 float found = -1f;
@@ -848,7 +945,34 @@ namespace SashaRX.UnityMeshLab
             return nearest;
         }
 
-        static void Dilate(Maps maps, int[] owners, int padding, CancellationToken token)
+        internal static void PadAndDilate(Maps maps, int[] owners, int padding, int dilationRadius, CancellationToken token)
+        {
+            var padded = Pad(maps, owners, padding, token);
+            if (dilationRadius == 0) return;
+            // Consume the padding mask as scratch. Its seeds include the padding
+            // pixels, so the requested radius is additional to the atlas padding.
+            var nearest = TextureDilation.NearestFilled(padded, maps.size, token);
+            long limit = (long)dilationRadius * dilationRadius;
+            for (int y = 0; y < maps.size; ++y) {
+                token.ThrowIfCancellationRequested();
+                for (int x = 0; x < maps.size; ++x) {
+                    int i = y * maps.size + x, from = nearest[i];
+                    if (from < 0 || from == i) continue;
+                    long dx = x - from % maps.size, dy = y - from / maps.size;
+                    if (dx * dx + dy * dy <= limit) CopyTexel(maps, from, i);
+                }
+            }
+        }
+
+        static void CopyTexel(Maps maps, int from, int to)
+        {
+            // Copy, never average: keep packed channels, tangent-space directions,
+            // proxy alpha coverage and HDR emission intact.
+            maps.color[to] = maps.color[from]; maps.normal[to] = maps.normal[from];
+            maps.metal[to] = maps.metal[from]; maps.ao[to] = maps.ao[from]; maps.emission[to] = maps.emission[from];
+        }
+
+        static int[] Pad(Maps maps, int[] owners, int padding, CancellationToken token)
         {
             int size = maps.size, count = owners.Length;
             var nearest = new int[count]; var next = new int[count];
@@ -875,9 +999,9 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < count; ++i) {
                 int from = nearest[i];
                 if (owners[i] >= 0 || from < 0) continue;
-                maps.color[i] = maps.color[from]; maps.normal[i] = maps.normal[from];
-                maps.metal[i] = maps.metal[from]; maps.ao[i] = maps.ao[from]; maps.emission[i] = maps.emission[from];
+                CopyTexel(maps, from, i);
             }
+            return nearest;
         }
     }
 }

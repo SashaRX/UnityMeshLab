@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
@@ -8,7 +9,8 @@ namespace SashaRX.UnityMeshLab
     /// The one home for the small geometry routines every projecting or baking tool
     /// needs — face normals, bit-exact position welding, evenly spread sample
     /// directions, 2D barycentrics, point–box distance. Pure math, thread-safe, no
-    /// UnityEngine.Object access, so it runs inside the bake workers. <see cref="TriangleBvh"/>
+    /// UnityEngine.Object access except the owned-mesh channel completion helper,
+    /// so the array routines run inside the bake workers. <see cref="TriangleBvh"/>
     /// (3D) and <see cref="TriangleBvh2D"/> (UV space) are the spatial queries; this
     /// class is what feeds them and reads their answers.
     /// </summary>
@@ -41,6 +43,83 @@ namespace SashaRX.UnityMeshLab
                 normals[f] = length > 1e-30f ? n / length : Vector3.zero;
             }
             return normals;
+        }
+
+        /// <summary>Area-weighted smooth normals, welded across identical positions.
+        /// A cancelling fan uses its largest face; unused/degenerate vertices use up.</summary>
+        internal static Vector3[] AveragedNormals(Vector3[] positions, int[] indices, CancellationToken token = default)
+        {
+            token.ThrowIfCancellationRequested();
+            var slots = WeldPositions(positions, out int count);
+            var sums = new Vector3[count]; var largest = new Vector3[count];
+            for (int f = 0; f < indices.Length; f += 3) {
+                if ((f & 4095) == 0) token.ThrowIfCancellationRequested();
+                int a = indices[f], b = indices[f + 1], c = indices[f + 2];
+                var face = Vector3.Cross(positions[b] - positions[a], positions[c] - positions[a]);
+                for (int k = 0; k < 3; ++k) {
+                    int slot = slots[indices[f + k]];
+                    sums[slot] += face;
+                    if (face.sqrMagnitude > largest[slot].sqrMagnitude) largest[slot] = face;
+                }
+            }
+            var result = new Vector3[positions.Length];
+            for (int i = 0; i < result.Length; ++i) {
+                if ((i & 4095) == 0) token.ThrowIfCancellationRequested();
+                int slot = slots[i];
+                var n = UnitDirection(sums[slot]);
+                if (!UsableNormal(n)) n = UnitDirection(largest[slot]);
+                result[i] = UsableNormal(n) ? n : Vector3.up;
+            }
+            return result;
+        }
+
+        internal static bool UsableNormal(Vector3 normal) =>
+            !float.IsNaN(normal.x) && !float.IsNaN(normal.y) && !float.IsNaN(normal.z) &&
+            !float.IsInfinity(normal.x) && !float.IsInfinity(normal.y) && !float.IsInfinity(normal.z) && normal.sqrMagnitude > 1e-12f;
+
+        /// <summary>Preserve supplied normals, repairing only missing/invalid entries.</summary>
+        internal static Vector3[] NormalsOrFallback(Vector3[] positions, int[] indices, Vector3[] normals, CancellationToken token = default)
+        {
+            if (normals == null || normals.Length != positions.Length) return AveragedNormals(positions, indices, token);
+            bool valid = true;
+            foreach (var n in normals) if (!UsableNormal(n)) { valid = false; break; }
+            if (valid) return normals;
+            var result = (Vector3[])normals.Clone(); var fallback = AveragedNormals(positions, indices, token);
+            for (int i = 0; i < result.Length; ++i) if (!UsableNormal(result[i])) result[i] = fallback[i];
+            return result;
+        }
+
+        /// <summary>Temporary planar UV0 from normalized local X/Y; flat axes map to 0.5.</summary>
+        internal static Vector2[] NormalizedXYUv(Vector3[] positions, CancellationToken token = default)
+        {
+            token.ThrowIfCancellationRequested();
+            var uv = new Vector2[positions.Length];
+            if (positions.Length == 0) return uv;
+            Vector3 mn = positions[0], mx = positions[0];
+            for (int i = 0; i < positions.Length; ++i) {
+                if ((i & 4095) == 0) token.ThrowIfCancellationRequested();
+                mn = Vector3.Min(mn, positions[i]); mx = Vector3.Max(mx, positions[i]);
+            }
+            double width = (double)mx.x - mn.x, height = (double)mx.y - mn.y;
+            for (int i = 0; i < uv.Length; ++i) {
+                if ((i & 4095) == 0) token.ThrowIfCancellationRequested();
+                uv[i] = new Vector2(width > 0 ? (float)(((double)positions[i].x - mn.x) / width) : .5f,
+                    height > 0 ? (float)(((double)positions[i].y - mn.y) / height) : .5f);
+            }
+            return uv;
+        }
+
+        /// <summary>Complete an owned triangle mesh without replacing authored channels.</summary>
+        internal static void EnsureMeshChannels(Mesh mesh)
+        {
+            var p = mesh.vertices;
+            if (p.Length == 0) return;
+            var n = mesh.normals;
+            var repaired = NormalsOrFallback(p, mesh.triangles, n);
+            if (!ReferenceEquals(n, repaired)) mesh.normals = repaired;
+            if (mesh.uv.Length != p.Length) {
+                MeshUvState.SetGeneratedUv(mesh, NormalizedXYUv(p));
+            }
         }
 
         /// <summary>
