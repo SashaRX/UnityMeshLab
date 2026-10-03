@@ -129,9 +129,12 @@ Before the UV stage the canvas shows the selected model as usual.
    X/Y normalized independently to 0–1 (a flat axis maps to 0.5). These planar
    UVs are temporary channel data; the unwrap stage replaces them with the
    real atlas before UV-dependent normal modes or baking run.
-   They carry a `draftUv` flag in stage geometry and transient mesh metadata,
-   exposed by the preview's `MeshEntry.draftUv` and shown as **Draft UV0**.
-   A completed xatlas unwrap clears this flag. Final normals and bake reject
+   They carry a `draftUv` flag in stage geometry, exposed by the preview's
+   `MeshEntry.draftUv` and shown as **Draft UV0**. Generated planar UV0 on a Unity
+   mesh uses a reserved third component (`Z = -1048576`) for this provenance;
+   XY stays unchanged, and the marker survives asset saving and domain reload.
+   Authored UV channels are preserved. A completed xatlas unwrap replaces the
+   draft UV0 with the real two-component atlas and clears this flag. Final normals and bake reject
    draft target UVs; `UvTopology.HasFinalUv` distinguishes them from usable
    channel data without hiding them from the UV preview.
 4. **Normals & UV** — *Hard edges* (defaults to *UV islands*):

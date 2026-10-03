@@ -126,7 +126,7 @@ namespace SashaRX.UnityMeshLab
                     trial[5] = options[5] >= 1000 ? options[5] : 4;
                     trial[7] = 5; trial[8] = 1;
                     bool same = true;
-                    for (int i = 0; i < options.Length; ++i) if (!trial[i].Equals(options[i])) { same = false; break; }
+                    for (int i = 0; i < options.Length; ++i) if (!Mathf.Approximately(trial[i], options[i])) { same = false; break; }
                     if (same) continue;
                     token.ThrowIfCancellationRequested();
                     Geometry candidate;

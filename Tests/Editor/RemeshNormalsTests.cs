@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
@@ -243,6 +244,76 @@ namespace SashaRX.UnityMeshLab.Tests
                 else { AssertChannels(output.vertices, output.normals, output.uv); Assert.IsEmpty(mesh.normals); Assert.IsEmpty(mesh.uv); }
             }
             finally { if (output) Object.DestroyImmediate(output); Object.DestroyImmediate(mesh); }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void GeneratedDraftUvSurvivesAssetSerializationAndRename(bool simplify)
+        {
+            string path = "Assets/MeshLabDraft_" + Guid.NewGuid().ToString("N") + ".asset";
+            string copyPath = path.Replace(".asset", "_copy.asset");
+            var source = new Mesh { vertices = FoldPositions(), triangles = FoldIndices() };
+            Mesh output = null;
+            try {
+                if (simplify) {
+                    RequireNative();
+                    var options = MeshSimplifier.SimplifySettings.Default; options.targetRatio = 1;
+                    var result = MeshSimplifier.Simplify(source, options);
+                    Assert.IsTrue(result.ok, result.error); output = result.simplifiedMesh;
+                }
+                else output = RemeshPipeline.BuildMesh("Draft", source.vertices, source.triangles);
+                output.hideFlags = HideFlags.None;
+                output.name = "Chair_LOD1";
+                var expectedUv = output.uv;
+                AssetDatabase.CreateAsset(output, path);
+                AssetDatabase.SaveAssets();
+                Assert.IsTrue(AssetDatabase.CopyAsset(path, copyPath));
+                var restored = AssetDatabase.LoadAssetAtPath<Mesh>(copyPath);
+                Assert.IsTrue(restored);
+                Assert.AreNotSame(output, restored, "The restored mesh has no transient weak-table registration");
+                // Unity names a main mesh asset after its filename. Provenance
+                // must survive both this automatic rename and an explicit LOD name.
+                restored.name = "Chair_LOD1";
+                Assert.AreEqual("Chair_LOD1", restored.name);
+                CollectionAssert.AreEqual(expectedUv, restored.uv);
+                Assert.AreEqual(3, restored.GetVertexAttributeDimension(VertexAttribute.TexCoord0));
+                Assert.IsTrue(MeshUvState.IsDraft(restored));
+                Assert.IsFalse(UvTopology.HasFinalUv(restored, 0));
+                Assert.Throws<InvalidOperationException>(() => TextureAoBakePanel.CaptureTarget(restored, 0));
+                MeshUvState.SetDraft(restored, false);
+                Assert.IsFalse(MeshUvState.IsDraft(restored));
+                Assert.AreEqual(2, restored.GetVertexAttributeDimension(VertexAttribute.TexCoord0));
+                CollectionAssert.AreEqual(expectedUv, restored.uv, "Clearing provenance cannot move XY coordinates");
+                Assert.IsTrue(UvTopology.HasFinalUv(restored, 0));
+            }
+            finally {
+                AssetDatabase.DeleteAsset(copyPath);
+                AssetDatabase.DeleteAsset(path);
+                if (output && !AssetDatabase.Contains(output)) Object.DestroyImmediate(output);
+                Object.DestroyImmediate(source);
+            }
+        }
+
+        [Test]
+        public void SerializedDraftUvSurvivesUnreadableMeshCopy()
+        {
+            var source = RemeshPipeline.BuildMesh("draft", FoldPositions(), FoldIndices());
+            Mesh unreadable = null, copy = null;
+            try {
+                // Instantiate copies serialized channels, but not weak-table state.
+                unreadable = Object.Instantiate(source);
+                unreadable.UploadMeshData(true);
+                Assert.IsTrue(MeshUvState.IsDraft(unreadable));
+                copy = MeshAccess.ReadableCopy(unreadable);
+                Assert.IsTrue(MeshUvState.IsDraft(copy));
+                CollectionAssert.AreEqual(source.uv, copy.uv);
+                Assert.Throws<InvalidOperationException>(() => TextureAoBakePanel.CaptureTarget(copy, 0));
+            }
+            finally {
+                if (copy) Object.DestroyImmediate(copy);
+                if (unreadable) Object.DestroyImmediate(unreadable);
+                Object.DestroyImmediate(source);
+            }
         }
 
         [Test]

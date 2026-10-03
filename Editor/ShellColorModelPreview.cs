@@ -58,7 +58,9 @@ namespace SashaRX.UnityMeshLab
                 // face removal during simplification, causing shells to split/merge.
                 var uv2List = new List<Vector2>();
                 mesh.GetUVs(channel < 0 ? 1 : channel, uv2List);
-                Vector2[] uv = uv2List.Count == mesh.vertexCount ? uv2List.ToArray() : channel < 0 ? mesh.uv : null;
+                Vector2[] uv = null;
+                if (uv2List.Count == mesh.vertexCount) uv = uv2List.ToArray();
+                else if (channel < 0) uv = mesh.uv;
                 if (uv == null || uv.Length != mesh.vertexCount)
                     return new int[faceCount];
 

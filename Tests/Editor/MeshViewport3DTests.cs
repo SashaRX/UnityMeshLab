@@ -100,6 +100,38 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(mesh); }
         }
 
+        [UnityTest]
+        public IEnumerator WirePreviewAboveFaceLimitUploadsValidMeshAndPreservesOtherSubmeshes()
+        {
+            var indices = new int[1_000_001 * 3];
+            for (int i = 0; i < indices.Length; i += 3) { indices[i + 1] = 1; indices[i + 2] = 2; }
+            for (int otherSubmesh = 0; otherSubmesh < 2; ++otherSubmesh) {
+                var mesh = new Mesh { name = "AboveWireFaceLimit" };
+                using (var viewport = new MeshViewport3D())
+                try {
+                    mesh.vertices = new[] { Vector3.zero, Vector3.right, Vector3.up };
+                    mesh.subMeshCount = otherSubmesh + 1;
+                    mesh.SetIndices(indices, MeshTopology.Triangles, 0);
+                    if (otherSubmesh != 0) mesh.SetIndices(new[] { 0, 1, 2 }, MeshTopology.Triangles, 1);
+                    var expected = MeshViewport3D.EdgeIndices(mesh);
+                    Assert.IsNotNull(expected, "An oversized submesh must never produce null upload indices");
+                    Assert.AreEqual(otherSubmesh * 6, expected.Count);
+                    Assert.IsNull(viewport.WireOf(mesh));
+                    Mesh wire = null;
+                    double deadline = EditorApplication.timeSinceStartup + 10;
+                    while (!wire && EditorApplication.timeSinceStartup < deadline) { yield return null; wire = viewport.WireOf(mesh); }
+                    Assert.IsTrue(wire, "Even an empty wire preview must finish uploading");
+                    Assert.AreEqual(MeshTopology.Lines, wire.GetTopology(0));
+                    CollectionAssert.AreEqual(expected, wire.GetIndices(0));
+                    Assert.AreSame(wire, viewport.WireOf(mesh), "A completed preview is reused");
+                    LogAssert.NoUnexpectedReceived();
+                    viewport.InvalidateMesh(mesh);
+                    Assert.IsFalse(wire, "The cached preview must be released on invalidation");
+                }
+                finally { Object.DestroyImmediate(mesh); }
+            }
+        }
+
         [Test]
         public void InspectionWorksWithoutUvNormalsOrTangents()
         {

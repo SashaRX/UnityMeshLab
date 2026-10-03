@@ -563,7 +563,7 @@ namespace SashaRX.UnityMeshLab
             return null;
         }
 
-        /// <summary>Line-list indices of a mesh's unique triangle edges (null above 1M faces).</summary>
+        /// <summary>Unique line-list edges across submeshes. Triangle submeshes above 1M faces are skipped.</summary>
         public static List<int> EdgeIndices(Mesh mesh)
         {
             SnapshotIndices(mesh, out var indices, out var topology);

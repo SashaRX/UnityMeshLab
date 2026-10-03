@@ -175,7 +175,10 @@ namespace SashaRX.UnityMeshLab
                 : Task.Run(() => RemeshBaker.Bake(source, geometry, geometry.tangents, options, token), token);
 
         internal static string BackendLabel(RemeshBaker.Maps maps)
-            => maps.gpuAO ? "GPU" : maps.gpu ? "CPU AO / GPU projection" : "CPU";
+        {
+            if (maps.gpuAO) return "GPU";
+            return maps.gpu ? "CPU AO / GPU projection" : "CPU";
+        }
 
         internal static RemeshNative.Geometry CaptureTarget(Mesh mesh, int channel)
         {

@@ -118,8 +118,7 @@ namespace SashaRX.UnityMeshLab
             var repaired = NormalsOrFallback(p, mesh.triangles, n);
             if (!ReferenceEquals(n, repaired)) mesh.normals = repaired;
             if (mesh.uv.Length != p.Length) {
-                mesh.uv = NormalizedXYUv(p);
-                MeshUvState.SetDraft(mesh, true);
+                MeshUvState.SetGeneratedUv(mesh, NormalizedXYUv(p));
             }
         }
 

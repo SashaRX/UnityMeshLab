@@ -524,8 +524,9 @@ namespace SashaRX.UnityMeshLab
             var mesh = new Mesh { name = name, indexFormat = IndexFormat.UInt32, hideFlags = HideFlags.HideAndDontSave };
             mesh.vertices = positions; mesh.triangles = indices;
             mesh.normals = MeshGeometry.NormalsOrFallback(positions, indices, normals);
-            mesh.uv = uv != null && uv.Length == positions.Length ? uv : MeshGeometry.NormalizedXYUv(positions);
-            MeshUvState.SetDraft(mesh, draftUv || uv == null || uv.Length != positions.Length);
+            if (uv == null || uv.Length != positions.Length) MeshUvState.SetGeneratedUv(mesh, MeshGeometry.NormalizedXYUv(positions));
+            else if (draftUv) MeshUvState.SetGeneratedUv(mesh, uv);
+            else mesh.uv = uv;
             if (colors != null) mesh.colors = colors;
             mesh.RecalculateBounds();
             return mesh;

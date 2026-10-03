@@ -37,7 +37,9 @@ namespace SashaRX.UnityMeshLab
                 double length = e1.magnitude, twiceArea = Vector3.Cross(e1, e2).magnitude;
                 if (length <= 0 || twiceArea <= 0) continue;
                 double det = (double)u1.x * u2.y - (double)u1.y * u2.x;
-                int sign = det > 0 ? 1 : det < 0 ? -1 : 0;
+                int sign = 0;
+                if (det > 0) sign = 1;
+                else if (det < 0) sign = -1;
                 if (sign == 0 || winding[chart] != 0 && winding[chart] != sign) usable = false;
                 winding[chart] = sign;
                 // Express the 3D triangle in its own orthonormal 2D frame. The

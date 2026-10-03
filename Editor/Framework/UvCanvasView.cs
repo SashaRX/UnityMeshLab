@@ -948,8 +948,9 @@ namespace SashaRX.UnityMeshLab
                 Color c = pal[UvHashUtil.NonNegativeColorKey(colorKey) % pal.Length];
                 if (s.shellId == selectedShellId)
                     c = Color.Lerp(c, Color.white, 0.45f);
-                c.a = CurrentPreviewMode == PreviewMode.Shells3D ? 1f :
-                    s.shellId == selectedShellId ? Mathf.Clamp01(FillAlpha * 1.85f) : FillAlpha;
+                c.a = FillAlpha;
+                if (CurrentPreviewMode == PreviewMode.Shells3D) c.a = 1f;
+                else if (s.shellId == selectedShellId) c.a = Mathf.Clamp01(FillAlpha * 1.85f);
                 GL.Color(c);
                 foreach (int f in s.faceIndices)
                 {
