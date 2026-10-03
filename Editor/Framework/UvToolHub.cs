@@ -1068,24 +1068,36 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < viewportItems.Count; ++i) {
                 var item = viewportItems[i]; var entry = viewportEntries[i];
                 if (!item.mesh) continue;
-                var key = (item.mesh.GetInstanceID(), entry?.GetHashCode() ?? 0);
-                var readable = inspection.Readable(item.mesh);
-                if (entry == null || readable != item.mesh) {
-                    active.Add(key);
-                    if (!inspectionEntries.TryGetValue(key, out var proxy)) {
-                        proxy = entry != null ? entry.PreviewCopy(readable) : new MeshEntry { originalMesh = readable };
-                        if (entry == null && item.materials != null)
-                            foreach (var material in item.materials)
-                                if (material && material.HasProperty("_MainTex") && material.mainTexture) { proxy.previewTexture = material.mainTexture; break; }
-                        inspectionEntries[key] = proxy;
-                    }
-                    proxy.originalMesh = readable;
-                    viewportEntries[i] = proxy;
-                }
+                viewportEntries[i] = PrepareInspectionEntry(item, entry, active, out var readable);
                 item.mesh = readable; viewportItems[i] = item;
             }
             foreach (var key in inspectionEntries.Keys.Where(key => !active.Contains(key)).ToArray()) inspectionEntries.Remove(key);
             inspection.Prune(viewportItems);
+        }
+
+        MeshEntry PrepareInspectionEntry(MeshViewport3D.Item item, MeshEntry entry, HashSet<(int, int)> active, out Mesh readable)
+        {
+            var key = (item.mesh.GetInstanceID(), entry?.GetHashCode() ?? 0);
+            readable = inspection.Readable(item.mesh);
+            if (entry == null || readable != item.mesh) {
+                active.Add(key);
+                if (!inspectionEntries.TryGetValue(key, out var proxy)) {
+                    proxy = CreateInspectionProxy(item, entry, readable);
+                    inspectionEntries[key] = proxy;
+                }
+                proxy.originalMesh = readable;
+                return proxy;
+            }
+            return entry;
+        }
+
+        static MeshEntry CreateInspectionProxy(MeshViewport3D.Item item, MeshEntry entry, Mesh readable)
+        {
+            var proxy = entry != null ? entry.PreviewCopy(readable) : new MeshEntry { originalMesh = readable };
+            if (entry == null && item.materials != null)
+                foreach (var material in item.materials)
+                    if (material && material.HasProperty("_MainTex") && material.mainTexture) { proxy.previewTexture = material.mainTexture; break; }
+            return proxy;
         }
 
         void InvalidateViewportCaches(bool clearInspection = true)

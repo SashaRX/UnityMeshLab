@@ -117,7 +117,8 @@ namespace SashaRX.UnityMeshLab
                         var weight = weights[start++];
                         if (weight.weight > largest) { largest = weight.weight; bone = weight.boneIndex; }
                     }
-                    colors[v] = indices ? Color.HSVToRGB(Mathf.Repeat(bone * .618034f, 1), .75f, largest > 0 ? 1 : 0)
+                    float brightness = largest > 0 ? 1 : 0;
+                    colors[v] = indices ? Color.HSVToRGB(Mathf.Repeat(bone * .618034f, 1), .75f, brightness)
                         : new Color(largest, largest, largest, 1);
                 }
                 return colors;
@@ -137,7 +138,9 @@ namespace SashaRX.UnityMeshLab
                 // Keep the local direction unnormalised: t remains the world ray parameter.
                 if (hit.triangleIndex < 0 || hit.t >= nearest) continue;
                 var tri = mesh.triangles; var b = hit.barycentric;
-                vertex = tri[hit.triangleIndex * 3 + (b.x >= b.y && b.x >= b.z ? 0 : b.y >= b.z ? 1 : 2)];
+                int corner = b.y >= b.z ? 1 : 2;
+                if (b.x >= b.y && b.x >= b.z) corner = 0;
+                vertex = tri[hit.triangleIndex * 3 + corner];
                 nearest = hit.t; itemIndex = i;
             }
             return itemIndex >= 0;
@@ -161,6 +164,13 @@ namespace SashaRX.UnityMeshLab
             var active = new HashSet<int>();
             foreach (var item in items) if (item.mesh) active.Add(item.mesh.GetInstanceID());
             var dropped = new List<int>();
+            PruneCopies(active, dropped);
+            PruneCache(reports, active, dropped);
+            PruneCache(bvhs, active, dropped);
+        }
+
+        void PruneCopies(HashSet<int> active, List<int> dropped)
+        {
             foreach (var pair in copies)
                 if (!pair.Value || !active.Contains(pair.Value.GetInstanceID())) dropped.Add(pair.Key);
             foreach (int id in dropped)
@@ -168,12 +178,13 @@ namespace SashaRX.UnityMeshLab
                 if (copies[id]) Object.DestroyImmediate(copies[id]);
                 copies.Remove(id);
             }
+        }
+
+        static void PruneCache<T>(Dictionary<int, T> cache, HashSet<int> active, List<int> dropped)
+        {
             dropped.Clear();
-            foreach (int id in reports.Keys) if (!active.Contains(id)) dropped.Add(id);
-            foreach (int id in dropped) reports.Remove(id);
-            dropped.Clear();
-            foreach (int id in bvhs.Keys) if (!active.Contains(id)) dropped.Add(id);
-            foreach (int id in dropped) bvhs.Remove(id);
+            foreach (int id in cache.Keys) if (!active.Contains(id)) dropped.Add(id);
+            foreach (int id in dropped) cache.Remove(id);
         }
 
         public void Clear()

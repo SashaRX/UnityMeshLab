@@ -140,37 +140,55 @@ namespace SashaRX.UnityMeshLab
             previewSourceRoot = root; previewLod0Only = settings.lod0Only; sourcePreviewDirty = false;
             if (!root) return;
             foreach (var renderer in RemeshSource.CollectRenderers(root, settings.lod0Only)) {
-                Mesh mesh;
-                if (renderer is SkinnedMeshRenderer skin) {
-                    mesh = new Mesh { name = skin.sharedMesh.name, hideFlags = HideFlags.HideAndDontSave };
-                    ownedSourceMeshes.Add(mesh);
-                    skin.BakeMesh(mesh);
-                    // Keep the authored skin attributes for inspection on the posed
-                    // surface; BakeMesh only supplies the deformed vertex channels.
-                    var authored = MeshAccess.Readable(skin.sharedMesh, out bool authoredCopy);
-                    try {
-                        mesh.bindposes = authored.bindposes;
-                        using (var counts = authored.GetBonesPerVertex())
-                        using (var weights = authored.GetAllBoneWeights())
-                            if (weights.Length > 0) mesh.SetBoneWeights(counts, weights);
-                    }
-                    finally { if (authoredCopy) UnityEngine.Object.DestroyImmediate(authored); }
-                }
-                else {
-                    mesh = MeshAccess.Readable(renderer.GetComponent<MeshFilter>().sharedMesh, out bool isCopy);
-                    if (isCopy) ownedSourceMeshes.Add(mesh);
-                }
-                Texture texture = null;
-                foreach (var material in renderer.sharedMaterials)
-                    if (material && material.HasProperty("_MainTex") && material.mainTexture) { texture = material.mainTexture; break; }
-                // The preview owns only unreadable/posed copies; it never substitutes
-                // these meshes into the scene's renderers for UV overlays.
-                sourceEntries.Add(new MeshEntry { originalMesh = mesh, fbxMesh = mesh, previewTexture = texture });
+                Mesh mesh = ReadSourcePreviewMesh(renderer);
+                // Preview copies never substitute meshes in the scene's renderers.
+                sourceEntries.Add(new MeshEntry { originalMesh = mesh, fbxMesh = mesh, previewTexture = SourcePreviewTexture(renderer) });
                 sourceRenderers.Add(renderer);
                 previewData.sourceVertices += mesh.vertexCount;
-                for (int sub = 0; sub < mesh.subMeshCount; ++sub)
-                    if (mesh.GetTopology(sub) == MeshTopology.Triangles) previewData.sourceTriangles += (int)mesh.GetIndexCount(sub) / 3;
+                previewData.sourceTriangles += TriangleCount(mesh);
             }
+        }
+
+        Mesh ReadSourcePreviewMesh(Renderer renderer)
+        {
+            if (renderer is SkinnedMeshRenderer skin) {
+                var posed = new Mesh { name = skin.sharedMesh.name, hideFlags = HideFlags.HideAndDontSave };
+                ownedSourceMeshes.Add(posed);
+                skin.BakeMesh(posed);
+                CopySkinAttributes(skin.sharedMesh, posed);
+                return posed;
+            }
+            var mesh = MeshAccess.Readable(renderer.GetComponent<MeshFilter>().sharedMesh, out bool isCopy);
+            if (isCopy) ownedSourceMeshes.Add(mesh);
+            return mesh;
+        }
+
+        static void CopySkinAttributes(Mesh sourceMesh, Mesh posed)
+        {
+            // BakeMesh supplies deformed channels, but omits authored skin attributes.
+            var authored = MeshAccess.Readable(sourceMesh, out bool authoredCopy);
+            try {
+                posed.bindposes = authored.bindposes;
+                using (var counts = authored.GetBonesPerVertex())
+                using (var weights = authored.GetAllBoneWeights())
+                    if (weights.Length > 0) posed.SetBoneWeights(counts, weights);
+            }
+            finally { if (authoredCopy) UnityEngine.Object.DestroyImmediate(authored); }
+        }
+
+        static Texture SourcePreviewTexture(Renderer renderer)
+        {
+            foreach (var material in renderer.sharedMaterials)
+                if (material && material.HasProperty("_MainTex") && material.mainTexture) return material.mainTexture;
+            return null;
+        }
+
+        static int TriangleCount(Mesh mesh)
+        {
+            int count = 0;
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                if (mesh.GetTopology(sub) == MeshTopology.Triangles) count += (int)mesh.GetIndexCount(sub) / 3;
+            return count;
         }
         // Hub context (LODGroup selection, Undo) does not feed this tool: the source
         // snapshot is captured when the remesh stage runs, so a running bake must not be cancelled here.

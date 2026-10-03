@@ -426,54 +426,63 @@ namespace SashaRX.UnityMeshLab
                 GlMat.SetPass(0);
                 GL.PushMatrix(); push = true;
                 GL.LoadPixelMatrix(0, size, size, 0);
-                float cx = 0f, cy = 0f, sz = size;
-                var draws = new List<ValueTuple<Mesh, MeshEntry, int>> { new ValueTuple<Mesh, MeshEntry, int>(mesh, entry, 0) };
-                var tile = new HashSet<Vector2Int> { new Vector2Int(0, 0) };
-                Texture bgTex = ResolveUvPreviewBackgroundTexture(ctx, draws);
-                // A tool entry's preview texture is the surface the 3D view already shows;
-                // laying it over the model again would only dim it.
-                if (entry != null && entry.renderer == null && bgTex == entry.previewTexture && !CheckerEnabled) bgTex = null;
-                if (bgTex != null)
-                {
-                    float bgAlpha = CheckerEnabled ? 0.33333f : 0.95f;
-                    float bgExposure = CurrentPreviewMode == PreviewMode.Lightmap ? LmExposure : 1f;
-                    GlTextureBg(cx, cy, sz, bgTex, Vector2.one, Vector2.zero, bgAlpha, tile, bgExposure);
-                    GlMat.SetPass(0);
-                }
-                else if (CheckerEnabled && CheckerColorMode)
-                    GlUvColorBg(cx, cy, sz, 0.33333f, tile);
-                else if (CheckerEnabled)
-                    GlCheckerBg(cx, cy, sz, 8, 0.33333f, ctx.PreviewUvChannel == 1, tile);
-
-                ClearFrameCaches();
-                var uvs = RdUvCached(mesh, ctx.PreviewUvChannel);
-                var tri = GetTrianglesCached(mesh);
-                if (uvs != null && tri != null)
-                {
-                    if (CurrentPreviewMode == PreviewMode.Lightmap && ctx.PreviewUvChannel == 1 && entry?.renderer != null && entry.renderer.lightmapIndex >= 0)
-                    {
-                        var so = entry.renderer.lightmapScaleOffset;
-                        var transformed = new Vector2[uvs.Length];
-                        for (int vi = 0; vi < uvs.Length; vi++)
-                            transformed[vi] = new Vector2(uvs[vi].x * so.x + so.z, uvs[vi].y * so.y + so.w);
-                        uvs = transformed;
-                    }
-                    int uN = uvs.Length, fN = tri.Length / 3;
-                    bool hasFill = !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
-                    if (InspectionShading != MeshViewport3D.Shading.Shaded) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
-                    else if (hasFill) FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
-                    if (ShowBorder && drawBorders)
-                    {
-                        HashSet<int> bdr = entry?.transferState?.borderPrimitiveIds;
-                        if (bdr != null && bdr.Count > 0) GlBdr(cx, cy, sz, uvs, tri, fN, uN, bdr);
-                        else GlUvBoundary(ctx, cx, cy, sz, mesh, uvs, tri, uN);
-                    }
-                }
+                DrawUvLayerBackground(ctx, mesh, entry, size);
+                DrawUvLayerMesh(ctx, mesh, entry, size, drawBorders);
             }
             catch (Exception ex) { UvtLog.Warn("[UV] 3D layer GL: " + ex.Message); }
             finally { if (push) GL.PopMatrix(); }
             RenderTexture.active = prevRT;
             return target;
+        }
+
+        void DrawUvLayerBackground(UvToolContext ctx, Mesh mesh, MeshEntry entry, float sz)
+        {
+            float cx = 0f, cy = 0f;
+            var draws = new List<ValueTuple<Mesh, MeshEntry, int>> { new ValueTuple<Mesh, MeshEntry, int>(mesh, entry, 0) };
+            var tile = new HashSet<Vector2Int> { new Vector2Int(0, 0) };
+            Texture bgTex = ResolveUvPreviewBackgroundTexture(ctx, draws);
+            // A tool entry's preview texture is the surface the 3D view already shows;
+            // laying it over the model again would only dim it.
+            if (entry != null && entry.renderer == null && bgTex == entry.previewTexture && !CheckerEnabled) bgTex = null;
+            if (bgTex != null)
+            {
+                float bgAlpha = CheckerEnabled ? 0.33333f : 0.95f;
+                float bgExposure = CurrentPreviewMode == PreviewMode.Lightmap ? LmExposure : 1f;
+                GlTextureBg(cx, cy, sz, bgTex, Vector2.one, Vector2.zero, bgAlpha, tile, bgExposure);
+                GlMat.SetPass(0);
+            }
+            else if (CheckerEnabled && CheckerColorMode)
+                GlUvColorBg(cx, cy, sz, 0.33333f, tile);
+            else if (CheckerEnabled)
+                GlCheckerBg(cx, cy, sz, 8, 0.33333f, ctx.PreviewUvChannel == 1, tile);
+
+        }
+
+        void DrawUvLayerMesh(UvToolContext ctx, Mesh mesh, MeshEntry entry, float sz, bool drawBorders)
+        {
+            float cx = 0f, cy = 0f;
+            ClearFrameCaches();
+            var uvs = RdUvCached(mesh, ctx.PreviewUvChannel);
+            var tri = GetTrianglesCached(mesh);
+            if (uvs == null || tri == null) return;
+            if (CurrentPreviewMode == PreviewMode.Lightmap && ctx.PreviewUvChannel == 1 && entry?.renderer != null && entry.renderer.lightmapIndex >= 0)
+            {
+                var so = entry.renderer.lightmapScaleOffset;
+                var transformed = new Vector2[uvs.Length];
+                for (int vi = 0; vi < uvs.Length; vi++)
+                    transformed[vi] = new Vector2(uvs[vi].x * so.x + so.z, uvs[vi].y * so.y + so.w);
+                uvs = transformed;
+            }
+            int uN = uvs.Length, fN = tri.Length / 3;
+            bool hasFill = !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
+            if (InspectionShading != MeshViewport3D.Shading.Shaded) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
+            else if (hasFill) FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
+            if (ShowBorder && drawBorders)
+            {
+                HashSet<int> bdr = entry?.transferState?.borderPrimitiveIds;
+                if (bdr != null && bdr.Count > 0) GlBdr(cx, cy, sz, uvs, tri, fN, uN, bdr);
+                else GlUvBoundary(ctx, cx, cy, sz, mesh, uvs, tri, uN);
+            }
         }
 
         /// <summary>The spot-mode info panel for a hit found in the 3D canvas.</summary>
@@ -733,8 +742,9 @@ namespace SashaRX.UnityMeshLab
 
         void ColorVertex(float x, float y, float u, float v, float alpha)
         {
+            float channel = CheckerShowR ? u : v;
             var color = CheckerShowR && CheckerShowG ? new Color(u, v, 0, alpha)
-                : new Color(CheckerShowR ? u : v, CheckerShowR ? u : v, CheckerShowR ? u : v, alpha);
+                : new Color(channel, channel, channel, alpha);
             GL.Color(color); GL.Vertex3(x, y, 0);
         }
 

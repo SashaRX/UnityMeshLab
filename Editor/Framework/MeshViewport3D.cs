@@ -281,9 +281,12 @@ namespace SashaRX.UnityMeshLab
             }
             DrawLines(pairs, colors, Matrix4x4.identity);
 
-            Vector3 GridPoint(float x, float y) => xy ? new Vector3(x, y, bounds.max.z + radius * .002f)
-                : yz ? new Vector3(bounds.min.x - radius * .002f, y, x)
-                : new Vector3(x, bounds.min.y - radius * .002f, y);
+            Vector3 GridPoint(float x, float y)
+            {
+                if (xy) return new Vector3(x, y, bounds.max.z + radius * .002f);
+                if (yz) return new Vector3(bounds.min.x - radius * .002f, y, x);
+                return new Vector3(x, bounds.min.y - radius * .002f, y);
+            }
         }
 
         // The pivot's axes: X red, Y green, Z blue, a quarter of the content radius long.
@@ -546,25 +549,27 @@ namespace SashaRX.UnityMeshLab
         public static List<int> EdgeIndices(Mesh mesh)
         {
             var pairs = new List<int>();
-            for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
-                var indices = mesh.GetIndices(sub);
-                switch (mesh.GetTopology(sub)) {
-                    case MeshTopology.Triangles: {
-                        var edges = UvTopology.UniqueEdges(indices);
-                        if (edges != null) pairs.AddRange(edges);
-                        break;
-                    }
-                    case MeshTopology.Lines: pairs.AddRange(indices); break;
-                    case MeshTopology.LineStrip:
-                        for (int i = 1; i < indices.Length; ++i) { pairs.Add(indices[i - 1]); pairs.Add(indices[i]); }
-                        break;
-                    case MeshTopology.Quads:
-                        for (int i = 0; i + 3 < indices.Length; i += 4)
-                            for (int k = 0; k < 4; ++k) { pairs.Add(indices[i + k]); pairs.Add(indices[i + (k + 1) % 4]); }
-                        break;
-                }
-            }
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                AppendEdges(pairs, mesh.GetIndices(sub), mesh.GetTopology(sub));
             return pairs;
+        }
+
+        static void AppendEdges(List<int> pairs, int[] indices, MeshTopology topology)
+        {
+            switch (topology) {
+                case MeshTopology.Triangles:
+                    var edges = UvTopology.UniqueEdges(indices);
+                    if (edges != null) pairs.AddRange(edges);
+                    break;
+                case MeshTopology.Lines: pairs.AddRange(indices); break;
+                case MeshTopology.LineStrip:
+                    for (int i = 1; i < indices.Length; ++i) { pairs.Add(indices[i - 1]); pairs.Add(indices[i]); }
+                    break;
+                case MeshTopology.Quads:
+                    for (int i = 0; i + 3 < indices.Length; i += 4)
+                        for (int k = 0; k < 4; ++k) { pairs.Add(indices[i + k]); pairs.Add(indices[i + (k + 1) % 4]); }
+                    break;
+            }
         }
 
         /// <summary>Drops cached encodings and wires (call when source meshes change).</summary>

@@ -559,23 +559,7 @@ namespace SashaRX.UnityMeshLab
             int lodCount = lods.Length;
             var meshes = new Mesh[lodCount];
             var xforms = new Transform[lodCount];
-            for (int li = 0; li < lodCount; li++)
-            {
-                var rs = lods[li].renderers;
-                if (rs == null) continue;
-                int found = 0;
-                foreach (var r in rs)
-                {
-                    if (r == null) continue;
-                    var mf = r.GetComponent<MeshFilter>();
-                    if (mf == null || mf.sharedMesh == null) continue;
-                    if (found == 0) { meshes[li] = mf.sharedMesh; xforms[li] = r.transform; }
-                    found++;
-                }
-                if (found > 1)
-                    UvtLog.Warn(UvtLog.Category.Benchmark,
-                        $"[HierRepack] LOD{li}: {found} renderers — using first only (multi-mesh deferred).");
-            }
+            CollectPrimaryLodMeshes(lods, meshes, xforms);
 
             int deepest = lodCount - 1;
             while (deepest > 0 && meshes[deepest] == null) deepest--;
@@ -611,92 +595,92 @@ namespace SashaRX.UnityMeshLab
             // operator's scene assets are untouched. The "clean" variant
             // is the one that will drive subsequent stages; the others are
             // diagnostic-only.
-            try { await ComputeProxyUv2VariantsAsync(meshes[deepest], xforms[deepest], opts, lg.name, result, interactive); }
-            catch (Exception ex)
-            {
-                UvtLog.Warn(UvtLog.Category.Benchmark,
-                    $"[HierRepack] proxy UV2 stage 1 failed on '{lg.name}': {ex.Message}");
-            }
+            await RunBuildStageAsync(() => ComputeProxyUv2VariantsAsync(meshes[deepest], xforms[deepest], opts, lg.name, result, interactive), lg.name, "proxy UV2 stage 1 failed");
             // PR-3 Stage B: classical xatlas unwrap of each non-deepest
             // LOD independently. Diagnostic only at this stage; Stage D
             // will use these to seed the cascade repack.
-            try { await ComputeFineClassicalUnwrapsAsync(lg, opts, result, interactive); }
-            catch (Exception ex)
-            {
-                UvtLog.Warn(UvtLog.Category.Benchmark,
-                    $"[HierRepack] fine classical unwrap stage B failed on '{lg.name}': {ex.Message}");
-            }
+            await RunBuildStageAsync(() => ComputeFineClassicalUnwrapsAsync(lg, opts, result, interactive), lg.name, "fine classical unwrap stage B failed");
             // PR-3 Stage 2: Poisson samples on the active proxy.
-            try { GenerateProxySamples(opts, meshDiag, result); }
-            catch (Exception ex)
-            {
-                UvtLog.Warn(UvtLog.Category.Benchmark,
-                    $"[HierRepack] proxy sampling stage 2 failed on '{lg.name}': {ex.Message}");
-            }
+            RunBuildStage(() => GenerateProxySamples(opts, meshDiag, result), lg.name, "proxy sampling stage 2 failed");
             // PR-3 Stage 3: project samples onto each fine LOD.
-            try { ProjectProxySamplesOntoFineLods(lg, opts, meshDiag, result); }
-            catch (Exception ex)
-            {
-                UvtLog.Warn(UvtLog.Category.Benchmark,
-                    $"[HierRepack] proxy projection stage 3 failed on '{lg.name}': {ex.Message}");
-            }
+            RunBuildStage(() => ProjectProxySamplesOntoFineLods(lg, opts, meshDiag, result), lg.name, "proxy projection stage 3 failed");
             // Stage C: per-LOD 3D shell extract + seed deepest-LOD
             // groups. No matching / no UV here — only segmentation +
             // data-model seed. Stage D consumes perLodShells +
             // perLodShellToGroup + groups.
-            try { ExtractPerLodShellsAndSeedGroups(lg, opts, meshDiag, result); }
-            catch (Exception ex)
-            {
-                UvtLog.Warn(UvtLog.Category.Benchmark,
-                    $"[HierRepack] stage C shells/groups failed on '{lg.name}': {ex.Message}");
-            }
+            RunBuildStage(() => ExtractPerLodShellsAndSeedGroups(lg, opts, meshDiag, result), lg.name, "stage C shells/groups failed");
             // Stage D: cascade grouping deep→fine. Walks each (li_proxy,
             // li_proxy-1) transition, samples the deeper LOD's surface
             // tagged with the deeper LOD's shell id, projects samples onto
             // the finer LOD via closest-face, and votes per finer shell
             // whether to join the parent's group (matchedFrac >= 0.5) or
             // open a new group. Membership only — UV is Stage E's job.
-            try { CascadeGroupShells(lg, opts, meshDiag, result); }
-            catch (Exception ex)
-            {
-                UvtLog.Warn(UvtLog.Category.Benchmark,
-                    $"[HierRepack] stage D cascade grouping failed on '{lg.name}': {ex.Message}");
-            }
+            RunBuildStage(() => CascadeGroupShells(lg, opts, meshDiag, result), lg.name, "stage D cascade grouping failed");
             // Stage E (slice E1): parameterise each lighting-domain group's
             // canonical shell planarly and pack the charts into one shared
             // atlas via xatlas (faceMaterial = groupId forces a chart
             // boundary per group). Produces the per-group atlas rects that
             // slice E2 will map every LOD's member shells into. Layout only
             // — no per-LOD UV2 / mesh writing here.
-            try { await PackDomainChartsAsync(lg, opts, meshDiag, result, interactive); }
-            catch (Exception ex)
-            {
-                UvtLog.Warn(UvtLog.Category.Benchmark,
-                    $"[HierRepack] stage E domain pack failed on '{lg.name}': {ex.Message}");
-            }
+            await RunBuildStageAsync(() => PackDomainChartsAsync(lg, opts, meshDiag, result, interactive), lg.name, "stage E domain pack failed");
             // Stage E (slice E2): the cascade — every LOD's shells project into
             // their group's atlas rect so matched shells share the region
             // across LODs (one bake valid everywhere) and unmatched shells use
             // their repacked slot. Produces per-LOD finalUv2/finalTris/
             // finalSourceVertexIdx.
-            try { BuildCascadedUv2(lg, opts, meshDiag, result); }
-            catch (Exception ex)
-            {
-                UvtLog.Warn(UvtLog.Category.Benchmark,
-                    $"[HierRepack] stage E cascade uv2 failed on '{lg.name}': {ex.Message}");
-            }
+            RunBuildStage(() => BuildCascadedUv2(lg, opts, meshDiag, result), lg.name, "stage E cascade uv2 failed");
             // Stage E (slice E3): objective atlas quality metrics — overlap
             // texels/pairs, inverted/degenerate faces, texel-density spread,
             // cross-LOD containment. The scalar that threshold sweeps
             // optimise and the reliability gate the Apply menu reports.
-            try { ComputeStageEMetrics(lg, opts, result); }
-            catch (Exception ex)
-            {
-                UvtLog.Warn(UvtLog.Category.Benchmark,
-                    $"[HierRepack] stage E3 metrics failed on '{lg.name}': {ex.Message}");
-            }
+            RunBuildStage(() => ComputeStageEMetrics(lg, opts, result), lg.name, "stage E3 metrics failed");
             return result;
         }
+
+        static void CollectPrimaryLodMeshes(LOD[] lods, Mesh[] meshes, Transform[] xforms)
+        {
+            int lodCount = lods.Length;
+            for (int li = 0; li < lodCount; li++)
+            {
+                int found = CollectPrimaryLodRenderer(lods[li], out meshes[li], out xforms[li]);
+                if (found > 1)
+                    UvtLog.Warn(UvtLog.Category.Benchmark,
+                        $"[HierRepack] LOD{li}: {found} renderers — using first only (multi-mesh deferred).");
+            }
+
+        }
+
+        static int CollectPrimaryLodRenderer(LOD lod, out Mesh mesh, out Transform xform)
+        {
+            mesh = null; xform = null;
+            var rs = lod.renderers;
+            if (rs == null) return 0;
+            int found = 0;
+            foreach (var r in rs)
+            {
+                if (r == null) continue;
+                var mf = r.GetComponent<MeshFilter>();
+                if (mf == null || mf.sharedMesh == null) continue;
+                if (found == 0) { mesh = mf.sharedMesh; xform = r.transform; }
+                found++;
+            }
+            return found;
+        }
+
+        static void RunBuildStage(Action stage, string groupName, string failureLabel)
+        {
+            try { stage(); }
+            catch (Exception ex) { LogBuildStageFailure(groupName, failureLabel, ex); }
+        }
+
+        static async Task RunBuildStageAsync(Func<Task> stage, string groupName, string failureLabel)
+        {
+            try { await stage(); }
+            catch (Exception ex) { LogBuildStageFailure(groupName, failureLabel, ex); }
+        }
+
+        static void LogBuildStageFailure(string groupName, string failureLabel, Exception ex)
+            => UvtLog.Warn(UvtLog.Category.Benchmark, $"[HierRepack] {failureLabel} on '{groupName}': {ex.Message}");
 
         // ─── Internal types ──────────────────────────────────────────
 
@@ -1444,6 +1428,15 @@ namespace SashaRX.UnityMeshLab
         {
             if (deepMesh == null) return;
 
+            await ComputeCleanProxyAsync(deepMesh, deepXform, opts, lgName, result, interactive);
+            await ComputeRawProxyAsync(deepMesh, deepXform, opts, lgName, result, interactive);
+            await ComputeAutoProxyAsync(deepMesh, deepXform, opts, lgName, result, interactive);
+            SelectActiveProxy(opts, result);
+        }
+
+        static async Task ComputeCleanProxyAsync(Mesh deepMesh, Transform deepXform,
+            Options opts, string lgName, Result result, bool interactive)
+        {
             // ── Variant 1: clean (sym-split + ARAP + pack) ──
             if (deepMesh.uv != null && deepMesh.uv.Length > 0)
             {
@@ -1487,6 +1480,11 @@ namespace SashaRX.UnityMeshLab
                 finally { UnityEngine.Object.DestroyImmediate(clone); }
             }
 
+        }
+
+        static async Task ComputeRawProxyAsync(Mesh deepMesh, Transform deepXform,
+            Options opts, string lgName, Result result, bool interactive)
+        {
             // ── Variant 2: raw (UV0 → pack only) ──
             if (deepMesh.uv != null && deepMesh.uv.Length > 0)
             {
@@ -1520,6 +1518,11 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+        }
+
+        static async Task ComputeAutoProxyAsync(Mesh deepMesh, Transform deepXform,
+            Options opts, string lgName, Result result, bool interactive)
+        {
             // ── Variant 3: true auto-unwrap (positions + normals) ──
             try
             {
@@ -1540,6 +1543,10 @@ namespace SashaRX.UnityMeshLab
                     $"[HierRepack] proxy auto-unwrap unavailable on '{lgName}': {ex.GetType().Name} ({ex.Message})");
             }
 
+        }
+
+        static void SelectActiveProxy(Options opts, Result result)
+        {
             // ── Select the active proxy that Stage 2+ will consume ──
             // All three variants are still emitted as diagnostic PNGs;
             // this just decides which pair the downstream sampler reads.
@@ -1598,48 +1605,53 @@ namespace SashaRX.UnityMeshLab
             for (int li = 0; li < lodCount; li++)
             {
                 if (li == deepest) continue;
-                var rs = lods[li].renderers;
-                if (rs == null || rs.Length == 0 || rs[0] == null) continue;
-                var mf = rs[0].GetComponent<MeshFilter>();
-                var src = mf != null ? mf.sharedMesh : null;
-                if (src == null) continue;
-                if (src.uv == null || src.uv.Length == 0) continue;
-
-                var clone = UnityEngine.Object.Instantiate(src);
-                clone.name = src.name + "_lod" + li + "_classical";
-                try
-                {
-                    // Same pipeline as the proxy's clean variant:
-                    // sym-split mirror-flipped shells, then pack via
-                    // xatlas at the operator-configured resolution and
-                    // padding. rotateCharts off so chart orientation
-                    // stays comparable across LODs for the diagnostic.
-                    var shells = UvShellExtractor.Extract(clone.uv, clone.triangles);
-                    if (shells != null && shells.Count > 0)
-                    {
-                        int split = SymmetrySplitShells.Split(clone, shells);
-                        if (split > 0)
-                            UvtLog.Info(UvtLog.Category.Benchmark,
-                                $"[HierRepack] lod{li} classical sym-split on '{lg.name}': {split} shells split");
-                    }
-                    var packOpts = RepackOptions.Default;
-                    packOpts.resolution   = (uint)opts.atlasResolutionPx;
-                    packOpts.padding      = (uint)opts.interDomainPaddingPx;
-                    packOpts.rotateCharts = false;
-                    var res = await RepackSingleByMode(clone, packOpts, interactive);
-                    if (res.ok && clone.uv2 != null && clone.uv2.Length > 0)
-                    {
-                        r.fineClassicalUv2[li]  = clone.uv2;
-                        r.fineClassicalTris[li] = clone.triangles;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    UvtLog.Warn(UvtLog.Category.Benchmark,
-                        $"[HierRepack] lod{li} classical unwrap failed on '{lg.name}': {ex.Message}");
-                }
-                finally { UnityEngine.Object.DestroyImmediate(clone); }
+                await ComputeClassicalLodUnwrapAsync(lods[li], li, lg.name, opts, r, interactive);
             }
+        }
+
+        static async Task ComputeClassicalLodUnwrapAsync(LOD lod, int li, string lgName, Options opts, Result r, bool interactive)
+        {
+            var rs = lod.renderers;
+            if (rs == null || rs.Length == 0 || rs[0] == null) return;
+            var mf = rs[0].GetComponent<MeshFilter>();
+            var src = mf != null ? mf.sharedMesh : null;
+            if (src == null) return;
+            if (src.uv == null || src.uv.Length == 0) return;
+
+            var clone = UnityEngine.Object.Instantiate(src);
+            clone.name = src.name + "_lod" + li + "_classical";
+            try
+            {
+                // Same pipeline as the proxy's clean variant:
+                // sym-split mirror-flipped shells, then pack via
+                // xatlas at the operator-configured resolution and
+                // padding. rotateCharts off so chart orientation
+                // stays comparable across LODs for the diagnostic.
+                var shells = UvShellExtractor.Extract(clone.uv, clone.triangles);
+                if (shells != null && shells.Count > 0)
+                {
+                    int split = SymmetrySplitShells.Split(clone, shells);
+                    if (split > 0)
+                        UvtLog.Info(UvtLog.Category.Benchmark,
+                            $"[HierRepack] lod{li} classical sym-split on '{lgName}': {split} shells split");
+                }
+                var packOpts = RepackOptions.Default;
+                packOpts.resolution   = (uint)opts.atlasResolutionPx;
+                packOpts.padding      = (uint)opts.interDomainPaddingPx;
+                packOpts.rotateCharts = false;
+                var res = await RepackSingleByMode(clone, packOpts, interactive);
+                if (res.ok && clone.uv2 != null && clone.uv2.Length > 0)
+                {
+                    r.fineClassicalUv2[li]  = clone.uv2;
+                    r.fineClassicalTris[li] = clone.triangles;
+                }
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Warn(UvtLog.Category.Benchmark,
+                    $"[HierRepack] lod{li} classical unwrap failed on '{lgName}': {ex.Message}");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(clone); }
         }
 
         /// <summary>Transform a local-space vertex array into world space
@@ -2332,127 +2344,19 @@ namespace SashaRX.UnityMeshLab
             if (r.groups == null || r.groups.Length == 0) return;
             if (r.perLodShells == null) return;
 
-            var lods = lg.GetLODs();
-            int lodCount = lods.Length;
-
-            // Lazy per-LOD geometry cache (worldVerts + rawTris). Stage C
-            // didn't keep these on the Result; recompute on first use. Most
-            // groups' canonical shells live on the deepest LOD, but fresh /
-            // tinyOrphan groups born on a finer LOD have their canonical there.
-            var worldVertsByLod = new Vector3[lodCount][];
-            var rawTrisByLod = new int[lodCount][];
-            var uv0ByLod = new Vector2[lodCount][];   // authored UV0, indexed like worldVerts
-            var builtLod = new bool[lodCount];
-            void EnsureLodGeometry(int li)
-            {
-                if (builtLod[li]) return;
-                builtLod[li] = true;
-                if (li < 0 || li >= lodCount) return;
-                var rs = lods[li].renderers;
-                if (rs == null || rs.Length == 0 || rs[0] == null) return;
-                var mf = rs[0].GetComponent<MeshFilter>();
-                var mesh = mf != null ? mf.sharedMesh : null;
-                if (mesh == null) return;
-                BuildFaceData(mesh, rs[0].transform, meshDiag,
-                    out Vector3[] wv, out int[] rt, out _, out _);
-                worldVertsByLod[li] = wv;
-                rawTrisByLod[li] = rt;
-                uv0ByLod[li] = mesh.uv;   // Vector2[] sized to vertexCount, or empty
-            }
-
-            // Build one UV mesh per canonical face. We PRESERVE the shell's own
-            // authored UV0 — its real unwrap — and only apply a single uniform
-            // scale + recentre per shell. No planar re-projection (that threw
-            // the shell's parameterisation away and folded curves). The scale
-            // S = sqrt(area3D / areaUV0) makes every canonical's UV-area equal
-            // its 3D area, so a fixed texelsPerUnit at pack time → identical
-            // texel density everywhere, with the shell shape kept intact.
-            // faceMaterial = groupId. We record each input vert's group + its
-            // scaled coord so the readback can fit the per-group affine, and we
-            // stash (uvc, S) per group so BuildCascadedUv2 can transform finer
-            // members' UV0 into the same frame.
-            var uvList = new List<float>(1024);
-            var idxList = new List<uint>(1024);
-            var faceMatList = new List<uint>(512);
-            var inputVertGroup = new List<int>(1024);  // myVertIdx → groupId
-            var inputVertU = new List<float>(1024);    // myVertIdx → scaled uv0.x
-            var inputVertV = new List<float>(1024);    // myVertIdx → scaled uv0.y
-            var pendingUvc = new Vector2[r.groups.Length];
-            var pendingScale = new float[r.groups.Length];
-            uint vCounter = 0;
-            double totalCanonArea = 0.0;
-
-            for (int g = 0; g < r.groups.Length; g++)
-            {
-                var grp = r.groups[g];
-                int cl = grp.canonicalLod;
-                if (cl < 0 || cl >= lodCount) continue;
-                var shellsAtCl = r.perLodShells[cl];
-                if (shellsAtCl == null || grp.canonicalShellId < 0
-                    || grp.canonicalShellId >= shellsAtCl.Length) continue;
-                EnsureLodGeometry(cl);
-                var rt = rawTrisByLod[cl];
-                var uv0 = uv0ByLod[cl];
-                if (rt == null || uv0 == null || uv0.Length == 0) continue;
-
-                var sh = shellsAtCl[grp.canonicalShellId];
-                if (sh.faceIndices == null || sh.faceIndices.Count == 0) continue;
-
-                // Preserve the shell's UV0 island: centroid + UV0 area, then a
-                // single uniform scale to normalise texel density (UV-area →
-                // 3D-area). Shape untouched.
-                Vector2 uvc = Vector2.zero; int cornerCount = 0; double uvArea = 0.0;
-                foreach (int f in sh.faceIndices)
-                {
-                    if (f < 0 || f * 3 + 2 >= rt.Length) continue;
-                    int a = rt[f * 3], b = rt[f * 3 + 1], c = rt[f * 3 + 2];
-                    if (a >= uv0.Length || b >= uv0.Length || c >= uv0.Length) continue;
-                    uvc += uv0[a] + uv0[b] + uv0[c]; cornerCount += 3;
-                    uvArea += 0.5 * Mathf.Abs((uv0[b].x - uv0[a].x) * (uv0[c].y - uv0[a].y)
-                                            - (uv0[c].x - uv0[a].x) * (uv0[b].y - uv0[a].y));
-                }
-                if (cornerCount == 0) continue;
-                uvc /= cornerCount;
-                float S = (uvArea > 1e-12)
-                    ? Mathf.Sqrt(sh.totalArea / (float)uvArea) : 1f;
-                pendingUvc[grp.groupId] = uvc;
-                pendingScale[grp.groupId] = S;
-                totalCanonArea += sh.totalArea;
-
-                foreach (int f in sh.faceIndices)
-                {
-                    if (f < 0 || f * 3 + 2 >= rt.Length) continue;
-                    int e0 = rt[f * 3], e1 = rt[f * 3 + 1], e2 = rt[f * 3 + 2];
-                    if (e0 >= uv0.Length || e1 >= uv0.Length || e2 >= uv0.Length) continue;
-                    for (int k = 0; k < 3; k++)
-                    {
-                        int vi = rt[f * 3 + k];
-                        float u = (uv0[vi].x - uvc.x) * S;   // preserved UV0, scaled
-                        float v = (uv0[vi].y - uvc.y) * S;
-                        uvList.Add(u);
-                        uvList.Add(v);
-                        idxList.Add(vCounter);
-                        inputVertGroup.Add(grp.groupId);
-                        inputVertU.Add(u);
-                        inputVertV.Add(v);
-                        vCounter++;
-                    }
-                    faceMatList.Add((uint)grp.groupId);
-                }
-            }
-
+            var input = BuildDomainPackInput(lg.GetLODs(), meshDiag, r);
             // Fixed texel density: with each shell's UV scaled so UV-area ==
             // 3D-area, the input UV is effectively in world units, so sizing the
             // pack by total canonical 3D area gives every chart the SAME
             // texels/unit.
             const float kPackEff = 0.5f;
-            float texelsPerUnit = (totalCanonArea > 1e-9)
-                ? opts.atlasResolutionPx * Mathf.Sqrt(kPackEff / (float)totalCanonArea)
+            float texelsPerUnit = (input.totalCanonArea > 1e-9)
+                ? opts.atlasResolutionPx * Mathf.Sqrt(kPackEff / (float)input.totalCanonArea)
                 : 0f;
 
-            int vc = (int)vCounter;
-            int ic = idxList.Count;
-            int fc = faceMatList.Count;
+            int vc = (int)input.vCounter;
+            int ic = input.idxList.Count;
+            int fc = input.faceMatList.Count;
             if (vc == 0 || ic == 0 || fc == 0)
             {
                 UvtLog.Warn(UvtLog.Category.Benchmark,
@@ -2460,9 +2364,9 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            var uvArr = uvList.ToArray();
-            var idxArr = idxList.ToArray();
-            var faceMatArr = faceMatList.ToArray();
+            var uvArr = input.uvList.ToArray();
+            var idxArr = input.idxList.ToArray();
+            var faceMatArr = input.faceMatList.ToArray();
 
             XatlasNative.xatlasCreate();
             try
@@ -2501,143 +2405,298 @@ namespace SashaRX.UnityMeshLab
                     return;
                 }
 
-                if (XatlasNative.xatlasGetMeshCount() <= 0) return;
-                int outVc = XatlasNative.xatlasGetOutputVertexCount(0);
-                int outIc = XatlasNative.xatlasGetOutputIndexCount(0);
-                if (outVc <= 0 || outIc <= 0) return;
+                ReadDomainPackOutput(lg.name, opts, r, input, texelsPerUnit);
+            }
+            finally { XatlasNative.xatlasDestroy(); }
+        }
 
-                var xref = new uint[outVc];
-                var outUvFlat = new float[outVc * 2];
-                var chartIdx = new uint[outVc];
-                XatlasNative.xatlasGetOutputVertexData(0, xref, outUvFlat, chartIdx, outVc);
-                var outIndsU = new uint[outIc];
-                XatlasNative.xatlasGetOutputIndices(0, outIndsU, outIc);
+        sealed class DomainLodGeometry
+        {
+            readonly LOD[] lods;
+            readonly float meshDiag;
+            readonly bool[] builtLod;
+            internal readonly int[][] rawTrisByLod;
+            internal readonly Vector2[][] uv0ByLod;
+            internal int LodCount => lods.Length;
+            internal DomainLodGeometry(LOD[] lods, float meshDiag)
+            {
+                this.lods = lods; this.meshDiag = meshDiag;
+                builtLod = new bool[lods.Length];
+                rawTrisByLod = new int[lods.Length][];
+                uv0ByLod = new Vector2[lods.Length][];
+            }
+            internal void Ensure(int li)
+            {
+                if (builtLod[li]) return;
+                builtLod[li] = true;
+                if (li < 0 || li >= LodCount) return;
+                var rs = lods[li].renderers;
+                if (rs == null || rs.Length == 0 || rs[0] == null) return;
+                var mf = rs[0].GetComponent<MeshFilter>();
+                var mesh = mf != null ? mf.sharedMesh : null;
+                if (mesh == null) return;
+                BuildFaceData(mesh, rs[0].transform, meshDiag,
+                    out _, out int[] rt, out _, out _);
+                rawTrisByLod[li] = rt;
+                uv0ByLod[li] = mesh.uv;   // Vector2[] sized to vertexCount, or empty
+            }
+        }
 
-                // Read placed UV ([0,1]) and, per group, fit the affine
-                // inU→atlasU and inV→atlasV by least squares over the canonical
-                // chart's output verts (exact: xatlas applied a uniform scale +
-                // translation, rotateCharts:0 so no rotation; LSQ is robust to
-                // any axis flip). xref[i] maps an output vert back to our input
-                // vert, whose group + (inU,inV) we recorded. Also keep the bbox
-                // rect for the diagnostic.
-                int nG = r.groups.Length;
-                var domUv = new Vector2[outVc];
-                var rectMin = new Vector2[nG];
-                var rectMax = new Vector2[nG];
+        internal sealed class DomainPackInput
+        {
+            internal readonly List<float> uvList = new List<float>(1024);
+            internal readonly List<uint> idxList = new List<uint>(1024);
+            internal readonly List<uint> faceMatList = new List<uint>(512);
+            internal readonly List<int> inputVertGroup = new List<int>(1024);
+            internal readonly List<float> inputVertU = new List<float>(1024);
+            internal readonly List<float> inputVertV = new List<float>(1024);
+            internal readonly Vector2[] pendingUvc;
+            internal readonly float[] pendingScale;
+            internal uint vCounter;
+            internal double totalCanonArea;
+            internal DomainPackInput(int groupCount)
+            {
+                pendingUvc = new Vector2[groupCount];
+                pendingScale = new float[groupCount];
+            }
+        }
+
+        static DomainPackInput BuildDomainPackInput(LOD[] lods, float meshDiag, Result r)
+        {
+            var input = new DomainPackInput(r.groups.Length);
+            var geometry = new DomainLodGeometry(lods, meshDiag);
+            int lodCount = lods.Length;
+            for (int g = 0; g < r.groups.Length; g++)
+            {
+                var grp = r.groups[g];
+                int cl = grp.canonicalLod;
+                if (cl < 0 || cl >= lodCount) continue;
+                var shellsAtCl = r.perLodShells[cl];
+                if (shellsAtCl == null || grp.canonicalShellId < 0
+                    || grp.canonicalShellId >= shellsAtCl.Length) continue;
+                geometry.Ensure(cl);
+                var rt = geometry.rawTrisByLod[cl];
+                var uv0 = geometry.uv0ByLod[cl];
+                if (rt == null || uv0 == null || uv0.Length == 0) continue;
+
+                var sh = shellsAtCl[grp.canonicalShellId];
+                if (sh.faceIndices == null || sh.faceIndices.Count == 0) continue;
+
+                if (!TryCanonicalUvFrame(sh, rt, uv0, out Vector2 uvc, out float S)) continue;
+                input.pendingUvc[grp.groupId] = uvc;
+                input.pendingScale[grp.groupId] = S;
+                input.totalCanonArea += sh.totalArea;
+
+                AppendDomainCanonicalFaces(input, grp.groupId, sh, rt, uv0, uvc, S);
+            }
+
+
+            return input;
+        }
+
+        internal static bool TryCanonicalUvFrame(Shell3D sh, int[] rt, Vector2[] uv0, out Vector2 uvc, out float S)
+        {
+            // Preserve the shell's UV0 island: centroid + UV0 area, then a
+            // single uniform scale to normalise texel density (UV-area →
+            // 3D-area). Shape untouched.
+            uvc = Vector2.zero; int cornerCount = 0; double uvArea = 0.0;
+            foreach (int f in sh.faceIndices)
+            {
+                if (f < 0 || f * 3 + 2 >= rt.Length) continue;
+                int a = rt[f * 3], b = rt[f * 3 + 1], c = rt[f * 3 + 2];
+                if (a >= uv0.Length || b >= uv0.Length || c >= uv0.Length) continue;
+                uvc += uv0[a] + uv0[b] + uv0[c]; cornerCount += 3;
+                uvArea += 0.5 * Mathf.Abs((uv0[b].x - uv0[a].x) * (uv0[c].y - uv0[a].y)
+                                        - (uv0[c].x - uv0[a].x) * (uv0[b].y - uv0[a].y));
+            }
+            if (cornerCount == 0) { S = 1f; return false; }
+            uvc /= cornerCount;
+            S = (uvArea > 1e-12)
+                ? Mathf.Sqrt(sh.totalArea / (float)uvArea) : 1f;
+            return true;
+        }
+
+        static void AppendDomainCanonicalFaces(DomainPackInput input, int groupId, Shell3D sh,
+            int[] rt, Vector2[] uv0, Vector2 uvc, float S)
+        {
+            foreach (int f in sh.faceIndices)
+            {
+                if (f < 0 || f * 3 + 2 >= rt.Length) continue;
+                int e0 = rt[f * 3], e1 = rt[f * 3 + 1], e2 = rt[f * 3 + 2];
+                if (e0 >= uv0.Length || e1 >= uv0.Length || e2 >= uv0.Length) continue;
+                for (int k = 0; k < 3; k++)
+                {
+                    int vi = rt[f * 3 + k];
+                    float u = (uv0[vi].x - uvc.x) * S;   // preserved UV0, scaled
+                    float v = (uv0[vi].y - uvc.y) * S;
+                    input.uvList.Add(u);
+                    input.uvList.Add(v);
+                    input.idxList.Add(input.vCounter);
+                    input.inputVertGroup.Add(groupId);
+                    input.inputVertU.Add(u);
+                    input.inputVertV.Add(v);
+                    input.vCounter++;
+                }
+                input.faceMatList.Add((uint)groupId);
+            }
+        }
+
+        static void ReadDomainPackOutput(string lgName, Options opts, Result r, DomainPackInput input, float texelsPerUnit)
+        {
+            if (XatlasNative.xatlasGetMeshCount() <= 0) return;
+            int outVc = XatlasNative.xatlasGetOutputVertexCount(0);
+            int outIc = XatlasNative.xatlasGetOutputIndexCount(0);
+            if (outVc <= 0 || outIc <= 0) return;
+
+            var xref = new uint[outVc];
+            var outUvFlat = new float[outVc * 2];
+            var chartIdx = new uint[outVc];
+            XatlasNative.xatlasGetOutputVertexData(0, xref, outUvFlat, chartIdx, outVc);
+            var outIndsU = new uint[outIc];
+            XatlasNative.xatlasGetOutputIndices(0, outIndsU, outIc);
+
+            // Read placed UV ([0,1]) and, per group, fit the affine
+            // inU→atlasU and inV→atlasV by least squares over the canonical
+            // chart's output verts (exact: xatlas applied a uniform scale +
+            // translation, rotateCharts:0 so no rotation; LSQ is robust to
+            // any axis flip). xref[i] maps an output vert back to our input
+            // vert, whose group + (inU,inV) we recorded. Also keep the bbox
+            // rect for the diagnostic.
+            int nG = r.groups.Length;
+            var domUv = new Vector2[outVc];
+            var fit = new DomainPlacementFit(nG);
+            for (int i = 0; i < outVc; i++)
+            {
+                var uv = new Vector2(outUvFlat[i * 2], outUvFlat[i * 2 + 1]);
+                domUv[i] = uv;
+                fit.Add((int)xref[i], uv, input);
+            }
+
+            var rects = new Rect[nG];
+            var placements = new DomainPlacement[nG];
+            int packedGroups = 0;
+            for (int g = 0; g < nG; g++)
+            {
+                if (fit.rectMax[g].x < fit.rectMin[g].x)
+                {
+                    rects[g] = new Rect(0f, 0f, 0f, 0f); // group contributed nothing
+                    continue;
+                }
+                rects[g] = new Rect(fit.rectMin[g].x, fit.rectMin[g].y,
+                    fit.rectMax[g].x - fit.rectMin[g].x, fit.rectMax[g].y - fit.rectMin[g].y);
+
+                placements[g] = fit.Placement(g, input, texelsPerUnit, (uint)opts.atlasResolutionPx);
+                packedGroups++;
+            }
+
+            var domTris = new int[outIc];
+            for (int i = 0; i < outIc; i++) domTris[i] = (int)outIndsU[i];
+
+            r.domainAtlasUv = domUv;
+            r.domainAtlasTris = domTris;
+            r.domainAtlasRects = rects;
+            r.domainPlacements = placements;
+
+            uint aw = XatlasNative.xatlasGetAtlasWidth();
+            uint ah = XatlasNative.xatlasGetAtlasHeight();
+            uint charts = XatlasNative.xatlasGetChartCount();
+            UvtLog.Info(UvtLog.Category.Benchmark,
+                $"[HierRepack] Stage E: '{lgName}' packed {packedGroups}/{r.groups.Length} "
+                + $"domain charts (xatlas charts={charts}) into {aw}×{ah} atlas "
+                + $"(canonical faces={input.faceMatList.Count}, outVerts={outVc}, "
+                + $"texels/unit={texelsPerUnit:F1}, canonArea={input.totalCanonArea:F2})");
+        }
+
+        internal sealed class DomainPlacementFit
+        {
+            internal readonly Vector2[] rectMin, rectMax;
+            readonly double[] aN, aSi, aSoU, aSii, aSioU, aSiV, aSoV, aSiiV, aSioV;
+            internal DomainPlacementFit(int nG)
+            {
+                rectMin = new Vector2[nG];
+                rectMax = new Vector2[nG];
                 // LSQ accumulators per group, per axis: n, Σin, Σout, Σin², Σin·out
-                var aN  = new double[nG];
-                var aSi = new double[nG]; var aSoU = new double[nG];
-                var aSii = new double[nG]; var aSioU = new double[nG];
-                var aSiV = new double[nG]; var aSoV = new double[nG];
-                var aSiiV = new double[nG]; var aSioV = new double[nG];
+                aN = new double[nG];
+                aSi = new double[nG]; aSoU = new double[nG];
+                aSii = new double[nG]; aSioU = new double[nG];
+                aSiV = new double[nG]; aSoV = new double[nG];
+                aSiiV = new double[nG]; aSioV = new double[nG];
                 for (int g = 0; g < nG; g++)
                 {
                     rectMin[g] = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
                     rectMax[g] = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
                 }
-                for (int i = 0; i < outVc; i++)
-                {
-                    var uv = new Vector2(outUvFlat[i * 2], outUvFlat[i * 2 + 1]);
-                    domUv[i] = uv;
-                    int myVert = (int)xref[i];
-                    if (myVert < 0 || myVert >= inputVertGroup.Count) continue;
-                    int gid = inputVertGroup[myVert];
-                    if (gid < 0 || gid >= nG) continue;
-                    double inU = inputVertU[myVert], inV = inputVertV[myVert];
-                    aN[gid]   += 1.0;
-                    aSi[gid]  += inU;  aSoU[gid] += uv.x;
-                    aSii[gid] += inU * inU; aSioU[gid] += inU * uv.x;
-                    aSiV[gid] += inV;  aSoV[gid] += uv.y;
-                    aSiiV[gid]+= inV * inV; aSioV[gid] += inV * uv.y;
-                    if (uv.x < rectMin[gid].x) rectMin[gid].x = uv.x;
-                    if (uv.y < rectMin[gid].y) rectMin[gid].y = uv.y;
-                    if (uv.x > rectMax[gid].x) rectMax[gid].x = uv.x;
-                    if (uv.y > rectMax[gid].y) rectMax[gid].y = uv.y;
-                }
-
-                var rects = new Rect[nG];
-                var placements = new DomainPlacement[nG];
-                int packedGroups = 0;
-                for (int g = 0; g < nG; g++)
-                {
-                    if (rectMax[g].x < rectMin[g].x)
-                    {
-                        rects[g] = new Rect(0f, 0f, 0f, 0f); // group contributed nothing
-                        continue;
-                    }
-                    rects[g] = new Rect(rectMin[g].x, rectMin[g].y,
-                        rectMax[g].x - rectMin[g].x, rectMax[g].y - rectMin[g].y);
-
-                    double n = aN[g];
-                    double denU = n * aSii[g] - aSi[g] * aSi[g];
-                    double denV = n * aSiiV[g] - aSiV[g] * aSiV[g];
-                    bool okU = System.Math.Abs(denU) > 1e-12;
-                    bool okV = System.Math.Abs(denV) > 1e-12;
-                    if (n >= 2.0 && (okU || okV))
-                    {
-                        double suD = okU ? (n * aSioU[g] - aSi[g] * aSoU[g]) / denU : 0.0;
-                        double svD = okV ? (n * aSioV[g] - aSiV[g] * aSoV[g]) / denV : 0.0;
-                        // A zero-variance axis (perfectly straight axis-aligned
-                        // strip in UV0) leaves that axis's LSQ slope
-                        // unconstrained — NOT a reason to drop the whole group:
-                        // every member shell on every LOD would silently lose
-                        // its placement. xatlas applied a uniform scale
-                        // (rotateCharts:0, no flip), so borrow the resolved
-                        // axis's magnitude; finer members DO vary along the
-                        // degenerate axis and land at the right density.
-                        if (!okU) suD = System.Math.Abs(svD);
-                        if (!okV) svD = System.Math.Abs(suD);
-                        placements[g] = new DomainPlacement
-                        {
-                            uvc = pendingUvc[g],
-                            scale = pendingScale[g],
-                            su = (float)suD,
-                            ou = (float)((aSoU[g] - suD * aSi[g]) / n),
-                            sv = (float)svD,
-                            ov = (float)((aSoV[g] - svD * aSiV[g]) / n),
-                            valid = true,
-                        };
-                    }
-                    else if (n >= 1.0 && texelsPerUnit > 0f)
-                    {
-                        // Both axes degenerate — the canonical chart collapsed
-                        // to a point in UV0. Fall back to the designed mapping:
-                        // the pack ran at a fixed texelsPerUnit, so the scale is
-                        // texelsPerUnit/resolution; anchor at the mean placed UV
-                        // so members at least land inside their packed slot.
-                        double s = texelsPerUnit / (double)opts.atlasResolutionPx;
-                        placements[g] = new DomainPlacement
-                        {
-                            uvc = pendingUvc[g],
-                            scale = pendingScale[g],
-                            su = (float)s,
-                            ou = (float)((aSoU[g] - s * aSi[g]) / n),
-                            sv = (float)s,
-                            ov = (float)((aSoV[g] - s * aSiV[g]) / n),
-                            valid = true,
-                        };
-                    }
-                    packedGroups++;
-                }
-
-                var domTris = new int[outIc];
-                for (int i = 0; i < outIc; i++) domTris[i] = (int)outIndsU[i];
-
-                r.domainAtlasUv = domUv;
-                r.domainAtlasTris = domTris;
-                r.domainAtlasRects = rects;
-                r.domainPlacements = placements;
-
-                uint aw = XatlasNative.xatlasGetAtlasWidth();
-                uint ah = XatlasNative.xatlasGetAtlasHeight();
-                uint charts = XatlasNative.xatlasGetChartCount();
-                UvtLog.Info(UvtLog.Category.Benchmark,
-                    $"[HierRepack] Stage E: '{lg.name}' packed {packedGroups}/{r.groups.Length} "
-                    + $"domain charts (xatlas charts={charts}) into {aw}×{ah} atlas "
-                    + $"(canonical faces={fc}, outVerts={outVc}, "
-                    + $"texels/unit={texelsPerUnit:F1}, canonArea={totalCanonArea:F2})");
             }
-            finally { XatlasNative.xatlasDestroy(); }
+            internal void Add(int myVert, Vector2 uv, DomainPackInput input)
+            {
+                if (myVert < 0 || myVert >= input.inputVertGroup.Count) return;
+                int gid = input.inputVertGroup[myVert];
+                if (gid < 0 || gid >= aN.Length) return;
+                double inU = input.inputVertU[myVert], inV = input.inputVertV[myVert];
+                aN[gid]   += 1.0;
+                aSi[gid]  += inU;  aSoU[gid] += uv.x;
+                aSii[gid] += inU * inU; aSioU[gid] += inU * uv.x;
+                aSiV[gid] += inV;  aSoV[gid] += uv.y;
+                aSiiV[gid]+= inV * inV; aSioV[gid] += inV * uv.y;
+                if (uv.x < rectMin[gid].x) rectMin[gid].x = uv.x;
+                if (uv.y < rectMin[gid].y) rectMin[gid].y = uv.y;
+                if (uv.x > rectMax[gid].x) rectMax[gid].x = uv.x;
+                if (uv.y > rectMax[gid].y) rectMax[gid].y = uv.y;
+
+            }
+            internal DomainPlacement Placement(int g, DomainPackInput input, float texelsPerUnit, uint resolution)
+            {
+                double n = aN[g];
+                double denU = n * aSii[g] - aSi[g] * aSi[g];
+                double denV = n * aSiiV[g] - aSiV[g] * aSiV[g];
+                bool okU = System.Math.Abs(denU) > 1e-12;
+                bool okV = System.Math.Abs(denV) > 1e-12;
+                if (n >= 2.0 && (okU || okV))
+                {
+                    double suD = okU ? (n * aSioU[g] - aSi[g] * aSoU[g]) / denU : 0.0;
+                    double svD = okV ? (n * aSioV[g] - aSiV[g] * aSoV[g]) / denV : 0.0;
+                    // A zero-variance axis (perfectly straight axis-aligned
+                    // strip in UV0) leaves that axis's LSQ slope
+                    // unconstrained — NOT a reason to drop the whole group:
+                    // every member shell on every LOD would silently lose
+                    // its placement. xatlas applied a uniform scale
+                    // (rotateCharts:0, no flip), so borrow the resolved
+                    // axis's magnitude; finer members DO vary along the
+                    // degenerate axis and land at the right density.
+                    if (!okU) suD = System.Math.Abs(svD);
+                    if (!okV) svD = System.Math.Abs(suD);
+                    return new DomainPlacement
+                    {
+                        uvc = input.pendingUvc[g],
+                        scale = input.pendingScale[g],
+                        su = (float)suD,
+                        ou = (float)((aSoU[g] - suD * aSi[g]) / n),
+                        sv = (float)svD,
+                        ov = (float)((aSoV[g] - svD * aSiV[g]) / n),
+                        valid = true,
+                    };
+                }
+                else if (n >= 1.0 && texelsPerUnit > 0f)
+                {
+                    // Both axes degenerate — the canonical chart collapsed
+                    // to a point in UV0. Fall back to the designed mapping:
+                    // the pack ran at a fixed texelsPerUnit, so the scale is
+                    // texelsPerUnit/resolution; anchor at the mean placed UV
+                    // so members at least land inside their packed slot.
+                    double s = texelsPerUnit / (double)resolution;
+                    return new DomainPlacement
+                    {
+                        uvc = input.pendingUvc[g],
+                        scale = input.pendingScale[g],
+                        su = (float)s,
+                        ou = (float)((aSoU[g] - s * aSi[g]) / n),
+                        sv = (float)s,
+                        ov = (float)((aSoV[g] - s * aSiV[g]) / n),
+                        valid = true,
+                    };
+                }
+                return default;
+            }
         }
 
         // ─── Stage E (slice E2): cascade — align every LOD to its domain ──

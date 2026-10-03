@@ -388,96 +388,12 @@ namespace SashaRX.UnityMeshLab
             ctx.LodGroup = (LODGroup)EditorGUILayout.ObjectField("LODGroup", ctx.LodGroup, typeof(LODGroup), true);
             if (EditorGUI.EndChangeCheck()) { ctx.Refresh(ctx.LodGroup); OnRefresh(); }
 
-            if (ctx.LodGroup == null)
-            {
-                var selected = Selection.activeGameObject;
-                var siblings = LodGroupUtility.FindLodSiblings(selected);
-
-                if (siblings != null && siblings.Count > 0)
-                {
-                    RefreshSetupSelectionCache(selected, siblings);
-                    EditorGUILayout.HelpBox(
-                        "LOD objects detected but no LODGroup assigned. Create one to continue.",
-                        MessageType.Info);
-                    EditorGUILayout.Space(4);
-                    EditorGUILayout.LabelField("Detected LODs", EditorStyles.boldLabel);
-                    foreach (var (go, lodIndex, rendererCount, triangleCount) in cachedSetupDetectedLods)
-                    {
-                        EditorGUILayout.LabelField(
-                            $"  LOD{lodIndex}: {go.name}  ({rendererCount} renderer{(rendererCount != 1 ? "s" : "")}, {triangleCount:N0} tris)",
-                            EditorStyles.miniLabel);
-                    }
-
-                    EditorGUILayout.Space(6);
-                    var bgc = GUI.backgroundColor;
-                    GUI.backgroundColor = new Color(.4f, .8f, .4f);
-                    if (GUILayout.Button("Add LOD Group", GUILayout.Height(28)))
-                    {
-                        var lodGroup = LodGroupUtility.CreateLodGroupStatic(siblings);
-                        ctx.Refresh(lodGroup);
-                        OnRefresh();
-                        RequestRepaint?.Invoke();
-                    }
-                    GUI.backgroundColor = bgc;
-                }
-                else if (selected != null && SetupSelectionHasRenderers(selected))
-                {
-                    EditorGUILayout.HelpBox(
-                        "No LOD naming detected, but child renderers found.\n" +
-                        "Create a LODGroup with all renderers as LOD0.",
-                        MessageType.Info);
-                    EditorGUILayout.Space(6);
-                    var bgc = GUI.backgroundColor;
-                    GUI.backgroundColor = new Color(.4f, .8f, .4f);
-                    if (GUILayout.Button("Add LOD Group", GUILayout.Height(28)))
-                    {
-                        var lodGroup = LodGroupUtility.CreateLodGroupFromRenderers(selected);
-                        if (lodGroup != null)
-                        {
-                            ctx.Refresh(lodGroup);
-                            OnRefresh();
-                            RequestRepaint?.Invoke();
-                        }
-                    }
-                    GUI.backgroundColor = bgc;
-                }
-                else
-                {
-                    EditorGUILayout.HelpBox(
-                        "Assign LODGroup or select a GameObject.",
-                        MessageType.Info);
-                }
-                return;
-            }
+            if (ctx.LodGroup == null) { DrawMissingLodGroupSetup(); return; }
 
             ctx.SourceLodIndex = EditorGUILayout.IntSlider("Source LOD", ctx.SourceLodIndex, 0, ctx.LodCount - 1);
 
             EditorGUILayout.Space(2);
-            for (int li = 0; li < ctx.LodCount; li++)
-            {
-                var ee = ctx.MeshEntries.Where(e => e.lodIndex == li).ToList();
-                if (ee.Count == 0) continue;
-                bool src = li == ctx.SourceLodIndex;
-                var c = GUI.contentColor;
-                if (src) GUI.contentColor = new Color(.4f,.85f,1f);
-                string header = (src ? "LOD " + li + " (Source)" : "LOD " + li + " (Target)") + "  [" + ee.Count + "]";
-                if (!lodFoldouts.ContainsKey(li)) lodFoldouts[li] = false;
-                lodFoldouts[li] = EditorGUILayout.Foldout(lodFoldouts[li], header, true);
-                GUI.contentColor = c;
-                if (!lodFoldouts[li]) continue;
-                foreach (var e in ee)
-                {
-                    EditorGUILayout.BeginHorizontal();
-                    e.include = EditorGUILayout.Toggle(e.include, GUILayout.Width(14));
-                    string badge = e.repackedMesh != null ? "[R]" : e.transferredMesh != null ? "[T]" : e.wasWelded ? "[W]" : e.hasExistingUv2 ? "[UV2]" : "";
-                    string name = e.renderer.name;
-                    if (name.Length > 22) name = name.Substring(0, 20) + "..";
-                    EditorGUILayout.LabelField(badge + name, EditorStyles.miniLabel, GUILayout.MinWidth(60));
-                    var m = e.originalMesh;
-                    EditorGUILayout.LabelField("V:" + m.vertexCount + " T:" + MeshHygieneUtility.GetTriangleCount(m), EditorStyles.miniLabel, GUILayout.Width(80));
-                    EditorGUILayout.EndHorizontal();
-                }
-            }
+            DrawSetupLods();
 
             if (selectedSidecarPath != null)
             {
@@ -512,6 +428,120 @@ namespace SashaRX.UnityMeshLab
                 DrawSetupDebugSection();
         }
 
+        void DrawMissingLodGroupSetup()
+        {
+            var selected = Selection.activeGameObject;
+            var siblings = LodGroupUtility.FindLodSiblings(selected);
+
+            if (siblings != null && siblings.Count > 0)
+            {
+                DrawDetectedLodGroupSetup(selected, siblings);
+            }
+            else if (selected != null && SetupSelectionHasRenderers(selected))
+            {
+                DrawRendererLodGroupSetup(selected);
+            }
+            else
+            {
+                EditorGUILayout.HelpBox(
+                    "Assign LODGroup or select a GameObject.",
+                    MessageType.Info);
+            }
+        }
+
+        void DrawDetectedLodGroupSetup(GameObject selected, List<(GameObject go, int lodIndex)> siblings)
+        {
+            RefreshSetupSelectionCache(selected, siblings);
+            EditorGUILayout.HelpBox(
+                "LOD objects detected but no LODGroup assigned. Create one to continue.",
+                MessageType.Info);
+            EditorGUILayout.Space(4);
+            EditorGUILayout.LabelField("Detected LODs", EditorStyles.boldLabel);
+            foreach (var (go, lodIndex, rendererCount, triangleCount) in cachedSetupDetectedLods)
+            {
+                EditorGUILayout.LabelField(
+                    $"  LOD{lodIndex}: {go.name}  ({rendererCount} renderer{(rendererCount != 1 ? "s" : "")}, {triangleCount:N0} tris)",
+                    EditorStyles.miniLabel);
+            }
+
+            EditorGUILayout.Space(6);
+            var bgc = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(.4f, .8f, .4f);
+            if (GUILayout.Button("Add LOD Group", GUILayout.Height(28)))
+            {
+                var lodGroup = LodGroupUtility.CreateLodGroupStatic(siblings);
+                ctx.Refresh(lodGroup);
+                OnRefresh();
+                RequestRepaint?.Invoke();
+            }
+            GUI.backgroundColor = bgc;
+        }
+
+        void DrawRendererLodGroupSetup(GameObject selected)
+        {
+            EditorGUILayout.HelpBox(
+                "No LOD naming detected, but child renderers found.\n" +
+                "Create a LODGroup with all renderers as LOD0.",
+                MessageType.Info);
+            EditorGUILayout.Space(6);
+            var bgc = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(.4f, .8f, .4f);
+            if (GUILayout.Button("Add LOD Group", GUILayout.Height(28)))
+            {
+                var lodGroup = LodGroupUtility.CreateLodGroupFromRenderers(selected);
+                if (lodGroup != null)
+                {
+                    ctx.Refresh(lodGroup);
+                    OnRefresh();
+                    RequestRepaint?.Invoke();
+                }
+            }
+            GUI.backgroundColor = bgc;
+        }
+
+        void DrawSetupLods()
+        {
+            for (int li = 0; li < ctx.LodCount; li++)
+            {
+                var ee = ctx.MeshEntries.Where(e => e.lodIndex == li).ToList();
+                if (ee.Count == 0) continue;
+                bool src = li == ctx.SourceLodIndex;
+                var c = GUI.contentColor;
+                if (src) GUI.contentColor = new Color(.4f,.85f,1f);
+                string header = (src ? "LOD " + li + " (Source)" : "LOD " + li + " (Target)") + "  [" + ee.Count + "]";
+                if (!lodFoldouts.ContainsKey(li)) lodFoldouts[li] = false;
+                lodFoldouts[li] = EditorGUILayout.Foldout(lodFoldouts[li], header, true);
+                GUI.contentColor = c;
+                if (!lodFoldouts[li]) continue;
+                foreach (var e in ee)
+                {
+                    DrawSetupMeshRow(e);
+                }
+            }
+
+        }
+
+        static void DrawSetupMeshRow(MeshEntry e)
+        {
+            EditorGUILayout.BeginHorizontal();
+            e.include = EditorGUILayout.Toggle(e.include, GUILayout.Width(14));
+            string badge = SetupMeshBadge(e);
+            string name = e.renderer.name;
+            if (name.Length > 22) name = name.Substring(0, 20) + "..";
+            EditorGUILayout.LabelField(badge + name, EditorStyles.miniLabel, GUILayout.MinWidth(60));
+            var m = e.originalMesh;
+            EditorGUILayout.LabelField("V:" + m.vertexCount + " T:" + MeshHygieneUtility.GetTriangleCount(m), EditorStyles.miniLabel, GUILayout.Width(80));
+            EditorGUILayout.EndHorizontal();
+        }
+
+        static string SetupMeshBadge(MeshEntry entry)
+        {
+            if (entry.repackedMesh != null) return "[R]";
+            if (entry.transferredMesh != null) return "[T]";
+            if (entry.wasWelded) return "[W]";
+            return entry.hasExistingUv2 ? "[UV2]" : "";
+        }
+
         // ──────────────── Setup tab debug section ──────────────────────
         //
         // UV0 Analysis & Fix — a diagnostic that edits this tab's working
@@ -521,31 +551,30 @@ namespace SashaRX.UnityMeshLab
         {
             EditorGUILayout.Space(10);
             DebugUi.Banner();
-
-            // ── UV0 Analysis & Fix ──
             EditorGUILayout.Space(4);
             foldUv0Analysis = EditorGUILayout.Foldout(foldUv0Analysis, "UV0 Analysis & Fix", true);
-            if (foldUv0Analysis)
+            if (!foldUv0Analysis) return;
+            ColorBtn(new Color(.5f,.7f,.9f), "Analyze UV0", 22, ExecAnalyzeUv0);
+            if (!uv0Analyzed) return;
+            bool anyIssues = DrawUv0Reports();
+            bool hasTargetLods = ctx.MeshEntries.Any(e => e.include && e.lodIndex != ctx.SourceLodIndex);
+            if ((anyIssues || hasTargetLods) && !uv0Welded)
+                ColorBtn(new Color(.9f,.7f,.2f), "Weld (false seams + source-guided)", 22,
+                    () => ExecWeldUv0(runMeshoptFirst: stageWeldRunMeshopt));
+            else if (uv0Welded)
+                EditorGUILayout.LabelField("UV0 welded", EditorStyles.miniLabel);
+        }
+
+        bool DrawUv0Reports()
+        {
+            bool anyIssues = false;
+            foreach (var r in uv0Reports.Values)
             {
-                ColorBtn(new Color(.5f,.7f,.9f), "Analyze UV0", 22, ExecAnalyzeUv0);
-                if (uv0Analyzed)
-                {
-                    bool anyIssues = false;
-                    foreach (var kv in uv0Reports)
-                    {
-                        var r = kv.Value;
-                        EditorGUILayout.LabelField(r.meshName + ": " + r.totalShells + " shells", EditorStyles.miniLabel);
-                        if (r.falseSeamPairs > 0) { anyIssues = true; EditorGUILayout.LabelField($"  {r.falseSeamPairs} false seams", EditorStyles.miniLabel); }
-                        if (!r.HasIssues) EditorGUILayout.LabelField("  No issues", EditorStyles.miniLabel);
-                    }
-                    bool hasTargetLods = ctx.MeshEntries.Any(e => e.include && e.lodIndex != ctx.SourceLodIndex);
-                    if ((anyIssues || hasTargetLods) && !uv0Welded)
-                        ColorBtn(new Color(.9f,.7f,.2f), "Weld (false seams + source-guided)", 22,
-                            () => ExecWeldUv0(runMeshoptFirst: stageWeldRunMeshopt));
-                    else if (uv0Welded)
-                        EditorGUILayout.LabelField("UV0 welded", EditorStyles.miniLabel);
-                }
+                EditorGUILayout.LabelField(r.meshName + ": " + r.totalShells + " shells", EditorStyles.miniLabel);
+                if (r.falseSeamPairs > 0) { anyIssues = true; EditorGUILayout.LabelField($"  {r.falseSeamPairs} false seams", EditorStyles.miniLabel); }
+                if (!r.HasIssues) EditorGUILayout.LabelField("  No issues", EditorStyles.miniLabel);
             }
+            return anyIssues;
         }
 
         // ──────────────── Pipeline section (Setup tab) ────────────────
@@ -576,17 +605,7 @@ namespace SashaRX.UnityMeshLab
                 "Merge false-seam vertices (UV0 verts that share a 3D edge + matching UV "
                 + "but were split). Instance-pair guard blocks welds across mirror / N-fold "
                 + "shells. Required for clean shell extraction in Repack and Transfer.",
-                ref stageRunWeldUv0, hasSettings: true, drawSettings: () =>
-                {
-                    stageWeldRunMeshopt = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Pre-optimize (meshopt dedup)",
-                            "Run meshoptimizer's binary-equivalence dedup + GPU cache/"
-                            + "overdraw/fetch reorder before the UV weld. This is a GPU "
-                            + "optimisation, NOT a UV weld — it only removes byte-identical "
-                            + "vertices (always safe). Turn OFF to run the pure UV-aware "
-                            + "seam weld in isolation."),
-                        stageWeldRunMeshopt);
-                });
+                ref stageRunWeldUv0, hasSettings: true, drawSettings: DrawWeldStageSettings);
 
             // 3. Symmetry split — uses inverted skipSymmetrySplitStep field
             // so existing diagnostic flag continues to work elsewhere.
@@ -595,24 +614,7 @@ namespace SashaRX.UnityMeshLab
                 "Split mirrored / overlapping UV0 shells in the source so each "
                 + "physical surface gets its own atlas tile. Auto-tunes the "
                 + "separation threshold across a few values and picks the best.",
-                ref runSym, hasSettings: true, drawSettings: () =>
-                {
-                    SymmetrySplitMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
-                        new GUIContent("Threshold mode",
-                            "Strategy for picking the SymSplit separation threshold. "
-                            + "Legacy Fixed uses 0.10; Adaptive picks per-shell from area."),
-                        SymmetrySplitMode);
-                    SymmetrySplitShells.CurrentThresholdMode = SymmetrySplitMode;
-                    // Advanced / debug-only toggle — hidden from production UI.
-                    if (DebugUi.Enabled)
-                    {
-                        splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft(
-                            new GUIContent("Apply to target LODs (advanced)",
-                                "Run SymSplit on every included LOD instead of only the source. "
-                                + "Coordinated across LODs so each surface keeps its identity."),
-                            splitTargetsInSymmetryStep);
-                    }
-                });
+                ref runSym, hasSettings: true, drawSettings: DrawSymmetryStageSettings);
             skipSymmetrySplitStep = !runSym;
 
             // 4. Repack — main settings live here so users see resolution etc.
@@ -621,85 +623,7 @@ namespace SashaRX.UnityMeshLab
                 "Pack source LOD UVs into a clean UV2 atlas using xatlas. "
                 + "Auto-resolution from texel density is the default; the "
                 + "Mode picker below switches to manual resolution.",
-                ref stageRunRepack, hasSettings: true, drawSettings: () =>
-                {
-                    // Vertical layout — sidebar is narrow and the previous
-                    // three-column row truncated labels ("Resolutior", "Pa",
-                    // "B "). One control per line, default labelWidth handles
-                    // alignment correctly even under indentLevel.
-
-                    // Mode picker — using friendly labels so the enum value
-                    // "AutoFromTexelDensity" doesn't show up as a run-on.
-                    int modeIdx = ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity ? 1 : 0;
-                    int newModeIdx = EditorGUILayout.Popup(
-                        new GUIContent("Mode",
-                            "Manual: pick atlas resolution (px) — the tool reports effective texel density.\n"
-                            + "Auto from texel density: pick target tex/m — the tool derives atlas size from "
-                            + "total 3D area."),
-                        modeIdx,
-                        new[] { "Manual", "Auto from texel density" });
-                    ctx.RepackResolutionMode = newModeIdx == 1
-                        ? ResolutionMode.AutoFromTexelDensity
-                        : ResolutionMode.Manual;
-
-                    // Show only the active driver — opposite mode's field
-                    // would confuse the user (Manual Resolution staying on
-                    // screen while Auto-mode preview says "atlas 64 px" was
-                    // exactly the contradiction we just had).
-                    if (ctx.RepackResolutionMode == ResolutionMode.Manual)
-                    {
-                        ctx.AtlasResolution = EditorGUILayout.IntField(
-                            new GUIContent("Resolution (px)",
-                                "Atlas resolution in pixels. Power-of-two values recommended (64..4096)."),
-                            ctx.AtlasResolution);
-                    }
-                    else
-                    {
-                        ctx.LightmapDensity = EditorGUILayout.Slider(
-                            new GUIContent("Texels per meter",
-                                "Target lightmap density. Atlas size = ceil_pow2(sqrt(area × density² / coverage))."),
-                            ctx.LightmapDensity, 0.5f, 100f);
-                    }
-
-                    ctx.ShellPaddingPx = EditorGUILayout.IntSlider(
-                        new GUIContent("Shell padding (px)",
-                            "Inter-shell padding in atlas pixels. Prevents bleed between neighbours."),
-                        ctx.ShellPaddingPx, 0, 16);
-                    ctx.BorderPaddingPx = EditorGUILayout.IntSlider(
-                        new GUIContent("Border padding (px)",
-                            "Atlas-edge padding in pixels."),
-                        ctx.BorderPaddingPx, 0, 16);
-
-                    ctx.RepackPerMesh = EditorGUILayout.ToggleLeft(
-                        new GUIContent("Per-mesh repack (each group → [0,1])",
-                            "Pack each mesh group into its own [0,1] atlas instead of sharing one."),
-                        ctx.RepackPerMesh);
-
-                    // Texel density preview — live summary of the resolved
-                    // atlas size so the user sees what xatlas will actually
-                    // pack into without having to switch to the Repack tab.
-                    double total3DArea = GetSourceAreaPreview();
-                    string previewLine;
-                    if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
-                    {
-                        uint autoRes = MeshAreaHelper.ComputeAutoResolution(
-                            total3DArea, ctx.LightmapDensity, ctx.TargetUvCoverage);
-                        previewLine =
-                            $"area {total3DArea:F2} m²  ·  density {ctx.LightmapDensity:F1} tex/m  " +
-                            $"→  atlas {autoRes} px";
-                    }
-                    else
-                    {
-                        int resForDisplay = Mathf.Max(1, ctx.AtlasResolution);
-                        double effDensity = total3DArea > 0.0
-                            ? resForDisplay / System.Math.Sqrt(total3DArea / Mathf.Max(0.0001f, ctx.TargetUvCoverage))
-                            : 0.0;
-                        previewLine =
-                            $"area {total3DArea:F2} m²  ·  atlas {resForDisplay} px  " +
-                            $"→  effective ≈ {effDensity:F1} tex/m";
-                    }
-                    EditorGUILayout.LabelField(previewLine, EditorStyles.miniLabel);
-                });
+                ref stageRunRepack, hasSettings: true, drawSettings: DrawRepackStageSettings);
 
             // 5. Transfer.
             bool hasTargets = ctx.LodGroup != null && HasIncludedTransferTargets(ctx.MeshEntries, ctx.SourceLodIndex);
@@ -709,6 +633,125 @@ namespace SashaRX.UnityMeshLab
                     : "No target LODs included — Transfer will skip even when enabled.",
                 ref stageRunTransfer, hasSettings: false, drawSettings: null, dimmed: !hasTargets);
 
+            DrawPipelineActions(hasTargets);
+        }
+
+
+        void DrawWeldStageSettings()
+        {
+            stageWeldRunMeshopt = EditorGUILayout.ToggleLeft(
+                new GUIContent("Pre-optimize (meshopt dedup)",
+                    "Run meshoptimizer's binary-equivalence dedup + GPU cache/"
+                    + "overdraw/fetch reorder before the UV weld. This is a GPU "
+                    + "optimisation, NOT a UV weld — it only removes byte-identical "
+                    + "vertices (always safe). Turn OFF to run the pure UV-aware "
+                    + "seam weld in isolation."),
+                stageWeldRunMeshopt);
+        }
+
+
+        void DrawSymmetryStageSettings()
+        {
+            SymmetrySplitMode = (SymmetrySplitShells.ThresholdMode)EditorGUILayout.EnumPopup(
+                new GUIContent("Threshold mode",
+                    "Strategy for picking the SymSplit separation threshold. "
+                    + "Legacy Fixed uses 0.10; Adaptive picks per-shell from area."),
+                SymmetrySplitMode);
+            SymmetrySplitShells.CurrentThresholdMode = SymmetrySplitMode;
+            // Advanced / debug-only toggle — hidden from production UI.
+            if (DebugUi.Enabled)
+            {
+                splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft(
+                    new GUIContent("Apply to target LODs (advanced)",
+                        "Run SymSplit on every included LOD instead of only the source. "
+                        + "Coordinated across LODs so each surface keeps its identity."),
+                    splitTargetsInSymmetryStep);
+            }
+        }
+
+
+        void DrawRepackStageSettings()
+        {
+            // Vertical layout — sidebar is narrow and the previous
+            // three-column row truncated labels ("Resolutior", "Pa",
+            // "B "). One control per line, default labelWidth handles
+            // alignment correctly even under indentLevel.
+
+            // Mode picker — using friendly labels so the enum value
+            // "AutoFromTexelDensity" doesn't show up as a run-on.
+            int modeIdx = ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity ? 1 : 0;
+            int newModeIdx = EditorGUILayout.Popup(
+                new GUIContent("Mode",
+                    "Manual: pick atlas resolution (px) — the tool reports effective texel density.\n"
+                    + "Auto from texel density: pick target tex/m — the tool derives atlas size from "
+                    + "total 3D area."),
+                modeIdx,
+                new[] { "Manual", "Auto from texel density" });
+            ctx.RepackResolutionMode = newModeIdx == 1
+                ? ResolutionMode.AutoFromTexelDensity
+                : ResolutionMode.Manual;
+
+            // Show only the active driver — opposite mode's field
+            // would confuse the user (Manual Resolution staying on
+            // screen while Auto-mode preview says "atlas 64 px" was
+            // exactly the contradiction we just had).
+            if (ctx.RepackResolutionMode == ResolutionMode.Manual)
+            {
+                ctx.AtlasResolution = EditorGUILayout.IntField(
+                    new GUIContent("Resolution (px)",
+                        "Atlas resolution in pixels. Power-of-two values recommended (64..4096)."),
+                    ctx.AtlasResolution);
+            }
+            else
+            {
+                ctx.LightmapDensity = EditorGUILayout.Slider(
+                    new GUIContent("Texels per meter",
+                        "Target lightmap density. Atlas size = ceil_pow2(sqrt(area × density² / coverage))."),
+                    ctx.LightmapDensity, 0.5f, 100f);
+            }
+
+            ctx.ShellPaddingPx = EditorGUILayout.IntSlider(
+                new GUIContent("Shell padding (px)",
+                    "Inter-shell padding in atlas pixels. Prevents bleed between neighbours."),
+                ctx.ShellPaddingPx, 0, 16);
+            ctx.BorderPaddingPx = EditorGUILayout.IntSlider(
+                new GUIContent("Border padding (px)",
+                    "Atlas-edge padding in pixels."),
+                ctx.BorderPaddingPx, 0, 16);
+
+            ctx.RepackPerMesh = EditorGUILayout.ToggleLeft(
+                new GUIContent("Per-mesh repack (each group → [0,1])",
+                    "Pack each mesh group into its own [0,1] atlas instead of sharing one."),
+                ctx.RepackPerMesh);
+
+            // Texel density preview — live summary of the resolved
+            // atlas size so the user sees what xatlas will actually
+            // pack into without having to switch to the Repack tab.
+            double total3DArea = GetSourceAreaPreview();
+            string previewLine;
+            if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
+            {
+                uint autoRes = MeshAreaHelper.ComputeAutoResolution(
+                    total3DArea, ctx.LightmapDensity, ctx.TargetUvCoverage);
+                previewLine =
+                    $"area {total3DArea:F2} m²  ·  density {ctx.LightmapDensity:F1} tex/m  " +
+                    $"→  atlas {autoRes} px";
+            }
+            else
+            {
+                int resForDisplay = Mathf.Max(1, ctx.AtlasResolution);
+                double effDensity = total3DArea > 0.0
+                    ? resForDisplay / System.Math.Sqrt(total3DArea / Mathf.Max(0.0001f, ctx.TargetUvCoverage))
+                    : 0.0;
+                previewLine =
+                    $"area {total3DArea:F2} m²  ·  atlas {resForDisplay} px  " +
+                    $"→  effective ≈ {effDensity:F1} tex/m";
+            }
+            EditorGUILayout.LabelField(previewLine, EditorStyles.miniLabel);
+        }
+
+        void DrawPipelineActions(bool hasTargets)
+        {
             // Primary action — wrapped in EditorGUI.DisabledScope on the
             // in-flight gate so the button visibly greys out while a run is
             // active. FireAndForget catches Task faults so an exception
@@ -764,9 +807,8 @@ namespace SashaRX.UnityMeshLab
 
             // Left stripe: green when enabled, grey when disabled.
             var stripeRect = new Rect(rowRect.x, rowRect.y + 1, 3f, rowRect.height - 2);
-            Color stripeColor = enabled
-                ? (dimmed ? new Color(0.45f, 0.55f, 0.45f) : new Color(0.35f, 0.78f, 0.45f))
-                : new Color(0.40f, 0.40f, 0.40f);
+            Color stripeColor = new Color(0.40f, 0.40f, 0.40f);
+            if (enabled) stripeColor = dimmed ? new Color(0.45f, 0.55f, 0.45f) : new Color(0.35f, 0.78f, 0.45f);
             EditorGUI.DrawRect(stripeRect, stripeColor);
 
             // Ordinal badge — small numbered chip on the left.
@@ -1138,52 +1180,7 @@ namespace SashaRX.UnityMeshLab
                 if (li == ctx.SourceLodIndex) continue;
                 var ee = ctx.ForLod(li);
                 if (ee.Count == 0) continue;
-                bool allDone = ee.All(e => e.transferredMesh != null);
-                bool noneDone = ee.All(e => e.transferredMesh == null);
-
-                int totalV = 0, transferredV = 0;
-                foreach (var e in ee)
-                {
-                    if (e.shellTransferResult == null) continue;
-                    totalV += e.shellTransferResult.verticesTotal;
-                    transferredV += e.shellTransferResult.verticesTransferred;
-                }
-                float coverage = totalV > 0 ? transferredV * 100f / totalV : 0f;
-
-                string headerIcon = allDone ? "✓" : (noneDone ? "•" : "◐");
-                string summary = totalV > 0
-                    ? $"   LOD{li}  ·  {ee.Count} mesh{(ee.Count == 1 ? "" : "es")}  ·  {coverage:F0}% verts"
-                    : $"   LOD{li}  ·  {ee.Count} mesh{(ee.Count == 1 ? "" : "es")}";
-
-                // Status colour on the icon glyph; the foldout label itself
-                // stays the default colour so it remains readable.
-                var oldContent = GUI.contentColor;
-                GUI.contentColor = allDone
-                    ? new Color(0.45f, 0.90f, 0.55f)
-                    : (noneDone ? new Color(0.65f, 0.65f, 0.65f) : new Color(0.95f, 0.78f, 0.35f));
-                if (!transferLodFoldouts.ContainsKey(li)) transferLodFoldouts[li] = false;
-                transferLodFoldouts[li] = EditorGUILayout.Foldout(transferLodFoldouts[li], headerIcon + summary, true);
-                GUI.contentColor = oldContent;
-                if (!transferLodFoldouts[li]) continue;
-
-                EditorGUI.indentLevel++;
-                foreach (var e in ee)
-                {
-                    string extra = "";
-                    if (e.shellTransferResult != null)
-                    {
-                        var r = e.shellTransferResult;
-                        float p = r.verticesTotal > 0 ? r.verticesTransferred * 100f / r.verticesTotal : 0f;
-                        extra = $"  ·  {r.shellsMatched} sh  ·  {p:F0}%";
-                    }
-                    string rowIcon = e.transferredMesh != null ? "✓" : "•";
-                    GUI.contentColor = e.transferredMesh != null
-                        ? new Color(0.45f, 0.90f, 0.55f)
-                        : new Color(0.65f, 0.65f, 0.65f);
-                    EditorGUILayout.LabelField(rowIcon + "  " + e.renderer.name + extra, EditorStyles.miniLabel);
-                    GUI.contentColor = oldContent;
-                }
-                EditorGUI.indentLevel--;
+                DrawTransferLodCard(li, ee);
             }
 
             EditorGUILayout.Space(6);
@@ -1193,79 +1190,154 @@ namespace SashaRX.UnityMeshLab
                     () => FireAndForget(ExecTransferAllAsync, "Transfer All Targets"));
             }
 
-            if (ctx.HasTransfer)
-            {
-                EditorGUILayout.Space(8);
-                H("Quality Report");
-                reportScroll = EditorGUILayout.BeginScrollView(reportScroll, GUILayout.MaxHeight(250));
-                for (int li = 0; li < ctx.LodCount; li++)
-                {
-                    if (li == ctx.SourceLodIndex) continue;
-                    var ee = ctx.ForLod(li);
-                    if (!ee.Any(e => e.shellTransferResult != null)) continue;
-                    if (!reportLodFoldouts.ContainsKey(li)) reportLodFoldouts[li] = false;
-                    reportLodFoldouts[li] = EditorGUILayout.Foldout(reportLodFoldouts[li], "LOD" + li, true);
-                    if (!reportLodFoldouts[li]) continue;
-                    foreach (var e in ee)
-                    {
-                        if (e.shellTransferResult != null)
-                        {
-                            var r = e.shellTransferResult;
-                            EditorGUILayout.LabelField("  " + e.renderer.name, EditorStyles.miniLabel);
-                            Bar("OK", r.verticesTransferred, r.verticesTotal, UvCanvasView.cAccept);
-                            Bar("Miss", r.verticesTotal - r.verticesTransferred, r.verticesTotal, UvCanvasView.cReject);
-                            var vr = e.validationReport;
-                            if (vr != null)
-                            {
-                                Bar("Clean", vr.cleanCount + vr.invertedCount, vr.totalTriangles, UvCanvasView.cValClean);
-                                if (vr.stretchedCount > 0) Bar("Str", vr.stretchedCount, vr.totalTriangles, UvCanvasView.cValStretch);
-                                if (vr.zeroAreaCount > 0) Bar("0A", vr.zeroAreaCount, vr.totalTriangles, UvCanvasView.cValZero);
-                                if (vr.oobCount > 0) Bar("OB", vr.oobCount, vr.totalTriangles, UvCanvasView.cValOOB);
-                                if (vr.overlapShellPairs > 0) Bar("Ov", vr.overlapTriangleCount, vr.totalTriangles, UvCanvasView.cValOverlap);
-                            }
-                        }
-                        EditorGUILayout.Space(2);
-                    }
-                }
-                EditorGUILayout.EndScrollView();
+            if (ctx.HasTransfer) DrawTransferQualityReport();
+            if (CanApplyUv2(ctx.HasRepack, ctx.HasTransfer)) DrawApplyUv2Actions();
+        }
 
-                EditorGUILayout.Space(4);
-                foldValidationOverlay = EditorGUILayout.Foldout(foldValidationOverlay, "Validation Overlay", true);
-                if (foldValidationOverlay)
+        void DrawTransferLodCard(int li, List<MeshEntry> ee)
+        {
+            bool allDone = ee.All(e => e.transferredMesh != null);
+            bool noneDone = ee.All(e => e.transferredMesh == null);
+
+            var totals = GetTransferTotals(ee);
+            float coverage = totals.vertices > 0 ? totals.transferred * 100f / totals.vertices : 0f;
+            string headerIcon = "◐";
+            if (allDone) headerIcon = "✓";
+            else if (noneDone) headerIcon = "•";
+            string plural = ee.Count == 1 ? "" : "es";
+            string summary = $"   LOD{li}  ·  {ee.Count} mesh{plural}";
+            if (totals.vertices > 0) summary += $"  ·  {coverage:F0}% verts";
+
+            // Status colour on the icon glyph; the foldout label itself
+            // stays the default colour so it remains readable.
+            var oldContent = GUI.contentColor;
+            GUI.contentColor = new Color(0.95f, 0.78f, 0.35f);
+            if (allDone) GUI.contentColor = new Color(0.45f, 0.90f, 0.55f);
+            else if (noneDone) GUI.contentColor = new Color(0.65f, 0.65f, 0.65f);
+            if (!transferLodFoldouts.ContainsKey(li)) transferLodFoldouts[li] = false;
+            transferLodFoldouts[li] = EditorGUILayout.Foldout(transferLodFoldouts[li], headerIcon + summary, true);
+            GUI.contentColor = oldContent;
+            if (!transferLodFoldouts[li]) return;
+
+            EditorGUI.indentLevel++;
+            foreach (var e in ee)
+            {
+                DrawTransferMeshRow(e, oldContent);
+            }
+            EditorGUI.indentLevel--;
+        }
+
+        static void DrawTransferMeshRow(MeshEntry e, Color oldContent)
+        {
+            string extra = "";
+            if (e.shellTransferResult != null)
+            {
+                var r = e.shellTransferResult;
+                float p = r.verticesTotal > 0 ? r.verticesTransferred * 100f / r.verticesTotal : 0f;
+                extra = $"  ·  {r.shellsMatched} sh  ·  {p:F0}%";
+            }
+            string rowIcon = e.transferredMesh != null ? "✓" : "•";
+            GUI.contentColor = e.transferredMesh != null
+                ? new Color(0.45f, 0.90f, 0.55f)
+                : new Color(0.65f, 0.65f, 0.65f);
+            EditorGUILayout.LabelField(rowIcon + "  " + e.renderer.name + extra, EditorStyles.miniLabel);
+            GUI.contentColor = oldContent;
+        }
+
+        void DrawTransferQualityReport()
+        {
+            EditorGUILayout.Space(8);
+            H("Quality Report");
+            reportScroll = EditorGUILayout.BeginScrollView(reportScroll, GUILayout.MaxHeight(250));
+            for (int li = 0; li < ctx.LodCount; li++)
+            {
+                if (li == ctx.SourceLodIndex) continue;
+                var ee = ctx.ForLod(li);
+                if (!ee.Any(e => e.shellTransferResult != null)) continue;
+                if (!reportLodFoldouts.ContainsKey(li)) reportLodFoldouts[li] = false;
+                reportLodFoldouts[li] = EditorGUILayout.Foldout(reportLodFoldouts[li], "LOD" + li, true);
+                if (!reportLodFoldouts[li]) continue;
+                foreach (var e in ee) DrawTransferQualityRow(e);
+            }
+            EditorGUILayout.EndScrollView();
+
+            DrawValidationOverlay();
+        }
+
+        void DrawTransferQualityRow(MeshEntry e)
+        {
+            if (e.shellTransferResult != null)
+            {
+                var r = e.shellTransferResult;
+                EditorGUILayout.LabelField("  " + e.renderer.name, EditorStyles.miniLabel);
+                Bar("OK", r.verticesTransferred, r.verticesTotal, UvCanvasView.cAccept);
+                Bar("Miss", r.verticesTotal - r.verticesTransferred, r.verticesTotal, UvCanvasView.cReject);
+                var vr = e.validationReport;
+                if (vr != null)
                 {
-                    EditorGUI.indentLevel++;
-                    var mask = canvas != null ? canvas.ValidationFilterMask : TransferValidator.TriIssue.None;
-                    bool changed = false;
-                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Inverted,    "Inverted");
-                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Stretched,   "Stretched");
-                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.ZeroArea,    "ZeroArea");
-                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.OutOfBounds, "OutOfBounds");
-                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Overlap,     "Overlap");
-                    changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.TexelDensity,"TexelDensity");
-                    if (changed && canvas != null)
-                    {
-                        canvas.ValidationFilterMask = mask;
-                        RequestRepaint?.Invoke();
-                    }
-                    EditorGUILayout.LabelField(
-                        mask == TransferValidator.TriIssue.None ? "(all triangles drawn)" : $"mask: {mask}",
-                        EditorStyles.miniLabel);
-                    EditorGUI.indentLevel--;
+                    Bar("Clean", vr.cleanCount + vr.invertedCount, vr.totalTriangles, UvCanvasView.cValClean);
+                    if (vr.stretchedCount > 0) Bar("Str", vr.stretchedCount, vr.totalTriangles, UvCanvasView.cValStretch);
+                    if (vr.zeroAreaCount > 0) Bar("0A", vr.zeroAreaCount, vr.totalTriangles, UvCanvasView.cValZero);
+                    if (vr.oobCount > 0) Bar("OB", vr.oobCount, vr.totalTriangles, UvCanvasView.cValOOB);
+                    if (vr.overlapShellPairs > 0) Bar("Ov", vr.overlapTriangleCount, vr.totalTriangles, UvCanvasView.cValOverlap);
                 }
             }
+            EditorGUILayout.Space(2);
+        }
 
-            if (CanApplyUv2(ctx.HasRepack, ctx.HasTransfer))
+        void DrawValidationOverlay()
+        {
+            EditorGUILayout.Space(4);
+            foldValidationOverlay = EditorGUILayout.Foldout(foldValidationOverlay, "Validation Overlay", true);
+            if (foldValidationOverlay)
             {
-                EditorGUILayout.Space(6);
-                // The source LOD can be applied immediately after repack,
-                // even when there are no included target LODs to transfer.
-                H("Apply UV2");
-                ColorBtn(new Color(.3f,.85f,.4f), "Apply UV2 to FBX", 26, ApplyUv2ToFbx);
-                EditorGUILayout.Space(2);
-                ColorBtn(new Color(.9f,.3f,.3f), "Reset UV2 (delete sidecar)", 20, ResetUv2FromFbx);
-                EditorGUILayout.Space(2);
-                ColorBtn(new Color(.5f,.15f,.15f), "Reset Pipeline State", 20, ResetPipelineState);
+                EditorGUI.indentLevel++;
+                var mask = canvas != null ? canvas.ValidationFilterMask : TransferValidator.TriIssue.None;
+                bool changed = false;
+                changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Inverted,    "Inverted");
+                changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Stretched,   "Stretched");
+                changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.ZeroArea,    "ZeroArea");
+                changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.OutOfBounds, "OutOfBounds");
+                changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.Overlap,     "Overlap");
+                changed |= ToggleIssueBit(ref mask, TransferValidator.TriIssue.TexelDensity,"TexelDensity");
+                if (changed && canvas != null)
+                {
+                    canvas.ValidationFilterMask = mask;
+                    RequestRepaint?.Invoke();
+                }
+                EditorGUILayout.LabelField(
+                    mask == TransferValidator.TriIssue.None ? "(all triangles drawn)" : $"mask: {mask}",
+                    EditorStyles.miniLabel);
+                EditorGUI.indentLevel--;
             }
+        }
+
+        void DrawApplyUv2Actions()
+        {
+            EditorGUILayout.Space(6);
+            // The source LOD can be applied immediately after repack,
+            // even when there are no included target LODs to transfer.
+            H("Apply UV2");
+            ColorBtn(new Color(.3f,.85f,.4f), "Apply UV2 to FBX", 26, ApplyUv2ToFbx);
+            EditorGUILayout.Space(2);
+            ColorBtn(new Color(.9f,.3f,.3f), "Reset UV2 (delete sidecar)", 20, ResetUv2FromFbx);
+            EditorGUILayout.Space(2);
+            ColorBtn(new Color(.5f,.15f,.15f), "Reset Pipeline State", 20, ResetPipelineState);
+        }
+
+        static (int vertices, int transferred, int rejected, int overlaps) GetTransferTotals(IEnumerable<MeshEntry> entries)
+        {
+            int vertices = 0, transferred = 0, rejected = 0, overlaps = 0;
+            foreach (var entry in entries)
+            {
+                var result = entry.shellTransferResult;
+                if (result == null) continue;
+                vertices += result.verticesTotal;
+                transferred += result.verticesTransferred;
+                rejected += result.shellsRejected;
+                overlaps += result.shellsOverlapFixed;
+            }
+            return (vertices, transferred, rejected, overlaps);
         }
 
         // ════════════════════════════════════════════════════════════
@@ -1373,63 +1445,70 @@ namespace SashaRX.UnityMeshLab
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include || e.lodIndex != ctx.SourceLodIndex) continue;
-                if (e.originalMesh == e.fbxMesh)
-                {
-                    e.originalMesh = MeshAccess.ReadableCopy(e.fbxMesh);
-                    e.originalMesh.name = e.fbxMesh.name + "_wc";
-                }
-                var uv0 = e.originalMesh.uv;
-                if (uv0 == null || uv0.Length == 0) continue;
-                var shells = UvShellExtractor.Extract(uv0, e.originalMesh.triangles);
-                int split = SymmetrySplitShells.Split(e.originalMesh, shells, out var splitParams, separationThreshold);
-                if (split > 0)
-                {
-                    e.wasSymmetrySplit = true;
-                    lastSymmetrySplitLods.Add(e.lodIndex);
-                    UvtLog.Info($"[SymSplit] '{e.originalMesh.name}' LOD{e.lodIndex}: {split} shells split");
-                    // Store params keyed by mesh group for target LOD propagation
-                    string key = e.meshGroupKey ?? e.renderer.name;
-                    splitParamsByGroup[key] = splitParams;
-                }
+                SplitSourceSymmetry(e, separationThreshold, splitParamsByGroup);
             }
-
-            // Phase 2: Apply same split parameters to target LODs (coordinated)
             if (includeTargets)
-            {
                 foreach (var e in ctx.MeshEntries)
                 {
                     if (!e.include || e.lodIndex == ctx.SourceLodIndex) continue;
-                    if (e.originalMesh == e.fbxMesh)
-                    {
-                        e.originalMesh = MeshAccess.ReadableCopy(e.fbxMesh);
-                        e.originalMesh.name = e.fbxMesh.name + "_wc";
-                    }
-                    var uv0 = e.originalMesh.uv;
-                    if (uv0 == null || uv0.Length == 0) continue;
-                    var shells = UvShellExtractor.Extract(uv0, e.originalMesh.triangles);
-
-                    // Try coordinated split with source LOD parameters
-                    string key = e.meshGroupKey ?? e.renderer.name;
-                    int split = 0;
-                    if (splitParamsByGroup.TryGetValue(key, out var prescribed) && prescribed.Count > 0)
-                    {
-                        split = SymmetrySplitShells.SplitWithParams(e.originalMesh, shells, prescribed);
-                        if (split > 0)
-                            UvtLog.Info($"[SymSplit] '{e.originalMesh.name}' LOD{e.lodIndex}: {split} shells split (coordinated)");
-                    }
-                    // Fallback to independent detection if no prescribed params
-                    if (split == 0)
-                    {
-                        split = SymmetrySplitShells.Split(e.originalMesh, shells, separationThreshold);
-                        if (split > 0)
-                            UvtLog.Info($"[SymSplit] '{e.originalMesh.name}' LOD{e.lodIndex}: {split} shells split (independent)");
-                    }
-                    if (split > 0) { e.wasSymmetrySplit = true; lastSymmetrySplitLods.Add(e.lodIndex); }
+                    SplitTargetSymmetry(e, separationThreshold, splitParamsByGroup);
                 }
-            }
 
             ctx.ClearAllCaches();
             RequestRepaint?.Invoke();
+        }
+
+        void SplitSourceSymmetry(MeshEntry e, float separationThreshold,
+            Dictionary<string, List<SymmetrySplitShells.SplitParams>> splitParamsByGroup)
+        {
+            EnsureTransferWorkingMesh(e);
+            var uv0 = e.originalMesh.uv;
+            if (uv0 == null || uv0.Length == 0) return;
+            var shells = UvShellExtractor.Extract(uv0, e.originalMesh.triangles);
+            int split = SymmetrySplitShells.Split(e.originalMesh, shells, out var splitParams, separationThreshold);
+            if (split > 0)
+            {
+                e.wasSymmetrySplit = true;
+                lastSymmetrySplitLods.Add(e.lodIndex);
+                UvtLog.Info($"[SymSplit] '{e.originalMesh.name}' LOD{e.lodIndex}: {split} shells split");
+                // Store params keyed by mesh group for target LOD propagation
+                string key = e.meshGroupKey ?? e.renderer.name;
+                splitParamsByGroup[key] = splitParams;
+            }
+        }
+
+        static void EnsureTransferWorkingMesh(MeshEntry entry)
+        {
+            if (entry.originalMesh != entry.fbxMesh) return;
+            entry.originalMesh = MeshAccess.ReadableCopy(entry.fbxMesh);
+            entry.originalMesh.name = entry.fbxMesh.name + "_wc";
+        }
+
+        void SplitTargetSymmetry(MeshEntry e, float separationThreshold,
+            Dictionary<string, List<SymmetrySplitShells.SplitParams>> splitParamsByGroup)
+        {
+            EnsureTransferWorkingMesh(e);
+            var uv0 = e.originalMesh.uv;
+            if (uv0 == null || uv0.Length == 0) return;
+            var shells = UvShellExtractor.Extract(uv0, e.originalMesh.triangles);
+
+            // Try coordinated split with source LOD parameters
+            string key = e.meshGroupKey ?? e.renderer.name;
+            int split = 0;
+            if (splitParamsByGroup.TryGetValue(key, out var prescribed) && prescribed.Count > 0)
+            {
+                split = SymmetrySplitShells.SplitWithParams(e.originalMesh, shells, prescribed);
+                if (split > 0)
+                    UvtLog.Info($"[SymSplit] '{e.originalMesh.name}' LOD{e.lodIndex}: {split} shells split (coordinated)");
+            }
+            // Fallback to independent detection if no prescribed params
+            if (split == 0)
+            {
+                split = SymmetrySplitShells.Split(e.originalMesh, shells, separationThreshold);
+                if (split > 0)
+                    UvtLog.Info($"[SymSplit] '{e.originalMesh.name}' LOD{e.lodIndex}: {split} shells split (independent)");
+            }
+            if (split > 0) { e.wasSymmetrySplit = true; lastSymmetrySplitLods.Add(e.lodIndex); }
         }
 
         // Sync entry — used by sweep loops where each cell runs end-to-end
@@ -1556,6 +1635,55 @@ namespace SashaRX.UnityMeshLab
             // pure function of (fbxMesh, settings).
             ResetWorkingMeshesToFbx();
 
+            RunInitialPipelineStages();
+
+            // ── Auto-tune: try multiple SymSplit configs, pick best ──
+            // Save working copies so we can restore between attempts.
+            var savedMeshes = new Dictionary<MeshEntry, Mesh>();
+            foreach (var e in ctx.MeshEntries)
+                if (e.originalMesh != null)
+                    savedMeshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
+
+            float[] separationConfigs = { 0.10f, 0.05f, 0.20f };
+            bool hasTransferTargets = HasIncludedTransferTargets(ctx.MeshEntries, ctx.SourceLodIndex);
+            if (!hasTransferTargets)
+                UvtLog.Warn("[Pipeline] No included target LOD meshes; running source repack only and skipping transfer/auto-tune.");
+
+            var best = new AutoTuneChoice();
+
+            bool cancelled = false;
+            UvProgress.Begin("Auto-tune Pipeline", cancelable: true);
+            try
+            {
+                cancelled = await RunAutoTuneAttempts(separationConfigs, savedMeshes, best, hasTransferTargets, useAsync);
+            }
+            finally
+            {
+                if (cancelled) UvProgress.Cancel(); else UvProgress.End();
+            }
+
+            if (best.Meshes.Count > 0 && !cancelled) RestoreAutoTuneChoice(best);
+
+            // Cleanup saved copies
+            foreach (var m in savedMeshes.Values)
+                UnityEngine.Object.DestroyImmediate(m);
+
+            if (cancelled)
+            {
+                RequestRepaint?.Invoke();
+                return false;
+            }
+            if (separationConfigs.Length > 1 && best.ConfigIndex > 0)
+                UvtLog.Info($"[Pipeline] Auto-tune: selected config #{best.ConfigIndex} " +
+                    $"(sep={separationConfigs[best.ConfigIndex]:P0})");
+
+            UvtLog.Info("[Pipeline] Complete.");
+            RequestRepaint?.Invoke();
+            return true;
+        }
+
+        void RunInitialPipelineStages()
+        {
             // 1. Analyze (skipped via Setup stage toggle)
             if (stageRunAnalyzeUv0)
             {
@@ -1582,210 +1710,199 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info("[Pipeline] Weld UV0 stage SKIPPED by user toggle");
             }
 
-            // ── Auto-tune: try multiple SymSplit configs, pick best ──
-            // Save working copies so we can restore between attempts.
-            var savedMeshes = new Dictionary<MeshEntry, Mesh>();
-            foreach (var e in ctx.MeshEntries)
-                if (e.originalMesh != null)
-                    savedMeshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
+        }
 
-            float[] separationConfigs = { 0.10f, 0.05f, 0.20f };
-            bool hasTransferTargets = HasIncludedTransferTargets(ctx.MeshEntries, ctx.SourceLodIndex);
-            if (!hasTransferTargets)
-                UvtLog.Warn("[Pipeline] No included target LOD meshes; running source repack only and skipping transfer/auto-tune.");
-
-            int bestRejected = int.MaxValue;
-            float bestCoverage = 0f;
-            int bestConfigIdx = 0;
-            var bestMeshes = new Dictionary<MeshEntry, Mesh>();
-            var bestTransfers = new Dictionary<MeshEntry, (Mesh transferred, GroupedShellTransfer.TransferResult tr)>();
-
-            bool cancelled = false;
-            UvProgress.Begin("Auto-tune Pipeline", cancelable: true);
-            try
+        void RunSymmetryStage(float sepThresh)
+        {
+            // 3. SymSplit (skipped via diagnostic toggle to isolate xatlas packing)
+            if (!skipSymmetrySplitStep)
             {
-                for (int ci = 0; ci < separationConfigs.Length; ci++)
+                stageOutcome[3] = StageStatus.Running;
+                try { ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh); stageOutcome[3] = StageStatus.Success; }
+                catch { stageOutcome[3] = StageStatus.Failed; throw; }
+            }
+            else
+            {
+                stageOutcome[3] = StageStatus.Skipped;
+                UvtLog.Info(UvtLog.Category.SymSplit, "[Pipeline] SymSplit step SKIPPED by user toggle");
+            }
+
+        }
+
+        async Task RunRepackStage(bool useAsync)
+        {
+            // 4. Repack (skipped via Setup stage toggle)
+            if (stageRunRepack)
+            {
+                stageOutcome[4] = StageStatus.Running;
+                try
                 {
-                    float sepThresh = separationConfigs[ci];
-
-                    UvProgress.Report(
-                        (float)ci / separationConfigs.Length,
-                        $"Config {ci + 1}/{separationConfigs.Length} (separation={sepThresh:P0})");
-                    if (UvProgress.CancelRequested)
-                    {
-                        UvtLog.Warn("[Pipeline] Auto-tune cancelled by user.");
-                        cancelled = true;
-                        break;
-                    }
-
-                    if (ci > 0)
-                    {
-                        UvtLog.Info($"[Pipeline] Auto-tune retry #{ci} (separation={sepThresh:P0})...");
-                        // Restore saved meshes
-                        foreach (var kv in savedMeshes)
-                        {
-                            kv.Key.originalMesh = UnityEngine.Object.Instantiate(kv.Value);
-                            kv.Key.originalMesh.name = kv.Value.name;
-                            kv.Key.wasSymmetrySplit = false;
-                            kv.Key.repackedMesh = null;
-                            kv.Key.repackedAtlasWidth = 0;
-                            kv.Key.repackedAtlasHeight = 0;
-                            kv.Key.transferredMesh = null;
-                            kv.Key.shellTransferResult = null;
-                        }
-                        ctx.ClearAllCaches();
-                        crossLodHints.Clear();
-                        shellTransformCache.Clear();
-                        ctx.HasRepack = false;
-                        ctx.HasTransfer = false;
-                    }
-
-                    // 3. SymSplit (skipped via diagnostic toggle to isolate xatlas packing)
-                    if (!skipSymmetrySplitStep)
-                    {
-                        stageOutcome[3] = StageStatus.Running;
-                        try { ExecSymmetrySplit(splitTargetsInSymmetryStep, sepThresh); stageOutcome[3] = StageStatus.Success; }
-                        catch { stageOutcome[3] = StageStatus.Failed; throw; }
-                    }
-                    else
-                    {
-                        stageOutcome[3] = StageStatus.Skipped;
-                        UvtLog.Info(UvtLog.Category.SymSplit, "[Pipeline] SymSplit step SKIPPED by user toggle");
-                    }
-
-                    // 4. Repack (skipped via Setup stage toggle)
-                    if (stageRunRepack)
-                    {
-                        stageOutcome[4] = StageStatus.Running;
-                        try
-                        {
-                            var src = ctx.ForLod(ctx.SourceLodIndex);
-                            if (ctx.RepackPerMesh) await ExecRepackPerMeshImpl(src, useAsync);
-                            else                   await ExecRepackImpl(src, useAsync);
-                            stageOutcome[4] = ctx.HasRepack ? StageStatus.Success : StageStatus.Failed;
-                        }
-                        catch { stageOutcome[4] = StageStatus.Failed; throw; }
-                    }
-                    else
-                    {
-                        stageOutcome[4] = StageStatus.Skipped;
-                        UvtLog.Info("[Pipeline] Repack stage SKIPPED by user toggle");
-                    }
-
-                    // 5. Transfer (skipped via Setup stage toggle)
-                    if (stageRunTransfer && ctx.HasRepack && hasTransferTargets)
-                    {
-                        stageOutcome[5] = StageStatus.Running;
-                        try
-                        {
-                            await ExecTransferAllImpl(useAsync);
-                            stageOutcome[5] = ctx.HasTransfer ? StageStatus.Success : StageStatus.Failed;
-                        }
-                        catch { stageOutcome[5] = StageStatus.Failed; throw; }
-                    }
-                    else if (ctx.HasRepack)
-                    {
-                        ctx.HasTransfer = false;
-                        stageOutcome[5] = StageStatus.Skipped;
-                        if (!stageRunTransfer)
-                            UvtLog.Info("[Pipeline] Transfer stage SKIPPED by user toggle");
-                    }
-                    else
-                    {
-                        stageOutcome[5] = StageStatus.Skipped;
-                    }
-
-                    if (!hasTransferTargets)
-                        break;
-
-                    // Evaluate quality
-                    int totalRejected = 0;
-                    int totalOverlaps = 0;
-                    int totalVerts = 0;
-                    int totalTransferred = 0;
-                    foreach (var e in ctx.MeshEntries)
-                    {
-                        if (e.shellTransferResult == null) continue;
-                        totalRejected += e.shellTransferResult.shellsRejected;
-                        totalOverlaps += e.shellTransferResult.shellsOverlapFixed;
-                        totalVerts += e.shellTransferResult.verticesTotal;
-                        totalTransferred += e.shellTransferResult.verticesTransferred;
-                    }
-                    float coverage = totalVerts > 0 ? (float)totalTransferred / totalVerts : 0f;
-                    int totalIssues = totalRejected + totalOverlaps;
-
-                    UvtLog.Info($"[Pipeline] Config #{ci} (sep={sepThresh:P0}): " +
-                        $"rejected={totalRejected}, overlaps={totalOverlaps}, coverage={coverage:P0}");
-
-                    bool better = false;
-                    if (totalIssues < bestRejected)
-                        better = true;
-                    else if (totalIssues == bestRejected && coverage > bestCoverage)
-                        better = true;
-
-                    if (better)
-                    {
-                        bestRejected = totalIssues;
-                        bestCoverage = coverage;
-                        bestConfigIdx = ci;
-                        // Save best meshes
-                        foreach (var m in bestMeshes.Values) UnityEngine.Object.DestroyImmediate(m);
-                        bestMeshes.Clear();
-                        bestTransfers.Clear();
-                        foreach (var e in ctx.MeshEntries)
-                        {
-                            if (e.originalMesh != null)
-                                bestMeshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
-                            if (e.transferredMesh != null)
-                                bestTransfers[e] = (UnityEngine.Object.Instantiate(e.transferredMesh),
-                                    e.shellTransferResult);
-                        }
-                    }
-
-                    // Early exit if perfect
-                    if (totalIssues == 0 && coverage >= 0.99f)
-                    {
-                        if (ci > 0) UvtLog.Info($"[Pipeline] Perfect result on config #{ci}, stopping.");
-                        break;
-                    }
+                    var src = ctx.ForLod(ctx.SourceLodIndex);
+                    if (ctx.RepackPerMesh) await ExecRepackPerMeshImpl(src, useAsync);
+                    else                   await ExecRepackImpl(src, useAsync);
+                    stageOutcome[4] = ctx.HasRepack ? StageStatus.Success : StageStatus.Failed;
                 }
+                catch { stageOutcome[4] = StageStatus.Failed; throw; }
             }
-            finally
+            else
             {
-                if (cancelled) UvProgress.Cancel(); else UvProgress.End();
+                stageOutcome[4] = StageStatus.Skipped;
+                UvtLog.Info("[Pipeline] Repack stage SKIPPED by user toggle");
             }
 
-            // Restore best config if not the last one tested
-            if (bestMeshes.Count > 0 && !cancelled)
+        }
+
+        async Task RunTransferStage(bool useAsync, bool hasTransferTargets)
+        {
+            // 5. Transfer (skipped via Setup stage toggle)
+            if (stageRunTransfer && ctx.HasRepack && hasTransferTargets)
             {
-                foreach (var kv in bestMeshes)
+                stageOutcome[5] = StageStatus.Running;
+                try
                 {
-                    kv.Key.originalMesh = kv.Value;
-                    kv.Key.originalMesh.name = kv.Value.name;
+                    await ExecTransferAllImpl(useAsync);
+                    stageOutcome[5] = ctx.HasTransfer ? StageStatus.Success : StageStatus.Failed;
                 }
-                foreach (var kv in bestTransfers)
-                {
-                    kv.Key.transferredMesh = kv.Value.transferred;
-                    kv.Key.shellTransferResult = kv.Value.tr;
-                }
+                catch { stageOutcome[5] = StageStatus.Failed; throw; }
             }
-
-            // Cleanup saved copies
-            foreach (var m in savedMeshes.Values)
-                UnityEngine.Object.DestroyImmediate(m);
-
-            if (cancelled)
+            else if (ctx.HasRepack)
             {
-                RequestRepaint?.Invoke();
-                return false;
+                ctx.HasTransfer = false;
+                stageOutcome[5] = StageStatus.Skipped;
+                if (!stageRunTransfer)
+                    UvtLog.Info("[Pipeline] Transfer stage SKIPPED by user toggle");
             }
-            if (separationConfigs.Length > 1 && bestConfigIdx > 0)
-                UvtLog.Info($"[Pipeline] Auto-tune: selected config #{bestConfigIdx} " +
-                    $"(sep={separationConfigs[bestConfigIdx]:P0})");
+            else
+            {
+                stageOutcome[5] = StageStatus.Skipped;
+            }
 
-            UvtLog.Info("[Pipeline] Complete.");
-            RequestRepaint?.Invoke();
+        }
+
+        void RestoreAutoTuneStartingMeshes(Dictionary<MeshEntry, Mesh> savedMeshes)
+        {
+            // Restore saved meshes
+            foreach (var kv in savedMeshes)
+            {
+                kv.Key.originalMesh = UnityEngine.Object.Instantiate(kv.Value);
+                kv.Key.originalMesh.name = kv.Value.name;
+                kv.Key.wasSymmetrySplit = false;
+                kv.Key.repackedMesh = null;
+                kv.Key.repackedAtlasWidth = 0;
+                kv.Key.repackedAtlasHeight = 0;
+                kv.Key.transferredMesh = null;
+                kv.Key.shellTransferResult = null;
+            }
+            ctx.ClearAllCaches();
+            crossLodHints.Clear();
+            shellTransformCache.Clear();
+            ctx.HasRepack = false;
+            ctx.HasTransfer = false;
+        }
+
+        sealed class AutoTuneChoice
+        {
+            internal int Issues = int.MaxValue;
+            internal float Coverage;
+            internal int ConfigIndex;
+            internal readonly Dictionary<MeshEntry, Mesh> Meshes = new Dictionary<MeshEntry, Mesh>();
+            internal readonly Dictionary<MeshEntry, (Mesh transferred, GroupedShellTransfer.TransferResult tr)> Transfers = new Dictionary<MeshEntry, (Mesh, GroupedShellTransfer.TransferResult)>();
+        }
+
+        async Task<bool> RunAutoTuneAttempts(float[] separationConfigs, Dictionary<MeshEntry, Mesh> savedMeshes,
+            AutoTuneChoice best, bool hasTransferTargets, bool useAsync)
+        {
+            for (int ci = 0; ci < separationConfigs.Length; ci++)
+            {
+                float sepThresh = separationConfigs[ci];
+
+                UvProgress.Report(
+                    (float)ci / separationConfigs.Length,
+                    $"Config {ci + 1}/{separationConfigs.Length} (separation={sepThresh:P0})");
+                if (UvProgress.CancelRequested)
+                {
+                    UvtLog.Warn("[Pipeline] Auto-tune cancelled by user.");
+                    return true;
+                }
+
+                if (ci > 0)
+                {
+                    UvtLog.Info($"[Pipeline] Auto-tune retry #{ci} (separation={sepThresh:P0})...");
+                    RestoreAutoTuneStartingMeshes(savedMeshes);
+                }
+
+                RunSymmetryStage(sepThresh);
+                await RunRepackStage(useAsync);
+                await RunTransferStage(useAsync, hasTransferTargets);
+
+                if (!hasTransferTargets)
+                    break;
+
+                if (EvaluateAutoTuneChoice(best, ci, sepThresh)) break;
+            }
+            return false;
+        }
+
+        bool EvaluateAutoTuneChoice(AutoTuneChoice best, int ci, float sepThresh)
+        {
+            // Evaluate quality
+            var totals = GetTransferTotals(ctx.MeshEntries);
+            int totalRejected = totals.rejected;
+            int totalOverlaps = totals.overlaps;
+            float coverage = totals.vertices > 0 ? (float)totals.transferred / totals.vertices : 0f;
+            int totalIssues = totalRejected + totalOverlaps;
+
+            UvtLog.Info($"[Pipeline] Config #{ci} (sep={sepThresh:P0}): " +
+                $"rejected={totalRejected}, overlaps={totalOverlaps}, coverage={coverage:P0}");
+
+            bool better = false;
+            if (totalIssues < best.Issues)
+                better = true;
+            else if (totalIssues == best.Issues && coverage > best.Coverage)
+                better = true;
+
+            if (better)
+            {
+                best.Issues = totalIssues;
+                best.Coverage = coverage;
+                best.ConfigIndex = ci;
+                CaptureAutoTuneChoice(best);
+            }
+
+
+            if (totalIssues != 0 || coverage < 0.99f) return false;
+            if (ci > 0) UvtLog.Info($"[Pipeline] Perfect result on config #{ci}, stopping.");
             return true;
+        }
+
+        void CaptureAutoTuneChoice(AutoTuneChoice best)
+        {
+            // Save best meshes
+            foreach (var m in best.Meshes.Values) UnityEngine.Object.DestroyImmediate(m);
+            best.Meshes.Clear();
+            best.Transfers.Clear();
+            foreach (var e in ctx.MeshEntries)
+            {
+                if (e.originalMesh != null)
+                    best.Meshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
+                if (e.transferredMesh != null)
+                    best.Transfers[e] = (UnityEngine.Object.Instantiate(e.transferredMesh),
+                        e.shellTransferResult);
+            }
+        }
+
+        static void RestoreAutoTuneChoice(AutoTuneChoice best)
+        {
+            foreach (var kv in best.Meshes)
+            {
+                kv.Key.originalMesh = kv.Value;
+                kv.Key.originalMesh.name = kv.Value.name;
+            }
+            foreach (var kv in best.Transfers)
+            {
+                kv.Key.transferredMesh = kv.Value.transferred;
+                kv.Key.shellTransferResult = kv.Value.tr;
+            }
         }
 
         // Async entry — button-click path. Editor main thread is free during
@@ -1972,21 +2089,7 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 crossLodHints.Clear();
-                int processed = 0;
-                for (int li = 0; li < ctx.LodCount; li++)
-                {
-                    if (li == ctx.SourceLodIndex) continue;
-                    if (UvProgress.CancelRequested)
-                    {
-                        UvtLog.Warn("[Transfer] Cancelled by user — stopping after LOD" + li);
-                        break;
-                    }
-                    UvProgress.SetPhase($"Transfer → LOD{li}",
-                                        fraction: targetLodCount > 0 ? (float)processed / targetLodCount : 0f,
-                                        detail: $"LOD{li}");
-                    await ExecTransferLodImpl(li, useAsync);
-                    processed++;
-                }
+                await TransferTargetLods(useAsync, targetLodCount);
                 ctx.HasTransfer = !UvProgress.CancelRequested;
                 completedSuccessfully = !UvProgress.CancelRequested;
                 RequestRepaint?.Invoke();
@@ -1994,19 +2097,42 @@ namespace SashaRX.UnityMeshLab
             finally
             {
                 BenchmarkRecorder.Current?.StageEnd("transfer");
-                // Skip RecordMesh entirely on user-cancel / early abort so
-                // we don't taint sweep aggregates with prior-run state.
-                if (completedSuccessfully && ownsSession && BenchmarkRecorder.Current != null)
-                    foreach (var e in ctx.MeshEntries)
-                    {
-                        if (!e.include) continue;
-                        BenchmarkRecorder.Current.RecordMesh(e);
-                    }
+                if (completedSuccessfully && ownsSession) RecordIncludedTransferMeshes();
                 if (ownsProgress)
                 {
                     if (UvProgress.CancelRequested) UvProgress.Cancel();
                     else UvProgress.End();
                 }
+            }
+        }
+
+        async Task TransferTargetLods(bool useAsync, int targetLodCount)
+        {
+            int processed = 0;
+            for (int li = 0; li < ctx.LodCount; li++)
+            {
+                if (li == ctx.SourceLodIndex) continue;
+                if (UvProgress.CancelRequested)
+                {
+                    UvtLog.Warn("[Transfer] Cancelled by user — stopping after LOD" + li);
+                    break;
+                }
+                UvProgress.SetPhase($"Transfer → LOD{li}",
+                                    fraction: targetLodCount > 0 ? (float)processed / targetLodCount : 0f,
+                                    detail: $"LOD{li}");
+                await ExecTransferLodImpl(li, useAsync);
+                processed++;
+            }
+        }
+
+        void RecordIncludedTransferMeshes()
+        {
+            var recorder = BenchmarkRecorder.Current;
+            if (recorder == null) return;
+            foreach (var e in ctx.MeshEntries)
+            {
+                if (!e.include) continue;
+                recorder.RecordMesh(e);
             }
         }
 
@@ -2029,79 +2155,91 @@ namespace SashaRX.UnityMeshLab
             foreach (var tgt in targets)
             {
                 if (UvProgress.CancelRequested) break;
-                if (tgt.originalMesh == tgt.fbxMesh)
-                {
-                    tgt.originalMesh = MeshAccess.ReadableCopy(tgt.fbxMesh);
-                    tgt.originalMesh.name = tgt.fbxMesh.name + "_wc";
-                }
-
-                // Find matching source by mesh group key
-                MeshEntry srcEntry = null;
-                if (!string.IsNullOrEmpty(tgt.meshGroupKey))
-                    srcEntry = sources.FirstOrDefault(s => s.meshGroupKey == tgt.meshGroupKey);
-                if (srcEntry == null)
-                    srcEntry = sources[0];
-
-                Mesh srcMesh = srcEntry.repackedMesh ?? srcEntry.originalMesh;
-                Mesh tgtMesh = tgt.originalMesh;
-                if (srcMesh == null || tgtMesh == null) continue;
-
-                string meshGroupKey = tgt.meshGroupKey ?? tgt.renderer.name;
-                var hintKey = (source: srcEntry, meshGroupKey: meshGroupKey);
-                if (!crossLodHints.TryGetValue(hintKey, out var hintState))
-                {
-                    hintState = new CrossLodHintState();
-                    crossLodHints.Add(hintKey, hintState);
-                }
-
-                int srcId = srcMesh.GetInstanceID();
-                if (!shellTransformCache.TryGetValue(srcId, out var srcInfos))
-                {
-                    srcInfos = GroupedShellTransfer.AnalyzeSource(srcMesh);
-                    if (srcInfos != null) shellTransformCache[srcId] = srcInfos;
-                }
-                if (srcInfos == null) continue;
-
-                UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
-                var tr = await TransferMesh(tgtMesh, srcMesh,
-                    hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
-                    hintState.matchHints.Count > 0 ? hintState.matchHints : null,
-                    srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
-                    srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync);
-                if (tr.uv2 == null) { UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); continue; }
-
-                // Accumulate overlap hints for subsequent LODs
-                if (tr.overlapHints != null && tr.overlapHints.Count > 0)
-                    hintState.overlapHints.AddRange(tr.overlapHints);
-                // Replace match hints with this LOD's matches (latest LOD drives
-                // next LOD's hint-guided matching; stale hints from older LODs
-                // could conflict with changing geometry)
-                hintState.matchHints.Clear();
-                if (tr.matchHints != null && tr.matchHints.Count > 0)
-                    hintState.matchHints.AddRange(tr.matchHints);
-
-                // Build output mesh with UV2 applied
-                var om = UnityEngine.Object.Instantiate(tgtMesh);
-                om.name = tgtMesh.name + "_uvTransfer";
-                if (ctx.ClampLightmapToUnit)
-                {
-                    int clamped = XatlasRepack.ClampUvsToUnit(tr.uv2);
-                    if (clamped > 0)
-                        UvtLog.Verbose(UvtLog.Category.Match,
-                            $"Clamped {clamped} UV2 vert(s) into [0,1] on '{tgt.renderer.name}'");
-                }
-                om.SetUVs(1, new List<Vector2>(tr.uv2));
-                tgt.transferredMesh = om;
-                tgt.shellTransferResult = tr;
-
-                // Validation
-                BenchmarkRecorder.Current?.StageBegin("validate");
-                tgt.validationReport = TransferValidator.Validate(tgtMesh, tr.uv2, tr);
-                BenchmarkRecorder.Current?.StageEnd("validate");
-
-                float pct = tr.verticesTotal > 0 ? tr.verticesTransferred * 100f / tr.verticesTotal : 0;
-                UvtLog.Info($"[Transfer] '{tgt.renderer.name}' LOD{tLod}: {tr.shellsMatched} shells, {pct:F0}% coverage");
+                await TransferTargetMesh(tgt, sources, tLod, useAsync);
             }
+        }
+
+        async Task TransferTargetMesh(MeshEntry tgt, List<MeshEntry> sources, int tLod, bool useAsync)
+        {
+            EnsureTransferWorkingMesh(tgt);
+
+            // Find matching source by mesh group key
+            MeshEntry srcEntry = null;
+            if (!string.IsNullOrEmpty(tgt.meshGroupKey))
+                srcEntry = sources.FirstOrDefault(s => s.meshGroupKey == tgt.meshGroupKey);
+            if (srcEntry == null)
+                srcEntry = sources[0];
+
+            Mesh srcMesh = srcEntry.repackedMesh ?? srcEntry.originalMesh;
+            Mesh tgtMesh = tgt.originalMesh;
+            if (srcMesh == null || tgtMesh == null) return;
+
+            string meshGroupKey = tgt.meshGroupKey ?? tgt.renderer.name;
+            var hintKey = (source: srcEntry, meshGroupKey: meshGroupKey);
+            if (!crossLodHints.TryGetValue(hintKey, out var hintState))
+            {
+                hintState = new CrossLodHintState();
+                crossLodHints.Add(hintKey, hintState);
+            }
+
+            if (!HasSourceShellTransforms(srcMesh)) return;
+
+            UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
+            var tr = await TransferMesh(tgtMesh, srcMesh,
+                hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
+                hintState.matchHints.Count > 0 ? hintState.matchHints : null,
+                srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
+                srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync);
+            if (tr.uv2 == null) { UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); return; }
+
+            // Accumulate overlap hints for subsequent LODs
+            if (tr.overlapHints != null && tr.overlapHints.Count > 0)
+                hintState.overlapHints.AddRange(tr.overlapHints);
+            // Replace match hints with this LOD's matches (latest LOD drives
+            // next LOD's hint-guided matching; stale hints from older LODs
+            // could conflict with changing geometry)
+            hintState.matchHints.Clear();
+            if (tr.matchHints != null && tr.matchHints.Count > 0)
+                hintState.matchHints.AddRange(tr.matchHints);
+
+            ApplyTransferResult(tgt, tgtMesh, tr, tLod);
+        }
+
+        bool HasSourceShellTransforms(Mesh srcMesh)
+        {
+            int srcId = srcMesh.GetInstanceID();
+            if (!shellTransformCache.TryGetValue(srcId, out var srcInfos))
+            {
+                srcInfos = GroupedShellTransfer.AnalyzeSource(srcMesh);
+                if (srcInfos != null) shellTransformCache[srcId] = srcInfos;
+            }
+            return srcInfos != null;
+
+        }
+
+        void ApplyTransferResult(MeshEntry tgt, Mesh tgtMesh, GroupedShellTransfer.TransferResult tr, int tLod)
+        {
+            // Build output mesh with UV2 applied
+            var om = UnityEngine.Object.Instantiate(tgtMesh);
+            om.name = tgtMesh.name + "_uvTransfer";
+            if (ctx.ClampLightmapToUnit)
+            {
+                int clamped = XatlasRepack.ClampUvsToUnit(tr.uv2);
+                if (clamped > 0)
+                    UvtLog.Verbose(UvtLog.Category.Match,
+                        $"Clamped {clamped} UV2 vert(s) into [0,1] on '{tgt.renderer.name}'");
+            }
+            om.SetUVs(1, new List<Vector2>(tr.uv2));
+            tgt.transferredMesh = om;
+            tgt.shellTransferResult = tr;
+
+            // Validation
+            BenchmarkRecorder.Current?.StageBegin("validate");
+            tgt.validationReport = TransferValidator.Validate(tgtMesh, tr.uv2, tr);
+            BenchmarkRecorder.Current?.StageEnd("validate");
+
+            float pct = tr.verticesTotal > 0 ? tr.verticesTransferred * 100f / tr.verticesTotal : 0;
+            UvtLog.Info($"[Transfer] '{tgt.renderer.name}' LOD{tLod}: {tr.shellsMatched} shells, {pct:F0}% coverage");
         }
 
         void ApplyUv2ToFbx() => ctx.Assets.ApplyUv2Public();
@@ -2334,18 +2472,23 @@ namespace SashaRX.UnityMeshLab
                 if (!sidecarCache.TryGetValue(fbxPath, out var sidecar))
                     sidecarCache[fbxPath] = sidecar = SidecarStore.Load(fbxPath);
                 if (sidecar == null) continue;
-                var entry = sidecar.Find(e.fbxMesh.name);
-                if (entry?.vertexToSourceShellDescriptor == null || entry.vertexToSourceShellDescriptor.Length == 0) continue;
-                var tr = new GroupedShellTransfer.TransferResult();
-                tr.vertexToSourceShell = entry.vertexToSourceShellDescriptor;
-                tr.targetShellToSourceShell = entry.targetShellToSourceShellDescriptor;
-                tr.verticesTotal = e.fbxMesh.vertexCount;
-                int transferred = 0;
-                for (int i = 0; i < tr.vertexToSourceShell.Length; i++)
-                    if (tr.vertexToSourceShell[i] >= 0) transferred++;
-                tr.verticesTransferred = transferred;
-                e.shellTransferResult = tr;
+                RestoreShellMatch(e, sidecar);
             }
+        }
+
+        static void RestoreShellMatch(MeshEntry e, Uv2DataAsset sidecar)
+        {
+            var entry = sidecar.Find(e.fbxMesh.name);
+            if (entry?.vertexToSourceShellDescriptor == null || entry.vertexToSourceShellDescriptor.Length == 0) return;
+            var tr = new GroupedShellTransfer.TransferResult();
+            tr.vertexToSourceShell = entry.vertexToSourceShellDescriptor;
+            tr.targetShellToSourceShell = entry.targetShellToSourceShellDescriptor;
+            tr.verticesTotal = e.fbxMesh.vertexCount;
+            int transferred = 0;
+            for (int i = 0; i < tr.vertexToSourceShell.Length; i++)
+                if (tr.vertexToSourceShell[i] >= 0) transferred++;
+            tr.verticesTransferred = transferred;
+            e.shellTransferResult = tr;
         }
 
         // ════════════════════════════════════════════════════════════
@@ -2363,6 +2506,17 @@ namespace SashaRX.UnityMeshLab
             Event e = Event.current;
             if (e == null) return;
 
+            UpdateSceneSpot(sv, e);
+            if (e.type != EventType.Repaint) return;
+
+            // Draw selected shell overlay in 3D
+            DrawSelectedShellOverlay3D();
+
+            DrawSceneSpotProjection();
+        }
+
+        void UpdateSceneSpot(SceneView sv, Event e)
+        {
             // Raycast on MouseMove/MouseDrag, throttled to ~30fps
             if (e.type == EventType.MouseMove || e.type == EventType.MouseDrag)
             {
@@ -2370,27 +2524,7 @@ namespace SashaRX.UnityMeshLab
                 if (now - sceneSpotLastRaycastTime >= sceneSpotThrottleSec)
                 {
                     sceneSpotLastRaycastTime = now;
-                    var ray = HandleUtility.GUIPointToWorldRay(e.mousePosition);
-                    bool hadHit = canvas.HoverHitValid;
-                    int prevShell = canvas.HoveredShellId;
-
-                    canvas.HoverHitValid = TryRaycastPreview(ray, out var hit);
-                    if (canvas.HoverHitValid)
-                    {
-                        canvas.HoverWorldPos = hit.worldPos;
-                        canvas.UvSpot = hit.uv;
-                        canvas.HoveredShellId = hit.shellId;
-                        sceneSpotCachedEntry = hit.meshEntry;
-                    }
-                    else
-                    {
-                        canvas.HoveredShellId = -1;
-                        sceneSpotCachedEntry = null;
-                    }
-
-                    if (canvas.HoverHitValid != hadHit || canvas.HoveredShellId != prevShell)
-                        RequestRepaint?.Invoke();
-                    sv.Repaint();
+                    RefreshSceneSpotHit(sv, e.mousePosition);
                 }
             }
             else if (e.type == EventType.MouseLeaveWindow && canvas.HoverHitValid)
@@ -2401,11 +2535,35 @@ namespace SashaRX.UnityMeshLab
                 RequestRepaint?.Invoke();
             }
 
-            if (e.type != EventType.Repaint) return;
+        }
 
-            // Draw selected shell overlay in 3D
-            DrawSelectedShellOverlay3D();
+        void RefreshSceneSpotHit(SceneView sv, Vector2 mousePosition)
+        {
+            var ray = HandleUtility.GUIPointToWorldRay(mousePosition);
+            bool hadHit = canvas.HoverHitValid;
+            int prevShell = canvas.HoveredShellId;
 
+            canvas.HoverHitValid = TryRaycastPreview(ray, out var hit);
+            if (canvas.HoverHitValid)
+            {
+                canvas.HoverWorldPos = hit.worldPos;
+                canvas.UvSpot = hit.uv;
+                canvas.HoveredShellId = hit.shellId;
+                sceneSpotCachedEntry = hit.meshEntry;
+            }
+            else
+            {
+                canvas.HoveredShellId = -1;
+                sceneSpotCachedEntry = null;
+            }
+
+            if (canvas.HoverHitValid != hadHit || canvas.HoveredShellId != prevShell)
+                RequestRepaint?.Invoke();
+            sv.Repaint();
+        }
+
+        void DrawSceneSpotProjection()
+        {
             // Draw spot projection on all meshes
             Vector2 projUv;
             MeshEntry projEntry = null;
@@ -2558,61 +2716,83 @@ namespace SashaRX.UnityMeshLab
                 Bounds wb = TransformBounds(mesh.bounds, l2w);
                 if (!wb.IntersectRay(ray, out float aabbDist) || aabbDist > bestHit.distance) continue;
 
-                // Inspect index metadata before reading mesh arrays: those properties make
-                // full managed copies and shell extraction is linear in the face count.
-                // Skip a mesh rather than partially testing it, which could report a false hit.
-                ulong meshIndexCount = 0;
-                for (int subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
-                {
-                    ulong indexCount = mesh.GetIndexCount(subMesh);
-                    if (indexCount > (ulong)remainingTriangleBudget * 3UL - meshIndexCount)
-                    {
-                        meshIndexCount = ulong.MaxValue;
-                        break;
-                    }
-                    meshIndexCount += indexCount;
-                }
-                if (meshIndexCount == ulong.MaxValue)
+                if (!FitsSceneTriangleBudget(mesh, remainingTriangleBudget))
                 {
                     WarnHoverBudgetSkip(mesh);
                     continue;
                 }
 
-                var v = mesh.vertices;
-                var tri = canvas.GetTrianglesCached(mesh);
-                var uv = canvas.RdUvCached(mesh, ctx.PreviewUvChannel);
-                if (v == null || tri == null || uv == null) continue;
-                if (tri.Length / 3 > remainingTriangleBudget)
-                {
-                    WarnHoverBudgetSkip(mesh);
-                    continue;
-                }
-                remainingTriangleBudget -= tri.Length / 3;
-                int[] faceToShell = ctx.UvPreviewShellCache.GetFaceToShell(mesh, ctx.PreviewUvChannel, uv, tri);
-
-                for (int f = 0; f + 2 < tri.Length; f += 3)
-                {
-                    int i0 = tri[f], i1 = tri[f + 1], i2 = tri[f + 2];
-                    if (i0 >= v.Length || i1 >= v.Length || i2 >= v.Length) continue;
-                    if (i0 >= uv.Length || i1 >= uv.Length || i2 >= uv.Length) continue;
-
-                    Vector3 p0 = l2w.MultiplyPoint3x4(v[i0]);
-                    Vector3 p1 = l2w.MultiplyPoint3x4(v[i1]);
-                    Vector3 p2 = l2w.MultiplyPoint3x4(v[i2]);
-
-                    if (!RayTriMT(ray, p0, p1, p2, out float t, out float b1, out float b2)) continue;
-                    if (t < 0f || t >= bestHit.distance) continue;
-
-                    float b0 = 1f - b1 - b2;
-                    bestHit.distance = t;
-                    bestHit.worldPos = ray.origin + ray.direction * t;
-                    bestHit.uv = uv[i0] * b0 + uv[i1] * b1 + uv[i2] * b2;
-                    bestHit.shellId = (faceToShell != null && f / 3 < faceToShell.Length) ? faceToShell[f / 3] : -1;
-                    bestHit.meshEntry = entry;
-                    found = true;
-                }
+                found |= RaycastPreviewMesh(entry, mesh, l2w, ray, ref remainingTriangleBudget, ref bestHit);
             }
             return found;
+        }
+
+        static bool FitsSceneTriangleBudget(Mesh mesh, int remainingTriangleBudget)
+        {
+            // Inspect index metadata before reading mesh arrays: those properties make
+            // full managed copies and shell extraction is linear in the face count.
+            // Skip a mesh rather than partially testing it, which could report a false hit.
+            ulong meshIndexCount = 0;
+            for (int subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
+            {
+                ulong indexCount = mesh.GetIndexCount(subMesh);
+                if (indexCount > (ulong)remainingTriangleBudget * 3UL - meshIndexCount)
+                {
+                    meshIndexCount = ulong.MaxValue;
+                    break;
+                }
+                meshIndexCount += indexCount;
+            }
+            return meshIndexCount != ulong.MaxValue;
+        }
+
+        bool RaycastPreviewMesh(MeshEntry entry, Mesh mesh, Matrix4x4 l2w, Ray ray,
+            ref int remainingTriangleBudget, ref SceneHit bestHit)
+        {
+            bool found = false;
+            var v = mesh.vertices;
+            var tri = canvas.GetTrianglesCached(mesh);
+            var uv = canvas.RdUvCached(mesh, ctx.PreviewUvChannel);
+            if (v == null || tri == null || uv == null) return false;
+            if (tri.Length / 3 > remainingTriangleBudget)
+            {
+                WarnHoverBudgetSkip(mesh);
+                return false;
+            }
+            remainingTriangleBudget -= tri.Length / 3;
+            int[] faceToShell = ctx.UvPreviewShellCache.GetFaceToShell(mesh, ctx.PreviewUvChannel, uv, tri);
+
+            for (int f = 0; f + 2 < tri.Length; f += 3)
+            {
+                int i0 = tri[f], i1 = tri[f + 1], i2 = tri[f + 2];
+                if (i0 >= uv.Length || i1 >= uv.Length || i2 >= uv.Length) continue;
+                if (!RaycastSceneTriangle(ray, l2w, v, tri, f, out float t, out var barycentric)) continue;
+                if (t < 0f || t >= bestHit.distance) continue;
+
+                bestHit.distance = t;
+                bestHit.worldPos = ray.origin + ray.direction * t;
+                bestHit.uv = uv[i0] * barycentric.x + uv[i1] * barycentric.y + uv[i2] * barycentric.z;
+                bestHit.shellId = (faceToShell != null && f / 3 < faceToShell.Length) ? faceToShell[f / 3] : -1;
+                bestHit.meshEntry = entry;
+                found = true;
+            }
+            return found;
+        }
+
+        static bool RaycastSceneTriangle(Ray ray, Matrix4x4 l2w, Vector3[] v, int[] tri, int f,
+            out float t, out Vector3 barycentric)
+        {
+            t = 0; barycentric = default;
+            int i0 = tri[f], i1 = tri[f + 1], i2 = tri[f + 2];
+            if (i0 >= v.Length || i1 >= v.Length || i2 >= v.Length) return false;
+
+            Vector3 p0 = l2w.MultiplyPoint3x4(v[i0]);
+            Vector3 p1 = l2w.MultiplyPoint3x4(v[i1]);
+            Vector3 p2 = l2w.MultiplyPoint3x4(v[i2]);
+
+            if (!RayTriMT(ray, p0, p1, p2, out t, out float b1, out float b2)) return false;
+            barycentric = new Vector3(1f - b1 - b2, b1, b2);
+            return true;
         }
 
         static Bounds TransformBounds(Bounds b, Matrix4x4 m) => MeshGeometry.TransformBounds(b, m);
@@ -2652,57 +2832,14 @@ namespace SashaRX.UnityMeshLab
             Vector3 faceNormal = tr.up.sqrMagnitude > 0.001f ? tr.up : Vector3.up;
             float idealDist = Mathf.Max(rendererBounds.extents.magnitude * 1.5f, 0.3f);
 
-            // Shell bbox for ideal camera distance
             var cache = canvas.GetPreviewShellCache(ctx, mesh, ctx.PreviewUvChannel);
-            if (cache?.shellById != null && cache.shellById.TryGetValue(uvHit.shellId, out var shell))
+            if (cache?.shellById != null && cache.shellById.TryGetValue(uvHit.shellId, out var shell)
+                && TryShellWorldBounds(shell, tris, verts, tr, out var shellBounds))
             {
-                bool first = true;
-                var sb = new Bounds();
-                foreach (int face in shell.faceIndices)
-                {
-                    int fi = face * 3;
-                    if (fi + 2 >= tris.Length) continue;
-                    for (int k = 0; k < 3; k++)
-                    {
-                        int vi = tris[fi + k];
-                        if (vi >= verts.Length) continue;
-                        var wp = tr.TransformPoint(verts[vi]);
-                        if (first) { sb = new Bounds(wp, Vector3.zero); first = false; }
-                        else sb.Encapsulate(wp);
-                    }
-                }
-                if (!first)
-                {
-                    worldPos = sb.center;
-                    idealDist = Mathf.Max(sb.extents.magnitude * 1.5f, 0.3f);
-                }
+                worldPos = shellBounds.center;
+                idealDist = Mathf.Max(shellBounds.extents.magnitude * 1.5f, 0.3f);
             }
-
-            if (uvHit.faceIndex >= 0)
-            {
-                int i0 = uvHit.faceIndex * 3;
-                if (i0 + 2 < tris.Length)
-                {
-                    int vi0 = tris[i0], vi1 = tris[i0 + 1], vi2 = tris[i0 + 2];
-                    if (vi0 >= 0 && vi1 >= 0 && vi2 >= 0 &&
-                        vi0 < verts.Length && vi1 < verts.Length && vi2 < verts.Length)
-                    {
-                        var bary = uvHit.barycentric;
-                        var localPos = verts[vi0] * bary.x + verts[vi1] * bary.y + verts[vi2] * bary.z;
-                        worldPos = tr.TransformPoint(localPos);
-
-                        var localEdge1 = verts[vi1] - verts[vi0];
-                        var localEdge2 = verts[vi2] - verts[vi0];
-                        var triNormal = Vector3.Cross(localEdge1, localEdge2);
-                        if (triNormal.sqrMagnitude > 1e-8f)
-                        {
-                            faceNormal = tr.TransformDirection(triNormal.normalized).normalized;
-                            if (faceNormal.sqrMagnitude < 0.5f)
-                                faceNormal = tr.up.sqrMagnitude > 0.001f ? tr.up : Vector3.up;
-                        }
-                    }
-                }
-            }
+            FocusFacePoint(uvHit, tris, verts, tr, ref worldPos, ref faceNormal);
 
             var sv = SceneView.lastActiveSceneView;
             if (sv == null) return;
@@ -2710,6 +2847,44 @@ namespace SashaRX.UnityMeshLab
             sv.size = idealDist;
             sv.rotation = Quaternion.LookRotation(-faceNormal);
             sv.Repaint();
+        }
+
+        static bool TryShellWorldBounds(UvShell shell, int[] tris, Vector3[] verts, Transform tr, out Bounds sb)
+        {
+            bool first = true;
+            sb = new Bounds();
+            foreach (int face in shell.faceIndices)
+            {
+                int fi = face * 3;
+                if (fi + 2 >= tris.Length) continue;
+                for (int k = 0; k < 3; k++)
+                {
+                    int vi = tris[fi + k];
+                    if (vi >= verts.Length) continue;
+                    var wp = tr.TransformPoint(verts[vi]);
+                    if (first) { sb = new Bounds(wp, Vector3.zero); first = false; }
+                    else sb.Encapsulate(wp);
+                }
+            }
+            return !first;
+        }
+
+        static void FocusFacePoint(ShellUvHit uvHit, int[] tris, Vector3[] verts, Transform tr,
+            ref Vector3 worldPos, ref Vector3 faceNormal)
+        {
+            if (uvHit.faceIndex < 0) return;
+            int i0 = uvHit.faceIndex * 3;
+            if (i0 + 2 >= tris.Length) return;
+            int vi0 = tris[i0], vi1 = tris[i0 + 1], vi2 = tris[i0 + 2];
+            if (vi0 < 0 || vi1 < 0 || vi2 < 0 || vi0 >= verts.Length || vi1 >= verts.Length || vi2 >= verts.Length) return;
+            var bary = uvHit.barycentric;
+            var localPos = verts[vi0] * bary.x + verts[vi1] * bary.y + verts[vi2] * bary.z;
+            worldPos = tr.TransformPoint(localPos);
+            var triNormal = Vector3.Cross(verts[vi1] - verts[vi0], verts[vi2] - verts[vi0]);
+            if (!(triNormal.sqrMagnitude > 1e-8f)) return;
+            faceNormal = tr.TransformDirection(triNormal.normalized).normalized;
+            if (faceNormal.sqrMagnitude < 0.5f)
+                faceNormal = tr.up.sqrMagnitude > 0.001f ? tr.up : Vector3.up;
         }
 
         // ════════════════════════════════════════════════════════════

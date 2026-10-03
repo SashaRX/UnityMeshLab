@@ -100,10 +100,10 @@ namespace SashaRX.UnityMeshLab
             using (new EditorGUI.DisabledScope(!result || data.geometry == null))
                 cageView = EditorGUILayout.ToggleLeft(new GUIContent("Cage shells", "Result stage: the projection limits — every corner pushed ±its reach along its cage direction; orange where the rays start, blue where they end."), cageView);
             var mesh = data.meshes[(int)stage];
-            EditorGUILayout.LabelField(stage == Stage.Source && data.sourceVertices > 0
-                ? $"{data.sourceVertices:N0} vertices · {data.sourceTriangles:N0} triangles"
-                : mesh ? $"{mesh.vertexCount:N0} vertices · {Triangles(mesh):N0} triangles" : "Run this stage to preview it.",
-                EditorStyles.miniLabel);
+            string meshSummary = mesh ? $"{mesh.vertexCount:N0} vertices · {Triangles(mesh):N0} triangles" : "Run this stage to preview it.";
+            if (stage == Stage.Source && data.sourceVertices > 0)
+                meshSummary = $"{data.sourceVertices:N0} vertices · {data.sourceTriangles:N0} triangles";
+            EditorGUILayout.LabelField(meshSummary, EditorStyles.miniLabel);
             if (ShowTrimMask(data))
                 EditorGUILayout.LabelField("Trim mask: green kept · red back of a sheet (opposite normal) · orange rim / no source within reach", EditorStyles.wordWrappedMiniLabel);
             var g = data.geometry;

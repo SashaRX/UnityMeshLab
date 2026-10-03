@@ -49,8 +49,7 @@ namespace SashaRX.UnityMeshLab
                     (uint)indices.Length, (uint)settings.targetTriangles, settings.maximumError, settings.flags,
                     out handle, out uint vertexCount, out uint indexCount, out error);
                 token.ThrowIfCancellationRequested();
-                if (code != 0) throw new InvalidOperationException("Simplification failed: " +
-                    (code == 1 ? "invalid geometry or settings" : code == 3 ? "empty output; reduce simplification" : "native processing error"));
+                if (code != 0) throw new InvalidOperationException("Simplification failed: " + SimplificationError(code));
                 return CopyGeometry(handle, vertexCount, indexCount);
             }
             finally { if (handle != IntPtr.Zero) meshLabMeshDestroy(handle); }
@@ -64,6 +63,13 @@ namespace SashaRX.UnityMeshLab
                 packed[i * 3] = positions[i].x; packed[i * 3 + 1] = positions[i].y; packed[i * 3 + 2] = positions[i].z;
             }
             return packed;
+        }
+
+        static string SimplificationError(int code)
+        {
+            if (code == 1) return "invalid geometry or settings";
+            if (code == 3) return "empty output; reduce simplification";
+            return "native processing error";
         }
 
         internal static IndexedGeometry CopyGeometry(IntPtr handle, uint vertexCount, uint indexCount)
