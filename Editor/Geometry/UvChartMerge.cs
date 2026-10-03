@@ -642,11 +642,26 @@ namespace SashaRX.UnityMeshLab
                     return false;
                 faceChart[f] = chart;
             }
+            // xatlas's UvMesh packer requires input UVs inside [0,1] (it asserts and
+            // crashes on negative texel coords, xatlas.cpp:8598), and the merge fit can
+            // place a rotated chart anywhere in the plane. Normalize the whole layout
+            // with one uniform scale + translation: chart shapes and relative texel
+            // densities are preserved, and the pack output replaces these UVs anyway.
+            Vector2 min = geometry.uv[0], max = geometry.uv[0];
+            foreach (var p in geometry.uv)
+            {
+                if (float.IsNaN(p.x) || float.IsNaN(p.y) || float.IsInfinity(p.x) || float.IsInfinity(p.y)) return false;
+                min = Vector2.Min(min, p);
+                max = Vector2.Max(max, p);
+            }
+            float extent = Mathf.Max(max.x - min.x, max.y - min.y);
+            if (!(extent > 1e-12f)) return false;
+            float normalize = 1f / extent;
             var flatUv = new float[vertexCount * 2];
             for (int i = 0; i < vertexCount; ++i)
             {
-                flatUv[i * 2] = geometry.uv[i].x;
-                flatUv[i * 2 + 1] = geometry.uv[i].y;
+                flatUv[i * 2] = (geometry.uv[i].x - min.x) * normalize;
+                flatUv[i * 2 + 1] = (geometry.uv[i].y - min.y) * normalize;
             }
             var indices = new uint[geometry.indices.Length];
             for (int i = 0; i < geometry.indices.Length; ++i) indices[i] = (uint)geometry.indices[i];
@@ -661,14 +676,12 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 int rotate = settings.packRotate ? 1 : 0;
-                if (PackSession(geometry, settings, flatUv, indices, faceMaterials, rotate, rotate) &&
-                    ReadPackedUv(geometry, token, mergedCharts)) return true;
+                if (PackAndRead(geometry, settings, flatUv, indices, faceMaterials, rotate, rotate, mergedCharts, token)) return true;
                 // Both rotation flags are separate xatlas knobs; a rotate placement is the
                 // one way a per-input-vertex UV can come back ambiguous. Fresh session —
                 // a second PackCharts on a packed atlas is not a defined state.
                 token.ThrowIfCancellationRequested();
-                if (PackSession(geometry, settings, flatUv, indices, faceMaterials, 0, 0) &&
-                    ReadPackedUv(geometry, token, mergedCharts)) return true;
+                if (PackAndRead(geometry, settings, flatUv, indices, faceMaterials, 0, 0, mergedCharts, token)) return true;
                 UvtLog.Warn("[Remesh] Chart merge re-pack did not map back cleanly; reverting.");
                 return false;
             }
@@ -678,8 +691,12 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static bool PackSession(RemeshNative.Geometry geometry, RemeshSettings settings, float[] flatUv, uint[] indices,
-            uint[] faceMaterials, int rotateCharts, int rotateToAxis)
+        /// <summary>One fresh create → add → pack → read → destroy cycle. The output
+        /// queries all read the bridge's global atlas, so the destroy may only run
+        /// after ReadPackedUv has finished — destroying between pack and read is a
+        /// use-after-free that hard-crashes the editor.</summary>
+        static bool PackAndRead(RemeshNative.Geometry geometry, RemeshSettings settings, float[] flatUv, uint[] indices,
+            uint[] faceMaterials, int rotateCharts, int rotateToAxis, HashSet<int> mergedCharts, CancellationToken token)
         {
             XatlasNative.xatlasCreate();
             try
@@ -691,12 +708,13 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Warn("[Remesh] Chart merge re-pack rejected the merged charts (xatlas error " + addError + ").");
                     return false;
                 }
-                return XatlasRepack.RunNativePackAsync(geometry.chartCount, (uint)settings.textureResolution, () =>
+                if (!XatlasRepack.RunNativePackAsync(geometry.chartCount, (uint)settings.textureResolution, () =>
                 {
                     XatlasNative.xatlasComputeCharts();
                     XatlasNative.xatlasPackCharts(0, (uint)settings.padding, 0f, (uint)settings.textureResolution, 1,
                         settings.packBlockAlign ? 1 : 0, settings.packBruteForce ? 1 : 0, rotateCharts, rotateToAxis);
-                }, pumpEditor: false).GetAwaiter().GetResult();
+                }, pumpEditor: false).GetAwaiter().GetResult()) return false;
+                return ReadPackedUv(geometry, token, mergedCharts);
             }
             finally { XatlasNative.xatlasDestroy(); }
         }
@@ -740,6 +758,13 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             for (int i = 0; i < packed.Length; ++i) if (!assigned[i]) return false;
+            // The bridge divides by the atlas dimensions, but the merge contract is a
+            // [0,1] atlas — verify with a float-rounding slack and revert otherwise.
+            for (int i = 0; i < packed.Length; ++i)
+            {
+                if (packed[i].x < -1e-4f || packed[i].x > 1f + 1e-4f ||
+                    packed[i].y < -1e-4f || packed[i].y > 1f + 1e-4f) return false;
+            }
             geometry.uv = packed;
             RebuildChartTangents(geometry, mergedCharts, token);
             return true;
