@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -164,8 +165,16 @@ namespace SashaRX.UnityMeshLab
 
         // Request repaint
         public Action RequestRepaint;
+        internal Action PreviewReady;
 
-        // Frame caches
+        // Mesh snapshots retained until explicit invalidation (never cleared by painting).
+        readonly Dictionary<UvToolContext, int> snapshotVersions = new Dictionary<UvToolContext, int>();
+        void SyncSnapshotVersion(UvToolContext ctx)
+        {
+            if (snapshotVersions.TryGetValue(ctx, out int version) && version == ctx.PreviewCacheVersion) return;
+            snapshotVersions[ctx] = ctx.PreviewCacheVersion;
+            cachedTriangles.Clear(); cachedUvs.Clear();
+        }
         readonly Dictionary<int, int[]> cachedTriangles = new Dictionary<int, int[]>();
         readonly Dictionary<long, Vector2[]> cachedUvs = new Dictionary<long, Vector2[]>();
 
@@ -174,8 +183,16 @@ namespace SashaRX.UnityMeshLab
         int lastHitShellId = -1;
         const int TRI_PICK_BUDGET = 6000;
 
+        static void SetPreviewUpdates(EditorApplication.CallbackFunction callback, bool enabled)
+        {
+            EditorApplication.update -= callback;
+            if (enabled) EditorApplication.update += callback;
+        }
+
         public void Init()
         {
+            disposed = false;
+            SetPreviewUpdates(PollPreviewJobs, true);
             VertexChannels.Changed += InvalidateInspection;
             var sh = Shader.Find("Hidden/Internal-Colored");
             if (sh == null) return;
@@ -204,6 +221,10 @@ namespace SashaRX.UnityMeshLab
 
         public void Cleanup()
         {
+            disposed = true;
+            SetPreviewUpdates(PollPreviewJobs, false);
+            ClearFrameCaches();
+            ForgetUvSpotPointer(); PreviewReady = null;
             VertexChannels.Changed -= InvalidateInspection;
             inspectionColors.Clear();
             DisplayMeshes.Clear();
@@ -223,6 +244,7 @@ namespace SashaRX.UnityMeshLab
 
         public void ClearHoverState(bool repaint = true)
         {
+            ForgetUvSpotPointer();
             HoverHitValid = false;
             HoveredShellId = -1;
             UvSpot = Vector2.zero;
@@ -243,8 +265,15 @@ namespace SashaRX.UnityMeshLab
 
         public void OnGUI(UvToolContext ctx, Action<UvCanvasView, float, float, float> toolOverlay)
         {
+            SyncSnapshotVersion(ctx);
+            // Reserve the viewport even when empty; a trailing FlexibleSpace would
+            // override ExpandHeight and collapse a populated canvas to one row.
+            var canvasRect = GUILayoutUtility.GetRect(GUIContent.none, GUIStyle.none,
+                GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
+            LastCanvasRect = canvasRect;
+
             var ee = Entries(ctx);
-            if (ee.Count == 0) { EditorGUILayout.HelpBox("No meshes for this LOD.", MessageType.Info); HoveredShellDebug = null; return; }
+            if (ee.Count == 0) { EditorGUI.HelpBox(canvasRect, "No meshes for this LOD.", MessageType.Info); HoveredShellDebug = null; return; }
 
             List<string> canvasGroupKeys = null;
             if (EntriesOverride == null && ctx.RepackPerMesh && ctx.IsolatedMeshGroup >= 0)
@@ -263,16 +292,11 @@ namespace SashaRX.UnityMeshLab
             }
             if (draws.Count == 0) { HoveredShellDebug = null; return; }
 
-            var canvasRect = GUILayoutUtility.GetRect(GUIContent.none, GUIStyle.none,
-                GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
-            LastCanvasRect = canvasRect;
-
             float baseSz = Mathf.Max(64, Mathf.Min(canvasRect.width, canvasRect.height));
             float sz = baseSz * Zoom;
             float cx = (canvasRect.width - sz) * 0.5f + Pan.x;
             float cy = (canvasRect.height - sz) * 0.5f + Pan.y;
 
-            HoveredShellDebug = FindShellAtMouse(ctx, draws, canvasRect, cx, cy, sz);
             var inspectEvent = Event.current;
             if (InspectedMesh && OnInspectVertex != null && inspectEvent.type == EventType.MouseDown && inspectEvent.button == 0 && inspectEvent.control && canvasRect.Contains(inspectEvent.mousePosition)) {
                 var mouse = inspectEvent.mousePosition - canvasRect.position;
@@ -352,7 +376,6 @@ namespace SashaRX.UnityMeshLab
 
                     GlGrid(cx, cy, sz, occupiedTiles);
 
-                    ClearFrameCaches();
                     ctx.ShellColorKeyCacheDirty = false;
 
                     bool hasFill = !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
@@ -390,6 +413,7 @@ namespace SashaRX.UnityMeshLab
                     }
 
                     toolOverlay?.Invoke(this, cx, cy, sz);
+                    if (SpotMode) DrawSpotOutlines(ctx, draws, cx, cy, sz);
 
                     if (SpotMode) GlDrawUvSpot(cx, cy, sz);
                     if (InspectedMesh) {
@@ -432,6 +456,7 @@ namespace SashaRX.UnityMeshLab
 
         public RenderTexture RenderUvLayer(UvToolContext ctx, Mesh mesh, MeshEntry entry, RenderTexture target, int size, bool drawBorders)
         {
+            SyncSnapshotVersion(ctx);
             if (GlMat == null || mesh == null) return null;
             if (target == null || target.width != size || target.height != size)
             {
@@ -467,22 +492,21 @@ namespace SashaRX.UnityMeshLab
             if (entry != null && entry.renderer == null && bgTex == entry.previewTexture && !CheckerEnabled) bgTex = null;
             if (bgTex != null)
             {
-                float bgAlpha = CheckerEnabled ? 0.33333f : 0.95f;
+                float bgAlpha = CheckerEnabled ? 1f : 0.95f;
                 float bgExposure = CurrentPreviewMode == PreviewMode.Lightmap ? LmExposure : 1f;
                 GlTextureBg(cx, cy, sz, bgTex, Vector2.one, Vector2.zero, bgAlpha, tile, bgExposure);
                 GlMat.SetPass(0);
             }
             else if (CheckerEnabled && CheckerColorMode)
-                GlUvColorBg(cx, cy, sz, 0.33333f, tile);
+                GlUvColorBg(cx, cy, sz, 1f, tile);
             else if (CheckerEnabled)
-                GlCheckerBg(cx, cy, sz, 8, 0.33333f, ctx.PreviewUvChannel == 1, tile);
+                GlCheckerBg(cx, cy, sz, 8, 1f, ctx.PreviewUvChannel == 1, tile);
 
         }
 
         void DrawUvLayerMesh(UvToolContext ctx, Mesh mesh, MeshEntry entry, float sz, bool drawBorders)
         {
             float cx = 0f, cy = 0f;
-            ClearFrameCaches();
             var uvs = RdUvCached(mesh, ctx.PreviewUvChannel);
             var tri = GetTrianglesCached(mesh);
             if (uvs == null || tri == null) return;
@@ -494,8 +518,8 @@ namespace SashaRX.UnityMeshLab
                 uvs = transformed;
             }
             int uN = uvs.Length, fN = tri.Length / 3;
-            bool hasFill = !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
-            if (AttributeFillVisible) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
+            bool hasFill = !CheckerEnabled && !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
+            if (!CheckerEnabled && AttributeFillVisible) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
             else if (hasFill) FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
             if (ShowBorder && drawBorders)
             {
@@ -515,6 +539,8 @@ namespace SashaRX.UnityMeshLab
         // ════════════════════════════════════════════════════════════
         //  Input Handling
         // ════════════════════════════════════════════════════════════
+
+        internal static bool IsSpotInput(EventType type) => type == EventType.MouseMove || type == EventType.MouseDown || type == EventType.MouseDrag;
 
         void HandleCanvasInput(UvToolContext ctx, Rect canvasRect, float baseSz, float sz, float cx, float cy)
         {
@@ -547,40 +573,24 @@ namespace SashaRX.UnityMeshLab
             if (e.type == EventType.KeyDown && e.keyCode == KeyCode.F && canvasRect.Contains(e.mousePosition))
             { FitToUvBounds(ctx); e.Use(); }
 
-            if (!SpotMode) return;
+            if (!SpotMode || !IsSpotInput(e.type)) return;
 
             if (!canvasRect.Contains(e.mousePosition))
             {
-                if (!LockSelection) HasHoveredShell = false;
-                CanvasSpotValid = false;
+                ForgetUvSpotPointer();
+                if (!SpotSelectionLocked) ClearSpotHover();
                 return;
             }
 
             Vector2 localPos = e.mousePosition - canvasRect.position;
             Vector2 uv = new Vector2((localPos.x - cx) / sz, 1f - ((localPos.y - cy) / sz));
-            CanvasSpotUv = uv;
-            CanvasSpotValid = true;
-
-            if (!LockSelection)
-            {
-                HasHoveredShell = TryPickUvHit(ctx, uv, ref HoveredShell);
-                if (!HasHoveredShell)
-                {
-                    HoveredShell.uvHit = uv;
-                    HoveredShell.barycentric = new Vector3(1f/3f, 1f/3f, 1f/3f);
-                }
-            }
-
+            bool select = e.type == EventType.MouseDown && e.button == 0 && !e.alt;
+            UpdateUvSpot(ctx, uv, select);
             RequestRepaint?.Invoke();
             SceneView.RepaintAll();
 
-            if (SpotMode && e.type == EventType.MouseDown && e.button == 0 && !e.alt)
+            if (select)
             {
-                if (HasHoveredShell) { SelectedShell = HoveredShell; HasSelectedShell = true; }
-                else if (!LockSelection) HasSelectedShell = false;
-                if (HoveredShellDebug != null) SelectedShellDebug = CloneHit(HoveredShellDebug);
-                else SelectedShellDebug = null;
-
                 // Double-click → focus SceneView camera on shell
                 if (e.clickCount == 2 && HasSelectedShell)
                 {
@@ -596,6 +606,83 @@ namespace SashaRX.UnityMeshLab
 
                 e.Use(); RequestRepaint?.Invoke(); SceneView.RepaintAll();
             }
+        }
+
+        internal bool SpotSelectionLocked => LockSelection && HasSelectedShell && SelectedShell.shellId >= 0;
+        UvToolContext uvSpotContext;
+        Vector2 uvSpotPointer;
+        bool selectUvSpotWhenReady;
+
+        internal void SetSelectionLock(bool locked)
+        {
+            LockSelection = locked;
+            if (locked && !HasSelectedShell && HasHoveredShell) SelectSpotHover();
+            if (SpotSelectionLocked) {
+                HoveredShell = SelectedShell; HasHoveredShell = true;
+                HoveredShellDebug = SelectedShellDebug != null ? CloneHit(SelectedShellDebug) : null;
+                HoveredShellId = SelectedShell.shellId; UvSpot = SelectedShell.uvHit;
+                CanvasSpotUv = SelectedShell.uvHit; CanvasSpotValid = true; HoverHitValid = false;
+            }
+        }
+
+        internal void ClearSpotSelection()
+        {
+            HasSelectedShell = false; SelectedShellDebug = null;
+        }
+
+        internal void ClearSpotHover()
+        {
+            HasHoveredShell = false; HoveredShellDebug = null;
+            HoverHitValid = false; HoveredShellId = -1; CanvasSpotValid = false;
+        }
+
+        internal void ForgetUvSpotPointer()
+        {
+            uvSpotContext = null; selectUvSpotWhenReady = false;
+        }
+
+        internal void ApplySpotHit(bool found, ShellUvHit hit, ShellDebugHit debug, Vector3? world = null)
+        {
+            if (SpotSelectionLocked) return;
+            if (!found || hit.meshEntry == null || hit.shellId < 0) { ClearSpotHover(); return; }
+            HoveredShell = hit; HasHoveredShell = true; HoveredShellDebug = debug;
+            HoveredShellId = hit.shellId; UvSpot = hit.uvHit;
+            CanvasSpotUv = hit.uvHit; CanvasSpotValid = true;
+            HoverHitValid = world.HasValue; HoverWorldPos = world ?? Vector3.zero;
+        }
+
+        internal bool SelectSpotHover()
+        {
+            if (SpotSelectionLocked) return true;
+            if (!HasHoveredShell || HoveredShell.shellId < 0) { ClearSpotSelection(); return false; }
+            SelectedShell = HoveredShell; HasSelectedShell = true;
+            SelectedShellDebug = HoveredShellDebug != null ? CloneHit(HoveredShellDebug) : null;
+            return true;
+        }
+
+        internal void UpdateUvSpot(UvToolContext ctx, Vector2 uv, bool select = false)
+        {
+            if (SpotSelectionLocked) return;
+            uvSpotContext = ctx; uvSpotPointer = uv; selectUvSpotWhenReady = select;
+            RefreshUvSpot();
+        }
+
+        void RefreshUvSpot()
+        {
+            if (!SpotMode || SpotSelectionLocked || uvSpotContext == null) return;
+            ShellUvHit hit = default;
+            bool found = TryPickUvHit(uvSpotContext, uvSpotPointer, ref hit);
+            ShellDebugHit debug = null;
+            if (found) {
+                var mesh = DisplayMesh(uvSpotContext, hit.meshEntry);
+                var cache = GetPreviewShellCache(uvSpotContext, mesh, uvSpotContext.PreviewUvChannel);
+                if (cache != null && cache.shellById.TryGetValue(hit.shellId, out var shell))
+                    debug = MakeHit(uvSpotContext, hit.meshEntry, mesh, shell, hit.uvHit);
+            }
+            ApplySpotHit(found, hit, debug);
+            // The UV pointer can still drive a scene projection while topology is pending.
+            CanvasSpotUv = uvSpotPointer; CanvasSpotValid = true;
+            if (selectUvSpotWhenReady && found) { SelectSpotHover(); selectUvSpotWhenReady = false; }
         }
 
         public void FitToUvBounds(UvToolContext ctx)
@@ -663,7 +750,14 @@ namespace SashaRX.UnityMeshLab
             return tri;
         }
 
-        public void ClearFrameCaches() { cachedTriangles.Clear(); cachedUvs.Clear(); }
+        public void ClearFrameCaches()
+        {
+            ++previewGeneration;
+            cachedTriangles.Clear(); cachedUvs.Clear();
+            previewRequests.Clear(); queuedPreviews.Clear(); snapshotVersions.Clear();
+            // A running job owns only arrays. Let it finish without waiting; its
+            // generation check prevents it from publishing stale data.
+        }
 
         public static Color SC(TriangleStatus s)
         {
@@ -864,10 +958,19 @@ namespace SashaRX.UnityMeshLab
             }
             GL.End();
 
-            if (selectedShellId >= 0)
-                GlOutlineShell(ox, oy, sz, uv, t, uN, cache, selectedShellId, new Color(1f, .95f, .2f, .95f));
-            if (hoverShellId >= 0 && hoverShellId != selectedShellId)
-                GlOutlineShell(ox, oy, sz, uv, t, uN, cache, hoverShellId, new Color(.25f, 1f, .95f, .85f));
+        }
+
+        void DrawSpotOutlines(UvToolContext ctx, List<ValueTuple<Mesh, MeshEntry, int>> draws, float x, float y, float size)
+        {
+            foreach (var item in draws) {
+                int selected = HasSelectedShell && SelectedShell.meshEntry == item.Item2 ? SelectedShell.shellId : -1;
+                int hovered = HasHoveredShell && HoveredShell.meshEntry == item.Item2 ? HoveredShell.shellId : -1;
+                if (selected < 0 && hovered < 0) continue;
+                var cache = GetPreviewShellCache(ctx, item.Item1, ctx.PreviewUvChannel);
+                if (cache == null) continue;
+                if (selected >= 0) GlOutlineShell(x, y, size, cache.uvs, cache.triangles, cache.uvs.Length, cache, selected, new Color(1f, .95f, .2f, .95f), ctx, item.Item2);
+                if (hovered >= 0 && hovered != selected) GlOutlineShell(x, y, size, cache.uvs, cache.triangles, cache.uvs.Length, cache, hovered, new Color(.25f, 1f, .95f, .85f), ctx, item.Item2);
+            }
         }
 
         public void GlFillSt(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, TriangleStatus[] st)
@@ -918,12 +1021,7 @@ namespace SashaRX.UnityMeshLab
         public void GlUvBoundary(UvToolContext ctx, float ox, float oy, float sz, Mesh mesh, Vector2[] uv, int[] tri, int uN)
         {
             if (mesh == null || uv == null || tri == null || tri.Length < 3) return;
-            long id = ((long)mesh.GetInstanceID() << 8) ^ (uint)ctx.PreviewUvChannel;
-            if (!ctx.UvBoundaryEdgeCache.TryGetValue(id, out int[] pairs))
-            {
-                pairs = UvTopology.UvBoundaryEdgePairs(mesh, ctx.PreviewUvChannel);
-                ctx.UvBoundaryEdgeCache[id] = pairs;
-            }
+            var pairs = GetPreviewBoundary(ctx, mesh, ctx.PreviewUvChannel);
             if (pairs == null || pairs.Length == 0) return;
             GL.Begin(GL.LINES);
             GL.Color(new Color(1f, .35f, .05f, .9f));
@@ -938,6 +1036,10 @@ namespace SashaRX.UnityMeshLab
         }
 
         public void GlOutlineShell(float ox, float oy, float sz, Vector2[] uv, int[] t, int uN, PreviewShellData cache, int shellId, Color color)
+            => GlOutlineShell(ox, oy, sz, uv, t, uN, cache, shellId, color, null, null);
+
+        void GlOutlineShell(float ox, float oy, float sz, Vector2[] uv, int[] t, int uN, PreviewShellData cache, int shellId, Color color,
+            UvToolContext ctx, MeshEntry entry)
         {
             if (cache == null || cache.shellById == null) return;
             if (!cache.shellById.TryGetValue(shellId, out var shell)) return;
@@ -947,9 +1049,12 @@ namespace SashaRX.UnityMeshLab
             {
                 int a0=t[fi*3],a1=t[fi*3+1],a2=t[fi*3+2];
                 if (!TOk(uv,uN,a0,a1,a2)) continue;
-                Vx(ox,oy,sz,uv[a0]); Vx(ox,oy,sz,uv[a1]);
-                Vx(ox,oy,sz,uv[a1]); Vx(ox,oy,sz,uv[a2]);
-                Vx(ox,oy,sz,uv[a2]); Vx(ox,oy,sz,uv[a0]);
+                Vector2 p0 = ctx == null ? uv[a0] : DisplayUv(ctx, entry, uv[a0]);
+                Vector2 p1 = ctx == null ? uv[a1] : DisplayUv(ctx, entry, uv[a1]);
+                Vector2 p2 = ctx == null ? uv[a2] : DisplayUv(ctx, entry, uv[a2]);
+                Vx(ox,oy,sz,p0); Vx(ox,oy,sz,p1);
+                Vx(ox,oy,sz,p1); Vx(ox,oy,sz,p2);
+                Vx(ox,oy,sz,p2); Vx(ox,oy,sz,p0);
             }
             GL.End();
         }
@@ -1036,30 +1141,162 @@ namespace SashaRX.UnityMeshLab
         //  Shell Cache & Color
         // ════════════════════════════════════════════════════════════
 
+        // Cache misses queue work; no topology calculation or wait occurs in OnGUI.
+        sealed class PreviewRequest
+        {
+            public UvToolContext context;
+            public Mesh mesh;
+            public long key;
+            public int channel, generation, contextVersion;
+        }
+
+        sealed class PreviewResult
+        {
+            public PreviewShellData shells;
+            public int[] boundaries;
+            public HashSet<Vector2Int> tiles;
+            public Dictionary<int, int> colors;
+            public int[] vertexShells;
+            public ShellDescriptor[] descriptors;
+            public TriangleBvh bvh;
+        }
+
+        readonly Queue<PreviewRequest> previewRequests = new Queue<PreviewRequest>();
+        readonly Dictionary<(UvToolContext, long), PreviewRequest> queuedPreviews = new Dictionary<(UvToolContext, long), PreviewRequest>();
+        Task<PreviewResult> previewTask;
+        PreviewRequest activePreview;
+        int previewGeneration;
+        bool disposed;
+        internal int PreviewRevision { get; private set; }
+
+        void QueuePreview(UvToolContext ctx, Mesh mesh, int channel)
+        {
+            if (disposed || !mesh || channel < 0 || channel > 7) return;
+            long key = ((long)mesh.GetInstanceID() << 8) ^ (uint)channel;
+            if (queuedPreviews.TryGetValue((ctx, key), out var queued) && PreviewRequestIsCurrent(queued.generation, queued.contextVersion, ctx)) return;
+            var request = new PreviewRequest { context = ctx, mesh = mesh, key = key,
+                channel = channel, generation = previewGeneration, contextVersion = ctx.PreviewCacheVersion };
+            queuedPreviews[(ctx, key)] = request;
+            previewRequests.Enqueue(request);
+        }
+
+        void RemoveQueuedPreview(PreviewRequest request)
+        {
+            var key = (request.context, request.key);
+            if (queuedPreviews.TryGetValue(key, out var queued) && ReferenceEquals(queued, request)) queuedPreviews.Remove(key);
+        }
+
+        internal bool PreviewRequestIsCurrent(int generation, int contextVersion, UvToolContext ctx)
+            => !disposed && generation == previewGeneration && contextVersion == ctx.PreviewCacheVersion;
+
+        internal void PollPreviewJobs()
+        {
+            if (disposed) return;
+            if (previewTask != null) {
+                if (!previewTask.IsCompleted) return;
+                var task = previewTask; var request = activePreview;
+                previewTask = null; activePreview = null;
+                RemoveQueuedPreview(request);
+                if (task.IsFaulted) { UvtLog.Warn("[UV] Preview preparation: " + task.Exception.GetBaseException().Message); }
+                else if (!task.IsCanceled && request.mesh && PreviewRequestIsCurrent(request.generation, request.contextVersion, request.context)) {
+                    // Already completed: retrieving this result cannot wait for a worker.
+                    var result = task.GetAwaiter().GetResult();
+                    var ctx = request.context;
+                    ctx.PreviewShellDataCache[request.key] = result.shells;
+                    ctx.UvBoundaryEdgeCache[request.key] = result.boundaries;
+                    ctx.OccupiedTilesPerMesh[request.key] = result.tiles;
+                    int meshId = request.mesh.GetInstanceID();
+                    ctx.PreviewBvhCache[meshId] = result.bvh;
+                    if (request.channel == 0) ctx.Uv0ShellMapCache[meshId] = (result.vertexShells, result.descriptors);
+                    foreach (var color in result.colors) ctx.ShellColorKeyCache[((long)meshId << 32) | (uint)color.Key] = color.Value;
+                    ++PreviewRevision;
+                    RefreshUvSpot();
+                    PreviewReady?.Invoke();
+                    RequestRepaint?.Invoke();
+                }
+            }
+            // Start at most one job per editor update and one worker per canvas.
+            while (previewRequests.Count > 0) {
+                var request = previewRequests.Dequeue();
+                if (!request.mesh || !PreviewRequestIsCurrent(request.generation, request.contextVersion, request.context)) {
+                    RemoveQueuedPreview(request); continue;
+                }
+                try {
+                    // Unity Mesh access stays on the editor thread, outside OnGUI.
+                    var mesh = request.mesh;
+                    var uv = RdUv(mesh, request.channel);
+                    var triangles = mesh.triangles;
+                    var vertices = mesh.vertices;
+                    var colorUv = request.channel == 1 ? uv : RdUv(mesh, 1);
+                    if (colorUv == null || colorUv.Length != vertices.Length) colorUv = request.channel == 0 ? uv : RdUv(mesh, 0);
+                    cachedUvs[request.key] = uv;
+                    cachedTriangles[mesh.GetInstanceID()] = triangles;
+                    activePreview = request;
+                    previewTask = Task.Run(() => PreparePreview(vertices, uv, triangles, colorUv));
+                }
+                catch (Exception ex) {
+                    RemoveQueuedPreview(request);
+                    UvtLog.Warn("[UV] Mesh snapshot: " + ex.Message);
+                }
+                return;
+            }
+        }
+
+        static PreviewResult PreparePreview(Vector3[] vertices, Vector2[] uv, int[] triangles, Vector2[] colorUv)
+        {
+            var shells = UvTopology.BuildShellData(uv, triangles);
+            var tiles = new HashSet<Vector2Int>();
+            UvTopology.OccupiedTiles(uv, tiles, UOk);
+            var colors = new Dictionary<int, int>();
+            int[] vertexShells = null;
+            ShellDescriptor[] descriptors = null;
+            if (shells != null) {
+                vertexShells = new int[uv.Length];
+                for (int i = 0; i < vertexShells.Length; ++i) vertexShells[i] = -1;
+                descriptors = new ShellDescriptor[shells.shells.Count];
+                for (int i = 0; i < shells.shells.Count; ++i) {
+                    var shell = shells.shells[i];
+                    colors[shell.shellId] = ShellBBoxHash(shell, colorUv);
+                    descriptors[i] = shell.descriptor;
+                    foreach (int vertex in shell.vertexIndices) if (vertex >= 0 && vertex < vertexShells.Length) vertexShells[vertex] = i;
+                }
+            }
+            return new PreviewResult { shells = shells, tiles = tiles, colors = colors, vertexShells = vertexShells, descriptors = descriptors,
+                boundaries = UvTopology.UvBoundaryEdgePairs(vertices, uv, triangles),
+                bvh = new TriangleBvh(vertices, triangles) };
+        }
+
         public PreviewShellData GetPreviewShellCache(UvToolContext ctx, Mesh mesh, int channel)
         {
             if (mesh == null) return null;
             long key = ((long)mesh.GetInstanceID() << 8) ^ (uint)channel;
             if (ctx.PreviewShellDataCache.TryGetValue(key, out var cached)) return cached;
+            QueuePreview(ctx, mesh, channel);
+            return null;
+        }
 
-            cached = UvTopology.BuildShellData(RdUvCached(mesh, channel), GetTrianglesCached(mesh));
-            if (cached == null) return null;
-            ctx.PreviewShellDataCache[key] = cached;
-            return cached;
+        internal TriangleBvh GetPreviewBvh(UvToolContext ctx, Mesh mesh, int channel)
+        {
+            if (ctx.PreviewBvhCache.TryGetValue(mesh.GetInstanceID(), out var bvh)) return bvh;
+            QueuePreview(ctx, mesh, channel);
+            return null;
+        }
+
+        internal int[] GetPreviewBoundary(UvToolContext ctx, Mesh mesh, int channel)
+        {
+            long key = ((long)mesh.GetInstanceID() << 8) ^ (uint)channel;
+            if (ctx.UvBoundaryEdgeCache.TryGetValue(key, out var cached)) return cached;
+            QueuePreview(ctx, mesh, channel);
+            return null;
         }
 
         public HashSet<Vector2Int> GetOccupiedUdimTiles(UvToolContext ctx, List<ValueTuple<Mesh, MeshEntry, int>> draws, int channel)
         {
             var tiles = new HashSet<Vector2Int>();
-            foreach (var item in draws)
-            {
-                var mesh = item.Item1;
-                long key = ((long)mesh.GetInstanceID() << 8) ^ (uint)channel;
-                if (ctx.OccupiedTilesPerMesh.TryGetValue(key, out var c)) { foreach (var t in c) tiles.Add(t); continue; }
-                var perMesh = new HashSet<Vector2Int>();
-                UvTopology.OccupiedTiles(RdUvCached(mesh, channel), perMesh, UOk);
-                tiles.UnionWith(perMesh);
-                ctx.OccupiedTilesPerMesh[key] = perMesh;
+            foreach (var item in draws) {
+                long key = ((long)item.Item1.GetInstanceID() << 8) ^ (uint)channel;
+                if (ctx.OccupiedTilesPerMesh.TryGetValue(key, out var cached)) tiles.UnionWith(cached);
+                else QueuePreview(ctx, item.Item1, channel);
             }
             return tiles;
         }
@@ -1070,22 +1307,15 @@ namespace SashaRX.UnityMeshLab
         /// by extreme vertices which survive simplification, unlike the centroid which
         /// shifts when interior vertices are removed non-uniformly.
         /// </summary>
-        static int ShellBBoxHash(UvShell shell, Mesh mesh, int uvChannel = 1)
+        static int ShellBBoxHash(UvShell shell, Vector2[] uvs)
         {
-            if (shell?.vertexIndices == null || shell.vertexIndices.Count == 0 || mesh == null)
+            if (shell?.vertexIndices == null || shell.vertexIndices.Count == 0 || uvs == null)
                 return shell?.shellId ?? 0;
-            var uvs = new List<Vector2>();
-            mesh.GetUVs(uvChannel, uvs);
-            if (uvs.Count != mesh.vertexCount)
-            {
-                mesh.GetUVs(0, uvs);
-                if (uvs.Count != mesh.vertexCount) return shell.shellId;
-            }
             Vector2 mn = new Vector2(float.MaxValue, float.MaxValue);
             Vector2 mx = new Vector2(float.MinValue, float.MinValue);
             foreach (int vi in shell.vertexIndices)
             {
-                if (vi < 0 || vi >= uvs.Count) continue;
+                if (vi < 0 || vi >= uvs.Length) continue;
                 var uv = uvs[vi];
                 if (uv.x < mn.x) mn.x = uv.x; if (uv.y < mn.y) mn.y = uv.y;
                 if (uv.x > mx.x) mx.x = uv.x; if (uv.y > mx.y) mx.y = uv.y;
@@ -1107,14 +1337,13 @@ namespace SashaRX.UnityMeshLab
             var mesh = entry != null ? DisplayMesh(ctx, entry) : null;
             if (mesh != null) meshId = mesh.GetInstanceID();
             long cacheKey = ((long)meshId << 32) | (uint)shell.shellId;
-            if (!ctx.ShellColorKeyCacheDirty && ctx.ShellColorKeyCache.TryGetValue(cacheKey, out int cc)) return cc;
+            if (ctx.ShellColorKeyCache.TryGetValue(cacheKey, out int cc)) return cc;
 
             // Always use UV bounding-box hash for maximum cross-LOD consistency.
             // Previous strategies (shellTransferResult, UV0 shell map) produced
             // extraction-order-dependent keys that changed between LODs.
-            int result = ShellBBoxHash(shell, mesh);
-            ctx.ShellColorKeyCache[cacheKey] = result;
-            return result;
+            if (mesh) QueuePreview(ctx, mesh, ctx.PreviewUvChannel);
+            return shell.shellId;
         }
 
         public (int[] vertToShell, ShellDescriptor[] descs) GetUv0ShellMap(UvToolContext ctx, Mesh mesh)
@@ -1122,26 +1351,8 @@ namespace SashaRX.UnityMeshLab
             if (mesh == null) return (null, null);
             int id = mesh.GetInstanceID();
             if (ctx.Uv0ShellMapCache.TryGetValue(id, out var cached)) return cached;
-            var uv0List = new List<Vector2>();
-            mesh.GetUVs(0, uv0List);
-            if (uv0List.Count != mesh.vertexCount) { ctx.Uv0ShellMapCache[id] = (null, null); return (null, null); }
-            try
-            {
-                var uv0 = uv0List.ToArray();
-                var shells = UvShellExtractor.Extract(uv0, mesh.triangles, computeDescriptors: true);
-                var vertToShell = new int[mesh.vertexCount];
-                for (int i = 0; i < vertToShell.Length; i++) vertToShell[i] = -1;
-                var descs = new ShellDescriptor[shells.Count];
-                for (int si = 0; si < shells.Count; si++)
-                {
-                    descs[si] = shells[si].descriptor;
-                    foreach (int vi in shells[si].vertexIndices)
-                        if (vi >= 0 && vi < vertToShell.Length) vertToShell[vi] = si;
-                }
-                ctx.Uv0ShellMapCache[id] = (vertToShell, descs);
-                return (vertToShell, descs);
-            }
-            catch { ctx.Uv0ShellMapCache[id] = (null, null); return (null, null); }
+            QueuePreview(ctx, mesh, 0);
+            return (null, null);
         }
 
         // ════════════════════════════════════════════════════════════
@@ -1267,31 +1478,6 @@ namespace SashaRX.UnityMeshLab
         // ════════════════════════════════════════════════════════════
         //  Shell Debug
         // ════════════════════════════════════════════════════════════
-
-        ShellDebugHit FindShellAtMouse(UvToolContext ctx, List<ValueTuple<Mesh, MeshEntry, int>> draws, Rect canvasRect, float cx, float cy, float sz)
-        {
-            var mouse = Event.current.mousePosition;
-            if (!canvasRect.Contains(mouse)) return null;
-            Vector2 local = mouse - canvasRect.position;
-            var uvPoint = new Vector2((local.x - cx) / sz, 1f - ((local.y - cy) / sz));
-            foreach (var item in draws)
-            {
-                Mesh mesh = item.Item1;
-                if (uvPoint.x < UV_LO || uvPoint.x > UV_HI || uvPoint.y < UV_LO || uvPoint.y > UV_HI) continue;
-                var cache = GetPreviewShellCache(ctx, mesh, ctx.PreviewUvChannel);
-                if (cache == null || cache.shells == null) continue;
-                for (int f = 0; f < cache.triangles.Length / 3; f++)
-                {
-                    int a = cache.triangles[f*3], b = cache.triangles[f*3+1], c = cache.triangles[f*3+2];
-                    if (!TOk(cache.uvs, cache.uvs.Length, a, b, c)) continue;
-                    if (!UvTopology.PointInTriangle(uvPoint, cache.uvs[a], cache.uvs[b], cache.uvs[c])) continue;
-                    if (!cache.faceToShell.TryGetValue(f, out int shellId)) return null;
-                    if (!cache.shellById.TryGetValue(shellId, out var shell)) return null;
-                    return BuildHit(ctx, item.Item2, mesh, shell, uvPoint, item.Item3);
-                }
-            }
-            return null;
-        }
 
         ShellDebugHit BuildHit(UvToolContext ctx, MeshEntry entry, Mesh mesh, UvShell shell, Vector2 uvPoint, int drawIndex)
         {

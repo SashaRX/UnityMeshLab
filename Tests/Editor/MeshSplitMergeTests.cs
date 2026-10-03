@@ -64,7 +64,7 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             var root = new GameObject("Asset"); created.Add(root);
             var lodGroup = root.AddComponent<LODGroup>();
-            var mat = new Material(Shader.Find("Standard")); created.Add(mat);
+            var mat = new Material(Shader.Find("Standard")) { name = "Surface" }; created.Add(mat);
             var go = new GameObject("Asset_LOD0"); created.Add(go);
             go.transform.SetParent(root.transform, false);
             var mesh = Quad(0, 2); created.Add(mesh);
@@ -93,7 +93,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var renderers = lodGroup.GetLODs()[0].renderers;
             Assert.AreEqual(1, renderers.Length);
             var merged = renderers[0].GetComponent<MeshFilter>().sharedMesh; created.Add(merged);
-            Assert.AreEqual("Asset_LOD0", renderers[0].name);
+            Assert.AreEqual("Asset_Surface_LOD0", renderers[0].name, "Merge preserves the first split renderer base and its material qualifier");
             Assert.AreEqual(6, merged.vertexCount); Assert.AreEqual(6, merged.triangles.Length);
             Assert.AreEqual(6, merged.tangents.Length); Assert.AreEqual(6, merged.colors.Length); Assert.AreEqual(6, merged.uv2.Length, "UV2 survives the merge");
         }

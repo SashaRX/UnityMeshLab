@@ -21,12 +21,13 @@ namespace SashaRX.UnityMeshLab
 
         // ── channel decoding ──
 
-        /// <summary>True for the four vertex colour components.</summary>
-        internal static bool IsColor(AOTargetChannel channel) => (int)channel <= (int)AOTargetChannel.VertexColorA;
+        /// <summary>True for a vertex colour component or the combined RGB target.</summary>
+        internal static bool IsColor(AOTargetChannel channel)
+            => (int)channel <= (int)AOTargetChannel.VertexColorA || channel == AOTargetChannel.VertexColorRGB;
 
-        /// <summary>0 = R, 1 = G, 2 = B, 3 = A; -1 for a UV channel.</summary>
+        /// <summary>0 = R, 1 = G, 2 = B, 3 = A; -1 for RGB or a UV channel.</summary>
         internal static int ColorComponent(AOTargetChannel channel)
-            => IsColor(channel) ? (int)channel - (int)AOTargetChannel.VertexColorR : -1;
+            => IsColor(channel) && channel != AOTargetChannel.VertexColorRGB ? (int)channel - (int)AOTargetChannel.VertexColorR : -1;
 
         /// <summary>The UV set (0–4) a UV channel addresses; -1 for a colour channel.</summary>
         internal static int UvChannel(AOTargetChannel channel)
@@ -39,6 +40,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>"Vertex Color R" … "UV4 Y", as the Vertex Colors tab labels them.</summary>
         internal static string Name(AOTargetChannel channel)
         {
+            if (channel == AOTargetChannel.VertexColorRGB) return "Vertex Color RGB";
             if (IsColor(channel)) return "Vertex Color " + "RGBA"[ColorComponent(channel)];
             return "UV" + UvChannel(channel) + " " + "XY"[UvComponent(channel)];
         }
@@ -48,6 +50,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// The channel as one float per vertex (colour bytes / 255, UV components clamped
         /// to [0,1]); null when the mesh does not carry that stream at the vertex count.
+        /// RGB reads R: an RGB AO write stores the same scalar in all three components.
         /// </summary>
         internal static float[] Read(Mesh mesh, AOTargetChannel channel)
         {
@@ -62,7 +65,7 @@ namespace SashaRX.UnityMeshLab
                 for (int i = 0; i < vertCount; i++)
                 {
                     var c = colors[i];
-                    values[i] = (comp == 0 ? c.r : comp == 1 ? c.g : comp == 2 ? c.b : c.a) / 255f;
+                    values[i] = (channel == AOTargetChannel.VertexColorRGB || comp == 0 ? c.r : comp == 1 ? c.g : comp == 2 ? c.b : c.a) / 255f;
                 }
                 return values;
             }
@@ -81,7 +84,8 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Stores <paramref name="values"/> (clamped to [0,1]) in the channel, keeping the
-        /// other components: the colour write remaps to bytes over a white default, the UV
+        /// other components (RGB writes R/G/B together and keeps A): the colour write
+        /// remaps to bytes over a white default, the UV
         /// write keeps the float over a zero default. Values are linear — no gamma. A
         /// length mismatch writes nothing. Records Undo under <paramref name="undoLabel"/>
         /// when given.
@@ -110,7 +114,8 @@ namespace SashaRX.UnityMeshLab
                     if (mask != null && !mask[i]) continue;
                     byte v = (byte)(Mathf.Clamp01(values[i]) * 255f);
                     var c = colors[i];
-                    if (comp == 0) c.r = v; else if (comp == 1) c.g = v; else if (comp == 2) c.b = v; else c.a = v;
+                    if (channel == AOTargetChannel.VertexColorRGB) c.r = c.g = c.b = v;
+                    else if (comp == 0) c.r = v; else if (comp == 1) c.g = v; else if (comp == 2) c.b = v; else c.a = v;
                     colors[i] = c;
                 }
                 mesh.colors32 = colors;

@@ -603,6 +603,50 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [TestCase(RemeshNormalWeighting.FaceArea)]
+        [TestCase(RemeshNormalWeighting.CornerAngle)]
+        [TestCase(RemeshNormalWeighting.FaceAreaAndCornerAngle)]
+        public void SplitNormalsRecoverSmallFacesAndCancellingFaces(RemeshNormalWeighting weighting)
+        {
+            // A valid sliver below the mesh-relative accumulation floor, then a
+            // two-sided sheet whose incident face normals cancel exactly.
+            var geometry = new RemeshNative.Geometry {
+                positions = new[] { Vector3.zero, Vector3.right, Vector3.up,
+                    new Vector3(2, 0, 0), new Vector3(2, 0.0001f, 0), new Vector3(2, 0, 0.0001f),
+                    new Vector3(3, 0, 0), new Vector3(4, 0, 0), new Vector3(3, 1, 0) },
+                normals = new Vector3[9], indices = new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 6, 8, 7 }
+            };
+            RemeshNative.GenerateSplitNormals(geometry, weighting);
+            for (int i = 0; i < geometry.normals.Length; ++i)
+                Assert.That(geometry.normals[i].magnitude, Is.EqualTo(1f).Within(1e-5f), "vertex " + i);
+            Assert.That(Vector3.Dot(geometry.normals[3], Vector3.right), Is.GreaterThan(.999f));
+            Assert.That(Vector3.Dot(geometry.normals[6], Vector3.forward), Is.GreaterThan(.999f));
+        }
+
+        [Test]
+        public void SplitNormalsDoNotInventDirectionsForDegenerateFaces()
+        {
+            var geometry = new RemeshNative.Geometry { positions = new[] { Vector3.zero, Vector3.right, Vector3.right * 2 },
+                normals = new Vector3[3], indices = new[] { 0, 1, 2 } };
+            RemeshNative.GenerateSplitNormals(geometry, RemeshNormalWeighting.FaceArea);
+            foreach (var normal in geometry.normals) Assert.AreEqual(Vector3.zero, normal);
+        }
+
+        [Test]
+        public void MissingOrParallelTangentsGetAValidFrame()
+        {
+            var geometry = new RemeshNative.Geometry { normals = new[] { Vector3.forward, Vector3.up },
+                tangents = new[] { Vector4.zero, new Vector4(0, 1, 0, -1) } };
+            RemeshNative.OrthogonalizeTangents(geometry);
+            for (int i = 0; i < 2; ++i) {
+                Vector3 t = geometry.tangents[i];
+                Assert.That(t.magnitude, Is.EqualTo(1f).Within(1e-5f));
+                Assert.That(Vector3.Dot(t, geometry.normals[i]), Is.EqualTo(0f).Within(1e-5f));
+            }
+            Assert.AreEqual(1f, geometry.tangents[0].w);
+            Assert.AreEqual(-1f, geometry.tangents[1].w);
+        }
+
         [Test]
         public void TrimKeepsTheSideTheSourceHasAndDropsTheSlabsBackAndRims()
         {
@@ -786,6 +830,215 @@ namespace SashaRX.UnityMeshLab.Tests
                 out color, out _, out _, out _, out _);
             Assert.That(color.g, Is.EqualTo(new Color(0.25f,0.5f,0.75f).gamma.g).Within(1e-5f));
         }
+        static RemeshSource AoSource(bool roof)
+        {
+            var source = Source();
+            source.positions = new[] { new Vector3(-2, -2, 0), new Vector3(2, -2, 0), new Vector3(0, 2, 0),
+                new Vector3(0, -4, .2f), new Vector3(4, -4, .2f), new Vector3(4, 4, .2f), new Vector3(0, 4, .2f) };
+            source.normals = new[] { Vector3.forward, Vector3.forward, Vector3.forward, Vector3.back, Vector3.back, Vector3.back, Vector3.back };
+            source.tangents = new Vector4[7]; source.uv = new Vector2[7];
+            for (int i = 0; i < 7; ++i) source.tangents[i] = new Vector4(1, 0, 0, 1);
+            source.indices = roof ? new[] { 0, 1, 2, 3, 5, 4, 3, 6, 5 } : new[] { 0, 1, 2 };
+            source.faceMaterials = roof ? new[] { 0, 0, 0 } : new[] { 0 };
+            source.diagonal = 10;
+            return source;
+        }
+
+        [Test]
+        public void SourceAoUsesGeometryAndNormalMapAtTheSourceHit()
+        {
+            var source = AoSource(true);
+            var bvh = new TriangleBvh(source.positions, source.indices);
+            var normals = MeshGeometry.FaceNormals(source.positions, source.indices);
+            var settings = new SourceAoSettings { samples = 512, radius = 1, binaryHit = true, normalMap = false };
+            Vector3 weights = new Vector3(.25f, .25f, .5f);
+            float smooth = new SourceAoBaker(source, bvh, normals, null, settings).Sample(0, weights, 7, CancellationToken.None);
+            Assert.That(smooth, Is.InRange(.2f, .8f), "the roof covers roughly half of the upper hemisphere");
+            source.materials[0].normal.image = new RemeshSource.Image { width = 1, height = 1,
+                pixels = new[] { new Color32(230, 128, 255, 255) }, wrapU = TextureWrapMode.Clamp, wrapV = TextureWrapMode.Clamp };
+            settings.normalMap = true;
+            float bumped = new SourceAoBaker(source, bvh, normals, null, settings).Sample(0, weights, 7, CancellationToken.None);
+            Assert.That(bumped, Is.LessThan(smooth - .15f), "tilting the source normal toward the roof increases its occlusion");
+            source.materials[0].normalScale = 0;
+            float disabledStrength = new SourceAoBaker(source, bvh, normals, null, settings).Sample(0, weights, 7, CancellationToken.None);
+            Assert.That(disabledStrength, Is.EqualTo(smooth).Within(1e-5f), "material normal strength is respected");
+        }
+
+        [Test]
+        public void TextureBakeCanRecalculateAoOrMultiplyTheSourceMap()
+        {
+            var source = Source();
+            source.materials[0].ao.image = new RemeshSource.Image { width = 1, height = 1,
+                pixels = new[] { new Color32(64, 64, 64, 255) }, wrapU = TextureWrapMode.Clamp, wrapV = TextureWrapMode.Clamp };
+            var target = new RemeshNative.Geometry { positions = source.positions, normals = source.normals, uv = source.uv,
+                indices = source.indices, tangents = source.tangents };
+            var settings = new RemeshSettings { textureResolution = 64, padding = 1, bakeSamples = 1, bakeSourceAO = true };
+            int pixel = 8 * 64 + 8;
+            var calculated = RemeshBaker.Bake(source, target, source.tangents, settings, CancellationToken.None);
+            Assert.IsTrue(calculated.sourceAO); Assert.That(calculated.misses, Is.Zero);
+            Assert.AreEqual(255, calculated.ao[pixel].g, "an open plane has no geometric occlusion");
+            settings.multiplySourceAO = true;
+            var multiplied = RemeshBaker.Bake(source, target, source.tangents, settings, CancellationToken.None);
+            Assert.That(multiplied.ao[pixel].g, Is.EqualTo(64).Within(1));
+            settings.bakeSourceAO = false;
+            var transferred = RemeshBaker.Bake(source, target, source.tangents, settings, CancellationToken.None);
+            Assert.IsFalse(transferred.sourceAO);
+            Assert.That(transferred.ao[pixel].g, Is.EqualTo(64).Within(1), "the existing material AO transfer remains available");
+        }
+
+        [Test]
+        public void SourceAoCancellationAndSettingsAreValidated()
+        {
+            var source = AoSource(false);
+            var sampler = new SourceAoBaker(source, new TriangleBvh(source.positions, source.indices),
+                MeshGeometry.FaceNormals(source.positions, source.indices), null, new SourceAoSettings());
+            using (var cancellation = new CancellationTokenSource()) {
+                cancellation.Cancel();
+                Assert.Throws<OperationCanceledException>(() => sampler.Sample(0, new Vector3(.25f, .25f, .5f), 0, cancellation.Token));
+            }
+            Assert.Throws<ArgumentException>(() => new SourceAoSettings { radius = float.NaN }.Validate());
+            Assert.Throws<ArgumentException>(() => new SourceAoSettings { samples = 0 }.Validate());
+            Assert.Throws<ArgumentException>(() => new RemeshSettings { bakeSourceAO = true, sourceAO = null }.Validate());
+            var settings = new RemeshSettings();
+            string key = RemeshPipeline.Key(RemeshPipeline.Stage.Bake, settings, null);
+            settings.bakeSourceAO = true;
+            Assert.AreNotEqual(key, RemeshPipeline.Key(RemeshPipeline.Stage.Bake, settings, null));
+            key = RemeshPipeline.Key(RemeshPipeline.Stage.Bake, settings, null);
+            settings.sourceAO.normalMap = false;
+            Assert.AreNotEqual(key, RemeshPipeline.Key(RemeshPipeline.Stage.Bake, settings, null));
+        }
+
+        [Test]
+        public void TextureAoCapturesSelectedUvAndTransformsMirrorsWithoutTouchingTheMesh()
+        {
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up }, triangles = new[] { 0, 1, 2 } };
+            try {
+                mesh.SetUVs(2, new[] { Vector2.one, Vector2.right, Vector2.up });
+                var geometry = TextureAoBakePanel.CaptureTarget(mesh, 2);
+                TextureAoBakePanel.TransformTarget(geometry, Matrix4x4.Scale(new Vector3(-2, 3, 1)));
+                Assert.AreEqual(new Vector3(-2, 0, 0), geometry.positions[1]);
+                CollectionAssert.AreEqual(new[] { 0, 2, 1 }, geometry.indices);
+                Assert.AreEqual(Vector3.forward, geometry.normals[0]);
+                Assert.AreEqual(Vector2.one, geometry.uv[0]);
+                Assert.AreEqual(Vector3.right, mesh.vertices[1], "the live target is never mutated");
+                CollectionAssert.AreEqual(new[] { 0, 1, 2 }, mesh.triangles);
+                Assert.Throws<InvalidOperationException>(() => TextureAoBakePanel.CaptureTarget(mesh, 1));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator TextureAoStandalonePublishesExistingUvPreviewAndCancelsWithoutPartialResults()
+        {
+            var root = new GameObject("AO existing UV source");
+            var mesh = new Mesh { name = "AO target", vertices = new[] { Vector3.zero, Vector3.right, Vector3.up },
+                triangles = new[] { 0, 1, 2 }, uv = new[] { Vector2.zero, Vector2.right, Vector2.up } };
+            var panel = new TextureAoBakePanel();
+            root.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var renderer = root.AddComponent<MeshRenderer>();
+            var entry = new MeshEntry { originalMesh = mesh, renderer = renderer };
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var settings = (RemeshSettings)typeof(TextureAoBakePanel).GetField("settings", flags).GetValue(panel);
+            settings.textureResolution = 64; settings.sourceAO.samples = 16;
+            var bake = typeof(TextureAoBakePanel).GetMethod("Bake", flags);
+            var entries = new System.Collections.Generic.List<MeshEntry>();
+            try {
+                var task = (System.Threading.Tasks.Task)bake.Invoke(panel, new object[] { new[] { entry }, root });
+                double deadline = EditorApplication.timeSinceStartup + 15;
+                while (!task.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(task.IsCompleted, "the standalone worker must finish without blocking the editor loop");
+                Assert.IsFalse(task.IsFaulted);
+                Assert.IsTrue(panel.GetUvContent(entries));
+                Assert.AreNotSame(mesh, entries[0].originalMesh);
+                Assert.IsNotNull(entries[0].previewTexture);
+                var texture = (Texture2D)entries[0].previewTexture;
+                Assert.AreEqual(255, texture.GetPixels32()[8 * 64 + 8].g);
+                var items = new System.Collections.Generic.List<MeshViewport3D.Item>();
+                Assert.IsTrue(panel.Get3DContent(items));
+                Assert.AreSame(entries[0].originalMesh, items[0].mesh);
+                Assert.AreSame(mesh, root.GetComponent<MeshFilter>().sharedMesh);
+                Assert.That(mesh.normals.Length, Is.Zero, "source readback must not regenerate normals on the live mesh");
+                entries.Clear();
+                task = (System.Threading.Tasks.Task)bake.Invoke(panel, new object[] { new[] { entry }, root });
+                panel.Clear();
+                deadline = EditorApplication.timeSinceStartup + 15;
+                while (!task.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(task.IsCompleted);
+                Assert.IsFalse(panel.GetUvContent(entries), "cancelled/stale work publishes no preview");
+            }
+            finally { panel.Deactivate(); UnityEngine.Object.DestroyImmediate(root); UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator TextureAoSourceMapsReadBackAsynchronouslyAndSkipDisabledMaps()
+        {
+            var root = new GameObject("AO textured source");
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up },
+                uv = new[] { Vector2.zero, Vector2.right, Vector2.up }, triangles = new[] { 0, 1, 2 } };
+            var normal = new Texture2D(1, 1, TextureFormat.RGBA32, false, true);
+            var ao = new Texture2D(1, 1, TextureFormat.RGBA32, false, true);
+            var material = new Material(Shader.Find("Standard"));
+            try {
+                if (!SystemInfo.supportsAsyncGPUReadback) Assert.Ignore("Graphics device has no async readback.");
+                normal.SetPixel(0, 0, new Color(0.5f, 0.5f, 1, 1)); normal.Apply(false, true);
+                ao.SetPixel(0, 0, new Color32(64, 64, 64, 255)); ao.Apply(false, true);
+                material.SetTexture("_BumpMap", normal); material.SetTexture("_OcclusionMap", ao);
+                root.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var renderer = root.AddComponent<MeshRenderer>(); renderer.sharedMaterial = material;
+                var options = new RemeshSettings { bakeSourceAO = true, multiplySourceAO = true };
+                var source = RemeshSource.Capture(Matrix4x4.identity, new[] { renderer }, aoOnly: true, aoReadbackSettings: options);
+                double deadline = EditorApplication.timeSinceStartup + 15;
+                while (!source.TextureReadbacks.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(source.TextureReadbacks.IsCompleted, "GPU completion must arrive without blocking Unity");
+                Assert.IsFalse(source.TextureReadbacks.IsFaulted, source.TextureReadbacks.Exception?.ToString());
+                Assert.AreEqual(64, source.materials[0].ao.image.pixels[0].g);
+                var n = source.materials[0].normal.Sample(Vector2.zero, Color.clear);
+                Assert.That(n.b, Is.GreaterThan(0.99f)); Assert.That(n.r, Is.EqualTo(0.5f).Within(0.01f));
+                Assert.IsFalse(normal.isReadable); Assert.IsFalse(ao.isReadable);
+                Assert.AreSame(material, renderer.sharedMaterial);
+                options.sourceAO.normalMap = false; options.multiplySourceAO = false;
+                source = RemeshSource.Capture(Matrix4x4.identity, new[] { renderer }, aoOnly: true, aoReadbackSettings: options);
+                Assert.IsTrue(source.TextureReadbacks.IsCompleted);
+                Assert.IsNull(source.materials[0].normal.image); Assert.IsNull(source.materials[0].ao.image);
+            }
+            finally {
+                UnityEngine.Object.DestroyImmediate(root); UnityEngine.Object.DestroyImmediate(mesh);
+                UnityEngine.Object.DestroyImmediate(normal); UnityEngine.Object.DestroyImmediate(ao); UnityEngine.Object.DestroyImmediate(material);
+            }
+        }
+
+        [Test]
+        public void AoSourceCaptureIncludesUntexturedGeometryWithoutUvOrMaterials()
+        {
+            var root = new GameObject("AO untextured source");
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up }, triangles = new[] { 0, 1, 2 } };
+            try {
+                root.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var renderer = root.AddComponent<MeshRenderer>();
+                var source = RemeshSource.Capture(Matrix4x4.identity, new[] { renderer }, aoOnly: true);
+                Assert.AreEqual(3, source.indices.Length);
+                Assert.AreEqual(3, source.normals.Length);
+                Assert.IsNull(source.materials[0].normal.image);
+                Assert.IsNull(source.materials[0].ao.image);
+                Assert.That(mesh.normals.Length, Is.Zero);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
+        public void TextureAoPngEncodingRunsOnWorkerAndPreservesLinearBytes()
+        {
+            var pixels = new[] { new Color32(64, 64, 64, 255) };
+            var bytes = System.Threading.Tasks.Task.Run(() => ImageConversion.EncodeArrayToPNG(pixels,
+                UnityEngine.Experimental.Rendering.GraphicsFormat.R8G8B8A8_UNorm, 1, 1)).GetAwaiter().GetResult();
+            var texture = new Texture2D(1, 1, TextureFormat.RGBA32, false, true);
+            try {
+                Assert.IsTrue(texture.LoadImage(bytes));
+                Assert.AreEqual(pixels[0], texture.GetPixels32()[0], "AO is raw linear data, no gamma conversion");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(texture); }
+        }
+
         [Test]
         public void NearestSeedsAssignsEveryTexelToItsClosestSeed()
         {
@@ -797,5 +1050,35 @@ namespace SashaRX.UnityMeshLab.Tests
             // No seeds at all: everything stays unassigned.
             foreach (var n in RemeshBaker.NearestSeeds(new bool[16], 4, CancellationToken.None)) Assert.AreEqual(-1, n);
         }
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator TextureReadbackWaitCancelsWithoutWaitingForGpuCompletion()
+        {
+            var gpu = new System.Threading.Tasks.TaskCompletionSource<bool>();
+            using (var cancellation = new CancellationTokenSource()) {
+                var wait = GpuReadback.AwaitReadbacks(gpu.Task, cancellation.Token);
+                Assert.IsFalse(wait.IsCompleted);
+                cancellation.Cancel();
+                var deadline = EditorApplication.timeSinceStartup + 3;
+                while (!wait.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(wait.IsCanceled, "Cancel must release the AO panel while GPU readback is still pending");
+                Assert.IsFalse(gpu.Task.IsCompleted, "GPU callbacks still own their cleanup");
+                gpu.SetException(new InvalidOperationException("Late GPU failure"));
+                yield return null;
+                Assert.IsTrue(wait.IsCanceled);
+            }
+        }
+
+        [Test]
+        public void TextureReadbackFailureStillReachesTheCaller()
+        {
+            var failure = new InvalidOperationException("GPU readback failed");
+            var readback = System.Threading.Tasks.Task.FromException(failure);
+            var wait = GpuReadback.AwaitReadbacks(readback, CancellationToken.None);
+            Assert.AreSame(failure, Assert.Throws<InvalidOperationException>(() => wait.GetAwaiter().GetResult()));
+            var observer = GpuReadback.ObserveFailure(readback);
+            Assert.IsTrue(observer.IsCompleted);
+            Assert.DoesNotThrow(() => observer.GetAwaiter().GetResult());
+        }
+
     }
 }

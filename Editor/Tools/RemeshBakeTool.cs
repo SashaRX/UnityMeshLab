@@ -435,6 +435,13 @@ namespace SashaRX.UnityMeshLab
                         settings.gpuProjection = EditorGUILayout.Toggle(new GUIContent("GPU projection",
                             GpuBvh.Supported ? "Run the projection rays and nearest-point fallbacks on the GPU (BvhQueries.compute). Same results as the CPU BVH, usually several times faster on large atlases."
                                              : "This platform has no compute shaders; the bake runs on the CPU."), settings.gpuProjection);
+                    settings.bakeSourceAO = EditorGUILayout.Toggle(new GUIContent("Bake source AO",
+                        "Calculate ambient occlusion at projected source samples instead of only transferring the material's AO map. AO rays run on CPU workers."), settings.bakeSourceAO);
+                    if (settings.bakeSourceAO) {
+                        settings.sourceAO ??= new SourceAoSettings();
+                        TextureAoBakePanel.DrawSourceSettings(settings.sourceAO);
+                        settings.multiplySourceAO = EditorGUILayout.Toggle("Multiply source AO map", settings.multiplySourceAO);
+                    }
                     settings.transferVertexColor = EditorGUILayout.Toggle("Vertex color (RGB)", settings.transferVertexColor);
                     settings.transferVertexAlpha = EditorGUILayout.Toggle("Vertex alpha", settings.transferVertexAlpha);
                     settings.vertexColorTint = EditorGUILayout.Toggle(new GUIContent("Vertex color tints albedo",

@@ -249,6 +249,79 @@ namespace SashaRX.UnityMeshLab.Tests
             return mesh;
         }
 
+        [TestCase(false, 0, .59f)]
+        [TestCase(false, 1, 1f)]
+        [TestCase(true, 0, .59f)]
+        [TestCase(true, 1, 1f)]
+        public void CheckerOn3DModelIsOpaqueAndIgnoresIslandFill(bool colorMode, int channel, float fillAlpha)
+        {
+            var mesh = Quad();
+            var canvas = new UvCanvasView { CheckerEnabled = true, CheckerColorMode = colorMode,
+                CheckerShowR = true, CheckerShowG = false, ShowBorder = false, FillAlpha = fillAlpha };
+            var context = new UvToolContext { PreviewUvChannel = channel };
+            var cameraObject = new GameObject("Checker surface test camera") { hideFlags = HideFlags.HideAndDontSave };
+            RenderTexture layer = null, target = null; Texture2D pixels = null;
+            Material material = null, baseMaterial = null;
+            var previous = RenderTexture.active;
+            int fillCalls = 0;
+            try {
+                mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
+                mesh.uv2 = new[] { Vector2.zero, Vector2.right * .5f, Vector2.up * .5f, Vector2.one * .5f };
+                canvas.SetFillModes(new List<UvCanvasView.FillModeEntry> { new UvCanvasView.FillModeEntry {
+                    name = "Opaque island fill", drawCallback = (view, x, y, size, m, entry) => {
+                        ++fillCalls;
+                        view.GlCheckerBg(x, y, size, 1, 1f);
+                    } } });
+                canvas.Init();
+                layer = canvas.RenderUvLayer(context, mesh,
+                    new MeshEntry { originalMesh = mesh, previewTexture = Texture2D.redTexture }, null, 64, false);
+                RenderTexture.active = layer;
+                pixels = new Texture2D(64, 64, TextureFormat.RGBA32, false);
+                pixels.ReadPixels(new Rect(0, 0, 64, 64), 0, 0); pixels.Apply();
+                foreach (var color in pixels.GetPixels()) Assert.That(color.a, Is.GreaterThan(.99f), "checker must fully replace the baked surface");
+                Assert.AreEqual(0, fillCalls, "Islands fill must not obscure Checker even at alpha 1");
+
+                var shader = Shader.Find("Hidden/MeshLab/UvOverlay"); Assert.IsNotNull(shader);
+                material = new Material(shader);
+                material.SetTexture("_MainTex", layer); material.SetColor("_Color", Color.white);
+                material.SetFloat("_UVChannel", channel);
+                baseMaterial = new Material(Shader.Find("Unlit/Color")); baseMaterial.color = Color.red;
+                target = new RenderTexture(64, 64, 24, RenderTextureFormat.ARGB32); target.Create();
+                var camera = cameraObject.AddComponent<Camera>();
+                camera.enabled = false; camera.orthographic = true; camera.orthographicSize = .5f;
+                camera.transform.position = new Vector3(.5f, .5f, -2);
+                camera.clearFlags = CameraClearFlags.SolidColor; camera.backgroundColor = Color.red;
+                camera.cullingMask = 1 << 31; camera.targetTexture = target;
+                Graphics.DrawMesh(mesh, Matrix4x4.identity, baseMaterial, 31, camera, 0, null,
+                    UnityEngine.Rendering.ShadowCastingMode.Off, false);
+                Graphics.DrawMesh(mesh, Matrix4x4.identity, material, 31, camera, 0, null,
+                    UnityEngine.Rendering.ShadowCastingMode.Off, false);
+                camera.Render();
+                RenderTexture.active = target;
+                pixels.ReadPixels(new Rect(0, 0, 64, 64), 0, 0); pixels.Apply();
+                if (colorMode) {
+                    var low = pixels.GetPixel(8, 32); var high = pixels.GetPixel(56, 32);
+                    Assert.That(high.r - low.r, Is.GreaterThan(.25f), "UV gradient remains visible over the baked red surface");
+                    Assert.That(high.g, Is.EqualTo(high.r).Within(.03f), "red baked material must not leak through the grayscale checker");
+                    Assert.That(high.r, channel == 0 ? Is.GreaterThan(.7f) : Is.LessThan(.7f), "3D samples the selected UV channel");
+                }
+                else {
+                    float min = 1, max = 0;
+                    foreach (var color in pixels.GetPixels()) { min = Mathf.Min(min, color.g); max = Mathf.Max(max, color.g); }
+                    Assert.That(max - min, Is.GreaterThan(.3f), "3D checker retains cell contrast over a baked material");
+                }
+            }
+            finally {
+                RenderTexture.active = previous; canvas.Cleanup(); Object.DestroyImmediate(cameraObject);
+                if (layer) { layer.Release(); Object.DestroyImmediate(layer); }
+                if (target) { target.Release(); Object.DestroyImmediate(target); }
+                if (pixels) Object.DestroyImmediate(pixels);
+                if (material) Object.DestroyImmediate(material);
+                if (baseMaterial) Object.DestroyImmediate(baseMaterial);
+                Object.DestroyImmediate(mesh);
+            }
+        }
+
         [Test]
         public void UvOverlayShowsCheckerEvenWhenModelVertexColorsAreBlack()
         {
@@ -314,5 +387,44 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             finally { Object.DestroyImmediate(mesh); }
         }
+        [TestCase(false)]
+        [TestCase(true)]
+        public void LightmapSpotOutlineUsesTheRendererAtlasTransform(bool selected)
+        {
+            var mesh = Quad(); mesh.uv2 = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
+            var root = new GameObject("Lightmap spot outline");
+            var renderer = root.AddComponent<MeshRenderer>();
+            renderer.lightmapIndex = 0; renderer.lightmapScaleOffset = new Vector4(.25f, .25f, .5f, .25f);
+            var entry = new MeshEntry { originalMesh = mesh, renderer = renderer };
+            var context = new UvToolContext { PreviewUvChannel = 1 };
+            var canvas = new UvCanvasView { SpotMode = true, CurrentPreviewMode = UvCanvasView.PreviewMode.Lightmap };
+            context.PreviewShellDataCache[((long)mesh.GetInstanceID() << 8) | 1] = UvTopology.BuildShellData(mesh.uv2, mesh.triangles);
+            var target = new RenderTexture(128, 128, 0, RenderTextureFormat.ARGB32); target.Create();
+            var pixels = new Texture2D(128, 128, TextureFormat.RGBA32, false, true);
+            var previous = RenderTexture.active;
+            try {
+                canvas.Init();
+                canvas.ApplySpotHit(true, new ShellUvHit { meshEntry = entry, shellId = 0 }, null);
+                if (selected) Assert.IsTrue(canvas.SelectSpotHover());
+                RenderTexture.active = target; GL.Clear(true, true, Color.clear);
+                GL.PushMatrix();
+                try {
+                    GL.LoadPixelMatrix(0, 128, 128, 0); canvas.GlMat.SetPass(0);
+                    typeof(UvCanvasView).GetMethod("DrawSpotOutlines", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                        .Invoke(canvas, new object[] { context, new List<System.ValueTuple<Mesh, MeshEntry, int>> { (mesh, entry, 0) }, 0f, 0f, 128f });
+                }
+                finally { GL.PopMatrix(); }
+                pixels.ReadPixels(new Rect(0, 0, 128, 128), 0, 0); pixels.Apply();
+                float green = 0;
+                for (int y = 47; y <= 49; ++y)
+                    for (int x = 63; x <= 65; ++x) green = Mathf.Max(green, pixels.GetPixel(x, y).g);
+                Assert.That(green, Is.GreaterThan(.7f), "Spot outlines must follow the scaled, offset lightmap UVs");
+            }
+            finally {
+                RenderTexture.active = previous; canvas.Cleanup(); target.Release();
+                Object.DestroyImmediate(target); Object.DestroyImmediate(pixels); Object.DestroyImmediate(root); Object.DestroyImmediate(mesh);
+            }
+        }
+
     }
 }

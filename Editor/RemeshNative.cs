@@ -198,6 +198,11 @@ namespace SashaRX.UnityMeshLab
             }
             int G(int v) => group == null ? v : group[v];
             var sum = new Vector3[groups];
+            var strongestFace = new Vector3[groups];
+            void KeepFace(int g, Vector3 face)
+            {
+                if (face.sqrMagnitude > strongestFace[g].sqrMagnitude) strongestFace[g] = face;
+            }
             bool byArea = weighting != RemeshNormalWeighting.CornerAngle;
             bool byAngle = weighting != RemeshNormalWeighting.FaceArea;
             for (int i = 0; i < geometry.indices.Length; i += 3) {
@@ -205,6 +210,7 @@ namespace SashaRX.UnityMeshLab
                 int ga = G(a), gb = G(b), gc = G(c);
                 Vector3 ab = p[b] - p[a], ac = p[c] - p[a], bc = p[c] - p[b];
                 Vector3 n = Vector3.Cross(ab, ac); // |n| = 2 * face area
+                KeepFace(ga, n); KeepFace(gb, n); KeepFace(gc, n);
                 if (!byAngle) { sum[ga] += n; sum[gb] += n; sum[gc] += n; continue; }
                 Vector3 face = n.sqrMagnitude > 1e-30f ? MeshGeometry.UnitDirection(n) : Vector3.zero;
                 float angleA = CornerAngle(ab, ac), angleB = CornerAngle(-ab, bc), angleC = CornerAngle(-ac, -bc);
@@ -217,13 +223,22 @@ namespace SashaRX.UnityMeshLab
                 if (sq > maxSq) maxSq = sq;
             }
             float floor = maxSq * 1e-12f;
-            for (int i = 0; i < p.Length; ++i)
-                if (sum[G(i)].sqrMagnitude > floor) geometry.normals[i] = MeshGeometry.UnitDirection(sum[G(i)]);
+            for (int i = 0; i < p.Length; ++i) {
+                int g = G(i);
+                if (sum[g].sqrMagnitude > floor) geometry.normals[i] = MeshGeometry.UnitDirection(sum[g]);
+                // Preserve a usable native normal when the weighted sum cancels.
+                // If that is also zero, use the largest incident face of this split
+                // group. A valid sliver must not inherit zero merely because another
+                // face on the mesh is much larger. Truly degenerate faces stay zero.
+                else if (geometry.normals[i].sqrMagnitude < 1e-12f)
+                    geometry.normals[i] = MeshGeometry.UnitDirection(strongestFace[g]);
+            }
             return group;
         }
 
         // Gram-Schmidt every tangent against the final vertex normal, keeping its
-        // handedness; a tangent that collapses onto the normal is left as generated.
+        // handedness. Missing/parallel tangents need the same perpendicular fallback
+        // as the bake's Basis(), so the saved mesh and baked map use the same frame.
         internal static void OrthogonalizeTangents(Geometry geometry)
         {
             if (geometry.tangents == null) return;
@@ -232,9 +247,12 @@ namespace SashaRX.UnityMeshLab
                 var n = geometry.normals[i];
                 var t = new Vector3(t4.x, t4.y, t4.z);
                 t -= n * Vector3.Dot(t, n);
-                if (t.sqrMagnitude < 1e-12f) continue;
-                t.Normalize();
-                geometry.tangents[i] = new Vector4(t.x, t.y, t.z, t4.w);
+                if (t.sqrMagnitude < 1e-12f) {
+                    if (n.sqrMagnitude < 1e-12f) continue;
+                    t = Vector3.Cross(n, Mathf.Abs(n.y) < .9f ? Vector3.up : Vector3.right);
+                }
+                t = MeshGeometry.UnitDirection(t);
+                geometry.tangents[i] = new Vector4(t.x, t.y, t.z, t4.w < 0 ? -1 : 1);
             }
         }
 

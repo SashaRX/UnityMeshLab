@@ -35,8 +35,14 @@ namespace SashaRX.UnityMeshLab
         internal static int[] UvBoundaryEdgePairs(Mesh mesh, int channel)
         {
             var uv = ReadUv(mesh, channel);
-            if (uv == null || uv.Length != mesh.vertexCount) return Array.Empty<int>();
-            var positions = MeshGeometry.WeldPositions(mesh.vertices, out _);
+            return UvBoundaryEdgePairs(mesh.vertices, uv, mesh.triangles);
+        }
+
+        // Array-only overload for background preview preparation. Inputs remain immutable.
+        internal static int[] UvBoundaryEdgePairs(Vector3[] vertices, Vector2[] uv, int[] sourceTriangles)
+        {
+            if (uv == null || vertices == null || uv.Length != vertices.Length || sourceTriangles == null) return Array.Empty<int>();
+            var positions = MeshGeometry.WeldPositions(vertices, out _);
             var slots = new Dictionary<(int, float, float), int>();
             var representatives = new List<int>();
             var remap = new int[uv.Length];
@@ -47,8 +53,12 @@ namespace SashaRX.UnityMeshLab
                 }
                 remap[i] = slot;
             }
-            var triangles = mesh.triangles;
-            for (int i = 0; i < triangles.Length; ++i) triangles[i] = remap[triangles[i]];
+            var triangles = new int[sourceTriangles.Length];
+            for (int i = 0; i < triangles.Length; ++i) {
+                int index = sourceTriangles[i];
+                if (index < 0 || index >= remap.Length) return Array.Empty<int>();
+                triangles[i] = remap[index];
+            }
             var pairs = BoundaryEdgePairs(triangles);
             for (int i = 0; i < pairs.Length; ++i) pairs[i] = representatives[pairs[i]];
             return pairs;
