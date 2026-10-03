@@ -202,7 +202,7 @@ namespace SashaRX.UnityMeshLab
             running = true;
             try {
                 string absolute = Path.GetFullPath(path); byte[] png = result.png;
-                await Task.Run(() => File.WriteAllBytes(absolute, png));
+                await Task.Run(() => File.WriteAllBytes(absolute, png), CancellationToken.None);
                 AssetDatabase.ImportAsset(path);
                 TextureAssets.Configure(path, TextureAssets.Kind.Linear, result.maps.size);
                 status = "Saved linear AO: " + path;
