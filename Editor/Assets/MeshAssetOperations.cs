@@ -299,31 +299,31 @@ namespace SashaRX.UnityMeshLab
         // gracefully degrades to the absolute path the user picked
         // (Unity's FBX exporter accepts both).
         void ExportNarrowIntentGroups(
-                    Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>> fbxGroups,
-                    FbxExportIntent intent,
-                    bool overwriteSource)
-                {
-        #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-                    int okCount = 0;
-                    int totalCount = 0;
-                    foreach (var kv in fbxGroups)
-                    {
-                        totalCount++;
-                        string sourceFbxPath = kv.Key;
-                        var entries = kv.Value.Select(p => p.entry).ToList();
-                        if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath)) continue;
+            Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>> fbxGroups,
+            FbxExportIntent intent,
+            bool overwriteSource)
+        {
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            int okCount = 0;
+            int totalCount = 0;
+            foreach (var kv in fbxGroups)
+            {
+                totalCount++;
+                string sourceFbxPath = kv.Key;
+                var entries = kv.Value.Select(p => p.entry).ToList();
+                if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath)) continue;
 
-                        RestoreAllPreviews();
-                        if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
-                            okCount++;
-                    }
-                    UvtLog.Info($"[FBX Export] Narrow-intent export: {okCount}/{totalCount} group(s) succeeded.");
-        #else
-                    UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
-        #endif
-                }
+                RestoreAllPreviews();
+                if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
+                    okCount++;
+            }
+            UvtLog.Info($"[FBX Export] Narrow-intent export: {okCount}/{totalCount} group(s) succeeded.");
+#else
+            UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
+#endif
+        }
 
-        #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
         static bool TryChooseNarrowExportPath(string sourceFbxPath, FbxExportIntent intent, bool overwriteSource, out string outputFbxPath)
         {
             outputFbxPath = null;
@@ -357,7 +357,7 @@ namespace SashaRX.UnityMeshLab
 
             return true;
         }
-        #endif
+#endif
 
         /// <summary>
         /// Re-save the FBX at <paramref name="sourceFbxPath"/> overwriting
@@ -459,86 +459,86 @@ namespace SashaRX.UnityMeshLab
         // to the atomic write is a follow-up; it keeps the direct overwrite that existing
         // tooling's sequencing depends on.
         void ExportFbx(bool overwriteSource, FbxExportIntent intent)
-                {
+        {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-                    if (intent == FbxExportIntent.None)
-                    {
-                        UvtLog.Warn("[FBX Export] ExportFbx called with FbxExportIntent.None — nothing to write.");
-                        return;
-                    }
-                    if (ctx?.MeshEntries == null || ctx.MeshEntries.Count == 0)
-                    {
-                        UvtLog.Error("[FBX Export] No meshes loaded.");
-                        return;
-                    }
+            if (intent == FbxExportIntent.None)
+            {
+                UvtLog.Warn("[FBX Export] ExportFbx called with FbxExportIntent.None — nothing to write.");
+                return;
+            }
+            if (ctx?.MeshEntries == null || ctx.MeshEntries.Count == 0)
+            {
+                UvtLog.Error("[FBX Export] No meshes loaded.");
+                return;
+            }
 
-                    // Restore any active preview (checker, AO, shell colors) before export
-                    // so that original materials are captured, not preview materials.
-                    RestoreAllPreviews();
+            // Restore any active preview (checker, AO, shell colors) before export
+            // so that original materials are captured, not preview materials.
+            RestoreAllPreviews();
 
-                    // The source FBX: the entries' own, else the LODGroup's prefab source, else
-                    // the path cached at Refresh. Generated LODs (.asset paths) export into it.
-                    string sourceFbxFile = FbxExport.ResolveSourceFbxPath(ctx.MeshEntries, ctx.LodGroup, ctx.SourceFbxPath);
-                    var fbxGroups = FbxExport.GroupByFbx(ctx.MeshEntries, GetResultMesh, sourceFbxFile);
-                    if (fbxGroups.Count == 0) { UvtLog.Error("[FBX Export] No processed meshes to export."); return; }
+            // The source FBX: the entries' own, else the LODGroup's prefab source, else
+            // the path cached at Refresh. Generated LODs (.asset paths) export into it.
+            string sourceFbxFile = FbxExport.ResolveSourceFbxPath(ctx.MeshEntries, ctx.LodGroup, ctx.SourceFbxPath);
+            var fbxGroups = FbxExport.GroupByFbx(ctx.MeshEntries, GetResultMesh, sourceFbxFile);
+            if (fbxGroups.Count == 0) { UvtLog.Error("[FBX Export] No processed meshes to export."); return; }
 
-                    // Narrow-intent fast path: no hierarchy / LOD-chain mutation asked for, so
-                    // every group goes through the safe core. This is the path UV2 transfer, UV
-                    // pack and vertex color baking take — node names, transforms, materials and
-                    // untouched per-vertex channels come through byte-for-byte (modulo what
-                    // Unity's FBX Exporter itself rewrites at the document level).
-                    if ((intent & (FbxExportIntent.Hierarchy | FbxExportIntent.LodGroup)) == 0)
-                    {
-                        ExportNarrowIntentGroups(fbxGroups, intent, overwriteSource);
-                        return;
-                    }
+            // Narrow-intent fast path: no hierarchy / LOD-chain mutation asked for, so
+            // every group goes through the safe core. This is the path UV2 transfer, UV
+            // pack and vertex color baking take — node names, transforms, materials and
+            // untouched per-vertex channels come through byte-for-byte (modulo what
+            // Unity's FBX Exporter itself rewrites at the document level).
+            if ((intent & (FbxExportIntent.Hierarchy | FbxExportIntent.LodGroup)) == 0)
+            {
+                ExportNarrowIntentGroups(fbxGroups, intent, overwriteSource);
+                return;
+            }
 
-                    bool allGroupsSucceeded = true;
-                    var batch = new HierarchyExportBatch();
-                    foreach (var kv in fbxGroups)
-                        if (!ExportHierarchyGroup(kv.Key, kv.Value, overwriteSource, batch)) allGroupsSucceeded = false;
+            bool allGroupsSucceeded = true;
+            var batch = new HierarchyExportBatch();
+            foreach (var kv in fbxGroups)
+                if (!ExportHierarchyGroup(kv.Key, kv.Value, overwriteSource, batch)) allGroupsSucceeded = false;
 
-                    FinishHierarchyExports(batch, overwriteSource, allGroupsSucceeded);
+            FinishHierarchyExports(batch, overwriteSource, allGroupsSucceeded);
 #endif
-                }
+        }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
         void FinishHierarchyExports(HierarchyExportBatch batch, bool overwriteSource, bool allGroupsSucceeded)
         {
             // Generated scene LOD objects are embedded in the exported FBX
-                    // now and would duplicate on reimport.
-                    if (overwriteSource && allGroupsSucceeded)
-                        LodGroupUtility.ClearGeneratedLods(ctx);
+            // now and would duplicate on reimport.
+            if (overwriteSource && allGroupsSucceeded)
+                LodGroupUtility.ClearGeneratedLods(ctx);
 
-                    // UV2 is baked into the FBX AND kept in the sidecar (for re-application after
-                    // third-party postprocessors like Bakery); the sidecar entries stay.
-                    AssetDatabase.Refresh();
+            // UV2 is baked into the FBX AND kept in the sidecar (for re-application after
+            // third-party postprocessors like Bakery); the sidecar entries stay.
+            AssetDatabase.Refresh();
 
-                    // Unity recreates sub-asset meshes on reimport; old MeshFilter references go
-                    // Missing even when names did not change. Relink every overwritten FBX.
-                    if (overwriteSource && allGroupsSucceeded && ctx?.LodGroup != null)
-                    {
-                        foreach (string fbxPath in batch.OverwrittenFbxPaths)
-                        {
-                            batch.MeshRenamesByFbx.TryGetValue(fbxPath, out var renameMap);
-                            FbxExport.RelinkSceneMeshReferences(fbxPath, renameMap, ctx.LodGroup);
-                        }
-                    }
-
-                    // Stale "Lit" / "No Name" material remaps the importer created for collision-
-                    // only nodes must not survive an overwrite.
-                    if (overwriteSource && allGroupsSucceeded)
-                    {
-                        foreach (string fbxPath in batch.OverwrittenFbxPaths)
-                            FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath));
-                    }
-
-                    if (allGroupsSucceeded)
-                        SwitchToPostApplyView();
+            // Unity recreates sub-asset meshes on reimport; old MeshFilter references go
+            // Missing even when names did not change. Relink every overwritten FBX.
+            if (overwriteSource && allGroupsSucceeded && ctx?.LodGroup != null)
+            {
+                foreach (string fbxPath in batch.OverwrittenFbxPaths)
+                {
+                    batch.MeshRenamesByFbx.TryGetValue(fbxPath, out var renameMap);
+                    FbxExport.RelinkSceneMeshReferences(fbxPath, renameMap, ctx.LodGroup);
                 }
+            }
+
+            // Stale "Lit" / "No Name" material remaps the importer created for collision-
+            // only nodes must not survive an overwrite.
+            if (overwriteSource && allGroupsSucceeded)
+            {
+                foreach (string fbxPath in batch.OverwrittenFbxPaths)
+                    FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath));
+            }
+
+            if (allGroupsSucceeded)
+                SwitchToPostApplyView();
+        }
 #endif
 
-        #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
         sealed class HierarchyExportBatch
         {
             public readonly HashSet<string> OverwrittenFbxPaths = new HashSet<string>();
@@ -765,7 +765,7 @@ namespace SashaRX.UnityMeshLab
                         Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true, lockForFbxOverwrite: true);
                     }
         }
-        #endif
+#endif
 
         // Where vertex AO was written, as the export and the sidecar need it.
         static SidecarStore.AoUvTarget AoTarget => SidecarStore.AoUvTarget.From(VertexChannels.LastAppliedTargetChannel);
