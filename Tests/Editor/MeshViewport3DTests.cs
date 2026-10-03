@@ -399,6 +399,40 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [UnityTest]
+        public IEnumerator CanvasAndSceneShellColorsMatchOnEverySelectedUvChannel()
+        {
+            var mesh = Quad();
+            var canvas = new UvCanvasView();
+            var context = new UvToolContext();
+            try {
+                for (int channel = 0; channel < 3; ++channel) {
+                    var offset = Vector2.one * channel * .2f;
+                    mesh.SetUVs(channel, new List<Vector2> { offset, offset + Vector2.right,
+                        offset + Vector2.up, offset + Vector2.one });
+                }
+                var entry = new MeshEntry { originalMesh = mesh, include = true };
+                canvas.Init();
+                foreach (int channel in new[] { 0, 1, 2, 0 }) {
+                    context.PreviewUvChannel = channel;
+                    double deadline = EditorApplication.timeSinceStartup + 10;
+                    var shells = canvas.GetPreviewShellCache(context, mesh, channel);
+                    while (shells == null && EditorApplication.timeSinceStartup < deadline) {
+                        canvas.PollPreviewJobs(); yield return null;
+                        shells = canvas.GetPreviewShellCache(context, mesh, channel);
+                    }
+                    Assert.IsNotNull(shells, "Async shell preparation must complete");
+                    var sceneKeys = new ShellColorModelPreview.PreviewShellCache(channel).GetOrBuild(mesh);
+                    foreach (var shell in shells.shells) {
+                        int canvasKey = canvas.GetShellColorKey(context, shell, entry);
+                        foreach (int face in shell.faceIndices)
+                            Assert.AreEqual(sceneKeys[face], canvasKey, "2D and 3D shell colors must agree on UV" + channel);
+                    }
+                }
+            }
+            finally { canvas.Cleanup(); Object.DestroyImmediate(mesh); }
+        }
+
         [Test]
         public void SceneShellCacheUsesRequestedPreviewUvChannel()
         {

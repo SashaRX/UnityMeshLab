@@ -104,6 +104,7 @@ namespace SashaRX.UnityMeshLab
         public List<UvShell> shells;
         public Dictionary<int, int> faceToShell;
         public Dictionary<int, UvShell> shellById;
+        internal Dictionary<int, int> colorKeys;
         public Bounds[] shellBounds;
         public int[] triangles;
         public Vector2[] uvs;
