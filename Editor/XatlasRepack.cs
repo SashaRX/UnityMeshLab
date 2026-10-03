@@ -1275,7 +1275,7 @@ namespace SashaRX.UnityMeshLab
                 if (shellTriIndices.Length == 0) { skipped++; continue; }
                 if (ArapParameterization.Reparameterize(
                         positions, tris, shellTriIndices, shell.vertexIndices,
-                        uvFlat, opts.arapIterations, out int _initFlipped))
+                        uvFlat, opts.arapIterations, out _))
                 {
                     converged++;
                     UvtLog.Verbose(UvtLog.Category.Repack,
