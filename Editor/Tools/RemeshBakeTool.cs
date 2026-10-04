@@ -447,10 +447,10 @@ namespace SashaRX.UnityMeshLab
                             "How deep behind a proxy face a texel looks for the source, as a fraction of the model's diagonal: the ray along the face " +
                             "normal, then the nearest surface within the same reach. Short keeps each face to what sits behind it and bakes fast; " +
                             "long lets a face see across courtyards and costs a full traversal per empty texel."), settings.proxyDepth, 0.01f, 1f);
-                    settings.bakeSamples = EditorGUILayout.IntPopup(new GUIContent("Samples per texel", "Supersampling for smoother edges and detail."),
+                    settings.bakeSamples = EditorGUILayout.IntPopup(new GUIContent("Samples per texel", "Integrate texel coverage over the surface, including neighbouring faces across UV seams. More samples capture finer texture detail."),
                         settings.bakeSamples, Array.ConvertAll(SampleNames, n => new GUIContent(n)), SampleCounts);
                     settings.dilationRadius = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Dilation radius (px)",
-                        "After atlas padding, extend every baked map from its nearest filled pixel by this additional radius. 0 keeps padding alone."),
+                        "After atlas padding, extend each shell by this additional radius, sampling the connected 3D surface across UV seams. Open edges clamp to their surface boundary. 0 keeps padding alone."),
                         settings.dilationRadius), 0, RemeshSettings.MaxDilationRadius);
                     using (new EditorGUI.DisabledScope(!GpuBvh.Supported))
                         settings.gpuProjection = EditorGUILayout.Toggle(new GUIContent("GPU projection",

@@ -452,7 +452,7 @@ namespace SashaRX.UnityMeshLab
                 beauty = new RemeshBeauty(root, SourceDiagonal);
                 if (!string.IsNullOrEmpty(beauty.occluderSummary)) UvtLog.Info("[Remesh] Beauty shadows also test " + beauty.occluderSummary + ".");
             }
-            long sourceTriangles = 0, targetTriangles = 0, misses = 0, covered = 0, empty = 0; int warnings = 0;
+            long sourceTriangles = 0, targetTriangles = 0, misses = 0, covered = 0, empty = 0, partialMisses = 0; int warnings = 0;
             var clock = System.Diagnostics.Stopwatch.StartNew();
             for (int i = 0; i < nodes.Count; ++i) {
                 var node = nodes[i];
@@ -477,13 +477,15 @@ namespace SashaRX.UnityMeshLab
                 VertexChannels.SetColors(node.mesh, node.maps.vertexColors);
                 sourceTriangles += source.indices.Length / 3; targetTriangles += target.indices.Length / 3;
                 misses += node.maps.misses; covered += node.maps.covered; empty += node.maps.empty; warnings += source.warnings.Length;
+                partialMisses += node.maps.partialMisses;
                 LogDiagnostics(node, options.sourceShape);
             }
             token.ThrowIfCancellationRequested();
             var primary = Primary;
             baseColorPreview = TextureAssets.FromPixels(primary.maps.color, primary.maps.size, primary.maps.size, linear: false);
             Status = (hierarchy ? $"{nodes.Count} node(s): " : "") + $"{sourceTriangles:N0} → {targetTriangles:N0} triangles. " +
-                (misses == 0 ? "All covered texels projected." : $"{misses:N0} / {covered:N0} texels missed (magenta). Increase projection distance and rebake.") +
+                (misses == 0 && partialMisses == 0 ? "All covered texels projected." :
+                    $"{misses:N0} / {covered:N0} texels missed (magenta), {partialMisses:N0} partially projected. Check projection distance and rebake.") +
                 (empty > 0 ? $" {empty:N0} proxy texels see no geometry (alpha 0, filled from neighbours)." : "") +
                 (warnings > 0 ? $" {warnings} material warning(s), see Console." : "") +
                 $" Bake {clock.Elapsed.TotalSeconds:F1} s ({(primary.maps.gpu ? "GPU" : "CPU")} queries).";

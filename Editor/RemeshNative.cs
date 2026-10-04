@@ -52,6 +52,8 @@ namespace SashaRX.UnityMeshLab
             public Vector2[] uv;
             public Vector4[] tangents;
             public int[] indices, charts;
+            // Physical half-edge neighbours from the indexed mesh, before UV/normal splits.
+            public int[] surfaceNeighbors;
             public int chartCount;
             public bool draftUv;
             public int originalChartCount, originalSmallChartCount, smallChartCount;
@@ -210,6 +212,7 @@ namespace SashaRX.UnityMeshLab
             if (settings.mergeCharts && result.chartCount > 1 && !result.draftUv)
                 UvChartMerge.Apply(result, best, settings, token);
             RemeshNormals.ApplyFinal(result, settings, token);
+            result.surfaceNeighbors = RemeshSurfaceTopology.Transfer(input.positions, input.indices, result, token);
             UvAtlasDiagnostics.Log(result, $"unwrap-final mergeCharts={settings.mergeCharts}", token);
             return result;
         }

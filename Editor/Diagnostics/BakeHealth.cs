@@ -46,7 +46,11 @@ namespace SashaRX.UnityMeshLab
                 $"({baked.foldedPositions:N0} double-sided positions), {baked.oneSidedNormals:N0} vertices off their cage by >30° (max {baked.maxOneSidedDeg:F0}°), " +
                 $"reach up to {baked.maxReachRatio:F1}× the projection distance, {baked.zeroNormals:N0} zero normals; " +
                 $"projection: {baked.rayFallbacks:N0} nearest-fallback samples, {baked.misses:N0} missed texels, front-face filter {(baked.facingFilter ? "on" : "off")}, " +
-                $"{baked.twoSidedFaces:N0} two-sided source faces; " +
+                $"{baked.twoSidedFaces:N0} two-sided source faces, {baked.partialMisses:N0} partially projected texels (missing area {baked.missedSampleArea:F2} texels); " +
+                $"surface filtering: {baked.gutterTexels:N0} gutter texels, {baked.surfaceSamples:N0} adjacent-face samples, " +
+                $"{baked.boundarySamples:N0} boundary-clamped samples, {baked.surfaceEdges:N0} trusted surface edges, " +
+                $"{baked.stoppedWalks:N0} stopped walks ({baked.walkLimitHits:N0} walk limits), {baked.patchLimitHits:N0} patch limits, " +
+                $"{baked.unfoldOverlapTexels:N0} overlapping local unfoldings, {baked.gutterMisses:N0} gutter projection fallbacks; " +
                 $"normal map tilt: mean {baked.meanTiltDeg:F1}° / max {baked.maxTiltDeg:F0}°, {baked.loudTexels:N0} texels >45°; " +
                 $"bounds diagonal: source {sourceDiagonal:F3} / target {r.targetDiagonal:F3} (ratio {r.scaleRatio:F2})";
 
@@ -60,6 +64,17 @@ namespace SashaRX.UnityMeshLab
             if (Mathf.Abs(r.scaleRatio - 1f) > 0.1f)
                 r.Warnings.Add($"target/source bounds diagonal ratio is {r.scaleRatio:F2} — the remeshed mesh no longer matches the source size. " +
                     "Check voxel resolution, small-part pruning and simplification settings, and rebake.");
+            if (baked.partialMisses > 0)
+                r.Warnings.Add($"{baked.partialMisses:N0} covered texels lost part of their surface samples during projection " +
+                    $"(missing area {baked.missedSampleArea:F2} texels). The surviving samples were renormalized; check projection distance and cage fit.");
+            if (baked.gutterMisses > 0)
+                r.Warnings.Add($"{baked.gutterMisses:N0} gutter texels could not project the continued surface; used a boundary fill with normal-frame transport. Check projection distance and cage fit.");
+            if (baked.patchLimitHits > 0)
+                r.Warnings.Add($"{baked.patchLimitHits:N0} texel footprints exceeded the local surface traversal limit; unreachable parts were clamped. Increase texture resolution or reduce dilation radius.");
+            if (baked.walkLimitHits > 0)
+                r.Warnings.Add($"{baked.walkLimitHits:N0} gutter texels exceeded the surface walk limit; continuation stopped at the last reached face. Increase texture resolution or reduce dilation radius.");
+            if (baked.unfoldOverlapTexels > 0)
+                r.Warnings.Add($"{baked.unfoldOverlapTexels:N0} texel footprints unfolded over themselves on the curved surface; overlapping contributions were area-normalized. Increase texture resolution or reduce dilation radius.");
             if (!r.heavyReduction && baked.loudTexels > baked.covered / 20 && baked.meanTiltDeg > 30f)
                 r.Warnings.Add($"{100.0 * baked.loudTexels / Mathf.Max(1, baked.covered):F1}% of texels lean >45° with a {baked.meanTiltDeg:F0}° mean tilt — " +
                     "the map is dominated by extreme normals. Check the hard-edge mode, projection distance and cage fit, " +
