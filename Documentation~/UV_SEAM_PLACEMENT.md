@@ -77,7 +77,7 @@ bound 4.5, bijectivity on, farther two-point initialization. Это миниму
 несвязные incident fans на границах разделены без движения source corners.
 
 Порог OptCuts 4.5 и пороги PartUV не равны нашему `mean/worstStretch`:
-в quality CSV stretch = отношение квадратов singular values, усреднение по
+в quality CSV stretch = отношение singular values, усреднение по
 3D-площади. У свободного OptCuts оно 1.436 / 10.241; у piecewise — 1.260 / 7.401.
 Отсутствие overlaps не означает приемлемого distortion или правильных швов.
 
@@ -159,7 +159,7 @@ pipeline в распространяемый commercial Unity package. Чужо�
 
 ## Проверка и рендеры
 
-13 Python checks: geometry correspondence, UV continuity при duplicate normals,
+Финальный повтор 2026-10-04: 18 Python checks passed. Проверяются geometry correspondence, UV continuity при duplicate normals,
 truncated captures, closed manifold gate, length weighting, near-segment distance,
 graph-cut exhaustive oracle/energy decrease, adjacent intra-chart folds и boundary
 fan splitting, surface-area hierarchy bound и scale-invariant triangle aspect.

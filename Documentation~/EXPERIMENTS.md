@@ -5,6 +5,15 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Геометрическая фаза завершена 2026-10-04 (продолжение Exp #1):**
+  PartUV/OptCuts/AutoUV и merge не воспроизвели требуемое расположение швов.
+  Проверены SHA/correspondence/winding 19 captures из 22 опубликованных rows;
+  18 полных overlap scans и 26 seam V1 rows заново совпали с сохранёнными числами.
+  SeamPlacementBenchmark: 18 passed; LearnedSeamBenchmark до trainer:
+  21 passed / 1 Windows symlink fixture skipped. Чужие solvers и Unity tests
+  заново не запускались. Следующий этап — обучаемые швы с независимыми families;
+  два текущих UV-варианта бюста остаются одним asset. [Итог и рендеры](UV_GEOMETRY_EXPERIMENT_FINAL.md).
+
 - **Протокол набора 2026-10-04 (продолжение Exp #1):** основа — существующие
   high-poly → построенные с нуля авторские low-poly, история ручных исправлений
   не обязательна. Оригиналы/native scenes/карты/зависимости сохраняются отдельно
