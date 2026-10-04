@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "input_npz": "D:\\sourceProject\\repos\\UnityMeshLab\\_results~\\learned-seams\\prepared-bust-variants-reviewed\\capture-0000.npz",
+  "input_sha256": "7a748b68b077972961b7524fd73dff5c07d830782094c047d3d8baf844dd25c8",
+  "helper_source_sha256": "cf8d996bacbc22f5f8aaf22de097566611f936b9f59b4cc62a966caee1e638f8",
+  "torch_version": "2.5.1+cu118",
+  "cuda_version": "11.8",
+  "device": "cuda:0",
+  "gpu": {
+    "index": 0,
+    "name": "NVIDIA GeForce GTX 980 Ti",
+    "capability": [
+      5,
+      2
+    ],
+    "total_memory_bytes": 6442319872
+  },
+  "parameters": 79169,
+  "batch_size": 1,
+  "edges": 2784,
+  "learned_edges": 2784,
+  "positive_labels": 204,
+  "input_features": 2,
+  "precision": "float32",
+  "optimizer": "AdamW",
+  "learning_rate": 0.001,
+  "weight_decay": 0.01,
+  "foreach": false,
+  "fused": false,
+  "warmup_steps": 10,
+  "measured_steps": 50,
+  "ephemeral_parameter_updates": 60,
+  "wall_step": {
+    "median_ms": 10.899349999817787,
+    "p90_ms": 13.654479998513125
+  },
+  "cuda_event_step": {
+    "median_ms": 10.278656005859375,
+    "p90_ms": 13.204495811462403
+  },
+  "memory": {
+    "baseline_allocated_bytes": 18454016,
+    "peak_allocated_bytes": 56951296,
+    "peak_reserved_bytes": 81788928
+  },
+  "checkpoints_saved": false,
+  "quality_evaluated": false,
+  "excluded": [
+    "data loading",
+    "feature preprocessing",
+    "topology decoder",
+    "parameterization solver",
+    "full validation",
+    "rendering",
+    "checkpoint IO"
+  ],
+  "memory_scope": "PyTorch tensors including gradients/AdamW states; CUDA context and other applications excluded"
+}

@@ -146,6 +146,161 @@ UV-разрезов после исключения hard edges, поэтому s
 
 ## Данные и следующий проверяемый этап
 
+### Требования к сбору: UV, сглаживание и топология
+
+Для первого UV/SG пилота обязателен авторский low-poly с готовой развёрткой,
+правильными hard/soft границами и финальными normals. Предпочтительный переносимый
+формат — FBX; `.max` сохраняем как редактируемый первоисточник, если доступен.
+Для начала удобны target meshes примерно 500–10000 triangles; это ограничение
+первого эксперимента, не фильтр для удаления более крупных моделей из архива.
+Source может иметь гораздо больше faces и обрабатываться отдельно.
+
+На первой партии из 5–10 разных объектов проверяем импорт и сохранение labels.
+Для первого обучения ориентир 20–50 независимых объектов со сходной задачей;
+сначала приоритет органике. Конструкционные объекты помечаются отдельно и не
+заменяют органические примеры. Ни одно из этих чисел не гарантирует качество.
+Размер независимого test важнее количества LOD/UV-вариантов одного объекта.
+
+| Файл на объект | Для чего | Обязательность |
+|---|---|---|
+| `artist_final.fbx` | Авторская геометрия, основной UV channel, SG/explicit normals | Минимум для UV/SG |
+| `artist_editable.max` | Quad/ngon structure, stack и выбранные диагонали | Сохранить, если есть |
+| `source.fbx` | Исходная детальная поверхность и геометрические source signals | Для source-aware обучения/оценки поверхности |
+| `raw_remesh.fbx` | Результат вокселизации до последующих исправлений | Для изучения voxel→simplify проблем |
+| `simplify_before.fbx` | Конкретная сетка до ручного исправления | Для supervision исправлений этой стадии |
+| `artist_corrected.fbx` | Хорошая сетка после исправления того же объекта; может совпадать с `artist_final` | В паре с `simplify_before` для topology training |
+| `textures/` | Визуальная проверка, normal/detail maps, decals | Не нужны для первого geometry/seam обучения |
+| `notes.txt` | Asset/family, UV channel, units, категория, хороший вариант и смысл открытых краёв | Краткие сведения, если известны |
+
+Одна папка — один исходный asset. Имена файлов условные: существующие файлы
+можно сохранить с исходными именами и указать роли в notes, не экспортировать
+повторно весь архив. Если `artist_final` и `artist_corrected` — одна версия,
+не нужна физическая копия. Варианты одного объекта кладём в его `variants/`,
+помечаем основной рекомендованный вариант; противоречивые seam labels разных
+авторских решений не усредняем в единственную цель. Все варианты остаются
+в одном train/val/test group.
+
+Пример структуры — **протокол сбора**, не уже поддерживаемый FBX manifest:
+
+```text
+dataset/
+  bust_001/
+    artist_final.fbx
+    artist_editable.max
+    source.fbx
+    simplify_before.fbx
+    raw_remesh.fbx
+    notes.txt
+    variants/
+    textures/
+```
+
+Не нужно вручную запекать curvature/AO, собирать NPZ или рендерить картинки.
+Автоматические import/QA/correspondence/features/rendering нужно дополнить
+в коллекторе; нынешний `prepare.py` принимает внутренние captures. Присутствие
+полного комплекта не требуется для сохранения объекта в архиве: отсутствующие
+стадии исключают только соответствующий вид supervision. Старый хороший FBX
+без source пригоден для UV/SG; source и final без before недостаточны для
+восстановления конкретных ручных операций simplify.
+
+В FBX exporter включаем Smoothing Groups и сохраняем explicit normals, выбранный
+UV channel и material assignments. Для машинной triangle-копии фиксируем
+триангуляцию и сохраняем turned edges; редактируемую quad-версию не уничтожаем.
+После первой экспортной партии проверяем roundtrip по faces/UV/SG. В Max
+Preserve edge orientation может конвертировать Editable Poly в triangulated
+Editable Mesh; настройки и проверка описаны в
+[Autodesk FBX Geometry](https://help.autodesk.com/cloudhelp/2025/ENU/3DSMax-Interoperability/files/GUID-249100FE-67BE-43B8-AF12-D20703CDF8D1.htm).
+
+Все стадии одной пары сохраняются в общей системе координат с известными units
+и transforms. Не применять независимый Reset XForm/центрирование к каждому
+файлу перед сбором. Нормализацию и axis conversion проводим согласованно после
+сохранения оригиналов. Анимация/rig для статического пилота не нужны; если модель
+skinned, сохраняем исходник и отдельную статическую копию выбранной позы.
+
+Хороший target: осмысленные швы, приемлемый distortion/density, правильное
+сглаживание, отсутствие случайных дыр, duplicate/degenerate faces и overlaps.
+Открытые поверхности допустимы: отмечаем намеренные boundaries. Для первого
+атласного пилота предпочтительны UV в 0–1 без stacking; намеренные mirror/tiling/
+UDIM cases сохраняем и помечаем отдельно, иначе QA ошибочно сочтёт их браком.
+Плохие `before` meshes с nonmanifold/дырками сохраняем без исправления: нынешний
+seam preparer их отклоняет, будущий topology pipeline должен читать и описывать
+их отдельно. Задача QA — сохранить метки дефектов, а не стереть причину.
+
+### Комплексные данные и разделение задач обучения
+
+План расширения dataset включает geometry graph, vertex/edge/face normals,
+площади/длины/углы/aspect, connected components, boundaries, manifold/Euler
+checks; авторские UV cuts/parts, local UV Jacobians и chart density; отдельные
+hard/soft edge и explicit-normal targets. SG IDs и chart IDs сами по себе
+произвольны: учим отношения/границы, а не номер группы.
+Авторские SG/explicit normals не подаются как скрытая готовая подсказка модели,
+которая их предсказывает: входные normals для этого baseline вычисляются из
+геометрии/source. Пользовательские locks — отдельное явное условие.
+
+При наличии source рассчитываем curvature/cavity, normal variation и AO на
+нескольких радиусах, проверяем полезность AO с обеих сторон, оцениваем thickness,
+source distance/normal error. Эти поля проецируются геометрически в samples
+target поверхности с confidence; draft UV для такой проекции не требуется.
+Texture normal map не заменяет физическую source geometry. Пиксельные признаки
+материалов оставляем отдельным дополнительным каналом: цвет сам по себе не
+задаёт topology. Не каждый из перечисленных признаков будет полезен модели —
+это проверяется на фиксированных splits, geometry-only против source-aware.
+
+**Сейчас реализованы** capture→edge graph/seam labels и два geometry features;
+source projection/curvature/cavity/AO проверялись в отдельном
+`SourceSignalsBenchmark`. Их общей автоматической подготовки для набора,
+FBX/SG ingestion и topology trainer пока нет. План расширения не следует
+принимать за уже существующий сбор всех параметров.
+
+Первый trainer — supervised graph model с двумя отдельными edge targets:
+UV cut и hard/soft boundary, weighted BCE/контроль дисбаланса positives.
+Обучение FP32 с AdamW; LR/regularization и early stopping выбираем по validation.
+Связность швов обеспечивается отдельным decoder и проверкой topology charts,
+а не одним threshold. Авторские junctions допустимы: требовать degree=2 везде
+было бы неверно. Затем валидный solver/relax и packing; случайный номер острова,
+его перенос/поворот в атласе не являются координатной regression-целью.
+Это первый baseline, не гарантия воспроизведения авторского стиля; при
+противоречивых layouts понадобится conditioning/генерация нескольких вариантов.
+
+Topology correction — отдельный следующий эксперимент с before/after/source
+pairs: прежде всего ранжирование допустимых local edge flips/collapse/split и
+source-constrained vertex moves. При изменении connectivity соответствие вершин
+не задано, поэтому MSE по одноимённым индексам не подходит. Нужны surface
+correspondence и оценки сохранения формы/диагоналей/границ/качества треугольников;
+валидность каждой операции остаётся строгим геометрическим gate. Финальный
+хороший меш без before полезен как quality reference, но не как готовая запись
+действий редактора.
+
+### Время: измеренная скорость и оценка разработки
+
+Дополнительный локальный microbenchmark использует реальный граф/UV labels,
+временную случайную модель 79169 parameters и AdamW: 10 warmup + 50 measured
+steps, FP32 batch 1, 2784 edges, GTX 980 Ti. Median wall step **10.899 ms**,
+p90 **13.654 ms** в первом запуске; повторный запуск дал median **31.955 ms**,
+p90 **34.813 ms**. Это измеренный разброс двух коротких запусков на общем
+пользовательском компьютере, а не гарантированная скорость. Peak allocated с
+gradients/optimizer states **54.31 MiB**,
+reserved 78 MiB; CUDA context/прочие приложения исключены.
+[Повторный timing JSON](LearnedSeamResearch/TRAIN_STEP_TIMING.json),
+[первый timing JSON](LearnedSeamResearch/TRAIN_STEP_TIMING_FIRST.json).
+Параметры обновлялись только в этом временном процессе; checkpoint и качество
+обученного решения не сохранялись/не проверялись.
+
+Для **похожих графов и этого baseline** 50 training objects × 200 epochs ×
+0.010899–0.031955 s ≈109–320 s (округлённо **2–6 минут**) чистых optimizer steps.
+Это не время полного обучения/поиска:
+не включены FBX import, source field sampling, decoder, solver, full validation,
+renders, checkpoint IO. Более крупные meshes, богатые features и новый decoder
+нужно измерить заново. Ускоренный microbenchmark не предсказывает сходимость.
+
+Предварительная оценка от получения готовой первой партии: несколько рабочих
+дней (ориентир **3–7**) до дополненного коллектора, первого UV/SG baseline и
+отчёта на независимом test. Это оценка инженерной работы, не измеренная ETA и
+не обещание хорошего production результата. Исправление topology и перенос на
+разные классы объектов — последующие итерации; надёжную длительность нельзя
+установить по одному бюсту. После проверки 5–10 полных комплектов оценку нужно
+уточнить по времени импорта/source sampling и размерам графов.
+
 Набор ещё предстоит собрать пользователю. Подготовщик `prepare.py` уже извлекает
 метки из готовых geometry+UV captures; массового обхода диска/FBX importer пока
 нет. Два варианта бюста дают **2 captures, 1 independent model, 1 split group**;

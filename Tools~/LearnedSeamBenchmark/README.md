@@ -64,3 +64,22 @@ saved logits, checkpoint, training or quality evaluation. JSON records versions,
 device, parameter count, SHA256 and PyTorch peak allocated/reserved GPU tensors.
 CUDA context and other applications are outside these memory counters. Use a fresh
 output JSON path. CPU fallback reports GPU memory as unavailable, not zero.
+
+## Ephemeral step timing
+
+`step_timing.py` separately measures real masked BCE + AdamW steps, including
+parameter updates that exist only for the lifetime of this process. It uses one
+prepared graph and its real UV labels. This is a hardware microbenchmark, not a
+train-quality run. Boundary edges are excluded from the loss and invalid masks
+fail. No checkpoints, logits or UVs are saved; existing JSON outputs are preserved.
+
+```powershell
+& '_results~/seam-methods/venv/Scripts/python.exe' 'Tools~/LearnedSeamBenchmark/step_timing.py' --input '_results~/learned-seams/prepared-bust-variants-reviewed/capture-0000.npz' --out '_results~/learned-seams/adamw-step-timing.json' --warmup 10 --steps 50
+```
+
+FP32, batch 1; synchronized CUDA events and wall time are reported separately.
+Memory includes AdamW states and gradients, excluding CUDA context/other apps.
+Preprocessing, topology decoding, solvers, validation, rendering and checkpoint IO
+are excluded. `N_train * epochs * median_step_time` estimates compute only for
+similarly sized graphs/features with this model and batch size; a larger dataset,
+richer source features or a different model requires new timing.
