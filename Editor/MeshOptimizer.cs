@@ -280,6 +280,7 @@ namespace SashaRX.UnityMeshLab
 
             mesh.RecalculateBounds();
             mesh.UploadMeshData(false);
+            VertexChannels.RaiseChanged(mesh);
 
             result.ok = true;
 

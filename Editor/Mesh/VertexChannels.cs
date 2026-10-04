@@ -12,12 +12,15 @@ namespace SashaRX.UnityMeshLab
 {
     internal static class VertexChannels
     {
-        /// <summary>Raised after this class writes a mesh's colours or UVs, so cached
-        /// views of that mesh (the 3D viewport's encodings) can drop it.</summary>
+        /// <summary>Raised after a mesh's vertex data is rewritten in place — this
+        /// class's colour/UV writes or in-place rewrites elsewhere (CompactVertices,
+        /// MeshOptimizer) — so cached views of that mesh can drop it.</summary>
         internal static event Action<Mesh> Changed;
         internal static AOTargetChannel? LastAppliedTargetChannel { get; set; }
 
-        static void NotifyChanged(Mesh mesh) => Changed?.Invoke(mesh);
+        /// <summary>Announces an in-place vertex-data rewrite of a live mesh; cached
+        /// views (inspection reports, viewport encodings) drop their stale copies.</summary>
+        internal static void RaiseChanged(Mesh mesh) => Changed?.Invoke(mesh);
 
         // ── channel decoding ──
 
@@ -142,7 +145,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 mesh.SetUVs(uvIdx, uvs);
             }
-            NotifyChanged(mesh);
+            RaiseChanged(mesh);
         }
 
         /// <summary>
@@ -206,7 +209,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < arr.Length; i++) arr[i] = color32;
             mesh.colors32 = arr;
             EditorUtility.SetDirty(mesh);
-            NotifyChanged(mesh);
+            RaiseChanged(mesh);
         }
 
         /// <summary>Replaces the mesh's whole colour array (null removes the stream) and raises
@@ -215,7 +218,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (mesh == null) return;
             mesh.colors = colors;
-            NotifyChanged(mesh);
+            RaiseChanged(mesh);
         }
 
         /// <summary>Replaces one UV channel (null removes it) and raises <see cref="Changed"/>. No Undo or SetDirty.</summary>
@@ -223,7 +226,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (mesh == null) return;
             if (uvs == null) mesh.SetUVs(channel, (List<Vector2>)null); else mesh.SetUVs(channel, uvs);
-            NotifyChanged(mesh);
+            RaiseChanged(mesh);
         }
 
         /// <summary>The mesh's colours at its vertex count, or null when it has none (for <see cref="RestoreColors"/>).</summary>
@@ -243,7 +246,7 @@ namespace SashaRX.UnityMeshLab
             if (undoLabel != null) Undo.RecordObject(mesh, undoLabel);
             mesh.colors32 = snapshot ?? Array.Empty<Color32>();
             EditorUtility.SetDirty(mesh);
-            NotifyChanged(mesh);
+            RaiseChanged(mesh);
         }
     }
 }
