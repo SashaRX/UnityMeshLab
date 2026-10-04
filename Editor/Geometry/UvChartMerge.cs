@@ -709,6 +709,8 @@ namespace SashaRX.UnityMeshLab
             const int kPackOversample = 4;
             uint internalRes = (uint)settings.textureResolution * kPackOversample;
             uint internalPad = (uint)settings.padding * kPackOversample;
+            DumpRepackInputs(geometry, flatUv, indices, faceMaterials, internalRes, internalPad,
+                rotateCharts, rotateToAxis, settings.packBlockAlign ? 1 : 0, settings.packBruteForce ? 1 : 0);
             XatlasNative.xatlasCreate();
             try
             {
@@ -728,6 +730,49 @@ namespace SashaRX.UnityMeshLab
                 return ReadPackedUv(geometry, token, mergedCharts);
             }
             finally { XatlasNative.xatlasDestroy(); }
+        }
+
+        /// <summary>Crash-capture harness for the chart-merge experiment: the exact
+        /// native re-pack inputs are dumped to %TEMP%/meshlab-uvmerge before the pack.
+        /// The merge re-pack has produced editor crashes that depend on the model's
+        /// data and could not be reproduced synthetically; with the inputs on disk a
+        /// crash becomes replayable in a native harness (Documentation~/EXPERIMENTS.md).
+        /// Best-effort: diagnostics must never break the stage.</summary>
+        static void DumpRepackInputs(RemeshNative.Geometry geometry, float[] flatUv, uint[] indices,
+            uint[] faceMaterials, uint resolution, uint padding, int rotateCharts, int rotateToAxis,
+            int blockAlign, int bruteForce)
+        {
+            try
+            {
+                string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "meshlab-uvmerge");
+                System.IO.Directory.CreateDirectory(dir);
+                string path = System.IO.Path.Combine(dir,
+                    "repack_" + System.DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".bin");
+                using (var writer = new System.IO.BinaryWriter(System.IO.File.Create(path)))
+                {
+                    writer.Write((uint)flatUv.Length / 2);   // vertexCount
+                    writer.Write((uint)indices.Length);      // indexCount
+                    writer.Write(resolution);
+                    writer.Write(padding);
+                    writer.Write(rotateCharts);
+                    writer.Write(rotateToAxis);
+                    writer.Write(blockAlign);
+                    writer.Write(bruteForce);
+                    foreach (float f in flatUv) writer.Write(f);
+                    foreach (uint i in indices) writer.Write(i);
+                    foreach (uint m in faceMaterials) writer.Write(m);
+                }
+                // Only the newest capture is interesting; keep the directory small.
+                var stale = new List<string>(System.IO.Directory.GetFiles(dir, "repack_*.bin"));
+                stale.Sort(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < stale.Count - 5; ++i)
+                    System.IO.File.Delete(stale[i]);
+                UvtLog.Info("[Remesh] Chart merge re-pack inputs captured to " + path);
+            }
+            catch (Exception error)
+            {
+                UvtLog.Verbose("[Remesh] Chart merge input capture failed: " + error.Message);
+            }
         }
 
         /// <summary>Maps the pack output back: exactly one consistent UV per input
