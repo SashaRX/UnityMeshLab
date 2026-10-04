@@ -83,7 +83,7 @@ namespace SashaRX.UnityMeshLab
         {
             int triangles = 0;
             for (int sub = 0; sub < mesh.subMeshCount; ++sub)
-                if (mesh.GetTopology(sub) == MeshTopology.Triangles) triangles += mesh.GetIndexCount(sub) / 3;
+                if (mesh.GetTopology(sub) == MeshTopology.Triangles) triangles += (int)mesh.GetIndexCount(sub) / 3;
             return triangles;
         }
 
