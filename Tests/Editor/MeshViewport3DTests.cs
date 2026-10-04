@@ -166,6 +166,23 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void InPlaceCompactionDropsTheCachedModelReport()
+        {
+            var mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
+            try {
+                mesh.vertices = new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.one, Vector3.left };
+                mesh.triangles = new[] { 0, 1, 2, 1, 3, 2 };   // vertex 4 stays unreferenced
+                mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one, Vector2.left };
+                using (var inspection = new MeshInspection()) {
+                    StringAssert.Contains("5 vertices", inspection.Report(mesh));
+                    Assert.AreEqual(1, MeshHygieneUtility.CompactVertices(mesh));
+                    StringAssert.Contains("4 vertices", inspection.Report(mesh));
+                }
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
         public void InspectionPreservesFourComponentUv7AndTangentAndColorAlpha()
         {
             var mesh = Quad();

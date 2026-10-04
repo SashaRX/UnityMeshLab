@@ -979,7 +979,10 @@ namespace SashaRX.UnityMeshLab
                 int present = viewportItems.Count(item => MeshInspection.Supports(item.mesh, shading));
                 if (present == 0 && shading != viewport.Mode) continue;
                 string label = MeshViewport3D.ShadingNames[mode];
-                if (present < viewportItems.Count) label += $" ({present}/{viewportItems.Count})";
+                // The (n/m) count marks partial support across several meshes; the
+                // active-but-unsupported mode gets its own marker instead.
+                if (viewportItems.Count > 1 && present > 0 && present < viewportItems.Count) label += $" ({present}/{viewportItems.Count})";
+                else if (present == 0 && viewportItems.Count > 0) label += " (no data)";
                 modes.Add(shading); names.Add(label);
             }
             int selected = Mathf.Max(0, modes.IndexOf(viewport.Mode));
