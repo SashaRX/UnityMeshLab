@@ -9,6 +9,10 @@ deviation 2, roundness 0.5, straightness 6, seam 4, iterations 1,
 512 px / padding 3, rotation on, brute force / block alignment off.
 Исходная геометрия и приватные captures в репозиторий не добавлены.
 
+**Позднейшая проверка расположения швов:** уменьшение числа charts не доказывает
+правильные границы. На одинаковой геометрии ручных эталонов merge снижает
+seam recall V1 с 50.12% до 30.17%. [PartUV/OptCuts, 3D seam metrics и рендеры](UV_SEAM_PLACEMENT.md).
+
 ## Причина лишней фрагментации и исправление
 
 После overlap repair baseline имеет 147 charts. Broad merge соединяет их в 44,

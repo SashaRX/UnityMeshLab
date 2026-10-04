@@ -5,6 +5,16 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Расположение швов 2026-10-04 (продолжение Exp #1):** сравнение по длине
+  швов на одинаковой 1856-face геометрии подтверждает ухудшение recall после
+  merge: V1 50.12% → 30.17%, V2 52.45% → 29.80%. Проверены полный PartUV
+  native pipeline (ABF, PAMO off, thresholds 1.1/1.25/1.5), OptCuts со свободными
+  и обязательными региональными границами, а также geometry-only segmentation.
+  Для каждого полного unwrap сохранён PNG и positive-area overlap scan;
+  11 новых Python checks проходят, standalone xatlas probe собран. Новые Unity
+  defaults не приняты: лучшие по числу charts варианты не восстанавливают
+  пользовательские границы. [Методика, рендеры и числа](UV_SEAM_PLACEMENT.md).
+
 - **Свежий 5125-face input 2026-10-04 (продолжение Exp #1):** точный capture
   воспроизводит 147 baseline charts → 44 full merge → packing rejection → 96
   после прежнего halving. Поиск до шести budgets сохраняет прошедшие checkpoints:
