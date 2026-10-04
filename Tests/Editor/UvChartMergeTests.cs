@@ -172,6 +172,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(1)]
         [TestCase(2)]
         [TestCase(3)]
+        [TestCase(4)]
         public void CancellationDuringStrategySelectionPreservesOriginalGeometry(int cancelStage)
         {
             if (cancelStage > 1) RequireRemeshNative();
@@ -190,7 +191,8 @@ namespace SashaRX.UnityMeshLab.Tests
                     if (message.Contains("[UV] merge-strategy-candidate:")) narrowCompleted = true;
                     if (message.Contains("[UV] merge-candidate:")) ++candidates;
                     if (cancelStage < 3 && message.Contains("[UV] merge-candidate:") && candidates == cancelStage ||
-                        cancelStage == 3 && message.Contains("[UV] merge-strategy:"))
+                        cancelStage == 3 && message.Contains("[UV] merge-strategy:") ||
+                        cancelStage == 4 && message.Contains("[UV] merge-checkpoint:"))
                     { sawCancellationPoint = true; cancelled.Cancel(); }
                 }
                 try
@@ -200,7 +202,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     var quality = UvChartQuality.Measure(g, CancellationToken.None);
                     Assert.Throws<OperationCanceledException>(() => UvChartMerge.Apply(g, quality, new RemeshSettings(), cancelled.Token));
                     Assert.IsTrue(sawCancellationPoint, "cancel at a deterministic production checkpoint");
-                    if (cancelStage > 1) Assert.IsTrue(narrowCompleted, "narrow strategy completed before cancellation");
+                    if (cancelStage == 2 || cancelStage == 3) Assert.IsTrue(narrowCompleted, "narrow strategy completed before cancellation");
                     Assert.AreEqual(2, g.chartCount); CollectionAssert.AreEqual(uv, g.uv); CollectionAssert.AreEqual(charts, g.charts);
                     CollectionAssert.AreEqual(tangents, g.tangents); Assert.AreSame(positions, g.positions); Assert.AreSame(indices, g.indices); Assert.AreSame(normals, g.normals);
                 }
@@ -474,6 +476,41 @@ namespace SashaRX.UnityMeshLab.Tests
             {
                 Assert.Ignore("Remesh native plugin unavailable: " + error.Message);
             }
+        }
+
+        [Test]
+        public void MergeAttachesToUnrolledCylinderWithoutClosingItsExistingCut()
+        {
+            var ring = new[] { Vector3.right, Vector3.forward, Vector3.left, Vector3.back, Vector3.right };
+            var positions = new List<Vector3>(); var uv = new List<Vector2>();
+            var indices = new List<int>(); var charts = new List<int>();
+            float width = Mathf.Sqrt(2) * Density;
+            void Quad(Vector3 a, Vector3 b, Vector3 c, Vector3 d, float x, float y, int chart)
+            {
+                int first = positions.Count;
+                positions.AddRange(new[] { a, b, c, d });
+                uv.AddRange(new[] { new Vector2(x, y), new Vector2(x + width, y),
+                    new Vector2(x + width, y + Density), new Vector2(x, y + Density) });
+                charts.AddRange(new[] { chart, chart, chart, chart });
+                indices.AddRange(new[] { first, first + 2, first + 1, first, first + 3, first + 2 });
+            }
+            for (int side = 0; side < 4; ++side)
+                Quad(ring[side], ring[side + 1], ring[side + 1] + Vector3.up, ring[side] + Vector3.up, side * width, 0, 0);
+            Vector3 outward = (ring[1] + ring[2]).normalized;
+            Quad(ring[1] + Vector3.up, ring[2] + Vector3.up,
+                ring[2] + Vector3.up + outward, ring[1] + Vector3.up + outward, width, Density, 1);
+            var g = new RemeshNative.Geometry { positions = positions.ToArray(), uv = uv.ToArray(),
+                indices = indices.ToArray(), charts = charts.ToArray(), chartCount = 2 };
+            var before = (Vector2[])g.uv.Clone();
+            Assert.AreEqual(g.positions[0], g.positions[13]);
+            Assert.AreNotEqual(g.uv[0], g.uv[13], "the cylinder is cut open in UV");
+            Assert.AreEqual(1, UvChartMerge.MergeCharts(g, new RemeshSettings(), CancellationToken.None, new HashSet<int>()));
+            Assert.AreEqual(1, g.chartCount);
+            for (int v = 0; v < 16; ++v) Assert.AreEqual(before[v], g.uv[v], "the existing cut and cylinder parameterization stay intact");
+            Assert.AreEqual(g.uv[7], g.uv[16]); Assert.AreEqual(g.uv[6], g.uv[17]);
+            var scan = UvAtlasDiagnostics.Measure(g, CancellationToken.None);
+            Assert.IsTrue(scan.complete); Assert.AreEqual(0, scan.pairs);
+            Assert.IsTrue(UvChartQuality.Measure(g, CancellationToken.None).valid);
         }
     }
 }

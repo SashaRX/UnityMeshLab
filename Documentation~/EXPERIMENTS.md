@@ -5,6 +5,19 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Свежий 5125-face input 2026-10-04 (продолжение Exp #1):** точный capture
+  воспроизводит 147 baseline charts → 44 full merge → packing rejection → 96
+  после прежнего halving. Поиск до шести budgets сохраняет прошедшие checkpoints:
+  итог 51 charts / 16 small / 52.366% fill / zero overlaps, против 96 / 37 /
+  52.726%. Существующие UV cuts вне предлагаемого edge seam теперь допускаются.
+  Все final gates сохранены; 194 Unity tests passed, три off/on repeat runs
+  побайтово идентичны с сохранением source corners. Обе FBX references остаются
+  на 22 charts / 54.633%; до ручного качества всё ещё есть разрыв. Цена на новом
+  input: ~13.8 s вместо ~5.9 s; дорогое brute-force / >512 px packing сохраняет
+  прежний halving / first-success путь. Relax during growth, compactness, rotations и
+  explicit-density packing проверены отдельно; не приняты как defaults.
+  [Причина, сравнение layouts, отвергнутые варианты и replay](UV_MERGE_SEARCH.md).
+
 - **Входная topology 2026-10-04 (продолжение Exp #1):** на бюсте source/raw
   voxel замкнуты; Trim удалял 4 faces и создавал 12 открытых edges, Simplify
   создавал 3 opposite-winding duplicate pairs. Trim теперь сохраняет closed

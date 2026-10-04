@@ -108,7 +108,17 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 int mergeLimit = int.MaxValue;
-                while (true)
+                int acceptedLimit = 0, rejectedLimit = int.MaxValue;
+                RemeshNative.Geometry bestCandidate = null;
+                // Packing is discontinuous: dropping half the joins and accepting
+                // the first passing atlas leaves many avoidable seams. Keep every
+                // passing checkpoint and probe nearer the rejected merge count.
+                // Brute-force and high-resolution packing are already expensive.
+                // Keep their original halving/first-success path; refinement is
+                // bounded to the interactive 512px fast-packing case.
+                bool refinePacking = !settings.packBruteForce && settings.textureResolution <= 512;
+                int packingAttempts = refinePacking ? 6 : 32;
+                for (int attempt = 0; attempt < packingAttempts; ++attempt)
                 {
                     var mergedCharts = new HashSet<int>();
                     int merged = MergeChartsLimited(geometry, settings, token, mergedCharts, mergeLimit, seamResidual, localWorstStretch);
@@ -140,16 +150,30 @@ namespace SashaRX.UnityMeshLab
                         $"[UV] merge-packing-gate: uvArea={packingBaseline.filledArea:G6}->{packing.filledArea:G6}, chartDensityCV={packingBaseline.densityDeviation:G6}->{packing.densityDeviation:G6}, accepted={preservesPacking}, merges={merged}."));
                     if (!preservesPacking || !preservesStretch)
                     {
-                        if (merged <= 1) throw new InvalidOperationException(preservesStretch
-                            ? "merge reduces packed texture area or worsens chart texel density"
-                            : "quality gate failed: " + post.ImprovementFailure(preMerge, preMerge));
-                        RestoreGeometry();
-                        mergeLimit = merged / 2;
-                        UvtLog.Info(UvtLog.Category.RemeshDiag, $"[UV] merge-packing-retry: merge budget={mergeLimit}; restarting from the baseline.");
-                        continue;
+                        rejectedLimit = Math.Min(rejectedLimit, merged);
+                        if (merged <= 1) break;
+                        mergeLimit = !refinePacking ? merged / 2 : acceptedLimit > 0
+                            ? acceptedLimit + (rejectedLimit - acceptedLimit) / 2
+                            : Math.Max(1, merged * 3 / 4);
                     }
-                    UvtLog.Info(UvtLog.Category.RemeshDiag, $"[UV] merge-strategy-candidate: {chartCountSnapshot} → {geometry.chartCount} islands ({merged} merges); final strategy comparison follows.");
-                    break;
+                    else
+                    {
+                        bestCandidate = CloneCandidate(geometry);
+                        acceptedLimit = merged;
+                        UvtLog.Info(UvtLog.Category.RemeshDiag, $"[UV] merge-checkpoint: {chartCountSnapshot} → {geometry.chartCount} islands ({merged} merges); retained while probing further joins.");
+                        token.ThrowIfCancellationRequested();
+                        if (!refinePacking || rejectedLimit == int.MaxValue || rejectedLimit - acceptedLimit <= 1) break;
+                        mergeLimit = acceptedLimit + (rejectedLimit - acceptedLimit) / 2;
+                    }
+                    if (mergeLimit <= acceptedLimit || attempt + 1 == packingAttempts) break;
+                    RestoreGeometry();
+                    UvtLog.Info(UvtLog.Category.RemeshDiag, $"[UV] merge-packing-retry: merge budget={mergeLimit}; restarting from the baseline; accepted budget={acceptedLimit}, rejected budget={rejectedLimit}.");
+                }
+                RestoreGeometry();
+                if (bestCandidate != null)
+                {
+                    CopyBuffers(bestCandidate, geometry);
+                    UvtLog.Info(UvtLog.Category.RemeshDiag, $"[UV] merge-strategy-candidate: {chartCountSnapshot} → {geometry.chartCount} islands; best validated checkpoint selected.");
                 }
             }
             catch (OperationCanceledException) { RestoreGeometry(); throw; }
@@ -167,6 +191,13 @@ namespace SashaRX.UnityMeshLab
                 geometry.tangents = tangentsSnapshot == null ? null : (Vector4[])tangentsSnapshot.Clone();
                 geometry.chartCount = chartCountSnapshot; geometry.smallChartCount = smallChartSnapshot;
             }
+        }
+
+        static void CopyBuffers(RemeshNative.Geometry source, RemeshNative.Geometry destination)
+        {
+            destination.positions = source.positions; destination.normals = source.normals; destination.indices = source.indices;
+            destination.uv = source.uv; destination.charts = source.charts; destination.tangents = source.tangents;
+            destination.chartCount = source.chartCount; destination.smallChartCount = source.smallChartCount;
         }
 
         // ── Merge core (pure: no native calls, unit-testable) ───────────────
@@ -333,14 +364,13 @@ namespace SashaRX.UnityMeshLab
             Vector2[] chartUvMin, Vector2[] chartUvMax, RemeshSettings settings, HashSet<int> mergedChartIds,
             CancellationToken token, float seamResidual, float localWorstStretch)
         {
-            // Slot → vertex maps per chart; the intersection is the seam. Every
-            // shared position is snapped, not only edge-seam ones — a corner shared
-            // without a shared edge would otherwise leave a UV split inside the chart
-            // and xatlas would split it again.
-            if (!TryBuildSlotMap(g, chartVerts[chartA], slots, out var slotsA) ||
-                !TryBuildSlotMap(g, chartVerts[chartB], slots, out var slotsB)) return false;
-            var seamSlotList = new List<int>();
-            foreach (var kv in slotsA) if (slotsB.ContainsKey(kv.Key)) seamSlotList.Add(kv.Key);
+            // Only shared edges define the join. A coincident corner can be on
+            // another side of an existing UV cut and must not be snapped closed.
+            var seamSlots = new HashSet<int>();
+            foreach (long key in seamKeys) { seamSlots.Add((int)(key >> 32)); seamSlots.Add((int)key); }
+            if (!TryBuildSlotMap(g, chartVerts[chartA], slots, seamSlots, out var slotsA) ||
+                !TryBuildSlotMap(g, chartVerts[chartB], slots, seamSlots, out var slotsB)) return false;
+            var seamSlotList = new List<int>(seamSlots);
             seamSlotList.Sort();
             float seamLength = 0f;
             foreach (long key in seamKeys) seamLength += EdgeLength(g.positions, slotVertex, key);
@@ -481,16 +511,17 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static bool TryBuildSlotMap(RemeshNative.Geometry g, List<int> vertices, int[] slots, out Dictionary<int, int> map)
+        static bool TryBuildSlotMap(RemeshNative.Geometry g, List<int> vertices, int[] slots,
+            HashSet<int> seamSlots, out Dictionary<int, int> map)
         {
             map = new Dictionary<int, int>(vertices.Count);
             foreach (int v in vertices)
             {
+                if (!seamSlots.Contains(slots[v])) continue;
                 if (map.TryGetValue(slots[v], out int previous))
                 {
-                    // An existing UV cut inside this chart cannot be collapsed by
-                    // choosing the last copy of a welded position. Tangent duplicates
-                    // with identical UVs are fine and are all snapped below.
+                    // Ambiguity on the proposed seam is unsafe. Cuts elsewhere
+                    // remain independent; tangent copies on this seam snap together.
                     if (BitConverter.SingleToInt32Bits(g.uv[v].x) != BitConverter.SingleToInt32Bits(g.uv[previous].x) ||
                         BitConverter.SingleToInt32Bits(g.uv[v].y) != BitConverter.SingleToInt32Bits(g.uv[previous].y)) return false;
                 }
