@@ -5,6 +5,18 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Лог из E project 2026-10-04 (продолжение Exp #1):** native source fitting
+  и area cleanup воспроизводят одиночное отверстие на том же участке бюста;
+  компактный fixture из 8 vertices воспроизводит его при voxel 48. Raw solid
+  теперь проверяется до Trim с проверенным retry без solve. Полностью отклонённая
+  source-коррекция пробует три меньших шага при прежних gates, лог сохраняет
+  attempted movement и RMS/max причины отказа. Cage fit и preview используют
+  ту же source-facing/two-sided политику, что bake. Точный UV input из E повторён
+  off/on трижды: 84 → 32 charts, zero overlaps, неизменные triangle corners.
+  Новый closed 1598-face replay проходит четыре Unwrap после исправления
+  budget-aware progressive repair precision; 241 Unity tests passed/skipped0.
+  [Причины, ограничения, реальные рендеры и replay](REMESH_LOG_20261004.md).
+
 - **Voxel stair triangles 2026-10-04 (продолжение Exp #1):** source-guided
   fitting, tangent redistribution и локальные edge flips подключены к Simplify
   через Fit to source surface. Source-distance, boundary/Euler и collapse-budget

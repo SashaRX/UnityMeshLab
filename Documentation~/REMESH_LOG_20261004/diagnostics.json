@@ -1,0 +1,45 @@
+{
+  "inputs": {
+    "latest-E-plain.bin": "d9cc16578ba2cf97b4bccf86e6e5e51e4f261b62ba6fc39d4e63d7cb6f91c32c",
+    "latest-E-merge.bin": "c3ec610cff88e2bdfc66e4c983f6a979f83b0785c5ef3f10719b50400ac3d236",
+    "latest-simplify.bin": "3408ef72db23cbda85e988b581eb9198a8bcb735b88c54241e7201154d73c0e0"
+  },
+  "uv": {
+    "plain": {
+      "faces": 1593,
+      "charts": 84,
+      "smallCharts": 52,
+      "meanStretch": 1.0271028157270299,
+      "worstStretch": 3.743883356603488,
+      "triangleUvArea": 0.5543812246159192,
+      "largestChartSurfaceFraction": 0.1557175457218665,
+      "outOfBoundsVertices": 0
+    },
+    "merge": {
+      "faces": 1593,
+      "charts": 32,
+      "smallCharts": 14,
+      "meanStretch": 1.0355694260789972,
+      "worstStretch": 1.87827373438587,
+      "triangleUvArea": 0.5362708688731592,
+      "largestChartSurfaceFraction": 0.28153443854519744,
+      "outOfBoundsVertices": 0
+    },
+    "same3dTriangleCorners": true
+  },
+  "geometry": {
+    "faces": 1593,
+    "boundaryEdges": 3,
+    "boundaryComponents": 1,
+    "triangularBoundaryLoops": 1,
+    "nonManifoldEdges": 0,
+    "selectedBoundaryTriangleArea": 1.4467395290415563e-12,
+    "selectedBoundaryEdges": 3,
+    "selectedBoundaryCenter": [
+      0.00023163009124497572,
+      0.00046218233183026314,
+      0.003866160443673531
+    ],
+    "cropRadius": 6.213735709908793e-05
+  }
+}

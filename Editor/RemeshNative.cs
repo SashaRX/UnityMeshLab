@@ -74,14 +74,50 @@ namespace SashaRX.UnityMeshLab
         {
             settings.Validate();
             token.ThrowIfCancellationRequested();
+            uint flags = (settings.solve ? 1u : 0u) | (settings.shell ? 2u : 0u);
+            int resolution = settings.voxelResolution;
+            var result = VoxelizeRaw(positions, indices, resolution, flags, token);
+            return GuardVoxelSolid(result, flags, resolution, token,
+                retryFlags => VoxelizeRaw(positions, indices, resolution, retryFlags, token)).PrepareChannels(token);
+        }
+
+        // A raw solid voxel result must be closed BEFORE source trimming. Otherwise
+        // Simplify would treat native cleanup's missing triangle as an authored border.
+        // The injected factory also lets managed tests verify retry flags and failure
+        // handling without loading the plugin or changing serialized settings.
+        internal static IndexedMesh GuardVoxelSolid(IndexedMesh result, uint flags, int resolution, CancellationToken token,
+            Func<uint, IndexedMesh> retryWithoutSolve)
+        {
+            token.ThrowIfCancellationRequested();
+            if ((flags & 2u) != 0) return result;
+            var topology = RemeshTopology.Inspect(result.positions, result.indices, token);
+            if (result.TriangleCount > 0 && topology.Valid && topology.boundary.Count == 0) return result;
+            if ((flags & 1u) == 0)
+                throw new InvalidOperationException($"Solid voxel remesh is not a valid closed surface before trim ({topology.Description}). " +
+                    "Source trimming and Simplify were not run on this result.");
+            UvtLog.Warn($"[Remesh] Source-fitted solid voxel output is not a valid closed surface before trim ({topology.Description}). " +
+                $"Retrying voxel resolution {resolution} without source fitting; settings are unchanged.");
+            var retry = retryWithoutSolve(flags & ~1u);
+            token.ThrowIfCancellationRequested();
+            var after = RemeshTopology.Inspect(retry.positions, retry.indices, token);
+            if (retry.TriangleCount == 0 || !after.Valid || after.boundary.Count != 0)
+                throw new InvalidOperationException($"Solid voxel retry without source fitting is not a valid closed surface before trim ({after.Description}). " +
+                    "Source trimming and Simplify were not run on this result.");
+            UvtLog.Info(UvtLog.Category.RemeshDiag, $"Solid voxel fallback accepted at resolution {resolution}: " +
+                $"{result.TriangleCount} → {retry.TriangleCount} faces, boundary {topology.boundary.Count} → 0; source fitting disabled for this native attempt only.");
+            return retry;
+        }
+
+        static IndexedMesh VoxelizeRaw(Vector3[] positions, int[] indices, int resolution, uint flags, CancellationToken token)
+        {
             IntPtr handle = IntPtr.Zero;
             try {
                 int code = meshLabVoxelRemesh(MeshSimplifier.PackPositions(positions), (uint)positions.Length, indices, (uint)indices.Length,
-                    settings.voxelResolution, (settings.solve ? 1u : 0u) | (settings.shell ? 2u : 0u),
+                    resolution, flags,
                     out handle, out uint vertexCount, out uint indexCount);
                 token.ThrowIfCancellationRequested();
                 if (code != 0) throw new InvalidOperationException("Voxel remesh failed: " + Error(code));
-                return CopyMesh(handle, vertexCount, indexCount).PrepareChannels(token);
+                return CopyMesh(handle, vertexCount, indexCount);
             }
             finally { if (handle != IntPtr.Zero) MeshSimplifier.meshLabMeshDestroy(handle); }
         }

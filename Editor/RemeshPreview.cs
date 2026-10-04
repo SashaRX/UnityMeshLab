@@ -35,6 +35,7 @@ namespace SashaRX.UnityMeshLab
             // Smoothing and fit mirror the bake settings; the source feeds the fit.
             public float cageDistance, cageSmoothing;
             public bool cageFit;
+            public RemeshBackfaces sourceBackfaces;
             public RemeshSource source;
         }
 
@@ -189,17 +190,18 @@ namespace SashaRX.UnityMeshLab
         {
             var geometry = data.geometry;
             int id = mesh.GetInstanceID();
-            string key = $"{data.cageDistance:R}|{data.cageSmoothing:R}|{data.cageFit}|{(data.source != null ? data.source.GetHashCode() : 0)}";
+            string key = $"{data.cageDistance:R}|{data.cageSmoothing:R}|{data.cageFit}|{data.sourceBackfaces}|{(data.source != null ? data.source.GetHashCode() : 0)}";
             if (id == cageMeshId && key == cageKey && ReferenceEquals(geometry, cageGeometryRef)) return;
             cageMeshId = id; cageKey = key; cageGeometryRef = geometry; cageReady = false;
             var source = data.cageFit ? data.source : null;
             float distance = data.cageDistance, smoothing = data.cageSmoothing;
+            var sourceBackfaces = data.sourceBackfaces;
             cageWork.Enqueue(() => {
                 if (cageOuter) Object.DestroyImmediate(cageOuter);
                 if (cageInner) Object.DestroyImmediate(cageInner);
                 cageOuter = cageInner = null;
                 var cachedSource = ReferenceEquals(cageSourceRef, source) ? cageSourceBvh : null;
-                return token => BuildCageData(geometry, source, cachedSource, distance, smoothing, token);
+                return token => BuildCageData(geometry, source, cachedSource, distance, smoothing, sourceBackfaces, token);
             }, prepared => {
                 if (!mesh) return;
                 cageSourceRef = source; cageSourceBvh = prepared.source;
@@ -213,12 +215,21 @@ namespace SashaRX.UnityMeshLab
         sealed class CageData { public Vector3[] outer, inner; public int[] lines; public TriangleBvh source; }
 
         static CageData BuildCageData(RemeshNative.Geometry geometry, RemeshSource source, TriangleBvh sourceBvh,
-            float distance, float smoothing, CancellationToken token)
+            float distance, float smoothing, RemeshBackfaces sourceBackfaces, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
             if (sourceBvh == null && source?.indices != null && source.indices.Length > 0)
                 sourceBvh = new TriangleBvh(source.positions, source.indices);
-            var cage = RemeshBaker.BuildCage(geometry, distance, smoothing, sourceBvh, token: token);
+            Vector3[] sourceNormals = null; bool[] eitherSide = null;
+            if (sourceBvh != null && source != null) {
+                eitherSide = source.TwoSidedFaces(sourceBackfaces);
+                sourceNormals = MeshGeometry.FaceNormals(source.positions, source.indices);
+                int winding = RemeshBaker.ProbeWinding(sourceBvh, source.positions, sourceNormals, eitherSide);
+                if (winding == 0) { sourceNormals = null; eitherSide = null; }
+                else if (winding < 0)
+                    for (int f = 0; f < sourceNormals.Length; ++f) sourceNormals[f] = -sourceNormals[f];
+            }
+            var cage = RemeshBaker.BuildCageWithFacing(geometry, distance, smoothing, sourceBvh, sourceNormals, eitherSide, token: token);
             token.ThrowIfCancellationRequested();
             var folds = new TriangleBvh(geometry.positions, geometry.indices);
             var outer = CageVertices(geometry, cage, 1f, folds, token);

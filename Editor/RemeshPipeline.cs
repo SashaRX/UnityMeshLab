@@ -297,7 +297,10 @@ namespace SashaRX.UnityMeshLab
                     if (shape == RemeshShape.BoundingBox) return captured.OrientedBoxes();
                     if (shape == RemeshShape.Hull) return Hull(captured, options, token);
                     var voxel = RemeshNative.Voxelize(captured.positions, captured.indices, options, token);
-                    if (!options.trimToSource || voxel == null) return voxel;
+                    if (!options.trimToSource || voxel == null) {
+                        if (voxel != null) RemeshGeometryDiagnostics.Capture(captured, voxel, voxel, options);
+                        return voxel;
+                    }
                     // The remesh surface sits within a cell of the source; two cells of reach
                     // keep a closed source whole and still find nothing behind an open sheet.
                     Vector3 mn = captured.positions[0], mx = captured.positions[0];
@@ -306,6 +309,7 @@ namespace SashaRX.UnityMeshLab
                     float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, options.voxelResolution);
                     trim = RemeshTrim.Trim(voxel, captured.positions, captured.indices, cell * 2f, token);
                     node.voxelRaw = voxel; node.trimClasses = trim.classes;
+                    RemeshGeometryDiagnostics.Capture(captured, voxel, trim.mesh, options);
                     return trim.mesh;
                 }, token);
                 if (node.voxel == null || node.voxel.TriangleCount == 0) throw new InvalidOperationException("The remesh produced no geometry.");

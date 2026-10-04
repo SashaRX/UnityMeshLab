@@ -844,6 +844,163 @@ namespace SashaRX.UnityMeshLab.Tests
             var near=new TriangleBvh(new[] { new Vector3(-2,-2,0.02f), new Vector3(3,-2,0.02f), new Vector3(3,3,0.02f), new Vector3(-2,3,0.02f) }, new[] { 0,1,2, 0,2,3 });
             foreach (float r in RemeshBaker.BuildCage(target, 0.1f, 2f, near).reach) Assert.That(r, Is.EqualTo(0.1f).Within(1e-6f));
         }
+
+        [TestCase(1f, false, 1f)]
+        [TestCase(0.001f, false, 1f)]
+        [TestCase(0.0001f, false, 1f)]
+        [TestCase(1f, false, -1f)]
+        [TestCase(0.001f, false, -1f)]
+        [TestCase(0.0001f, false, -1f)]
+        [TestCase(1f, true, 1f)]
+        [TestCase(0.001f, true, 1f)]
+        [TestCase(0.0001f, true, 1f)]
+        public void CageFitIgnoresBackFacingLayers(float scale, bool offRay, float direction)
+        {
+            var target = CageFitTarget(scale);
+            var bvh = CageFitLayers(scale, offRay, direction, out var normals, out _, out _);
+            float distance = .1f * scale;
+            var legacy = RemeshBaker.BuildCage(target, distance, 0f, bvh);
+            var fitted = RemeshBaker.BuildCageWithFacing(target, distance, 0f, bvh, normals, null);
+            var weights = new Vector3(1f / 3, 1f / 3, 1f / 3);
+            var point = (target.positions[0] + target.positions[1] + target.positions[2]) / 3;
+            var dir = fitted.Direction(0, weights);
+            // The closer layer has the wrong winding for the actual cage ray.
+            // The unfiltered fit cannot reach the farther eligible layer.
+            var tooShort = bvh.FindNearestNormalFiltered(point, dir, normals, 0f, legacy.Reach(0, weights));
+            Assert.That(tooShort.triangleIndex, Is.EqualTo(-1));
+            var eligible = bvh.FindNearestNormalFiltered(point, dir, normals, 0f, fitted.Reach(0, weights));
+            Assert.That(eligible.triangleIndex, Is.GreaterThanOrEqualTo(2));
+            foreach (float reach in fitted.reach) {
+                Assert.That(reach, Is.GreaterThanOrEqualTo(distance));
+                Assert.That(reach, Is.LessThanOrEqualTo(distance * RemeshBaker.Cage.FitRange));
+            }
+            if (!offRay) {
+                var reach = fitted.Reach(0, weights);
+                var hit = bvh.RaycastFacingFiltered(point + dir * reach, -dir, reach * 2f, normals);
+                Assert.That(hit.triangleIndex, Is.GreaterThanOrEqualTo(2));
+                foreach (float value in fitted.reach) Assert.That(value, Is.EqualTo(.6f * scale).Within(scale * 1e-4f));
+            }
+        }
+
+        [TestCase(1f)]
+        [TestCase(0.001f)]
+        [TestCase(0.0001f)]
+        public void CageFitKeepsTwoSidedNearbyLayerEligible(float scale)
+        {
+            var target = CageFitTarget(scale);
+            var bvh = CageFitLayers(scale, false, 1f, out var normals, out _, out _);
+            var eitherSide = new[] { true, true, false, false };
+            float distance = .1f * scale;
+            var fitted = RemeshBaker.BuildCageWithFacing(target, distance, 0f, bvh, normals, eitherSide);
+            foreach (float value in fitted.reach) Assert.That(value, Is.EqualTo(distance).Within(scale * 1e-5f));
+            var weights = new Vector3(1f / 3, 1f / 3, 1f / 3);
+            var point = (target.positions[0] + target.positions[1] + target.positions[2]) / 3;
+            var dir = fitted.Direction(0, weights);
+            var hit = bvh.RaycastFacingFiltered(point + dir * distance, -dir, distance * 2f, normals, eitherSide);
+            Assert.That(hit.triangleIndex, Is.InRange(0, 1));
+        }
+
+        [TestCase(1f)]
+        [TestCase(0.001f)]
+        [TestCase(0.0001f)]
+        public void FittedBakeReachesEligibleLayerBeyondCloserBackFace(float scale)
+        {
+            var target = CageFitTarget(scale);
+            target.uv = new[] { Vector2.zero, Vector2.right, Vector2.up };
+            var source = CageFitLayerSource(scale);
+            var tangents = new[] { new Vector4(1, 0, 0, 1), new Vector4(1, 0, 0, 1), new Vector4(1, 0, 0, 1) };
+            var settings = new RemeshSettings { textureResolution = 64, padding = 1, bakeSamples = 1,
+                sourceBackfaces = RemeshBackfaces.Never, projectionDistance = .1f * scale / source.diagonal,
+                cageSmoothing = 0, cageFit = false, dilationRadius = 0 };
+            var unfitted = RemeshBaker.Bake(source, target, tangents, settings, CancellationToken.None);
+            Assert.IsTrue(unfitted.facingFilter, "Both outer layers give an outward winding vote.");
+            Assert.That(unfitted.covered, Is.GreaterThan(0));
+            Assert.That(unfitted.misses, Is.EqualTo(unfitted.covered));
+            settings.cageFit = true;
+            var fitted = RemeshBaker.Bake(source, target, tangents, settings, CancellationToken.None);
+            Assert.IsTrue(fitted.facingFilter);
+            Assert.That(fitted.covered, Is.EqualTo(unfitted.covered));
+            Assert.That(fitted.misses, Is.Zero);
+            Assert.That(fitted.rayFallbacks, Is.Zero);
+            Assert.That(fitted.maxReachRatio, Is.EqualTo(6f).Within(.001f));
+            Assert.That(fitted.maxTiltDeg, Is.LessThan(1f));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator CagePreviewRebuildsWhenSourceBackfacesChange()
+        {
+            var outerField = typeof(RemeshPreview).GetField("cageOuter", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            foreach (float scale in new[] { 1f, .001f }) {
+                var target = CageFitTarget(scale);
+                var mesh = new Mesh { vertices = target.positions, triangles = target.indices, normals = target.normals };
+                using (var preview = new RemeshPreview())
+                try {
+                    var data = new RemeshPreview.Data { geometry = target, source = CageFitLayerSource(scale),
+                        cageDistance = .1f * scale, cageFit = true, cageSmoothing = 0, sourceBackfaces = RemeshBackfaces.Never };
+                    preview.PrepareCage(mesh, data);
+                    double deadline = EditorApplication.timeSinceStartup + 10;
+                    Mesh outer = null;
+                    while (!outer && EditorApplication.timeSinceStartup < deadline) {
+                        yield return null;
+                        outer = (Mesh)outerField.GetValue(preview);
+                    }
+                    Assert.IsTrue(outer);
+                    Assert.That(outer.vertices[0].z, Is.EqualTo(.6f * scale).Within(scale * 1e-4f));
+                    var previous = outer;
+                    data.sourceBackfaces = RemeshBackfaces.Always;
+                    preview.PrepareCage(mesh, data);
+                    deadline = EditorApplication.timeSinceStartup + 10;
+                    while (EditorApplication.timeSinceStartup < deadline) {
+                        yield return null;
+                        outer = (Mesh)outerField.GetValue(preview);
+                        if (outer && !ReferenceEquals(outer, previous)) break;
+                    }
+                    Assert.IsTrue(outer); Assert.IsFalse(ReferenceEquals(outer, previous));
+                    Assert.IsFalse(previous, "Changing the filter replaces the old preview mesh.");
+                    Assert.That(outer.vertices[0].z, Is.EqualTo(.1f * scale).Within(scale * 1e-5f));
+                }
+                finally { UnityEngine.Object.DestroyImmediate(mesh); }
+            }
+        }
+
+        static RemeshSource CageFitLayerSource(float scale)
+        {
+            CageFitLayers(scale, false, 1f, out _, out var positions, out var indices);
+            var source = Source();
+            source.positions = positions; source.indices = indices; source.faceMaterials = new int[4];
+            source.uv = new Vector2[8]; source.normals = new Vector3[8]; source.tangents = new Vector4[8];
+            source.hasColors = false; source.colors = null;
+            for (int i = 0; i < 8; ++i) {
+                source.normals[i] = i < 4 ? Vector3.back : Vector3.forward;
+                source.tangents[i] = new Vector4(1, 0, 0, 1);
+            }
+            source.diagonal = new Vector3(1, 1, .25f).magnitude * scale;
+            return source;
+        }
+
+        static RemeshNative.Geometry CageFitTarget(float scale)
+            => new RemeshNative.Geometry {
+                positions = new[] { Vector3.zero, Vector3.right * (.1f * scale), Vector3.up * (.1f * scale) },
+                normals = new[] { Vector3.forward, Vector3.forward, Vector3.forward }, indices = new[] { 0, 1, 2 }
+            };
+
+        static TriangleBvh CageFitLayers(float scale, bool offRay, float direction, out Vector3[] normals,
+            out Vector3[] positions, out int[] indices)
+        {
+            positions = new Vector3[8];
+            for (int layer = 0; layer < 2; ++layer) {
+                float left = offRay && layer == 1 ? .25f : -.5f, right = offRay && layer == 1 ? .45f : .5f;
+                float z = (layer == 0 ? .05f : .3f) * direction;
+                positions[layer * 4] = new Vector3(left, -.5f, z) * scale;
+                positions[layer * 4 + 1] = new Vector3(right, -.5f, z) * scale;
+                positions[layer * 4 + 2] = new Vector3(right, .5f, z) * scale;
+                positions[layer * 4 + 3] = new Vector3(left, .5f, z) * scale;
+            }
+            indices = new[] { 0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7 };
+            normals = MeshGeometry.FaceNormals(positions, indices);
+            return new TriangleBvh(positions, indices);
+        }
+
         [Test]
         public void UvIslandNormalsAreHardOnlyAtSplitVertices()
         {

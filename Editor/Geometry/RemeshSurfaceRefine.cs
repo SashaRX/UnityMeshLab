@@ -11,8 +11,12 @@ namespace SashaRX.UnityMeshLab
         internal struct Report
         {
             internal int moves, flips, features;
+            internal int attemptedMoves, attemptedFeatures;
+            internal int motionBacktracks;
             internal float meanQualityBefore, meanQualityAfter, maxDisplacement;
-            internal bool reverted;
+            internal float attemptedMaxDisplacement, motionScale;
+            internal bool reverted, movementFallback;
+            internal string fallbackReason, rejectionReason, backtrackReason;
         }
 
         internal static RemeshNative.IndexedMesh Simplify(RemeshNative.IndexedMesh input,
@@ -29,9 +33,14 @@ namespace SashaRX.UnityMeshLab
             Log(pre, cell, "before simplify");
             var candidate = ReferenceEquals(input, prepared) ? baseline : RemeshNative.Simplify(prepared, settings, token, out error);
             var bvh = new TriangleBvh(sourcePositions, sourceIndices);
-            if (candidate.TriangleCount > Math.Max(baseline.TriangleCount * 1.1f, baseline.TriangleCount + 2) ||
-                !PreservesSurface(bvh, sourcePositions, sourceIndices, baseline.positions, baseline.indices, candidate.positions, candidate.indices, cell, token)) {
-                UvtLog.Info(UvtLog.Category.RemeshDiag, "Source surface refinement rejected its collapse candidate: retaining ordinary Simplify before final triangle refinement.");
+            float triangleLimit = Math.Max(baseline.TriangleCount * 1.1f, baseline.TriangleCount + 2);
+            bool exceedsTriangleBudget = candidate.TriangleCount > triangleLimit;
+            string collapseReason = null;
+            if (exceedsTriangleBudget ||
+                !PreservesSurface(bvh, sourcePositions, sourceIndices, baseline.positions, baseline.indices, candidate.positions, candidate.indices, cell, token, out collapseReason)) {
+                if (exceedsTriangleBudget) collapseReason = $"triangle count {candidate.TriangleCount} exceeds {triangleLimit:G6} (ordinary {baseline.TriangleCount})";
+                UvtLog.Info(UvtLog.Category.RemeshDiag, $"Source surface refinement rejected its collapse candidate ({collapseReason}): " +
+                    "retaining ordinary Simplify; pre-refinement changes discarded before final triangle refinement.");
                 candidate = baseline; error = baselineError;
             }
             var result = Apply(candidate, sourcePositions, sourceIndices, cell, token, out var post);
@@ -42,14 +51,20 @@ namespace SashaRX.UnityMeshLab
         static void Log(Report report, float cell, string phase)
             => UvtLog.Info(UvtLog.Category.RemeshDiag, $"Source surface refinement {phase}: {report.moves} vertex moves, {report.flips} edge flips, " +
                 $"{report.features} feature anchors; triangle quality {report.meanQualityBefore:F3} → {report.meanQualityAfter:F3}; " +
-                $"max displacement {report.maxDisplacement:G4} ({report.maxDisplacement / cell:F3} cells){(report.reverted ? "; reverted by surface/topology gate" : "")}. " +
+                $"max displacement {report.maxDisplacement:G4} ({report.maxDisplacement / cell:F3} cells); attempted {report.attemptedMoves} vertex moves, " +
+                $"{report.attemptedFeatures} feature anchors, max {report.attemptedMaxDisplacement / cell:F3} cells" +
+                $"; motion scale {report.motionScale:G3}, backtrack trials {report.motionBacktracks}" +
+                (report.movementFallback ? $"; flips-only fallback ({report.fallbackReason})" :
+                    report.motionBacktracks > 0 ? $"; reduced motion accepted; full motion rejected ({report.fallbackReason})" : "") +
+                (report.movementFallback && report.motionBacktracks > 0 ? $"; last reduced-motion rejection ({report.backtrackReason})" : "") +
+                (report.reverted ? $"; reverted ({report.rejectionReason})" : "") + ". " +
                 "Simplify error measures native collapse only.");
 
         sealed class Source
         {
             internal readonly TriangleBvh bvh;
             internal readonly Vector3[] normals, positions;
-            readonly int[] indices;
+            internal readonly int[] indices;
             readonly bool[] features;
 
             internal Source(Vector3[] p, int[] ix, CancellationToken token)
@@ -165,19 +180,32 @@ namespace SashaRX.UnityMeshLab
                     if (Move(p, ix, v, target, input.positions[v], fans[v], cell, minCross, pass > 0)) report.moves++;
                 }
             for (int pass = 0; pass < 4; pass++) report.flips += Flip(p, ix, source, cell, minCross, token);
-            bool surfaceValid = PreservesSurface(source.bvh, sourcePositions, sourceIndices, input.positions, input.indices, p, ix, cell, token);
+            report.attemptedMoves = report.moves; report.attemptedFeatures = report.features;
+            for (int v = 0; v < p.Length; v++)
+                report.attemptedMaxDisplacement = Mathf.Max(report.attemptedMaxDisplacement, (p[v] - input.positions[v]).magnitude);
+            report.motionScale = report.moves > 0 ? 1f : 0f;
+            bool surfaceValid = PreservesSurface(source.bvh, sourcePositions, sourceIndices, input.positions, input.indices, p, ix, cell, token, out var surfaceReason);
             if (!surfaceValid) {
-                // Keep a useful diagonal change even if the vertex redistribution
-                // loses source detail. Re-evaluate it with the original positions.
-                p = (Vector3[])input.positions.Clone(); ix = (int[])input.indices.Clone();
-                report.moves = 0; report.features = 0; report.flips = 0;
-                for (int pass = 0; pass < 4; pass++) report.flips += Flip(p, ix, source, cell, minCross, token);
-                surfaceValid = PreservesSurface(source.bvh, sourcePositions, sourceIndices, input.positions, input.indices, p, ix, cell, token);
+                report.fallbackReason = surfaceReason;
+                var fitted = p;
+                surfaceValid = report.attemptedMaxDisplacement > 0 && BacktrackMotion(input, fitted, source, cell, minCross, before, token,
+                    ref report, out p, out ix);
+                if (!surfaceValid) {
+                    report.movementFallback = true;
+                    // Keep useful diagonal changes if every bounded motion trial
+                    // loses source detail. Start again from the original positions.
+                    p = (Vector3[])input.positions.Clone(); ix = (int[])input.indices.Clone();
+                    report.moves = 0; report.features = 0; report.flips = 0; report.motionScale = 0;
+                    for (int pass = 0; pass < 4; pass++) report.flips += Flip(p, ix, source, cell, minCross, token);
+                    surfaceValid = PreservesSurface(source.bvh, sourcePositions, sourceIndices, input.positions, input.indices, p, ix, cell, token, out surfaceReason);
+                }
             }
             var after = RemeshTopology.Inspect(p, ix, token);
             if (!after.Valid || !after.PreservesBoundary(before) || !after.PreservesComponents(before, false) ||
                 !surfaceValid) {
                 report.reverted = true;
+                report.rejectionReason = !surfaceValid ? surfaceReason : $"topology: {after.Description}; " +
+                    $"boundary preserved {after.PreservesBoundary(before)}, component topology preserved {after.PreservesComponents(before, false)}";
                 report.meanQualityAfter = report.meanQualityBefore;
                 return input;
             }
@@ -185,6 +213,61 @@ namespace SashaRX.UnityMeshLab
             report.meanQualityAfter = MeanQuality(p, ix);
             if (report.moves == 0 && report.flips == 0) return input;
             return new RemeshNative.IndexedMesh { positions = p, indices = ix }.PrepareChannels(token);
+        }
+
+        static bool BacktrackMotion(RemeshNative.IndexedMesh input, Vector3[] fitted, Source source, float cell, float minCross,
+            RemeshTopology.Snapshot before, CancellationToken token, ref Report report, out Vector3[] positions, out int[] indices)
+        {
+            positions = null; indices = null;
+            // Rebuild every trial from the same snapshot. Reusing rejected flips
+            // would combine unrelated topology and motion decisions.
+            for (int trial = 1; trial <= 3; trial++) {
+                token.ThrowIfCancellationRequested(); report.motionBacktracks++;
+                float factor = 1f / (1 << trial);
+                var p = new Vector3[input.positions.Length];
+                for (int v = 0; v < p.Length; v++) {
+                    if ((v & 1023) == 0) token.ThrowIfCancellationRequested();
+                    p[v] = input.positions[v] + (fitted[v] - input.positions[v]) * factor;
+                }
+                if (!SafeCollectiveMotion(input, p, minCross, token)) {
+                    report.backtrackReason = "original triangle orientation/area gate";
+                    continue;
+                }
+                var ix = (int[])input.indices.Clone(); int flips = 0;
+                for (int pass = 0; pass < 4; pass++) flips += Flip(p, ix, source, cell, minCross, token);
+                if (!PreservesSurface(source.bvh, source.positions, source.indices, input.positions, input.indices, p, ix, cell, token, out var reason)) {
+                    report.backtrackReason = reason;
+                    continue;
+                }
+                var after = RemeshTopology.Inspect(p, ix, token);
+                if (!after.Valid || !after.PreservesBoundary(before) || !after.PreservesComponents(before, false)) {
+                    report.backtrackReason = $"topology: {after.Description}; boundary/component preservation failed";
+                    continue;
+                }
+                report.moves = 0;
+                for (int v = 0; v < p.Length; v++) if ((p[v] - input.positions[v]).sqrMagnitude > 0) report.moves++;
+                report.features = 0; // A blended feature target is not an exact anchor.
+                report.flips = flips; report.motionScale = factor;
+                positions = p; indices = ix;
+                return true;
+            }
+            return false;
+        }
+
+        static bool SafeCollectiveMotion(RemeshNative.IndexedMesh input, Vector3[] p, float minCross, CancellationToken token)
+        {
+            for (int f = 0; f < input.TriangleCount; f++) {
+                if ((f & 1023) == 0) token.ThrowIfCancellationRequested();
+                var previous = Cross(input.positions, input.indices, f);
+                var cross = Cross(p, input.indices, f); float length = cross.magnitude, originalLength = previous.magnitude;
+                // Native-clean input can contain valid faces below the extra fitting
+                // margin. An unchanged face must pass; such a face may not shrink.
+                float areaFloor = Mathf.Min(minCross, originalLength);
+                if (!(length >= areaFloor) || float.IsInfinity(length) ||
+                    Vector3.Dot(cross, previous) <= .5f * length * originalLength ||
+                    cross.sqrMagnitude < previous.sqrMagnitude * .0625f) return false;
+            }
+            return true;
         }
 
         static bool Move(Vector3[] p, int[] ix, int v, Vector3 target, Vector3 origin, List<int> faces, float cell, float minCross, bool improve)
@@ -292,16 +375,30 @@ namespace SashaRX.UnityMeshLab
         }
 
         static bool PreservesSurface(TriangleBvh bvh, Vector3[] sourcePositions, int[] sourceIndices,
-            Vector3[] before, int[] oldIndices, Vector3[] after, int[] newIndices, float cell, CancellationToken token)
+            Vector3[] before, int[] oldIndices, Vector3[] after, int[] newIndices, float cell, CancellationToken token, out string reason)
         {
+            reason = null;
             var oldError = SampleError(bvh, before, oldIndices, token);
             var newError = SampleError(bvh, after, newIndices, token);
-            if (!Within(oldError, newError, cell)) return false;
+            if (!Within(oldError, newError, cell)) { reason = SurfaceRejection("target-to-source", oldError, newError, cell); return false; }
             // The reverse probes catch lost source protrusions that a one-way
             // target-to-source distance could hide on an otherwise flat patch.
             oldError = SampleError(new TriangleBvh(before, oldIndices), sourcePositions, sourceIndices, token, true);
             newError = SampleError(new TriangleBvh(after, newIndices), sourcePositions, sourceIndices, token, true);
-            return Within(oldError, newError, cell);
+            if (Within(oldError, newError, cell)) return true;
+            reason = SurfaceRejection("source-to-target", oldError, newError, cell);
+            return false;
+        }
+
+        static string SurfaceRejection(string direction, (double rms, double max) before, (double rms, double max) after, float cell)
+        {
+            double rmsLimit = Math.Max(before.rms * 1.05, before.rms + cell * .005);
+            double maxLimit = before.max + cell * .025;
+            string failed = after.rms > rmsLimit ? "RMS" : "";
+            if (after.max > maxLimit) failed += failed.Length > 0 ? "+max" : "max";
+            if (failed.Length == 0) failed = "non-finite samples";
+            return $"{direction} {failed}: RMS {before.rms / cell:G6}→{after.rms / cell:G6} (limit {rmsLimit / cell:G6}), " +
+                $"max {before.max / cell:G6}→{after.max / cell:G6} (limit {maxLimit / cell:G6}) cells";
         }
 
         static bool Within((double rms, double max) before, (double rms, double max) after, float cell)

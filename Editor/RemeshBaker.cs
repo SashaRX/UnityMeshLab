@@ -181,7 +181,6 @@ namespace SashaRX.UnityMeshLab
             // The cage is per corner and per side (see Cage), so a double-sided sheet
             // projects each face from its own side, and its reach is fitted to where
             // the source actually is when the settings ask for it.
-            var cage = BuildCage(target, distance, settings.cageSmoothing, settings.cageFit && !proxy ? bvh : null, result, token);
             // Front-face filter for the projection rays: a plain closest-hit raycast
             // travels 2×distance THROUGH the target and can pierce a thin wall, sampling
             // the far side's texture (periodic mirrored/garbled patches). The filter only
@@ -199,6 +198,8 @@ namespace SashaRX.UnityMeshLab
             if (winding < 0)
                 for (int f = 0; f < faceNormals.Length; ++f) faceNormals[f] = -faceNormals[f];
             result.facingFilter = facingFilter;
+            var cage = BuildCageWithFacing(target, distance, settings.cageSmoothing, settings.cageFit && !proxy ? bvh : null,
+                facingFilter ? faceNormals : null, facingFilter ? twoSided : null, result, token);
             result.sourceAO = settings.bakeSourceAO;
             var aoBaker = settings.bakeSourceAO ? new SourceAoBaker(source, bvh, faceNormals, twoSided, settings.sourceAO) : null;
             // Bands sized so one band's samples fit a query batch (and a modest amount of memory).
@@ -630,6 +631,12 @@ namespace SashaRX.UnityMeshLab
 
         internal static Cage BuildCage(RemeshNative.Geometry target, float distance, float smoothing, TriangleBvh source,
             Maps diag = null, CancellationToken token = default)
+            => BuildCageWithFacing(target, distance, smoothing, source, null, null, diag, token);
+
+        // The fitted reach must look for the same source faces that the bake can
+        // project onto. A nearer back face must not hide an eligible front face.
+        internal static Cage BuildCageWithFacing(RemeshNative.Geometry target, float distance, float smoothing, TriangleBvh source,
+            Vector3[] sourceNormals, bool[] eitherSide, Maps diag = null, CancellationToken token = default)
         {
             token.ThrowIfCancellationRequested();
             var positions = target.positions; var indices = target.indices;
@@ -711,7 +718,8 @@ namespace SashaRX.UnityMeshLab
             for (int slot = 0; slot < firstSide.Length; ++slot)
                 if (firstSide[slot] >= 0 && nextSide[firstSide[slot]] >= 0) ++cage.folded;
             cage.maxReach = distance;
-            if (source != null && distance > 0f) FitReach(cage, welded.normals, sideDir, sideVertex, positions, source, token);
+            if (source != null && distance > 0f)
+                FitReach(cage, welded.normals, sideDir, sideVertex, positions, source, sourceNormals, eitherSide, token);
             if (diag != null) {
                 diag.weldedPositions = cage.positions;
                 diag.splitCopies = positions.Length - cage.positions;
@@ -734,11 +742,15 @@ namespace SashaRX.UnityMeshLab
         // the ray cannot. Smoothed over the side connectivity, never below a side's own
         // measured need, so the shells stay shells instead of spiking per vertex.
         static void FitReach(Cage cage, Vector3[] smoothed, Vector3[] sideDir, System.Collections.Generic.List<int> sideVertex,
-            Vector3[] positions, TriangleBvh source, CancellationToken token)
+            Vector3[] positions, TriangleBvh source, Vector3[] sourceNormals, bool[] eitherSide, CancellationToken token)
         {
             float distance = cage.distance, range = distance * Cage.FitRange;
             int sides = sideDir.Length;
             var need = new float[sides];
+            // Both searches need dot(source normal, cage direction) >= 0, as
+            // the bake casts inward from the outer cage. Reversing only the
+            // outward search's filter normals keeps that eligibility fixed.
+            Vector3[] outwardNormals = sourceNormals == null ? null : Array.ConvertAll(sourceNormals, normal => -normal);
             for (int sd = 0; sd < sides; ++sd) {
                 if ((sd & 255) == 0) token.ThrowIfCancellationRequested();
                 Vector3 d = smoothed[sd].sqrMagnitude > 1e-20f ? smoothed[sd] : sideDir[sd];
@@ -746,13 +758,16 @@ namespace SashaRX.UnityMeshLab
                 float found = -1f;
                 if (d.sqrMagnitude > 1e-20f) {
                     float eps = distance * 1e-3f;
-                    var outward = source.Raycast(p + d * eps, d, range);
-                    var inward = source.Raycast(p - d * eps, -d, range);
+                    var outward = sourceNormals == null ? source.Raycast(p + d * eps, d, range) :
+                        source.RaycastFacingFiltered(p + d * eps, d, range, outwardNormals, eitherSide);
+                    var inward = sourceNormals == null ? source.Raycast(p - d * eps, -d, range) :
+                        source.RaycastFacingFiltered(p - d * eps, -d, range, sourceNormals, eitherSide);
                     if (outward.triangleIndex >= 0) found = outward.t + eps;
                     if (inward.triangleIndex >= 0 && (found < 0f || inward.t + eps < found)) found = inward.t + eps;
                 }
                 if (found < 0f) {
-                    var nearest = source.FindNearest(p, range);
+                    var nearest = sourceNormals == null ? source.FindNearest(p, range) :
+                        source.FindNearestNormalFiltered(p, d, sourceNormals, 0f, range, eitherSide);
                     if (nearest.triangleIndex >= 0) found = Mathf.Sqrt(nearest.distSq);
                 }
                 need[sd] = found < 0f ? distance : Mathf.Clamp(found * Cage.FitMargin, distance, range);

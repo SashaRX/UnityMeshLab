@@ -12,6 +12,59 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TestCase(1f)]
         [TestCase(.001f)]
+        public void FittedSolidHoleRetriesBeforeTrimAndKeepsClosedGeometry(float scale)
+        {
+            var p = TetraPositions();
+            for (int v = 0; v < p.Length; v++) p[v] *= scale;
+            var opened = new RemeshNative.IndexedMesh { positions = p, indices = new[] { 0, 2, 1, 0, 1, 3, 1, 2, 3 } };
+            var closed = new RemeshNative.IndexedMesh { positions = (Vector3[])p.Clone(), indices = (int[])Tetrahedron.Clone() };
+            var original = (int[])opened.indices.Clone(); int retries = 0;
+            var result = RemeshNative.GuardVoxelSolid(opened, 1u, 256, CancellationToken.None, flags => {
+                Assert.AreEqual(0u, flags); retries++; return closed;
+            });
+            Assert.AreEqual(1, retries); Assert.AreSame(closed, result);
+            var topology = RemeshTopology.Inspect(result.positions, result.indices);
+            Assert.IsTrue(topology.Valid, topology.Description); Assert.AreEqual(0, topology.boundary.Count);
+            CollectionAssert.AreEqual(original, opened.indices); CollectionAssert.AreEqual(p, opened.positions);
+        }
+
+        [Test]
+        public void ClosedVoxelAndExplicitShellDoNotChangeGeometryOrRequestRetry()
+        {
+            var closed = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = (int[])Tetrahedron.Clone() };
+            var sheet = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = new[] { 0, 2, 1 } };
+            foreach (uint flags in new[] { 0u, 1u })
+                Assert.AreSame(closed, RemeshNative.GuardVoxelSolid(closed, flags, 256, CancellationToken.None, _ => throw new Exception("Unexpected retry")));
+            Assert.AreSame(sheet, RemeshNative.GuardVoxelSolid(sheet, 3u, 256, CancellationToken.None, _ => throw new Exception("Unexpected retry")));
+        }
+
+        [Test]
+        public void SolidVoxelCannotPassAnUnrecoverableOpeningIntoSimplify()
+        {
+            var opened = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = new[] { 0, 2, 1, 0, 1, 3, 1, 2, 3 } };
+            Assert.Throws<InvalidOperationException>(() => RemeshNative.GuardVoxelSolid(opened, 1u, 256, CancellationToken.None, _ => opened));
+            Assert.Throws<InvalidOperationException>(() => RemeshNative.GuardVoxelSolid(opened, 0u, 256, CancellationToken.None, _ => throw new Exception("Unexpected retry")));
+            using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+            Assert.Throws<OperationCanceledException>(() => RemeshNative.GuardVoxelSolid(opened, 1u, 256, cancelled.Token, _ => opened));
+        }
+
+        [Test]
+        public void FittedSolidRetriesInvalidWeldsEvenWithoutBoundaryEdges()
+        {
+            var invalid = new RemeshNative.IndexedMesh { positions = TetraPositions(),
+                indices = new[] { 0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3, 0, 2, 1, 0, 1, 2 } };
+            var info = RemeshTopology.Inspect(invalid.positions, invalid.indices);
+            Assert.IsFalse(info.Valid); Assert.AreEqual(0, info.boundary.Count);
+            var closed = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = (int[])Tetrahedron.Clone() };
+            int retries = 0;
+            Assert.AreSame(closed, RemeshNative.GuardVoxelSolid(invalid, 1u, 256, CancellationToken.None, flags => {
+                Assert.AreEqual(0u, flags); retries++; return closed;
+            }));
+            Assert.AreEqual(1, retries);
+        }
+
+        [TestCase(1f)]
+        [TestCase(.001f)]
         public void TrimKeepsClosedVolumeAtSharpCorner(float scale)
         {
             var source = TetraPositions(); var p = TetraPositions();
@@ -110,6 +163,34 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             try { RemeshNative.CheckAvailable(); }
             catch (InvalidOperationException error) { Assert.Ignore(error.Message); }
+        }
+
+        [Test]
+        public void NativeFittedVoxelDoesNotLeaveCleanupHoleInRotatedThinBox()
+        {
+            RequireNative();
+            // Eight source vertices reproduce a one-face native Clean deletion
+            // at resolution 48. Constants retain the captured float32 positions.
+            var p = new[] {
+                new Vector3(-.0020011793822050095f, -.001458699000068009f, -.0001976821367861703f),
+                new Vector3(.00184518878813833f, -.0011100758565589786f, -.0012387937167659402f),
+                new Vector3(.0018915702821686864f, .0016025769291445613f, -.00015908811474218965f),
+                new Vector3(-.001954797888174653f, .0012539536692202091f, .0008820234215818346f),
+                new Vector3(-.0018915702821686864f, -.0016025769291445613f, .00015908811474218965f),
+                new Vector3(.001954797888174653f, -.0012539536692202091f, -.0008820234215818346f),
+                new Vector3(.0020011793822050095f, .001458699000068009f, .0001976821367861703f),
+                new Vector3(-.00184518878813833f, .0011100758565589786f, .0012387937167659402f) };
+            var ix = new[] { 0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4,
+                1,2,6, 1,6,5, 2,3,7, 2,7,6, 3,0,4, 3,4,7 };
+            var positionsBefore = (Vector3[])p.Clone(); var indicesBefore = (int[])ix.Clone();
+            var settings = new RemeshSettings { voxelResolution = 48, solve = true, shell = false };
+            var fitted = RemeshNative.Voxelize(p, ix, settings, CancellationToken.None);
+            var topology = RemeshTopology.Inspect(fitted.positions, fitted.indices);
+            Assert.IsTrue(topology.Valid, topology.Description); Assert.AreEqual(0, topology.boundary.Count);
+            Assert.Greater(fitted.TriangleCount, 0); Assert.IsTrue(settings.solve);
+            var repeated = RemeshNative.Voxelize(p, ix, settings, CancellationToken.None);
+            CollectionAssert.AreEqual(fitted.positions, repeated.positions); CollectionAssert.AreEqual(fitted.indices, repeated.indices);
+            CollectionAssert.AreEqual(positionsBefore, p); CollectionAssert.AreEqual(indicesBefore, ix);
         }
 
         [Test]

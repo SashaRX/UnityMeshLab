@@ -730,9 +730,27 @@ namespace SashaRX.UnityMeshLab
         internal static bool Repack(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token)
             => RepackWithPrecision(geometry, settings, token, 4);
 
-        internal static bool RepackHighPrecision(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token)
+        const long RepackCostBudget = 20_000_000_000L;
+
+        // The largest safe retry can be between the nominal 8/16/32 stages.
+        // Select it before opening a native session, rather than rejecting an
+        // oversized 32x request when useful higher precision still fits.
+        internal static int HighPrecisionLimit(int chartCount, int resolution)
         {
-            int oversample = Math.Min(32, 16384 / settings.textureResolution);
+            if (chartCount <= 0 || resolution <= 0) return 0;
+            int limit = Math.Min(32, 16384 / resolution);
+            while (limit > 4) {
+                long internalResolution = (long)resolution * limit;
+                if (chartCount * internalResolution * internalResolution <= RepackCostBudget) return limit;
+                --limit;
+            }
+            return 0;
+        }
+
+        internal static bool RepackHighPrecision(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token,
+            int requestedOversample = 32)
+        {
+            int oversample = Math.Min(requestedOversample, HighPrecisionLimit(geometry.chartCount, settings.textureResolution));
             return oversample > 4 && RepackWithPrecision(geometry, settings, token, oversample);
         }
 
@@ -836,7 +854,7 @@ namespace SashaRX.UnityMeshLab
                 // pack task and freed the atlas under it — the editor crashed inside
                 // PackCharts with wandering access violations (three dumps,
                 // 2026-10-03/04). One thread, no editor APIs, no orphan task.
-                if ((long)geometry.chartCount * internalRes * internalRes > 20_000_000_000L)
+                if ((long)geometry.chartCount * internalRes * internalRes > RepackCostBudget)
                 {
                     UvtLog.Warn("[Remesh] Chart merge re-pack refused: the pack cost is past the safety budget.");
                     return false;

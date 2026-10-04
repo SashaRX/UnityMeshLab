@@ -7,6 +7,39 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class UvChartRepairTests
     {
+        [Test]
+        public void HighPrecisionRetryUsesAvailableBudgetInsteadOfRefusingThirtyTwoTimes()
+        {
+            const int charts = 81, resolution = 512;
+            int factor = UvChartMerge.HighPrecisionLimit(charts, resolution);
+            Assert.AreEqual(30, factor, "A useful retry fits even though 32x exceeds the existing cost budget.");
+            long internalResolution = (long)resolution * factor;
+            Assert.That(charts * internalResolution * internalResolution, Is.LessThanOrEqualTo(20_000_000_000L));
+            long nextResolution = (long)resolution * (factor + 1);
+            Assert.That(charts * nextResolution * nextResolution, Is.GreaterThan(20_000_000_000L));
+        }
+
+        [TestCase(13, 512, 32)]
+        [TestCase(1, 64, 32)]
+        [TestCase(1, 2048, 8)]
+        public void HighPrecisionRetryHonorsMultiplierAndAtlasCaps(int charts, int resolution, int expected)
+        {
+            int factor = UvChartMerge.HighPrecisionLimit(charts, resolution);
+            Assert.AreEqual(expected, factor);
+            Assert.That(factor, Is.InRange(5, 32));
+            Assert.That((long)resolution * factor, Is.LessThanOrEqualTo(16384));
+            Assert.That((long)charts * resolution * factor * resolution * factor, Is.LessThanOrEqualTo(20_000_000_000L));
+        }
+
+        [TestCase(1, 4096)]
+        [TestCase(1, 8192)]
+        [TestCase(4000, 512)]
+        [TestCase(int.MaxValue, 512)]
+        [TestCase(0, 512)]
+        [TestCase(1, 0)]
+        public void HighPrecisionRetryReturnsNoCandidateWhenHigherPrecisionCannotFit(int charts, int resolution)
+            => Assert.AreEqual(0, UvChartMerge.HighPrecisionLimit(charts, resolution));
+
         static RemeshNative.Geometry FoldedNeighbour()
             => new RemeshNative.Geometry {
                 positions = new[] { Vector3.zero, Vector3.right, Vector3.forward, new Vector3(.25f, 0, .25f) },

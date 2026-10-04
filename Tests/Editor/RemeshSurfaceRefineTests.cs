@@ -40,6 +40,80 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(scale * .02f, input.positions[4].z);
             for (int v = 0; v < 4; v++) Assert.AreEqual(source[v], result.positions[v]);
             Assert.IsFalse(report.reverted);
+            Assert.AreEqual(report.moves, report.attemptedMoves);
+            Assert.IsFalse(report.movementFallback);
+            Assert.IsNull(report.fallbackReason);
+            Assert.AreEqual(1f, report.motionScale); Assert.AreEqual(0, report.motionBacktracks);
+        }
+
+        [TestCase(1f)]
+        [TestCase(.001f)]
+        public void FlipsOnlyFallbackReportsDiscardedFittingAndFailedSurfaceSamples(float scale)
+        {
+            // A tiny nearby sheet attracts the interior vertex, but lifting the
+            // surrounding fan loses the broad source plane. The independent
+            // planar quad still has a useful diagonal change to retain.
+            var p = new[] { new Vector3(-1,-1,0), new Vector3(1,-1,0), new Vector3(1,1,0), new Vector3(-1,1,0), new Vector3(0,0,.022f),
+                new Vector3(4,0,0), new Vector3(6,0,0), new Vector3(6,1,0), new Vector3(4,.2f,0) };
+            var source = new[] { p[0], p[1], p[2], p[3], Vector3.zero, p[5], p[6], p[7], p[8],
+                new Vector3(-.001f,-.001f,.04f), new Vector3(.001f,-.001f,.04f), new Vector3(0,.001f,.04f) };
+            for (int v = 0; v < p.Length; v++) p[v] *= scale;
+            for (int v = 0; v < source.Length; v++) source[v] *= scale;
+            var ix = new[] { 0,1,4, 1,2,4, 2,3,4, 3,0,4, 5,6,7, 5,7,8 };
+            var sourceIx = new[] { 0,1,4, 1,2,4, 2,3,4, 3,0,4, 5,6,7, 5,7,8, 9,10,11 };
+            var input = new RemeshNative.IndexedMesh { positions = p, indices = ix };
+            var result = RemeshSurfaceRefine.Apply(input, source, sourceIx, scale * .1f, CancellationToken.None, out var report);
+            Assert.IsTrue(report.movementFallback);
+            Assert.Greater(report.attemptedMoves, 0);
+            Assert.Greater(report.attemptedFeatures, 0);
+            Assert.Greater(report.attemptedMaxDisplacement, 0);
+            Assert.AreEqual(0, report.moves); Assert.AreEqual(0, report.features); Assert.AreEqual(0, report.maxDisplacement);
+            Assert.AreEqual(0, report.motionScale); Assert.AreEqual(3, report.motionBacktracks);
+            Assert.Greater(report.flips, 0); Assert.IsFalse(report.reverted);
+            StringAssert.Contains("target-to-source", report.fallbackReason);
+            StringAssert.Contains("RMS", report.fallbackReason); StringAssert.Contains("max", report.fallbackReason);
+            StringAssert.Contains("limit", report.fallbackReason); StringAssert.Contains("cells", report.fallbackReason);
+            CollectionAssert.AreEqual(p, result.positions);
+            CollectionAssert.AreEqual(new[] { 0,1,4, 1,2,4, 2,3,4, 3,0,4, 5,6,7, 5,7,8 }, input.indices);
+        }
+
+        [TestCase(1f)]
+        [TestCase(.001f)]
+        public void BacktracksRejectedFittingToPartialMotionWithinOriginalSurfaceGates(float scale)
+        {
+            var source = new[] { new Vector3(-1,-1,0), new Vector3(1,-1,0), new Vector3(1,1,0), new Vector3(-1,1,0), Vector3.zero,
+                new Vector3(-.001f,-.001f,.04f), new Vector3(.001f,-.001f,.04f), new Vector3(0,.001f,.04f),
+                new Vector3(4,0,0), new Vector3(4.0001f,0,0), new Vector3(4,.0001f,0) };
+            for (int v = 0; v < source.Length; v++) source[v] *= scale;
+            var p = new[] { source[0], source[1], source[2], source[3], new Vector3(0,0,.034f * scale), source[8], source[9], source[10] };
+            // The fixed tiny component is below the extra source-fitting area
+            // margin. It must neither veto a useful trial nor lose area.
+            var ix = new[] { 0,1,4, 1,2,4, 2,3,4, 3,0,4, 5,6,7 };
+            var sourceIx = new[] { 0,1,4, 1,2,4, 2,3,4, 3,0,4, 5,6,7, 8,9,10 };
+            var input = new RemeshNative.IndexedMesh { positions = p, indices = ix };
+            var result = RemeshSurfaceRefine.Apply(input, source, sourceIx, scale * .1f, CancellationToken.None, out var report);
+            Assert.IsFalse(report.reverted); Assert.IsFalse(report.movementFallback);
+            Assert.Greater(report.attemptedMoves, 0); Assert.Greater(report.attemptedFeatures, 0);
+            Assert.AreEqual(.25f, report.motionScale); Assert.AreEqual(2, report.motionBacktracks);
+            Assert.Greater(report.moves, 0); Assert.AreEqual(0, report.features);
+            Assert.Greater(result.positions[4].z, p[4].z); Assert.Less(result.positions[4].z, source[5].z);
+            Assert.That(report.maxDisplacement, Is.EqualTo(report.attemptedMaxDisplacement * .25f).Within(scale * 1e-7f));
+            StringAssert.Contains("target-to-source", report.fallbackReason);
+            for (int f = 0; f < ix.Length; f += 3) {
+                var original = Vector3.Cross(p[ix[f + 1]] - p[ix[f]], p[ix[f + 2]] - p[ix[f]]);
+                var fitted = Vector3.Cross(result.positions[result.indices[f + 1]] - result.positions[result.indices[f]],
+                    result.positions[result.indices[f + 2]] - result.positions[result.indices[f]]);
+                Assert.Greater(Vector3.Dot(original, fitted), 0);
+            }
+            var after = RemeshTopology.Inspect(result.positions, result.indices);
+            var before = RemeshTopology.Inspect(p, ix);
+            Assert.IsTrue(after.Valid, after.Description); Assert.IsTrue(after.PreservesBoundary(before));
+            Assert.IsTrue(after.PreservesComponents(before, false));
+            var repeated = RemeshSurfaceRefine.Apply(input, source, sourceIx, scale * .1f, CancellationToken.None, out var again);
+            CollectionAssert.AreEqual(result.positions, repeated.positions); CollectionAssert.AreEqual(result.indices, repeated.indices);
+            Assert.AreEqual(report.motionScale, again.motionScale); Assert.AreEqual(report.motionBacktracks, again.motionBacktracks);
+            for (int v = 5; v < p.Length; v++) Assert.AreEqual(p[v], result.positions[v]);
+            Assert.AreEqual(.034f * scale, input.positions[4].z); CollectionAssert.AreEqual(new[] { 0,1,4, 1,2,4, 2,3,4, 3,0,4, 5,6,7 }, input.indices);
         }
 
         [Test]

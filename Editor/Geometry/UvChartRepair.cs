@@ -29,12 +29,20 @@ namespace SashaRX.UnityMeshLab
                 // Small chart bounds are ceil-rounded independently by xatlas.
                 // Retry from pristine UV triangles, not the already stretched pack.
                 // Keep the same stretch/overlap gates and user-facing padding.
-                var precise = SplitConflicts(geometry, report.conflicts, token);
-                if (UvChartMerge.RepackHighPrecision(precise, settings, token)) {
+                int limit = UvChartMerge.HighPrecisionLimit(repaired.chartCount, settings.textureResolution);
+                int previous = 4;
+                foreach (int requested in new[] { 8, 16, limit }) {
+                    int precision = Math.Min(requested, limit);
+                    if (precision <= previous) continue;
+                    previous = precision;
+                    token.ThrowIfCancellationRequested();
+                    var precise = SplitConflicts(geometry, report.conflicts, token);
+                    if (!UvChartMerge.RepackHighPrecision(precise, settings, token, precision)) continue;
                     repaired = precise;
                     check = UvAtlasDiagnostics.Measure(repaired, token);
                     post = UvChartQuality.Measure(repaired, token);
-                    UvAtlasDiagnostics.Log(repaired, "repair-high-precision (candidate)", token);
+                    UvAtlasDiagnostics.Log(repaired, $"repair-high-precision {precision}x (candidate)", token);
+                    if (Accepts(check, post, quality)) break;
                 }
             }
             if (!Accepts(check, post, quality))

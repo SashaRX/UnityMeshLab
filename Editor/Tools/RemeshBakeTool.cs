@@ -292,6 +292,7 @@ namespace SashaRX.UnityMeshLab
             previewData.cageDistance = pipeline.SourceDiagonal * settings.projectionDistance;
             previewData.cageSmoothing = settings.cageSmoothing;
             previewData.cageFit = settings.cageFit && settings.sourceShape == RemeshShape.LOD0;
+            previewData.sourceBackfaces = settings.sourceBackfaces;
             previewData.source = pipeline.Source;
         }
 
