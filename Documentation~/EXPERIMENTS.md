@@ -3,6 +3,133 @@
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v0.15.39 (2026-04-07)
 
+## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
+
+- **Подбор xatlas defaults 2026-10-04 (продолжение Exp #1):** на фиксированном
+  bust (1997 faces) и четырёх геометрических fixtures сравнены chart weights,
+  iterations и packing: 810 phase/case/profile измерений, 1568 вызовов.
+  Сбалансированный default меняет только roundness 0.01 → 0.5; cost 2,
+  normal deviation 2, straightness 6, seam 4, iterations 1, rotation on,
+  block alignment / brute force off остаются прежними. На bust 512/padding 2
+  с Merge: 28 charts / 14 small / 0 overlap, mean 1.10772, worst 3.75916,
+  451 ms; текущие сохранённые настройки пользователя: 36 / 19 / 0,
+  mean 1.18992, worst 3.19396, 2615 ms (один медленный sample).
+  Worst ухудшается, но остаётся ниже 4; это компромисс, не универсальный optimum.
+  На 2048 без Merge новый профиль избегает дорогого overlap repair:
+  890 ms против 10577 ms у прежнего default. Merge на 2048 всё ещё дорогой
+  и остаётся opt-in. Сохранённые настройки не мигрируют автоматически;
+  кнопка **Recommended xatlas settings** применяет только chart/packing preset.
+  154/154 связанных Unity-теста проходят. Полный корпус, ограничения,
+  sample counts и воспроизводимый harness: [отчёт](XATLAS_DEFAULTS_BENCHMARK.md).
+- **Изменение алгоритма 2026-10-04 после реальных логов:** baseline пользователя
+  уже содержал 26 внутри-chart overlap-пар на 1883 faces / 80 charts; rollback
+  возвращал их без изменений. Кандидат 54 charts содержал 33 пары и 6 charts
+  с разной намоткой граней. Отказ вызывала mixed winding, хотя mean/worst
+  укладывались в пределы. Соседи по welded edge ошибочно исключались из overlap-теста.
+  Теперь перед merge (и при выключенном merge) конфликтующие UV-грани разрезаются
+  в отдельные charts: детерминированное greedy vertex cover графа конфликтов,
+  дублирование вершин на границах, сохранение каждой 3D-грани и формы её UV-треугольника,
+  затем repack. Результат принимается только после полной проверки нулевого overlap,
+  winding и прежних stretch-пределов; незавершённая проверка не считается успехом.
+  Merge сначала выравнивает намотку двух charts отражением UV при необходимости,
+  затем делает прежний similarity fit. Проверка площади пересечений общая с
+  диагностикой, без исключений для соседних граней. Снап охватывает все tangent/normal
+  дубликаты швовой вершины; неоднозначные существующие UV-разрезы внутри chart не сливаются.
+  Readback читает полные native vertex/index buffers и проверяет xref каждого
+  source corner; chart splits допустимы, геометрия сохраняется. Тангенты пересчитываются
+  у всех упакованных charts. Прямоугольный native atlas встраивается в квадратный UV
+  с единым масштабом: независимая width/height-нормализация bridge создавала stretch
+  1.43 даже на двух исходно недеформированных треугольниках.
+- **Проверка на модели пользователя в Unity 6000.2.6f2:** исходный FBX
+  `Meshy_AI_Distinguished_Bust_0925154648_texture`, текущие сохранённые настройки,
+  отдельный локальный проект. Remesh совпадает с логом: 30288 → 51612 triangles,
+  trim 4. Текущая simplification даёт 1997 faces (в прежнем логе — 1883, это другой
+  snapshot настроек). Raw unwrap: 78 charts / 8 overlap-пар; repair: 82 charts /
+  0 overlap; merge: 36 charts / 0 overlap (46 accepted merges). Small charts: 47 → 19;
+  mean stretch: 1.17660 → 1.18992; worst: 2.90240 → 3.19396, пределы 1.29426 / 4.
+  Все overlap-проверки полные, invalid/degenerate/OOB = 0; source corners сохраняются.
+  10/10 unwrap-прогонов дают побайтово идентичные position/UV/index/chart buffers.
+  153/153 связанных Unity EditMode-теста проходят с DirectX (UV диагностика,
+  merge/repair, Remesh bake/hierarchy/normals); обе FBX define-конфигурации compile-check
+  проходят. Для GPU-тестов нужен графический backend, `-nographics` даёт Null GPU.
+  Это проверка Unwrap, не визуальный bake seam-review и не Playground GO-протокол.
+- **Диагностика 2026-10-04:** логи `[RemeshDiag] [UV]` при уровне Info разделяют
+  `merge-baseline`, `merge-candidate`, `merge-before-pack` (только внутри chart),
+  `merge-after-pack (candidate)`, `merge-quality-gate`, `merge-rollback` и
+  `unwrap-final mergeCharts=True/False`. Число acceptedMerges относится к кандидату,
+  не к финальному результату. Gate печатает baseline/candidate, реальные mean/worst
+  limits, valid и все причины отказа. Финальный атлас проверяется и с выключенным merge.
+  Overlap-диагностика пересекает UV-треугольники по площади в double precision,
+  не пропуская соседей с общим ребром: контакт нулевой площади разрешён, складка — нет.
+  Печатаются pair counts внутри/между chart, первые 8 пар с face/chart ID (с нуля),
+  сумма площадей пересечений пар (не union; тройное покрытие считается несколько раз),
+  degenerate/invalid/OOB и время. Лимит 2M broad-phase сравнений ограничивает стоимость;
+  `complete=False` означает только нижнюю оценку, а не доказательство отсутствия overlap.
+  Отсекается площадь ≤ max(1e-16 UV², 1e-8 площади меньшего треугольника).
+  Само логирование read-only; актуальные изменения алгоритма и приёмки описаны выше.
+- **Replay `repack_20261004_031155.bin`:** 1883 faces, 48 charts в merge-кандидате;
+  до pack 40 внутри-chart overlap-пар (pairAreaSum=0.000512322007 в UV² дампа),
+  после pack 40 внутри-chart пар, 0 между-chart пар
+  (pairAreaSum=0.000752826608 в UV² финального атласа). Обе проверки полные.
+  Исходный атлас до merge и атлас после rollback этот дамп не содержит, поэтому
+  наличие overlap в финальных 80 shell нужно проверять `merge-baseline`/`unwrap-final`.
+  10 чистых диагностических тестов прошли в headless harness с math shims;
+  Editor/Tests компилируются в обеих FBX define-конфигурациях. Это не Unity EditMode-прогон.
+
+- **Вопрос:** можно ли существенно сократить xatlas-фрагментацию (число островов и мелких
+  обломков) вообще без source-features и без нового parameterizer — только пост-обработкой
+  выходных чартов?
+- **Изменение:** переключатель **Merge charts** (off по умолчанию) в Remesh & Bake → Unwrap.
+  После выбора лучшей развёртки (включая «Reduce UV fragmentation») `UvChartMerge.Apply`
+  детерминированно, раундами, пробует слить соседние пары чартов: Procrustes-подобие
+  (поворот + uniform scale + перенос после выравнивания winding) UV движущегося чарта по швовым вершинам,
+  затем бит-точный снап шва к UV принимающего — xatlas соединяет чарты по UV-colocal,
+  `faceMaterial` только разделяет, поэтому почти равный шов после repack снова распадётся на
+  два острова. Гейты приёмки: residual шва ≤ 0.02 относительно диагонали UV bbox принимающего;
+  scale фита в [0.5, 2] (texel density); `maxChartArea`/`maxChartBoundary` пользователя
+  (boundary объединения = boundaryA + boundaryB − 2·seamLength3D); полный tri-tri overlap-тест
+  (double-precision polygon clipping, разрешён только контакт нулевой площади); локальное
+  растяжение после снапа на гранях движущегося чарта и швовых гранях принимающего:
+  mean ≤ max(1.15, pre·1.1), worst ≤ max(4, pre·1.1), единая winding. Тангенты всех чартов
+  перестраиваются по финальной раскладке атласа (Lengyel-аккумуляция по граням) — это
+  покрывает и поворот merge-фита, и по-вершинное смещение снапа шва, и per-axis
+  ceil-растяжение паковщика xatlas (не являющееся подобием). После снапа дополнительно
+  проверяется само-перекрытие движущегося чарта (снап — не подобие и может сложить плотно
+  свёрнутый чарт сам на себя). Слитые чарты перепаковываются через xatlas UvMesh bridge (`faceMaterial` = id
+  чарта, ComputeCharts + PackCharts; retry с обоими rotation-флагами off при неоднозначном
+  маппинге). Финальный гейт — `UvChartQuality.Measure(...).Improves(preMerge, preMerge)`;
+  любая неоднозначность — откат к снапшоту. ID чартов после раундов компактируются в 0..N−1.
+- **Не трогается:** native ABI и вендоренный xatlas; `originalChartCount` /
+  `originalSmallChartCount` (это бейслайн до оптимизаторов); настройки чарта пользователя.
+- **Протокол A/B:** сначала простая модель (куб/симметричная), затем регрессия на Playground
+  LODGroup; ≥10 повторов; метрики: islands, small islands (≤8 tris), mean/max stretch, время
+  стадии Unwrap; baseline — тот же unwrap с выключенным переключателем.
+- **GO-критерий:** islands ↓ ≥10% на Playground-наборе при `meanStretch ≤ max(1.15, orig·1.1)`,
+  `maxStretch ≤ max(4, orig·1.1)`, 10/10 байт-в-байт детерминизм UV и TransferValidator без overlaps.
+- **STOP-критерий:** рост stretch за гейтами, недетерминизм, деградация бейка по швам →
+  revert без компенсаций.
+- **Статус:** реализация (PR Exp #1); измерения по протоколу — до мержа.
+- **Найдено при ручной проверке (краш редактора):** merge-фит мог выставить UV вне [0,1]
+  (повёрнутый чарт торчит за атлас), а UvMesh-пакер xatlas требует входные UV в [0,1] —
+  `ASSERT texcoord.x >= 0` (xatlas.cpp:8598) и нативный краш в `xatlasPackCharts`. Фикс:
+  нормализация всего лейаута одним uniform-масштабом до подачи в пакер + проверка [0,1]
+  на выходе. Вторая мина рядом: `xatlasDestroy()` выполнялся до чтения выходов
+  (use-after-free); сессия перестроена как create → add → pack → read → destroy.
+  **Отдельный краш на фиксе:** нормализация на весь [0,1] делала суммарные extent'ы чартов
+  равными атласу, per-chart ceil-округление xatlas добавляло сверху — чарты переставали
+  помещаться, пакер выставлял отрицательные координаты и ассертил (тот же xatlas.cpp:8598).
+  Фикс — внутренний 4× oversample (resolution × 4, padding × 4) с нормализацией выхода
+  бриджем, ровно как в продакшн-repack (`XatlasRepack` internalOversample).
+  **Настоящая причина тиражных крашей после нормализации (3 дампа, доказано логом+реплеем):**
+  `RunNativePackAsync` рассчитан на вызов с главного потока — внутри `Task.Run(нативный пак)`
+  плюс `EditorApplication.timeSinceStartup`/`UvProgress`; с worker-потока стадии Unwrap
+  `timeSinceStartup` кидал исключение немедленно, `finally { xatlasDestroy(); }` освобождал
+  глобальный атлас под всё ещё работающим паком на пул-потоке → use-after-free, AV-чтения
+  с блуждающими адресами внутри `PackCharts`. Реплей точных входов (захват в
+  `%TEMP%/meshlab-uvmerge`) нативно НЕ падал — краш был средой, не данными. Фикс: пак
+  выполняется инлайн на том же worker-потоке (create → add → pack → read → destroy одним
+  потоком, без editor-API и пул-тасков), с бюджетной проверкой стоимости пака.
+
 ## Эксперимент 2026-08-06 — Самодостаточная нормализация winding в repack
 
 - **Проблема:** standalone `Repack All` и отключаемый Weld в full pipeline

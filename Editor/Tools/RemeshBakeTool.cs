@@ -398,9 +398,17 @@ namespace SashaRX.UnityMeshLab
                         "Compare the current chart settings with two alternatives; keep fewer islands and small fragments only within bounded UV stretch. " +
                         "Crease edges, island size limits and packing stay as configured. Adds up to two unwrap passes on the worker."),
                         settings.reduceUvFragmentation);
+                    settings.mergeCharts = EditorGUILayout.Toggle(new GUIContent("Merge charts",
+                        "Deterministically merges adjacent island pairs whose seam UVs align within bounded stretch and texel density, " +
+                        "respecting max island area/border, then re-packs the atlas. Adds one xatlas pack pass on the worker."),
+                        settings.mergeCharts);
                     chartFold = EditorGUILayout.Foldout(chartFold, "Islands & packing", true);
                     if (chartFold) {
                         using (new EditorGUI.IndentLevelScope()) {
+                            if (GUILayout.Button(new GUIContent("Recommended xatlas settings", "Apply tested island-growth and packing defaults."))) {
+                                settings.ApplyDefaultXatlasSettings();
+                                SaveSettings();
+                            }
                             settings.chartMaxCost = EditorGUILayout.Slider(new GUIContent("Max cost", "Lower = more, smaller islands."), settings.chartMaxCost, 0.1f, 10);
                             settings.chartNormalDeviation = EditorGUILayout.Slider(new GUIContent("Normal deviation", "Penalty for bending inside one island."), settings.chartNormalDeviation, 0, 10);
                             settings.chartNormalSeam = EditorGUILayout.Slider(new GUIContent("Hard edge seam", "Prefer island borders on hard edges (>1000 always)."), settings.chartNormalSeam, 0, 1000);

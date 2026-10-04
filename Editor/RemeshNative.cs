@@ -143,7 +143,12 @@ namespace SashaRX.UnityMeshLab
             result.originalChartCount = original.charts;
             result.originalSmallChartCount = original.smallCharts;
             result.smallChartCount = best.smallCharts;
+            result = UvChartRepair.Apply(result, settings, token);
+            best = UvChartQuality.Measure(result, token);
+            if (settings.mergeCharts && result.chartCount > 1 && !result.draftUv)
+                UvChartMerge.Apply(result, best, settings, token);
             RemeshNormals.ApplyFinal(result, settings, token);
+            UvAtlasDiagnostics.Log(result, $"unwrap-final mergeCharts={settings.mergeCharts}", token);
             return result;
         }
 

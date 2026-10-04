@@ -170,6 +170,13 @@ Before the UV stage the canvas shows the selected model as usual.
    break on hard edges), straightness, roundness, iterations, max island area and
    border length (source units, 0 = unlimited), rotation, 4×4 block alignment and
    brute-force packing. Texture size and padding set the atlas.
+   The measured balanced chart default uses max cost 2, normal deviation 2,
+   **roundness 0.5**, straightness 6, hard-edge seam 4 and one iteration.
+   Rotation is on; block alignment and brute force are off. Previously saved
+   values stay intact. **Recommended xatlas settings** explicitly applies these
+   chart/packing defaults while preserving texture size/padding, optimizer
+   toggles, mesh, shading and bake settings. See the
+   [settings comparison](XATLAS_DEFAULTS_BENCHMARK.md) for the corpus and tradeoffs.
    **Reduce UV fragmentation** is enabled by default, including restored settings.
    It compares the requested unwrap with up to two chart-growth alternatives
    (max cost 5, normal deviation 2, roundness 0.01, normal seam 4, one iteration,
@@ -186,6 +193,20 @@ Before the UV stage the canvas shows the selected model as usual.
    status reports before/after island counts. Turn it off to use only the
    manually configured chart settings. Automatic charting still chooses its
    own seams; this control does not specify anatomical seams on a head or suit.
+   **Merge charts** (off by default) runs after the fragmentation search and
+   deterministically merges adjacent island pairs: a Procrustes similarity
+   (rotation + uniform scale + translation, no mirror) fits one chart's UVs onto
+   its neighbour through the seam vertices, the seam is snapped bit-exact onto
+   the acceptor's UVs, and the merge is accepted only within bounded seam
+   residual (≤ 0.02 of the acceptor's UV size), texel-density change (≤ 2×),
+   the island area/border limits, a full UV-triangle overlap test (contact along
+   the new seam is allowed, and the moved chart is also checked against itself
+   after the snap) and the same stretch bounds the fragmentation search uses.
+   Merged charts are re-packed through xatlas with their tangent frames rebuilt
+   from the final atlas layout — covering the fit rotation, the seam snap's
+   per-vertex displacement and the packer's per-axis stretch alike — and any
+   anomaly reverts to the unmerged unwrap. Adds one xatlas pack pass on the
+   worker.
    Baking first fills that padding, then applies **Dilation radius (px)**
    (default 64, 0 disables the extra pass). Dilation extends all maps into the
    remaining background from the nearest filled pixel within the additional
