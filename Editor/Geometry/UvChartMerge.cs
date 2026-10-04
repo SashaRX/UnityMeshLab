@@ -698,6 +698,17 @@ namespace SashaRX.UnityMeshLab
         static bool PackAndRead(RemeshNative.Geometry geometry, RemeshSettings settings, float[] flatUv, uint[] indices,
             uint[] faceMaterials, int rotateCharts, int rotateToAxis, HashSet<int> mergedCharts, CancellationToken token)
         {
+            // Pack at 4× the user-facing resolution, exactly like XatlasRepack: xatlas
+            // ceil-rounds each chart's extents to texel dimensions, so a layout whose
+            // charts sum near the full atlas size cannot fit — the packer then places
+            // charts at negative coordinates and its texcoord assert aborts the editor
+            // (xatlas.cpp:8598). The oversample turns the rounding into a fraction of
+            // the internal atlas; the bridge normalizes the output back to [0,1], so
+            // the user-facing resolution is unchanged. Padding scales with it to keep
+            // the gap fraction in UV space constant.
+            const int kPackOversample = 4;
+            uint internalRes = (uint)settings.textureResolution * kPackOversample;
+            uint internalPad = (uint)settings.padding * kPackOversample;
             XatlasNative.xatlasCreate();
             try
             {
@@ -708,10 +719,10 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Warn("[Remesh] Chart merge re-pack rejected the merged charts (xatlas error " + addError + ").");
                     return false;
                 }
-                if (!XatlasRepack.RunNativePackAsync(geometry.chartCount, (uint)settings.textureResolution, () =>
+                if (!XatlasRepack.RunNativePackAsync(geometry.chartCount, internalRes, () =>
                 {
                     XatlasNative.xatlasComputeCharts();
-                    XatlasNative.xatlasPackCharts(0, (uint)settings.padding, 0f, (uint)settings.textureResolution, 1,
+                    XatlasNative.xatlasPackCharts(0, internalPad, 0f, internalRes, 1,
                         settings.packBlockAlign ? 1 : 0, settings.packBruteForce ? 1 : 0, rotateCharts, rotateToAxis);
                 }, pumpEditor: false).GetAwaiter().GetResult()) return false;
                 return ReadPackedUv(geometry, token, mergedCharts);
