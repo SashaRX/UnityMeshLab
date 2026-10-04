@@ -40,6 +40,10 @@ namespace SashaRX.UnityMeshLab
         // uses for the global gate.
         internal const float MaxMeanStretch = 1.15f;
         internal const float MaxWorstStretch = 4f;
+        // Broader proposals are candidates only: relax/repack must still pass the
+        // original global stretch gates and preserve the narrow atlas's packing.
+        const float BroadSeamResidual = .1f;
+        const float BroadLocalWorstStretch = 6f;
         const float StretchSlack = 1.1f;       // ...and never >10% worse than the same faces pre-merge
         const uint OrphanChart = 0xFFFFFFFFu;
 
@@ -49,6 +53,43 @@ namespace SashaRX.UnityMeshLab
         /// only when every gate passes; otherwise restores the pre-merge state.
         /// `preMerge` is the quality of the geometry exactly as passed in.</summary>
         internal static void Apply(RemeshNative.Geometry geometry, UvChartQuality preMerge, RemeshSettings settings, CancellationToken token)
+        {
+            if (geometry == null || settings == null || geometry.charts == null || geometry.uv == null ||
+                geometry.indices == null || geometry.chartCount < 2) return;
+            // Evaluate both strategies on separate buffers. Broad seam fits can join
+            // curved patches that rigid matching excludes; relax must distribute the
+            // temporary deformation before the unchanged final atlas gates accept it.
+            var narrow = CloneCandidate(geometry);
+            ApplyStrategy(narrow, preMerge, settings, token, MaxSeamResidual, MaxWorstStretch);
+            var broad = CloneCandidate(geometry);
+            ApplyStrategy(broad, preMerge, settings, token, BroadSeamResidual, BroadLocalWorstStretch);
+            var narrowQuality = UvChartQuality.Measure(narrow, token);
+            var broadQuality = UvChartQuality.Measure(broad, token);
+            var narrowPacking = UvPackingQuality.Measure(narrow, token);
+            var broadPacking = UvPackingQuality.Measure(broad, token);
+            bool useBroad = broadQuality.Improves(narrowQuality, preMerge) && broadPacking.Preserves(narrowPacking);
+            UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
+                $"[UV] merge-strategy: narrow charts={narrow.chartCount} fill={narrowPacking.filledArea:G6}; broad charts={broad.chartCount} fill={broadPacking.filledArea:G6}; selected={(useBroad ? "broad" : "narrow")}."));
+            token.ThrowIfCancellationRequested();
+            var best = useBroad ? broad : narrow;
+            geometry.positions = best.positions; geometry.normals = best.normals; geometry.indices = best.indices;
+            geometry.uv = best.uv; geometry.charts = best.charts; geometry.tangents = best.tangents;
+            geometry.chartCount = best.chartCount; geometry.smallChartCount = best.smallChartCount;
+            if (geometry.chartCount < preMerge.charts)
+                UvtLog.Info($"[Remesh] Chart merge: {preMerge.charts} → {geometry.chartCount} islands; {(useBroad ? "broad" : "narrow")} seam strategy passed final gates.");
+        }
+
+        static RemeshNative.Geometry CloneCandidate(RemeshNative.Geometry g)
+            => new RemeshNative.Geometry {
+                positions = g.positions, normals = g.normals, indices = g.indices,
+                uv = (Vector2[])g.uv.Clone(), charts = (int[])g.charts.Clone(),
+                tangents = g.tangents == null ? null : (Vector4[])g.tangents.Clone(),
+                chartCount = g.chartCount, smallChartCount = g.smallChartCount, draftUv = g.draftUv,
+                originalChartCount = g.originalChartCount, originalSmallChartCount = g.originalSmallChartCount
+            };
+
+        static void ApplyStrategy(RemeshNative.Geometry geometry, UvChartQuality preMerge, RemeshSettings settings,
+            CancellationToken token, float seamResidual, float localWorstStretch)
         {
             if (geometry == null || settings == null || geometry.charts == null || geometry.uv == null ||
                 geometry.indices == null || geometry.chartCount < 2)
@@ -70,7 +111,7 @@ namespace SashaRX.UnityMeshLab
                 while (true)
                 {
                     var mergedCharts = new HashSet<int>();
-                    int merged = MergeChartsLimited(geometry, settings, token, mergedCharts, mergeLimit);
+                    int merged = MergeChartsLimited(geometry, settings, token, mergedCharts, mergeLimit, seamResidual, localWorstStretch);
                     UvtLog.Info(UvtLog.Category.RemeshDiag,
                         $"[UV] merge-candidate: charts={chartCountSnapshot}->{geometry.chartCount}, acceptedMerges={merged}; candidate is not the final unwrap.");
                     if (merged <= 0) return;
@@ -107,7 +148,7 @@ namespace SashaRX.UnityMeshLab
                         UvtLog.Info(UvtLog.Category.RemeshDiag, $"[UV] merge-packing-retry: merge budget={mergeLimit}; restarting from the baseline.");
                         continue;
                     }
-                    UvtLog.Info($"[Remesh] Chart merge: {chartCountSnapshot} → {geometry.chartCount} islands ({merged} merge(s) accepted).");
+                    UvtLog.Info(UvtLog.Category.RemeshDiag, $"[UV] merge-strategy-candidate: {chartCountSnapshot} → {geometry.chartCount} islands ({merged} merges); final strategy comparison follows.");
                     break;
                 }
             }
@@ -115,7 +156,7 @@ namespace SashaRX.UnityMeshLab
             catch (Exception error)
             {
                 RestoreGeometry();
-                UvtLog.Warn("[Remesh] Chart merge reverted; keeping the unmerged unwrap. " + error.Message);
+                UvtLog.Warn("[Remesh] Chart merge candidate rejected; restoring its baseline before strategy selection. " + error.Message);
                 UvtLog.Info(UvtLog.Category.RemeshDiag,
                     $"[UV] merge-rollback: restored original UV/chart/tangent arrays; final charts={chartCountSnapshot}, small={smallChartSnapshot}.");
             }
@@ -136,10 +177,10 @@ namespace SashaRX.UnityMeshLab
         /// `mergedChartIds` collects the compacted ids of charts that absorbed or were
         /// absorbed. Returns the accepted merge count.</summary>
         internal static int MergeCharts(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token, HashSet<int> mergedChartIds)
-            => MergeChartsLimited(geometry, settings, token, mergedChartIds, int.MaxValue);
+            => MergeChartsLimited(geometry, settings, token, mergedChartIds, int.MaxValue, MaxSeamResidual, MaxWorstStretch);
 
         static int MergeChartsLimited(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token,
-            HashSet<int> mergedChartIds, int mergeLimit)
+            HashSet<int> mergedChartIds, int mergeLimit, float seamResidual, float localWorstStretch)
         {
             int faceCount = geometry.indices.Length / 3;
             var faceChart = new int[faceCount];
@@ -257,7 +298,7 @@ namespace SashaRX.UnityMeshLab
                     token.ThrowIfCancellationRequested();
                     if (TryMergePair(geometry, faceChart, slots, slotVertex, edgeFaces, pair.Item1, pair.Item2,
                             adjacency[pair], chartFaces, chartVerts, chartArea, chartBoundary, chartUvMin, chartUvMax,
-                            settings, mergedChartIds, token))
+                            settings, mergedChartIds, token, seamResidual, localWorstStretch))
                     {
                         ++merged;
                         accepted = true;
@@ -290,7 +331,7 @@ namespace SashaRX.UnityMeshLab
             Dictionary<long, List<int>> edgeFaces, int chartA, int chartB, List<long> seamKeys,
             List<int>[] chartFaces, List<int>[] chartVerts, float[] chartArea, float[] chartBoundary,
             Vector2[] chartUvMin, Vector2[] chartUvMax, RemeshSettings settings, HashSet<int> mergedChartIds,
-            CancellationToken token)
+            CancellationToken token, float seamResidual, float localWorstStretch)
         {
             // Slot → vertex maps per chart; the intersection is the seam. Every
             // shared position is snapped, not only edge-seam ones — a corner shared
@@ -317,7 +358,7 @@ namespace SashaRX.UnityMeshLab
                 var moverSlotOf = dir == 0 ? slotsB : slotsA;
                 if (EvaluateDirection(g, faceChart, slots, edgeFaces, acceptorSlotOf, moverSlotOf, seamSlotList, seamKeys,
                         chartFaces, chartArea, chartBoundary, chartUvMin, chartUvMax,
-                        acceptor, mover, seamLength, settings, out var candidate) &&
+                        acceptor, mover, seamLength, settings, seamResidual, localWorstStretch, out var candidate) &&
                     (!haveBest || Better(candidate, best)))
                 {
                     best = candidate;
@@ -353,7 +394,7 @@ namespace SashaRX.UnityMeshLab
             Dictionary<int, int> moverSlotOf, List<int> seamSlots, List<long> seamKeys,
             List<int>[] chartFaces, float[] chartArea, float[] chartBoundary,
             Vector2[] chartUvMin, Vector2[] chartUvMax, int acceptor, int mover, float seamLength,
-            RemeshSettings settings, out Candidate candidate)
+            RemeshSettings settings, float seamResidual, float localWorstStretch, out Candidate candidate)
         {
             candidate = default;
             if (seamSlots.Count < 2) return false;
@@ -375,7 +416,7 @@ namespace SashaRX.UnityMeshLab
                 return false;
             float normalize = Mathf.Max((chartUvMax[acceptor] - chartUvMin[acceptor]).magnitude, 1e-6f);
             if (scale < MinDensityScale || scale > MaxDensityScale) return false;           // texel-density gate
-            if (residual > MaxSeamResidual * normalize) return false;                       // seam misalignment gate
+            if (residual > seamResidual * normalize) return false;                         // seam proposal gate
             float area = chartArea[acceptor] + chartArea[mover];
             if (settings.maxChartArea > 0f && area > settings.maxChartArea) return false;   // user island area limit
             float boundary = chartBoundary[acceptor] + chartBoundary[mover] - 2f * seamLength;
@@ -411,7 +452,7 @@ namespace SashaRX.UnityMeshLab
                 MeasureStretch(g, localFaces, out double postMean, out var postWorst);
                 if (double.IsNaN(postMean) || double.IsNaN(postWorst) ||
                     postMean > Math.Max(MaxMeanStretch, preMean * StretchSlack) ||
-                    postWorst > Math.Max(MaxWorstStretch, preWorst * StretchSlack))
+                    postWorst > Math.Max(localWorstStretch, preWorst * StretchSlack))
                     passes = false;
             }
             if (passes && !OverlapFree(g, chartFaces[acceptor], moverFaces)) passes = false;

@@ -169,9 +169,12 @@ namespace SashaRX.UnityMeshLab.Tests
 
         // ── similarity fit ──────────────────────────────────────────────────
 
-        [Test]
-        public void CancellationAfterAnAcceptedMergeRestoresOriginalGeometry()
+        [TestCase(1)]
+        [TestCase(2)]
+        [TestCase(3)]
+        public void CancellationDuringStrategySelectionPreservesOriginalGeometry(int cancelStage)
         {
+            if (cancelStage > 1) RequireRemeshNative();
             var g = TwoPatchGeometry(chart1Offset: new Vector2(.4f, .3f));
             var uv = (Vector2[])g.uv.Clone(); var charts = (int[])g.charts.Clone(); var tangents = (Vector4[])g.tangents.Clone();
             var positions = g.positions; var indices = g.indices; var normals = g.normals;
@@ -180,10 +183,15 @@ namespace SashaRX.UnityMeshLab.Tests
             bool hadCategories = UnityEditor.EditorPrefs.HasKey("UnityMeshLab_LogCategoryMask");
             using (var cancelled = new CancellationTokenSource())
             {
-                bool sawCandidate = false;
+                bool sawCancellationPoint = false, narrowCompleted = false;
+                int candidates = 0;
                 void OnLog(string message, string stack, LogType kind)
                 {
-                    if (message.Contains("[UV] merge-candidate:")) { sawCandidate = true; cancelled.Cancel(); }
+                    if (message.Contains("[UV] merge-strategy-candidate:")) narrowCompleted = true;
+                    if (message.Contains("[UV] merge-candidate:")) ++candidates;
+                    if (cancelStage < 3 && message.Contains("[UV] merge-candidate:") && candidates == cancelStage ||
+                        cancelStage == 3 && message.Contains("[UV] merge-strategy:"))
+                    { sawCancellationPoint = true; cancelled.Cancel(); }
                 }
                 try
                 {
@@ -191,7 +199,8 @@ namespace SashaRX.UnityMeshLab.Tests
                     Application.logMessageReceived += OnLog;
                     var quality = UvChartQuality.Measure(g, CancellationToken.None);
                     Assert.Throws<OperationCanceledException>(() => UvChartMerge.Apply(g, quality, new RemeshSettings(), cancelled.Token));
-                    Assert.IsTrue(sawCandidate, "cancel after a real accepted merge, without timing assumptions");
+                    Assert.IsTrue(sawCancellationPoint, "cancel at a deterministic production checkpoint");
+                    if (cancelStage > 1) Assert.IsTrue(narrowCompleted, "narrow strategy completed before cancellation");
                     Assert.AreEqual(2, g.chartCount); CollectionAssert.AreEqual(uv, g.uv); CollectionAssert.AreEqual(charts, g.charts);
                     CollectionAssert.AreEqual(tangents, g.tangents); Assert.AreSame(positions, g.positions); Assert.AreSame(indices, g.indices); Assert.AreSame(normals, g.normals);
                 }
