@@ -4,6 +4,13 @@
 
 Геометрическая фаза завершена. [Итог, финальные проверки и переход к обучению](UV_GEOMETRY_EXPERIMENT_FINAL.md).
 
+Добавлен первый исполнимый `train.py`: независимые train/val/test, проверка
+hashes/geometry, train-only normalization, val-only checkpoint/threshold и
+сохранение/resume состояния. [Команды для ноутбука](../Tools~/LearnedSeamBenchmark/README.md#first-local-training-cycle).
+Проверка на synthetic fixtures подтверждает механику trainer; художественная
+UV-сеть на пользовательском наборе ещё не обучалась, FBX/SG ingestion остаётся
+следующим этапом. [CUDA-проверка](LearnedSeamResearch/TRAINER_VALIDATION.json).
+
 Переходим к обучению расположения швов на авторских примерах. Это обоснованная
 гипотеза, но пока не доказано, что она даст нужное качество или является единственным
 решением. Текстовая LLM для первого прототипа не требуется: вход и выход удобно

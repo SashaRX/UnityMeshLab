@@ -5,6 +5,18 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Первый trainer 2026-10-04 (подготовка следующего этапа Exp #1):**
+  `train.py` перепроверяет independent train/val/test и hashes/geometry, использует
+  train-only normalization и val-only best/threshold; модель/optimizer/RNG
+  сохраняются для epoch resume. Алиасы одной geometry балансируются как один
+  model_group. На synthetic tetrahedra CUDA whole 4 epochs и pause2/resume4
+  дают одинаковые model/optimizer/metrics; recovery final JSON не повторяет test.
+  Текущий один бюст отклонён до output creation. LearnedSeamBenchmark:
+  29 passed / 1 Windows symlink fixture skipped; SeamPlacementBenchmark: 18 passed.
+  Это проверка trainer, не обученное художественное UV-решение. Пользовательский
+  набор и RTX 3070 Ti ещё не участвовали в quality run. [Проверка](LearnedSeamResearch/TRAINER_VALIDATION.json),
+  [запуск на ноутбуке](../Tools~/LearnedSeamBenchmark/README.md#first-local-training-cycle).
+
 - **Геометрическая фаза завершена 2026-10-04 (продолжение Exp #1):**
   PartUV/OptCuts/AutoUV и merge не воспроизвели требуемое расположение швов.
   Проверены SHA/correspondence/winding 19 captures из 22 опубликованных rows;

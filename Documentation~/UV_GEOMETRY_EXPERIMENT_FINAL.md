@@ -66,6 +66,15 @@ fixture из-за Windows WinError 1314; реальная junction-провер�
 
 ## Переход к обучению
 
+Добавлены `train.py` и 8 contract tests. Итоговый LearnedSeamBenchmark:
+29 passed / 1 Windows symlink fixture skipped. На GTX 980 Ti выполнены два
+synthetic CUDA runs полной width-64 / 4-block модели: 4 эпохи непрерывно и
+2 эпохи + resume до 4. Model, optimizer и итоговые metrics совпали точно;
+partial run не оценивал test. Проверено восстановление финального JSON без
+повторного test и отказ одному unassigned бюсту до создания run directory.
+[Численные доказательства и SHA финальной версии](LearnedSeamResearch/TRAINER_VALIDATION.json).
+Это переход к исполнимому обучению, а не подтверждение качества на реальных UV.
+
 Первый baseline предсказывает вероятность UV-шва на геометрическом графе.
 Сглаживание, изменение topology и decoder валидных цепочек/дисковых patches
 будут проверяться отдельно. Классификация рёбер сама по себе ещё не unwrap.

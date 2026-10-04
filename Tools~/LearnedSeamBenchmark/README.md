@@ -1,8 +1,9 @@
 # Local learned-seam data preparation
 
-This prototype prepares numerical inputs and labels; it does not train a model,
-change Unity, choose automatic splits, or evaluate generalization. Only NumPy is
-required. The canonical capture reader is shared with SeamPlacementBenchmark.
+This research tool prepares numerical inputs and labels and includes an optional
+local edge-label trainer. It does not change Unity or generate a valid UV unwrap.
+Preparation needs only NumPy; training additionally needs PyTorch. The canonical
+capture reader is shared with SeamPlacementBenchmark.
 
 Create a JSON **list** of entries; relative capture paths resolve against the manifest:
 
@@ -143,3 +144,112 @@ material information, but the helper has not extracted or certified those fields
 the model pairing, or all external dependencies. It performs no automatic disk
 scan and archives no real models during its tests. Curvature/AO/source projection
 and other derived numerical fields remain separate, recomputable processing.
+
+## First local training cycle
+
+The geometry-method comparison is closed; its captures, quality scans and renders
+remain the baseline in [the final report](../../Documentation~/UV_GEOMETRY_EXPERIMENT_FINAL.md).
+`train.py` is a small FP32 edge-label baseline, not a text LLM or an automatic
+UV system. It uses only the two verified geometry features already prepared.
+SG, source projection features, topology repair and seam-chain/patch decoding
+are separate next steps; neither predicted labels nor a low BCE certify UVs.
+
+### Dataset required
+
+Declare `split` for every independent family in the preparation manifest before
+training. Train, val and test must all contain independent data. All UV/LOD and
+synthetic variants of an asset stay together; aliases of the exact same geometry
+are grouped even when their names differ. Related templates share `family_id`.
+The trainer rebuilds grouping from asset/family/geometry and verifies NPZ hashes,
+geometry, winding, feature values, graph adjacency, masks and reported counts.
+It refuses unassigned splits, duplicate NPZ records, paths outside the prepared
+directory and cross-split leakage before creating a new run directory.
+
+The current two bust UV variants are one unassigned model, with 88 conflicting
+edge labels. **They cannot be used as an independent train/val/test experiment.**
+Select a preferred authored variant per asset for the initial style dataset;
+multiple references without a style condition may have conflicting targets.
+Additional variants do not become additional independent models. Satisfying the
+technical minimum of three split groups does not establish statistical quality;
+reserve independent test families before tuning methods or data augmentation.
+
+### Windows environment for the RTX 3070 Ti laptop
+
+Use a dedicated environment in a checkout of this branch. The locally tested
+baseline is Python 3.12 / NumPy 2.1.3 / PyTorch 2.5.1+cu118. These commands reuse
+that environment; they are not a claim that this is the latest PyTorch release.
+CUDA wheel variants are documented by [PyTorch](https://pytorch.org/get-started/previous-versions/#v251).
+The trainer itself has no FlashAttention, FBX SDK or third-party model dependency.
+
+```powershell
+py -3.12 -m venv '_results~/training-venv'
+& '_results~/training-venv/Scripts/python.exe' -m pip install numpy==2.1.3
+& '_results~/training-venv/Scripts/python.exe' -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu118
+$env:PYTHONDONTWRITEBYTECODE='1'
+& '_results~/training-venv/Scripts/python.exe' -c 'import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))'
+& '_results~/training-venv/Scripts/python.exe' -m unittest discover -s 'Tools~/LearnedSeamBenchmark' -v
+```
+
+The Python trainer needs neither Unity nor WSL for this baseline. It installs
+nothing automatically and performs no cloud upload. Keep captures, prepared
+data and weights under ignored `_results~`; the laptop must receive these private
+files separately because a Git pull does not include them. A raw FBX/MAX archive
+is preserved data, not yet a numerical training dataset: per-corner FBX/SG
+ingestion and author high→low correspondence have not been implemented here.
+
+### Run, pause and resume
+
+After preparing a reviewed capture manifest with explicit independent splits:
+
+```powershell
+& '_results~/training-venv/Scripts/python.exe' 'Tools~/LearnedSeamBenchmark/prepare.py' --manifest '_results~/learned-seams/TRAINING_MANIFEST.json' --out '_results~/learned-seams/training-data-001'
+& '_results~/training-venv/Scripts/python.exe' 'Tools~/LearnedSeamBenchmark/train.py' --prepared '_results~/learned-seams/training-data-001' --out '_results~/learned-seams/run-001' --epochs 200 --device cuda:0
+```
+
+The output directory must not exist. There is one AdamW update per independent
+model per epoch; references have equal gradient contribution within that model.
+FP32, width 64, four residual blocks, constant LR 0.001, weight decay 0.01 and
+seed 73 are starting settings, not optimized training defaults. Normalization
+uses train data only. Boundaries never enter the learned loss or seam metrics.
+
+`--max-epochs 20` limits one invocation to 20 epochs while retaining the same
+total `--epochs 200`. Resume with the exact original configuration and dataset:
+
+```powershell
+& '_results~/training-venv/Scripts/python.exe' 'Tools~/LearnedSeamBenchmark/train.py' --prepared '_results~/learned-seams/training-data-001' --out '_results~/learned-seams/run-001' --epochs 200 --device cuda:0 --max-epochs 20
+& '_results~/training-venv/Scripts/python.exe' 'Tools~/LearnedSeamBenchmark/train.py' --prepared '_results~/learned-seams/training-data-001' --out '_results~/learned-seams/run-001' --epochs 200 --device cuda:0 --resume
+```
+
+Use the limited first invocation instead of the full invocation above; do not
+run both against the same existing directory. The last completed epoch is the
+resume boundary; an interrupted partial epoch is replayed. Checkpoints preserve
+model, optimizer, Python/NumPy/Torch RNG, history, normalization and data/config
+hashes. Source/runtime/config/data changes are refused rather than silently
+continuing a different experiment. Exact reproduction is tested in the same
+runtime/device; it is not promised across different GPUs or library versions.
+
+### Results and limits
+
+`best.pt` is chosen by validation macro F1; the threshold is selected on val,
+with ties preferring proximity to 0.5. The untouched test split is evaluated
+only after the configured training end using the selected best checkpoint.
+Reloaded validation probabilities must reproduce the saved SHA before test.
+`last.pt`, `best.pt`, `metrics.json` and `provenance.json` are saved locally;
+checkpoint/JSON writes replace files atomically. A completed test run cannot
+be extended to tune against the same test set.
+
+If the final JSON was lost after the finalized checkpoint was written, `--resume`
+restores that JSON without evaluating test again. The first checkpoint appears
+after the first completed epoch. CLI progress prints epoch/total, train BCE,
+validation macro F1, threshold and whether the best checkpoint improved.
+Final `last.pt` is a finalized result containing the best model and end-of-training
+optimizer state; it is not a checkpoint for extending an already evaluated run.
+
+Precision/recall/F1 use 3D internal-edge lengths normalized within each reference,
+with equal reference contribution per independent model. Reports include per-model,
+macro and normalized micro scores; zero denominators return zero. Plain edge
+accuracy is deliberately omitted because most edges are not seams. Independent
+thresholding still does not guarantee continuous cuts, disk charts or no overlaps.
+Checkpoint tests on synthetic fixtures validate training/resume and leakage
+guards; they do not measure learned artistic UV quality. Time/VRAM on the
+RTX 3070 Ti laptop have not been measured by runs on the current GTX 980 Ti host.
