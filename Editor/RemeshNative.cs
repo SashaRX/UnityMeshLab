@@ -96,8 +96,33 @@ namespace SashaRX.UnityMeshLab
                     (settings.regularize == RemeshRegularize.Strong ? 2u : 0u) |
                     (settings.preserveFolds ? 4u : 0u) | (settings.pruneSmallParts ? 16u : 0u)
             };
-            var result = MeshSimplifier.SimplifyGeometry(input.positions, input.indices, options, token, out error);
-            return new IndexedMesh { positions = result.positions, indices = result.indices }.PrepareChannels(token);
+            var topology = RemeshTopology.Inspect(input.positions, input.indices, token);
+            if (!topology.Valid)
+                throw new InvalidOperationException("Simplify input has invalid topology (" + topology.Description + "). Rerun Remesh or repair the source.");
+            // Keep real sheet borders fixed. This also lets the postflight distinguish
+            // existing openings from holes introduced by native area cleanup.
+            if (topology.boundary.Count > 0) options.flags |= 8u;
+            for (int attempt = 0; attempt < 6; attempt++) {
+                var result = MeshSimplifier.SimplifyGeometry(input.positions, input.indices, options, token, out error, allowEmpty: true);
+                if (result != null) {
+                    var candidate = RemeshTopology.RemoveCollapsedFins(new IndexedMesh { positions = result.positions, indices = result.indices }, token, out int fins);
+                    var after = RemeshTopology.Inspect(candidate.positions, candidate.indices, token);
+                    if (after.Valid && after.PreservesBoundary(topology) && after.PreservesComponents(topology, settings.pruneSmallParts)) {
+                        if (fins > 0 || attempt > 0)
+                            UvtLog.Info(UvtLog.Category.RemeshDiag, $"Simplify topology: removed {fins} collapsed fin faces; retry {attempt}; " + after.Description);
+                        return candidate.PrepareChannels(token);
+                    }
+                    UvtLog.Warn($"[Remesh] Simplify candidate rejected ({after.Description}; boundary preserved {after.PreservesBoundary(topology)}; component topology preserved {after.PreservesComponents(topology, settings.pruneSmallParts)}). Retrying with less collapse.");
+                }
+                else UvtLog.Warn("[Remesh] Simplify candidate was empty. Retrying with less collapse.");
+                options.maximumError *= .5f;
+                options.targetTriangles = Math.Max(options.targetTriangles, Math.Max(1, input.TriangleCount / (1 << (5 - attempt))));
+            }
+            // A reversible fallback preserves every input face rather than deleting a
+            // bad triangle and leaving a new hole. Report zero error for this snapshot.
+            error = 0;
+            UvtLog.Warn("[Remesh] No topologically valid simplification found; retaining the remesh geometry. Increase the triangle budget or repair thin features.");
+            return new IndexedMesh { positions = (Vector3[])input.positions.Clone(), indices = (int[])input.indices.Clone() }.PrepareChannels(token);
         }
 
         public static Geometry Unwrap(IndexedMesh input, RemeshSettings settings, CancellationToken token)

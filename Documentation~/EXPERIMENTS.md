@@ -5,6 +5,16 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Входная topology 2026-10-04 (продолжение Exp #1):** на бюсте source/raw
+  voxel замкнуты; Trim удалял 4 faces и создавал 12 открытых edges, Simplify
+  создавал 3 opposite-winding duplicate pairs. Trim теперь сохраняет closed
+  source volume components; Simplify удаляет только безопасные collapsed fins,
+  фиксирует реальные borders и проверяет edges, vertex fans и component Euler
+  characteristics с retry/fallback. Результат None: 1886 faces, boundary /
+  non-manifold / duplicates / degenerate = 0; 9 repeat runs в трёх режимах
+  бит-идентичны. 192 Unity tests passed, skipped 0; native ABI/binaries unchanged.
+  [Причина, результаты и воспроизведение](SIMPLIFY_TOPOLOGY.md).
+
 - **Source signals 2026-10-04 (продолжение Exp #1):** curvature/cavity на high-poly
   и geometric AO перенесены через production fitted cage на оба ручных эталона
   и actual simplify. 16704 + 17940 samples, zero misses; повторные buffers

@@ -55,12 +55,13 @@ namespace SashaRX.UnityMeshLab
             if (faces == 0 || sourceIndices.Length < 3) { result.mesh.PrepareChannels(token); return result; }
             var bvh = new TriangleBvh(sourcePositions, sourceIndices);
             var sourceNormals = MeshGeometry.FaceNormals(sourcePositions, sourceIndices);
-            var classes = Classify(mesh, bvh, sourceNormals, maxDistance, token, out int kept);
+            var closedSource = RemeshTopology.ClosedVolumeFaces(sourcePositions, sourceIndices, token);
+            var classes = Classify(mesh, bvh, sourceNormals, closedSource, maxDistance, token, out int kept);
             // A source wound inside out would reject everything; judge it by its flipped
             // normals instead, and give up (keep all) when neither reading keeps a tenth.
             if (kept * 10 < faces) {
                 for (int i = 0; i < sourceNormals.Length; ++i) sourceNormals[i] = -sourceNormals[i];
-                var flipped = Classify(mesh, bvh, sourceNormals, maxDistance, token, out int keptFlipped);
+                var flipped = Classify(mesh, bvh, sourceNormals, closedSource, maxDistance, token, out int keptFlipped);
                 if (keptFlipped > kept) { classes = flipped; kept = keptFlipped; }
                 if (kept * 10 < faces) { result.gaveUp = true; result.mesh.PrepareChannels(token); return result; }
             }
@@ -81,10 +82,12 @@ namespace SashaRX.UnityMeshLab
         // that breaks the cage and the bake. The back face's normal is opposite to the
         // sheet's (Back), the rims are perpendicular (Rim); both go. A source wound
         // inside out is handled by the caller's flipped retry.
-        static byte[] Classify(RemeshNative.IndexedMesh mesh, TriangleBvh bvh, Vector3[] sourceNormals, float maxDistance, CancellationToken token, out int kept)
+        static byte[] Classify(RemeshNative.IndexedMesh mesh, TriangleBvh bvh, Vector3[] sourceNormals, bool[] closedSource, float maxDistance, CancellationToken token, out int kept)
         {
             int faces = mesh.indices.Length / 3;
             var classes = new byte[faces];
+            bool allClosed = closedSource.Length > 0;
+            foreach (bool closed in closedSource) allClosed &= closed;
             int count = 0;
             Parallel.For(0, faces, new ParallelOptions { CancellationToken = token, MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, f => {
                 int a = mesh.indices[f * 3], b = mesh.indices[f * 3 + 1], c = mesh.indices[f * 3 + 2];
@@ -93,6 +96,13 @@ namespace SashaRX.UnityMeshLab
                 if (normal.sqrMagnitude < 1e-30f) { classes[f] = Rim; return; }   // degenerate: drop
                 normal = MeshGeometry.UnitDirection(normal);
                 Vector3 centroid = (pa + pb + pc) / 3f;
+                // The normal of a tiny fitted voxel face may oppose the nearest
+                // source face at a sharp fold. Closed volumes have no sheet back;
+                // deleting such a face cuts a hole in an otherwise closed remesh.
+                var nearest = allClosed ? default : bvh.FindNearest(centroid, maxDistance);
+                if (allClosed || (nearest.triangleIndex >= 0 && closedSource[nearest.triangleIndex])) {
+                    classes[f] = Kept; Interlocked.Increment(ref count); return;
+                }
                 if (bvh.FindNearestNormalFiltered(centroid, normal, sourceNormals, MinDot, maxDistance).triangleIndex >= 0) {
                     classes[f] = Kept; Interlocked.Increment(ref count); return;
                 }
