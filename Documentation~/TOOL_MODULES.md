@@ -71,4 +71,6 @@ declare dependencies, use these contracts and cover their resource lifecycle.
 `MeshLabModuleTests` verifies tab independence, transitive availability, preserved
 active state, headless workflow ownership, independent export and simplification.
 CI also runs `Tools~/check_tool_dependencies.py` to reject concrete tool references
-outside their owner and missing tool dependency declarations.
+outside their owner, missing tool dependency declarations, and library code that
+uses a top-level type declared under `Editor/Tools/` (a shared contract such as an
+export intent belongs to its library's folder, not next to a tab).
