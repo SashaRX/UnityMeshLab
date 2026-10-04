@@ -5,6 +5,17 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Source signals 2026-10-04 (продолжение Exp #1):** curvature/cavity на high-poly
+  и geometric AO перенесены через production fitted cage на оба ручных эталона
+  и actual simplify. 16704 + 17940 samples, zero misses; повторные buffers
+  бит-идентичны. На пяти spatial folds source повышает hard-boundary AUC
+  0.844→0.903, но общий UV AUC только 0.808→0.827 / 0.801→0.830.
+  После исключения hard edges преимущество для UV-разрезов исчезает:
+  V1 0.530→0.505, V2 0.703→0.690. Blind source-driven default weights
+  не вводились; нужны отдельно confidence и chart topology/cut planning.
+  Метод, AO/curvature radii, контроль leakage и sampling limits:
+  [отчёт](UV_SOURCE_SIGNALS.md), переносимый harness в `Tools~/SourceSignalsBenchmark/`.
+
 - **Сравнение с двумя ручными эталонами 2026-10-04 (продолжение Exp #1):**
   `uvbest.fbx` содержит исправленную сетку: 1856 triangles, без duplicate faces и
   non-manifold edges. На этой же сетке прежний merge оставлял 52 islands против
