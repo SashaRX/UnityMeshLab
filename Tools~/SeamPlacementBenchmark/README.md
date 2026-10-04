@@ -133,3 +133,36 @@ seam_region_probe.exe PARTUV_OUTPUT/unpacked.bin PARTUV_OUTPUT/charts.dat PartUV
 
 The packing stage is vendored xatlas, 512/padding 3, not the paid UVPackMaster
 used in some author examples. Render and score `PartUV.bin` like any other capture.
+
+## AutoUV and fixed-cut SLIM control
+
+See `Documentation~/UV_LEARNED_SEAMS.md` for actual results. Separately acquire
+[AutoUV](https://github.com/visualbruno/AutoUV), tested commit
+`f0e0ff8963210b35e362a15eaf56d88d07fdd778`; do not vendor its checkout/captures.
+`autouv_probe.py` tests cone 35/50/65 with remaining author settings and weld=False.
+It also reconstructs authored cut topology and regenerates all UV coordinates.
+The latter is a **fixed-cut control**, not automatic seam placement. Its output
+can contain overlaps: run `render.py` for the complete final quality scan.
+AutoUV's bbox fill and scaled padding are not equivalent to triangle fill and
+fixed texel margins.
+
+With optional `libigl` Python bindings (SLIM API), `fixed_cut_slim.py` instead
+uses an injective convex disk seed and free-boundary symmetric Dirichlet solve.
+Non-disk charts fail; author UV values are used only to establish connectivity.
+Every checkpoint and the final saved float32 atlas pass a complete overlap gate.
+Source face winding and exact cut mask are verified separately.
+
+```powershell
+python 'Tools~/SeamPlacementBenchmark/autouv_probe.py' --autouv AUTOUV_CHECKOUT --reference REFERENCE.bin --out FRESH_RESULTS
+python 'Tools~/SeamPlacementBenchmark/fixed_cut_slim.py' --autouv AUTOUV_CHECKOUT --reference REFERENCE.bin --out FRESH_RESULTS/control.bin --packer BUILD_DIR/Release/seam_region_probe.exe
+python 'Tools~/SeamPlacementBenchmark/render.py' --reference REFERENCE.bin --capture control=FRESH_RESULTS/control.bin --out RENDERS
+```
+
+The standalone probe's `pack-square` mode keeps both coordinate divisors equal
+to max(actual raster width,height), preserving aspect for a square texture.
+Its existing `pack` mode uses separate width/height divisors. `fixed_cut_slim.py`
+uses `pack-square`, records actual dimensions and scaled raster padding in JSON.
+Requested resolution 512 does not guarantee a 512² raster. Neither mode installs
+or rebuilds Unity plugins. Without `--packer`, the control uses AutoUV skyline
+packing and explicitly records its scaled-padding limitation. Tests for this
+optional SLIM path skip if libigl/SciPy/Matplotlib are unavailable.

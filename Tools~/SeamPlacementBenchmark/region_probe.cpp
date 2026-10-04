@@ -1,6 +1,6 @@
 // Standalone research executable. Does not build or copy a Unity plugin.
 // Inputs: exact capture, face-region uint32 stream (or '-'), output capture,
-// maxCost, maxIterations, roundnessWeight. Optional region labels are inferred
+// maxCost (or pack / pack-square), maxIterations, roundnessWeight. Optional region labels are inferred
 // from geometry; no artist UVs/normals are passed to xatlas.
 #include "xatlas.h"
 #include <algorithm>
@@ -55,7 +55,8 @@ int main(int argc, char** argv) try {
     for (size_t i = 0; i < p.size(); ++i) normalized[i] = (p[i] - (lo[i % 3] + hi[i % 3]) * 0.5f) / extent;
     std::unique_ptr<xatlas::Atlas, decltype(&xatlas::Destroy)> atlas(xatlas::Create(), xatlas::Destroy);
     if (!atlas) throw std::runtime_error("Atlas allocation failed");
-    const bool packOnly = std::string(argv[4]) == "pack";
+    const bool squarePacking = std::string(argv[4]) == "pack-square";
+    const bool packOnly = std::string(argv[4]) == "pack" || squarePacking;
     xatlas::MeshDecl mesh;
     mesh.vertexPositionData = normalized.data(); mesh.vertexPositionStride = 12;
     mesh.vertexCount = h[0]; mesh.indexData = indices.data(); mesh.indexCount = h[1];
@@ -93,7 +94,11 @@ int main(int argc, char** argv) try {
         if (v.atlasIndex != 0 || v.chartIndex < 0 || v.xref >= uint32_t(h[0]))
             throw std::runtime_error("Invalid output mapping");
         for (int k = 0; k < 3; ++k) p[i * 3 + k] = source[v.xref * 3 + k];
-        uv[i * 2] = v.uv[0] / atlas->width; uv[i * 2 + 1] = v.uv[1] / atlas->height;
+        // Square textures require a uniform normalization: separate width and
+        // height divisors would stretch an otherwise valid parameterization.
+        const auto squareExtent = std::max(atlas->width, atlas->height);
+        uv[i * 2] = v.uv[0] / (squarePacking ? squareExtent : atlas->width);
+        uv[i * 2 + 1] = v.uv[1] / (squarePacking ? squareExtent : atlas->height);
         charts[i] = v.chartIndex;
     }
     indices.assign(result.indexArray, result.indexArray + result.indexCount);
@@ -101,7 +106,9 @@ int main(int argc, char** argv) try {
     std::ofstream output(argv[3], std::ios::binary);
     write(output, h); write(output, p); write(output, uv); write(output, indices); write(output, charts);
     if (!output) throw std::runtime_error("Output write failed");
-    std::cout << result.chartCount << " charts\n";
+    std::cout << "{\"charts\":" << result.chartCount << ",\"width\":" << atlas->width
+              << ",\"height\":" << atlas->height << ",\"squareNormalization\":"
+              << (squarePacking ? "true" : "false") << "}\n";
     return 0;
 } catch (const std::exception& e) {
     std::cerr << e.what() << '\n';

@@ -49,9 +49,12 @@ def plot(cuts, reference, out, names):
     center = (positions.max(0) + positions.min(0)) / 2
     for row, azimuth in enumerate((55, 235)):
         for col, name in enumerate(names):
-            ax = fig.add_subplot(2, len(names), row * len(names) + col + 1, projection="3d")
-            ax.add_collection3d(Poly3DCollection(positions[faces], facecolors="#dedede", edgecolors="none", alpha=0.65))
-            ax.add_collection3d(Line3DCollection(positions[edges[cuts[name]]], colors="#a32648", linewidths=1.1))
+            ax = fig.add_subplot(2, len(names), row * len(names) + col + 1,
+                                 projection="3d", computed_zorder=False)
+            ax.add_collection3d(Poly3DCollection(positions[faces], facecolors="#dedede",
+                                                edgecolors="none", alpha=0.12, zorder=1))
+            ax.add_collection3d(Line3DCollection(positions[edges[cuts[name]]], colors="#a32648",
+                                                linewidths=1.1, zorder=2))
             for axis, c in zip((ax.set_xlim, ax.set_ylim, ax.set_zlim), center):
                 axis(c - extent, c + extent)
             ax.set_box_aspect((1, 1, 1))
@@ -59,7 +62,7 @@ def plot(cuts, reference, out, names):
             ax.set_axis_off()
             if row == 0:
                 ax.set_title(name)
-    fig.suptitle("Seam placement on identical geometry — two opposite views", fontsize=15)
+    fig.suptitle("Seam placement on identical geometry — transparent mesh, rear seams included", fontsize=15)
     fig.tight_layout()
     fig.savefig(out, dpi=160)
     plt.close(fig)

@@ -1,0 +1,184 @@
+{
+  "control": "authored cuts; all UV coordinates discarded",
+  "geometryPreserved": true,
+  "seamsPreserved": true,
+  "faceWindingPreserved": true,
+  "referenceSha256": "05adf0517edb4d07b106f0ec858325935ac4c5209de2675a9b0a644aa742a042",
+  "captureSha256": "d3fc8d7cb431460ecb044f3bb2639bf729db2565c53d37614ff1de215d95a580",
+  "charts": [
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 11
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 11
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 12
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 12
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 10
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 12
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 78
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 20
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 26
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 14
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 12
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 10
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 11
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 5
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 21
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 25
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 6
+    },
+    {
+      "method": "uniform disk seed + SLIM symmetric Dirichlet",
+      "acceptedIteration": 30,
+      "rejectedCheckpoints": 0,
+      "fullIntersectionScan": true,
+      "chi": 1,
+      "boundaryEdges": 112
+    }
+  ],
+  "packing": {
+    "method": "standalone xatlas pack-only; uniform square normalization",
+    "requestedResolution": 512,
+    "requestedPadding": 3,
+    "actualRaster": {
+      "charts": 18,
+      "width": 462,
+      "height": 366,
+      "squareNormalization": true
+    },
+    "normalizedRasterPaddingAt512": 3.324675324675325,
+    "executableSha256": "0bd55db88a3e47b6819f7ff01ee7f5c52c30ba0252f5a2e93ce79f2968f7cd4f"
+  },
+  "finalAtlas": {
+    "file": "CONTROL-artist-V1-cuts-SLIM-square.bin",
+    "faces": 1856,
+    "charts": 18,
+    "small": 3,
+    "filledArea": 0.5045078851802972,
+    "chartDensityCV": 0.005293653651671113,
+    "meanStretch": 1.1050452101740662,
+    "worstStretch": 4.523093553416805,
+    "overlapPairs": 0,
+    "sameChartPairs": 0,
+    "pairAreaSum": 0.0,
+    "mixedWindingFaces": 0,
+    "zeroAreaFaces": 0,
+    "outOfBoundsVertices": 0,
+    "captureSha256": "d3fc8d7cb431460ecb044f3bb2639bf729db2565c53d37614ff1de215d95a580"
+  }
+}

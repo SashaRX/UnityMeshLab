@@ -5,6 +5,19 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Обучаемые швы 2026-10-04 (продолжение Exp #1):** новый AutoUV baseline
+  при cone 35/50/65 сохраняет геометрию, но даёт 51/59/42 intra-chart overlap
+  pairs и seam F1 0.213/0.172/0.240. Контроль с точными авторскими cuts, без
+  авторских UV coordinates: uniform disk seed → SLIM → square-normalized xatlas,
+  zero overlaps, mean/worst 1.105/4.523, fill 50.45% против ручных 69.14%.
+  Standalone packing дополнен uniform square normalization, production unchanged.
+  Подготовщик labels предотвращает leakage по asset/geometry/family: два UV
+  варианта бюста — одна модель. Untrained graph probe 79169 parameters прошёл
+  FP32 forward/backward на GTX 980 Ti, peak PyTorch allocated 53.7 MiB;
+  обучение/качество модели не проверены, набор пользователю ещё нужно собрать.
+  18 seam/control + 10 prepare/graph checks passed, все UV renders сохранены.
+  [Методы, доступность релизов, фактические замеры и ограничения](UV_LEARNED_SEAMS.md).
+
 - **Лог из E project 2026-10-04 (продолжение Exp #1):** native source fitting
   и area cleanup воспроизводят одиночное отверстие на том же участке бюста;
   компактный fixture из 8 vertices воспроизводит его при voxel 48. Raw solid
