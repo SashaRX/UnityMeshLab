@@ -122,6 +122,35 @@ namespace SashaRX.UnityMeshLab
                 }
                 return true;
             }
+
+            static (int, int, int) FaceKey(int a, int b, int c)
+            {
+                if (a > b) (a, b) = (b, a);
+                if (b > c) (b, c) = (c, b);
+                if (a > b) (a, b) = (b, a);
+                return (a, b, c);
+            }
+
+            static (Vector3, Vector3) BoundaryKey(Vector3 a, Vector3 b)
+            {
+                int order = a.x.CompareTo(b.x);
+                if (order == 0) order = a.y.CompareTo(b.y);
+                if (order == 0) order = a.z.CompareTo(b.z);
+                return order <= 0 ? (a, b) : (b, a);
+            }
+
+            static int[] Identity(int count)
+            {
+                var result = new int[count];
+                for (int i = 0; i < count; i++) result[i] = i;
+                return result;
+            }
+
+            static void Union(int[] parent, int a, int b)
+            {
+                a = Find(parent, a); b = Find(parent, b);
+                if (a != b) parent[b] = a;
+            }
         }
 
         internal static Snapshot Inspect(Vector3[] positions, int[] indices, CancellationToken token = default)
@@ -217,35 +246,10 @@ namespace SashaRX.UnityMeshLab
         }
 
         static (int, int) EdgeKey(int a, int b) => a < b ? (a, b) : (b, a);
-        static (int, int, int) FaceKey(int a, int b, int c)
-        {
-            if (a > b) (a, b) = (b, a);
-            if (b > c) (b, c) = (c, b);
-            if (a > b) (a, b) = (b, a);
-            return (a, b, c);
-        }
-        static (Vector3, Vector3) BoundaryKey(Vector3 a, Vector3 b)
-        {
-            int order = a.x.CompareTo(b.x);
-            if (order == 0) order = a.y.CompareTo(b.y);
-            if (order == 0) order = a.z.CompareTo(b.z);
-            return order <= 0 ? (a, b) : (b, a);
-        }
-        static int[] Identity(int count)
-        {
-            var result = new int[count];
-            for (int i = 0; i < count; i++) result[i] = i;
-            return result;
-        }
         static int Find(int[] parent, int value)
         {
             while (parent[value] != value) { parent[value] = parent[parent[value]]; value = parent[value]; }
             return value;
-        }
-        static void Union(int[] parent, int a, int b)
-        {
-            a = Find(parent, a); b = Find(parent, b);
-            if (a != b) parent[b] = a;
         }
     }
 }
