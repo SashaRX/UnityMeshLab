@@ -5,6 +5,26 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Distortion relax 2026-10-04 (продолжение Exp #1):** после успешного merge
+  все итоговые charts проходят guarded conformal relax перед repack.
+  Свободная граница, MIPS-based energy + quadratic tail, L-BFGS (до 50 итераций),
+  аналитический первый корень det-barrier и сохранение безопасных checkpoints.
+  Per-chart mean/worst не увеличиваются; UV-площадь сохраняется uniform scale,
+  seam/tangent дубликаты получают бит-идентичные UV; полный overlap scan обязателен.
+  Source corners не меняются; ambiguous UV cuts / unsupported topology пропускаются.
+  ARAP и разные места relax сравнены: all-after даёт устойчивый выигрыш без
+  изменения числа shells; before меняет seam candidates и не всегда полезен.
+  На bust recommended 512: 28 charts / 14 small / 0 overlap,
+  mean 1.10772 → 1.05221, worst 3.75916 → 1.66454; user settings:
+  36 / 19 / 0, mean 1.18992 → 1.06325, worst 3.19396 → 1.65894.
+  По 10/10 production repeats побайтово идентичны; каждый source corner сохранён.
+  На default 2048: 29 / 13 / 0, worst 3.90045 → 1.67871 (3 repeats).
+  Relax занимает около 40 ms; pack на 2048 всё ещё дорогой (~11 s).
+  Отмена после принятого merge теперь восстанавливает полный snapshot;
+  диагностический лог `[UV] merge-relax` отделяет этот этап от финального pack gate.
+  165/165 связанных Unity EditMode tests проходят (DirectX, без skips);
+  compile-check проходит в обеих FBX define-конфигурациях.
+  Метод, alternatives, corpus CSV и UV heatmap: [отчёт](UV_MERGE_RELAX_BENCHMARK.md).
 - **Подбор xatlas defaults 2026-10-04 (продолжение Exp #1):** на фиксированном
   bust (1997 faces) и четырёх геометрических fixtures сравнены chart weights,
   iterations и packing: 810 phase/case/profile измерений, 1568 вызовов.

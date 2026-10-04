@@ -202,7 +202,15 @@ Before the UV stage the canvas shows the selected model as usual.
    the island area/border limits, a full UV-triangle overlap test (contact along
    the new seam is allowed, and the moved chart is also checked against itself
    after the snap) and the same stretch bounds the fragmentation search uses.
-   Merged charts are re-packed through xatlas with their tangent frames rebuilt
+   Before repacking merged charts through xatlas, a bounded distortion relax
+   runs on the resulting UV islands. Relax moves
+   free UV vertices while keeping joined seam copies exactly colocal, preserving
+   each island's UV area, and accepting only non-increasing mean/worst stretch
+   with a complete zero-overlap scan. Existing cuts and unsupported topology are
+   skipped. It runs only after an accepted merge; the xatlas charting settings
+   and unmerged unwrap stay as configured. The
+   [relax comparison](UV_MERGE_RELAX_BENCHMARK.md) includes UV distortion heatmaps.
+   Tangent frames are rebuilt
    from the final atlas layout — covering the fit rotation, the seam snap's
    per-vertex displacement and the packer's per-axis stretch alike — and any
    anomaly reverts to the unmerged unwrap. Adds one xatlas pack pass on the

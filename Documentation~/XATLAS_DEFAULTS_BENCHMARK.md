@@ -1,5 +1,9 @@
 # xatlas defaults comparison — 2026-10-04
 
+These measurements precede the subsequent
+[merge distortion relax](UV_MERGE_RELAX_BENCHMARK.md); its report gives the latest
+merged stretch results with the same selected xatlas defaults.
+
 The measured balanced default changes **roundness from 0.01 to 0.5**. Other
 chart weights, iteration count and packing defaults stay unchanged. This is a
 continuation of the [chart-merge experiment](EXPERIMENTS.md), using its repaired

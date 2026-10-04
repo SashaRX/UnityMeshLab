@@ -400,7 +400,7 @@ namespace SashaRX.UnityMeshLab
                         settings.reduceUvFragmentation);
                     settings.mergeCharts = EditorGUILayout.Toggle(new GUIContent("Merge charts",
                         "Deterministically merges adjacent island pairs whose seam UVs align within bounded stretch and texel density, " +
-                        "respecting max island area/border, then re-packs the atlas. Adds one xatlas pack pass on the worker."),
+                        "respecting max island area/border. Relaxes the resulting UV islands to reduce distortion before packing. Adds one xatlas pack pass on the worker."),
                         settings.mergeCharts);
                     chartFold = EditorGUILayout.Foldout(chartFold, "Islands & packing", true);
                     if (chartFold) {

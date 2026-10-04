@@ -10,7 +10,9 @@
 // in that snap: acceptance therefore re-measures the stretch of the moved faces
 // plus the acceptor's seam faces after snapping, and runs a full triangle-triangle
 // overlap test (edge-edge crossings included, seam contact excluded). User island
-// area/border limits are respected in source units. Merged charts are re-packed
+// area/border limits are respected in source units. A guarded free-boundary
+// conformal relax reduces distortion over the resulting charts, preserving seam
+// colocalization and chart UV area. Merged charts are re-packed
 // through the xatlas UvMesh bridge and their tangent frames are rebuilt from the
 // final atlas layout — that covers the fit rotation, the seam snap's per-vertex
 // displacement and the packer's per-axis ceil stretch alike, none of which a
@@ -68,6 +70,14 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info(UvtLog.Category.RemeshDiag,
                     $"[UV] merge-candidate: charts={chartCountSnapshot}->{geometry.chartCount}, acceptedMerges={merged}; candidate is not the final unwrap.");
                 if (merged <= 0) return;
+                var beforeRelax = UvChartQuality.Measure(geometry, token);
+                var relaxWatch = System.Diagnostics.Stopwatch.StartNew();
+                const int relaxIterations = 50;
+                var relaxCharts = new HashSet<int>(geometry.charts);
+                int relaxed = UvChartRelax.Apply(geometry, relaxCharts, relaxIterations, token);
+                var afterRelax = UvChartQuality.Measure(geometry, token);
+                UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
+                    $"[UV] merge-relax: relaxed={relaxed}/{relaxCharts.Count} charts, iterations={relaxIterations}, mean={beforeRelax.meanStretch:G6}->{afterRelax.meanStretch:G6} worst={beforeRelax.maxStretch:G6}->{afterRelax.maxStretch:G6}, elapsedMs={relaxWatch.Elapsed.TotalMilliseconds:F1}; repack and final gates follow."));
                 UvAtlasDiagnostics.Log(geometry, "merge-before-pack", token, sameChartOnly: true);
                 if (!Repack(geometry, settings, token))
                     throw new InvalidOperationException("the re-pack rejected the merged charts");
@@ -83,20 +93,19 @@ namespace SashaRX.UnityMeshLab
                         "quality gate failed: " + post.ImprovementFailure(preMerge, preMerge));
                 UvtLog.Info($"[Remesh] Chart merge: {chartCountSnapshot} → {geometry.chartCount} islands ({merged} merge(s) accepted).");
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException) { RestoreGeometry(); throw; }
             catch (Exception error)
             {
-                geometry.positions = positionsSnapshot;
-                geometry.normals = normalsSnapshot;
-                geometry.indices = indicesSnapshot;
-                geometry.uv = uvSnapshot;
-                geometry.charts = chartsSnapshot;
-                geometry.tangents = tangentsSnapshot;
-                geometry.chartCount = chartCountSnapshot;
-                geometry.smallChartCount = smallChartSnapshot;
+                RestoreGeometry();
                 UvtLog.Warn("[Remesh] Chart merge reverted; keeping the unmerged unwrap. " + error.Message);
                 UvtLog.Info(UvtLog.Category.RemeshDiag,
                     $"[UV] merge-rollback: restored original UV/chart/tangent arrays; final charts={chartCountSnapshot}, small={smallChartSnapshot}.");
+            }
+            void RestoreGeometry()
+            {
+                geometry.positions = positionsSnapshot; geometry.normals = normalsSnapshot; geometry.indices = indicesSnapshot;
+                geometry.uv = uvSnapshot; geometry.charts = chartsSnapshot; geometry.tangents = tangentsSnapshot;
+                geometry.chartCount = chartCountSnapshot; geometry.smallChartCount = smallChartSnapshot;
             }
         }
 

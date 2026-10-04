@@ -170,6 +170,42 @@ namespace SashaRX.UnityMeshLab.Tests
         // ── similarity fit ──────────────────────────────────────────────────
 
         [Test]
+        public void CancellationAfterAnAcceptedMergeRestoresOriginalGeometry()
+        {
+            var g = TwoPatchGeometry(chart1Offset: new Vector2(.4f, .3f));
+            var uv = (Vector2[])g.uv.Clone(); var charts = (int[])g.charts.Clone(); var tangents = (Vector4[])g.tangents.Clone();
+            var positions = g.positions; var indices = g.indices; var normals = g.normals;
+            var level = UvtLog.Current; var categories = UvtLog.EnabledCategories;
+            bool hadLevel = UnityEditor.EditorPrefs.HasKey("UnityMeshLab_LogLevel");
+            bool hadCategories = UnityEditor.EditorPrefs.HasKey("UnityMeshLab_LogCategoryMask");
+            using (var cancelled = new CancellationTokenSource())
+            {
+                bool sawCandidate = false;
+                void OnLog(string message, string stack, LogType kind)
+                {
+                    if (message.Contains("[UV] merge-candidate:")) { sawCandidate = true; cancelled.Cancel(); }
+                }
+                try
+                {
+                    UvtLog.Current = UvtLog.Level.Info; UvtLog.EnabledCategories |= UvtLog.Category.RemeshDiag;
+                    Application.logMessageReceived += OnLog;
+                    var quality = UvChartQuality.Measure(g, CancellationToken.None);
+                    Assert.Throws<OperationCanceledException>(() => UvChartMerge.Apply(g, quality, new RemeshSettings(), cancelled.Token));
+                    Assert.IsTrue(sawCandidate, "cancel after a real accepted merge, without timing assumptions");
+                    Assert.AreEqual(2, g.chartCount); CollectionAssert.AreEqual(uv, g.uv); CollectionAssert.AreEqual(charts, g.charts);
+                    CollectionAssert.AreEqual(tangents, g.tangents); Assert.AreSame(positions, g.positions); Assert.AreSame(indices, g.indices); Assert.AreSame(normals, g.normals);
+                }
+                finally
+                {
+                    Application.logMessageReceived -= OnLog;
+                    UvtLog.Current = level; UvtLog.EnabledCategories = categories;
+                    if (!hadLevel) UnityEditor.EditorPrefs.DeleteKey("UnityMeshLab_LogLevel");
+                    if (!hadCategories) UnityEditor.EditorPrefs.DeleteKey("UnityMeshLab_LogCategoryMask");
+                }
+            }
+        }
+
+        [Test]
         public void SimilarityFitRecoversSeededRotationScaleAndTranslation()
         {
             var random = new System.Random(1234);
