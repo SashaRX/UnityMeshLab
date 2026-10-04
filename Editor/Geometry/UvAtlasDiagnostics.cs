@@ -17,6 +17,7 @@ namespace SashaRX.UnityMeshLab
             // Sum over pairs, not the union area: triple coverage is counted more than once.
             internal double pairAreaSum;
             internal readonly List<string> samples = new List<string>();
+            internal readonly List<(int a, int b)> conflicts = new List<(int, int)>();
         }
 
         struct Point
@@ -33,7 +34,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static Report Measure(RemeshNative.Geometry g, CancellationToken token,
-            bool sameChartOnly = false, long comparisonBudget = 2_000_000)
+            bool sameChartOnly = false, long comparisonBudget = 2_000_000, bool collectConflicts = false)
         {
             token.ThrowIfCancellationRequested();
             var report = new Report();
@@ -76,6 +77,7 @@ namespace SashaRX.UnityMeshLab
                     // scales with the smaller triangle; absolute floor is in UV units².
                     if (area <= Math.Max(1e-16, Math.Min(a.area, b.area) * 1e-8)) continue;
                     ++report.pairs;
+                    if (collectConflicts) report.conflicts.Add((a.face, b.face));
                     if (a.chart == b.chart) ++report.sameChartPairs; else ++report.crossChartPairs;
                     report.pairAreaSum += area;
                     if (report.samples.Count < 8)
@@ -83,6 +85,29 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             return report;
+        }
+
+        /// <summary>Reusable scratch buffers for exact area checks during merge trials.</summary>
+        internal sealed class IntersectionTest
+        {
+            readonly Point[] bufferA = new Point[8], bufferB = new Point[8];
+
+            internal bool Overlaps(RemeshNative.Geometry g, int faceA, int faceB)
+            {
+                var a = FromFace(g, faceA); var b = FromFace(g, faceB);
+                return IntersectionArea(a, b, bufferA, bufferB) > Math.Max(1e-16, Math.Min(a.area, b.area) * 1e-8);
+            }
+
+            static Triangle FromFace(RemeshNative.Geometry g, int face)
+            {
+                var t = new Triangle {
+                    a = new Point(g.uv[g.indices[face * 3]]),
+                    b = new Point(g.uv[g.indices[face * 3 + 1]]),
+                    c = new Point(g.uv[g.indices[face * 3 + 2]])
+                };
+                t.area = Math.Abs(Cross(t.a, t.b, t.c)) * .5;
+                return t;
+            }
         }
 
         static bool Finite(Vector2 p)

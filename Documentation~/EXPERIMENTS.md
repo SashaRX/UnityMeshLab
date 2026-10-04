@@ -5,6 +5,38 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Изменение алгоритма 2026-10-04 после реальных логов:** baseline пользователя
+  уже содержал 26 внутри-chart overlap-пар на 1883 faces / 80 charts; rollback
+  возвращал их без изменений. Кандидат 54 charts содержал 33 пары и 6 charts
+  с разной намоткой граней. Отказ вызывала mixed winding, хотя mean/worst
+  укладывались в пределы. Соседи по welded edge ошибочно исключались из overlap-теста.
+  Теперь перед merge (и при выключенном merge) конфликтующие UV-грани разрезаются
+  в отдельные charts: детерминированное greedy vertex cover графа конфликтов,
+  дублирование вершин на границах, сохранение каждой 3D-грани и формы её UV-треугольника,
+  затем repack. Результат принимается только после полной проверки нулевого overlap,
+  winding и прежних stretch-пределов; незавершённая проверка не считается успехом.
+  Merge сначала выравнивает намотку двух charts отражением UV при необходимости,
+  затем делает прежний similarity fit. Проверка площади пересечений общая с
+  диагностикой, без исключений для соседних граней. Снап охватывает все tangent/normal
+  дубликаты швовой вершины; неоднозначные существующие UV-разрезы внутри chart не сливаются.
+  Readback читает полные native vertex/index buffers и проверяет xref каждого
+  source corner; chart splits допустимы, геометрия сохраняется. Тангенты пересчитываются
+  у всех упакованных charts. Прямоугольный native atlas встраивается в квадратный UV
+  с единым масштабом: независимая width/height-нормализация bridge создавала stretch
+  1.43 даже на двух исходно недеформированных треугольниках.
+- **Проверка на модели пользователя в Unity 6000.2.6f2:** исходный FBX
+  `Meshy_AI_Distinguished_Bust_0925154648_texture`, текущие сохранённые настройки,
+  отдельный локальный проект. Remesh совпадает с логом: 30288 → 51612 triangles,
+  trim 4. Текущая simplification даёт 1997 faces (в прежнем логе — 1883, это другой
+  snapshot настроек). Raw unwrap: 78 charts / 8 overlap-пар; repair: 82 charts /
+  0 overlap; merge: 36 charts / 0 overlap (46 accepted merges). Small charts: 47 → 19;
+  mean stretch: 1.17660 → 1.18992; worst: 2.90240 → 3.19396, пределы 1.29426 / 4.
+  Все overlap-проверки полные, invalid/degenerate/OOB = 0; source corners сохраняются.
+  10/10 unwrap-прогонов дают побайтово идентичные position/UV/index/chart buffers.
+  153/153 связанных Unity EditMode-теста проходят с DirectX (UV диагностика,
+  merge/repair, Remesh bake/hierarchy/normals); обе FBX define-конфигурации compile-check
+  проходят. Для GPU-тестов нужен графический backend, `-nographics` даёт Null GPU.
+  Это проверка Unwrap, не визуальный bake seam-review и не Playground GO-протокол.
 - **Диагностика 2026-10-04:** логи `[RemeshDiag] [UV]` при уровне Info разделяют
   `merge-baseline`, `merge-candidate`, `merge-before-pack` (только внутри chart),
   `merge-after-pack (candidate)`, `merge-quality-gate`, `merge-rollback` и
@@ -18,7 +50,7 @@
   degenerate/invalid/OOB и время. Лимит 2M broad-phase сравнений ограничивает стоимость;
   `complete=False` означает только нижнюю оценку, а не доказательство отсутствия overlap.
   Отсекается площадь ≤ max(1e-16 UV², 1e-8 площади меньшего треугольника).
-  Диагностика read-only, правила принятия эксперимента не меняются.
+  Само логирование read-only; актуальные изменения алгоритма и приёмки описаны выше.
 - **Replay `repack_20261004_031155.bin`:** 1883 faces, 48 charts в merge-кандидате;
   до pack 40 внутри-chart overlap-пар (pairAreaSum=0.000512322007 в UV² дампа),
   после pack 40 внутри-chart пар, 0 между-chart пар
@@ -34,15 +66,15 @@
 - **Изменение:** переключатель **Merge charts** (off по умолчанию) в Remesh & Bake → Unwrap.
   После выбора лучшей развёртки (включая «Reduce UV fragmentation») `UvChartMerge.Apply`
   детерминированно, раундами, пробует слить соседние пары чартов: Procrustes-подобие
-  (поворот + uniform scale + перенос, без зеркала) UV движущегося чарта по швовым вершинам,
+  (поворот + uniform scale + перенос после выравнивания winding) UV движущегося чарта по швовым вершинам,
   затем бит-точный снап шва к UV принимающего — xatlas соединяет чарты по UV-colocal,
   `faceMaterial` только разделяет, поэтому почти равный шов после repack снова распадётся на
   два острова. Гейты приёмки: residual шва ≤ 0.02 относительно диагонали UV bbox принимающего;
   scale фита в [0.5, 2] (texel density); `maxChartArea`/`maxChartBoundary` пользователя
   (boundary объединения = boundaryA + boundaryB − 2·seamLength3D); полный tri-tri overlap-тест
-  (пересечения рёбер + strict containment, контакт вдоль нового шва разрешён); локальное
+  (double-precision polygon clipping, разрешён только контакт нулевой площади); локальное
   растяжение после снапа на гранях движущегося чарта и швовых гранях принимающего:
-  mean ≤ max(1.15, pre·1.1), worst ≤ max(4, pre·1.1), без флипов. Тангенты слитых чартов
+  mean ≤ max(1.15, pre·1.1), worst ≤ max(4, pre·1.1), единая winding. Тангенты всех чартов
   перестраиваются по финальной раскладке атласа (Lengyel-аккумуляция по граням) — это
   покрывает и поворот merge-фита, и по-вершинное смещение снапа шва, и per-axis
   ceil-растяжение паковщика xatlas (не являющееся подобием). После снапа дополнительно
