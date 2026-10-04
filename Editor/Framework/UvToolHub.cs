@@ -41,7 +41,7 @@ namespace SashaRX.UnityMeshLab
         UvLayer3D uvLayer;
         MeshInspection inspection;
         bool inspectMesh;
-        int inspectedItem, inspectedVertex, planarProjection;
+        int inspectedItem, planarProjection;
         Vector2 inspectionScroll;
         readonly Dictionary<(int, int), MeshEntry> inspectionEntries = new Dictionary<(int, int), MeshEntry>();
         bool canvas3D;
@@ -119,10 +119,6 @@ namespace SashaRX.UnityMeshLab
             viewport = new MeshViewport3D { RequestRepaint = Repaint };
             uvLayer = new UvLayer3D();
             inspection = new MeshInspection();
-            canvas.OnInspectVertex = (mesh, vertex) => {
-                int index = viewportItems.FindIndex(item => item.mesh == mesh);
-                if (index >= 0) { inspectedItem = index; inspectedVertex = vertex; Repaint(); }
-            };
             canvas3D = EditorPrefs.GetBool(Canvas3DPref, false);
 
             ctx.Assets.BeforeWrite = BeforeAssetWrite;
@@ -416,8 +412,6 @@ namespace SashaRX.UnityMeshLab
             DrawCanvasToolbar();
             DrawInspectionToolbar();
             canvas.InspectionShading = viewport.Mode;
-            canvas.InspectedMesh = inspectMesh && inspectedItem < viewportItems.Count ? viewportItems[inspectedItem].mesh : null;
-            canvas.InspectedVertex = inspectedVertex;
 
             bool showGroupPanel = ctx.RepackPerMesh && ctx.MeshGroupCount(ctx.PreviewLod) > 1;
             if (showGroupPanel)
@@ -976,12 +970,20 @@ namespace SashaRX.UnityMeshLab
         void DrawInspectionToolbar()
         {
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
-            var names = new string[MeshViewport3D.ShadingNames.Length];
-            for (int mode = 0; mode < names.Length; ++mode) {
-                int present = viewportItems.Count(item => MeshInspection.Supports(item.mesh, (MeshViewport3D.Shading)mode));
-                names[mode] = MeshViewport3D.ShadingNames[mode] + $" ({present}/{viewportItems.Count})";
+            // Offer only the shading modes the shown meshes actually have data for; the
+            // active mode stays listed (and visibly unsupported) instead of vanishing.
+            var modes = new List<MeshViewport3D.Shading>();
+            var names = new List<string>(MeshViewport3D.ShadingNames.Length);
+            for (int mode = 0; mode < MeshViewport3D.ShadingNames.Length; ++mode) {
+                var shading = (MeshViewport3D.Shading)mode;
+                int present = viewportItems.Count(item => MeshInspection.Supports(item.mesh, shading));
+                if (present == 0 && shading != viewport.Mode) continue;
+                string label = MeshViewport3D.ShadingNames[mode];
+                if (present < viewportItems.Count) label += $" ({present}/{viewportItems.Count})";
+                modes.Add(shading); names.Add(label);
             }
-            var next = (MeshViewport3D.Shading)EditorGUILayout.Popup((int)viewport.Mode, names, EditorStyles.toolbarPopup, GUILayout.Width(150));
+            int selected = Mathf.Max(0, modes.IndexOf(viewport.Mode));
+            var next = modes[EditorGUILayout.Popup(selected, names.ToArray(), EditorStyles.toolbarPopup, GUILayout.Width(150))];
             if (next != viewport.Mode) {
                 viewport.Mode = next;
                 if (next >= MeshViewport3D.Shading.UV0 && next <= MeshViewport3D.Shading.UV7 && canvas.HasPreviewChannel(ctx, next - MeshViewport3D.Shading.UV0))
@@ -1001,16 +1003,19 @@ namespace SashaRX.UnityMeshLab
             if (!inspectMesh || viewportItems.Count == 0) return;
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
             inspectedItem = Mathf.Clamp(inspectedItem, 0, viewportItems.Count - 1);
-            var meshes = viewportItems.Select((item, index) => $"{index}: {item.mesh.name}").ToArray();
-            inspectedItem = EditorGUILayout.Popup(inspectedItem, meshes, EditorStyles.toolbarPopup);
-            var mesh = viewportItems[inspectedItem].mesh;
-            inspectedVertex = Mathf.Clamp(EditorGUILayout.IntField("Vertex", inspectedVertex, GUILayout.Width(160)), 0, Mathf.Max(0, mesh.vertexCount - 1));
+            if (viewportItems.Count > 1) {
+                var meshes = viewportItems.Select(item => item.mesh.name).ToArray();
+                inspectedItem = EditorGUILayout.Popup(inspectedItem, meshes, EditorStyles.toolbarPopup);
+            }
+            else
+                GUILayout.Label(viewportItems[inspectedItem].mesh.name, EditorStyles.miniBoldLabel);
             EditorGUILayout.EndHorizontal();
+            var mesh = viewportItems[inspectedItem].mesh;
             inspectionScroll = EditorGUILayout.BeginScrollView(inspectionScroll, GUILayout.Height(145));
-            string text = inspection.Report(mesh) + "\nVertex " + inspectedVertex + "\n" + inspection.VertexValues(mesh, inspectedVertex);
+            string text = inspection.Report(mesh);
             EditorGUILayout.SelectableLabel(text, EditorStyles.miniLabel, GUILayout.Height(Mathf.Max(140, text.Count(c => c == '\n') * 15 + 20)));
             EditorGUILayout.EndScrollView();
-            EditorGUILayout.LabelField("Ctrl+click a surface or UV vertex. Numeric values are in mesh local space.", EditorStyles.miniLabel);
+            EditorGUILayout.LabelField("Ctrl+click a surface to inspect that mesh. Values are in mesh local space.", EditorStyles.miniLabel);
         }
 
         void SetCanvas3D(bool on)
@@ -1176,7 +1181,7 @@ namespace SashaRX.UnityMeshLab
                 var e = Event.current;
                 if (inspectMesh && e.type == EventType.MouseDown && e.button == 0 && e.control && rect.Contains(e.mousePosition) &&
                     viewport.TryScreenRay(e.mousePosition, out var origin, out var direction)) {
-                    if (inspection.Pick(items, origin, direction, out int item, out int vertex)) { inspectedItem = item; inspectedVertex = vertex; Repaint(); }
+                    if (inspection.Pick(items, origin, direction, out int item)) { inspectedItem = item; Repaint(); }
                     e.Use();
                 }
                 HandleViewportSpot(rect);
@@ -1185,11 +1190,6 @@ namespace SashaRX.UnityMeshLab
                 {
                     uvLayer.Draw(view, canvas, ctx, viewportItems, viewportEntries);
                     tool3D?.OnDraw3D(view);
-                    if (inspectMesh && inspectedItem < items.Count) {
-                        var selected = items[inspectedItem];
-                        if (inspectedVertex < selected.mesh.vertexCount)
-                            view.DrawPoints(new[] { inspection.VertexPosition(selected.mesh, inspectedVertex) }, selected.matrix, Color.yellow, 8);
-                    }
                 });
                 if (canvas.SpotMode) canvas.DrawShellInfoPanel(rect);
             }

@@ -22,9 +22,6 @@ namespace SashaRX.UnityMeshLab
         readonly List<Vector3> pickPositions = new List<Vector3>();
         readonly List<int> pickTriangles = new List<int>();
         readonly List<int> pickSubmeshTriangles = new List<int>();
-        int sampledMesh, sampledVertex = -1;
-        string sampledValues;
-        Vector3 sampledPosition;
 
         public MeshInspection() { VertexChannels.Changed += Invalidate; }
 
@@ -57,60 +54,72 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // A model-level summary: only the data the mesh actually carries gets a line,
+        // so a plain static mesh never shows skinning or blend-shape noise.
         public string Report(Mesh mesh)
         {
             int id = mesh.GetInstanceID();
             if (reports.TryGetValue(id, out var report)) return report;
             var text = new StringBuilder();
-            text.AppendLine($"{mesh.vertexCount:N0} vertices · {mesh.subMeshCount} submeshes · indices {mesh.indexFormat}");
-            text.AppendLine($"Bounds center {mesh.bounds.center:G6} · size {mesh.bounds.size:G6}");
+            text.AppendLine($"{mesh.vertexCount:N0} vertices · {TriangleCount(mesh):N0} triangles · {mesh.subMeshCount} submesh{(mesh.subMeshCount == 1 ? "" : "es")} · {mesh.indexFormat}");
+            text.AppendLine($"Size {mesh.bounds.size:F3} · center {mesh.bounds.center:F3}");
             foreach (var attribute in mesh.GetVertexAttributes())
-                text.AppendLine($"{attribute.attribute}: {attribute.format} ×{attribute.dimension} · stream {attribute.stream}");
-            for (int sub = 0; sub < mesh.subMeshCount; ++sub)
-                text.AppendLine($"Submesh {sub}: {mesh.GetTopology(sub)} · {mesh.GetIndexCount(sub):N0} indices · base vertex {mesh.GetBaseVertex(sub)}");
-            text.AppendLine($"Bind poses: {mesh.bindposes.Length} · blend shapes: {mesh.blendShapeCount}");
-            using (var weights = mesh.GetAllBoneWeights()) text.AppendLine($"Skin influences: {weights.Length:N0}");
-            for (int shape = 0; shape < mesh.blendShapeCount; ++shape)
-                text.AppendLine($"Blend shape {shape}: {mesh.GetBlendShapeName(shape)} · {mesh.GetBlendShapeFrameCount(shape)} frames");
+                text.AppendLine(ChannelLine(mesh, attribute));
+            if (mesh.subMeshCount > 1 || !HasOnlyTriangles(mesh))
+                for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                    text.AppendLine($"Submesh {sub}: {mesh.GetTopology(sub)} · {mesh.GetIndexCount(sub):N0} indices · base vertex {mesh.GetBaseVertex(sub)}");
+            using (var weights = mesh.GetAllBoneWeights())
+                if (weights.Length > 0)
+                    text.AppendLine($"Skinning: {weights.Length:N0} influences · {mesh.bindposes.Length:N0} bind poses");
+            if (mesh.blendShapeCount > 0) {
+                text.AppendLine($"Blend shapes: {mesh.blendShapeCount}");
+                for (int shape = 0; shape < mesh.blendShapeCount; ++shape)
+                    text.AppendLine($"  {mesh.GetBlendShapeName(shape)}: {mesh.GetBlendShapeFrameCount(shape)} frames");
+            }
             return reports[id] = text.ToString();
         }
 
-        public string VertexValues(Mesh mesh, int vertex)
+        static int TriangleCount(Mesh mesh)
         {
-            if (!mesh || vertex < 0 || vertex >= mesh.vertexCount) return "No vertex selected.";
-            int id = mesh.GetInstanceID();
-            if (sampledMesh == id && sampledVertex == vertex) return sampledValues;
-            var text = new StringBuilder();
-            sampledPosition = mesh.vertices[vertex];
-            text.AppendLine($"Position: {sampledPosition:G9}");
-            if (mesh.HasVertexAttribute(VertexAttribute.Normal)) text.AppendLine($"Normal: {mesh.normals[vertex]:G9}");
-            if (mesh.HasVertexAttribute(VertexAttribute.Tangent)) text.AppendLine($"Tangent xyzw: {mesh.tangents[vertex]:G9}");
-            if (mesh.HasVertexAttribute(VertexAttribute.Color)) text.AppendLine($"Color rgba: {mesh.colors[vertex]:G9}");
-            var uv = new List<Vector4>();
-            for (int channel = 0; channel < 8; ++channel) {
-                if (!mesh.HasVertexAttribute((VertexAttribute)((int)VertexAttribute.TexCoord0 + channel))) continue;
-                mesh.GetUVs(channel, uv);
-                text.AppendLine($"UV{channel} xyzw: {uv[vertex]:G9}");
-            }
-            using (var counts = mesh.GetBonesPerVertex())
-            using (var weights = mesh.GetAllBoneWeights()) {
-                if (counts.Length == mesh.vertexCount) {
-                    int start = 0;
-                    for (int i = 0; i < vertex; ++i) start += counts[i];
-                    for (int i = 0; i < counts[vertex]; ++i) {
-                        var weight = weights[start + i];
-                        text.AppendLine($"Bone {weight.boneIndex}: {weight.weight:G9}");
-                    }
-                }
-            }
-            sampledMesh = id; sampledVertex = vertex;
-            return sampledValues = text.ToString();
+            int triangles = 0;
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                if (mesh.GetTopology(sub) == MeshTopology.Triangles) triangles += mesh.GetIndexCount(sub) / 3;
+            return triangles;
         }
 
-        public Vector3 VertexPosition(Mesh mesh, int vertex)
+        static string ChannelLine(Mesh mesh, VertexAttributeDescriptor attribute)
         {
-            VertexValues(mesh, vertex);
-            return sampledPosition;
+            var text = new StringBuilder($"{ChannelName(attribute.attribute)}: {attribute.format} ×{attribute.dimension}");
+            int channel = (int)attribute.attribute - (int)VertexAttribute.TexCoord0;
+            if (channel >= 0 && channel <= 7) {
+                var uv = new List<Vector4>();
+                mesh.GetUVs(channel, uv);
+                if (uv.Count > 0) {
+                    float minU = float.MaxValue, maxU = float.MinValue, minV = float.MaxValue, maxV = float.MinValue;
+                    foreach (var value in uv) {
+                        minU = Mathf.Min(minU, value.x); maxU = Mathf.Max(maxU, value.x);
+                        minV = Mathf.Min(minV, value.y); maxV = Mathf.Max(maxV, value.y);
+                    }
+                    text.Append($" · U {minU:0.###}…{maxU:0.###}");
+                    if (attribute.dimension >= 2) text.Append($" · V {minV:0.###}…{maxV:0.###}");
+                }
+            }
+            return text.ToString();
+        }
+
+        static string ChannelName(VertexAttribute attribute)
+        {
+            if (attribute >= VertexAttribute.TexCoord0 && attribute <= VertexAttribute.TexCoord7)
+                return "UV" + ((int)attribute - (int)VertexAttribute.TexCoord0);
+            switch (attribute) {
+                case VertexAttribute.Position: return "Position";
+                case VertexAttribute.Normal: return "Normal";
+                case VertexAttribute.Tangent: return "Tangent";
+                case VertexAttribute.Color: return "Color";
+                case VertexAttribute.BlendWeight: return "Skin weights";
+                case VertexAttribute.BlendIndices: return "Skin indices";
+                default: return attribute.ToString();
+            }
         }
 
         internal static Color32[] SkinColors(Mesh mesh, bool indices)
@@ -134,9 +143,9 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        public bool Pick(IReadOnlyList<MeshViewport3D.Item> items, Vector3 origin, Vector3 direction, out int itemIndex, out int vertex)
+        public bool Pick(IReadOnlyList<MeshViewport3D.Item> items, Vector3 origin, Vector3 direction, out int itemIndex)
         {
-            itemIndex = vertex = -1; float nearest = float.MaxValue;
+            itemIndex = -1; float nearest = float.MaxValue;
             for (int i = 0; i < items.Count; ++i) {
                 var mesh = items[i].mesh;
                 if (!mesh || !HasOnlyTriangles(mesh)) continue;
@@ -148,10 +157,6 @@ namespace SashaRX.UnityMeshLab
                 var hit = data.bvh.Raycast(inverse.MultiplyPoint3x4(origin), inverse.MultiplyVector(direction), float.MaxValue);
                 // Keep the local direction unnormalised: t remains the world ray parameter.
                 if (hit.triangleIndex < 0 || hit.t >= nearest) continue;
-                var tri = data.triangles; var b = hit.barycentric;
-                int corner = b.y >= b.z ? 1 : 2;
-                if (b.x >= b.y && b.x >= b.z) corner = 0;
-                vertex = tri[hit.triangleIndex * 3 + corner];
                 nearest = hit.t; itemIndex = i;
             }
             return itemIndex >= 0;
@@ -193,7 +198,7 @@ namespace SashaRX.UnityMeshLab
         void Invalidate(Mesh mesh) { Clear(); }
         public void InvalidateData()
         {
-            reports.Clear(); bvhs.Clear(); sampledMesh = 0; sampledVertex = -1; sampledValues = null;
+            reports.Clear(); bvhs.Clear();
         }
 
         public void Prune(IReadOnlyList<MeshViewport3D.Item> items)

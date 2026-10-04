@@ -73,7 +73,7 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                 posed = entries[0].originalMesh;
                 Assert.AreNotSame(mesh, posed); Assert.AreSame(posed, items[0].mesh);
                 using (var inspection = new MeshInspection())
-                    Assert.IsTrue(MeshInspection.Supports(posed, MeshViewport3D.Shading.BoneWeights), inspection.Report(posed) + inspection.VertexValues(posed, 0));
+                    Assert.IsTrue(MeshInspection.Supports(posed, MeshViewport3D.Shading.BoneWeights), inspection.Report(posed));
                 Assert.IsNotNull(MeshViewport3D.EncodeColors(posed, MeshViewport3D.Shading.BoneIndices));
                 CollectionAssert.AreEqual(mesh.uv, posed.uv);
                 tool.ClearSourcePreview();

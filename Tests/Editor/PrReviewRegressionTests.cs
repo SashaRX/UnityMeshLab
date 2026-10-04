@@ -42,14 +42,13 @@ namespace SashaRX.UnityMeshLab.Tests
             var mesh = Plane();
             var items = new[] { new MeshViewport3D.Item(mesh, Matrix4x4.identity) };
             using (var inspection = new MeshInspection()) {
-                Assert.IsTrue(inspection.Pick(items, new Vector3(.1f, .2f, -1), Vector3.forward, out _, out _));
+                Assert.IsTrue(inspection.Pick(items, new Vector3(.1f, .2f, -1), Vector3.forward, out _));
                 var vertices = mesh.vertices;
                 for (int i = 0; i < vertices.Length; ++i) vertices[i] += Vector3.right * 10;
                 mesh.vertices = vertices;
-                Assert.IsFalse(inspection.Pick(items, new Vector3(.1f, .2f, -1), Vector3.forward, out _, out _));
+                Assert.IsFalse(inspection.Pick(items, new Vector3(.1f, .2f, -1), Vector3.forward, out _));
                 mesh.triangles = new[] { 0, 2, 3 };
-                Assert.IsTrue(inspection.Pick(items, new Vector3(10.1f, .2f, -1), Vector3.forward, out _, out int vertex));
-                Assert.That(vertex, Is.InRange(0, 3));
+                Assert.IsTrue(inspection.Pick(items, new Vector3(10.1f, .2f, -1), Vector3.forward, out _));
             }
         }
 
@@ -63,8 +62,8 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(MeshViewport3D.EdgeIndices(mesh), Has.Count.EqualTo(10));
             using (var inspection = new MeshInspection()) {
                 var items = new[] { new MeshViewport3D.Item(mesh, Matrix4x4.identity) };
-                Assert.IsTrue(inspection.Pick(items, new Vector3(.1f, .8f, -2), Vector3.forward, out _, out int vertex));
-                Assert.AreEqual(3, vertex, "Picking must retain triangle indices from every submesh");
+                Assert.IsTrue(inspection.Pick(items, new Vector3(.1f, .8f, -2), Vector3.forward, out _),
+                    "Picking must retain triangle indices from every submesh: the hit point lies only in submesh 1's triangle");
             }
         }
 

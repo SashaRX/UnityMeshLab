@@ -145,15 +145,21 @@ namespace SashaRX.UnityMeshLab.Tests
                 var colors = MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.Positions);
                 Assert.AreEqual(new Color32(0, 0, 128, 255), colors[0]);
                 Assert.AreEqual(new Color32(255, 255, 128, 255), colors[3]);
-                StringAssert.Contains("Position:", inspection.VertexValues(mesh, 0));
-                StringAssert.Contains("Triangles", inspection.Report(mesh));
+                string report = inspection.Report(mesh);
+                StringAssert.Contains("2 triangles", report);
+                StringAssert.Contains("Position: Float32 ×3", report);
+                // Absent channels must not appear in the model summary.
+                StringAssert.DoesNotContain("UV0:", report);
+                StringAssert.DoesNotContain("Normal:", report);
+                StringAssert.DoesNotContain("Tangent:", report);
+                StringAssert.DoesNotContain("Skinning", report);
                 var items = new[] { new MeshViewport3D.Item(mesh, Matrix4x4.identity) };
-                Assert.IsTrue(inspection.Pick(items, new Vector3(.05f, .05f, -2), Vector3.forward, out int item, out int vertex));
-                Assert.AreEqual(0, item); Assert.AreEqual(0, vertex);
+                Assert.IsTrue(inspection.Pick(items, new Vector3(.05f, .05f, -2), Vector3.forward, out int item));
+                Assert.AreEqual(0, item);
                 // World-space depth ordering also works for nonuniformly scaled instances.
                 var near = Matrix4x4.TRS(new Vector3(0, 0, -1), Quaternion.identity, new Vector3(2, 3, .25f));
                 Assert.IsTrue(inspection.Pick(new[] { items[0], new MeshViewport3D.Item(mesh, near) },
-                    new Vector3(.05f, .05f, -2), Vector3.forward, out item, out vertex));
+                    new Vector3(.05f, .05f, -2), Vector3.forward, out item));
                 Assert.AreEqual(1, item);
             }
             finally { Object.DestroyImmediate(mesh); }
@@ -170,9 +176,10 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsTrue(MeshInspection.Supports(mesh, MeshViewport3D.Shading.UV7));
                 var uv = MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.UV7);
                 Assert.AreEqual(new Color32(127, 191, 0, 255), uv[0]);
-                StringAssert.Contains("UV7 xyzw:", inspection.VertexValues(mesh, 0));
-                StringAssert.Contains("3", inspection.VertexValues(mesh, 0));
-                StringAssert.Contains("TexCoord7: Float32 ×4", inspection.Report(mesh));
+                string report = inspection.Report(mesh);
+                StringAssert.Contains("UV7: Float32 ×4", report);
+                StringAssert.Contains("U 0…2.5", report);
+                StringAssert.Contains("V -0.25…1", report);
                 Assert.AreEqual(new Color32(64, 64, 64, 255), MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.ColorAlpha)[0]);
                 Assert.AreNotEqual(MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.TangentSign)[0],
                     MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.TangentSign)[1]);
@@ -196,7 +203,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 mesh.SetBoneWeights(counts, weights);
                 Assert.IsTrue(MeshInspection.Supports(mesh, MeshViewport3D.Shading.BoneWeights));
                 Assert.IsTrue(MeshInspection.Supports(mesh, MeshViewport3D.Shading.BoneIndices));
-                StringAssert.Contains("Bone 17:", inspection.VertexValues(mesh, 0));
+                StringAssert.Contains("Skinning: 8 influences", inspection.Report(mesh));
                 Assert.AreEqual(new Color32(102, 102, 102, 255), MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.BoneWeights)[0]);
                 Assert.AreNotEqual(MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.BoneIndices)[0],
                     MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.BoneIndices)[1]);

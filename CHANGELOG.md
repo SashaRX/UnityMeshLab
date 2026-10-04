@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
-- Universal mesh inspection shares the 2D/3D layout, projection, attribute shading and numeric vertex data, including UV0–UV7, skin weights and meshes without UVs. Remesh source meshes are inspectable before baking; checker and UV island borders work in 3D.
+- Universal mesh inspection shares the 2D/3D layout, projection and attribute shading. The Inspect panel is a model-level summary — vertex/triangle counts, size, present channels only (no skinning or blend-shape noise on static meshes) and per-channel UV ranges — with the shading dropdown offering only the modes the shown meshes carry data for; Ctrl+click a surface to inspect that mesh. Remesh source meshes are inspectable before baking; checker and UV island borders work in 3D.
 - Tools declare required libraries through `MeshLabTool`; project settings control module availability without resetting unrelated active tools. CI checks tool dependency boundaries.
 
 ### Changed

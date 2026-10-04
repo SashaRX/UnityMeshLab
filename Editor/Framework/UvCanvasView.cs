@@ -120,9 +120,6 @@ namespace SashaRX.UnityMeshLab
         public float FillAlpha = 0.25f;
         internal MeshViewport3D.Shading InspectionShading;
         bool AttributeFillVisible => !FillHidden && InspectionShading != MeshViewport3D.Shading.Shaded;
-        internal Mesh InspectedMesh;
-        internal int InspectedVertex;
-        internal Action<Mesh, int> OnInspectVertex;
         readonly Dictionary<long, Color32[]> inspectionColors = new Dictionary<long, Color32[]>();
 
         /// <summary>
@@ -297,22 +294,6 @@ namespace SashaRX.UnityMeshLab
             float cx = (canvasRect.width - sz) * 0.5f + Pan.x;
             float cy = (canvasRect.height - sz) * 0.5f + Pan.y;
 
-            var inspectEvent = Event.current;
-            if (InspectedMesh && OnInspectVertex != null && inspectEvent.type == EventType.MouseDown && inspectEvent.button == 0 && inspectEvent.control && canvasRect.Contains(inspectEvent.mousePosition)) {
-                var mouse = inspectEvent.mousePosition - canvasRect.position;
-                float nearest = 144; Mesh picked = null; int pickedVertex = -1;
-                foreach (var draw in draws) {
-                    var uv = RdUvCached(draw.Item1, ctx.PreviewUvChannel);
-                    if (uv == null) continue;
-                    for (int v = 0; v < uv.Length; ++v) {
-                        var displayed = DisplayUv(ctx, draw.Item2, uv[v]);
-                        float d = (mouse - new Vector2(cx + displayed.x * sz, cy + (1 - displayed.y) * sz)).sqrMagnitude;
-                        if (d < nearest) { nearest = d; picked = draw.Item1; pickedVertex = v; }
-                    }
-                }
-                if (picked) OnInspectVertex(picked, pickedVertex);
-                inspectEvent.Use();
-            }
             HandleCanvasInput(ctx, canvasRect, baseSz, sz, cx, cy);
 
             if (Event.current.type == EventType.Repaint && GlMat != null)
@@ -418,17 +399,6 @@ namespace SashaRX.UnityMeshLab
                     if (SpotMode) DrawSpotOutlines(ctx, draws, cx, cy, sz);
 
                     if (SpotMode) GlDrawUvSpot(cx, cy, sz);
-                    if (InspectedMesh) {
-                        var uv = RdUvCached(InspectedMesh, ctx.PreviewUvChannel);
-                        if (uv != null && InspectedVertex >= 0 && InspectedVertex < uv.Length) {
-                            var entry = draws.FirstOrDefault(draw => draw.Item1 == InspectedMesh).Item2;
-                            var displayed = DisplayUv(ctx, entry, uv[InspectedVertex]);
-                            float x = cx + displayed.x * sz, y = cy + (1 - displayed.y) * sz;
-                            GL.Begin(GL.LINES); GL.Color(Color.yellow);
-                            GL.Vertex3(x - 5, y, 0); GL.Vertex3(x + 5, y, 0);
-                            GL.Vertex3(x, y - 5, 0); GL.Vertex3(x, y + 5, 0); GL.End();
-                        }
-                    }
                 }
                 catch (Exception ex) { UvtLog.Warn("[UV] GL: " + ex.Message); }
                 finally { if (push) GL.PopMatrix(); }
