@@ -5,6 +5,29 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Диагностика 2026-10-04:** логи `[RemeshDiag] [UV]` при уровне Info разделяют
+  `merge-baseline`, `merge-candidate`, `merge-before-pack` (только внутри chart),
+  `merge-after-pack (candidate)`, `merge-quality-gate`, `merge-rollback` и
+  `unwrap-final mergeCharts=True/False`. Число acceptedMerges относится к кандидату,
+  не к финальному результату. Gate печатает baseline/candidate, реальные mean/worst
+  limits, valid и все причины отказа. Финальный атлас проверяется и с выключенным merge.
+  Overlap-диагностика пересекает UV-треугольники по площади в double precision,
+  не пропуская соседей с общим ребром: контакт нулевой площади разрешён, складка — нет.
+  Печатаются pair counts внутри/между chart, первые 8 пар с face/chart ID (с нуля),
+  сумма площадей пересечений пар (не union; тройное покрытие считается несколько раз),
+  degenerate/invalid/OOB и время. Лимит 2M broad-phase сравнений ограничивает стоимость;
+  `complete=False` означает только нижнюю оценку, а не доказательство отсутствия overlap.
+  Отсекается площадь ≤ max(1e-16 UV², 1e-8 площади меньшего треугольника).
+  Диагностика read-only, правила принятия эксперимента не меняются.
+- **Replay `repack_20261004_031155.bin`:** 1883 faces, 48 charts в merge-кандидате;
+  до pack 40 внутри-chart overlap-пар (pairAreaSum=0.000512322007 в UV² дампа),
+  после pack 40 внутри-chart пар, 0 между-chart пар
+  (pairAreaSum=0.000752826608 в UV² финального атласа). Обе проверки полные.
+  Исходный атлас до merge и атлас после rollback этот дамп не содержит, поэтому
+  наличие overlap в финальных 80 shell нужно проверять `merge-baseline`/`unwrap-final`.
+  10 чистых диагностических тестов прошли в headless harness с math shims;
+  Editor/Tests компилируются в обеих FBX define-конфигурациях. Это не Unity EditMode-прогон.
+
 - **Вопрос:** можно ли существенно сократить xatlas-фрагментацию (число островов и мелких
   обломков) вообще без source-features и без нового parameterizer — только пост-обработкой
   выходных чартов?

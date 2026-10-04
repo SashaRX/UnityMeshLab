@@ -146,6 +146,7 @@ namespace SashaRX.UnityMeshLab
             if (settings.mergeCharts && result.chartCount > 1 && !result.draftUv)
                 UvChartMerge.Apply(result, best, settings, token);
             RemeshNormals.ApplyFinal(result, settings, token);
+            UvAtlasDiagnostics.Log(result, $"unwrap-final mergeCharts={settings.mergeCharts}", token);
             return result;
         }
 

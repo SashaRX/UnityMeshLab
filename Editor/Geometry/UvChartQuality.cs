@@ -70,5 +70,23 @@ namespace SashaRX.UnityMeshLab
             return meanStretch <= Math.Max(1.15, original.meanStretch * 1.1) &&
                 maxStretch <= Math.Max(4, original.maxStretch * 1.1);
         }
+
+        /// <summary>Explains the existing gate without changing its acceptance rules.</summary>
+        internal string ImprovementFailure(UvChartQuality current, UvChartQuality original)
+        {
+            var failures = new System.Collections.Generic.List<string>();
+            if (!valid) failures.Add("invalid UV quality (degenerate, non-finite, inconsistent chart or winding)");
+            if (charts > current.charts) failures.Add("chart count increased");
+            if (smallCharts > current.smallCharts) failures.Add("small chart count increased");
+            if (charts == current.charts && smallCharts == current.smallCharts) failures.Add("fragmentation unchanged");
+            if (original.valid)
+            {
+                double meanLimit = Math.Max(1.15, original.meanStretch * 1.1);
+                double worstLimit = Math.Max(4, original.maxStretch * 1.1);
+                if (!(meanStretch <= meanLimit)) failures.Add(FormattableString.Invariant($"mean {meanStretch:G6} > limit {meanLimit:G6}"));
+                if (!(maxStretch <= worstLimit)) failures.Add(FormattableString.Invariant($"worst {maxStretch:G6} > limit {worstLimit:G6}"));
+            }
+            return failures.Count == 0 ? "accepted" : string.Join("; ", failures);
+        }
     }
 }

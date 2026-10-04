@@ -58,17 +58,24 @@ namespace SashaRX.UnityMeshLab
             var tangentsSnapshot = geometry.tangents == null ? null : (Vector4[])geometry.tangents.Clone();
             int chartCountSnapshot = geometry.chartCount;
             int smallChartSnapshot = geometry.smallChartCount;
+            UvAtlasDiagnostics.Log(geometry, "merge-baseline", token);
             try
             {
                 var mergedCharts = new HashSet<int>();
                 int merged = MergeCharts(geometry, settings, token, mergedCharts);
+                UvtLog.Info(UvtLog.Category.RemeshDiag,
+                    $"[UV] merge-candidate: charts={chartCountSnapshot}->{geometry.chartCount}, acceptedMerges={merged}; candidate is not the final unwrap.");
                 if (merged <= 0) return;
+                UvAtlasDiagnostics.Log(geometry, "merge-before-pack", token, sameChartOnly: true);
                 if (!Repack(geometry, settings, token, mergedCharts))
                     throw new InvalidOperationException("the re-pack rejected the merged charts");
                 var post = UvChartQuality.Measure(geometry, token);
+                UvAtlasDiagnostics.Log(geometry, "merge-after-pack (candidate)", token);
+                UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
+                    $"[UV] merge-quality-gate: baseline charts={preMerge.charts} small={preMerge.smallCharts} mean={preMerge.meanStretch:G6} worst={preMerge.maxStretch:G6} valid={preMerge.valid}; candidate charts={post.charts} small={post.smallCharts} mean={post.meanStretch:G6} worst={post.maxStretch:G6} valid={post.valid}; meanLimit={Math.Max(1.15, preMerge.meanStretch * 1.1):G6} worstLimit={Math.Max(4, preMerge.maxStretch * 1.1):G6}; result={post.ImprovementFailure(preMerge, preMerge)}"));
                 if (!post.Improves(preMerge, preMerge))
                     throw new InvalidOperationException(
-                        $"quality gate failed (mean {post.meanStretch:G3}, worst {post.maxStretch:G3})");
+                        "quality gate failed: " + post.ImprovementFailure(preMerge, preMerge));
                 UvtLog.Info($"[Remesh] Chart merge: {chartCountSnapshot} → {geometry.chartCount} islands ({merged} merge(s) accepted).");
             }
             catch (OperationCanceledException) { throw; }
@@ -80,6 +87,8 @@ namespace SashaRX.UnityMeshLab
                 geometry.chartCount = chartCountSnapshot;
                 geometry.smallChartCount = smallChartSnapshot;
                 UvtLog.Warn("[Remesh] Chart merge reverted; keeping the unmerged unwrap. " + error.Message);
+                UvtLog.Info(UvtLog.Category.RemeshDiag,
+                    $"[UV] merge-rollback: restored original UV/chart/tangent arrays; final charts={chartCountSnapshot}, small={smallChartSnapshot}.");
             }
         }
 
