@@ -63,7 +63,7 @@ namespace SashaRX.UnityMeshLab
                 rotation = 0; return new FaceKey(ka, kb, kc);
             }
 
-            internal FaceKey Reversed => new FaceKey(a, c, b);
+            internal FaceKey Reversed => new FaceKey(a: a, b: c, c: b);
             public bool Equals(FaceKey other) => a.Equals(other.a) && b.Equals(other.b) && c.Equals(other.c);
             public override bool Equals(object obj) => obj is FaceKey other && Equals(other);
             public override int GetHashCode() => unchecked(((a.GetHashCode() * 397) ^ b.GetHashCode()) * 397 ^ c.GetHashCode());

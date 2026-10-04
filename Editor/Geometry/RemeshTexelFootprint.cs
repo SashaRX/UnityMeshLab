@@ -236,7 +236,7 @@ namespace SashaRX.UnityMeshLab
                 var across = current.At(opposite) - qa - along * (xc / length);
                 third = qa + along * (xd / length) - across * (hd / hc);
             }
-            if (!third.Finite) return false;
+            if (!third.IsFinite) return false;
             next.face = neighborFace;
             // UV metric preservation and normal transport are independent: an
             // uncut UV edge can still connect geometrically folded triangles.
@@ -251,7 +251,7 @@ namespace SashaRX.UnityMeshLab
         {
             var a = target.uv[target.indices[face * 3 + corner]];
             var b = target.uv[target.indices[otherFace * 3 + otherCorner]];
-            return a.x == b.x && a.y == b.y;
+            return !float.IsNaN(a.x) && !float.IsNaN(a.y) && a.x.Equals(b.x) && a.y.Equals(b.y);
         }
 
         static bool ContainsPixel(Triangle triangle, int x, int y) =>
@@ -268,7 +268,7 @@ namespace SashaRX.UnityMeshLab
             if (determinant == 0 || !Finite(determinant)) return false;
             double y = Point.Cross(ap, ac) / determinant, z = Point.Cross(ab, ap) / determinant;
             weights = new Weights(1 - y - z, y, z);
-            return weights.Finite;
+            return weights.IsFinite;
         }
 
         static Weights ClosestWeights(Triangle triangle, Point point, out double distance)
@@ -343,7 +343,7 @@ namespace SashaRX.UnityMeshLab
             if (twiceArea == 0 || !Finite(twiceArea)) return false;
             area = Math.Abs(twiceArea) * .5;
             centroid = origin + moment / (3 * twiceArea);
-            return area > 0 && centroid.Finite;
+            return area > 0 && centroid.IsFinite;
         }
 
         static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
@@ -379,7 +379,7 @@ namespace SashaRX.UnityMeshLab
             public Weights(double x, double y, double z) { this.x = x; this.y = y; this.z = z; }
             public double At(int corner) => corner == 0 ? x : corner == 1 ? y : z;
             public bool Inside => x >= -InsideTolerance && y >= -InsideTolerance && z >= -InsideTolerance;
-            public bool Finite => RemeshTexelFootprint.Finite(x) && RemeshTexelFootprint.Finite(y) && RemeshTexelFootprint.Finite(z);
+            public bool IsFinite => RemeshTexelFootprint.Finite(x) && RemeshTexelFootprint.Finite(y) && RemeshTexelFootprint.Finite(z);
             public Vector3 Clamped()
             {
                 double a = Math.Max(0, x), b = Math.Max(0, y), c = Math.Max(0, z), sum = a + b + c;
@@ -394,7 +394,7 @@ namespace SashaRX.UnityMeshLab
             public readonly double x, y;
             public Point(double x, double y) { this.x = x; this.y = y; }
             public double LengthSquared => x * x + y * y;
-            public bool Finite => RemeshTexelFootprint.Finite(x) && RemeshTexelFootprint.Finite(y);
+            public bool IsFinite => RemeshTexelFootprint.Finite(x) && RemeshTexelFootprint.Finite(y);
             public static Point operator +(Point a, Point b) => new Point(a.x + b.x, a.y + b.y);
             public static Point operator -(Point a, Point b) => new Point(a.x - b.x, a.y - b.y);
             public static Point operator *(Point a, double b) => new Point(a.x * b, a.y * b);
@@ -410,7 +410,8 @@ namespace SashaRX.UnityMeshLab
             Vector(double x, double y, double z) { this.x = x; this.y = y; this.z = z; }
             public double Length => Math.Sqrt(x * x + y * y + z * z);
             public Vector Unit() { double length = Length; return length > 0 ? this / length : default; }
-            public bool Equals(Vector other) => x == other.x && y == other.y && z == other.z;
+            public bool Equals(Vector other) => !double.IsNaN(x) && !double.IsNaN(y) && !double.IsNaN(z) &&
+                x.Equals(other.x) && y.Equals(other.y) && z.Equals(other.z);
             public static Vector operator -(Vector a, Vector b) => new Vector(a.x - b.x, a.y - b.y, a.z - b.z);
             public static Vector operator *(Vector a, double b) => new Vector(a.x * b, a.y * b, a.z * b);
             public static Vector operator /(Vector a, double b) => new Vector(a.x / b, a.y / b, a.z / b);
