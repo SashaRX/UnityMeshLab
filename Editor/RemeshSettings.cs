@@ -142,7 +142,9 @@ namespace SashaRX.UnityMeshLab
         public RemeshNormalWeighting normalWeighting = RemeshNormalWeighting.FaceArea;
         public float chartMaxCost = 2;
         public float chartNormalDeviation = 2;
-        public float chartRoundness = 0.01f;
+        // Measured balanced preset: compact charts avoid slivers without increasing
+        // cost/iterations globally. Corpus and packing comparisons: EXPERIMENTS.md.
+        public float chartRoundness = 0.5f;
         public float chartStraightness = 6;
         public float chartNormalSeam = 4;
         public int chartIterations = 1;
@@ -197,6 +199,24 @@ namespace SashaRX.UnityMeshLab
         // keeps its real size with a scale-1 transform, regardless of the source's
         // own scaling. Off: the saved transform carries the source's scale instead.
         public bool normalizeSize = true;
+
+        /// <summary>Apply the measured xatlas preset without resetting the mesh,
+        /// shading, atlas resolution/padding, optimizer toggles or bake settings.</summary>
+        internal void ApplyDefaultXatlasSettings()
+        {
+            var defaults = new RemeshSettings();
+            chartMaxCost = defaults.chartMaxCost;
+            chartNormalDeviation = defaults.chartNormalDeviation;
+            chartRoundness = defaults.chartRoundness;
+            chartStraightness = defaults.chartStraightness;
+            chartNormalSeam = defaults.chartNormalSeam;
+            chartIterations = defaults.chartIterations;
+            maxChartArea = defaults.maxChartArea;
+            maxChartBoundary = defaults.maxChartBoundary;
+            packBruteForce = defaults.packBruteForce;
+            packRotate = defaults.packRotate;
+            packBlockAlign = defaults.packBlockAlign;
+        }
 
         internal static RemeshSettings FromSavedJson(string json)
         {

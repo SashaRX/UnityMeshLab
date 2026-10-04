@@ -405,6 +405,10 @@ namespace SashaRX.UnityMeshLab
                     chartFold = EditorGUILayout.Foldout(chartFold, "Islands & packing", true);
                     if (chartFold) {
                         using (new EditorGUI.IndentLevelScope()) {
+                            if (GUILayout.Button(new GUIContent("Recommended xatlas settings", "Apply tested island-growth and packing defaults."))) {
+                                settings.ApplyDefaultXatlasSettings();
+                                SaveSettings();
+                            }
                             settings.chartMaxCost = EditorGUILayout.Slider(new GUIContent("Max cost", "Lower = more, smaller islands."), settings.chartMaxCost, 0.1f, 10);
                             settings.chartNormalDeviation = EditorGUILayout.Slider(new GUIContent("Normal deviation", "Penalty for bending inside one island."), settings.chartNormalDeviation, 0, 10);
                             settings.chartNormalSeam = EditorGUILayout.Slider(new GUIContent("Hard edge seam", "Prefer island borders on hard edges (>1000 always)."), settings.chartNormalSeam, 0, 1000);

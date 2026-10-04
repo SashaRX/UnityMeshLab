@@ -5,6 +5,22 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Подбор xatlas defaults 2026-10-04 (продолжение Exp #1):** на фиксированном
+  bust (1997 faces) и четырёх геометрических fixtures сравнены chart weights,
+  iterations и packing: 810 phase/case/profile измерений, 1568 вызовов.
+  Сбалансированный default меняет только roundness 0.01 → 0.5; cost 2,
+  normal deviation 2, straightness 6, seam 4, iterations 1, rotation on,
+  block alignment / brute force off остаются прежними. На bust 512/padding 2
+  с Merge: 28 charts / 14 small / 0 overlap, mean 1.10772, worst 3.75916,
+  451 ms; текущие сохранённые настройки пользователя: 36 / 19 / 0,
+  mean 1.18992, worst 3.19396, 2615 ms (один медленный sample).
+  Worst ухудшается, но остаётся ниже 4; это компромисс, не универсальный optimum.
+  На 2048 без Merge новый профиль избегает дорогого overlap repair:
+  890 ms против 10577 ms у прежнего default. Merge на 2048 всё ещё дорогой
+  и остаётся opt-in. Сохранённые настройки не мигрируют автоматически;
+  кнопка **Recommended xatlas settings** применяет только chart/packing preset.
+  154/154 связанных Unity-теста проходят. Полный корпус, ограничения,
+  sample counts и воспроизводимый harness: [отчёт](XATLAS_DEFAULTS_BENCHMARK.md).
 - **Изменение алгоритма 2026-10-04 после реальных логов:** baseline пользователя
   уже содержал 26 внутри-chart overlap-пар на 1883 faces / 80 charts; rollback
   возвращал их без изменений. Кандидат 54 charts содержал 33 пары и 6 charts

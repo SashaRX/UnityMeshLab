@@ -170,6 +170,13 @@ Before the UV stage the canvas shows the selected model as usual.
    break on hard edges), straightness, roundness, iterations, max island area and
    border length (source units, 0 = unlimited), rotation, 4×4 block alignment and
    brute-force packing. Texture size and padding set the atlas.
+   The measured balanced chart default uses max cost 2, normal deviation 2,
+   **roundness 0.5**, straightness 6, hard-edge seam 4 and one iteration.
+   Rotation is on; block alignment and brute force are off. Previously saved
+   values stay intact. **Recommended xatlas settings** explicitly applies these
+   chart/packing defaults while preserving texture size/padding, optimizer
+   toggles, mesh, shading and bake settings. See the
+   [settings comparison](XATLAS_DEFAULTS_BENCHMARK.md) for the corpus and tradeoffs.
    **Reduce UV fragmentation** is enabled by default, including restored settings.
    It compares the requested unwrap with up to two chart-growth alternatives
    (max cost 5, normal deviation 2, roundness 0.01, normal seam 4, one iteration,

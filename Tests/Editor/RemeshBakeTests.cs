@@ -11,6 +11,43 @@ namespace SashaRX.UnityMeshLab.Tests
         static RemeshSource.Map Map() => new RemeshSource.Map();
 
         [Test]
+        public void RecommendedXatlasSettings_PreserveOtherStagesAndExplicitSavedSettings()
+        {
+            var settings = new RemeshSettings {
+                voxelResolution = 64, maximumError = .004f, hardEdges = RemeshHardEdges.Smooth,
+                textureResolution = 512, padding = 2, reduceUvFragmentation = false, mergeCharts = true,
+                chartMaxCost = 10, chartNormalDeviation = 7.1f, chartRoundness = .73f,
+                chartStraightness = 20, chartNormalSeam = 251, chartIterations = 16,
+                maxChartArea = 2, maxChartBoundary = 3, packBruteForce = true, packRotate = false, packBlockAlign = true,
+                projectionDistance = .01f, bakeSamples = 16
+            };
+            // Upgrading defaults must not replace manually saved chart settings.
+            string saved = JsonUtility.ToJson(settings);
+            Assert.AreEqual(saved, JsonUtility.ToJson(RemeshSettings.FromSavedJson(saved)));
+            var unaffected = new[] { RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Simplify, RemeshPipeline.Stage.Bake };
+            var keys = Array.ConvertAll(unaffected, stage => RemeshPipeline.Key(stage, settings, null));
+            string unwrap = RemeshPipeline.Key(RemeshPipeline.Stage.Unwrap, settings, null);
+            settings.ApplyDefaultXatlasSettings();
+            for (int i = 0; i < unaffected.Length; ++i)
+                Assert.AreEqual(keys[i], RemeshPipeline.Key(unaffected[i], settings, null));
+            Assert.AreNotEqual(unwrap, RemeshPipeline.Key(RemeshPipeline.Stage.Unwrap, settings, null));
+            Assert.AreEqual(RemeshHardEdges.Smooth, settings.hardEdges);
+            Assert.AreEqual(512, settings.textureResolution); Assert.AreEqual(2, settings.padding);
+            Assert.IsFalse(settings.reduceUvFragmentation); Assert.IsTrue(settings.mergeCharts);
+            var defaults = new RemeshSettings();
+            Assert.AreEqual(defaults.chartMaxCost, settings.chartMaxCost);
+            Assert.AreEqual(defaults.chartNormalDeviation, settings.chartNormalDeviation);
+            Assert.AreEqual(defaults.chartRoundness, settings.chartRoundness);
+            Assert.AreEqual(defaults.chartStraightness, settings.chartStraightness);
+            Assert.AreEqual(defaults.chartNormalSeam, settings.chartNormalSeam);
+            Assert.AreEqual(defaults.chartIterations, settings.chartIterations);
+            Assert.AreEqual(0, settings.maxChartArea); Assert.AreEqual(0, settings.maxChartBoundary);
+            Assert.AreEqual(defaults.packRotate, settings.packRotate);
+            Assert.AreEqual(defaults.packBruteForce, settings.packBruteForce);
+            Assert.AreEqual(defaults.packBlockAlign, settings.packBlockAlign);
+        }
+
+        [Test]
         public void FragmentationSettingMigratesWithoutReplacingManualChartSettings()
         {
             var settings = new RemeshSettings { chartMaxCost = 9, chartIterations = 7, reduceUvFragmentation = false };
