@@ -691,10 +691,10 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        /// <summary>One fresh create → add → pack → read → destroy cycle. The output
-        /// queries all read the bridge's global atlas, so the destroy may only run
-        /// after ReadPackedUv has finished — destroying between pack and read is a
-        /// use-after-free that hard-crashes the editor.</summary>
+        /// <summary>One fresh create → add → pack → read → destroy cycle, all on the
+        /// calling worker thread. Everything that reads the bridge's global atlas stays
+        /// between create and destroy on this one thread — no editor APIs, no pool
+        /// tasks — so no exception can race the destroy against an in-flight pack.</summary>
         static bool PackAndRead(RemeshNative.Geometry geometry, RemeshSettings settings, float[] flatUv, uint[] indices,
             uint[] faceMaterials, int rotateCharts, int rotateToAxis, HashSet<int> mergedCharts, CancellationToken token)
         {
@@ -721,12 +721,24 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Warn("[Remesh] Chart merge re-pack rejected the merged charts (xatlas error " + addError + ").");
                     return false;
                 }
-                if (!XatlasRepack.RunNativePackAsync(geometry.chartCount, internalRes, () =>
+                // The pack runs INLINE on this worker thread. The unwrap stage is
+                // already background work, so there is no editor to keep responsive,
+                // and RunNativePackAsync's machinery is main-thread-only: it starts
+                // the native pack on a pool task and then calls
+                // EditorApplication.timeSinceStartup / UvProgress, which THROW here.
+                // That throw raced the finally-destroy below against the still-running
+                // pack task and freed the atlas under it — the editor crashed inside
+                // PackCharts with wandering access violations (three dumps,
+                // 2026-10-03/04). One thread, no editor APIs, no orphan task.
+                if ((long)geometry.chartCount * internalRes * internalRes > 20_000_000_000L)
                 {
-                    XatlasNative.xatlasComputeCharts();
-                    XatlasNative.xatlasPackCharts(0, internalPad, 0f, internalRes, 1,
-                        settings.packBlockAlign ? 1 : 0, settings.packBruteForce ? 1 : 0, rotateCharts, rotateToAxis);
-                }, pumpEditor: false).GetAwaiter().GetResult()) return false;
+                    UvtLog.Warn("[Remesh] Chart merge re-pack refused: the pack cost is past the safety budget.");
+                    return false;
+                }
+                token.ThrowIfCancellationRequested();
+                XatlasNative.xatlasComputeCharts();
+                XatlasNative.xatlasPackCharts(0, internalPad, 0f, internalRes, 1,
+                    settings.packBlockAlign ? 1 : 0, settings.packBruteForce ? 1 : 0, rotateCharts, rotateToAxis);
                 return ReadPackedUv(geometry, token, mergedCharts);
             }
             finally { XatlasNative.xatlasDestroy(); }
