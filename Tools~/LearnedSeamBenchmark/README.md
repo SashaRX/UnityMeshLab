@@ -83,3 +83,63 @@ Preprocessing, topology decoding, solvers, validation, rendering and checkpoint 
 are excluded. `N_train * epochs * median_step_time` estimates compute only for
 similarly sized graphs/features with this model and batch size; a larger dataset,
 richer source features or a different model requires new timing.
+
+## Explicit raw-file archive
+
+`archive.py` is a separate, SDK-neutral collector. It copies only the files or
+directories explicitly listed in a JSON manifest, byte-for-byte, without opening
+FBX/MAX models or finding texture/XRef/modifier-stack dependencies. Any existing
+high-poly source plus handmade final low-poly pair is sufficient; intermediate
+remesh/simplify stages are optional if they already exist. Include native scenes
+and reference directories when available to preserve data for future ingestion.
+
+This **collection manifest is different from `prepare.py`'s capture manifest**:
+
+```json
+[
+  {
+    "asset_id": "bust",
+    "family_id": "bust-original-A",
+    "files": [
+      {"role": "source", "path": "source/high.fbx"},
+      {"role": "artist", "path": "artist/low.fbx"},
+      {"role": "native", "path": "scene/bust.max"},
+      {"role": "textures", "path": "textures"}
+    ]
+  }
+]
+```
+
+Only list optional files/directories that actually exist. Input paths resolve
+against the manifest; `--out` resolves against the current working directory.
+Asset/family/role IDs use 1-128 ASCII letters, digits, dots, underscores or hyphens
+(starting with a letter or digit); Windows reserved names and trailing dots are
+rejected. Declare each asset once; multiple assets can share one family ID.
+
+```powershell
+python 'Tools~/LearnedSeamBenchmark/archive.py' --manifest COLLECTION.json --out '_results~/learned-seams/raw-archive-001'
+```
+
+The output must not exist, even as an empty directory. Files are placed at
+`assets/<asset_id>/<role>/<source_filename>`. Directory roots retain their name
+and complete relative structure, including empty directories and hidden files;
+for example `textures/nested/normal.exr` becomes
+`assets/bust/textures/textures/nested/normal.exr`. This collector needs only the
+Python standard library. It never deletes, moves or rewrites inputs/results.
+
+All explicitly listed inputs are preflighted before output creation. Missing
+inputs, symlinks/junctions/reparse points (including ancestors), output inside an
+input, unsafe output names and Windows case-insensitive path collisions fail.
+Every copied file is verified by input/output SHA256. Interrupted copying or an
+input changing after preflight can leave a partial **new** archive without a
+success report; the helper does not remove it. Use a different fresh output.
+
+`collection-manifest.json` retains the original manifest bytes.
+`archive-report.json` records manifest/input/output hashes, source-to-archived
+path mapping, roles, asset/family grouping and byte counts. It explicitly reports
+`dependency_discovery_performed: false`, `completeness_verified: false`, and
+`fields_extracted: false`. A copied FBX/MAX file may preserve UV, SG, normals and
+material information, but the helper has not extracted or certified those fields,
+the model pairing, or all external dependencies. It performs no automatic disk
+scan and archives no real models during its tests. Curvature/AO/source projection
+and other derived numerical fields remain separate, recomputable processing.
