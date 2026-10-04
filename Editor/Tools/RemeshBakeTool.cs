@@ -294,6 +294,7 @@ namespace SashaRX.UnityMeshLab
             previewData.cageFit = settings.cageFit && settings.sourceShape == RemeshShape.LOD0;
             previewData.sourceBackfaces = settings.sourceBackfaces;
             previewData.source = pipeline.Source;
+            previewData.twoSided = pipeline.Primary?.twoSided ?? false;
         }
 
         // The shared 3D canvas shows the selected pipeline stage (in capture space) with

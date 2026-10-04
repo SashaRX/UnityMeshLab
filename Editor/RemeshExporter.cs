@@ -222,7 +222,7 @@ namespace SashaRX.UnityMeshLab
 
         // ── pieces ──
 
-        static Shader ResolveShader(bool unlit, out bool urp)
+        internal static Shader ResolveShader(bool unlit, out bool urp)
         {
             var pipeline = GraphicsSettings.currentRenderPipeline;
             urp = pipeline != null;
@@ -283,27 +283,41 @@ namespace SashaRX.UnityMeshLab
         static Material CreateMaterial(Shader shader, bool urp, bool unlit, string name, string[] paths)
         {
             var material = new Material(shader) { name = name };
-            Texture2D Map(int i) => AssetDatabase.LoadAssetAtPath<Texture2D>(paths[i]);
+            var maps = new Texture[paths.Length];
+            for (int i = 0; i < paths.Length; ++i) maps[i] = AssetDatabase.LoadAssetAtPath<Texture2D>(paths[i]);
+            ConfigureMaterial(material, urp, unlit, maps);
+            return material;
+        }
+
+        // Preview and export use the same shader, channels and strengths. Preview
+        // textures are transient; exported ones are imported assets.
+        internal static void ConfigureMaterial(Material material, bool urp, bool unlit, IReadOnlyList<Texture> maps)
+        {
+            material.SetTexture(urp ? "_BaseMap" : "_MainTex", maps[0]);
+            string colorProperty = urp ? "_BaseColor" : "_Color";
+            if (material.HasProperty(colorProperty)) material.SetColor(colorProperty, Color.white);
             if (unlit) {
                 // One lit texture in, one texture out — the other maps still export
                 // alongside for reference, but nothing samples them.
-                material.SetTexture(urp ? "_BaseMap" : "_MainTex", Map(0));
-                if (urp) material.SetColor("_BaseColor", Color.white);
-                return material;
+                return;
             }
-            material.SetTexture(urp ? "_BaseMap" : "_MainTex", Map(0));
-            material.SetColor(urp ? "_BaseColor" : "_Color", Color.white);
-            material.SetTexture("_BumpMap", Map(1));
-            material.SetTexture("_MetallicGlossMap", Map(2));
-            material.SetTexture("_OcclusionMap", Map(3));
-            material.SetTexture("_EmissionMap", Map(4));
-            material.SetColor("_EmissionColor", Color.white);
-            material.SetFloat("_Metallic", 1); material.SetFloat(urp ? "_Smoothness" : "_GlossMapScale", 1);
+            material.SetTexture("_BumpMap", maps[1]);
+            material.SetTexture("_MetallicGlossMap", maps[2]);
+            material.SetTexture("_OcclusionMap", maps[3]);
+            material.SetTexture("_EmissionMap", maps[4]);
+            material.SetColor("_EmissionColor", maps[4] ? Color.white : Color.black);
+            material.SetFloat("_Metallic", maps[2] ? 1 : 0); material.SetFloat(urp ? "_Smoothness" : "_GlossMapScale", maps[2] ? 1 : 0);
+            if (!urp) material.SetFloat("_Glossiness", 0);
             material.SetFloat("_BumpScale", 1); material.SetFloat("_OcclusionStrength", 1);
-            material.EnableKeyword("_NORMALMAP"); material.EnableKeyword("_EMISSION");
-            material.EnableKeyword(urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP");
-            if (urp) material.EnableKeyword("_OCCLUSIONMAP");
-            return material;
+            SetKeyword(material, "_NORMALMAP", maps[1]);
+            SetKeyword(material, "_EMISSION", maps[4]);
+            SetKeyword(material, urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP", maps[2]);
+            if (urp) SetKeyword(material, "_OCCLUSIONMAP", maps[3]);
+        }
+
+        static void SetKeyword(Material material, string keyword, bool enabled)
+        {
+            if (enabled) material.EnableKeyword(keyword); else material.DisableKeyword(keyword);
         }
 
         // Bakes a world scale into the vertex data so the saved root sits at scale 1:

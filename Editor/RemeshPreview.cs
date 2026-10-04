@@ -37,6 +37,7 @@ namespace SashaRX.UnityMeshLab
             public bool cageFit;
             public RemeshBackfaces sourceBackfaces;
             public RemeshSource source;
+            public bool twoSided;
         }
 
         static readonly string[] ViewNames = { "3D", "Maps" };
@@ -46,6 +47,9 @@ namespace SashaRX.UnityMeshLab
         Channel channel;
         bool textured = true, bumpMap = true, cageView, trimMaskView = true;
         Material surface;
+        Material resultSurface;
+        Texture2D emissionTexture;
+        string resultShaderWarning;
         Mesh cageOuter, cageInner; int cageMeshId; string cageKey;
         bool cageReady;
         RemeshNative.Geometry cageGeometryRef;
@@ -75,6 +79,10 @@ namespace SashaRX.UnityMeshLab
             foreach (var texture in mapTextures) if (texture) Object.DestroyImmediate(texture);
             Array.Clear(mapTextures, 0, mapTextures.Length);
             mapSource = null;
+            if (emissionTexture) Object.DestroyImmediate(emissionTexture);
+            emissionTexture = null;
+            if (resultSurface) Object.DestroyImmediate(resultSurface);
+            resultSurface = null;
         }
 
         public void Dispose()
@@ -100,7 +108,7 @@ namespace SashaRX.UnityMeshLab
             using (new EditorGUI.DisabledScope(!result || !data.baseColor))
                 textured = EditorGUILayout.ToggleLeft(new GUIContent("Baked base color", "Result stage: show the baked base color on the surface."), textured);
             using (new EditorGUI.DisabledScope(!result || data.maps == null))
-                bumpMap = EditorGUILayout.ToggleLeft(new GUIContent("Baked normal map", "Result stage: shade with the baked tangent-space normal map (the saved material's look)."), bumpMap);
+                bumpMap = EditorGUILayout.ToggleLeft(new GUIContent("Baked normal map", "Result stage: shade with the baked tangent-space normal map using the saved material's shader and the viewport lights."), bumpMap);
             using (new EditorGUI.DisabledScope(stage != Stage.Remesh || !data.trimMask))
                 trimMaskView = EditorGUILayout.ToggleLeft(new GUIContent("Trim mask", "Remesh stage: colour the untrimmed remesh by what Trim to source surface did with each face."), trimMaskView);
             using (new EditorGUI.DisabledScope(!result || data.geometry == null))
@@ -114,6 +122,10 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField(meshSummary, EditorStyles.miniLabel);
             if (ShowTrimMask(data))
                 EditorGUILayout.LabelField("Trim mask: green kept · red back of a sheet (opposite normal) · orange rim / no source within reach", EditorStyles.wordWrappedMiniLabel);
+            if (result && data.maps != null && data.maps.beauty && textured)
+                EditorGUILayout.LabelField("Beauty contains baked scene lighting and renders unlit.", EditorStyles.wordWrappedMiniLabel);
+            if (result && data.twoSided && resultSurface && !resultSurface.HasProperty("_Cull"))
+                EditorGUILayout.HelpBox("This result shader renders only front faces, including after export. Use a two-sided shader to show the back of a sheet.", MessageType.Warning);
             var g = data.geometry;
             if (g != null) {
                 string coverage = data.maps != null ? $" · {100.0 * data.maps.covered / ((double)data.maps.size * data.maps.size):0.#}% texels used" : "";
@@ -134,6 +146,18 @@ namespace SashaRX.UnityMeshLab
             var mesh = DisplayMesh(data);
             if (!mesh) return false;
             if (!EnsureResources()) return false;
+            // Source uses its original materials under the viewport lights. Result
+            // must use the exported PBR shader under those same lights, not the
+            // geometry/trim preview's camera-facing light approximation.
+            if (stage == Stage.Result) {
+                var material = ResultMaterial(data);
+                if (material) {
+                    var resultMaterials = new Material[mesh.subMeshCount];
+                    for (int sub = 0; sub < resultMaterials.Length; ++sub) resultMaterials[sub] = material;
+                    items.Add(new MeshViewport3D.Item(mesh, data.spaceToWorld, resultMaterials));
+                    return true;
+                }
+            }
             bool trimMask = ShowTrimMask(data);
             bool useTexture = textured && stage == Stage.Result && data.baseColor;
             surface.SetTexture("_MainTex", useTexture ? data.baseColor : null);
@@ -152,6 +176,37 @@ namespace SashaRX.UnityMeshLab
             for (int sub = 0; sub < materials.Length; ++sub) materials[sub] = surface;
             items.Add(new MeshViewport3D.Item(mesh, data.spaceToWorld, materials));
             return true;
+        }
+
+        Material ResultMaterial(Data data)
+        {
+            bool unlit = textured && data.baseColor && data.maps != null && data.maps.beauty;
+            Shader shader;
+            bool urp;
+            try { shader = RemeshExporter.ResolveShader(unlit, out urp); }
+            catch (InvalidOperationException ex) {
+                if (resultShaderWarning != ex.Message) UvtLog.Warn("[Remesh preview] " + ex.Message);
+                resultShaderWarning = ex.Message;
+                return null;
+            }
+            resultShaderWarning = null;
+            if (!resultSurface || resultSurface.shader != shader) {
+                if (resultSurface) Object.DestroyImmediate(resultSurface);
+                resultSurface = new Material(shader) { name = "Remesh result preview", hideFlags = HideFlags.HideAndDontSave };
+            }
+            SyncMapSource(data.maps);
+            var maps = new Texture[5];
+            maps[0] = textured ? data.baseColor : null;
+            if (data.maps != null && !unlit) {
+                maps[1] = bumpMap ? MapTexture(data.maps, Channel.Normal) : null;
+                maps[2] = MapTexture(data.maps, Channel.MetallicSmoothness);
+                maps[3] = MapTexture(data.maps, Channel.Occlusion);
+                maps[4] = EmissionTexture(data.maps);
+            }
+            RemeshExporter.ConfigureMaterial(resultSurface, urp, unlit, maps);
+            if (resultSurface.HasProperty("_Cull"))
+                resultSurface.SetFloat("_Cull", (float)(data.twoSided ? CullMode.Off : CullMode.Back));
+            return resultSurface;
         }
 
         /// <summary>The cage overlay for the result in the shared 3D canvas (the wire is
@@ -311,11 +366,7 @@ namespace SashaRX.UnityMeshLab
 
         Texture2D MapTexture(RemeshBaker.Maps maps, Channel which)
         {
-            if (!ReferenceEquals(maps, mapSource)) {
-                foreach (var t in mapTextures) if (t) Object.DestroyImmediate(t);
-                Array.Clear(mapTextures, 0, mapTextures.Length);
-                mapSource = maps;
-            }
+            SyncMapSource(maps);
             int index = (int)which;
             if (mapTextures[index]) return mapTextures[index];
             Color32[] pixels;
@@ -332,7 +383,32 @@ namespace SashaRX.UnityMeshLab
                     }
                     break;
             }
-            return mapTextures[index] = TextureAssets.FromPixels(pixels, maps.size, maps.size, linear: which != Channel.BaseColor);
+            var texture = TextureAssets.FromPixels(pixels, maps.size, maps.size, linear: which != Channel.BaseColor);
+            if (texture) texture.wrapMode = TextureWrapMode.Clamp;
+            return mapTextures[index] = texture;
+        }
+
+        void SyncMapSource(RemeshBaker.Maps maps)
+        {
+            if (ReferenceEquals(maps, mapSource)) return;
+            foreach (var t in mapTextures) if (t) Object.DestroyImmediate(t);
+            Array.Clear(mapTextures, 0, mapTextures.Length);
+            if (emissionTexture) Object.DestroyImmediate(emissionTexture);
+            emissionTexture = null;
+            mapSource = maps;
+        }
+
+        Texture2D EmissionTexture(RemeshBaker.Maps maps)
+        {
+            if (emissionTexture) return emissionTexture;
+            if (maps.emission == null || maps.emission.Length != maps.size * maps.size) return null;
+            // Emission is linear HDR, unlike the clipped swatch in the Maps panel.
+            emissionTexture = new Texture2D(maps.size, maps.size, TextureFormat.RGBAHalf, false, true) {
+                name = "Remesh emission preview", hideFlags = HideFlags.HideAndDontSave, wrapMode = TextureWrapMode.Clamp
+            };
+            emissionTexture.SetPixels(maps.emission);
+            emissionTexture.Apply();
+            return emissionTexture;
         }
     }
 }
