@@ -709,7 +709,7 @@ namespace SashaRX.UnityMeshLab
             const int kPackOversample = 4;
             uint internalRes = (uint)settings.textureResolution * kPackOversample;
             uint internalPad = (uint)settings.padding * kPackOversample;
-            DumpRepackInputs(geometry, flatUv, indices, faceMaterials, internalRes, internalPad,
+            DumpRepackInputs(flatUv, indices, faceMaterials, internalRes, internalPad,
                 rotateCharts, rotateToAxis, settings.packBlockAlign ? 1 : 0, settings.packBruteForce ? 1 : 0);
             XatlasNative.xatlasCreate();
             try
@@ -738,7 +738,7 @@ namespace SashaRX.UnityMeshLab
         /// data and could not be reproduced synthetically; with the inputs on disk a
         /// crash becomes replayable in a native harness (Documentation~/EXPERIMENTS.md).
         /// Best-effort: diagnostics must never break the stage.</summary>
-        static void DumpRepackInputs(RemeshNative.Geometry geometry, float[] flatUv, uint[] indices,
+        static void DumpRepackInputs(float[] flatUv, uint[] indices,
             uint[] faceMaterials, uint resolution, uint padding, int rotateCharts, int rotateToAxis,
             int blockAlign, int bruteForce)
         {
