@@ -81,7 +81,10 @@ namespace SashaRX.UnityMeshLab
             // Removed charts can leave holes; compact in source-corner order.
             var ids = new Dictionary<int, int>();
             for (int v = 0; v < charts.Count; ++v) {
-                if (!ids.TryGetValue(charts[v], out int compact)) ids.Add(charts[v], compact = ids.Count);
+                if (!ids.TryGetValue(charts[v], out int compact)) {
+                    compact = ids.Count;
+                    ids.Add(charts[v], compact);
+                }
                 charts[v] = compact;
             }
             return new RemeshNative.Geometry {

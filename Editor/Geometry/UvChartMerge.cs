@@ -805,7 +805,10 @@ namespace SashaRX.UnityMeshLab
                 var value = new Vector2(uv[o * 2] * uScale, uv[o * 2 + 1] * vScale);
                 if (float.IsNaN(value.x) || float.IsNaN(value.y) || float.IsInfinity(value.x) || float.IsInfinity(value.y) ||
                     value.x < -1e-4f || value.x > 1.0001f || value.y < -1e-4f || value.y > 1.0001f) return false;
-                if (!ids.TryGetValue(chartIndex[o], out int id)) ids.Add(chartIndex[o], id = ids.Count);
+                if (!ids.TryGetValue(chartIndex[o], out int id)) {
+                    id = ids.Count;
+                    ids.Add(chartIndex[o], id);
+                }
                 charts[o] = id; packed[o] = value; positions[o] = geometry.positions[source];
                 if (normals != null) normals[o] = geometry.normals[source];
                 if (tangents != null) tangents[o] = geometry.tangents[source];
