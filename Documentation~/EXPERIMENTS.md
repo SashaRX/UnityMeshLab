@@ -5,6 +5,19 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Packing gate 2026-10-04 после плохих пользовательских скриншотов (продолжение Exp #1):**
+  zero overlap / низкий conformal stretch не гарантируют плотный атлас или равную
+  texel density. UvMesh repack теперь получает charts с UV-площадью, нормализованной
+  к 3D-площади; также для overlap repair без Merge. Seams приоритетны по доле
+  удаляемой границы, а не chart id. Финальный gate ограничивает потерю заполнения
+  5% относительно repaired baseline и chart density CV; при отказе — restart из
+  snapshot с половиной merge budget. Все старые overlap/stretch/source-corner
+  гарантии сохранены. На 1901 faces: старый merge 42.1% → новый 56.8%, 55 charts;
+  на 1997 faces: 47.2% → 64.6%, 56 charts. Это не точный 1883-face snapshot скриншота:
+  UV-only captures не содержат исходной геометрии. Теперь Info/RemeshDiag сохраняет
+  полный input + настройки в `unwrap_*.bin`, последние пять файлов.
+  Пределы, сравнение baseline, ограничения и реальные layouts: [отчёт](UV_PACKING_QUALITY.md).
+
 - **Distortion relax 2026-10-04 (продолжение Exp #1):** после успешного merge
   все итоговые charts проходят guarded conformal relax перед repack.
   Свободная граница, MIPS-based energy + quadratic tail, L-BFGS (до 50 итераций),

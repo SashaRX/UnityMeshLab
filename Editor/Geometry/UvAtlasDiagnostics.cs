@@ -9,6 +9,33 @@ namespace SashaRX.UnityMeshLab
     /// Shared edges and corners are legal only when intersection area is zero.</summary>
     internal static class UvAtlasDiagnostics
     {
+        /// <summary>Capture source geometry and exact settings; rounded inspector
+        /// values and UV-only repack dumps cannot reproduce simplification output.</summary>
+        internal static void CaptureInput(RemeshNative.IndexedMesh input, RemeshSettings settings)
+        {
+            if (UvtLog.Current < UvtLog.Level.Info || !UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag)) return;
+            try
+            {
+                string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "meshlab-uvmerge");
+                System.IO.Directory.CreateDirectory(dir);
+                string path = System.IO.Path.Combine(dir, "unwrap_" + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") +
+                    "_" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".bin");
+                using (var writer = new System.IO.BinaryWriter(System.IO.File.Create(path)))
+                {
+                    writer.Write(0x554D4C42); writer.Write(1); // magic and format version
+                    writer.Write(JsonUtility.ToJson(settings));
+                    writer.Write(input.positions.Length); writer.Write(input.indices.Length);
+                    foreach (var p in input.positions) { writer.Write(p.x); writer.Write(p.y); writer.Write(p.z); }
+                    foreach (int i in input.indices) writer.Write(i);
+                }
+                UvtLog.Info(UvtLog.Category.RemeshDiag, "[UV] unwrap source mesh and settings captured to " + path);
+                var stale = new List<string>(System.IO.Directory.GetFiles(dir, "unwrap_*.bin"));
+                stale.Sort(StringComparer.Ordinal);
+                for (int i = 0; i < stale.Count - 5; ++i) System.IO.File.Delete(stale[i]);
+            }
+            catch (Exception error) { UvtLog.Warn(UvtLog.Category.RemeshDiag, "[UV] input capture failed: " + error.Message); }
+        }
+
         internal sealed class Report
         {
             internal int pairs, sameChartPairs, crossChartPairs, degenerateFaces, invalidFaces, outOfBoundsVertices;
@@ -156,8 +183,9 @@ namespace SashaRX.UnityMeshLab
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var quality = UvChartQuality.Measure(g, token);
             var overlap = Measure(g, token, sameChartOnly);
+            var packing = UvPackingQuality.Measure(g, token);
             UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
-                $"[UV] {phase}: faces={g.indices.Length / 3}, charts={g.chartCount}, small={quality.smallCharts}, mean={quality.meanStretch:G6}, worst={quality.maxStretch:G6}, valid={quality.valid}; overlapPairs={overlap.pairs}, sameChart={overlap.sameChartPairs}, crossChart={overlap.crossChartPairs}, pairAreaSum={overlap.pairAreaSum:G6}, degenerate={overlap.degenerateFaces}, invalid={overlap.invalidFaces}, outOfBoundsVertices={overlap.outOfBoundsVertices}; scope={(sameChartOnly ? "within-chart (unpacked)" : "whole-atlas")}, complete={overlap.complete}, comparisons={overlap.comparisons}, ms={clock.ElapsedMilliseconds}"));
+                $"[UV] {phase}: faces={g.indices.Length / 3}, charts={g.chartCount}, small={quality.smallCharts}, mean={quality.meanStretch:G6}, worst={quality.maxStretch:G6}, valid={quality.valid}; uvArea={packing.filledArea:G6}, chartDensityCV={packing.densityDeviation:G6}; overlapPairs={overlap.pairs}, sameChart={overlap.sameChartPairs}, crossChart={overlap.crossChartPairs}, pairAreaSum={overlap.pairAreaSum:G6}, degenerate={overlap.degenerateFaces}, invalid={overlap.invalidFaces}, outOfBoundsVertices={overlap.outOfBoundsVertices}; scope={(sameChartOnly ? "within-chart (unpacked)" : "whole-atlas")}, complete={overlap.complete}, comparisons={overlap.comparisons}, ms={clock.ElapsedMilliseconds}"));
             foreach (string sample in overlap.samples)
                 UvtLog.Info(UvtLog.Category.RemeshDiag, $"[UV] {phase}: overlap {sample}");
             if (!overlap.complete)

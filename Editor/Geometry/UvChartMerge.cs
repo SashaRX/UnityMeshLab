@@ -63,35 +63,53 @@ namespace SashaRX.UnityMeshLab
             var normalsSnapshot = geometry.normals;
             var indicesSnapshot = geometry.indices;
             UvAtlasDiagnostics.Log(geometry, "merge-baseline", token);
+            var packingBaseline = UvPackingQuality.Measure(geometry, token);
             try
             {
-                var mergedCharts = new HashSet<int>();
-                int merged = MergeCharts(geometry, settings, token, mergedCharts);
-                UvtLog.Info(UvtLog.Category.RemeshDiag,
-                    $"[UV] merge-candidate: charts={chartCountSnapshot}->{geometry.chartCount}, acceptedMerges={merged}; candidate is not the final unwrap.");
-                if (merged <= 0) return;
-                var beforeRelax = UvChartQuality.Measure(geometry, token);
-                var relaxWatch = System.Diagnostics.Stopwatch.StartNew();
-                const int relaxIterations = 50;
-                var relaxCharts = new HashSet<int>(geometry.charts);
-                int relaxed = UvChartRelax.Apply(geometry, relaxCharts, relaxIterations, token);
-                var afterRelax = UvChartQuality.Measure(geometry, token);
-                UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
-                    $"[UV] merge-relax: relaxed={relaxed}/{relaxCharts.Count} charts, iterations={relaxIterations}, mean={beforeRelax.meanStretch:G6}->{afterRelax.meanStretch:G6} worst={beforeRelax.maxStretch:G6}->{afterRelax.maxStretch:G6}, elapsedMs={relaxWatch.Elapsed.TotalMilliseconds:F1}; repack and final gates follow."));
-                UvAtlasDiagnostics.Log(geometry, "merge-before-pack", token, sameChartOnly: true);
-                if (!Repack(geometry, settings, token))
-                    throw new InvalidOperationException("the re-pack rejected the merged charts");
-                UvAtlasDiagnostics.Log(geometry, "merge-after-pack (candidate)", token);
-                var atlasCheck = UvAtlasDiagnostics.Measure(geometry, token);
-                if (!atlasCheck.complete || atlasCheck.pairs > 0 || atlasCheck.invalidFaces > 0 || atlasCheck.degenerateFaces > 0)
-                    throw new InvalidOperationException("merged atlas is not overlap-free (pairs=" + atlasCheck.pairs + ", complete=" + atlasCheck.complete + ")");
-                var post = UvChartQuality.Measure(geometry, token);
-                UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
-                    $"[UV] merge-quality-gate: baseline charts={preMerge.charts} small={preMerge.smallCharts} mean={preMerge.meanStretch:G6} worst={preMerge.maxStretch:G6} valid={preMerge.valid}; candidate charts={post.charts} small={post.smallCharts} mean={post.meanStretch:G6} worst={post.maxStretch:G6} valid={post.valid}; meanLimit={Math.Max(1.15, preMerge.meanStretch * 1.1):G6} worstLimit={Math.Max(4, preMerge.maxStretch * 1.1):G6}; result={post.ImprovementFailure(preMerge, preMerge)}"));
-                if (!post.Improves(preMerge, preMerge))
-                    throw new InvalidOperationException(
-                        "quality gate failed: " + post.ImprovementFailure(preMerge, preMerge));
-                UvtLog.Info($"[Remesh] Chart merge: {chartCountSnapshot} → {geometry.chartCount} islands ({merged} merge(s) accepted).");
+                int mergeLimit = int.MaxValue;
+                while (true)
+                {
+                    var mergedCharts = new HashSet<int>();
+                    int merged = MergeChartsLimited(geometry, settings, token, mergedCharts, mergeLimit);
+                    UvtLog.Info(UvtLog.Category.RemeshDiag,
+                        $"[UV] merge-candidate: charts={chartCountSnapshot}->{geometry.chartCount}, acceptedMerges={merged}; candidate is not the final unwrap.");
+                    if (merged <= 0) return;
+                    var beforeRelax = UvChartQuality.Measure(geometry, token);
+                    var relaxWatch = System.Diagnostics.Stopwatch.StartNew();
+                    const int relaxIterations = 50;
+                    var relaxCharts = new HashSet<int>(geometry.charts);
+                    int relaxed = UvChartRelax.Apply(geometry, relaxCharts, relaxIterations, token);
+                    var afterRelax = UvChartQuality.Measure(geometry, token);
+                    UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
+                        $"[UV] merge-relax: relaxed={relaxed}/{relaxCharts.Count} charts, iterations={relaxIterations}, mean={beforeRelax.meanStretch:G6}->{afterRelax.meanStretch:G6} worst={beforeRelax.maxStretch:G6}->{afterRelax.maxStretch:G6}, elapsedMs={relaxWatch.Elapsed.TotalMilliseconds:F1}; repack and final gates follow."));
+                    UvAtlasDiagnostics.Log(geometry, "merge-before-pack", token, sameChartOnly: true);
+                    if (!Repack(geometry, settings, token))
+                        throw new InvalidOperationException("the re-pack rejected the merged charts");
+                    UvAtlasDiagnostics.Log(geometry, "merge-after-pack (candidate)", token);
+                    var atlasCheck = UvAtlasDiagnostics.Measure(geometry, token);
+                    if (!atlasCheck.complete || atlasCheck.pairs > 0 || atlasCheck.invalidFaces > 0 || atlasCheck.degenerateFaces > 0)
+                        throw new InvalidOperationException("merged atlas is not overlap-free (pairs=" + atlasCheck.pairs + ", complete=" + atlasCheck.complete + ")");
+                    var post = UvChartQuality.Measure(geometry, token);
+                    UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
+                        $"[UV] merge-quality-gate: baseline charts={preMerge.charts} small={preMerge.smallCharts} mean={preMerge.meanStretch:G6} worst={preMerge.maxStretch:G6} valid={preMerge.valid}; candidate charts={post.charts} small={post.smallCharts} mean={post.meanStretch:G6} worst={post.maxStretch:G6} valid={post.valid}; meanLimit={Math.Max(1.15, preMerge.meanStretch * 1.1):G6} worstLimit={Math.Max(4, preMerge.maxStretch * 1.1):G6}; result={post.ImprovementFailure(preMerge, preMerge)}"));
+                    bool preservesStretch = post.Improves(preMerge, preMerge);
+                    var packing = UvPackingQuality.Measure(geometry, token);
+                    bool preservesPacking = packing.Preserves(packingBaseline);
+                    UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
+                        $"[UV] merge-packing-gate: uvArea={packingBaseline.filledArea:G6}->{packing.filledArea:G6}, chartDensityCV={packingBaseline.densityDeviation:G6}->{packing.densityDeviation:G6}, accepted={preservesPacking}, merges={merged}."));
+                    if (!preservesPacking || !preservesStretch)
+                    {
+                        if (merged <= 1) throw new InvalidOperationException(preservesStretch
+                            ? "merge reduces packed texture area or worsens chart texel density"
+                            : "quality gate failed: " + post.ImprovementFailure(preMerge, preMerge));
+                        RestoreGeometry();
+                        mergeLimit = merged / 2;
+                        UvtLog.Info(UvtLog.Category.RemeshDiag, $"[UV] merge-packing-retry: merge budget={mergeLimit}; restarting from the baseline.");
+                        continue;
+                    }
+                    UvtLog.Info($"[Remesh] Chart merge: {chartCountSnapshot} → {geometry.chartCount} islands ({merged} merge(s) accepted).");
+                    break;
+                }
             }
             catch (OperationCanceledException) { RestoreGeometry(); throw; }
             catch (Exception error)
@@ -104,7 +122,8 @@ namespace SashaRX.UnityMeshLab
             void RestoreGeometry()
             {
                 geometry.positions = positionsSnapshot; geometry.normals = normalsSnapshot; geometry.indices = indicesSnapshot;
-                geometry.uv = uvSnapshot; geometry.charts = chartsSnapshot; geometry.tangents = tangentsSnapshot;
+                geometry.uv = (Vector2[])uvSnapshot.Clone(); geometry.charts = (int[])chartsSnapshot.Clone();
+                geometry.tangents = tangentsSnapshot == null ? null : (Vector4[])tangentsSnapshot.Clone();
                 geometry.chartCount = chartCountSnapshot; geometry.smallChartCount = smallChartSnapshot;
             }
         }
@@ -117,6 +136,10 @@ namespace SashaRX.UnityMeshLab
         /// `mergedChartIds` collects the compacted ids of charts that absorbed or were
         /// absorbed. Returns the accepted merge count.</summary>
         internal static int MergeCharts(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token, HashSet<int> mergedChartIds)
+            => MergeChartsLimited(geometry, settings, token, mergedChartIds, int.MaxValue);
+
+        static int MergeChartsLimited(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token,
+            HashSet<int> mergedChartIds, int mergeLimit)
         {
             int faceCount = geometry.indices.Length / 3;
             var faceChart = new int[faceCount];
@@ -157,7 +180,7 @@ namespace SashaRX.UnityMeshLab
             var chartUvMax = new Vector2[chartCount];
 
             int merged = 0;
-            for (int round = 0; round < chartCount; ++round)
+            for (int round = 0; round < chartCount && merged < mergeLimit; ++round)
             {
                 token.ThrowIfCancellationRequested();
                 // ── per-chart aggregates for the current face assignment ──
@@ -212,7 +235,21 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (adjacency.Count == 0) break;
                 var pairs = new List<(int, int)>(adjacency.Keys);
-                pairs.Sort((x, y) => x.Item1 != y.Item1 ? x.Item1.CompareTo(y.Item1) : x.Item2.CompareTo(y.Item2));
+                // Prefer joins that remove a large fraction of the smaller chart's
+                // border, rather than letting chart ids dictate long chains/fins.
+                var seamCoverage = new Dictionary<(int, int), double>();
+                foreach (var pair in pairs)
+                {
+                    double length = 0;
+                    foreach (long edge in adjacency[pair]) length += EdgeLength(geometry.positions, slotVertex, edge);
+                    double border = Math.Min(chartBoundary[pair.Item1], chartBoundary[pair.Item2]);
+                    seamCoverage[pair] = border > 0 ? length / border : 0;
+                }
+                pairs.Sort((x, y) => {
+                    int order = seamCoverage[y].CompareTo(seamCoverage[x]);
+                    if (order != 0) return order;
+                    return x.Item1 != y.Item1 ? x.Item1.CompareTo(y.Item1) : x.Item2.CompareTo(y.Item2);
+                });
 
                 bool accepted = false;
                 foreach (var pair in pairs)
@@ -632,11 +669,11 @@ namespace SashaRX.UnityMeshLab
             }
             // xatlas's UvMesh packer requires input UVs inside [0,1] (it asserts and
             // crashes on negative texel coords, xatlas.cpp:8598), and the merge fit can
-            // place a rotated chart anywhere in the plane. Normalize the whole layout
-            // with one uniform scale + translation: chart shapes and relative texel
-            // densities are preserved, and the pack output replaces these UVs anyway.
-            Vector2 min = geometry.uv[0], max = geometry.uv[0];
-            foreach (var p in geometry.uv)
+            // place a rotated chart anywhere in the plane. UvMesh cannot see 3D area:
+            // restore each chart's area density before the global [0,1] normalization.
+            var densityUv = UvPackingQuality.NormalizeChartAreas(geometry, token);
+            Vector2 min = densityUv[0], max = densityUv[0];
+            foreach (var p in densityUv)
             {
                 if (float.IsNaN(p.x) || float.IsNaN(p.y) || float.IsInfinity(p.x) || float.IsInfinity(p.y)) return false;
                 min = Vector2.Min(min, p);
@@ -648,8 +685,8 @@ namespace SashaRX.UnityMeshLab
             var flatUv = new float[vertexCount * 2];
             for (int i = 0; i < vertexCount; ++i)
             {
-                flatUv[i * 2] = (geometry.uv[i].x - min.x) * normalize;
-                flatUv[i * 2 + 1] = (geometry.uv[i].y - min.y) * normalize;
+                flatUv[i * 2] = (densityUv[i].x - min.x) * normalize;
+                flatUv[i * 2 + 1] = (densityUv[i].y - min.y) * normalize;
             }
             var indices = new uint[geometry.indices.Length];
             for (int i = 0; i < geometry.indices.Length; ++i) indices[i] = (uint)geometry.indices[i];

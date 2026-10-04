@@ -105,6 +105,7 @@ namespace SashaRX.UnityMeshLab
             settings.Validate();
             token.ThrowIfCancellationRequested();
             // Matches ParseUnwrapOptions in Native~/src/remesh.cpp.
+            UvAtlasDiagnostics.CaptureInput(input, settings);
             float[] options = {
                 settings.maxChartArea, settings.maxChartBoundary, settings.chartNormalDeviation, settings.chartRoundness,
                 settings.chartStraightness, settings.chartNormalSeam, 0.5f, settings.chartMaxCost, settings.chartIterations,
