@@ -91,16 +91,16 @@ namespace SashaRX.UnityMeshLab
         static double Cross(Point a, Point b, Point p)
             => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
 
-        static double IntersectionArea(Triangle a, Triangle b, Point[] input, Point[] output)
+        static double IntersectionArea(Triangle a, Triangle b, Point[] bufferA, Point[] bufferB)
         {
-            input[0] = a.a; input[1] = a.b; input[2] = a.c;
+            bufferA[0] = a.a; bufferA[1] = a.b; bufferA[2] = a.c;
             int count = 3;
             double sign = Cross(b.a, b.b, b.c) > 0 ? 1 : -1;
-            count = Clip(input, count, output, b.a, b.b, sign);
-            count = Clip(output, count, input, b.b, b.c, sign);
-            count = Clip(input, count, output, b.c, b.a, sign);
+            count = Clip(bufferA, count, bufferB, b.a, b.b, sign);
+            count = Clip(bufferB, count, bufferA, b.b, b.c, sign);
+            count = Clip(bufferA, count, bufferB, b.c, b.a, sign);
             double twiceArea = 0;
-            for (int i = 1; i + 1 < count; ++i) twiceArea += Cross(output[0], output[i], output[i + 1]);
+            for (int i = 1; i + 1 < count; ++i) twiceArea += Cross(bufferB[0], bufferB[i], bufferB[i + 1]);
             return Math.Abs(twiceArea) * .5;
         }
 
