@@ -394,7 +394,11 @@ namespace SashaRX.UnityMeshLab
                 if (options.simplify) {
                     float error = 0;
                     var input = node.voxel;
-                    node.simplified = await Task.Run(() => RemeshNative.Simplify(input, options, token, out error), token);
+                    node.simplified = await Task.Run(() => {
+                        bool fit = options.solve && !options.shell && options.sourceShape == RemeshShape.LOD0;
+                        return fit ? RemeshSurfaceRefine.Simplify(input, node.source.positions, node.source.indices, options, token, out error)
+                            : RemeshNative.Simplify(input, options, token, out error);
+                    }, token);
                     node.simplifyError = error;
                 }
                 else { node.simplified = node.voxel; node.simplifyError = 0; }

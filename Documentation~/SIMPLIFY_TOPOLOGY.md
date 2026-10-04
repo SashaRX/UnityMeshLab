@@ -1,5 +1,8 @@
 # Remesh / Simplify: отверстия после Trim и схлопнутые лепестки
 
+Дополнение: [подгонка и перестройка voxel triangles по source](VOXEL_SURFACE_REFINE.md)
+устраняет часть grid diagonal/sliver artifacts, сохраняя описанные ниже topology gates.
+
 2026-10-04, продолжение диагностики входной геометрии Experiment #1.
 
 ## Причина на бюсте

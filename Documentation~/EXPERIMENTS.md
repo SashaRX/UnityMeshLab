@@ -5,6 +5,16 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Voxel stair triangles 2026-10-04 (продолжение Exp #1):** source-guided
+  fitting, tangent redistribution и локальные edge flips подключены к Simplify
+  через Fit to source surface. Source-distance, boundary/Euler и collapse-budget
+  gates отклоняют ухудшающие кандидаты; финальная коррекция сохраняет 1886 / 98
+  faces и уменьшает slivers 42 → 34 на бюсте, 30 → 21 на диагональном боксе.
+  Четыре конечных Unwrap имеют zero overlaps и сохранённые source corners;
+  маленькие charts при repair могут повторно паковаться с большей точностью,
+  без ослабления stretch gate. Native source/binaries unchanged.
+  [Методика, ограничения, реальные сетки и UV](VOXEL_SURFACE_REFINE.md).
+
 - **Крупный piecewise OptCuts shell (продолжение Exp #1):** semantic hierarchy
   делится по surface-area cap и пересекается с mandatory planar regions. При
   cap 20% / symmetric Dirichlet 4.15 крупнейший chart сокращён 63.54% → 16.55%,

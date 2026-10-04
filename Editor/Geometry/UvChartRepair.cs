@@ -25,14 +25,29 @@ namespace SashaRX.UnityMeshLab
             var check = UvAtlasDiagnostics.Measure(repaired, token);
             var post = UvChartQuality.Measure(repaired, token);
             UvAtlasDiagnostics.Log(repaired, "repair-after-pack (candidate)", token);
-            if (!check.complete || check.pairs > 0 || !post.valid ||
-                post.meanStretch > Math.Max(1.15, quality.meanStretch * 1.1) ||
-                post.maxStretch > Math.Max(4, quality.maxStretch * 1.1))
+            if (!Accepts(check, post, quality)) {
+                // Small chart bounds are ceil-rounded independently by xatlas.
+                // Retry from pristine UV triangles, not the already stretched pack.
+                // Keep the same stretch/overlap gates and user-facing padding.
+                var precise = SplitConflicts(geometry, report.conflicts, token);
+                if (UvChartMerge.RepackHighPrecision(precise, settings, token)) {
+                    repaired = precise;
+                    check = UvAtlasDiagnostics.Measure(repaired, token);
+                    post = UvChartQuality.Measure(repaired, token);
+                    UvAtlasDiagnostics.Log(repaired, "repair-high-precision (candidate)", token);
+                }
+            }
+            if (!Accepts(check, post, quality))
                 throw new InvalidOperationException(FormattableString.Invariant(
                     $"UV overlap repair rejected: pairs={check.pairs}, complete={check.complete}, valid={post.valid}, mean={post.meanStretch:G6} (limit {Math.Max(1.15, quality.meanStretch * 1.1):G6}), worst={post.maxStretch:G6} (limit {Math.Max(4, quality.maxStretch * 1.1):G6})."));
             UvAtlasDiagnostics.Log(repaired, "repair-final", token);
             return repaired;
         }
+
+        static bool Accepts(UvAtlasDiagnostics.Report report, UvChartQuality post, UvChartQuality original)
+            => report.complete && report.pairs == 0 && post.valid &&
+                post.meanStretch <= Math.Max(1.15, original.meanStretch * 1.1) &&
+                post.maxStretch <= Math.Max(4, original.maxStretch * 1.1);
 
         /// <summary>Deterministic greedy vertex cover of the overlap graph. Each
         /// conflicting pair loses at least one face to a separate chart; clean chart

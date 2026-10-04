@@ -728,6 +728,15 @@ namespace SashaRX.UnityMeshLab
         /// frame from the final layout. False — with the geometry untouched — on any
         /// anomaly (busy session, refused pack, unexpected output shape).</summary>
         internal static bool Repack(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token)
+            => RepackWithPrecision(geometry, settings, token, 4);
+
+        internal static bool RepackHighPrecision(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token)
+        {
+            int oversample = Math.Min(32, 16384 / settings.textureResolution);
+            return oversample > 4 && RepackWithPrecision(geometry, settings, token, oversample);
+        }
+
+        static bool RepackWithPrecision(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token, int oversample)
         {
             int vertexCount = geometry.positions.Length;
             int faceCount = geometry.indices.Length / 3;
@@ -773,12 +782,12 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 int rotate = settings.packRotate ? 1 : 0;
-                if (PackAndRead(geometry, settings, flatUv, indices, faceMaterials, rotate, rotate, token)) return true;
+                if (PackAndRead(geometry, settings, flatUv, indices, faceMaterials, rotate, rotate, token, oversample)) return true;
                 // Both rotation flags are separate xatlas knobs; a rotate placement is the
                 // one way a per-input-vertex UV can come back ambiguous. Fresh session —
                 // a second PackCharts on a packed atlas is not a defined state.
                 token.ThrowIfCancellationRequested();
-                if (PackAndRead(geometry, settings, flatUv, indices, faceMaterials, 0, 0, token)) return true;
+                if (PackAndRead(geometry, settings, flatUv, indices, faceMaterials, 0, 0, token, oversample)) return true;
                 UvtLog.Warn("[Remesh] Chart merge re-pack did not map back cleanly; reverting.");
                 return false;
             }
@@ -793,9 +802,10 @@ namespace SashaRX.UnityMeshLab
         /// between create and destroy on this one thread — no editor APIs, no pool
         /// tasks — so no exception can race the destroy against an in-flight pack.</summary>
         static bool PackAndRead(RemeshNative.Geometry geometry, RemeshSettings settings, float[] flatUv, uint[] indices,
-            uint[] faceMaterials, int rotateCharts, int rotateToAxis, CancellationToken token)
+            uint[] faceMaterials, int rotateCharts, int rotateToAxis, CancellationToken token, int oversample)
         {
-            // Pack at 4× the user-facing resolution, exactly like XatlasRepack: xatlas
+            // Usually pack at 4× the user-facing resolution, like XatlasRepack;
+            // overlap repair can retry at higher precision. xatlas
             // ceil-rounds each chart's extents to texel dimensions, so a layout whose
             // charts sum near the full atlas size cannot fit — the packer then places
             // charts at negative coordinates and its texcoord assert aborts the editor
@@ -803,9 +813,8 @@ namespace SashaRX.UnityMeshLab
             // the internal atlas; the bridge normalizes the output back to [0,1], so
             // the user-facing resolution is unchanged. Padding scales with it to keep
             // the gap fraction in UV space constant.
-            const int kPackOversample = 4;
-            uint internalRes = (uint)settings.textureResolution * kPackOversample;
-            uint internalPad = (uint)settings.padding * kPackOversample;
+            uint internalRes = (uint)settings.textureResolution * (uint)oversample;
+            uint internalPad = (uint)settings.padding * (uint)oversample;
             DumpRepackInputs(flatUv, indices, faceMaterials, internalRes, internalPad,
                 rotateCharts, rotateToAxis, settings.packBlockAlign ? 1 : 0, settings.packBruteForce ? 1 : 0);
             XatlasNative.xatlasCreate();
