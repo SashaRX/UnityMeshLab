@@ -40,6 +40,7 @@ namespace SashaRX.UnityMeshLab
         MeshViewport3D viewport;
         UvLayer3D uvLayer;
         MeshInspection inspection;
+        Action<Mesh> meshInvalidated;
         bool inspectMesh;
         int inspectedItem, planarProjection;
         Vector2 inspectionScroll;
@@ -119,6 +120,10 @@ namespace SashaRX.UnityMeshLab
             viewport = new MeshViewport3D { RequestRepaint = Repaint };
             uvLayer = new UvLayer3D();
             inspection = new MeshInspection();
+            // The context's per-mesh caches are keyed by instance ID and would outlive
+            // an in-place rewrite; drop them on the same notification the views use.
+            meshInvalidated = _ => ctx.ClearAllCaches();
+            VertexChannels.Changed += meshInvalidated;
             canvas3D = EditorPrefs.GetBool(Canvas3DPref, false);
 
             ctx.Assets.BeforeWrite = BeforeAssetWrite;
@@ -190,6 +195,7 @@ namespace SashaRX.UnityMeshLab
             uvLayer?.Dispose(); uvLayer = null;
             inspection?.Dispose(); inspection = null;
             inspectionEntries.Clear();
+            VertexChannels.Changed -= meshInvalidated; meshInvalidated = null;
 
             RestoreWorkingMeshes();
         }
