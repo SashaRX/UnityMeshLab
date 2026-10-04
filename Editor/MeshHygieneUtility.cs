@@ -299,7 +299,10 @@ namespace SashaRX.UnityMeshLab
                     mesh.SetTriangles(kept, s);
             }
             if (removed > 0)
+            {
                 mesh.RecalculateBounds();
+                VertexChannels.RaiseChanged(mesh);
+            }
             return removed;
         }
 
@@ -487,6 +490,9 @@ namespace SashaRX.UnityMeshLab
                 mesh.SetTriangles(remapped, s);
             }
             mesh.RecalculateBounds();
+            // The compacted mesh keeps its instance ID — cached views (inspection
+            // reports) must drop their pre-compaction copies.
+            VertexChannels.RaiseChanged(mesh);
             return removed;
         }
 
