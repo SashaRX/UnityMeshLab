@@ -12,6 +12,25 @@ from seams import align, exact_scores, read_capture, sample_distances, topology
 
 
 class SeamChecks(unittest.TestCase):
+    def test_area_bound_is_independent_of_face_count(self):
+        from bounded_parts import partition
+        tree = {4: {"left": 0, "right": 1}, 5: {"left": 2, "right": 3},
+                6: {"left": 4, "right": 5}}
+        areas = np.array([7., 1., 1., 1.])
+        labels = partition(tree, areas, 0.5)
+        self.assertNotEqual(labels[0], labels[1])
+        self.assertEqual(labels[2], labels[3])
+        for label in np.unique(labels):
+            selected = labels == label
+            self.assertTrue(areas[selected].sum() <= 5 or selected.sum() == 1)
+
+    def test_triangle_aspect_is_invariant_under_uniform_scale(self):
+        from shape_report import aspect
+        triangles = np.array([[[0.,0], [1.,0], [0.5,np.sqrt(3)/2]], [[0.,0], [1.,0], [0.,0.01]]])
+        areas = np.array([np.sqrt(3)/4, 0.005])
+        self.assertAlmostEqual(aspect(triangles, areas)[0], 1)
+        np.testing.assert_allclose(aspect(triangles, areas), aspect(triangles*17, areas*17**2))
+
     def test_region_fans_split_point_contacts_and_keep_shared_edges(self):
         from piecewise_optcuts import split_boundary_fans
         p = np.array([[0.,0,0], [1.,0,0], [0.,1,0], [-1.,0,0], [0.,-1,0]])

@@ -76,6 +76,25 @@ uniform scale/translation. Piecewise runs split disconnected boundary fans and
 abort on any failed region. Output is density-normalized and packed. Use a fresh
 output directory to prevent accidentally reading stale solver results.
 
+To avoid one giant curved shell, use area-bounded semantic parts intersected
+with the structural regions, then solve with a stricter distortion bound:
+
+```powershell
+python 'Tools~/SeamPlacementBenchmark/bounded_parts.py' --reference REFERENCE.bin --tree PARTUV_INPUT/tree.json --structural REGION_LABELS.npy --out BOUNDED
+python 'Tools~/SeamPlacementBenchmark/piecewise_optcuts.py' --reference REFERENCE.bin --labels BOUNDED/bounded-parts-0.2-labels.npy --optcuts OptCuts_bin.exe --dll-directory STB_DLL_DIR --packer seam_region_probe.exe --distortion 4.15 --out FRESH_OUTPUT
+python 'Tools~/SeamPlacementBenchmark/shape_report.py' --reference REFERENCE.bin --capture old=OLD.bin --capture bounded=NEW.bin --out SHAPES
+```
+
+Bounds use surface area, not face counts. The PartUV hierarchy is split until
+parts fit the bound; mandatory planar regions remain separated, and connected
+components are verified. An individual face exceeding the bound is reported as
+a leaf exception: this method does not alter source triangulation. `shape_report`
+distinguishes intrinsic 3D slivers from extra elongation introduced by UV.
+Tested bounds 4.15 and 4.05 are retained separately: 4.05 reduces newly elongated
+triangles but worsens mean stretch and packed area on the reference. It is not
+an accepted default. OptCuts' energy bound and the reported stretch ratio are
+different metrics; compare actual captures rather than assuming monotonicity.
+
 ## Full PartUV (external, optional research)
 
 Acquire [official PartUV](https://github.com/EricWang12/PartUV) and the official

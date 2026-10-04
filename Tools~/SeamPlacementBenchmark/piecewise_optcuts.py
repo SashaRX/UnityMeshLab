@@ -62,7 +62,10 @@ def main():
     parser.add_argument("--dll-directory", type=Path)
     parser.add_argument("--packer", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--distortion", type=float, default=4.5, help="OptCuts symmetric Dirichlet bound, minimum 4")
     args = parser.parse_args()
+    if not np.isfinite(args.distortion) or args.distortion <= 4:
+        raise ValueError("Distortion bound must be finite and greater than 4")
     reference = topology(read_capture(args.reference))
     p, faces, _, _, _ = reference
     labels = np.load(args.labels, allow_pickle=False)
@@ -89,7 +92,7 @@ def main():
             raise ValueError("Use a fresh output directory to avoid stale solver output")
         started = time.perf_counter()
         with (args.out / (name + ".log")).open("w") as log:
-            result = subprocess.run([str(args.optcuts.resolve()), "100", obj.name, "0.999", "1", "0", "4.5", "1", "1", "probe"],
+            result = subprocess.run([str(args.optcuts.resolve()), "100", obj.name, "0.999", "1", "0", str(args.distortion), "1", "1", "probe"],
                                     cwd=args.out, env=environment, stdout=log, stderr=subprocess.STDOUT, timeout=60)
         if result.returncode:
             raise RuntimeError(f"OptCuts region {region} failed; see {name}.log")
@@ -132,7 +135,8 @@ def main():
     output = args.out / "piecewise-optcuts.bin"
     subprocess.run([str(args.packer.resolve()), str(unpacked), str(label_file), str(output), "pack", "1", "0.5"], check=True)
     align(read_capture(output), reference)
-    (args.out / "report.json").write_text(json.dumps(dict(regions=report, labelsSha256=hashlib.sha256(args.labels.read_bytes()).hexdigest()), indent=2))
+    (args.out / "report.json").write_text(json.dumps(dict(regions=report, distortionBound=args.distortion,
+                                                        labelsSha256=hashlib.sha256(args.labels.read_bytes()).hexdigest()), indent=2))
 
 
 if __name__ == "__main__":

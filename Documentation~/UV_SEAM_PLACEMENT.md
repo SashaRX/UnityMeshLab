@@ -81,6 +81,47 @@ bound 4.5, bijectivity on, farther two-point initialization. Это миниму
 3D-площади. У свободного OptCuts оно 1.436 / 10.241; у piecewise — 1.260 / 7.401.
 Отсутствие overlaps не означает приемлемого distortion или правильных швов.
 
+## Piecewise OptCuts: устранение слишком крупного шела
+
+В первом piecewise результате один chart занимал 63.54% 3D-площади поверхности.
+В нём объединялись различные кривые области; средний symmetric Dirichlet bound
+не ограничивал локальное растяжение. Введён новый автоматический вариант:
+авторское semantic hierarchy PartUV делится по 3D-площади, пересекается с
+обязательными planar boundaries, затем каждый connected patch решается OptCuts.
+Distortion bound снижен с 4.5 до 4.15. 3D positions/triangulation сохранены.
+
+| Вариант | Charts | Крупнейший chart, 3D-площадь | Mean / worst stretch | V1 recall / F1 | Overlaps |
+|---|---:|---:|---:|---:|---:|
+| Первый piecewise | 12 | 63.54% | 1.260 / 7.401 | 36.37% / 0.357 | 0 |
+| Area cap 15%, Ed 4.15 | 28 | 12.45% | 1.084 / 3.764 | 49.74% / 0.347 | 0 |
+| Area cap 20%, Ed 4.15 | 25 | 16.55% | 1.076 / 3.716 | 49.74% / 0.361 | 0 |
+| Area cap 30%, Ed 4.15 | 17 | 24.09% | 1.099 / 3.674 | 38.60% / 0.321 | 0 |
+| Area cap 20%, Ed 4.05 | 25 | 16.55% | 1.158 / 3.416 | 51.93% / 0.367 | 0 |
+
+Это совместное изменение partitioning и distortion bound; таблица не выделяет
+их независимый причинный вклад. Структурные швы не удаляются ради cap. Если
+одна исходная грань превышает лимит, это явный leaf exception; на этой сетке
+исключений нет. [Новые рендеры](UV_OPTCUTS_BOUNDED.png),
+[качество](UV_OPTCUTS_BOUNDED.csv), [seam scores](UV_OPTCUTS_BOUNDED_SEAMS.csv).
+
+Triangle aspect определяется как `sqrt(3)*longestSide²/(4*area)` (equilateral = 1).
+На этой исходной сетке 37 faces уже имеют aspect >10. Дополнительное UV-вытягивание
+выделяется, когда UV aspect >10 и >1.5× собственного 3D aspect: первый piecewise
+даёт 20 таких faces, cap 20% — 5, ручной V1 — тоже 5. Их доля 3D-площади
+0.187% → 0.072% (ручной V1 0.035%). Худший UV aspect остаётся около 52, потому
+что такие треугольники есть в самой сетке. Это diagnostic threshold, не критерий
+художественного качества всех швов. [Inherited/introduced slivers](UV_OPTCUTS_TRIANGLES.png).
+Сходство швов остаётся неполным; вариант исследовательский и пока не Unity default.
+
+Дополнительный прогон с теми же partitions cap 20%, но Ed 4.05, уменьшил
+UV-induced slivers до 2 (0.014% 3D-площади) и улучшил worst stretch 3.716 → 3.416.
+Однако mean stretch ухудшился 1.076 → 1.158, fill снизился 51.13% → 49.05%.
+Seam F1 повысился лишь 0.361 → 0.367. Это не безусловно лучший preset:
+ограничение энергии OptCuts не является ограничением нашей отдельной stretch
+метрики. Оба результата сохранены для визуальной оценки; UV relax сам по себе
+не изменит художественно неверный путь шва. Следующее улучшение должно выбирать
+разрезы по структурным границам и локальному distortion, а не одной площади шела.
+
 ## Другие проверки и вывод для следующего изменения
 
 Отдельно реализованы geometry-only normal-proxy graph cuts, shape-thickness
@@ -118,10 +159,11 @@ pipeline в распространяемый commercial Unity package. Чужо�
 
 ## Проверка и рендеры
 
-11 Python checks: geometry correspondence, UV continuity при duplicate normals,
+13 Python checks: geometry correspondence, UV continuity при duplicate normals,
 truncated captures, closed manifold gate, length weighting, near-segment distance,
 graph-cut exhaustive oracle/energy decrease, adjacent intra-chart folds и boundary
-fan splitting. Standalone C++ probe собран успешно. Для каждого полного UV
+fan splitting, surface-area hierarchy bound и scale-invariant triangle aspect.
+Standalone C++ probe собран успешно. Для каждого полного UV
 проверены positive-area triangle intersections, mixed winding, zero area и bounds.
 Это не новый Unity Editor test run: production Editor/Native~/Plugins не менялись.
 

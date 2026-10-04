@@ -131,7 +131,8 @@ def main():
     (args.out / "quality.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
     pages = []
     for start in range(0, len(overview), 12):
-        fig, axes = plt.subplots(3, 4, figsize=(18, 15), layout="constrained")
+        page_rows = (min(12, len(overview)-start)+3)//4
+        fig, axes = plt.subplots(page_rows, 4, figsize=(18, 5*page_rows), layout="constrained", squeeze=False)
         for ax in axes.flat:
             ax.set_axis_off()
         for ax, (name, triangles, charts, flagged, row) in zip(axes.flat, overview[start:start+12]):

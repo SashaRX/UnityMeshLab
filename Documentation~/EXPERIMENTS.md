@@ -5,6 +5,16 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **Крупный piecewise OptCuts shell (продолжение Exp #1):** semantic hierarchy
+  делится по surface-area cap и пересекается с mandatory planar regions. При
+  cap 20% / symmetric Dirichlet 4.15 крупнейший chart сокращён 63.54% → 16.55%,
+  mean/worst 1.260/7.401 → 1.076/3.716, UV-induced sliver faces 20 → 5,
+  zero overlaps. Сетка/грани не изменены; 37 intrinsically elongated faces
+  остаются. Более строгий Ed 4.05 при тех же partitions даёт 2 UV-induced faces,
+  но ухудшает mean stretch до 1.158 и fill до 49.05% (Ed 4.15: 51.13%).
+  Сохранены рендеры cap 15/20/30%, Ed 4.05 и сравнение с первым piecewise;
+  seam parity всё ещё неполная, в Unity defaults метод не включён.
+
 - **Расположение швов 2026-10-04 (продолжение Exp #1):** сравнение по длине
   швов на одинаковой 1856-face геометрии подтверждает ухудшение recall после
   merge: V1 50.12% → 30.17%, V2 52.45% → 29.80%. Проверены полный PartUV
