@@ -251,7 +251,7 @@ namespace SashaRX.UnityMeshLab
         {
             var a = target.uv[target.indices[face * 3 + corner]];
             var b = target.uv[target.indices[otherFace * 3 + otherCorner]];
-            return !float.IsNaN(a.x) && !float.IsNaN(a.y) && a.x.Equals(b.x) && a.y.Equals(b.y);
+            return !float.IsNaN(a.x) && !float.IsNaN(a.y) && a.x.CompareTo(b.x) == 0 && a.y.CompareTo(b.y) == 0;
         }
 
         static bool ContainsPixel(Triangle triangle, int x, int y) =>
@@ -411,7 +411,7 @@ namespace SashaRX.UnityMeshLab
             public double Length => Math.Sqrt(x * x + y * y + z * z);
             public Vector Unit() { double length = Length; return length > 0 ? this / length : default; }
             public bool Equals(Vector other) => !double.IsNaN(x) && !double.IsNaN(y) && !double.IsNaN(z) &&
-                x.Equals(other.x) && y.Equals(other.y) && z.Equals(other.z);
+                x.CompareTo(other.x) == 0 && y.CompareTo(other.y) == 0 && z.CompareTo(other.z) == 0;
             public static Vector operator -(Vector a, Vector b) => new Vector(a.x - b.x, a.y - b.y, a.z - b.z);
             public static Vector operator *(Vector a, double b) => new Vector(a.x * b, a.y * b, a.z * b);
             public static Vector operator /(Vector a, double b) => new Vector(a.x / b, a.y / b, a.z / b);

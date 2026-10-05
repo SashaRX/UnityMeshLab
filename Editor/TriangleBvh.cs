@@ -460,8 +460,10 @@ namespace SashaRX.UnityMeshLab
                     // closer to the target than the current outer-layer hit.
                     if (!Watertight(in frame, origin, verts[a], verts[b], verts[c], maxT, out float t, out Vector3 bary)) continue;
                     float candidate = Mathf.Abs(t - preferredT);
-                    if (candidate > distance || (candidate == distance && best.triangleIndex >= 0
-                        && (t > best.t || (t == best.t && f >= best.triangleIndex)))) continue;
+                    int distanceOrder = candidate.CompareTo(distance);
+                    int hitOrder = t.CompareTo(best.t);
+                    if (distanceOrder > 0 || (distanceOrder == 0 && best.triangleIndex >= 0
+                        && (hitOrder > 0 || (hitOrder == 0 && f >= best.triangleIndex)))) continue;
                     distance = candidate;
                     best = new RayHit { triangleIndex = f, t = t, barycentric = bary };
                 }

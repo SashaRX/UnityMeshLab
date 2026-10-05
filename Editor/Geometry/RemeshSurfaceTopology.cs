@@ -46,9 +46,9 @@ namespace SashaRX.UnityMeshLab
         {
             readonly PositionKey a, b, c;
 
-            FaceKey(PositionKey a, PositionKey b, PositionKey c)
+            FaceKey(PositionKey first, PositionKey second, PositionKey third)
             {
-                this.a = a; this.b = b; this.c = c;
+                a = first; b = second; c = third;
             }
 
             internal static FaceKey Create(Vector3 a, Vector3 b, Vector3 c, out int rotation)
@@ -63,7 +63,7 @@ namespace SashaRX.UnityMeshLab
                 rotation = 0; return new FaceKey(ka, kb, kc);
             }
 
-            internal FaceKey Reversed => new FaceKey(a: a, b: c, c: b);
+            internal FaceKey Reversed => new FaceKey(first: a, second: c, third: b);
             public bool Equals(FaceKey other) => a.Equals(other.a) && b.Equals(other.b) && c.Equals(other.c);
             public override bool Equals(object obj) => obj is FaceKey other && Equals(other);
             public override int GetHashCode() => unchecked(((a.GetHashCode() * 397) ^ b.GetHashCode()) * 397 ^ c.GetHashCode());
