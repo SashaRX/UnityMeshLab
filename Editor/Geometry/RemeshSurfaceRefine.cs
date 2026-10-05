@@ -343,7 +343,7 @@ namespace SashaRX.UnityMeshLab
                     // alone could otherwise slide a corner along another surface.
                     if (source.FeaturePoint(hit.triangleIndex, p[v], cell * .2f, out _)) continue;
                     var original = p[v];
-                    var baseline = RingError(source, p, ix, fans[v], reach);
+                    var baseline = RingError(source, p, ix, fans[v], reach, v, original);
                     if (!double.IsFinite(baseline.meanSquared)) continue;
                     var best = baseline; var bestPoint = original;
                     var candidates = new[] { hit.point,
@@ -358,10 +358,8 @@ namespace SashaRX.UnityMeshLab
                             var next = original + (target - original) * (1f / (1 << trial));
                             if ((next - original).sqrMagnitude < cell * cell * 1e-10f ||
                                 !SafeRingMotion(p, ix, v, next, fans[v])) continue;
-                            p[v] = next;
                             var vertexHit = source.Nearest(next, normals[v], reach);
-                            var measured = RingError(source, p, ix, fans[v], reach);
-                            p[v] = original;
+                            var measured = RingError(source, p, ix, fans[v], reach, v, next);
                             if (vertexHit.triangleIndex < 0 || Mathf.Sqrt(vertexHit.distSq) > Mathf.Max(Mathf.Sqrt(hit.distSq) + cell * .1f, cell * .5f) ||
                                 measured.max > baseline.max + cell * .005f || measured.meanSquared >= best.meanSquared * .99) continue;
                             best = measured; bestPoint = next;
@@ -385,11 +383,17 @@ namespace SashaRX.UnityMeshLab
             return new RemeshNative.IndexedMesh { positions = p, indices = (int[])ix.Clone() }.PrepareChannels(token);
         }
 
-        static (double meanSquared, float max) RingError(Source source, Vector3[] p, int[] ix, List<int> faces, float reach)
+        static Vector3 PositionAt(Vector3[] p, int index, int vertex, Vector3 target)
+            => index == vertex ? target : p[index];
+
+        static (double meanSquared, float max) RingError(Source source, Vector3[] p, int[] ix, List<int> faces, float reach,
+            int vertex, Vector3 target)
         {
             double sum = 0, area = 0; float max = 0;
             foreach (int f in faces) {
-                var a = p[ix[f * 3]]; var b = p[ix[f * 3 + 1]]; var c = p[ix[f * 3 + 2]];
+                var a = PositionAt(p, ix[f * 3], vertex, target);
+                var b = PositionAt(p, ix[f * 3 + 1], vertex, target);
+                var c = PositionAt(p, ix[f * 3 + 2], vertex, target);
                 var cross = Vector3.Cross(b - a, c - a); double weight = cross.magnitude;
                 var error = SurfaceError(source, a, b, c, MeshGeometry.UnitDirection(cross), reach);
                 sum += error.meanSquared * weight; area += weight; max = Mathf.Max(max, error.max);
@@ -399,18 +403,18 @@ namespace SashaRX.UnityMeshLab
 
         static bool SafeRingMotion(Vector3[] p, int[] ix, int v, Vector3 target, List<int> faces)
         {
-            var previous = p[v]; bool safe = true;
             foreach (int f in faces) {
                 var oldCross = Cross(p, ix, f);
                 float quality = Quality(p[ix[f * 3]], p[ix[f * 3 + 1]], p[ix[f * 3 + 2]]);
-                p[v] = target;
-                var newCross = Cross(p, ix, f);
-                float nextQuality = Quality(p[ix[f * 3]], p[ix[f * 3 + 1]], p[ix[f * 3 + 2]]);
-                p[v] = previous;
+                var a = PositionAt(p, ix[f * 3], v, target);
+                var b = PositionAt(p, ix[f * 3 + 1], v, target);
+                var c = PositionAt(p, ix[f * 3 + 2], v, target);
+                var newCross = Vector3.Cross(b - a, c - a);
+                float nextQuality = Quality(a, b, c);
                 if (Vector3.Dot(oldCross, newCross) <= .75f * oldCross.magnitude * newCross.magnitude ||
-                    newCross.sqrMagnitude < oldCross.sqrMagnitude * .64f || nextQuality < quality * .8f) { safe = false; break; }
+                    newCross.sqrMagnitude < oldCross.sqrMagnitude * .64f || nextQuality < quality * .8f) return false;
             }
-            return safe;
+            return true;
         }
 
         // This final pass changes connectivity only. Its acceptance must not
