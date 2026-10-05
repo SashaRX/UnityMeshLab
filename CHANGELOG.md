@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.11] - 2026-10-05
+
+### Fixed
+- Simplify compares both diagonals of coarse organic patches against the captured source surface after vertex fitting. Curvature can drive a diagonal change without requiring better triangle shape; the final pass preserves vertex positions, face count, boundaries and component topology, and retains the sampled surface-error gates.
+
 ## [1.1.10] - 2026-10-05
 
 ### Fixed

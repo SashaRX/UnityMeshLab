@@ -9,6 +9,51 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         [TestCase(1f)]
         [TestCase(.001f)]
+        public void CurvedPatchChoosesSourceDiagonalEvenWithEqualTriangleQuality(float scale)
+        {
+            var p = new[] { new Vector3(-1,0,0), new Vector3(1,0,0), new Vector3(0,1,.2f), new Vector3(0,-1,.2f) };
+            for (int v = 0; v < p.Length; v++) p[v] *= scale;
+            var old = new[] { 0,1,2, 1,0,3 }; var correct = new[] { 2,3,1, 3,2,0 };
+            var input = new RemeshNative.IndexedMesh { positions = p, indices = old };
+            Assert.That(RemeshSurfaceRefine.Quality(p[0],p[1],p[2]), Is.EqualTo(RemeshSurfaceRefine.Quality(p[2],p[3],p[1])).Within(1e-6f));
+            var result = RemeshSurfaceRefine.Retriangulate(input,p,correct,scale * .1f,CancellationToken.None,out var report);
+            Assert.AreEqual(1,report.flips); Assert.IsFalse(report.reverted);
+            CollectionAssert.AreEqual(correct,result.indices); CollectionAssert.AreEqual(p,result.positions);
+            CollectionAssert.AreEqual(new[] { 0,1,2, 1,0,3 },input.indices);
+            var before = RemeshTopology.Inspect(p,old); var after = RemeshTopology.Inspect(result.positions,result.indices);
+            Assert.IsTrue(after.Valid,after.Description); Assert.IsTrue(after.PreservesBoundary(before)); Assert.IsTrue(after.PreservesComponents(before,false));
+            var repeat = RemeshSurfaceRefine.Retriangulate(input,p,correct,scale * .1f,CancellationToken.None,out _);
+            CollectionAssert.AreEqual(result.indices,repeat.indices);
+            var stable = RemeshSurfaceRefine.Retriangulate(result,p,correct,scale * .1f,CancellationToken.None,out var again);
+            Assert.AreEqual(0,again.flips); CollectionAssert.AreEqual(result.indices,stable.indices);
+        }
+
+        [TestCase(1f)]
+        [TestCase(.001f)]
+        public void DoesNotTradeExactSourceFitForBetterTriangleShape(float scale)
+        {
+            var p = new[] { new Vector3(0,0,0), new Vector3(2,0,0), new Vector3(2,1,.15f), new Vector3(0,.2f,0) };
+            for (int v = 0; v < p.Length; v++) p[v] *= scale;
+            var ix = new[] { 0,1,2, 0,2,3 }; var input = new RemeshNative.IndexedMesh { positions = p, indices = ix };
+            var result = RemeshSurfaceRefine.Retriangulate(input,p,ix,scale * .1f,CancellationToken.None,out var report);
+            Assert.AreEqual(0,report.flips); CollectionAssert.AreEqual(ix,result.indices); CollectionAssert.AreEqual(p,result.positions);
+        }
+
+        [TestCase(1f)]
+        [TestCase(.001f)]
+        public void PlanarSourceDoesNotSpendTriangleQualityOnFitNoise(float scale)
+        {
+            var p = new[] { new Vector3(-.9f,0,0), new Vector3(.9f,0,0), new Vector3(0,1,.02f), new Vector3(0,-1,.02f) };
+            var source = (Vector3[])p.Clone(); source[0].z = source[1].z = .02f;
+            for (int v = 0; v < p.Length; v++) { p[v] *= scale; source[v] *= scale; }
+            var ix = new[] { 0,1,2, 1,0,3 }; var input = new RemeshNative.IndexedMesh { positions = p, indices = ix };
+            Assert.Less(RemeshSurfaceRefine.Quality(p[2],p[3],p[1]), RemeshSurfaceRefine.Quality(p[0],p[1],p[2]));
+            var result = RemeshSurfaceRefine.Retriangulate(input,source,ix,scale * .1f,CancellationToken.None,out var report);
+            Assert.AreEqual(0,report.flips); CollectionAssert.AreEqual(ix,result.indices); CollectionAssert.AreEqual(p,result.positions);
+        }
+
+        [TestCase(1f)]
+        [TestCase(.001f)]
         public void FlipsBadPlanarDiagonalWithoutMovingBoundary(float scale)
         {
             var p = new[] { new Vector3(0, 0, 0), new Vector3(2, 0, 0), new Vector3(2, 1, 0), new Vector3(0, .2f, 0) };
@@ -125,6 +170,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var result = RemeshSurfaceRefine.Apply(mesh, p, ix, .1f, CancellationToken.None, out var report);
             Assert.AreEqual(0, report.flips); CollectionAssert.AreEqual(ix, result.indices);
             CollectionAssert.AreEqual(p, result.positions);
+            var unchangedFold = RemeshSurfaceRefine.Retriangulate(mesh, p, ix, .1f, CancellationToken.None, out var diagonal);
+            Assert.AreEqual(0, diagonal.flips); CollectionAssert.AreEqual(ix, unchangedFold.indices);
             // Every source face points backwards; a front-facing target must not jump to it.
             var front = new RemeshNative.IndexedMesh {
                 positions = new[] { new Vector3(-1, -1, 0), new Vector3(1, -1, 0), new Vector3(1, 1, 0), new Vector3(-1, 1, 0), Vector3.zero },
@@ -145,6 +192,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var ix = new[] { 0, 1, 2 }; var input = new RemeshNative.IndexedMesh { positions = p, indices = ix };
             using var cancel = new CancellationTokenSource(); cancel.Cancel();
             Assert.Throws<OperationCanceledException>(() => RemeshSurfaceRefine.Apply(input, p, ix, .1f, cancel.Token, out _));
+            Assert.Throws<OperationCanceledException>(() => RemeshSurfaceRefine.Retriangulate(input, p, ix, .1f, cancel.Token, out _));
             CollectionAssert.AreEqual(new[] { 0, 1, 2 }, ix);
         }
 
@@ -154,6 +202,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var p = new[] { Vector3.zero, Vector3.right, Vector3.up };
             var ix = new[] { 0, 1, 2, 0, 1, 2 }; var input = new RemeshNative.IndexedMesh { positions = p, indices = ix };
             Assert.AreSame(input, RemeshSurfaceRefine.Apply(input, p, ix, .1f, CancellationToken.None, out _));
+            Assert.AreSame(input, RemeshSurfaceRefine.Retriangulate(input, p, ix, .1f, CancellationToken.None, out _));
         }
 
         [Test]

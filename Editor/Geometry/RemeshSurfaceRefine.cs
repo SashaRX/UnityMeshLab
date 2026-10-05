@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
 {
-    /// <summary>Redistributes voxel triangles on the captured surface before decimation.</summary>
+    /// <summary>Fits voxel vertices and chooses source-aligned diagonals before and after decimation.</summary>
     internal static class RemeshSurfaceRefine
     {
         internal struct Report
@@ -45,7 +45,9 @@ namespace SashaRX.UnityMeshLab
             }
             var result = Apply(candidate, sourcePositions, sourceIndices, cell, token, out var post);
             Log(post, cell, "after simplify");
-            return result;
+            var aligned = Retriangulate(result, sourcePositions, sourceIndices, cell, token, out var triangles);
+            Log(triangles, cell, "source-aligned triangulation");
+            return aligned;
         }
 
         static void Log(Report report, float cell, string phase)
@@ -297,13 +299,42 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
-        static int Flip(Vector3[] p, int[] ix, Source source, float cell, float minCross, CancellationToken token)
+        // This final pass changes connectivity only. Its acceptance must not
+        // depend on a different accepted vertex-motion backtrack.
+        internal static RemeshNative.IndexedMesh Retriangulate(RemeshNative.IndexedMesh input,
+            Vector3[] sourcePositions, int[] sourceIndices, float cell, CancellationToken token, out Report report)
+        {
+            token.ThrowIfCancellationRequested(); report = default;
+            if (!(cell > 0) || !float.IsFinite(cell) || input.TriangleCount == 0 || sourceIndices.Length == 0) return input;
+            var before = RemeshTopology.Inspect(input.positions, input.indices, token);
+            if (!before.Valid || new HashSet<Vector3>(input.positions).Count != input.positions.Length) return input;
+            var p = input.positions; var ix = (int[])input.indices.Clone();
+            var low = p[0]; var high = low;
+            foreach (var point in p) { low = Vector3.Min(low, point); high = Vector3.Max(high, point); }
+            var span = high - low; float extent = Mathf.Max(span.x, Mathf.Max(span.y, span.z)) + cell * .7f;
+            float minCross = extent * extent * 4.76837158203125e-7f;
+            report.meanQualityBefore = MeanQuality(p, ix);
+            var source = new Source(sourcePositions, sourceIndices, token);
+            for (int pass = 0; pass < 4; pass++) report.flips += Flip(p, ix, source, cell, minCross, token, true);
+            report.meanQualityAfter = MeanQuality(p, ix);
+            if (report.flips == 0) return input;
+            var after = RemeshTopology.Inspect(p, ix, token);
+            bool surface = PreservesSurface(source.bvh, sourcePositions, sourceIndices, p, input.indices, p, ix, cell, token, out var reason);
+            if (!after.Valid || !after.PreservesBoundary(before) || !after.PreservesComponents(before, false) || !surface) {
+                report.reverted = true; report.rejectionReason = !surface ? reason : after.Description;
+                report.meanQualityAfter = report.meanQualityBefore; return input;
+            }
+            return new RemeshNative.IndexedMesh { positions = (Vector3[])p.Clone(), indices = ix }.PrepareChannels(token);
+        }
+
+        static int Flip(Vector3[] p, int[] ix, Source source, float cell, float minCross, CancellationToken token, bool sourceAligned = false)
         {
             var data = RemeshTopology.Inspect(p, ix, token);
             var used = new bool[ix.Length / 3]; int flips = 0;
             var edges = new List<KeyValuePair<(int, int), RemeshTopology.Edge>>(data.edges);
-            foreach (var pair in edges) {
-                if ((flips & 255) == 0) token.ThrowIfCancellationRequested();
+            for (int e = 0; e < edges.Count; e++) {
+                if ((e & 255) == 0) token.ThrowIfCancellationRequested();
+                var pair = edges[e];
                 var edge = pair.Value;
                 if (edge.count != 2 || used[edge.firstFace] || used[edge.secondFace]) continue;
                 int f = edge.firstFace, g = edge.secondFace;
@@ -313,23 +344,40 @@ namespace SashaRX.UnityMeshLab
                 for (int k = 0; k < 3; k++) if (ix[g * 3 + k] != a && ix[g * 3 + k] != b) d = ix[g * 3 + k];
                 if (d < 0 || data.edges.ContainsKey(Key(data.slots[c], data.slots[d]))) continue;
                 var n0 = MeshGeometry.UnitDirection(Cross(p, ix, f)); var n1 = MeshGeometry.UnitDirection(Cross(p, ix, g));
-                if (Vector3.Dot(n0, n1) < .9f) continue;
+                // A decimated organic surface need not be almost planar. Keep
+                // sharp folds, but let the source choose a diagonal on a bend.
+                float normalLimit = sourceAligned ? .75f : .9f;
+                if (Vector3.Dot(n0, n1) < normalLimit) continue;
+                float reach = sourceAligned ? Mathf.Max(cell * 2, Mathf.Max((p[a] - p[b]).magnitude, (p[c] - p[d]).magnitude) * .5f) : cell * 1.5f;
                 var midpoint = (p[a] + p[b]) * .5f;
-                var seam = source.Nearest(midpoint, MeshGeometry.UnitDirection(n0 + n1), cell * 1.5f);
+                var seam = source.Nearest(midpoint, MeshGeometry.UnitDirection(n0 + n1), reach);
                 if (seam.triangleIndex >= 0 && source.FeaturePoint(seam.triangleIndex, midpoint, cell * .025f, out _)) continue;
                 float before = Mathf.Min(Quality(p[a], p[b], p[c]), Quality(p[b], p[a], p[d]));
                 float after = Mathf.Min(Quality(p[c], p[d], p[b]), Quality(p[d], p[c], p[a]));
-                if (after <= before * 1.02f) continue;
+                // Never replace a usable patch with slivers for a small fit gain.
+                if (sourceAligned ? after < Mathf.Min(.05f, before) || after < before * .8f : after <= before * 1.02f) continue;
+                // On the dense voxel grid there is little curvature to recover
+                // within one cell. Reserve the extra fit search for coarse edges.
+                if (sourceAligned && after <= before * 1.02f && reach <= cell * 2) continue;
                 var cross0 = Vector3.Cross(p[d] - p[c], p[b] - p[c]); var cross1 = Vector3.Cross(p[c] - p[d], p[a] - p[d]);
                 if (cross0.magnitude < minCross || cross1.magnitude < minCross) continue;
                 var m0 = MeshGeometry.UnitDirection(cross0); var m1 = MeshGeometry.UnitDirection(cross1);
-                if (Vector3.Dot(m0, n0) < .9f || Vector3.Dot(m1, n1) < .9f) continue;
-                var s0 = source.Nearest((p[a] + p[b] + p[c]) / 3, n0, cell * 1.5f);
-                var s1 = source.Nearest((p[b] + p[a] + p[d]) / 3, n1, cell * 1.5f);
-                if (s0.triangleIndex < 0 || s1.triangleIndex < 0 || Vector3.Dot(source.normals[s0.triangleIndex], source.normals[s1.triangleIndex]) < .95f) continue;
-                float baseline = Mathf.Max(SurfaceError(source, p[a], p[b], p[c], n0, cell), SurfaceError(source, p[b], p[a], p[d], n1, cell));
-                float candidate = Mathf.Max(SurfaceError(source, p[c], p[d], p[b], m0, cell), SurfaceError(source, p[d], p[c], p[a], m1, cell));
-                if (candidate > baseline + cell * .025f || float.IsInfinity(candidate)) continue;
+                if (Vector3.Dot(m0, n0) < normalLimit || Vector3.Dot(m1, n1) < normalLimit || sourceAligned && Vector3.Dot(m0, m1) < .75f) continue;
+                var s0 = source.Nearest((p[a] + p[b] + p[c]) / 3, n0, reach);
+                var s1 = source.Nearest((p[b] + p[a] + p[d]) / 3, n1, reach);
+                if (s0.triangleIndex < 0 || s1.triangleIndex < 0 || Vector3.Dot(source.normals[s0.triangleIndex], source.normals[s1.triangleIndex]) < (sourceAligned ? .75f : .95f)) continue;
+                bool sourceBend = Vector3.Dot(source.normals[s0.triangleIndex], source.normals[s1.triangleIndex]) < .999f;
+                if (sourceAligned && !sourceBend) {
+                    // Centroids can both project onto the same side of a ridge.
+                    // Also probe opposite interiors before calling it planar.
+                    var left = source.Nearest(p[a] * .5f + (p[b] + p[c]) * .25f, n0, reach);
+                    var right = source.Nearest(p[b] * .5f + (p[a] + p[d]) * .25f, n1, reach);
+                    if (left.triangleIndex >= 0 && right.triangleIndex >= 0) {
+                        float dot = Vector3.Dot(source.normals[left.triangleIndex], source.normals[right.triangleIndex]);
+                        sourceBend = dot >= .75f && dot < .999f;
+                    }
+                }
+                if (!ImprovesPatch(source, p, a, b, c, d, n0, n1, m0, m1, before, after, reach, cell, sourceAligned, sourceBend)) continue;
                 ix[f * 3] = c; ix[f * 3 + 1] = d; ix[f * 3 + 2] = b;
                 ix[g * 3] = d; ix[g * 3 + 1] = c; ix[g * 3 + 2] = a;
                 used[f] = used[g] = true;
@@ -337,6 +385,36 @@ namespace SashaRX.UnityMeshLab
                 flips++;
             }
             return flips;
+        }
+
+        static bool ImprovesPatch(Source source, Vector3[] p, int a, int b, int c, int d, Vector3 n0, Vector3 n1, Vector3 m0, Vector3 m1,
+            float before, float after, float reach, float cell, bool sourceAligned, bool sourceBend)
+        {
+            if (sourceAligned) {
+                var baseline = PatchError(source, p[a], p[b], p[c], p[d], n0, n1, reach);
+                var candidate = PatchError(source, p[c], p[d], p[b], p[a], m0, m1, reach);
+                if (!float.IsFinite(candidate.max) || candidate.max > baseline.max + cell * .025f) return false;
+                // Fit has priority over triangle shape on curved patches. On a
+                // flat patch, accept a shape gain only with essentially equal fit.
+                double noise = (double)cell * cell * 1e-8;
+                bool betterFit = sourceBend && candidate.meanSquared + noise < baseline.meanSquared * .9;
+                bool betterShape = after > before * 1.02f && candidate.meanSquared <= baseline.meanSquared * 1.02 + noise;
+                return betterFit || betterShape;
+            }
+            float oldError = Mathf.Max(CoarseSurfaceError(source, p[a], p[b], p[c], n0, cell), CoarseSurfaceError(source, p[b], p[a], p[d], n1, cell));
+            float newError = Mathf.Max(CoarseSurfaceError(source, p[c], p[d], p[b], m0, cell), CoarseSurfaceError(source, p[d], p[c], p[a], m1, cell));
+            return float.IsFinite(newError) && newError <= oldError + cell * .025f;
+        }
+
+        static float CoarseSurfaceError(Source source, Vector3 a, Vector3 b, Vector3 c, Vector3 normal, float cell)
+        {
+            float error = 0;
+            foreach (var point in new[] { (a + b) * .5f, (b + c) * .5f, (c + a) * .5f, (a + b + c) / 3 }) {
+                var hit = source.Nearest(point, normal, cell * 2);
+                if (hit.triangleIndex < 0) return float.PositiveInfinity;
+                error = Mathf.Max(error, Mathf.Sqrt(hit.distSq));
+            }
+            return error;
         }
 
         static int DirectedCorner(int[] ix, int face, (int, int) edge, int[] slots)
@@ -348,15 +426,30 @@ namespace SashaRX.UnityMeshLab
             throw new InvalidOperationException("Missing refinement edge.");
         }
 
-        static float SurfaceError(Source source, Vector3 a, Vector3 b, Vector3 c, Vector3 normal, float cell)
+        static (double meanSquared, float max) PatchError(Source source, Vector3 a, Vector3 b, Vector3 c, Vector3 d,
+            Vector3 n0, Vector3 n1, float reach)
         {
-            float error = 0;
-            foreach (var point in new[] { (a + b) * .5f, (b + c) * .5f, (c + a) * .5f, (a + b + c) / 3 }) {
-                var hit = source.Nearest(point, normal, cell * 2);
-                if (hit.triangleIndex < 0) return float.PositiveInfinity;
-                error = Mathf.Max(error, Mathf.Sqrt(hit.distSq));
+            var first = SurfaceError(source, a, b, c, n0, reach);
+            var second = SurfaceError(source, b, a, d, n1, reach);
+            double w0 = Vector3.Cross(b - a, c - a).magnitude, w1 = Vector3.Cross(a - b, d - b).magnitude;
+            return ((first.meanSquared * w0 + second.meanSquared * w1) / (w0 + w1), Mathf.Max(first.max, second.max));
+        }
+
+        static (double meanSquared, float max) SurfaceError(Source source, Vector3 a, Vector3 b, Vector3 c, Vector3 normal, float reach)
+        {
+            double sum = 0; float maxSquared = 0;
+            // Probe the diagonal along its length and the triangle interior;
+            // one centroid can miss the bulge that a long chin edge cuts across.
+            var points = new[] { (a + b) * .5f, a * .75f + b * .25f, a * .25f + b * .75f,
+                (b + c) * .5f, b * .75f + c * .25f, b * .25f + c * .75f,
+                (c + a) * .5f, c * .75f + a * .25f, c * .25f + a * .75f,
+                (a + b + c) / 3, a * .5f + (b + c) * .25f, b * .5f + (a + c) * .25f, c * .5f + (a + b) * .25f };
+            foreach (var point in points) {
+                var hit = source.Nearest(point, normal, reach);
+                if (hit.triangleIndex < 0) return (double.PositiveInfinity, float.PositiveInfinity);
+                sum += hit.distSq; maxSquared = Mathf.Max(maxSquared, hit.distSq);
             }
-            return error;
+            return (sum / points.Length, Mathf.Sqrt(maxSquared));
         }
 
         static (int, int) Key(int a, int b) => a < b ? (a, b) : (b, a);
