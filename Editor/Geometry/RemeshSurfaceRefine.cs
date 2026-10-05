@@ -430,7 +430,7 @@ namespace SashaRX.UnityMeshLab
             Vector3 n0, Vector3 n1, float reach)
         {
             var first = SurfaceError(source, a, b, c, n0, reach);
-            var second = SurfaceError(source, b, a, d, n1, reach);
+            var second = SurfaceError(source, a, b, d, n1, reach);
             double w0 = Vector3.Cross(b - a, c - a).magnitude, w1 = Vector3.Cross(a - b, d - b).magnitude;
             return ((first.meanSquared * w0 + second.meanSquared * w1) / (w0 + w1), Mathf.Max(first.max, second.max));
         }
