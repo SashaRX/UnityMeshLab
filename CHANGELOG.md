@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.16] - 2026-10-05
+
+### Fixed
+- Preserve positive-area voxel triangles below the model-relative Simplify cleanup threshold. Dense solid remesh outputs stay closed before source trimming, with and without source fitting; exact collapsed faces and non-finite data remain rejected by cleanup/topology guards. Native plugins require the matching Build Native Libraries result.
+
 ## [1.1.15] - 2026-10-05
 
 ### Fixed

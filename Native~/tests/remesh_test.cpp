@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <unordered_map>
 #include <vector>
 extern "C" int meshLabRemeshVersion();
@@ -86,7 +87,74 @@ static uint32_t checkHighResolutionBox(const float* cube, const uint32_t* triang
               << ": " << vertices << " vertices, " << indexCount / 3 << " triangles\n";
     return indexCount / 3;
 }
-int main() {
+// A rotated, closed box makes a valid voxel triangle smaller than the old
+// model-relative cleanup floor. Its deletion used to open the fitted solid
+// even at resolution 48; dense grids can lose unfitted triangles as well.
+static void checkVoxelSlivers(int resolution, uint32_t flags, float scale) {
+    float points[] = {
+        -0.0020011793822050095f, -0.001458699000068009f, -0.0001976821367861703f,
+         0.00184518878813833f, -0.0011100758565589786f, -0.0012387937167659402f,
+         0.0018915702821686864f, 0.0016025769291445613f, -0.00015908811474218965f,
+        -0.001954797888174653f, 0.0012539536692202091f, 0.0008820234215818346f,
+        -0.0018915702821686864f, -0.0016025769291445613f, 0.00015908811474218965f,
+         0.001954797888174653f, -0.0012539536692202091f, -0.0008820234215818346f,
+         0.0020011793822050095f, 0.001458699000068009f, 0.0001976821367861703f,
+        -0.00184518878813833f, 0.0011100758565589786f, 0.0012387937167659402f
+    };
+    uint32_t triangles[] = {0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4,
+        1,2,6, 1,6,5, 2,3,7, 2,7,6, 3,0,4, 3,4,7};
+    for (float& value : points) value *= scale;
+    void* handle = nullptr; uint32_t vertices = 0, count = 0;
+    check(meshLabVoxelRemesh(points, 8, triangles, 36, resolution, flags, &handle, &vertices, &count) == 0 && handle,
+        "voxel slivers: remesh");
+    std::vector<float> p(size_t(vertices) * 3);
+    std::vector<uint32_t> ix(count);
+    check(meshLabMeshCopy(handle, p.data(), vertices, ix.data(), count) == 0, "voxel slivers: copy");
+    meshLabMeshDestroy(handle);
+    double minArea = std::numeric_limits<double>::max(), extent = 0;
+    for (int k = 0; k < 3; ++k) {
+        float lo = p[k], hi = p[k];
+        for (uint32_t v = 0; v < vertices; ++v) {
+            float value = p[size_t(v) * 3 + k];
+            check(std::isfinite(value), "voxel slivers: finite position");
+            lo = std::min(lo, value); hi = std::max(hi, value);
+        }
+        extent = std::max(extent, double(hi) - lo);
+    }
+    std::unordered_map<uint64_t, std::pair<int, int>> edges;
+    for (size_t f = 0; f < ix.size(); f += 3) {
+        uint32_t a = ix[f], b = ix[f + 1], c = ix[f + 2];
+        check(a < vertices && b < vertices && c < vertices, "voxel slivers: valid indices");
+        check(a != b && a != c && b != c, "voxel slivers: distinct corners");
+        double ab[3], ac[3];
+        for (int k = 0; k < 3; ++k) {
+            ab[k] = double(p[size_t(b) * 3 + k]) - p[size_t(a) * 3 + k];
+            ac[k] = double(p[size_t(c) * 3 + k]) - p[size_t(a) * 3 + k];
+        }
+        double x = ab[1] * ac[2] - ab[2] * ac[1], y = ab[2] * ac[0] - ab[0] * ac[2], z = ab[0] * ac[1] - ab[1] * ac[0];
+        double area = .5 * std::sqrt(x*x + y*y + z*z);
+        check(std::isfinite(area) && area > 0, "voxel slivers: positive triangle area");
+        minArea = std::min(minArea, area);
+        uint32_t corners[] = {a, b, c, a};
+        for (int k = 0; k < 3; ++k) {
+            uint32_t lo = std::min(corners[k], corners[k + 1]), hi = std::max(corners[k], corners[k + 1]);
+            auto& edge = edges[(uint64_t(lo) << 32) | hi];
+            ++edge.first; edge.second += corners[k] < corners[k + 1] ? 1 : -1;
+        }
+    }
+    for (const auto& edge : edges)
+        check(edge.second.first == 2 && edge.second.second == 0, "voxel slivers: closed oriented surface");
+    if (resolution == 48 && flags == 1 && scale == 1)
+        check(minArea < extent * extent * std::numeric_limits<float>::epsilon(), "voxel slivers: retained regression face");
+    std::cout << "voxel slivers " << resolution << " flags " << flags << " scale " << scale
+              << ": " << count / 3 << " triangles, closed\n";
+}
+
+int main(int argc, char** argv) {
+    for (int resolution : {48, 512})
+        for (uint32_t flags : {0u, 1u})
+            for (float scale : {1.f, .001f}) checkVoxelSlivers(resolution, flags, scale);
+    if (argc == 2 && std::string(argv[1]) == "--voxel-slivers-only") return 0;
     float p[] = {-1,-1,-1, 1,-1,-1, 1,1,-1, -1,1,-1, -1,-1,1, 1,-1,1, 1,1,1, -1,1,1};
     uint32_t t[] = {0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5};
     check(meshLabRemeshVersion() == 3, "ABI version");

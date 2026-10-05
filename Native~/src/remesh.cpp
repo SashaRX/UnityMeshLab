@@ -84,7 +84,7 @@ int Voxelize(const float* positions, uint32_t vertexCount, const uint32_t* indic
 // generic unwrap failure makes one collapsed triangle abort the whole remesh.
 // Filter them using a relative area scale, then drop unreferenced vertices so every
 // later xref points at geometry that can own UVs.
-int Clean(PosMesh& m)
+int Clean(PosMesh& m, double relativeAreaFloor = double(FLT_EPSILON))
 {
     const size_t unique = m.pos.size() / 3;
     float lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
@@ -102,7 +102,7 @@ int Clean(PosMesh& m)
     if (!haveBounds) return Empty;
     const double extent = std::max(double(hi[0] - lo[0]), std::max(double(hi[1] - lo[1]), double(hi[2] - lo[2])));
     if (!std::isfinite(extent) || extent <= 0.0) return Empty;
-    const double minTriangleArea = extent * extent * double(FLT_EPSILON);
+    const double minTriangleArea = extent * extent * relativeAreaFloor;
 
     std::vector<unsigned int> cleaned;
     cleaned.reserve(m.idx.size());
@@ -378,7 +378,11 @@ EXPORT int meshLabVoxelRemesh(const float* positions, uint32_t vertexCount,
     try {
         auto mesh = std::make_unique<PosMesh>();
         if (int code = Voxelize(positions, vertexCount, indices, indexCount, resolution, RemeshOptions(flags), *mesh)) return code;
-        if (int code = Clean(*mesh)) return code;
+        // Dense voxel surfaces can contain valid sub-cell slivers. The simplify
+        // cleanup's model-relative area floor deletes those faces and opens the
+        // solid, increasingly often as resolution grows. Keep every positive-area
+        // voxel face; still reject non-finite data and remove exact collapses.
+        if (int code = Clean(*mesh, 0.0)) return code;
         *outVertices = uint32_t(mesh->pos.size() / 3); *outIndices = uint32_t(mesh->idx.size());
         Publish(mesh, handle);
         return Ok;
