@@ -84,6 +84,14 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(report.reverted, report.rejectionReason);
             Assert.Greater(report.moves, 0);
             Assert.That(Mathf.Abs(result.positions[4].z), Is.LessThan(scale * 1e-5f));
+            for (int repeat = 0; repeat < 3; ++repeat) {
+                var repeated = RemeshSurfaceRefine.FitCoarse(input, source, ix, scale * .01f, CancellationToken.None, out var repeatedReport);
+                CollectionAssert.AreEqual(result.positions, repeated.positions, "parallel candidate completion must not change the chosen motion");
+                CollectionAssert.AreEqual(result.indices, repeated.indices);
+                Assert.AreEqual(report.moves, repeatedReport.moves);
+                Assert.AreEqual(report.meanQualityAfter, repeatedReport.meanQualityAfter);
+                Assert.AreEqual(report.reverted, repeatedReport.reverted);
+            }
             for (int i = 0; i < 4; i++) Assert.AreEqual(p[i], result.positions[i]);
             CollectionAssert.AreEqual(ix, result.indices);
             Assert.AreEqual(scale * .015f, input.positions[4].z);

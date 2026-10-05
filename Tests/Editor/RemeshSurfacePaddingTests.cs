@@ -14,6 +14,88 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         static readonly CancellationToken Token = CancellationToken.None;
 
+        static RemeshBaker.Context RequestContext(int grid, int budget)
+        {
+            const int size = 16;
+            var target = new RemeshNative.Geometry {
+                positions = new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.zero, Vector3.up, Vector3.forward },
+                indices = new[] { 0, 1, 2, 3, 4, 5 },
+                normals = new[] { Vector3.forward, Vector3.forward, Vector3.forward, Vector3.right, Vector3.right, Vector3.right },
+                uv = new[] { new Vector2(2, 2), new Vector2(14, 2), new Vector2(2, 14),
+                    new Vector2(14, 14), new Vector2(14, 2), new Vector2(2, 14) }
+            };
+            for (int i = 0; i < target.uv.Length; ++i) target.uv[i] /= size;
+            var receivers = new int[size * size];
+            for (int pixel = 0; pixel < receivers.Length; ++pixel)
+                receivers[pixel] = pixel % 11 == 0 ? -1 : pixel % size < 8 ? 0 : 1;
+            return new RemeshBaker.Context { size = size, bandRows = 3, queryBudget = budget,
+                offsets = new Vector2[grid * grid], owners = new int[receivers.Length], receivers = receivers,
+                target = target, footprint = new RemeshTexelFootprint(target, new[] { -1, 5, -1, -1, -1, 1 }, size),
+                proxy = true, faceDirs = new[] { Vector3.forward, Vector3.right }, depth = 2 };
+        }
+
+        [TestCase(1, 5)]
+        [TestCase(2, 7)]
+        [TestCase(4, 31)]
+        [TestCase(4, 16384)]
+        public void ParallelRequestsMatchSerialFootprintsAcrossMidRowCutoffsAndCacheWrap(int grid, int budget)
+        {
+            var reference = RequestContext(grid, budget);
+            var expected = new List<RemeshBaker.Request>();
+            var samples = new List<RemeshTexelFootprint.Sample>();
+            for (int pixel = 0; pixel < reference.receivers.Length; ++pixel) {
+                int receiver = reference.receivers[pixel];
+                if (receiver < 0) continue;
+                samples.Clear();
+                reference.footprint.Gather(receiver, pixel % reference.size, pixel / reference.size, grid, samples, Token);
+                foreach (var sample in samples) if (sample.area > 0)
+                    expected.Add(new RemeshBaker.Request { pixel = pixel, sample = sample });
+            }
+            var context = RequestContext(grid, budget);
+            var band = new RemeshBaker.Band(context);
+            int compared = 0, continued = 0, boundary = 0;
+            for (int pixel = 0; pixel < context.owners.Length; pixel = band.nextPixel) {
+                RemeshBaker.BuildRequests(context, band, pixel, Token);
+                Assert.That(band.nextPixel, Is.GreaterThan(pixel));
+                Assert.That(band.rowStart[band.y1 - band.y0], Is.EqualTo(band.count));
+                for (int i = 0; i < band.count; ++i) {
+                    var wanted = expected[compared++];
+                    var actual = band.requests[i];
+                    Assert.AreEqual(wanted.pixel, actual.pixel);
+                    Assert.AreEqual(wanted.sample, actual.sample, "sample order and transported frame must remain exact");
+                    Assert.AreEqual(wanted.pixel, band.pixel[i]);
+                    Assert.AreEqual(wanted.sample.face, band.face[i]);
+                    Assert.AreEqual(wanted.sample.weights, band.weights[i]);
+                    Assert.AreEqual(wanted.sample.area, band.area[i]);
+                    Assert.AreEqual(wanted.sample.normalTransport, band.normalTransport[i]);
+                    int row = wanted.pixel / context.size - band.y0;
+                    Assert.That(i, Is.InRange(band.rowStart[row], band.rowStart[row + 1] - 1));
+                    if (wanted.sample.boundary) ++boundary;
+                    else if (wanted.sample.face != context.receivers[wanted.pixel]) ++continued;
+                }
+            }
+            Assert.AreEqual(expected.Count, compared);
+            Assert.AreEqual(boundary, context.boundarySamples);
+            Assert.AreEqual(continued, context.surfaceSamples);
+            Assert.AreEqual(reference.footprint.NavigationFallbacks, context.footprint.NavigationFallbacks);
+            Assert.AreEqual(reference.footprint.NavigationLimitHits, context.footprint.NavigationLimitHits);
+            Assert.AreEqual(reference.footprint.LocalFaceLimitHits, context.footprint.LocalFaceLimitHits);
+            Assert.AreEqual(reference.footprint.UnfoldOverlapTexels, context.footprint.UnfoldOverlapTexels);
+        }
+
+        [Test]
+        public void ParallelFootprintCancellationDoesNotPublishARequestBand()
+        {
+            var context = RequestContext(4, 31);
+            var band = new RemeshBaker.Band(context);
+            using (var cancelled = new CancellationTokenSource()) {
+                cancelled.Cancel();
+                Assert.Throws<OperationCanceledException>(() => RemeshBaker.BuildRequests(context, band, 0, cancelled.Token));
+                Assert.AreEqual(0, band.count);
+                Assert.AreEqual(0, band.nextPixel);
+            }
+        }
+
         static RemeshNative.Geometry Fold(float scale = 1)
         {
             return new RemeshNative.Geometry {

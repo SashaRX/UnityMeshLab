@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
@@ -326,6 +327,9 @@ namespace SashaRX.UnityMeshLab
                 locked[edge.Key.Item1] = true; locked[edge.Key.Item2] = true;
             }
             report.meanQualityBefore = MeanQuality(p, ix);
+            var searchOptions = new ParallelOptions { CancellationToken = token,
+                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) };
+            var trials = new (bool valid, Vector3 point, double meanSquared, float max)[7 * 3];
             for (int pass = 0; pass < 3; pass++) {
                 var normals = MeshGeometry.AveragedNormals(p, ix, token);
                 for (int v = 0; v < p.Length; v++) {
@@ -350,20 +354,29 @@ namespace SashaRX.UnityMeshLab
                         original + Vector3.right * budget, original - Vector3.right * budget,
                         original + Vector3.up * budget, original - Vector3.up * budget,
                         original + Vector3.forward * budget, original - Vector3.forward * budget };
-                    foreach (var candidate in candidates) {
-                        var projected = source.Nearest(candidate, normals[v], reach);
-                        if (projected.triangleIndex < 0) continue;
-                        var target = input.positions[v] + Vector3.ClampMagnitude(projected.point - input.positions[v], budget);
+                    // Candidate queries only read the current one-ring. Vertices
+                    // still move sequentially; reduce in the original candidate /
+                    // trial order so the 1% improvement threshold and ties match.
+                    int vertex = v;
+                    Array.Clear(trials, 0, trials.Length);
+                    Parallel.For(0, candidates.Length, searchOptions, candidateIndex => {
+                        var projected = source.Nearest(candidates[candidateIndex], normals[vertex], reach);
+                        if (projected.triangleIndex < 0) return;
+                        var target = input.positions[vertex] + Vector3.ClampMagnitude(projected.point - input.positions[vertex], budget);
                         for (int trial = 0; trial < 3; trial++) {
                             var next = original + (target - original) * (1f / (1 << trial));
                             if ((next - original).sqrMagnitude < cell * cell * 1e-10f ||
-                                !SafeRingMotion(p, ix, v, next, fans[v])) continue;
-                            var vertexHit = source.Nearest(next, normals[v], reach);
-                            var measured = RingError(source, p, ix, fans[v], reach, v, next);
+                                !SafeRingMotion(p, ix, vertex, next, fans[vertex])) continue;
+                            var vertexHit = source.Nearest(next, normals[vertex], reach);
+                            var measured = RingError(source, p, ix, fans[vertex], reach, vertex, next);
                             if (vertexHit.triangleIndex < 0 || Mathf.Sqrt(vertexHit.distSq) > Mathf.Max(Mathf.Sqrt(hit.distSq) + cell * .1f, cell * .5f) ||
-                                measured.max > baseline.max + cell * .005f || measured.meanSquared >= best.meanSquared * .99) continue;
-                            best = measured; bestPoint = next;
+                                measured.max > baseline.max + cell * .005f) continue;
+                            trials[candidateIndex * 3 + trial] = (true, next, measured.meanSquared, measured.max);
                         }
+                    });
+                    foreach (var trial in trials) {
+                        if (!trial.valid || trial.meanSquared >= best.meanSquared * .99) continue;
+                        best = (trial.meanSquared, trial.max); bestPoint = trial.point;
                     }
                     if (bestPoint == original) continue;
                     p[v] = bestPoint; report.moves++;

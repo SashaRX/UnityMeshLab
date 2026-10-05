@@ -156,6 +156,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>One band of rows as queries and answers; arrays are reused across bands.</summary>
         public sealed class Band
         {
+            const int FootprintWindowPixels = 256;
             public int y0, y1, count, nextPixel;
             public int[] rowStart;          // per row of the band (+1 sentinel): first sample index
             public int[] pixel, face;        // per sample
@@ -168,17 +169,50 @@ namespace SashaRX.UnityMeshLab
             internal SourceAoBaker.SurfacePoint[] aoPoints;
             internal float[] aoValues;
             internal readonly List<Request> requests = new List<Request>(QueryBudget);
-            internal readonly List<RemeshTexelFootprint.Sample> samples = new List<RemeshTexelFootprint.Sample>(32);
+            // A bounded circular window retains gathered pixels beyond a query
+            // cutoff. Each footprint is computed once, including its diagnostics,
+            // even when a band ends halfway through a row.
+            internal readonly List<RemeshTexelFootprint.Sample>[] cachedSamples;
+            int gatheredUntil;
 
             public Band(Context ctx)
             {
                 int capacity = Math.Min(ctx.queryBudget, ctx.bandRows * ctx.size * ctx.offsets.Length);
                 rowStart = new int[ctx.bandRows + 1];
+                cachedSamples = new List<RemeshTexelFootprint.Sample>[Math.Min(FootprintWindowPixels, checked(ctx.bandRows * ctx.size))];
                 pixel = new int[capacity]; face = new int[capacity]; weights = new Vector3[capacity];
                 area = new float[capacity];
                 normalTransport = new Quaternion[capacity];
                 rayOrigin = new Vector4[capacity]; rayDir = new Vector4[capacity]; point = new Vector4[capacity]; pointNormal = new Vector4[capacity];
                 rayHit = new GpuBvh.RayHit[capacity]; nearest = new GpuBvh.NearestHit[capacity]; needNearest = new bool[capacity];
+            }
+
+            internal List<RemeshTexelFootprint.Sample> Footprint(Context ctx, int pixel, int limitPixel, int grid, CancellationToken token)
+            {
+                if (pixel >= gatheredUntil)
+                    GatherFootprints(ctx, pixel, Math.Min(limitPixel, pixel + cachedSamples.Length), grid, token);
+                return cachedSamples[pixel % cachedSamples.Length];
+            }
+
+            void GatherFootprints(Context ctx, int firstPixel, int limitPixel, int grid, CancellationToken token)
+            {
+                // Only newly exposed pixels overwrite slots. The whole live window
+                // fits cachedSamples, so unconsumed prefetched pixels survive.
+                Parallel.For(Math.Max(firstPixel, gatheredUntil), limitPixel,
+                    new ParallelOptions { CancellationToken = token,
+                        MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, pixel => {
+                    int slot = pixel % cachedSamples.Length;
+                    var samples = cachedSamples[slot];
+                    samples?.Clear();
+                    int receiver = ctx.receivers[pixel];
+                    if (receiver < 0) return;
+                    if (samples == null) {
+                        samples = new List<RemeshTexelFootprint.Sample>(ctx.offsets.Length);
+                        cachedSamples[slot] = samples;
+                    }
+                    ctx.footprint.Gather(receiver, pixel % ctx.size, pixel / ctx.size, grid, samples, token);
+                });
+                gatheredUntil = limitPixel;
             }
 
             internal void EnsureCapacity(int count)
@@ -280,13 +314,12 @@ namespace SashaRX.UnityMeshLab
 
         // Integrate every intersecting physical face, including continuation across
         // UV cuts. Atlas proximity selects a receiving shell, never a source surface.
-        static void BuildRequests(Context ctx, Band band, int firstPixel, CancellationToken token)
+        internal static void BuildRequests(Context ctx, Band band, int firstPixel, CancellationToken token)
         {
             int size = ctx.size, grid = Mathf.RoundToInt(Mathf.Sqrt(ctx.offsets.Length));
             band.y0 = firstPixel / size;
             int limitPixel = Math.Min(ctx.owners.Length, (band.y0 + ctx.bandRows) * size);
             var requests = band.requests; requests.Clear();
-            var samples = band.samples;
             int continued = 0, boundary = 0, row = band.y0;
             band.rowStart[0] = 0;
             int cursor = firstPixel;
@@ -295,12 +328,11 @@ namespace SashaRX.UnityMeshLab
             // One pixel is bounded by the footprint's local face/grid limits.
             for (; cursor < limitPixel; ++cursor) {
                 token.ThrowIfCancellationRequested();
-                int y = cursor / size, x = cursor % size;
+                int y = cursor / size;
                 if (y != row) { row = y; band.rowStart[row - band.y0] = requests.Count; }
                 int receiver = ctx.receivers[cursor];
                 if (receiver < 0) continue;
-                samples.Clear();
-                ctx.footprint.Gather(receiver, x, y, grid, samples, token);
+                var samples = band.Footprint(ctx, cursor, limitPixel, grid, token);
                 foreach (var sample in samples) {
                     if (!(sample.area > 0)) continue;
                     requests.Add(new Request { pixel = cursor, sample = sample });

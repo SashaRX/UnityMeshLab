@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.18] - 2026-10-05
+
+### Changed
+- Calculate independent 3D bake footprints and coarse source-fit motion candidates in parallel. Preserve sample ordering, vertex update ordering, every candidate/trial, projection settings and quality gates. Retain prefetched footprints across query cutoffs so their diagnostics are counted once.
+
 ## [1.1.17] - 2026-10-05
 
 ### Fixed
