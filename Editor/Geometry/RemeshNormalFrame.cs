@@ -26,7 +26,7 @@ namespace SashaRX.UnityMeshLab
                 tangentNormal = Vector3.zero;
                 var t = new Wide(tangent); var b = new Wide(bitangent); var n = new Wide(normal);
                 var d = new Wide(direction);
-                if (!t.Finite || !b.Finite || !n.Finite || !d.Finite || d.Length == 0) return false;
+                if (!t.IsFinite || !b.IsFinite || !n.IsFinite || !d.IsFinite || d.Length == 0) return false;
                 var bxN = Wide.Cross(b, n);
                 double determinant = Wide.Dot(t, bxN), scale = t.Length * b.Length * n.Length;
                 if (!(scale > 0) || Math.Abs(determinant) <= scale * 1e-12) return false;
@@ -66,18 +66,18 @@ namespace SashaRX.UnityMeshLab
             if ((uint)face >= indices.Length / 3) throw new ArgumentOutOfRangeException(nameof(face));
             if (mode != Mode.BuiltIn && mode != Mode.Urp) throw new ArgumentOutOfRangeException(nameof(mode));
             var transform = new Transform(objectToWorld);
-            if (!transform.Valid || !new Wide(bary).Finite) return default;
+            if (!transform.Valid || !new Wide(bary).IsFinite) return default;
             Wide n = default, t = default, b = default; double sign = 0;
             for (int corner = 0; corner < 3; ++corner) {
                 int vertex = indices[face * 3 + corner];
                 if ((uint)vertex >= normals.Length) throw new ArgumentException("Normal frame index is outside its vertex channels.", nameof(indices));
                 double weight = corner == 0 ? bary.x : corner == 1 ? bary.y : bary.z;
                 var tangent = tangents[vertex];
-                if (!new Wide(normals[vertex]).Finite || !new Wide(new Vector3(tangent.x, tangent.y, tangent.z)).Finite) return default;
+                if (!new Wide(normals[vertex]).IsFinite || !new Wide(new Vector3(tangent.x, tangent.y, tangent.z)).IsFinite) return default;
                 var vertexN = new Wide(transform.Normal(normals[vertex]));
                 var vertexT = new Wide(transform.Direction(new Vector3(tangent.x, tangent.y, tangent.z)));
                 double handedness = tangent.w * transform.Sign;
-                if (!vertexN.Finite || !vertexT.Finite || !Finite(handedness)) return default;
+                if (!vertexN.IsFinite || !vertexT.IsFinite || !Finite(handedness)) return default;
                 n += vertexN * weight; t += vertexT * weight; sign += handedness * weight;
                 if (mode == Mode.BuiltIn) b += Wide.Cross(vertexN, vertexT) * (handedness * weight);
             }
@@ -91,7 +91,7 @@ namespace SashaRX.UnityMeshLab
         {
             readonly Wide x, y, z;
             readonly double determinant;
-            internal bool Valid => x.Finite && y.Finite && z.Finite && Finite(determinant) && determinant != 0;
+            internal bool Valid => x.IsFinite && y.IsFinite && z.IsFinite && Finite(determinant) && determinant != 0;
             internal double Sign => determinant < 0 ? -1 : 1;
 
             internal Transform(Matrix4x4 matrix)
@@ -119,13 +119,13 @@ namespace SashaRX.UnityMeshLab
             readonly double x, y, z;
             internal Wide(Vector3 value) : this(value.x, value.y, value.z) { }
             internal Wide(double x, double y, double z) { this.x = x; this.y = y; this.z = z; }
-            internal bool Finite => RemeshNormalFrame.Finite(x) && RemeshNormalFrame.Finite(y) && RemeshNormalFrame.Finite(z);
+            internal bool IsFinite => RemeshNormalFrame.Finite(x) && RemeshNormalFrame.Finite(y) && RemeshNormalFrame.Finite(z);
             internal double Length => Math.Sqrt(x * x + y * y + z * z);
             internal Vector3 Single() => new Vector3((float)x, (float)y, (float)z);
             internal Vector3 Unit()
             {
                 double scale = Math.Max(Math.Abs(x), Math.Max(Math.Abs(y), Math.Abs(z)));
-                if (!Finite || !(scale > 0)) return Vector3.zero;
+                if (!IsFinite || !(scale > 0)) return Vector3.zero;
                 double nx = x / scale, ny = y / scale, nz = z / scale;
                 double length = Math.Sqrt(nx * nx + ny * ny + nz * nz);
                 return new Vector3((float)(nx / length), (float)(ny / length), (float)(nz / length));
