@@ -366,6 +366,74 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [TestCase(false, false, false)]
+        [TestCase(true, false, false)]
+        [TestCase(false, true, false)]
+        [TestCase(true, true, false)]
+        [TestCase(false, false, true)]
+        [TestCase(true, false, true)]
+        [TestCase(false, true, true)]
+        [TestCase(true, true, true)]
+        public void SmoothUvSeamDoesNotRotateAConstantPhysicalSourceNormal(bool mirrored, bool urp, bool varyingShading)
+        {
+            var source = FoldSource(1, out _, out _); var target = FoldAtlas();
+            var mode = urp ? RemeshNormalFrame.Mode.Urp : RemeshNormalFrame.Mode.BuiltIn;
+            // A smooth shared normal need not lie in the plane spanned by these
+            // two geometric face normals: the rest of a vertex fan contributes.
+            var shadingNormal = new Vector3(.6f, .4f, .6f).normalized;
+            var physicalNormal = new Vector3(.25f, .3f, 1).normalized;
+            Array.Fill(target.normals, shadingNormal);
+            Array.Fill(source.normals, physicalNormal);
+            target.normalFrameMode = mode;
+            if (mirrored) MirrorNeighborUv(target);
+            if (varyingShading) {
+                target.normals[1] = new Vector3(0, .1f, 1).normalized;
+                target.normals[5] = new Vector3(1, .1f, 0).normalized;
+            }
+            for (int vertex = 0; vertex < target.tangents.Length; ++vertex) {
+                var old = target.tangents[vertex];
+                var tangent = Vector3.ProjectOnPlane((Vector3)old, target.normals[vertex]).normalized;
+                target.tangents[vertex] = new Vector4(tangent.x, tangent.y, tangent.z, old.w);
+            }
+            var maps = RemeshBaker.Bake(source, target, target.tangents, new RemeshSettings {
+                textureResolution = 64, padding = 2, dilationRadius = 0, bakeSamples = 16 }, Token);
+            var footprint = new RemeshTexelFootprint(target, target.surfaceNeighbors, 64);
+            foreach (int x in new[] { 7, 8, 9 }) {
+                int pixel = 8 * 64 + x;
+                var weights = footprint.ReceiverFrameWeights(0, new Vector2(x + .5f, 8.5f) / 64);
+                var frame = RemeshNormalFrame.Interpolate(target, target.tangents, 0, weights, mode);
+                Assert.That(Vector3.Angle(frame.Decode(DecodeNormal(maps.normal[pixel])), physicalNormal), Is.LessThan(1),
+                    "The gutter, seam texel and interior must agree with the same physical normal; x=" + x);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void BilinearSmoothSeamPreservesPhysicalNormalWithVaryingReceiverFrame(bool urp)
+        {
+            var source = FoldSource(1, out _, out _); var target = FoldAtlas();
+            var physical = new Vector3(.25f, .3f, 1).normalized;
+            var shared = new Vector3(.6f, .4f, .6f).normalized;
+            Array.Fill(source.normals, physical); Array.Fill(target.normals, shared);
+            target.normals[1] = new Vector3(0, .1f, 1).normalized;
+            target.normals[5] = new Vector3(1, .1f, 0).normalized;
+            target.normalFrameMode = urp ? RemeshNormalFrame.Mode.Urp : RemeshNormalFrame.Mode.BuiltIn;
+            for (int i = 0; i < 3; ++i) target.uv[i].x -= .25f / 64;
+            for (int i = 0; i < target.tangents.Length; ++i) {
+                var old = target.tangents[i]; var tangent = Vector3.ProjectOnPlane((Vector3)old, target.normals[i]).normalized;
+                target.tangents[i] = new Vector4(tangent.x, tangent.y, tangent.z, old.w);
+            }
+            var maps = RemeshBaker.Bake(source, target, target.tangents, new RemeshSettings {
+                textureResolution = 64, padding = 2, dilationRadius = 0, bakeSamples = 16 }, Token);
+            var colors = Array.ConvertAll(maps.normal, value => (Color)value);
+            var uv = new Vector2(8.25f, 8.5f) / 64;
+            var packed = SampleColor(colors, 64, uv, true);
+            var tangentNormal = new Vector3(packed.r * 2 - 1, packed.g * 2 - 1, packed.b * 2 - 1).normalized;
+            var frame = RemeshNormalFrame.Interpolate(target, target.tangents, 0, new Vector3(.625f, 0, .375f), target.normalFrameMode);
+            Assert.That(Vector3.Angle(frame.Decode(tangentNormal), physical), Is.LessThan(1),
+                "Filtering between the interior and gutter must preserve the continuous receiver frame at the edge.");
+        }
+
         [Test]
         public void PartialSourceMissesRemainVisibleAfterSuccessfulSamplesAreRenormalized()
         {

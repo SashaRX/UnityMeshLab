@@ -17,8 +17,10 @@ namespace SashaRX.UnityMeshLab
             public float area;
             public bool boundary;
             // Donor geometric frame to the initial receiving geometric frame.
-            // Baker separately aligns the donor/receiver shading normals.
             public Quaternion transport;
+            // Only discontinuities of the shading normals require rotation.
+            // A smooth physical surface keeps its directions across a UV cut.
+            public Quaternion normalTransport;
         }
 
         const int NavigationLimit = 64;
@@ -64,7 +66,8 @@ namespace SashaRX.UnityMeshLab
                     for (int sx = 0; sx < grid; ++sx) {
                         var point = new Point(x + (sx + .5) * step, y + (sy + .5) * step);
                         Barycentric(initial, point, out var weights);
-                        output.Add(new Sample { face = receiverFace, weights = weights.Clamped(), area = (float)area, transport = Quaternion.identity });
+                        output.Add(new Sample { face = receiverFace, weights = weights.Clamped(), area = (float)area,
+                            transport = Quaternion.identity, normalTransport = Quaternion.identity });
                     }
                 }
                 return;
@@ -96,7 +99,8 @@ namespace SashaRX.UnityMeshLab
                                 !Clip(triangle, left, bottom, right, top, work, out double area, out var centroid)) continue;
                             if (!Barycentric(triangle, centroid, out var weights)) continue;
                             if (!((float)area > 0)) continue;
-                            output.Add(new Sample { face = triangle.face, weights = weights.Clamped(), area = (float)area, transport = triangle.transport.ToUnity() });
+                            output.Add(new Sample { face = triangle.face, weights = weights.Clamped(), area = (float)area,
+                                transport = triangle.transport.ToUnity(), normalTransport = triangle.normalTransport.ToUnity() });
                             covered += area; moment += centroid * area;
                         }
                         if (covered > cellArea) {
@@ -142,12 +146,30 @@ namespace SashaRX.UnityMeshLab
             return ClosestWeights(triangle, point, out _).Clamped();
         }
 
+        // Bilinear filtering uses texel centres outside a chart. Continue the
+        // receiver's affine vertex frame into the margin rather than freezing it
+        // at the edge. The baker rejects singular or reversed continuations.
+        internal Vector3 ReceiverFrameWeights(int receiverFace, Vector2 receiverUV)
+        {
+            if ((uint)receiverFace >= faceCount) throw new ArgumentOutOfRangeException(nameof(receiverFace));
+            var triangle = ActualTriangle(receiverFace);
+            var point = new Point((double)receiverUV.x * size, (double)receiverUV.y * size);
+            bool valid = Barycentric(triangle, point, out var weights);
+            if (valid && weights.Inside) return weights.Clamped();
+            var closest = ClosestWeights(triangle, point, out _);
+            if (valid) {
+                var affine = new Vector3((float)weights.x, (float)weights.y, (float)weights.z);
+                if (float.IsFinite(affine.x) && float.IsFinite(affine.y) && float.IsFinite(affine.z)) return affine;
+            }
+            return closest.Clamped();
+        }
+
         Triangle ActualTriangle(int face)
         {
             var a = target.uv[target.indices[face * 3]];
             var b = target.uv[target.indices[face * 3 + 1]];
             var c = target.uv[target.indices[face * 3 + 2]];
-            return new Triangle { face = face, transport = Rotation.Identity, a = new Point((double)a.x * size, (double)a.y * size),
+            return new Triangle { face = face, transport = Rotation.Identity, normalTransport = Rotation.Identity, a = new Point((double)a.x * size, (double)a.y * size),
                 b = new Point((double)b.x * size, (double)b.y * size), c = new Point((double)c.x * size, (double)c.y * size) };
         }
 
@@ -241,11 +263,22 @@ namespace SashaRX.UnityMeshLab
             // UV metric preservation and normal transport are independent: an
             // uncut UV edge can still connect geometrically folded triangles.
             next.transport = (current.transport * Rotation.FromTo(neighborNormal, currentNormal)).Unit();
+            var currentShading = EdgeNormal(current.face, ca, cb, currentNormal);
+            var neighborShading = EdgeNormal(neighborFace, na, nb, neighborNormal);
+            next.normalTransport = (current.normalTransport * Rotation.FromTo(neighborShading, currentShading)).Unit();
             next.Set(neighborOpposite, third); next.Set(na, qb); next.Set(nb, qa);
             return Barycentric(next, (next.a + next.b + next.c) / 3, out _);
         }
 
         Vector Position(int face, int corner) => new Vector(target.positions[target.indices[face * 3 + corner]]);
+
+        Vector EdgeNormal(int face, int a, int b, Vector fallback)
+        {
+            if (target.normals == null || target.normals.Length != target.positions.Length) return fallback;
+            var unit = new Vector(target.normals[target.indices[face * 3 + a]] +
+                target.normals[target.indices[face * 3 + b]]).Unit();
+            return unit.Length > 0 ? unit : fallback;
+        }
 
         bool UvEquals(int face, int corner, int otherFace, int otherCorner)
         {
@@ -301,7 +334,7 @@ namespace SashaRX.UnityMeshLab
 
         static Sample BoundarySample(Triangle triangle, Point point, double area) => new Sample {
             face = triangle.face, weights = ClosestWeights(triangle, point, out _).Clamped(), area = (float)area, boundary = true,
-            transport = triangle.transport.ToUnity() };
+            transport = triangle.transport.ToUnity(), normalTransport = triangle.normalTransport.ToUnity() };
 
         static bool IntersectsBox(Triangle triangle, double left, double bottom, double right, double top) =>
             Math.Max(triangle.a.x, Math.Max(triangle.b.x, triangle.c.x)) >= left &&
@@ -365,7 +398,7 @@ namespace SashaRX.UnityMeshLab
         {
             public int face;
             public Point a, b, c;
-            public Rotation transport;
+            public Rotation transport, normalTransport;
             public Point At(int corner) => corner == 0 ? a : corner == 1 ? b : c;
             public void Set(int corner, Point point)
             {

@@ -997,18 +997,25 @@ namespace SashaRX.UnityMeshLab
         /// old tangent. Repack callers rebuild every output chart.</summary>
         internal static void RebuildChartTangents(RemeshNative.Geometry g, HashSet<int> chartIds, CancellationToken token)
         {
-            if (g.tangents == null || g.normals == null || chartIds.Count == 0) return;
+            if (g.tangents == null || g.normals == null || chartIds.Count == 0 || g.positions.Length == 0) return;
             var tan = new Vector3[g.positions.Length];
             var bit = new Vector3[g.positions.Length];
             var touched = new bool[g.positions.Length];
+            var minimum = g.positions[0]; var maximum = minimum;
+            foreach (var p in g.positions) { minimum = Vector3.Min(minimum, p); maximum = Vector3.Max(maximum, p); }
+            double extent = Math.Max((double)maximum.x - minimum.x,
+                Math.Max((double)maximum.y - minimum.y, (double)maximum.z - minimum.z));
+            if (!(extent > 0) || double.IsInfinity(extent)) return;
             for (int f = 0; f < g.indices.Length; f += 3)
             {
                 if ((f & 4095) == 0) token.ThrowIfCancellationRequested();
                 // f walks index space in steps of three — no second ×3 here.
                 int i0 = g.indices[f], i1 = g.indices[f + 1], i2 = g.indices[f + 2];
                 if (!chartIds.Contains(g.charts[i0])) continue;
-                Vector3 e1 = g.positions[i1] - g.positions[i0];
-                Vector3 e2 = g.positions[i2] - g.positions[i0];
+                // Scale before taking the area: its magnitude must not decide
+                // whether a millimetre mesh keeps stale pre-merge tangents.
+                Vector3 e1 = ScaledEdge(g.positions[i0], g.positions[i1], extent);
+                Vector3 e2 = ScaledEdge(g.positions[i0], g.positions[i2], extent);
                 float weight = Vector3.Cross(e1, e2).magnitude; // 2× face area
                 if (weight <= 0f) continue;
                 Vector2 d1 = g.uv[i1] - g.uv[i0];
@@ -1024,17 +1031,38 @@ namespace SashaRX.UnityMeshLab
                 tan[i1] += faceT; bit[i1] += faceB; touched[i1] = true;
                 tan[i2] += faceT; bit[i2] += faceB; touched[i2] = true;
             }
+            // A removed UV seam can retain separate vertex indices. Identical
+            // final position/normal/UV copies need the same accumulated frame,
+            // otherwise texture filtering crosses an artificial tangent cut.
+            var groups = new Dictionary<(Vector3, Vector3, Vector2, int), (Vector3 tangent, Vector3 bitangent)>();
+            for (int v = 0; v < touched.Length; ++v) {
+                if ((v & 4095) == 0) token.ThrowIfCancellationRequested();
+                if (!touched[v]) continue;
+                var key = (g.positions[v], g.normals[v], g.uv[v], g.charts[v]);
+                groups.TryGetValue(key, out var sum);
+                groups[key] = (sum.tangent + tan[v], sum.bitangent + bit[v]);
+            }
             for (int v = 0; v < touched.Length; ++v)
             {
-                if (!touched[v] || tan[v].sqrMagnitude < 1e-12f) continue;
-                var n = g.normals[v];
-                if (n.sqrMagnitude < 1e-12f) continue;
-                var t = tan[v] - n * Vector3.Dot(n, tan[v]);
-                if (t.sqrMagnitude < 1e-12f) continue;
-                t = MeshGeometry.UnitDirection(t);
-                float handedness = Vector3.Dot(bit[v], Vector3.Cross(n, t)) < 0f ? -1f : 1f;
+                if ((v & 4095) == 0) token.ThrowIfCancellationRequested();
+                if (!touched[v]) continue;
+                var sum = groups[(g.positions[v], g.normals[v], g.uv[v], g.charts[v])];
+                var n = TangentDirection(g.normals[v]); var direction = TangentDirection(sum.tangent);
+                if (n == Vector3.zero || direction == Vector3.zero) continue;
+                var t = TangentDirection(direction - n * Vector3.Dot(n, direction));
+                if (t == Vector3.zero) continue;
+                float handedness = Vector3.Dot(TangentDirection(sum.bitangent), Vector3.Cross(n, t)) < 0f ? -1f : 1f;
                 g.tangents[v] = new Vector4(t.x, t.y, t.z, handedness);
             }
+        }
+
+        static Vector3 ScaledEdge(Vector3 a, Vector3 b, double extent) => new Vector3(
+            (float)(((double)b.x - a.x) / extent), (float)(((double)b.y - a.y) / extent), (float)(((double)b.z - a.z) / extent));
+
+        static Vector3 TangentDirection(Vector3 value)
+        {
+            float scale = Mathf.Max(Mathf.Abs(value.x), Mathf.Max(Mathf.Abs(value.y), Mathf.Abs(value.z)));
+            return scale > 0 && float.IsFinite(scale) ? MeshGeometry.UnitDirection(value / scale) : Vector3.zero;
         }
 
         // ── Small helpers ───────────────────────────────────────────────────

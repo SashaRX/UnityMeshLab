@@ -19,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.10] - 2026-10-05
+
+### Fixed
+- Merged-chart tangents rebuild from final UVs on small models instead of retaining the previous atlas frames. Copies of a removed seam share tangent accumulations when their final position, normal, UV and chart match; UV and smoothing discontinuities remain independent.
+- Surface padding continues the receiving chart's tangent frame beyond its UV boundary. Normal detail crosses smooth physical edges without an artificial geometric-frame twist; singular or reversed frame continuations fall back to their reachable boundary frame.
+
 ## [1.1.9] - 2026-10-05
 
 ### Fixed

@@ -144,7 +144,6 @@ namespace SashaRX.UnityMeshLab
             internal int queryBudget = QueryBudget;
             internal RemeshTexelFootprint footprint;
             public TriangleBvh bvh; public Cage cage; public bool proxy; public Vector3[] faceDirs; public float depth;
-            public Vector3[] targetFaceNormals;
             public Vector3[] faceNormals;   // source faces, oriented by the winding probe
             public bool[] twoSided;         // source faces whose back counts (null = none)
             public bool facingFilter;
@@ -162,7 +161,7 @@ namespace SashaRX.UnityMeshLab
             public int[] pixel, face;        // per sample
             public Vector3[] weights;        // per sample: barycentric on the target face
             public float[] area;
-            public Quaternion[] transport;
+            public Quaternion[] normalTransport;
             public Vector4[] rayOrigin, rayDir, point, pointNormal;   // queries (w = reach / dotMin)
             public GpuBvh.RayHit[] rayHit; public GpuBvh.NearestHit[] nearest;
             public bool[] needNearest;
@@ -177,7 +176,7 @@ namespace SashaRX.UnityMeshLab
                 rowStart = new int[ctx.bandRows + 1];
                 pixel = new int[capacity]; face = new int[capacity]; weights = new Vector3[capacity];
                 area = new float[capacity];
-                transport = new Quaternion[capacity];
+                normalTransport = new Quaternion[capacity];
                 rayOrigin = new Vector4[capacity]; rayDir = new Vector4[capacity]; point = new Vector4[capacity]; pointNormal = new Vector4[capacity];
                 rayHit = new GpuBvh.RayHit[capacity]; nearest = new GpuBvh.NearestHit[capacity]; needNearest = new bool[capacity];
             }
@@ -188,7 +187,7 @@ namespace SashaRX.UnityMeshLab
                 int capacity = Math.Max(count, checked(pixel.Length * 2));
                 Array.Resize(ref pixel, capacity); Array.Resize(ref face, capacity); Array.Resize(ref weights, capacity);
                 Array.Resize(ref area, capacity);
-                Array.Resize(ref transport, capacity);
+                Array.Resize(ref normalTransport, capacity);
                 Array.Resize(ref rayOrigin, capacity); Array.Resize(ref rayDir, capacity);
                 Array.Resize(ref point, capacity); Array.Resize(ref pointNormal, capacity);
                 Array.Resize(ref rayHit, capacity); Array.Resize(ref nearest, capacity); Array.Resize(ref needNearest, capacity);
@@ -268,7 +267,7 @@ namespace SashaRX.UnityMeshLab
             int bandRows = Mathf.Clamp(QueryBudget / Math.Max(1, size * offsets.Length), 1, size);
             return new Context { source = source, target = target, tangents = tangents, settings = settings, beauty = beauty,
                 result = result, aoBaker = aoBaker, size = size, bandRows = bandRows, offsets = offsets, owners = owners,
-                receivers = receivers, footprint = footprint, bvh = bvh, cage = cage, targetFaceNormals = targetFaceNormals,
+                receivers = receivers, footprint = footprint, bvh = bvh, cage = cage,
                 proxy = proxy, faceDirs = faceDirs, depth = depth, faceNormals = faceNormals, twoSided = twoSided,
                 facingFilter = facingFilter, emptyTexels = proxy ? new bool[count] : null };
         }
@@ -330,7 +329,7 @@ namespace SashaRX.UnityMeshLab
                     Vector3 p = target.positions[a] * w.x + target.positions[b] * w.y + target.positions[c] * w.z;
                     band.pixel[write] = request.pixel; band.face[write] = face; band.weights[write] = w;
                     band.area[write] = sample.area;
-                    band.transport[write] = sample.transport;
+                    band.normalTransport[write] = sample.normalTransport;
                     Vector3 direction; float reach, length;
                     if (ctx.proxy) {
                         direction = ctx.faceDirs[face]; reach = ctx.depth * 1e-4f; length = ctx.depth;
@@ -414,7 +413,6 @@ namespace SashaRX.UnityMeshLab
                     int pixel = band.pixel[i], receiver = ctx.receivers[pixel];
                     bool covered = ctx.owners[pixel] >= 0;
                     var frame = TargetFrame(ctx, receiver, pixel);
-                    var n = MeshGeometry.UnitDirection(frame.normal);
                     Color color = default, metal = default, ao = default, emission = default;
                     Vector3 normal = Vector3.zero;
                     float hitArea = 0, totalArea = 0;
@@ -429,11 +427,7 @@ namespace SashaRX.UnityMeshLab
                             if (covered && (sourceFace >= 0 || !ctx.proxy)) ++fallbacks;
                         }
                         if (sourceFace < 0) { sampleMiss = true; continue; }
-                        int face = band.face[i]; Vector3 w = band.weights[i];
-                        Vector3 donorNormal = TargetNormal(ctx, face, w);
-                        Quaternion transport = Quaternion.FromToRotation(ctx.targetFaceNormals[receiver], n) *
-                            band.transport[i] * Quaternion.FromToRotation(donorNormal, ctx.targetFaceNormals[face]);
-                        EvaluateProjected(source, sourceFace, sw, transport, vertexTint,
+                        EvaluateProjected(source, sourceFace, sw, band.normalTransport[i], vertexTint,
                             out var sc, out var sn, out var sm, out var sa, out var se);
                         if (ctx.aoBaker != null) {
                             float computedAO = band.aoValues != null ? band.aoValues[i] : ctx.aoBaker.Sample(sourceFace, sw, pixel, token);
@@ -559,17 +553,15 @@ namespace SashaRX.UnityMeshLab
 
         static RemeshNormalFrame.Frame TargetFrame(Context ctx, int receiver, int pixel)
         {
-            Vector3 w = ctx.footprint.ReceiverWeights(receiver,
-                new Vector2((pixel % ctx.size + .5f) / ctx.size, (pixel / ctx.size + .5f) / ctx.size));
-            return RemeshNormalFrame.Interpolate(ctx.target, ctx.tangents, receiver, w, ctx.target.normalFrameMode);
-        }
-
-        static Vector3 TargetNormal(Context ctx, int face, Vector3 weights)
-        {
-            var target = ctx.target;
-            int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
-            var normal = MeshGeometry.UnitDirection(target.normals[a] * weights.x + target.normals[b] * weights.y + target.normals[c] * weights.z);
-            return normal == Vector3.zero ? ctx.targetFaceNormals[face] : normal;
+            var uv = new Vector2((pixel % ctx.size + .5f) / ctx.size, (pixel / ctx.size + .5f) / ctx.size);
+            Vector3 w = ctx.footprint.ReceiverFrameWeights(receiver, uv);
+            var frame = RemeshNormalFrame.Interpolate(ctx.target, ctx.tangents, receiver, w, ctx.target.normalFrameMode);
+            if (w.x >= 0 && w.y >= 0 && w.z >= 0) return frame;
+            var anchor = RemeshNormalFrame.Interpolate(ctx.target, ctx.tangents, receiver,
+                ctx.footprint.ReceiverWeights(receiver, uv), ctx.target.normalFrameMode);
+            // Tiny or strongly varying triangles can extrapolate to a singular
+            // or reversed frame. Keep the reachable edge frame in that case.
+            return Vector3.Dot(frame.normal, anchor.normal) > 0 && frame.TryEncode(frame.normal, out _) ? frame : anchor;
         }
 
         static Vector3[] TargetFaceNormals(RemeshNative.Geometry target, CancellationToken token)

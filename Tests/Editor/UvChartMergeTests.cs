@@ -394,8 +394,11 @@ namespace SashaRX.UnityMeshLab.Tests
 
         // ── tangent rebuild ─────────────────────────────────────────────────
 
-        [Test]
-        public void RebuiltTangentsFollowTheFinalAtlasLayoutIncludingSnappedSeams()
+        [TestCase(1f)]
+        [TestCase(.002f)]
+        [TestCase(.000001f)]
+        [TestCase(1000000f)]
+        public void RebuiltTangentsFollowTheFinalAtlasLayoutIncludingSnappedSeams(float scale)
         {
             // The chart is laid out with a per-vertex snap displacement baked in (the
             // mover's seam copies carry the acceptor's values, its interior keeps the
@@ -406,6 +409,7 @@ namespace SashaRX.UnityMeshLab.Tests
             UvChartMerge.MergeCharts(geometry, new RemeshSettings(), CancellationToken.None, mergedCharts);
             CollectionAssert.AreEquivalent(new[] { 0 }, mergedCharts, "the merged chart id is reported compacted");
             var expected = geometry.uv[0] == Vector2.zero ? PlaneTangent(0f) : PlaneTangent(30f);
+            for (int v = 0; v < geometry.positions.Length; ++v) geometry.positions[v] *= scale;
             for (int v = 0; v < 8; ++v)
                 geometry.tangents[v] = PlaneTangent(174f); // garbage in
             UvChartMerge.RebuildChartTangents(geometry, mergedCharts, CancellationToken.None);
@@ -414,6 +418,33 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         // ── end-to-end with the native unwrap ───────────────────────────────
+
+        [Test]
+        public void RebuiltTangentsJoinIdenticalCopiesOfARemovedSeam()
+        {
+            var geometry = TwoPatchGeometry(chart1UvOverride: new[] {
+                new Vector2(Density, 0), new Vector2(Density, Density),
+                new Vector2(2 * Density, 2 * Density), new Vector2(2 * Density, Density) });
+            Array.Fill(geometry.charts, 0);
+            UvChartMerge.RebuildChartTangents(geometry, new HashSet<int> { 0 }, CancellationToken.None);
+            Assert.That(Vector4.Distance(geometry.tangents[1], geometry.tangents[4]), Is.LessThan(1e-6), "same position, normal and final UV need one frame");
+            Assert.That(Vector4.Distance(geometry.tangents[2], geometry.tangents[5]), Is.LessThan(1e-6));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void RebuiltTangentsPreserveUvAndNormalDiscontinuities(bool hardNormal)
+        {
+            var geometry = TwoPatchGeometry(chart1UvOverride: new[] {
+                new Vector2(Density, 0), new Vector2(Density, Density),
+                new Vector2(2 * Density, 2 * Density), new Vector2(2 * Density, Density) });
+            if (hardNormal) {
+                Array.Fill(geometry.charts, 0);
+                for (int i = 4; i < 8; ++i) geometry.normals[i] = new Vector3(0, 1, 1).normalized;
+            }
+            UvChartMerge.RebuildChartTangents(geometry, new HashSet<int> { 0, 1 }, CancellationToken.None);
+            Assert.That(Vector4.Distance(geometry.tangents[1], geometry.tangents[4]), Is.GreaterThan(.2f), "distinct charts or shading normals must keep independent frames");
+        }
 
         [Test]
         public void NativeChartMergeReducesIslandsOnFragmentedUnwrap()
