@@ -49,6 +49,10 @@ namespace SashaRX.UnityMeshLab
         Material surface;
         Material resultSurface;
         Texture2D emissionTexture;
+        RenderTexture litNormalTexture;
+        bool litNormalUrp;
+        BuildTarget litNormalTarget;
+        NormalMapEncoding litNormalEncoding;
         string resultShaderWarning;
         Mesh cageOuter, cageInner; int cageMeshId; string cageKey;
         bool cageReady;
@@ -81,6 +85,7 @@ namespace SashaRX.UnityMeshLab
             mapSource = null;
             if (emissionTexture) Object.DestroyImmediate(emissionTexture);
             emissionTexture = null;
+            ReleaseLitNormal();
             if (resultSurface) Object.DestroyImmediate(resultSurface);
             resultSurface = null;
         }
@@ -198,7 +203,7 @@ namespace SashaRX.UnityMeshLab
             var maps = new Texture[5];
             maps[0] = textured ? data.baseColor : null;
             if (data.maps != null && !unlit) {
-                maps[1] = bumpMap ? MapTexture(data.maps, Channel.Normal) : null;
+                maps[1] = bumpMap ? LitNormalTexture(data.maps, urp) : null;
                 maps[2] = MapTexture(data.maps, Channel.MetallicSmoothness);
                 maps[3] = MapTexture(data.maps, Channel.Occlusion);
                 maps[4] = EmissionTexture(data.maps);
@@ -395,7 +400,29 @@ namespace SashaRX.UnityMeshLab
             Array.Clear(mapTextures, 0, mapTextures.Length);
             if (emissionTexture) Object.DestroyImmediate(emissionTexture);
             emissionTexture = null;
+            ReleaseLitNormal();
             mapSource = maps;
+        }
+
+        Texture LitNormalTexture(RemeshBaker.Maps maps, bool urp)
+        {
+            var canonical = MapTexture(maps, Channel.Normal);
+            if (!canonical) return null;
+            var target = EditorUserBuildSettings.activeBuildTarget;
+            var encoding = RemeshNormalPreviewPacking.ActiveEncoding();
+            if (litNormalTexture && litNormalUrp == urp && litNormalTarget == target && litNormalEncoding == encoding) return litNormalTexture;
+            ReleaseLitNormal();
+            litNormalTexture = RemeshNormalPreviewPacking.Create(canonical, urp);
+            litNormalUrp = urp; litNormalTarget = target; litNormalEncoding = encoding;
+            return litNormalTexture;
+        }
+
+        void ReleaseLitNormal()
+        {
+            if (!litNormalTexture) return;
+            litNormalTexture.Release();
+            Object.DestroyImmediate(litNormalTexture);
+            litNormalTexture = null;
         }
 
         Texture2D EmissionTexture(RemeshBaker.Maps maps)

@@ -93,8 +93,18 @@ namespace SashaRX.UnityMeshLab
         internal static void Log(Report r)
         {
             string prefix = "[" + r.node + "] ";
-            if (UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag))
+            if (UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag)) {
                 UvtLog.Info(UvtLog.Category.RemeshDiag, prefix + r.Summary);
+                var maps = r.maps;
+                if (maps.gpu)
+                    UvtLog.Info(UvtLog.Category.RemeshDiag, prefix +
+                        $"GPU pipeline: {maps.gpuBands:N0} bands, {maps.gpuQueries:N0} queries, " +
+                        $"{maps.gpuRayBatches:N0} ray / {maps.gpuNearestBatches:N0} nearest dispatches; " +
+                        $"prepare {maps.gpuPrepareMs:F1} ms, setup {maps.gpuSetupMs:F1} ms, " +
+                        $"build requests {maps.gpuBuildRequestsMs:F1} ms, resolve/readback {maps.gpuResolveMs:F1} ms, " +
+                        $"evaluate {maps.gpuEvaluateMs:F1} ms, AO {maps.gpuAoMs:F1} ms, finish {maps.gpuFinishMs:F1} ms " +
+                        "(includes Editor scheduling waits).");
+            }
             foreach (var w in r.Warnings)
                 UvtLog.Warn(UvtLog.Category.RemeshDiag, prefix + w);
         }

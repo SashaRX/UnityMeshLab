@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
+using Stopwatch = System.Diagnostics.Stopwatch;
 
 namespace SashaRX.UnityMeshLab
 {
@@ -36,6 +37,11 @@ namespace SashaRX.UnityMeshLab
             public bool beauty;
             public bool gpu;            // the geometry queries ran on the GPU
             public bool gpuAO;          // source AO rays ran on the GPU
+            // Async pipeline timings include await/Editor-pump latency, so they
+            // distinguish query/readback waiting from footprint/material work.
+            public int gpuBands, gpuRayBatches, gpuNearestBatches;
+            public long gpuQueries;
+            public double gpuPrepareMs, gpuSetupMs, gpuBuildRequestsMs, gpuResolveMs, gpuEvaluateMs, gpuAoMs, gpuFinishMs;
         }
 
         // ── Batched bake ──
@@ -70,12 +76,19 @@ namespace SashaRX.UnityMeshLab
         public static async Task<Maps> BakeAsync(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents,
             RemeshSettings settings, CancellationToken token, RemeshBeauty beauty, Func<Context, GpuBvh> createGpu, bool gpuSourceAO = false)
         {
+            var timer = Stopwatch.StartNew();
             var ctx = await Task.Run(() => Prepare(source, target, tangents, settings, token, beauty), token);
+            ctx.result.gpuPrepareMs = timer.Elapsed.TotalMilliseconds;
             GpuBvh gpu = null;
             SourceAoBaker.Gpu aoGpu = null;
             try {
                 token.ThrowIfCancellationRequested();
+                timer.Restart();
                 gpu = SystemInfo.supportsAsyncGPUReadback ? createGpu(ctx) : null;
+                if (gpu != null) {
+                    ctx.queryBudget = GpuBvh.AsyncBatch;
+                    ctx.bandRows = Mathf.Clamp(ctx.queryBudget / Math.Max(1, ctx.size * ctx.offsets.Length), 1, ctx.size);
+                }
                 if (gpuSourceAO) aoGpu = ctx.aoBaker?.TryCreateGpu(gpu);
                 bool useAoGpu = aoGpu != null;
                 var band = await Task.Run(() => {
@@ -86,20 +99,34 @@ namespace SashaRX.UnityMeshLab
                     }
                     return prepared;
                 }, token);
+                ctx.result.gpuSetupMs = timer.Elapsed.TotalMilliseconds;
                 for (int pixel = 0; pixel < ctx.owners.Length; pixel = band.nextPixel) {
                     int firstPixel = pixel;
+                    timer.Restart();
                     await Task.Run(() => BuildRequests(ctx, band, firstPixel, token), token);
+                    ctx.result.gpuBuildRequestsMs += timer.Elapsed.TotalMilliseconds;
+                    ++ctx.result.gpuBands; ctx.result.gpuQueries += band.count;
+                    timer.Restart();
                     if (gpu != null) await ResolveGpuAsync(ctx, band, gpu, token);
                     else await Task.Run(() => ResolveCpu(ctx, band, token), token);
+                    ctx.result.gpuResolveMs += timer.Elapsed.TotalMilliseconds;
                     if (aoGpu != null) {
+                        timer.Restart();
                         await Task.Run(() => PrepareAoPoints(ctx, band, token), token);
                         await aoGpu.SampleAsync(band.aoPoints, band.count, band.aoValues, token);
+                        ctx.result.gpuAoMs += timer.Elapsed.TotalMilliseconds;
                     }
+                    timer.Restart();
                     await Task.Run(() => EvaluateBand(ctx, band, token), token);
+                    ctx.result.gpuEvaluateMs += timer.Elapsed.TotalMilliseconds;
                 }
                 ctx.result.gpu = gpu != null;
                 ctx.result.gpuAO = aoGpu != null;
-                return await Task.Run(() => Finish(ctx, token), token);
+                if (gpu != null) { ctx.result.gpuRayBatches = gpu.RayBatchCount; ctx.result.gpuNearestBatches = gpu.NearestBatchCount; }
+                timer.Restart();
+                var result = await Task.Run(() => Finish(ctx, token), token);
+                result.gpuFinishMs = timer.Elapsed.TotalMilliseconds;
+                return result;
             }
             finally { aoGpu?.Dispose(); gpu?.Dispose(); }
         }
@@ -114,6 +141,7 @@ namespace SashaRX.UnityMeshLab
             public RemeshSettings settings; public RemeshBeauty beauty;
             internal SourceAoBaker aoBaker;
             public Maps result; public int size, bandRows; public Vector2[] offsets; public int[] owners, receivers;
+            internal int queryBudget = QueryBudget;
             internal RemeshTexelFootprint footprint;
             public TriangleBvh bvh; public Cage cage; public bool proxy; public Vector3[] faceDirs; public float depth;
             public Vector3[] targetFaceNormals;
@@ -145,7 +173,7 @@ namespace SashaRX.UnityMeshLab
 
             public Band(Context ctx)
             {
-                int capacity = Math.Min(QueryBudget, ctx.bandRows * ctx.size * ctx.offsets.Length);
+                int capacity = Math.Min(ctx.queryBudget, ctx.bandRows * ctx.size * ctx.offsets.Length);
                 rowStart = new int[ctx.bandRows + 1];
                 pixel = new int[capacity]; face = new int[capacity]; weights = new Vector3[capacity];
                 area = new float[capacity];
@@ -280,9 +308,9 @@ namespace SashaRX.UnityMeshLab
                     if (sample.boundary) ++boundary;
                     else if (sample.face != receiver) ++continued;
                 }
-                if (requests.Count >= QueryBudget) break;
+                if (requests.Count >= ctx.queryBudget) break;
             }
-            if (requests.Count >= QueryBudget) ++cursor;
+            if (requests.Count >= ctx.queryBudget) ++cursor;
             band.nextPixel = cursor;
             band.y1 = (cursor + size - 1) / size;
             int rows = band.y1 - band.y0;

@@ -20,9 +20,15 @@ namespace SashaRX.UnityMeshLab.Tests
             var maps = Maps(Vector3.forward, new Color(.01f, .02f, .015f, 1));
             var textures = SourceTextures(maps);
             var source = SourceMaterial(textures, false);
+            RenderTexture sourceNormal = null;
             using (var preview = new RemeshPreview())
             using (var render = new RenderFixture())
             try {
+                // This fixture synthesizes canonical RGB bytes rather than an
+                // imported NormalMap, so its source control also needs Lit packing.
+                // The imported-map test below independently verifies the decoder.
+                sourceNormal = RemeshNormalPreviewPacking.Create(textures[1], source.shader.name == "Universal Render Pipeline/Lit");
+                source.SetTexture("_BumpMap", sourceNormal);
                 var data = Data(mesh, maps, textures[0]);
                 var result = ResultMaterial(preview, data);
                 var front = Vector3.forward;
@@ -36,7 +42,10 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.That(RgbDistance(sourceFront, sourceGrazing), Is.GreaterThan(.06f), "The fixture must distinguish lighting from a fixed camera headlight");
                 Assert.That(RgbDistance(resultFront, resultGrazing), Is.GreaterThan(.06f), "Result must actually use the preview lights");
             }
-            finally { Object.DestroyImmediate(mesh); Object.DestroyImmediate(source); DestroyTextures(textures); }
+            finally {
+                if (sourceNormal) { sourceNormal.Release(); Object.DestroyImmediate(sourceNormal); }
+                Object.DestroyImmediate(mesh); Object.DestroyImmediate(source); DestroyTextures(textures);
+            }
         }
 
         [TestCase(.45f, .2f, false)]
@@ -97,6 +106,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void ResultPreservesHdrEmissionAndReleasesItsOwnedCaches()
         {
+            RequireGraphics();
             var mesh = Plane();
             var firstMaps = Maps(Vector3.forward, new Color(3.5f, .375f, 1.25f, 1));
             var secondMaps = Maps(new Vector3(.3f, 0, Mathf.Sqrt(.91f)), new Color(.125f, 2.25f, .5f, 1));
@@ -105,7 +115,7 @@ namespace SashaRX.UnityMeshLab.Tests
             try {
                 var data = Data(mesh, firstMaps, externalBase);
                 var first = ResultMaterial(preview, data);
-                var oldNormal = (Texture2D)first.GetTexture("_BumpMap");
+                var oldNormal = first.GetTexture("_BumpMap");
                 var oldMetal = (Texture2D)first.GetTexture("_MetallicGlossMap");
                 var oldAo = (Texture2D)first.GetTexture("_OcclusionMap");
                 var oldEmission = (Texture2D)first.GetTexture("_EmissionMap");
@@ -117,15 +127,18 @@ namespace SashaRX.UnityMeshLab.Tests
                 data.maps = secondMaps;
                 var second = ResultMaterial(preview, data);
                 Assert.IsFalse(oldNormal); Assert.IsFalse(oldMetal); Assert.IsFalse(oldAo); Assert.IsFalse(oldEmission);
-                var normal = (Texture2D)second.GetTexture("_BumpMap");
+                var normal = second.GetTexture("_BumpMap");
                 var emission = (Texture2D)second.GetTexture("_EmissionMap");
-                AssertColor(normal.GetPixel(0, 0), secondMaps.normal[0], 1f / 255, "New maps must replace the normal cache");
+                var canonical = (Texture2D)typeof(RemeshPreview).GetMethod("MapTexture", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .Invoke(preview, new object[] { secondMaps, RemeshPreview.Channel.Normal });
+                Assert.That(normal, Is.InstanceOf<RenderTexture>());
+                AssertColor(canonical.GetPixel(0, 0), secondMaps.normal[0], 1f / 255, "New maps must replace the canonical normal cache");
                 AssertColor(emission.GetPixel(0, 0), secondMaps.emission[0], .003f, "New maps must replace the HDR cache");
                 preview.Invalidate();
                 Assert.IsFalse(normal); Assert.IsFalse(emission); Assert.IsFalse(second);
                 Assert.IsTrue(externalBase, "Preview does not own the pipeline's base-color texture");
                 var afterInvalidation = ResultMaterial(preview, data);
-                normal = (Texture2D)afterInvalidation.GetTexture("_BumpMap");
+                normal = afterInvalidation.GetTexture("_BumpMap");
                 emission = (Texture2D)afterInvalidation.GetTexture("_EmissionMap");
                 preview.Dispose();
                 Assert.IsFalse(afterInvalidation); Assert.IsFalse(normal); Assert.IsFalse(emission);

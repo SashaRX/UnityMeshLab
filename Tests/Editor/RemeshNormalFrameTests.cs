@@ -210,8 +210,12 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             var oldMap = TextureAssets.FromPixels(legacy, 64, 64, true);
             oldMap.filterMode = FilterMode.Bilinear; oldMap.wrapMode = TextureWrapMode.Clamp;
-            var sourceMaterial = Lit(shader, urp, null); var targetMaterial = Lit(shader, urp, map); var oldMaterial = Lit(shader, urp, oldMap);
+            RenderTexture packed = null, oldPacked = null;
+            Material sourceMaterial = null, targetMaterial = null, oldMaterial = null;
             try {
+                packed = RemeshNormalPreviewPacking.Create(map, urp);
+                oldPacked = RemeshNormalPreviewPacking.Create(oldMap, urp);
+                sourceMaterial = Lit(shader, urp, null); targetMaterial = Lit(shader, urp, packed); oldMaterial = Lit(shader, urp, oldPacked);
                 float oldError = 0;
                 foreach (var light in new[] { new Vector3(-.65f, .35f, 1), new Vector3(.4f, -.5f, 1) }) {
                     var expected = RenderMean(sourceMesh, sourceMaterial, light, "frame-source-" + light.x);
@@ -226,6 +230,8 @@ namespace SashaRX.UnityMeshLab.Tests
             finally {
                 Object.DestroyImmediate(sourceMesh); Object.DestroyImmediate(targetMesh); Object.DestroyImmediate(map); Object.DestroyImmediate(oldMap);
                 Object.DestroyImmediate(sourceMaterial); Object.DestroyImmediate(targetMaterial); Object.DestroyImmediate(oldMaterial);
+                if (packed) { packed.Release(); Object.DestroyImmediate(packed); }
+                if (oldPacked) { oldPacked.Release(); Object.DestroyImmediate(oldPacked); }
             }
         }
 
@@ -277,7 +283,7 @@ namespace SashaRX.UnityMeshLab.Tests
             mesh.uv = target.uv; mesh.triangles = target.indices; mesh.RecalculateBounds(); return mesh;
         }
 
-        static Material Lit(Shader shader, bool urp, Texture2D normal)
+        static Material Lit(Shader shader, bool urp, Texture normal)
         {
             var material = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             material.SetColor(urp ? "_BaseColor" : "_Color", new Color(.8f, .8f, .8f, 1));

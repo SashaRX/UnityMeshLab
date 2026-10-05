@@ -472,6 +472,19 @@ Normal maps are decoded on the GPU before readback and transformed from source
 TBN to destination TBN. Metallic/smoothness, occlusion and emission stay separate
 from base color. The output normal map is imported as a Unity normal map.
 
+The bake and Maps view store canonical RGB normals. The Result Lit preview uses
+a separate linear GPU texture packed for the active shader decoder. Android's
+DXT5nm setting enables AG decoding in URP, so its preview places normal X in alpha;
+feeding a raw RGB texture with alpha 1 would make lighting depend on chart tangents.
+Built-in and URP use their respective decoder precedence. The preview cache follows
+the active target, normal encoding and pipeline, and releases its owned textures
+when invalidated. This conversion does not alter baked bytes or PNG export.
+
+GPU surface queries use bounded 65,536-query chunks; CPU bands remain at 16,384.
+`RemeshDiag` reports band/query/dispatch counts and stage timings, including Editor
+scheduling and asynchronous readback waits. GPU performance depends on query count
+and Editor scheduling; it must be measured against CPU with identical bake inputs.
+
 Material textures are read at their imported dimensions, without the web demo's
 1K rescaling. The readback cache has a 512 MiB limit (HDR emission costs 16 bytes
 per pixel). Source color maps retain sRGB byte precision and are interpolated in
@@ -501,8 +514,7 @@ compression or max-size settings.
   occlusion, emission and scalar metallic/smoothness from common property names;
   every such downgrade is logged as a warning. Result materials target Built-in
   and URP; HDRP export is not implemented.
-- CPU projection is slower than a dedicated GPU baker, particularly at 4K.
-  Source snapshot/readback and export are synchronous editor operations.
+- Source snapshot/readback and export are synchronous editor operations.
 - Cancellation is observed after the current native remesh/unwrap completes,
   and throughout CPU projection. Assembly reload is deferred while the job owns
   native resources. Switching tabs requests cancellation and disposes previews.
@@ -542,6 +554,14 @@ coverage of a chart thinner than a texel, independent vertex color/alpha transfe
 UV-island hard edges and source-root selection following. Run these in
 Unity 6000.0+ after the native binaries are updated. The repository's Unity CI is
 license-gated; a skipped job is not a passed compilation/test run.
+
+`RemeshPreviewNormalPackingTests` renders the actual Result material against an
+independent mesh-normal control, including neutral/tilted normals and rotated or
+mirrored chart tangents. Run the graphics fixtures with Android DXT5nm and XYZ
+normal encoding, and Built-in and URP. They also check canonical Maps bytes,
+texture ownership and render-target restoration. `RemeshProjectionSurfaceTests`
+checks mixed ray traversal and hit/miss slots across the GPU chunk boundary, plus
+the actual Unity compute compiler's uninitialized-variable diagnostics.
 
 Manual gate: textured multi-submesh prop, nested transforms including negative
 scale, normal-mapped high-poly with bevels, thin sheet, LODGroup, 4K source texture,

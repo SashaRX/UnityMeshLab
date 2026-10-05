@@ -1740,15 +1740,32 @@ namespace SashaRX.UnityMeshLab.Tests
         [UnityEngine.TestTools.UnityTest]
         public System.Collections.IEnumerator TextureAoSourceMapsReadBackAsynchronouslyAndSkipDisabledMaps()
         {
+            string normalPath = "Assets/AO_SourceNormal_" + Guid.NewGuid().ToString("N") + ".png";
             var root = new GameObject("AO textured source");
             var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up },
                 uv = new[] { Vector2.zero, Vector2.right, Vector2.up }, triangles = new[] { 0, 1, 2 } };
-            var normal = new Texture2D(1, 1, TextureFormat.RGBA32, false, true);
+            var normalWriter = new Texture2D(4, 4, TextureFormat.RGBA32, false, true);
             var ao = new Texture2D(1, 1, TextureFormat.RGBA32, false, true);
             var material = new Material(Shader.Find("Standard"));
             try {
                 if (!SystemInfo.supportsAsyncGPUReadback) Assert.Ignore("Graphics device has no async readback.");
-                normal.SetPixel(0, 0, new Color(0.5f, 0.5f, 1, 1)); normal.Apply(false, true);
+                // An authored normal map goes through the independent importer.
+                // Raw RGBA is not the Standard shader's packed normal layout on
+                // every active target (ASTC can store X in alpha).
+                var normalPixels = new Color[16];
+                Array.Fill(normalPixels, new Color(.5f, .5f, 1, 1));
+                normalWriter.SetPixels(normalPixels); normalWriter.Apply();
+                System.IO.File.WriteAllBytes(System.IO.Path.GetFullPath(normalPath), normalWriter.EncodeToPNG());
+                AssetDatabase.ImportAsset(normalPath, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (TextureImporter)AssetImporter.GetAtPath(normalPath);
+                Assert.IsNotNull(importer);
+                importer.textureType = TextureImporterType.NormalMap;
+                importer.sRGBTexture = false; importer.isReadable = false;
+                importer.textureCompression = TextureImporterCompression.Uncompressed;
+                importer.mipmapEnabled = false; importer.filterMode = FilterMode.Point;
+                importer.wrapMode = TextureWrapMode.Clamp; importer.SaveAndReimport();
+                var normal = AssetDatabase.LoadAssetAtPath<Texture2D>(normalPath);
+                Assert.IsNotNull(normal); Assert.IsFalse(normal.isReadable, "the readback must operate on an unreadable imported normal map");
                 ao.SetPixel(0, 0, new Color32(64, 64, 64, 255)); ao.Apply(false, true);
                 material.SetTexture("_BumpMap", normal); material.SetTexture("_OcclusionMap", ao);
                 root.AddComponent<MeshFilter>().sharedMesh = mesh;
@@ -1771,7 +1788,8 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             finally {
                 UnityEngine.Object.DestroyImmediate(root); UnityEngine.Object.DestroyImmediate(mesh);
-                UnityEngine.Object.DestroyImmediate(normal); UnityEngine.Object.DestroyImmediate(ao); UnityEngine.Object.DestroyImmediate(material);
+                UnityEngine.Object.DestroyImmediate(normalWriter); UnityEngine.Object.DestroyImmediate(ao); UnityEngine.Object.DestroyImmediate(material);
+                AssetDatabase.DeleteAsset(normalPath);
             }
         }
 

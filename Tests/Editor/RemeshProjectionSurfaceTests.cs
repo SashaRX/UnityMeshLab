@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -156,6 +157,72 @@ namespace SashaRX.UnityMeshLab.Tests
             while (!task.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
             Assert.IsTrue(task.IsCompleted, "GPU projection query must complete without blocking the Editor");
             Assert.IsFalse(task.IsFaulted, task.Exception?.ToString()); Assert.IsFalse(task.IsCanceled);
+        }
+
+        [UnityTest]
+        public IEnumerator GpuMixedTraversalVisitsBothBvhBranchesWithoutUninitializedCompilerWarnings()
+        {
+            if (!GpuBvh.Supported || !SystemInfo.supportsAsyncGPUReadback) Assert.Ignore("Async GPU queries unavailable on this device.");
+            var depths = new float[41]; var normals = new Vector3[depths.Length];
+            for (int face = 0; face < depths.Length; ++face) { depths[face] = -.8f + face * .04f; normals[face] = Vector3.forward; }
+            Layers(1, depths, out var positions, out var indices);
+            var bvh = new TriangleBvh(positions, indices);
+            using (var gpu = GpuBvh.TryCreate(bvh, normals)) {
+                Assert.IsNotNull(gpu);
+                var origins = new Vector4[82]; var directions = new Vector4[origins.Length]; var hits = new GpuBvh.RayHit[origins.Length];
+                for (int q = 0; q < origins.Length; ++q) {
+                    origins[q] = new Vector4(.25f, .25f, 1.2f, 3);
+                    directions[q] = new Vector4(0, 0, -1, q % 3 == 0 ? 0 : 1.2f - depths[q % depths.Length] + .003f);
+                }
+                yield return Await(gpu.RaycastAsync(origins, directions, origins.Length, true, hits, CancellationToken.None));
+                for (int q = 0; q < hits.Length; ++q) {
+                    int face = q % 3 == 0 ? depths.Length - 1 : q % depths.Length;
+                    Assert.AreEqual(face, hits[q].tri, "legacy and target rays must traverse the branching tree; query=" + q);
+                    Assert.That(hits[q].t, Is.EqualTo(1.2f - depths[face]).Within(1e-6));
+                    Assert.That(hits[q].u, Is.EqualTo(.25f).Within(1e-6)); Assert.That(hits[q].v, Is.EqualTo(.25f).Within(1e-6));
+                }
+            }
+            var shader = ComputeShaders.Find("BvhQueries");
+            var messages = typeof(ShaderUtil).GetMethod("GetComputeShaderMessages", BindingFlags.Public | BindingFlags.Static);
+            Assert.IsNotNull(messages, "actual Unity compute compiler diagnostics must be available");
+            foreach (object message in (Array)messages.Invoke(null, new object[] { shader })) {
+                var type = message.GetType();
+                string text = (string)(type.GetField("message")?.GetValue(message) ?? type.GetProperty("message")?.GetValue(message));
+                Assert.That(text ?? "", Does.Not.Contain("potentially uninitialized"), "Both traversal paths must compile without the FXC warning");
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator GpuAsyncQueryChunkBoundaryPreservesHitAndMissSlotsForRaysAndNearestFallbacks()
+        {
+            if (!GpuBvh.Supported || !SystemInfo.supportsAsyncGPUReadback) Assert.Ignore("Async GPU queries unavailable on this device.");
+            Layers(1, new[] { 0f }, out var positions, out var indices);
+            using (var gpu = GpuBvh.TryCreate(new TriangleBvh(positions, indices), new[] { Vector3.forward })) {
+                Assert.IsNotNull(gpu);
+                int count = GpuBvh.AsyncBatch + 3;
+                var origins = new Vector4[count]; var directions = new Vector4[count]; var hits = new GpuBvh.RayHit[count];
+                var points = new Vector4[count]; var queryNormals = new Vector4[count]; var nearest = new GpuBvh.NearestHit[count];
+                for (int i = 0; i < count; ++i) {
+                    bool miss = i % 3 == 0; bool skipped = i % 3 == 1;
+                    origins[i] = new Vector4(miss ? 2 : .25f, .25f, 1, skipped ? 0 : 2);
+                    directions[i] = new Vector4(0, 0, -1, i % 2 == 0 ? 1 : 0);
+                    points[i] = new Vector4(miss ? 2 : .25f, .25f, .1f, skipped ? 0 : .2f);
+                    queryNormals[i] = new Vector4(0, 0, 1, .5f);
+                }
+                yield return Await(gpu.RaycastAsync(origins, directions, count, true, hits, CancellationToken.None));
+                yield return Await(gpu.NearestAsync(points, queryNormals, count, true, nearest, CancellationToken.None));
+                Assert.AreEqual(2, gpu.RayBatchCount); Assert.AreEqual(2, gpu.NearestBatchCount);
+                for (int i = 0; i < count; ++i) {
+                    int face = i % 3 == 2 ? 0 : -1;
+                    Assert.AreEqual(face, hits[i].tri, "ray readback slot must survive chunk boundary; query=" + i);
+                    Assert.AreEqual(face, nearest[i].tri, "nearest readback slot must survive chunk boundary; query=" + i);
+                    if (face < 0) continue;
+                    Assert.That(hits[i].t, Is.EqualTo(1).Within(1e-6));
+                    Assert.That(nearest[i].distSq, Is.EqualTo(.01f).Within(1e-6));
+                    Assert.That(hits[i].u, Is.EqualTo(.25f).Within(1e-6));
+                    Assert.That(nearest[i].bary.y, Is.EqualTo(.25f).Within(1e-6));
+                }
+            }
         }
 
         [UnityTest]

@@ -25,7 +25,10 @@ void Raycast(uint3 id : SV_DispatchThreadID)
     if (id.x >= _QueryCount) return;
     float4 o = _RayOrigins[id.x];
     float4 d = _RayDirs[id.x];
-    _RayHits[id.x] = BvhRaycastClosestToTarget(o.xyz, d.xyz, o.w, _FacingFilter != 0, d.w);
+    if (d.w > 0.0)
+        _RayHits[id.x] = BvhRaycastClosestToTarget(o.xyz, d.xyz, o.w, _FacingFilter != 0, d.w);
+    else
+        _RayHits[id.x] = BvhRaycast(o.xyz, d.xyz, o.w, _FacingFilter != 0);
 }
 
 [numthreads(64, 1, 1)]

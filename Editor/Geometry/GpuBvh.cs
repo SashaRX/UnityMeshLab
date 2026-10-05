@@ -26,7 +26,9 @@ namespace SashaRX.UnityMeshLab
         public struct NearestHit { public int tri; public float distSq; public Vector3 point, bary; } // 32 bytes
 
         public const int MaxBatch = 1 << 20;
-        const int AsyncBatch = 16384;
+        // Keep readbacks bounded while amortizing Editor-frame completion latency.
+        // A full async chunk occupies 7 MiB of reusable query buffers.
+        internal const int AsyncBatch = 65536;
 
         public static bool Supported => SystemInfo.supportsComputeShaders;
 
@@ -37,6 +39,8 @@ namespace SashaRX.UnityMeshLab
         int capacity;
         readonly int eitherSideCount;
         public int FaceCount { get; }
+        internal int RayBatchCount { get; private set; }
+        internal int NearestBatchCount { get; private set; }
 
         /// <summary>Null when compute shaders are unavailable or the kernel asset is missing (logged once).</summary>
         public static GpuBvh TryCreate(TriangleBvh bvh, Vector3[] faceNormals = null, bool[] eitherSide = null)
@@ -128,6 +132,7 @@ namespace SashaRX.UnityMeshLab
 
         void DispatchRays(Vector4[] origins, Vector4[] dirs, int start, int n, bool facingFilter)
         {
+            ++RayBatchCount;
             Ensure(n);
             rayOrigins.SetData(origins, start, 0, n);
             rayDirs.SetData(dirs, start, 0, n);
@@ -168,6 +173,7 @@ namespace SashaRX.UnityMeshLab
 
         void DispatchNearest(Vector4[] pts, Vector4[] normals, int start, int n, bool normalFilter)
         {
+            ++NearestBatchCount;
             Ensure(n);
             points.SetData(pts, start, 0, n);
             queryNormals.SetData(normals, start, 0, n);

@@ -228,11 +228,12 @@ bool BvhRayTargetAabb(float3 origin, float3 dir, float3 bMin, float3 bMax,
     return true;
 }
 
-// Ordinary queries keep their first-hit traversal. Surface-transfer rays may
-// instead nominate the target point inside the segment, preserving actual hit t.
+// Positive-preference surface-transfer query. The query kernel selects the
+// ordinary first-hit traversal separately for nonpositive preferences: combining
+// the two traversal loops behind this function's early return confuses FXC's
+// definite-initialization analysis. Preserve actual hit t in either path.
 BvhRayHit BvhRaycastClosestToTarget(float3 origin, float3 dir, float maxDist, bool facingFilter, float preferredT)
 {
-    if (!(preferredT > 0.0)) return BvhRaycast(origin, dir, maxDist, facingFilter);
     BvhRayHit best;
     best.tri = -1; best.t = maxDist; best.u = 0; best.v = 0;
     if (!(maxDist > 0.0)) return best;
