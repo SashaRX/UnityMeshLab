@@ -17,7 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Fixed
 - Address CodeRabbit/Graphify findings: restore failed FBX overwrites and importer state, export computed channels, isolate all xatlas sessions, keep GPU cancellation terminal, preserve canonical inspection entries, align lightmap picking and fill visibility, deduplicate wire edges and retain prefab LOD overrides. Skinned source previews apply renderer scale once.
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
-- Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
+- Remesh previews use the source root's axes; saved output preserves captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
+
+## [1.1.22] - 2026-10-06
+
+### Fixed
+- Remesh 3D previews remove the scene root's position and rotation in every stage, including Source before running the pipeline. Root scale and child-relative transforms remain visible; generated stage and cage previews use the captured display frame. Saved prefab/FBX transforms continue to use the captured export frame.
 
 ## [1.1.21] - 2026-10-06
 

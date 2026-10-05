@@ -306,7 +306,7 @@ namespace SashaRX.UnityMeshLab
             previewData.meshes[(int)RemeshPreview.Stage.Result] = pipeline.ResultMesh;
             previewData.geometry = pipeline.Geometry; previewData.maps = pipeline.Maps; previewData.baseColor = pipeline.BaseColorPreview;
             previewData.trimMask = pipeline.TrimMaskMesh;
-            previewData.spaceToWorld = pipeline.Primary?.spaceToWorld ?? Matrix4x4.identity;
+            previewData.spaceToWorld = pipeline.PreviewSpaceToWorld;
             // Live from the current settings so the cage preview reflects projection
             // distance changes before a re-bake; zero until a source snapshot exists.
             previewData.cageDistance = pipeline.SourceDiagonal * settings.projectionDistance;
@@ -334,10 +334,11 @@ namespace SashaRX.UnityMeshLab
         {
             SyncPreviewData();
             if (previews.IsSource) {
+                var worldToFrame = previewSourceRoot ? RemeshPipeline.PreviewRootFrameInverse(previewSourceRoot.transform) : Matrix4x4.identity;
                 for (int i = 0; i < sourceEntries.Count; ++i) {
                     var renderer = sourceRenderers[i];
                     if (renderer) items.Add(new MeshViewport3D.Item(sourceEntries[i].originalMesh,
-                        renderer.localToWorldMatrix, renderer.sharedMaterials));
+                        worldToFrame * renderer.localToWorldMatrix, renderer.sharedMaterials));
                 }
                 return true;
             }
