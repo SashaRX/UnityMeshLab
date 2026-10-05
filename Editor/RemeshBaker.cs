@@ -280,8 +280,9 @@ namespace SashaRX.UnityMeshLab
                     if (sample.boundary) ++boundary;
                     else if (sample.face != receiver) ++continued;
                 }
-                if (requests.Count >= QueryBudget) { ++cursor; break; }
+                if (requests.Count >= QueryBudget) break;
             }
+            if (requests.Count >= QueryBudget) ++cursor;
             band.nextPixel = cursor;
             band.y1 = (cursor + size - 1) / size;
             int rows = band.y1 - band.y0;
