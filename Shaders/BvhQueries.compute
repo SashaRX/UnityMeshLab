@@ -5,7 +5,7 @@
 #pragma kernel Raycast
 #pragma kernel Nearest
 
-#include "BvhTraversal.hlsl"
+#include "Packages/com.sasharx.unitymeshlab/Shaders/BvhTraversal.hlsl"
 
 StructuredBuffer<float4>          _RayOrigins;    // xyz origin, w = maxDist (<= 0: no query)
 StructuredBuffer<float4>          _RayDirs;       // xyz unit direction, w preferred target t (0: first hit)

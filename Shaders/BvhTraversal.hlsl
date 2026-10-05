@@ -86,6 +86,7 @@ BvhRayFrame BvhFrame(float3 dir)
 bool BvhWatertight(BvhRayFrame k, float3 origin, float3 a, float3 b, float3 c, float maxT, out float t, out float3 bary)
 {
     t = 0; bary = float3(0, 0, 0);
+    bool hit = false;
     a -= origin; b -= origin; c -= origin;
     float az = a[k.kz], bz = b[k.kz], cz = c[k.kz];
     float ax = a[k.kx] - k.sx * az, ay = a[k.ky] - k.sy * az;
@@ -94,17 +95,26 @@ bool BvhWatertight(BvhRayFrame k, float3 origin, float3 a, float3 b, float3 c, f
     float U = cx * by - cy * bx;
     float V = ax * cy - ay * cx;
     float W = bx * ay - by * ax;
-    if ((U < 0.0 || V < 0.0 || W < 0.0) && (U > 0.0 || V > 0.0 || W > 0.0)) return false;
-    float det = U + V + W;
-    if (det == 0.0) return false;
-    float T = U * (k.sz * az) + V * (k.sz * bz) + W * (k.sz * cz);
-    float sgn = det < 0.0 ? -1.0 : 1.0;
-    float Ts = T * sgn, dets = det * sgn;
-    if (Ts < 0.0 || Ts >= maxT * dets) return false;
-    float rcp = 1.0 / det;
-    t = T * rcp;
-    bary = float3(U, V, W) * rcp;
-    return true;
+    // A single initialized return also gives the Vulkan translator a defined
+    // result on rejected intersections; retain the same watertight predicates.
+    if (!((U < 0.0 || V < 0.0 || W < 0.0) && (U > 0.0 || V > 0.0 || W > 0.0)))
+    {
+        float det = U + V + W;
+        if (det != 0.0)
+        {
+            float T = U * (k.sz * az) + V * (k.sz * bz) + W * (k.sz * cz);
+            float sgn = det < 0.0 ? -1.0 : 1.0;
+            float Ts = T * sgn, dets = det * sgn;
+            if (!(Ts < 0.0 || Ts >= maxT * dets))
+            {
+                float rcp = 1.0 / det;
+                t = T * rcp;
+                bary = float3(U, V, W) * rcp;
+                hit = true;
+            }
+        }
+    }
+    return hit;
 }
 
 float BvhAabbDistSq(float3 bMin, float3 bMax, float3 p)
@@ -117,25 +127,68 @@ float BvhAabbDistSq(float3 bMin, float3 bMax, float3 p)
 // with the weights of a, b, c — the same convention as TriangleBvh.ClosestPointOnTriangle.
 float3 BvhClosestPointOnTriangle(float3 p, float3 a, float3 b, float3 c, out float3 bary)
 {
+    float3 closest = a;
+    bary = float3(1, 0, 0);
     float3 ab = b - a, ac = c - a, ap = p - a;
     float d1 = dot(ab, ap), d2 = dot(ac, ap);
-    if (d1 <= 0.0 && d2 <= 0.0) { bary = float3(1, 0, 0); return a; }
-    float3 bp = p - b;
-    float d3 = dot(ab, bp), d4 = dot(ac, bp);
-    if (d3 >= 0.0 && d4 <= d3) { bary = float3(0, 1, 0); return b; }
-    float vc = d1 * d4 - d3 * d2;
-    if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) { float v = d1 / (d1 - d3); bary = float3(1 - v, v, 0); return a + ab * v; }
-    float3 cp = p - c;
-    float d5 = dot(ab, cp), d6 = dot(ac, cp);
-    if (d6 >= 0.0 && d5 <= d6) { bary = float3(0, 0, 1); return c; }
-    float vb = d5 * d2 - d1 * d6;
-    if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) { float w = d2 / (d2 - d6); bary = float3(1 - w, 0, w); return a + ac * w; }
-    float va = d3 * d6 - d5 * d4;
-    if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) { float w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); bary = float3(0, 1 - w, w); return b + (c - b) * w; }
-    float denom = 1.0 / (va + vb + vc);
-    float v2 = vb * denom, w2 = vc * denom;
-    bary = float3(1 - v2 - w2, v2, w2);
-    return a + ab * v2 + ac * w2;
+    if (!(d1 <= 0.0 && d2 <= 0.0))
+    {
+        float3 bp = p - b;
+        float d3 = dot(ab, bp), d4 = dot(ac, bp);
+        if (d3 >= 0.0 && d4 <= d3)
+        {
+            bary = float3(0, 1, 0);
+            closest = b;
+        }
+        else
+        {
+            float vc = d1 * d4 - d3 * d2;
+            if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0)
+            {
+                float v = d1 / (d1 - d3);
+                bary = float3(1 - v, v, 0);
+                closest = a + ab * v;
+            }
+            else
+            {
+                float3 cp = p - c;
+                float d5 = dot(ab, cp), d6 = dot(ac, cp);
+                if (d6 >= 0.0 && d5 <= d6)
+                {
+                    bary = float3(0, 0, 1);
+                    closest = c;
+                }
+                else
+                {
+                    float vb = d5 * d2 - d1 * d6;
+                    if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0)
+                    {
+                        float w = d2 / (d2 - d6);
+                        bary = float3(1 - w, 0, w);
+                        closest = a + ac * w;
+                    }
+                    else
+                    {
+                        float va = d3 * d6 - d5 * d4;
+                        if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0)
+                        {
+                            float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+                            bary = float3(0, 1 - w, w);
+                            closest = b + (c - b) * w;
+                        }
+                        else
+                        {
+                            float denom = 1.0 / (va + vb + vc);
+                            float v2 = vb * denom, w2 = vc * denom;
+                            bary = float3(1 - v2 - w2, v2, w2);
+                            closest = a + ab * v2 + ac * w2;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return closest;
 }
 
 // Closest hit along the ray within maxDist. facingFilter rejects faces whose
@@ -145,57 +198,59 @@ BvhRayHit BvhRaycast(float3 origin, float3 dir, float maxDist, bool facingFilter
 {
     BvhRayHit best;
     best.tri = -1; best.t = maxDist; best.u = 0; best.v = 0;
-    if (maxDist <= 0.0) return best;
-    float3 invDir = float3(
-        abs(dir.x) > BVH_DIR_EPSILON ? 1.0 / dir.x : (dir.x >= 0 ? 1e20 : -1e20),
-        abs(dir.y) > BVH_DIR_EPSILON ? 1.0 / dir.y : (dir.y >= 0 ? 1e20 : -1e20),
-        abs(dir.z) > BVH_DIR_EPSILON ? 1.0 / dir.z : (dir.z >= 0 ? 1e20 : -1e20));
-    BvhRayFrame frame = BvhFrame(dir);
-    int stack[BVH_MAX_STACK];
-    int sp = 0;
-    stack[sp++] = 0;
-    while (sp > 0)
+    if (!(maxDist <= 0.0))
     {
-        int nodeIdx = stack[--sp];
-        BVHNode node = _BVHNodes[nodeIdx];
-        float tEnter;
-        if (!BvhRayAabb(origin, invDir, node.bMin, node.bMax, best.t, tEnter)) continue;
-        if (node.left == -1)
+        float3 invDir = float3(
+            abs(dir.x) > BVH_DIR_EPSILON ? 1.0 / dir.x : (dir.x >= 0 ? 1e20 : -1e20),
+            abs(dir.y) > BVH_DIR_EPSILON ? 1.0 / dir.y : (dir.y >= 0 ? 1e20 : -1e20),
+            abs(dir.z) > BVH_DIR_EPSILON ? 1.0 / dir.z : (dir.z >= 0 ? 1e20 : -1e20));
+        BvhRayFrame frame = BvhFrame(dir);
+        int stack[BVH_MAX_STACK];
+        int sp = 0;
+        stack[sp++] = 0;
+        while (sp > 0)
         {
-            for (int i = node.triStart; i < node.triStart + node.triCount; i++)
+            int nodeIdx = stack[--sp];
+            BVHNode node = _BVHNodes[nodeIdx];
+            float tEnter;
+            if (!BvhRayAabb(origin, invDir, node.bMin, node.bMax, best.t, tEnter)) continue;
+            if (node.left == -1)
             {
-                int f = _TriIndices[i];
-                if (facingFilter && dot(_FaceNormals[f], dir) > 0.0 && !BvhEitherSide(f)) continue;
-                float3 a = _TriVerts[_Tris[f * 3]];
-                float3 b = _TriVerts[_Tris[f * 3 + 1]];
-                float3 c = _TriVerts[_Tris[f * 3 + 2]];
-                float t; float3 bary;
-                if (BvhWatertight(frame, origin, a, b, c, best.t, t, bary))
+                for (int i = node.triStart; i < node.triStart + node.triCount; i++)
                 {
-                    best.t = t; best.tri = f; best.u = bary.y; best.v = bary.z;
+                    int f = _TriIndices[i];
+                    if (facingFilter && dot(_FaceNormals[f], dir) > 0.0 && !BvhEitherSide(f)) continue;
+                    float3 a = _TriVerts[_Tris[f * 3]];
+                    float3 b = _TriVerts[_Tris[f * 3 + 1]];
+                    float3 c = _TriVerts[_Tris[f * 3 + 2]];
+                    float t; float3 bary;
+                    if (BvhWatertight(frame, origin, a, b, c, best.t, t, bary))
+                    {
+                        best.t = t; best.tri = f; best.u = bary.y; best.v = bary.z;
+                    }
                 }
+                continue;
             }
-            continue;
-        }
-        // Nearer child on top of the stack.
-        BVHNode l = _BVHNodes[node.left];
-        BVHNode r = _BVHNodes[node.right];
-        float tl, tr;
-        bool hitL = BvhRayAabb(origin, invDir, l.bMin, l.bMax, best.t, tl);
-        bool hitR = BvhRayAabb(origin, invDir, r.bMin, r.bMax, best.t, tr);
-        if (sp + 2 > BVH_MAX_STACK) continue;
-        // Push each hit child independently. The combined hitL && hitR branch with
-        // two stack writes crashes FXC's optimizer (including Windows SDK 26100).
-        // This keeps the same near-first order without that compiler failure.
-        if (tl <= tr)
-        {
-            if (hitR) stack[sp++] = node.right;
-            if (hitL) stack[sp++] = node.left;
-        }
-        else
-        {
-            if (hitL) stack[sp++] = node.left;
-            if (hitR) stack[sp++] = node.right;
+            // Nearer child on top of the stack.
+            BVHNode l = _BVHNodes[node.left];
+            BVHNode r = _BVHNodes[node.right];
+            float tl, tr;
+            bool hitL = BvhRayAabb(origin, invDir, l.bMin, l.bMax, best.t, tl);
+            bool hitR = BvhRayAabb(origin, invDir, r.bMin, r.bMax, best.t, tr);
+            if (sp + 2 > BVH_MAX_STACK) continue;
+            // Push each hit child independently. The combined hitL && hitR branch with
+            // two stack writes crashes FXC's optimizer (including Windows SDK 26100).
+            // This keeps the same near-first order without that compiler failure.
+            if (tl <= tr)
+            {
+                if (hitR) stack[sp++] = node.right;
+                if (hitL) stack[sp++] = node.left;
+            }
+            else
+            {
+                if (hitL) stack[sp++] = node.left;
+                if (hitR) stack[sp++] = node.right;
+            }
         }
     }
     return best;
@@ -208,77 +263,83 @@ bool BvhRayTargetAabb(float3 origin, float3 dir, float3 bMin, float3 bMax,
 {
     float loT = 0.0, hiT = maxT;
     distance = 0.0;
+    bool intersects = true;
     [unroll] for (int axis = 0; axis < 3; ++axis)
     {
-        float o = origin[axis], d = dir[axis];
-        // A nonzero component can still enter a slab from just outside its edge.
-        // Keep the ordinary first-hit traversal's epsilon policy unchanged.
-        if (d == 0.0)
+        if (intersects)
         {
-            if (o < bMin[axis] || o > bMax[axis]) return false;
-        }
-        else
-        {
-            float a = (bMin[axis] - o) / d, b = (bMax[axis] - o) / d;
-            loT = max(loT, min(a, b)); hiT = min(hiT, max(a, b));
-            if (loT > hiT) return false;
+            float o = origin[axis], d = dir[axis];
+            // A nonzero component can still enter a slab from just outside its edge.
+            // Keep the ordinary first-hit traversal's epsilon policy unchanged.
+            if (d == 0.0)
+            {
+                if (o < bMin[axis] || o > bMax[axis]) intersects = false;
+            }
+            else
+            {
+                float a = (bMin[axis] - o) / d, b = (bMax[axis] - o) / d;
+                loT = max(loT, min(a, b)); hiT = min(hiT, max(a, b));
+                if (loT > hiT) intersects = false;
+            }
         }
     }
-    distance = max(0.0, max(loT - preferredT, preferredT - hiT));
-    return true;
+    if (intersects) distance = max(0.0, max(loT - preferredT, preferredT - hiT));
+    return intersects;
 }
 
 // Positive-preference surface-transfer query. The query kernel selects the
 // ordinary first-hit traversal separately for nonpositive preferences: combining
-// the two traversal loops behind this function's early return confuses FXC's
+// the two traversal loops behind an early return confuses FXC's
 // definite-initialization analysis. Preserve actual hit t in either path.
 BvhRayHit BvhRaycastClosestToTarget(float3 origin, float3 dir, float maxDist, bool facingFilter, float preferredT)
 {
     BvhRayHit best;
     best.tri = -1; best.t = maxDist; best.u = 0; best.v = 0;
-    if (!(maxDist > 0.0)) return best;
-    preferredT = min(preferredT, maxDist);
-    float distance = max(preferredT, maxDist - preferredT);
-    BvhRayFrame frame = BvhFrame(dir);
-    int stack[BVH_MAX_STACK];
-    int sp = 0;
-    stack[sp++] = 0;
-    while (sp > 0)
+    if (maxDist > 0.0)
     {
-        BVHNode node = _BVHNodes[stack[--sp]];
-        float bound;
-        if (!BvhRayTargetAabb(origin, dir, node.bMin, node.bMax, maxDist, preferredT, bound) || bound > distance) continue;
-        if (node.left == -1)
+        preferredT = min(preferredT, maxDist);
+        float distance = max(preferredT, maxDist - preferredT);
+        BvhRayFrame frame = BvhFrame(dir);
+        int stack[BVH_MAX_STACK];
+        int sp = 0;
+        stack[sp++] = 0;
+        while (sp > 0)
         {
-            for (int i = node.triStart; i < node.triStart + node.triCount; ++i)
+            BVHNode node = _BVHNodes[stack[--sp]];
+            float bound;
+            if (!BvhRayTargetAabb(origin, dir, node.bMin, node.bMax, maxDist, preferredT, bound) || bound > distance) continue;
+            if (node.left == -1)
             {
-                int f = _TriIndices[i];
-                if (facingFilter && dot(_FaceNormals[f], dir) > 0.0 && !BvhEitherSide(f)) continue;
-                float3 a = _TriVerts[_Tris[f * 3]], b = _TriVerts[_Tris[f * 3 + 1]], c = _TriVerts[_Tris[f * 3 + 2]];
-                float t; float3 bary;
-                if (!BvhWatertight(frame, origin, a, b, c, maxDist, t, bary)) continue;
-                float candidate = abs(t - preferredT);
-                if (candidate > distance || (candidate == distance && best.tri >= 0
-                    && (t > best.t || (t == best.t && f >= best.tri)))) continue;
-                distance = candidate; best.t = t; best.tri = f; best.u = bary.y; best.v = bary.z;
+                for (int i = node.triStart; i < node.triStart + node.triCount; ++i)
+                {
+                    int f = _TriIndices[i];
+                    if (facingFilter && dot(_FaceNormals[f], dir) > 0.0 && !BvhEitherSide(f)) continue;
+                    float3 a = _TriVerts[_Tris[f * 3]], b = _TriVerts[_Tris[f * 3 + 1]], c = _TriVerts[_Tris[f * 3 + 2]];
+                    float t; float3 bary;
+                    if (!BvhWatertight(frame, origin, a, b, c, maxDist, t, bary)) continue;
+                    float candidate = abs(t - preferredT);
+                    if (candidate > distance || (candidate == distance && best.tri >= 0
+                        && (t > best.t || (t == best.t && f >= best.tri)))) continue;
+                    distance = candidate; best.t = t; best.tri = f; best.u = bary.y; best.v = bary.z;
+                }
+                continue;
             }
-            continue;
-        }
-        BVHNode l = _BVHNodes[node.left], r = _BVHNodes[node.right];
-        float dl, dr;
-        bool hitL = BvhRayTargetAabb(origin, dir, l.bMin, l.bMax, maxDist, preferredT, dl) && dl <= distance;
-        bool hitR = BvhRayTargetAabb(origin, dir, r.bMin, r.bMax, maxDist, preferredT, dr) && dr <= distance;
-        if (sp + 2 > BVH_MAX_STACK) continue;
-        // Separate stack writes preserve compatibility with FXC's optimizer.
-        if (dl <= dr)
-        {
-            if (hitR) stack[sp++] = node.right;
-            if (hitL) stack[sp++] = node.left;
-        }
-        else
-        {
-            if (hitL) stack[sp++] = node.left;
-            if (hitR) stack[sp++] = node.right;
+            BVHNode l = _BVHNodes[node.left], r = _BVHNodes[node.right];
+            float dl, dr;
+            bool hitL = BvhRayTargetAabb(origin, dir, l.bMin, l.bMax, maxDist, preferredT, dl) && dl <= distance;
+            bool hitR = BvhRayTargetAabb(origin, dir, r.bMin, r.bMax, maxDist, preferredT, dr) && dr <= distance;
+            if (sp + 2 > BVH_MAX_STACK) continue;
+            // Separate stack writes preserve compatibility with FXC's optimizer.
+            if (dl <= dr)
+            {
+                if (hitR) stack[sp++] = node.right;
+                if (hitL) stack[sp++] = node.left;
+            }
+            else
+            {
+                if (hitL) stack[sp++] = node.left;
+                if (hitR) stack[sp++] = node.right;
+            }
         }
     }
     return best;

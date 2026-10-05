@@ -19,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.8] - 2026-10-05
+
+### Fixed
+- GPU BVH, source AO and vertex AO compute shaders resolve their shared traversal include through the canonical UPM package path. This avoids relying on sibling include lookup during package imports.
+- Shared GPU intersection and nearest-point helpers return initialized results through a single exit, avoiding uninitialized-value diagnostics during Android/Vulkan compilation while preserving intersection predicates and hit ranking.
+
 ## [1.1.7] - 2026-10-05
 
 ### Fixed

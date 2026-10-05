@@ -160,6 +160,45 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator GpuNearestMatchesAllTriangleRegionsAtOrdinaryAndTinyScale()
+        {
+            if (!GpuBvh.Supported || !SystemInfo.supportsAsyncGPUReadback) Assert.Ignore("Async GPU queries unavailable on this device.");
+            var probes = new[] {
+                new Vector3(-.3f, -.4f, .2f), new Vector3(1.4f, -.2f, .2f), new Vector3(-.2f, 1.4f, .2f),
+                new Vector3(.25f, -.4f, .2f), new Vector3(-.4f, .25f, .2f), new Vector3(.8f, .8f, .2f),
+                new Vector3(.25f, .25f, .2f)
+            };
+            // A, B, C, AB, AC, BC and the interior of the right triangle.
+            var expectedBary = new[] {
+                new Vector3(1, 0, 0), new Vector3(0, 1, 0), new Vector3(0, 0, 1),
+                new Vector3(.75f, .25f, 0), new Vector3(.75f, 0, .25f), new Vector3(0, .5f, .5f),
+                new Vector3(.5f, .25f, .25f)
+            };
+            foreach (float scale in new[] { 1f, .0001f }) {
+                Layers(scale, new[] { 0f }, out var positions, out var indices);
+                var bvh = new TriangleBvh(positions, indices);
+                using (var gpu = GpuBvh.TryCreate(bvh, new[] { Vector3.forward })) {
+                    Assert.IsNotNull(gpu);
+                    var points = new Vector4[probes.Length]; var normals = new Vector4[probes.Length];
+                    var hits = new GpuBvh.NearestHit[probes.Length];
+                    for (int q = 0; q < probes.Length; ++q) {
+                        Vector3 p = probes[q] * scale;
+                        points[q] = new Vector4(p.x, p.y, p.z, 2 * scale);
+                    }
+                    yield return Await(gpu.NearestAsync(points, normals, points.Length, false, hits, CancellationToken.None));
+                    for (int q = 0; q < hits.Length; ++q) {
+                        var cpu = bvh.FindNearest(points[q], points[q].w);
+                        Vector3 expectedPoint = new Vector3(expectedBary[q].y, expectedBary[q].z, 0) * scale;
+                        Assert.AreEqual(0, hits[q].tri, "scale=" + scale + ", region=" + q);
+                        Assert.That((hits[q].bary - expectedBary[q]).magnitude, Is.LessThan(1e-5));
+                        Assert.That((hits[q].point - expectedPoint).magnitude / scale, Is.LessThan(1e-5));
+                        Assert.That(hits[q].distSq / (scale * scale), Is.EqualTo(cpu.distSq / (scale * scale)).Within(1e-5));
+                    }
+                }
+            }
+        }
+
+        [UnityTest]
         public IEnumerator GpuMixedTraversalVisitsBothBvhBranchesWithoutUninitializedCompilerWarnings()
         {
             if (!GpuBvh.Supported || !SystemInfo.supportsAsyncGPUReadback) Assert.Ignore("Async GPU queries unavailable on this device.");
