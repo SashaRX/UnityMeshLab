@@ -1,5 +1,28 @@
 # Source-aligned triangulation after Simplify
 
+## 1.1.13: coarse source fitting and bounded triangle regularization
+
+The neck/collar report exposed a second limitation: fitting was capped at 0.35 voxel cells, while all vertex motion was accepted or backtracked together. The strict diagonal policy could also retain a zigzag/poor triangle pair for a small local distance advantage. The pipeline now first retains the existing source-aligned triangulation, fits coarse vertices individually against their full one-ring, and then regularizes the fitted mesh. Performing the fit before the existing triangulation produced a different, less useful set of local moves in the bust replay and was discarded.
+
+The coarse fit skips dense voxel edges, open/non-manifold boundaries, split positions and existing source feature anchors. It projects candidate positions to normal-compatible source faces, compares 13 probes per adjacent triangle, and only accepts a local mean-squared error improvement without increasing local maximum error by more than 0.005 cells. Vertex motion is bounded by 25% of the shortest incident edge and four voxel cells from the input position. Orientation, area and minimum-quality checks apply to every incident face. The complete forward/reverse surface and topology guards still decide whether to retain the fitted mesh.
+
+The final regularization can trade a small local distance increase for at least a 25% increase in minimum triangle quality on a poor pair (quality below 0.5). Its candidate maximum error must stay below 0.8 cells; local maximum can grow by at most 0.125 cells and local RMS by at most 0.075 cells. Existing sharp-fold, source-feature, orientation and sliver checks remain. The original `Retriangulate` entry point retains its previous strict policy; this extra shape budget belongs to `RegularizeFitted` after accepted coarse fitting. These are sampled geometric checks, not a self-intersection proof or artistic retopology.
+
+Replay: `remesh_20261005_121621_951_8b9208.bin` and retained `unwrap_20261005_121700_966_552f8a.bin`, using the recorded settings and source geometry in the isolated Unity 6000.2.6f2 project. The full pipeline starts from the captured 210,626-face trimmed Remesh. Its native collapse error remains 0.004777913 and its final face count remains 1,598. Coarse fitting accepts 379 vertex updates; the final regularizer accepts 35 flips. The original strict connectivity pass still accepts 76 flips. The complete Simplify/refinement replay takes 65.84 seconds on the local machine, excluding unwrap and Editor startup.
+
+| Area | Old final RMS, cells | New final RMS, cells | Maximum old/new, cells |
+| --- | ---: | ---: | ---: |
+| Whole mesh, 1,598 faces | 0.365806891 | 0.324644431 | 2.370909222 / 2.321382536 |
+| Chin/front patch, 108 faces | 0.430350732 | 0.388078361 | 1.518407680 / 1.398098598 |
+
+Sampled RMS improves by 11.25% overall and 9.82% in the chin/front region defined below. The reproduced neck pair replaces the old `295–310` diagonal with `309–271`; vertex IDs are diagnostic capture indices. Final topology has no boundaries, duplicate/degenerate faces, non-manifold/inconsistent edges or disconnected fans. Subsequent native unwrap produces 49 charts and passes a complete whole-atlas scan with zero overlap pairs, invalid UV faces and degenerate UV faces. Chart count is reported for reproduction, not used as proof of seam placement quality.
+
+Local artifacts: `_results~/neck-contour/`, including `full/result.bin`, `full/metrics.txt`, `full/topology.txt`, `full/uv.txt`, and matching-camera geometry renders. No textures or lighting were baked in this replay; it validates geometry and UV integrity, not final material appearance. Rebuild **Simplify → Unwrap → Bake** in the live project to compare the new final material.
+
+Verification for 1.1.13: 97/97 local Unity EditMode tests passed with no skipped tests (46.03 seconds). The suite covers surface refinement, topology, normals and chart merge; added coverage verifies coarse fitting at unit/millimetre scales, unchanged open boundaries, opposite-facing source rejection, sharp-fold retention, cancellation and invalid-topology rejection. Both FBX define configurations compile with zero errors. Tool dependencies and undeclared-identifier checks report no findings.
+
+## 1.1.11: connectivity-only baseline
+
 The previous surface-refinement pass only flipped a diagonal when the minimum triangle quality increased by 2%, the target faces were almost coplanar, and the nearest source face normals agreed within about 18 degrees. On an organic bend, two diagonals can have equal triangle quality while one cuts through the source's bulge. Keeping the shorter or more regular diagonal alone does not solve this.
 
 `RemeshSurfaceRefine.Simplify` now runs a separate connectivity pass after the existing bounded vertex fitting. This pass leaves every vertex position and the face count unchanged. It runs before normals/UV construction and baking.

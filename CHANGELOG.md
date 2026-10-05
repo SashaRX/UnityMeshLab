@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.13] - 2026-10-05
+
+### Fixed
+- Fit coarse Simplify vertices to the original source using their full one-ring error, then regularize poor triangle pairs with a bounded sub-voxel shape budget. Preserve boundaries, source folds and bidirectional surface-error guards; rebuild normals/UVs after the changed geometry.
+
 ## [1.1.12] - 2026-10-05
 
 ### Fixed

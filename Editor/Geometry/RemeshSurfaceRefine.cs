@@ -47,7 +47,12 @@ namespace SashaRX.UnityMeshLab
             Log(post, cell, "after simplify");
             var aligned = Retriangulate(result, sourcePositions, sourceIndices, cell, token, out var triangles);
             Log(triangles, cell, "source-aligned triangulation");
-            return aligned;
+            aligned = FitCoarse(aligned, sourcePositions, sourceIndices, cell, token, out var fit);
+            Log(fit, cell, "coarse source fit");
+            if (fit.moves == 0 || fit.reverted) return aligned;
+            var regularized = RegularizeFitted(aligned, sourcePositions, sourceIndices, cell, token, out var shape);
+            Log(shape, cell, "fitted triangle regularization");
+            return regularized;
         }
 
         static void Log(Report report, float cell, string phase)
@@ -299,10 +304,127 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
+        // Relocate coarse vertices by the error of their whole one-ring, rather
+        // than projecting each vertex independently and accepting all motion at once.
+        internal static RemeshNative.IndexedMesh FitCoarse(RemeshNative.IndexedMesh input,
+            Vector3[] sourcePositions, int[] sourceIndices, float cell, CancellationToken token, out Report report)
+        {
+            token.ThrowIfCancellationRequested(); report = default;
+            if (!(cell > 0) || !float.IsFinite(cell) || input.TriangleCount == 0 || sourceIndices.Length == 0) return input;
+            var before = RemeshTopology.Inspect(input.positions, input.indices, token);
+            if (!before.Valid || new HashSet<Vector3>(input.positions).Count != input.positions.Length) return input;
+            var p = (Vector3[])input.positions.Clone(); var ix = input.indices;
+            var source = new Source(sourcePositions, sourceIndices, token);
+            var fans = new List<int>[p.Length]; var neighbours = new SortedSet<int>[p.Length];
+            var locked = new bool[p.Length];
+            for (int v = 0; v < p.Length; v++) { fans[v] = new List<int>(); neighbours[v] = new SortedSet<int>(); }
+            for (int f = 0; f < input.TriangleCount; f++) for (int k = 0; k < 3; k++) {
+                int v = ix[f * 3 + k]; fans[v].Add(f);
+                neighbours[v].Add(ix[f * 3 + (k + 1) % 3]); neighbours[v].Add(ix[f * 3 + (k + 2) % 3]);
+            }
+            foreach (var edge in before.edges) if (edge.Value.count != 2) {
+                locked[edge.Key.Item1] = true; locked[edge.Key.Item2] = true;
+            }
+            report.meanQualityBefore = MeanQuality(p, ix);
+            for (int pass = 0; pass < 3; pass++) {
+                var normals = MeshGeometry.AveragedNormals(p, ix, token);
+                for (int v = 0; v < p.Length; v++) {
+                    if ((v & 63) == 0) token.ThrowIfCancellationRequested();
+                    if (locked[v] || fans[v].Count == 0) continue;
+                    float shortest = float.PositiveInfinity;
+                    foreach (int n in neighbours[v]) shortest = Mathf.Min(shortest, (p[v] - p[n]).magnitude);
+                    // Dense voxel triangles are handled by Apply; this pass is for
+                    // the larger approximation patches left by decimation.
+                    if (shortest < cell * 2) continue;
+                    float budget = Mathf.Min(cell * 4, shortest * .25f), reach = Mathf.Max(cell * 4, shortest * .5f);
+                    var hit = source.Nearest(p[v], normals[v], reach);
+                    if (hit.triangleIndex < 0) continue;
+                    // Keep existing sharp source anchors. A one-ring error decrease
+                    // alone could otherwise slide a corner along another surface.
+                    if (source.FeaturePoint(hit.triangleIndex, p[v], cell * .2f, out _)) continue;
+                    var original = p[v];
+                    var baseline = RingError(source, p, ix, fans[v], reach);
+                    if (!double.IsFinite(baseline.meanSquared)) continue;
+                    var best = baseline; var bestPoint = original;
+                    var candidates = new[] { hit.point,
+                        original + Vector3.right * budget, original - Vector3.right * budget,
+                        original + Vector3.up * budget, original - Vector3.up * budget,
+                        original + Vector3.forward * budget, original - Vector3.forward * budget };
+                    foreach (var candidate in candidates) {
+                        var projected = source.Nearest(candidate, normals[v], reach);
+                        if (projected.triangleIndex < 0) continue;
+                        var target = input.positions[v] + Vector3.ClampMagnitude(projected.point - input.positions[v], budget);
+                        for (int trial = 0; trial < 3; trial++) {
+                            var next = original + (target - original) * (1f / (1 << trial));
+                            if ((next - original).sqrMagnitude < cell * cell * 1e-10f ||
+                                !SafeRingMotion(p, ix, v, next, fans[v])) continue;
+                            p[v] = next;
+                            var vertexHit = source.Nearest(next, normals[v], reach);
+                            var measured = RingError(source, p, ix, fans[v], reach);
+                            p[v] = original;
+                            if (vertexHit.triangleIndex < 0 || Mathf.Sqrt(vertexHit.distSq) > Mathf.Max(Mathf.Sqrt(hit.distSq) + cell * .1f, cell * .5f) ||
+                                measured.max > baseline.max + cell * .005f || measured.meanSquared >= best.meanSquared * .99) continue;
+                            best = measured; bestPoint = next;
+                        }
+                    }
+                    if (bestPoint == original) continue;
+                    p[v] = bestPoint; report.moves++;
+                }
+            }
+            report.attemptedMoves = report.moves;
+            for (int v = 0; v < p.Length; v++) report.attemptedMaxDisplacement = Mathf.Max(report.attemptedMaxDisplacement, (p[v] - input.positions[v]).magnitude);
+            report.meanQualityAfter = MeanQuality(p, ix);
+            if (report.moves == 0) return input;
+            var after = RemeshTopology.Inspect(p, ix, token);
+            bool surface = PreservesSurface(source.bvh, sourcePositions, sourceIndices, input.positions, ix, p, ix, cell, token, out var reason);
+            if (!after.Valid || !after.PreservesBoundary(before) || !after.PreservesComponents(before, false) || !surface) {
+                report.reverted = true; report.rejectionReason = !surface ? reason : after.Description;
+                report.moves = 0; report.meanQualityAfter = report.meanQualityBefore; return input;
+            }
+            report.maxDisplacement = report.attemptedMaxDisplacement; report.motionScale = 1;
+            return new RemeshNative.IndexedMesh { positions = p, indices = (int[])ix.Clone() }.PrepareChannels(token);
+        }
+
+        static (double meanSquared, float max) RingError(Source source, Vector3[] p, int[] ix, List<int> faces, float reach)
+        {
+            double sum = 0, area = 0; float max = 0;
+            foreach (int f in faces) {
+                var a = p[ix[f * 3]]; var b = p[ix[f * 3 + 1]]; var c = p[ix[f * 3 + 2]];
+                var cross = Vector3.Cross(b - a, c - a); double weight = cross.magnitude;
+                var error = SurfaceError(source, a, b, c, MeshGeometry.UnitDirection(cross), reach);
+                sum += error.meanSquared * weight; area += weight; max = Mathf.Max(max, error.max);
+            }
+            return (sum / area, max);
+        }
+
+        static bool SafeRingMotion(Vector3[] p, int[] ix, int v, Vector3 target, List<int> faces)
+        {
+            var previous = p[v]; bool safe = true;
+            foreach (int f in faces) {
+                var oldCross = Cross(p, ix, f);
+                float quality = Quality(p[ix[f * 3]], p[ix[f * 3 + 1]], p[ix[f * 3 + 2]]);
+                p[v] = target;
+                var newCross = Cross(p, ix, f);
+                float nextQuality = Quality(p[ix[f * 3]], p[ix[f * 3 + 1]], p[ix[f * 3 + 2]]);
+                p[v] = previous;
+                if (Vector3.Dot(oldCross, newCross) <= .75f * oldCross.magnitude * newCross.magnitude ||
+                    newCross.sqrMagnitude < oldCross.sqrMagnitude * .64f || nextQuality < quality * .8f) { safe = false; break; }
+            }
+            return safe;
+        }
+
         // This final pass changes connectivity only. Its acceptance must not
         // depend on a different accepted vertex-motion backtrack.
         internal static RemeshNative.IndexedMesh Retriangulate(RemeshNative.IndexedMesh input,
             Vector3[] sourcePositions, int[] sourceIndices, float cell, CancellationToken token, out Report report)
+            => RetriangulateCore(input, sourcePositions, sourceIndices, cell, token, false, out report);
+
+        internal static RemeshNative.IndexedMesh RegularizeFitted(RemeshNative.IndexedMesh input,
+            Vector3[] sourcePositions, int[] sourceIndices, float cell, CancellationToken token, out Report report)
+            => RetriangulateCore(input, sourcePositions, sourceIndices, cell, token, true, out report);
+
+        static RemeshNative.IndexedMesh RetriangulateCore(RemeshNative.IndexedMesh input,
+            Vector3[] sourcePositions, int[] sourceIndices, float cell, CancellationToken token, bool regularize, out Report report)
         {
             token.ThrowIfCancellationRequested(); report = default;
             if (!(cell > 0) || !float.IsFinite(cell) || input.TriangleCount == 0 || sourceIndices.Length == 0) return input;
@@ -315,7 +437,7 @@ namespace SashaRX.UnityMeshLab
             float minCross = extent * extent * 4.76837158203125e-7f;
             report.meanQualityBefore = MeanQuality(p, ix);
             var source = new Source(sourcePositions, sourceIndices, token);
-            for (int pass = 0; pass < 4; pass++) report.flips += Flip(p, ix, source, cell, minCross, token, true);
+            for (int pass = 0; pass < 4; pass++) report.flips += Flip(p, ix, source, cell, minCross, token, true, regularize);
             report.meanQualityAfter = MeanQuality(p, ix);
             if (report.flips == 0) return input;
             var after = RemeshTopology.Inspect(p, ix, token);
@@ -327,7 +449,7 @@ namespace SashaRX.UnityMeshLab
             return new RemeshNative.IndexedMesh { positions = (Vector3[])p.Clone(), indices = ix }.PrepareChannels(token);
         }
 
-        static int Flip(Vector3[] p, int[] ix, Source source, float cell, float minCross, CancellationToken token, bool sourceAligned = false)
+        static int Flip(Vector3[] p, int[] ix, Source source, float cell, float minCross, CancellationToken token, bool sourceAligned = false, bool regularize = false)
         {
             var data = RemeshTopology.Inspect(p, ix, token);
             var used = new bool[ix.Length / 3]; int flips = 0;
@@ -377,7 +499,7 @@ namespace SashaRX.UnityMeshLab
                         sourceBend = dot >= .75f && dot < .999f;
                     }
                 }
-                if (!ImprovesPatch(source, p, a, b, c, d, n0, n1, m0, m1, before, after, reach, cell, sourceAligned, sourceBend)) continue;
+                if (!ImprovesPatch(source, p, a, b, c, d, n0, n1, m0, m1, before, after, reach, cell, sourceAligned, sourceBend, regularize)) continue;
                 ix[f * 3] = c; ix[f * 3 + 1] = d; ix[f * 3 + 2] = b;
                 ix[g * 3] = d; ix[g * 3 + 1] = c; ix[g * 3 + 2] = a;
                 used[f] = used[g] = true;
@@ -388,18 +510,26 @@ namespace SashaRX.UnityMeshLab
         }
 
         static bool ImprovesPatch(Source source, Vector3[] p, int a, int b, int c, int d, Vector3 n0, Vector3 n1, Vector3 m0, Vector3 m1,
-            float before, float after, float reach, float cell, bool sourceAligned, bool sourceBend)
+            float before, float after, float reach, float cell, bool sourceAligned, bool sourceBend, bool regularize)
         {
             if (sourceAligned) {
                 var baseline = PatchError(source, p[a], p[b], p[c], p[d], n0, n1, reach);
                 var candidate = PatchError(source, p[c], p[d], p[b], p[a], m0, m1, reach);
-                if (!float.IsFinite(candidate.max) || candidate.max > baseline.max + cell * .025f) return false;
+                if (!float.IsFinite(candidate.max)) return false;
+                // A large improvement to a poor triangle pair may spend a small,
+                // sub-voxel approximation budget. Keeping every locally best-fit
+                // diagonal can preserve decimation zigzags despite useful shape gains.
+                // The whole-mesh, bidirectional error guard still applies afterward.
+                bool regularized = regularize && before < .5f && after > before * 1.25f && candidate.max <= cell * .8f &&
+                    candidate.max <= baseline.max + cell * .125f &&
+                    Math.Sqrt(candidate.meanSquared) <= Math.Sqrt(baseline.meanSquared) + cell * .075f;
+                if (candidate.max > baseline.max + cell * .025f) return regularized;
                 // Fit has priority over triangle shape on curved patches. On a
                 // flat patch, accept a shape gain only with essentially equal fit.
                 double noise = (double)cell * cell * 1e-8;
                 bool betterFit = sourceBend && candidate.meanSquared + noise < baseline.meanSquared * .9;
                 bool betterShape = after > before * 1.02f && candidate.meanSquared <= baseline.meanSquared * 1.02 + noise;
-                return betterFit || betterShape;
+                return betterFit || betterShape || regularized;
             }
             float oldError = Mathf.Max(CoarseSurfaceError(source, p[a], p[b], p[c], n0, cell), CoarseSurfaceError(source, p[b], p[a], p[d], n1, cell));
             float newError = Mathf.Max(CoarseSurfaceError(source, p[c], p[d], p[b], m0, cell), CoarseSurfaceError(source, p[d], p[c], p[a], m1, cell));
