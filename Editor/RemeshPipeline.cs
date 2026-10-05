@@ -70,6 +70,7 @@ namespace SashaRX.UnityMeshLab
         public IReadOnlyList<Node> Nodes => nodes;
         public bool IsHierarchy => hierarchy;
         public bool IsRunning => Volatile.Read(ref running) != 0;
+        public Stage? RunningStage { get; private set; }
         public bool CanCancel => cancellation != null && !cancellation.IsCancellationRequested;
         public string Status { get; private set; } = "Select a static model root. LODGroups contribute only LOD0.";
         public string ResultName { get; private set; }
@@ -189,6 +190,7 @@ namespace SashaRX.UnityMeshLab
                 ClearFrom(from);
                 EditorApplication.LockReloadAssemblies(); locked = true;
                 for (var stage = from; stage <= to; ++stage) {
+                    RunningStage = stage; Changed?.Invoke();
                     string key = Key(stage, options, source);
                     switch (stage) {
                         case Stage.Remesh: await RunRemesh(source, options, token); break;
@@ -208,6 +210,7 @@ namespace SashaRX.UnityMeshLab
                 // A Dispose() that arrived mid-run waited for this point: the stage code
                 // above never sees a cleared node list or a destroyed mesh.
                 if (disposeRequested) { disposeRequested = false; ClearFrom(Stage.Remesh); }
+                RunningStage = null;
                 Interlocked.Exchange(ref running, 0); Changed?.Invoke();
             }
         }

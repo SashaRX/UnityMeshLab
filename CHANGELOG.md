@@ -19,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.14] - 2026-10-05
+
+### Fixed
+- Keep both sidebars and the canvas inside the window, including after shrinking the window or dragging an oversized sidebar. Release splitter mouse capture on mouse-up and focus loss; contain toolbar tabs within their own scroll area.
+- Replace the Remesh preview stage dropdown with Source, Remesh, Simplify and Result buttons showing selection, ready/stale states and active pipeline progress.
+
 ## [1.1.13] - 2026-10-05
 
 ### Fixed

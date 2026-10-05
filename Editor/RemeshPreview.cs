@@ -38,6 +38,10 @@ namespace SashaRX.UnityMeshLab
             public RemeshBackfaces sourceBackfaces;
             public RemeshSource source;
             public bool twoSided;
+            public bool remeshReady, simplifyReady, unwrapReady, bakeReady;
+            public bool remeshStale, simplifyStale, unwrapStale, bakeStale;
+            public RemeshPipeline.Stage? runningStage;
+            public float progress = -1;
         }
 
         static readonly string[] ViewNames = { "3D", "Maps" };
@@ -108,7 +112,7 @@ namespace SashaRX.UnityMeshLab
         // to the stage mesh like to any other.
         void DrawMesh(Data data)
         {
-            stage = (Stage)EditorGUILayout.EnumPopup("Stage", stage);
+            DrawStageButtons(data);
             bool result = stage == Stage.Result;
             using (new EditorGUI.DisabledScope(!result || !data.baseColor))
                 textured = EditorGUILayout.ToggleLeft(new GUIContent("Baked base color", "Result stage: show the baked base color on the surface."), textured);
@@ -138,6 +142,48 @@ namespace SashaRX.UnityMeshLab
             }
             EditorGUILayout.LabelField("Wire, shading modes, UV fill and island borders: canvas controls (status bar, 3D shading row).", EditorStyles.wordWrappedMiniLabel);
             if (GUI.changed) RequestRepaint?.Invoke();
+        }
+
+        internal static Stage? PreviewStage(RemeshPipeline.Stage? running)
+            => !running.HasValue ? (Stage?)null : running == RemeshPipeline.Stage.Remesh ? Stage.Remesh :
+                running == RemeshPipeline.Stage.Simplify ? Stage.Simplified : Stage.Result;
+
+        void DrawStageButtons(Data data)
+        {
+            var area = GUILayoutUtility.GetRect(0, 62, GUILayout.ExpandWidth(true));
+            var running = PreviewStage(data.runningStage);
+            var labels = new[] { "Source", "Remesh", "Simplify", "Result" };
+            var ready = new[] { data.sourceVertices > 0 || data.meshes[0], data.remeshReady, data.simplifyReady, data.unwrapReady };
+            var stale = new[] { false, data.remeshStale, data.simplifyStale, data.unwrapStale || data.bakeStale };
+            var style = new GUIStyle(EditorStyles.miniButton) { alignment = TextAnchor.MiddleCenter, fontSize = 11 };
+            style.normal.background = style.hover.background = style.active.background = null;
+            style.normal.textColor = style.hover.textColor = style.active.textColor = Color.white;
+            for (int i = 0; i < 4; i++) {
+                var value = (Stage)i;
+                var r = new Rect(area.x + (i % 2) * (area.width + 4) * .5f, area.y + (i / 2) * 32, (area.width - 4) * .5f, 28);
+                bool working = running == value;
+                var color = working ? new Color(.12f, .38f, .62f) : stale[i] ? new Color(.48f, .32f, .12f) :
+                    ready[i] ? new Color(.18f, .38f, .25f) : new Color(.25f, .25f, .25f);
+                EditorGUI.DrawRect(r, color);
+                if (working) {
+                    float width = data.progress >= 0 ? r.width * Mathf.Clamp01(data.progress) : r.width * .25f;
+                    float offset = data.progress >= 0 ? 0 : (r.width - width) * Mathf.PingPong((float)EditorApplication.timeSinceStartup, 1);
+                    EditorGUI.DrawRect(new Rect(r.x + offset, r.yMax - 3, width, 3), new Color(.35f, .75f, 1));
+                    RequestRepaint?.Invoke();
+                }
+                if (stage == value) {
+                    var border = new Color(1f, .55f, .15f);
+                    EditorGUI.DrawRect(new Rect(r.x, r.y, r.width, 2), border);
+                    EditorGUI.DrawRect(new Rect(r.x, r.yMax - 2, r.width, 2), border);
+                }
+                string state = working ? (data.runningStage == RemeshPipeline.Stage.Unwrap ? "Unwrapping…" : data.runningStage == RemeshPipeline.Stage.Bake ? "Baking…" : "Working…") :
+                    stale[i] ? "Settings changed" : ready[i] ? (value == Stage.Result ? data.bakeReady ? "Baked" : "UV ready" : "Ready") : "Not built";
+                if (working && data.progress >= 0) state += $" {data.progress * 100:0}%";
+                using (new EditorGUI.DisabledScope(!ready[i]))
+                    if (GUI.Button(r, new GUIContent(labels[i] + "\n" + state, "Select the preview stage. Orange border: selected; green: ready; blue: running; amber: changed settings."), style)) {
+                        stage = value; RequestRepaint?.Invoke();
+                    }
+            }
         }
 
         bool ShowTrimMask(Data data) => trimMaskView && stage == Stage.Remesh && data.trimMask;

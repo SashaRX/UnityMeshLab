@@ -296,6 +296,16 @@ namespace SashaRX.UnityMeshLab
             previewData.sourceBackfaces = settings.sourceBackfaces;
             previewData.source = pipeline.Source;
             previewData.twoSided = pipeline.Primary?.twoSided ?? false;
+            previewData.remeshReady = pipeline.Has(RemeshPipeline.Stage.Remesh);
+            previewData.simplifyReady = pipeline.Has(RemeshPipeline.Stage.Simplify);
+            previewData.unwrapReady = pipeline.Has(RemeshPipeline.Stage.Unwrap);
+            previewData.bakeReady = pipeline.Has(RemeshPipeline.Stage.Bake);
+            previewData.remeshStale = pipeline.IsStale(RemeshPipeline.Stage.Remesh, settings, source);
+            previewData.simplifyStale = previewData.remeshStale || pipeline.IsStale(RemeshPipeline.Stage.Simplify, settings, source);
+            previewData.unwrapStale = previewData.simplifyStale || pipeline.IsStale(RemeshPipeline.Stage.Unwrap, settings, source);
+            previewData.bakeStale = previewData.unwrapStale || pipeline.IsStale(RemeshPipeline.Stage.Bake, settings, source);
+            previewData.runningStage = pipeline.RunningStage;
+            previewData.progress = pipeline.IsRunning && UvProgress.Current.active ? UvProgress.Current.fraction : -1;
         }
 
         // The shared 3D canvas shows the selected pipeline stage (in capture space) with

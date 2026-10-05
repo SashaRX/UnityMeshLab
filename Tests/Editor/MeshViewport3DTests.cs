@@ -10,6 +10,46 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class MeshViewport3DTests
     {
+        [TestCase(0f, 900f, 700f, true)]
+        [TestCase(320f, 900f, 700f, true)]
+        [TestCase(500f, 900f, 700f, true)]
+        [TestCase(800f, 900f, 700f, true)]
+        [TestCase(1900f, 900f, 700f, true)]
+        [TestCase(800f, 300f, 360f, true)]
+        [TestCase(500f, 900f, 700f, false)]
+        [TestCase(800f, 900f, 700f, false)]
+        public void SidebarColumnsRemainInsideTheWindow(float windowWidth, float left, float right, bool hasRight)
+        {
+            var widths = UvToolHub.ResolveColumnWidths(windowWidth, left, right, hasRight);
+            float handles = UvToolHub.SplitterWidth(windowWidth, hasRight) * (hasRight ? 2 : 1);
+            Assert.GreaterOrEqual(widths.x, 0); Assert.GreaterOrEqual(widths.y, 0); Assert.GreaterOrEqual(widths.z, 0);
+            Assert.That(widths.x + widths.y + widths.z + handles, Is.EqualTo(windowWidth).Within(.001f));
+            if (!hasRight) Assert.AreEqual(0, widths.z);
+            if (windowWidth >= 800) {
+                Assert.GreaterOrEqual(widths.x, 220); Assert.GreaterOrEqual(widths.y, 120);
+                if (hasRight) Assert.GreaterOrEqual(widths.z, 220);
+            }
+        }
+
+        [Test]
+        public void RightSplitterCanGrowWhenTheLeftPanelUsedAllAvailableRoom()
+        {
+            var initial = UvToolHub.ResolveColumnWidths(800, 900, 700, true);
+            var resized = UvToolHub.ResizeColumns(800, initial, initial.z + 100, true, true);
+            Assert.That(resized.z, Is.EqualTo(initial.z + 100).Within(.001f));
+            Assert.Less(resized.x, initial.x); Assert.GreaterOrEqual(resized.y, 120);
+        }
+
+        [Test]
+        public void PipelineWorkMapsToItsPreviewButton()
+        {
+            Assert.IsNull(RemeshPreview.PreviewStage(null));
+            Assert.AreEqual(RemeshPreview.Stage.Remesh, RemeshPreview.PreviewStage(RemeshPipeline.Stage.Remesh));
+            Assert.AreEqual(RemeshPreview.Stage.Simplified, RemeshPreview.PreviewStage(RemeshPipeline.Stage.Simplify));
+            Assert.AreEqual(RemeshPreview.Stage.Result, RemeshPreview.PreviewStage(RemeshPipeline.Stage.Unwrap));
+            Assert.AreEqual(RemeshPreview.Stage.Result, RemeshPreview.PreviewStage(RemeshPipeline.Stage.Bake));
+        }
+
         [UnityTest]
         public IEnumerator PreviewPreparationRunsOnWorkerAndCoalescesSupersededRequests()
         {
