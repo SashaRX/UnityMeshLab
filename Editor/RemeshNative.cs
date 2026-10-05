@@ -54,6 +54,7 @@ namespace SashaRX.UnityMeshLab
             public int[] indices, charts;
             // Physical half-edge neighbours from the indexed mesh, before UV/normal splits.
             public int[] surfaceNeighbors;
+            public RemeshNormalFrame.Mode normalFrameMode;
             public int chartCount;
             public bool draftUv;
             public int originalChartCount, originalSmallChartCount, smallChartCount;

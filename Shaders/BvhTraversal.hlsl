@@ -201,6 +201,88 @@ BvhRayHit BvhRaycast(float3 origin, float3 dir, float maxDist, bool facingFilter
     return best;
 }
 
+// Lower bound for a closest-to-target query: distance from preferredT to the
+// box's intersection interval on the original segment. Do not prune by best.t.
+bool BvhRayTargetAabb(float3 origin, float3 dir, float3 bMin, float3 bMax,
+    float maxT, float preferredT, out float distance)
+{
+    float loT = 0.0, hiT = maxT;
+    distance = 0.0;
+    [unroll] for (int axis = 0; axis < 3; ++axis)
+    {
+        float o = origin[axis], d = dir[axis];
+        // A nonzero component can still enter a slab from just outside its edge.
+        // Keep the ordinary first-hit traversal's epsilon policy unchanged.
+        if (d == 0.0)
+        {
+            if (o < bMin[axis] || o > bMax[axis]) return false;
+        }
+        else
+        {
+            float a = (bMin[axis] - o) / d, b = (bMax[axis] - o) / d;
+            loT = max(loT, min(a, b)); hiT = min(hiT, max(a, b));
+            if (loT > hiT) return false;
+        }
+    }
+    distance = max(0.0, max(loT - preferredT, preferredT - hiT));
+    return true;
+}
+
+// Ordinary queries keep their first-hit traversal. Surface-transfer rays may
+// instead nominate the target point inside the segment, preserving actual hit t.
+BvhRayHit BvhRaycastClosestToTarget(float3 origin, float3 dir, float maxDist, bool facingFilter, float preferredT)
+{
+    if (!(preferredT > 0.0)) return BvhRaycast(origin, dir, maxDist, facingFilter);
+    BvhRayHit best;
+    best.tri = -1; best.t = maxDist; best.u = 0; best.v = 0;
+    if (!(maxDist > 0.0)) return best;
+    preferredT = min(preferredT, maxDist);
+    float distance = max(preferredT, maxDist - preferredT);
+    BvhRayFrame frame = BvhFrame(dir);
+    int stack[BVH_MAX_STACK];
+    int sp = 0;
+    stack[sp++] = 0;
+    while (sp > 0)
+    {
+        BVHNode node = _BVHNodes[stack[--sp]];
+        float bound;
+        if (!BvhRayTargetAabb(origin, dir, node.bMin, node.bMax, maxDist, preferredT, bound) || bound > distance) continue;
+        if (node.left == -1)
+        {
+            for (int i = node.triStart; i < node.triStart + node.triCount; ++i)
+            {
+                int f = _TriIndices[i];
+                if (facingFilter && dot(_FaceNormals[f], dir) > 0.0 && !BvhEitherSide(f)) continue;
+                float3 a = _TriVerts[_Tris[f * 3]], b = _TriVerts[_Tris[f * 3 + 1]], c = _TriVerts[_Tris[f * 3 + 2]];
+                float t; float3 bary;
+                if (!BvhWatertight(frame, origin, a, b, c, maxDist, t, bary)) continue;
+                float candidate = abs(t - preferredT);
+                if (candidate > distance || (candidate == distance && best.tri >= 0
+                    && (t > best.t || (t == best.t && f >= best.tri)))) continue;
+                distance = candidate; best.t = t; best.tri = f; best.u = bary.y; best.v = bary.z;
+            }
+            continue;
+        }
+        BVHNode l = _BVHNodes[node.left], r = _BVHNodes[node.right];
+        float dl, dr;
+        bool hitL = BvhRayTargetAabb(origin, dir, l.bMin, l.bMax, maxDist, preferredT, dl) && dl <= distance;
+        bool hitR = BvhRayTargetAabb(origin, dir, r.bMin, r.bMax, maxDist, preferredT, dr) && dr <= distance;
+        if (sp + 2 > BVH_MAX_STACK) continue;
+        // Separate stack writes preserve compatibility with FXC's optimizer.
+        if (dl <= dr)
+        {
+            if (hitR) stack[sp++] = node.right;
+            if (hitL) stack[sp++] = node.left;
+        }
+        else
+        {
+            if (hitL) stack[sp++] = node.left;
+            if (hitR) stack[sp++] = node.right;
+        }
+    }
+    return best;
+}
+
 // Nearest face to q within maxDistSq. normalFilter keeps only faces whose normal
 // has dot >= dotMin with qNormal (|dot| for either-side faces).
 BvhNearestHit BvhNearest(float3 q, float maxDistSq, bool normalFilter, float3 qNormal, float dotMin)

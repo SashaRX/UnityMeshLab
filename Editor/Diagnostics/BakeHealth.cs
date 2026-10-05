@@ -51,9 +51,16 @@ namespace SashaRX.UnityMeshLab
                 $"{baked.boundarySamples:N0} boundary-clamped samples, {baked.surfaceEdges:N0} trusted surface edges, " +
                 $"{baked.stoppedWalks:N0} stopped walks ({baked.walkLimitHits:N0} walk limits), {baked.patchLimitHits:N0} patch limits, " +
                 $"{baked.unfoldOverlapTexels:N0} overlapping local unfoldings, {baked.gutterMisses:N0} gutter projection fallbacks; " +
-                $"normal map tilt: mean {baked.meanTiltDeg:F1}° / max {baked.maxTiltDeg:F0}°, {baked.loudTexels:N0} texels >45°; " +
+                $"normal map tilt: mean {baked.meanTiltDeg:F1}° / max {baked.maxTiltDeg:F0}°, {baked.loudTexels:N0} texels >45°, " +
+                $"{baked.negativeNormalTexels:N0} covered / {baked.negativeGutterNormals:N0} gutter normals with negative tangent Z, " +
+                $"{baked.invalidNormalFrames:N0} invalid normal frames; " +
                 $"bounds diagonal: source {sourceDiagonal:F3} / target {r.targetDiagonal:F3} (ratio {r.scaleRatio:F2})";
 
+            if (baked.invalidNormalFrames > 0)
+                r.Warnings.Add($"{baked.invalidNormalFrames:N0} texels used a neutral normal because their interpolated tangent frame was singular. Inspect degenerate faces and re-run Unwrap.");
+            if (baked.negativeNormalTexels > 0 || baked.negativeGutterNormals > 0)
+                r.Warnings.Add($"{baked.negativeNormalTexels:N0} covered and {baked.negativeGutterNormals:N0} gutter normals point behind the result's tangent surface. " +
+                    "Stock Lit RG/AG normal decoding cannot represent negative Z and reflects these normals. Check projection, surface folds and result smoothing; this map requires correction before export.");
             if (baked.zeroNormals > 0)
                 r.Warnings.Add(baked.zeroNormals + " result vertices have zero normals — projection rays use the face-based cage, " +
                     "but their shading/tangent frames remain invalid. Re-run the UV stage; if it repeats, inspect degenerate faces " +

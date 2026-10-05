@@ -104,6 +104,26 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void NegativeZWarnsEvenForAProxyAndNamesUnrepresentableNormals()
+        {
+            var m = Healthy(); m.negativeNormalTexels = 7; m.negativeGutterNormals = 11;
+            var r = BakeHealth.Build("n", m, Diag, 1000, Cube(1f), 100, RemeshShape.BoundingBox);
+            Assert.That(r.Warnings.Count, Is.EqualTo(1));
+            StringAssert.Contains("7 covered and 11 gutter normals", r.Warnings[0]);
+            StringAssert.Contains("cannot represent negative Z", r.Warnings[0]);
+            StringAssert.Contains("7 covered / 11 gutter normals with negative tangent Z", r.Summary);
+        }
+
+        [Test]
+        public void SingularFramesHaveTheirOwnWarning()
+        {
+            var m = Healthy(); m.invalidNormalFrames = 3;
+            var r = BakeHealth.Build("n", m, Diag, 1000, Cube(1f), 100, RemeshShape.LOD0);
+            Assert.That(r.Warnings.Count, Is.EqualTo(1));
+            StringAssert.Contains("3 texels used a neutral normal", r.Warnings[0]);
+        }
+
+        [Test]
         public void EmptyTargetGivesAZeroDiagonalAndAScaleWarning()
         {
             var r = BakeHealth.Build("n", Healthy(), Diag, 100, new Vector3[0], 0, RemeshShape.LOD0);

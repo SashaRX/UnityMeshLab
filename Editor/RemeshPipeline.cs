@@ -508,6 +508,9 @@ namespace SashaRX.UnityMeshLab
         // tangents are missing.
         internal static Mesh BuildResultMesh(string name, RemeshNative.Geometry unwrapped, out Vector4[] tangents)
         {
+            var pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+            bool urp = pipeline && pipeline.GetType().Name.Contains("Universal");
+            unwrapped.normalFrameMode = urp ? RemeshNormalFrame.Mode.Urp : RemeshNormalFrame.Mode.BuiltIn;
             var mesh = new Mesh { name = name, indexFormat = IndexFormat.UInt32, hideFlags = HideFlags.HideAndDontSave };
             bool missingUv = unwrapped.uv == null || unwrapped.uv.Length != unwrapped.positions.Length;
             mesh.vertices = unwrapped.positions; mesh.normals = unwrapped.normals;

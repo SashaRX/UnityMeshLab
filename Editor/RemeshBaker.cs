@@ -18,6 +18,7 @@ namespace SashaRX.UnityMeshLab
             public int partialMisses, gutterTexels, gutterMisses, surfaceSamples, boundarySamples;
             public int surfaceEdges, stoppedWalks, walkLimitHits, patchLimitHits, unfoldOverlapTexels;
             public float missedSampleArea;
+            public int invalidNormalFrames, negativeNormalTexels, negativeGutterNormals;
             // Proxy shapes: covered texels whose inward ray met no source geometry (the
             // empty part of a box face). Filled from their nearest hit and written with
             // alpha 0 in the base color, not counted as misses.
@@ -122,6 +123,7 @@ namespace SashaRX.UnityMeshLab
             public bool[] emptyTexels;
             public int misses, rayFallbacks, empties, partialMisses, gutterMisses, surfaceSamples, boundarySamples;
             public double missedSampleArea;
+            public int invalidNormalFrames;
         }
 
         /// <summary>One band of rows as queries and answers; arrays are reused across bands.</summary>
@@ -309,7 +311,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     Vector3 origin = p + direction * reach;
                     band.rayOrigin[write] = new Vector4(origin.x, origin.y, origin.z, length);
-                    band.rayDir[write] = new Vector4(-direction.x, -direction.y, -direction.z, 0f);
+                    band.rayDir[write] = new Vector4(-direction.x, -direction.y, -direction.z, ctx.proxy ? 0f : reach);
                     band.point[write] = new Vector4(p.x, p.y, p.z, ctx.proxy ? ctx.depth : reach);
                     band.pointNormal[write] = new Vector4(direction.x, direction.y, direction.z, 0f);
                     ++write;
@@ -325,7 +327,8 @@ namespace SashaRX.UnityMeshLab
             Parallel.For(0, band.count, new ParallelOptions { CancellationToken = token,
                 MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, i => {
                 Vector4 o = band.rayOrigin[i]; Vector3 d = band.rayDir[i];
-                var hit = facing != null ? bvh.RaycastFacingFiltered(o, d, o.w, facing, either) : bvh.Raycast(o, d, o.w);
+                var hit = ctx.proxy ? (facing != null ? bvh.RaycastFacingFiltered(o, d, o.w, facing, either) : bvh.Raycast(o, d, o.w)) :
+                    bvh.RaycastClosestToTarget(o, d, o.w, band.rayDir[i].w, facing, either);
                 band.rayHit[i] = new GpuBvh.RayHit { tri = hit.triangleIndex, t = hit.t, u = hit.barycentric.y, v = hit.barycentric.z };
                 if (hit.triangleIndex >= 0) { band.nearest[i].tri = -1; return; }
                 Vector4 q = band.point[i]; Vector3 qn = band.pointNormal[i];
@@ -365,9 +368,9 @@ namespace SashaRX.UnityMeshLab
             });
         }
 
-        // Every contributing source normal is expressed in the receiving face's
-        // frame before area averaging. A neighbouring chart's tangent bytes cannot
-        // be copied across a seam, especially on mirrored or rotated charts.
+        // Average transported source directions in physical space, then invert the
+        // receiver's actual Lit frame once. A neighbouring chart's tangent bytes
+        // cannot be copied across a seam, especially on mirrored or rotated charts.
         static void EvaluateBand(Context ctx, Band band, CancellationToken token)
         {
             int rows = band.y1 - band.y0; var result = ctx.result; var source = ctx.source;
@@ -375,13 +378,14 @@ namespace SashaRX.UnityMeshLab
             Parallel.For(0, rows, new ParallelOptions { CancellationToken = token,
                 MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, r => {
                 int i = band.rowStart[r], end = band.rowStart[r + 1];
-                int misses = 0, fallbacks = 0, empties = 0, partial = 0, gutterMisses = 0;
+                int misses = 0, fallbacks = 0, empties = 0, partial = 0, gutterMisses = 0, invalidFrames = 0;
                 double missedArea = 0;
                 while (i < end) {
                     token.ThrowIfCancellationRequested();
                     int pixel = band.pixel[i], receiver = ctx.receivers[pixel];
                     bool covered = ctx.owners[pixel] >= 0;
-                    TargetFrame(ctx, receiver, pixel, out var n, out var tangent);
+                    var frame = TargetFrame(ctx, receiver, pixel);
+                    var n = MeshGeometry.UnitDirection(frame.normal);
                     Color color = default, metal = default, ao = default, emission = default;
                     Vector3 normal = Vector3.zero;
                     float hitArea = 0, totalArea = 0;
@@ -400,7 +404,7 @@ namespace SashaRX.UnityMeshLab
                         Vector3 donorNormal = TargetNormal(ctx, face, w);
                         Quaternion transport = Quaternion.FromToRotation(ctx.targetFaceNormals[receiver], n) *
                             band.transport[i] * Quaternion.FromToRotation(donorNormal, ctx.targetFaceNormals[face]);
-                        EvaluateProjected(source, sourceFace, sw, n, tangent, transport, vertexTint,
+                        EvaluateProjected(source, sourceFace, sw, transport, vertexTint,
                             out var sc, out var sn, out var sm, out var sa, out var se);
                         if (ctx.aoBaker != null) {
                             float computedAO = band.aoValues != null ? band.aoValues[i] : ctx.aoBaker.Sample(sourceFace, sw, pixel, token);
@@ -409,7 +413,7 @@ namespace SashaRX.UnityMeshLab
                         }
                         if (ctx.beauty != null) sc = BeautyLight(ctx.beauty, source, sourceFace, sw, sc, sm, se).gamma;
                         color += sc.linear * area; metal += sm * area; ao += sa * area; emission += se * area;
-                        normal += new Vector3(sn.r * 2 - 1, sn.g * 2 - 1, sn.b * 2 - 1) * area;
+                        normal += sn * area;
                         hitArea += area;
                     }
                     if (covered && sampleMiss && totalArea > 0) missedArea += (totalArea - hitArea) / totalArea;
@@ -425,8 +429,9 @@ namespace SashaRX.UnityMeshLab
                     if (covered && sampleMiss) ++partial;
                     float inv = 1f / hitArea;
                     Color averaged = (color * inv).gamma; averaged.a = 1;
-                    normal = MeshGeometry.UnitDirection(normal);
-                    if (normal == Vector3.zero) normal = Vector3.forward;
+                    // Average physical directions before inverse TBN: normalizing the
+                    // inverse of each sample would change its effective area weight.
+                    if (!frame.TryEncode(normal, out normal)) { normal = Vector3.forward; ++invalidFrames; }
                     result.color[pixel] = averaged;
                     result.normal[pixel] = new Color(normal.x * .5f + .5f, normal.y * .5f + .5f, normal.z * .5f + .5f, 1);
                     result.metal[pixel] = metal * inv; result.ao[pixel] = ao * inv;
@@ -435,6 +440,7 @@ namespace SashaRX.UnityMeshLab
                 Interlocked.Add(ref ctx.misses, misses); Interlocked.Add(ref ctx.rayFallbacks, fallbacks);
                 Interlocked.Add(ref ctx.empties, empties); Interlocked.Add(ref ctx.partialMisses, partial);
                 Interlocked.Add(ref ctx.gutterMisses, gutterMisses);
+                Interlocked.Add(ref ctx.invalidNormalFrames, invalidFrames);
                 if (missedArea > 0) lock (result) ctx.missedSampleArea += missedArea;
             });
         }
@@ -447,6 +453,7 @@ namespace SashaRX.UnityMeshLab
             result.rayFallbacks = ctx.rayFallbacks;
             result.empty = ctx.empties;
             result.partialMisses = ctx.partialMisses; result.missedSampleArea = (float)ctx.missedSampleArea;
+            result.invalidNormalFrames = ctx.invalidNormalFrames;
             result.gutterMisses = ctx.gutterMisses; result.surfaceSamples = ctx.surfaceSamples; result.boundarySamples = ctx.boundarySamples;
             result.stoppedWalks = ctx.footprint.NavigationFallbacks; result.patchLimitHits = ctx.footprint.LocalFaceLimitHits;
             result.walkLimitHits = ctx.footprint.NavigationLimitHits;
@@ -459,8 +466,15 @@ namespace SashaRX.UnityMeshLab
             double tiltSum = 0; float tiltMax = 0; int loud = 0, tiltN = 0;
             for (int i = 0; i < count; ++i) {
                 if ((i & 4095) == 0) token.ThrowIfCancellationRequested();
-                if (owners[i] < 0) continue;
+                if (ctx.receivers[i] < 0) continue;
                 float z = result.normal[i].b * (1f / 127.5f) - 1f;
+                // Stock Lit RG/AG decoders reconstruct positive Z. Preserve the raw
+                // direction for diagnosis instead of silently reflecting it.
+                if (z < 0) {
+                    if (owners[i] >= 0) ++result.negativeNormalTexels;
+                    else ++result.negativeGutterNormals;
+                }
+                if (owners[i] < 0) continue;
                 float tilt = Mathf.Acos(Mathf.Clamp(z, -1f, 1f)) * Mathf.Rad2Deg;
                 tiltSum += tilt; ++tiltN;
                 if (tilt > tiltMax) tiltMax = tilt;
@@ -488,16 +502,19 @@ namespace SashaRX.UnityMeshLab
                 if (ctx.owners[i] >= 0 || ctx.receivers[i] < 0 || ctx.result.color[i].a != 0 || nearest[i] < 0) continue;
                 int seed = nearest[i];
                 CopyTexel(ctx.result, seed, i);
-                TargetFrame(ctx, ctx.owners[seed], seed, out var sourceNormal, out var sourceTangent);
-                TargetFrame(ctx, ctx.receivers[i], i, out var receiverNormal, out var receiverTangent);
-                Basis(sourceNormal, sourceTangent, out var st, out var sb);
-                Basis(receiverNormal, receiverTangent, out var rt, out var rb);
+                var sourceFrame = TargetFrame(ctx, ctx.owners[seed], seed);
+                var receiverFrame = TargetFrame(ctx, ctx.receivers[i], i);
+                var sourceNormal = MeshGeometry.UnitDirection(sourceFrame.normal);
+                var receiverNormal = MeshGeometry.UnitDirection(receiverFrame.normal);
                 var encoded = ctx.result.normal[seed];
-                Vector3 world = MeshGeometry.UnitDirection(st * (encoded.r / 127.5f - 1) +
-                    sb * (encoded.g / 127.5f - 1) + sourceNormal * (encoded.b / 127.5f - 1));
+                Vector3 world = sourceFrame.Decode(new Vector3(encoded.r / 127.5f - 1,
+                    encoded.g / 127.5f - 1, encoded.b / 127.5f - 1));
                 world = Quaternion.FromToRotation(sourceNormal, receiverNormal) * world;
-                ctx.result.normal[i] = new Color(Vector3.Dot(world, rt) * .5f + .5f,
-                    Vector3.Dot(world, rb) * .5f + .5f, Vector3.Dot(world, receiverNormal) * .5f + .5f, 1);
+                if (!receiverFrame.TryEncode(world, out var tangentNormal)) {
+                    tangentNormal = Vector3.forward; ++ctx.result.invalidNormalFrames;
+                }
+                ctx.result.normal[i] = new Color(tangentNormal.x * .5f + .5f,
+                    tangentNormal.y * .5f + .5f, tangentNormal.z * .5f + .5f, 1);
             }
         }
 
@@ -511,14 +528,11 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static void TargetFrame(Context ctx, int receiver, int pixel, out Vector3 normal, out Vector4 tangent)
+        static RemeshNormalFrame.Frame TargetFrame(Context ctx, int receiver, int pixel)
         {
             Vector3 w = ctx.footprint.ReceiverWeights(receiver,
                 new Vector2((pixel % ctx.size + .5f) / ctx.size, (pixel / ctx.size + .5f) / ctx.size));
-            var target = ctx.target;
-            int a = target.indices[receiver * 3], b = target.indices[receiver * 3 + 1], c = target.indices[receiver * 3 + 2];
-            normal = TargetNormal(ctx, receiver, w);
-            tangent = ctx.tangents[a] * w.x + ctx.tangents[b] * w.y + ctx.tangents[c] * w.z;
+            return RemeshNormalFrame.Interpolate(ctx.target, ctx.tangents, receiver, w, ctx.target.normalFrameMode);
         }
 
         static Vector3 TargetNormal(Context ctx, int face, Vector3 weights)
@@ -664,16 +678,7 @@ namespace SashaRX.UnityMeshLab
         {
             int a = source.indices[face * 3], b = source.indices[face * 3 + 1], c = source.indices[face * 3 + 2];
             Vector3 p = source.positions[a] * w.x + source.positions[b] * w.y + source.positions[c] * w.z;
-            Vector3 n = (source.normals[a] * w.x + source.normals[b] * w.y + source.normals[c] * w.z).normalized;
-            Vector4 tangent = source.tangents[a] * w.x + source.tangents[b] * w.y + source.tangents[c] * w.z;
-            Vector2 uv = source.uv[a] * w.x + source.uv[b] * w.y + source.uv[c] * w.z;
-            var surface = source.materials[source.faceMaterials[face]];
-            if (surface.normal.image != null) {
-                var sample = surface.normal.Sample(uv, new Color(0.5f, 0.5f, 1));
-                float nx = (sample.r * 2 - 1) * surface.normalScale, ny = (sample.g * 2 - 1) * surface.normalScale;
-                Basis(n, tangent, out var st, out var sb);
-                n = (st * nx + sb * ny + n * Mathf.Sqrt(Mathf.Max(0, 1 - nx * nx - ny * ny))).normalized;
-            }
+            Vector3 n = SourceNormal(source, face, w, true);
             Color albedoLinear = albedo.linear;
             int lightmapId = source.faceLightmaps != null && face < source.faceLightmaps.Length ? source.faceLightmaps[face] : -1;
             // The face's renderer layer gates lights by their culling mask.
@@ -939,11 +944,17 @@ namespace SashaRX.UnityMeshLab
         // taken as linear, the way vertex-tinting shaders read it).
         internal static void Evaluate(RemeshSource source, int face, Vector3 w, Vector3 targetNormal, Vector4 targetTangent, bool vertexTint,
             out Color color, out Color normal, out Color metal, out Color ao, out Color emission)
-            => EvaluateProjected(source, face, w, targetNormal, targetTangent, Quaternion.identity, vertexTint,
-                out color, out normal, out metal, out ao, out emission);
+        {
+            EvaluateProjected(source, face, w, Quaternion.identity, vertexTint,
+                out color, out var direction, out metal, out ao, out emission);
+            var frame = new RemeshNormalFrame.Frame((Vector3)targetTangent,
+                Vector3.Cross(targetNormal, targetTangent) * targetTangent.w, targetNormal);
+            if (!frame.TryEncode(direction, out var encoded)) encoded = Vector3.forward;
+            normal = new Color(encoded.x * .5f + .5f, encoded.y * .5f + .5f, encoded.z * .5f + .5f, 1);
+        }
 
-        static void EvaluateProjected(RemeshSource source, int face, Vector3 w, Vector3 targetNormal, Vector4 targetTangent,
-            Quaternion transport, bool vertexTint, out Color color, out Color normal, out Color metal, out Color ao, out Color emission)
+        static void EvaluateProjected(RemeshSource source, int face, Vector3 w,
+            Quaternion transport, bool vertexTint, out Color color, out Vector3 direction, out Color metal, out Color ao, out Color emission)
         {
             int a = source.indices[face * 3], b = source.indices[face * 3 + 1], c = source.indices[face * 3 + 2];
             Vector2 uv = source.uv[a] * w.x + source.uv[b] * w.y + source.uv[c] * w.z;
@@ -955,10 +966,7 @@ namespace SashaRX.UnityMeshLab
                 linear = new Color(linear.r * vc.r, linear.g * vc.g, linear.b * vc.b, linear.a);
             }
             color = linear.gamma; color.a = 1;
-            var n = transport * SourceNormal(source, face, w, true);
-            Basis(targetNormal, targetTangent, out var tt, out var tb);
-            normal = new Color(Vector3.Dot(n, tt) * 0.5f + 0.5f, Vector3.Dot(n, tb) * 0.5f + 0.5f,
-                Vector3.Dot(n, targetNormal) * 0.5f + 0.5f, 1);
+            direction = transport * SourceNormal(source, face, w, true);
             var mr = surface.metal.Sample(uv, Color.white);
             float smooth = surface.smoothness * (surface.smoothnessFromAlbedo ? albedo.a : mr.a);
             metal = new Color(surface.metal.image != null ? mr.r : surface.metallic, 0, 0, smooth);
@@ -977,19 +985,23 @@ namespace SashaRX.UnityMeshLab
             var surface = source.materials[source.faceMaterials[face]];
             if (!useNormalMap || surface.normal.image == null) return n;
             Vector2 uv = source.uv[a] * w.x + source.uv[b] * w.y + source.uv[c] * w.z;
-            var tangent = source.tangents[a] * w.x + source.tangents[b] * w.y + source.tangents[c] * w.z;
             var sample = surface.normal.Sample(uv, new Color(.5f, .5f, 1));
-            float nx = (sample.r * 2 - 1) * surface.normalScale, ny = (sample.g * 2 - 1) * surface.normalScale;
-            Basis(n, tangent, out var t, out var bAxis);
-            return MeshGeometry.UnitDirection(t * nx + bAxis * ny + n * Mathf.Sqrt(Mathf.Max(0, 1 - nx * nx - ny * ny)));
-        }
-
-        static void Basis(Vector3 n, Vector4 tangent, out Vector3 t, out Vector3 b)
-        {
-            t = new Vector3(tangent.x, tangent.y, tangent.z);
-            t = (t - n * Vector3.Dot(t, n)).normalized;
-            if (t.sqrMagnitude < 1e-10f) t = Vector3.Cross(n, Mathf.Abs(n.y) < 0.9f ? Vector3.up : Vector3.right).normalized;
-            b = Vector3.Cross(n, t) * (tangent.w < 0 ? -1 : 1);
+            Vector3 tangentNormal = new Vector3(sample.r * 2 - 1, sample.g * 2 - 1, sample.b * 2 - 1);
+            // Readback stores canonical *unscaled* channels and a constant alpha
+            // recipe: 0 = Standard RG/AG (Z after strength), .5 = pre-strength Z,
+            // 1 = plain RGB (preserve blue). Filter first, just as the Lit sampler.
+            bool captured = surface.normal.image.normalReadback;
+            bool preserveZ = captured && sample.a >= .75f;
+            bool preStrengthZ = captured ? sample.a >= .25f : surface.normalFrameMode == RemeshNormalFrame.Mode.Urp;
+            float nx = tangentNormal.x, ny = tangentNormal.y;
+            if (!preserveZ && preStrengthZ)
+                tangentNormal.z = Mathf.Sqrt(Mathf.Max(0, 1 - nx * nx - ny * ny));
+            tangentNormal.x = nx * surface.normalScale; tangentNormal.y = ny * surface.normalScale;
+            if (!preserveZ && !preStrengthZ)
+                tangentNormal.z = Mathf.Sqrt(Mathf.Max(0, 1 - tangentNormal.x * tangentNormal.x - tangentNormal.y * tangentNormal.y));
+            var frame = RemeshNormalFrame.Interpolate(source.normals, source.tangents, source.indices, face, w, surface.normalFrameMode);
+            var direction = frame.Decode(tangentNormal);
+            return direction == Vector3.zero ? n : direction;
         }
 
         /// <summary>

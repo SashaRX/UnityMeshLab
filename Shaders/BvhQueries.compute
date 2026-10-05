@@ -8,7 +8,7 @@
 #include "BvhTraversal.hlsl"
 
 StructuredBuffer<float4>          _RayOrigins;    // xyz origin, w = maxDist (<= 0: no query)
-StructuredBuffer<float4>          _RayDirs;       // xyz unit direction
+StructuredBuffer<float4>          _RayDirs;       // xyz unit direction, w preferred target t (0: first hit)
 RWStructuredBuffer<BvhRayHit>     _RayHits;
 
 StructuredBuffer<float4>          _Points;        // xyz query point, w = maxDist (<= 0: no query)
@@ -24,8 +24,8 @@ void Raycast(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= _QueryCount) return;
     float4 o = _RayOrigins[id.x];
-    float3 d = _RayDirs[id.x].xyz;
-    _RayHits[id.x] = BvhRaycast(o.xyz, d, o.w, _FacingFilter != 0);
+    float4 d = _RayDirs[id.x];
+    _RayHits[id.x] = BvhRaycastClosestToTarget(o.xyz, d.xyz, o.w, _FacingFilter != 0, d.w);
 }
 
 [numthreads(64, 1, 1)]
