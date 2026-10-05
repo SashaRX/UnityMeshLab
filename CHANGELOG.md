@@ -19,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.6] - 2026-10-05
+
+### Fixed
+- Remesh Result preview packs normal maps for the active Lit decoder, eliminating chart-shaped shading patches with Android DXT5nm encoding. Maps and exported PNG bytes remain unchanged.
+- GPU bake uses larger bounded asynchronous query batches to reduce Editor scheduling overhead, reports stage timings, and compiles without the BVH traversal initialization warning.
+
 ## [1.1.4] - 2026-10-03
 
 ### Fixed
