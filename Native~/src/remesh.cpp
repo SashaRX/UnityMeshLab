@@ -32,6 +32,8 @@ struct Result { std::vector<Vertex> vertices; std::vector<unsigned int> indices;
 struct PosMesh { std::vector<float> pos; std::vector<unsigned int> idx; };
 struct AtlasDelete { void operator()(xatlas::Atlas* a) const { xatlas::Destroy(a); } };
 constexpr size_t MaxTriangles = 5000000;
+// The reviewed remesher packs each axis into ten bits; larger grids do not fit.
+constexpr int MaxVoxelResolution = 1024;
 
 // Return codes shared by every entry point.
 enum : int { Ok = 0, Invalid = 1, Budget = 2, Empty = 3, AtlasRejected = 4, MultipleAtlases = 5,
@@ -332,7 +334,7 @@ EXPORT int meshLabRemeshBuild(const float* positions, uint32_t vertexCount,
 {
     if (!handle || !outVertices || !outIndices) return Invalid;
     *handle = nullptr; *outVertices = 0; *outIndices = 0;
-    if (resolution < 4 || resolution > 256 || targetTriangles < 1 || targetTriangles > MaxTriangles ||
+    if (resolution < 4 || resolution > MaxVoxelResolution || targetTriangles < 1 || targetTriangles > MaxTriangles ||
         !std::isfinite(error) || error < 0 || error > 1 ||
         !std::isfinite(crease) || crease < 0 || crease > 3.141593f ||
         !std::isfinite(smoothing) || smoothing < 0 || smoothing > 10 ||
@@ -371,7 +373,7 @@ EXPORT int meshLabVoxelRemesh(const float* positions, uint32_t vertexCount,
 {
     if (!handle || !outVertices || !outIndices) return Invalid;
     *handle = nullptr; *outVertices = 0; *outIndices = 0;
-    if (resolution < 4 || resolution > 256 || (flags & ~3u)) return Invalid;
+    if (resolution < 4 || resolution > MaxVoxelResolution || (flags & ~3u)) return Invalid;
     if (int code = ValidateMesh(positions, vertexCount, indices, indexCount)) return code;
     try {
         auto mesh = std::make_unique<PosMesh>();

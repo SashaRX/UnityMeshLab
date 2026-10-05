@@ -165,6 +165,29 @@ namespace SashaRX.UnityMeshLab.Tests
             catch (InvalidOperationException error) { Assert.Ignore(error.Message); }
         }
 
+        [TestCase(257)]
+        [TestCase(512)]
+        public void WideNativeVoxelProducesClosedSurfaceAndPreparedChannels(int resolution)
+        {
+            RequireNative();
+            var p = new[] {
+                new Vector3(-1, -.04f, -.02f), new Vector3(1, -.04f, -.02f),
+                new Vector3(1, .04f, -.02f), new Vector3(-1, .04f, -.02f),
+                new Vector3(-1, -.04f, .02f), new Vector3(1, -.04f, .02f),
+                new Vector3(1, .04f, .02f), new Vector3(-1, .04f, .02f) };
+            var ix = new[] { 0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4,
+                3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5 };
+            var settings = new RemeshSettings { voxelResolution = resolution, solve = true, shell = false };
+            var result = RemeshNative.Voxelize(p, ix, settings, CancellationToken.None);
+            var topology = RemeshTopology.Inspect(result.positions, result.indices);
+            Assert.IsTrue(topology.Valid, topology.Description);
+            Assert.AreEqual(0, topology.boundary.Count);
+            Assert.Greater(result.TriangleCount, 0);
+            Assert.AreEqual(result.positions.Length, result.normals.Length);
+            Assert.AreEqual(result.positions.Length, result.uv.Length);
+            Assert.IsTrue(result.draftUv);
+        }
+
         [Test]
         public void NativeFittedVoxelDoesNotLeaveCleanupHoleInRotatedThinBox()
         {

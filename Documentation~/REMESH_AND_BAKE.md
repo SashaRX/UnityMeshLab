@@ -84,7 +84,7 @@ Before the UV stage the canvas shows the selected model as usual.
    meshes; pose the model the way you want it baked. Every contributing submesh
    needs UV0. Read/Write-disabled imports are read through MeshData; the source
    importers are never touched (no reimports).
-2. **Voxel remesh** — voxel resolution (4–256), fit to source surface, two-sided
+2. **Voxel remesh** — voxel resolution (4–1024), fit to source surface, two-sided
    shell. Higher resolution preserves smaller gaps but produces a denser,
    uniform intermediate mesh. **Trim to source surface** (default on) masks the
    result against the source: the voxelizer closes every surface, so an open
@@ -417,6 +417,12 @@ Texture snapshots and Unity mesh/asset APIs stay on the main thread.
 
 `Native~/src/remesh.cpp` uses meshoptimizer v1.3
 (`9e1f07b159d3cb777f1c67ed31fc11fd117986f4`, 2026-09-25), pinned by full commit SHA.
+The reviewed copy of its remesher in `Native~/third_party/meshoptimizer/` keeps
+byte grid offsets for resolutions up to 256 and uses 16-bit offsets from 257 to
+1024. The default remains 128. The grid alone uses 256 MiB at 512 and 2 GiB at
+1024; surface data and intermediate mesh buffers add to that. Resolution means
+cells along the longest axis, and the five-million-triangle output budget still
+applies. Native libraries must come from the completed `build-native.yml` run.
 Staged exports (ABI 3) run voxel remesh + position weld (`meshLabVoxelRemesh`),
 simplifyWithUpdate with the selected regularize/fold/prune options plus degenerate
 cleanup (`meshLabSimplify`), and averaged normal generation + xatlas unwrap

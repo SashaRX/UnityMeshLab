@@ -10,6 +10,29 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         static RemeshSource.Map Map() => new RemeshSource.Map();
 
+        [TestCase(257)]
+        [TestCase(512)]
+        [TestCase(1024)]
+        public void HighVoxelResolutionPersistsAndInvalidatesRemesh(int resolution)
+        {
+            var settings = new RemeshSettings { voxelResolution = resolution };
+            Assert.DoesNotThrow(settings.Validate);
+            var restored = RemeshSettings.FromSavedJson(JsonUtility.ToJson(settings));
+            Assert.AreEqual(resolution, restored.voxelResolution);
+            Assert.DoesNotThrow(restored.Validate);
+            string before = RemeshPipeline.Key(RemeshPipeline.Stage.Remesh, settings, null);
+            settings.voxelResolution = 256;
+            Assert.AreNotEqual(before, RemeshPipeline.Key(RemeshPipeline.Stage.Remesh, settings, null));
+        }
+
+        [TestCase(3)]
+        [TestCase(1025)]
+        public void UnsupportedVoxelResolutionIsRejected(int resolution)
+        {
+            var settings = new RemeshSettings { voxelResolution = resolution };
+            Assert.Throws<ArgumentException>(settings.Validate);
+        }
+
         [Test]
         public void RecommendedXatlasSettings_PreserveOtherStagesAndExplicitSavedSettings()
         {

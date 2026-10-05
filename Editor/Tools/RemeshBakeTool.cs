@@ -348,7 +348,9 @@ namespace SashaRX.UnityMeshLab
                         "Remesh every renderer SEPARATELY and save the result as a hierarchy of meshes with per-node baked materials under one root, instead of welding everything into one mesh with one material."), settings.keepHierarchy);
                     DrawHighlightToggle();
                     using (new EditorGUI.DisabledScope(settings.sourceShape != RemeshShape.LOD0)) {
-                        settings.voxelResolution = EditorGUILayout.IntSlider("Voxel resolution", settings.voxelResolution, 4, 256);
+                        settings.voxelResolution = EditorGUILayout.IntSlider(new GUIContent("Voxel resolution",
+                            "Voxels along the model's longest axis. Higher values preserve finer geometry and increase memory use and processing time."),
+                            settings.voxelResolution, 4, RemeshSettings.MaxVoxelResolution);
                         settings.solve = EditorGUILayout.Toggle("Fit source surface", settings.solve);
                         settings.shell = EditorGUILayout.Toggle("Two-sided shell", settings.shell);
                         settings.trimToSource = EditorGUILayout.Toggle(new GUIContent("Trim to source surface",

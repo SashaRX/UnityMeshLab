@@ -82,6 +82,7 @@ namespace SashaRX.UnityMeshLab
     public sealed class RemeshSettings
     {
         // 1 · Voxel remesh
+        internal const int MaxVoxelResolution = 1024;
         public int voxelResolution = 128;
         public bool solve = true;
         public bool shell;
@@ -236,7 +237,7 @@ namespace SashaRX.UnityMeshLab
                 if (sourceAO == null) throw new ArgumentException("Source AO settings are missing.");
                 sourceAO.Validate();
             }
-            if (voxelResolution < 4 || voxelResolution > 256 || targetTriangles < 0 || targetTriangles > 5000000 ||
+            if (voxelResolution < 4 || voxelResolution > MaxVoxelResolution || targetTriangles < 0 || targetTriangles > 5000000 ||
                 !Finite(maximumError) || maximumError < 0 || maximumError > 1 ||
                 !Finite(normalCrease) || normalCrease < 0 || normalCrease > 180 ||
                 !Finite(normalSmoothing) || normalSmoothing < 0 || normalSmoothing > 10 ||

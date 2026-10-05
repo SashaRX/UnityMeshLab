@@ -1,8 +1,10 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <unordered_map>
 #include <vector>
 extern "C" int meshLabRemeshVersion();
 extern "C" int meshLabRemeshBuild(const float*, uint32_t, const uint32_t*, uint32_t,
@@ -20,6 +22,70 @@ extern "C" int meshLabUnwrapCopy(void*, float*, uint32_t, uint32_t*, uint32_t, i
 static void check(bool condition, const char* message) {
     if (!condition) { std::cerr << message << '\n'; std::exit(1); }
 }
+
+// A long, thin closed box has a row with hundreds of occupied voxels, exercising
+// the old byte-offset overflow without creating a five-million-triangle output.
+// Axis permutations also pin all three ten-bit packed coordinate components.
+static uint32_t checkHighResolutionBox(const float* cube, const uint32_t* triangles,
+    int resolution, int longAxis, uint32_t flags)
+{
+    const float halfExtent[3] = {1.0f, 0.04f, 0.02f};
+    float points[24], expected[3] = {};
+    for (int k = 0; k < 3; ++k) {
+        int axis = (k + longAxis) % 3;
+        expected[axis] = halfExtent[k];
+        for (int i = 0; i < 8; ++i)
+            points[i * 3 + axis] = cube[i * 3 + k] * halfExtent[k];
+    }
+    void* handle = nullptr;
+    uint32_t vertices = 0, indexCount = 0;
+    check(meshLabVoxelRemesh(points, 8, triangles, 36, resolution, flags,
+        &handle, &vertices, &indexCount) == 0 && handle, "high grid: voxel remesh");
+    check(vertices > 0 && indexCount > 0 && indexCount % 3 == 0, "high grid: valid counts");
+    std::vector<float> positions(size_t(vertices) * 3);
+    std::vector<uint32_t> indices(indexCount);
+    check(meshLabMeshCopy(handle, positions.data(), vertices, indices.data(), indexCount) == 0,
+        "high grid: copy");
+    meshLabMeshDestroy(handle);
+
+    float lower[3] = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+    float upper[3] = {-lower[0], -lower[1], -lower[2]};
+    const float cell = 2.0f / float(resolution - 2);
+    for (uint32_t i = 0; i < vertices; ++i)
+        for (int k = 0; k < 3; ++k) {
+            float value = positions[size_t(i) * 3 + k];
+            check(std::isfinite(value), "high grid: finite position");
+            check(value >= -expected[k] - cell && value <= expected[k] + cell,
+                "high grid: coordinates stay at source");
+            lower[k] = std::min(lower[k], value);
+            upper[k] = std::max(upper[k], value);
+        }
+    for (int k = 0; k < 3; ++k)
+        check(lower[k] <= -expected[k] + cell && upper[k] >= expected[k] - cell,
+            "high grid: both source extents retained");
+
+    std::unordered_map<uint64_t, uint32_t> edges;
+    for (size_t i = 0; i < indices.size(); i += 3) {
+        uint32_t a = indices[i], b = indices[i + 1], c = indices[i + 2];
+        check(a < vertices && b < vertices && c < vertices, "high grid: valid indices");
+        check(a != b && a != c && b != c, "high grid: distinct corners");
+        uint32_t corners[] = {a, b, c, a};
+        for (int k = 0; k < 3; ++k) {
+            uint32_t lo = std::min(corners[k], corners[k + 1]);
+            uint32_t hi = std::max(corners[k], corners[k + 1]);
+            ++edges[(uint64_t(lo) << 32) | hi];
+        }
+    }
+    for (const auto& edge : edges) {
+        // A two-sided shell may weld coincident opposed faces into one edge
+        // with four incidences. Only the solid mode promises a manifold surface.
+        check((flags & 2) ? edge.second >= 2 && edge.second % 2 == 0 : edge.second == 2,
+            "high grid: no open surface edges");
+    }
+    std::cout << "high grid " << resolution << " axis " << longAxis << " flags " << flags
+              << ": " << vertices << " vertices, " << indexCount / 3 << " triangles\n";
+    return indexCount / 3;
+}
 int main() {
     float p[] = {-1,-1,-1, 1,-1,-1, 1,1,-1, -1,1,-1, -1,-1,1, 1,-1,1, 1,1,1, -1,1,1};
     uint32_t t[] = {0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5};
@@ -32,6 +98,35 @@ int main() {
     p[0]=std::numeric_limits<float>::quiet_NaN();
     check(meshLabRemeshBuild(p,8,t,36,16,100,0.01f,1,0,256,4,1,&h,&v,&n)==1 && !h, "reject NaN");
     p[0]=-1;
+    check(meshLabRemeshBuild(p,8,t,36,1025,100,0.01f,1,0,256,4,1,&h,&v,&n)==1 && !h && !v && !n,
+        "reject grid above packed coordinate range");
+    check(meshLabVoxelRemesh(p,8,t,36,1025,1,&h,&v,&n)==1 && !h && !v && !n,
+        "staged: reject grid above packed coordinate range");
+    check(meshLabVoxelRemesh(p,8,t,36,std::numeric_limits<int>::max(),1,&h,&v,&n)==1 && !h,
+        "staged: reject overflowing resolution before allocation");
+    checkHighResolutionBox(p, t, 256, 0, 1);
+    checkHighResolutionBox(p, t, 257, 0, 1);
+    uint32_t wideSolid[2], wideShell[2];
+    for (uint32_t solve = 0; solve < 2; ++solve) {
+        wideSolid[solve] = checkHighResolutionBox(p, t, 512, 0, solve);
+        wideShell[solve] = checkHighResolutionBox(p, t, 512, 0, solve | 2);
+        check(wideShell[solve] > wideSolid[solve], "high grid: shell retains both surfaces");
+    }
+    checkHighResolutionBox(p, t, 1024, 0, 1);
+    checkHighResolutionBox(p, t, 1024, 1, 0);
+    checkHighResolutionBox(p, t, 1024, 2, 3);
+    // The cap extension must not bypass the existing intermediate triangle budget.
+    check(meshLabVoxelRemesh(p,8,t,36,1024,1,&h,&v,&n)==2 && !h && !v && !n,
+        "high grid: five-million-triangle budget preserved");
+    {
+        float thin[24];
+        for (int i = 0; i < 8; ++i)
+            for (int k = 0; k < 3; ++k)
+                thin[i * 3 + k] = p[i * 3 + k] * (k == 0 ? 1.0f : 0.04f);
+        check(meshLabRemeshBuild(thin,8,t,36,512,1000,0.1f,1,0,512,2,1,&h,&v,&n)==0 && h,
+            "high grid: legacy pipeline accepts wide grid");
+        meshLabRemeshDestroy(h); h=nullptr;
+    }
     for (int pass=0; pass<2; ++pass) {
         check(meshLabRemeshBuild(p,8,t,36,16,100,pass ? 1.0f : 0.01f,1,0,256,4,1,&h,&v,&n)==0 && h, "cube pipeline");
         check(v>0 && n>0 && n%3==0, "valid counts");
