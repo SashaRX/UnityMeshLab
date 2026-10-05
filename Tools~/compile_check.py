@@ -84,6 +84,64 @@ namespace UnityEditor.Formats.Fbx.Exporter
         public static string ExportObjects(string path, UnityEngine.Object[] objects, ExportModelOptions options = null) => path;
     }
 }
+
+// Autodesk's SDK surface used only for normalized static FBX output.
+namespace Autodesk.Fbx
+{
+    public class FbxManager : System.IDisposable {
+        public static FbxManager Create() => new FbxManager();
+        public void SetIOSettings(FbxIOSettings io) { }
+        public void Dispose() { }
+    }
+    public class FbxIOSettings {
+        public static FbxIOSettings Create(FbxManager manager, string name) => new FbxIOSettings();
+        public void SetBoolProp(string name, bool value) { }
+    }
+    public static class Globals { public const string IOSROOT = ""; public const string EXP_FBX_EMBEDDED = ""; }
+    public class FbxScene {
+        public static FbxScene Create(FbxManager manager, string name) => new FbxScene();
+        public FbxGlobalSettings GetGlobalSettings() => new FbxGlobalSettings();
+        public FbxNode GetRootNode() => new FbxNode();
+    }
+    public class FbxGlobalSettings {
+        public FbxSystemUnit GetSystemUnit() => new FbxSystemUnit();
+        public void SetSystemUnit(FbxSystemUnit unit) { }
+        public FbxAxisSystem GetAxisSystem() => new FbxAxisSystem();
+    }
+    public class FbxSystemUnit { public static FbxSystemUnit m => new FbxSystemUnit(); public double GetScaleFactor() => 100; }
+    public class FbxAxisSystem { public static FbxAxisSystem Max => new FbxAxisSystem(); public void DeepConvertScene(FbxScene scene) { } }
+    public struct FbxDouble3 { public double this[int i] { get => 0; set { } } }
+    public struct FbxVector4 { public double this[int i] { get => 0; set { } } }
+    public class FbxPropertyDouble3 { public FbxDouble3 Get() => new FbxDouble3(); }
+    public class FbxNode {
+        public enum EPivotSet { eSourcePivot }
+        public FbxPropertyDouble3 LclTranslation => new FbxPropertyDouble3();
+        public FbxPropertyDouble3 LclRotation => new FbxPropertyDouble3();
+        public FbxPropertyDouble3 LclScaling => new FbxPropertyDouble3();
+        public FbxVector4 GetPreRotation(EPivotSet pivot) => new FbxVector4();
+        public FbxVector4 GetPostRotation(EPivotSet pivot) => new FbxVector4();
+        public FbxMesh GetMesh() => null;
+        public int GetChildCount() => 0;
+        public FbxNode GetChild(int i) => null;
+    }
+    public class FbxMesh {
+        public int GetControlPointsCount() => 0;
+        public FbxVector4 GetControlPointAt(int i) => new FbxVector4();
+        public void SetControlPointAt(FbxVector4 v, int i) { }
+    }
+    public class FbxImporter : System.IDisposable {
+        public static FbxImporter Create(FbxManager manager, string name) => new FbxImporter();
+        public bool Initialize(string path, int format, FbxIOSettings io) => true;
+        public bool Import(FbxScene scene) => true;
+        public void Dispose() { }
+    }
+    public class FbxExporter : System.IDisposable {
+        public static FbxExporter Create(FbxManager manager, string name) => new FbxExporter();
+        public bool Initialize(string path, int format, FbxIOSettings io) => true;
+        public bool Export(FbxScene scene) => true;
+        public void Dispose() { }
+    }
+}
 """
 
 NOWARN = "CS0649;CS0169;CS0414;CS0162;CS0219;CS0168;CS0618;CS0067;CS1998;CS8632;CS0105;NU1701"

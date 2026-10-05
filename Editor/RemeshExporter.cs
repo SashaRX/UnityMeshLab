@@ -102,8 +102,8 @@ namespace SashaRX.UnityMeshLab
                     for (int i = 0; i < nodes.Count; ++i) ConfigureMaps(paths[i], nodes[i].maps.size);
 
                 // Materials, meshes and the object tree. The result meshes live in their
-                // capture space; the weld bakes the root's world scale into the vertices
-                // when Normalize size is on (real size at scale 1), a hierarchy keeps the
+                // capture space; the weld bakes the captured world linear matrix into
+                // vertices when normalization is on (real size at identity), a hierarchy keeps the
                 // root scale on the prefab root (no single vertex space to bake it into).
                 bool normalize = settings.normalizeSize && !hierarchy;
                 if (settings.normalizeSize && hierarchy)
@@ -111,7 +111,7 @@ namespace SashaRX.UnityMeshLab
                 var root = new GameObject(clean + "_LOD0");
                 temporary.Add(root);
                 root.transform.localScale = normalize ? Vector3.one : pipeline.RootScale;
-                root.transform.localRotation = pipeline.RootRotation;
+                root.transform.localRotation = normalize ? Quaternion.identity : pipeline.RootRotation;
                 var materials = new Material[nodes.Count];
                 var meshes = new Mesh[nodes.Count];
                 bool twoSidedWarned = false;
@@ -132,7 +132,11 @@ namespace SashaRX.UnityMeshLab
                     meshes[i] = Object.Instantiate(node.mesh);
                     meshes[i].name = names[i] + "_LOD0"; meshes[i].hideFlags = HideFlags.None;
                     temporary.Add(meshes[i]);
-                    if (normalize) BakeScaleIntoMesh(meshes[i], pipeline.RootScale);
+                    if (normalize) {
+                        var linear = node.spaceToWorld;
+                        linear.SetColumn(3, new Vector4(0, 0, 0, 1));
+                        MeshTransform.BakeMatrix(meshes[i], linear);
+                    }
                     var go = hierarchy ? new GameObject(names[i]) : root;
                     go.AddComponent<MeshFilter>().sharedMesh = meshes[i];
                     go.AddComponent<MeshRenderer>().sharedMaterial = materials[i];
@@ -151,7 +155,7 @@ namespace SashaRX.UnityMeshLab
                 Object ping;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
                 if (!hierarchy) {
-                    ping = ExportFbx(folder + "/" + clean + ".fbx", root, materials[0], prefabPath, settings.embedFbxTextures);
+                    ping = ExportFbx(folder + "/" + clean + ".fbx", root, materials[0], prefabPath, settings.embedFbxTextures, normalize);
                 }
                 else
 #endif
@@ -190,11 +194,11 @@ namespace SashaRX.UnityMeshLab
         // channel re-save of a source FBX, so the isolated-export core's same-vertex-
         // count snapshot contract does not apply; a failed export still rolls the
         // whole folder back.
-        static Object ExportFbx(string fbxPath, GameObject root, Material material, string prefabPath, bool embedTextures)
+        static Object ExportFbx(string fbxPath, GameObject root, Material material, string prefabPath, bool embedTextures, bool normalizedTransforms)
         {
             // Embedded maps make the FBX self-contained; a linked FBX would reference
             // this machine's absolute paths instead.
-            FbxExport.Write(fbxPath, root, embedTextures);
+            FbxExport.Write(fbxPath, root, embedTextures, normalizedTransforms);
             var modelImporter = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
             if (modelImporter != null) {
                 // The curated material + prefab ship next to the FBX; keep the importer
@@ -205,6 +209,11 @@ namespace SashaRX.UnityMeshLab
                 // which green-flips chunks of the baked map.
                 modelImporter.importNormals = ModelImporterNormals.Import;
                 modelImporter.importTangents = ModelImporterTangents.Import;
+                if (normalizedTransforms) {
+                    modelImporter.globalScale = 1;
+                    modelImporter.useFileScale = true;
+                    modelImporter.bakeAxisConversion = true;
+                }
                 modelImporter.SaveAndReimport();
             }
             var fbxRoot = AssetDatabase.LoadMainAssetAtPath(fbxPath) as GameObject;

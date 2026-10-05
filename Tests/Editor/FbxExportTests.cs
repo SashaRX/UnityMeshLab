@@ -4,6 +4,11 @@
 using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+using Autodesk.Fbx;
+using UnityEditor;
+using System.IO;
+#endif
 
 namespace SashaRX.UnityMeshLab.Tests
 {
@@ -177,6 +182,196 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(1, sink.Count, "…onto a copy of its mesh");
             Assert.AreEqual(new Vector3(2, 0, 0), far.GetComponent<MeshFilter>().sharedMesh.vertices[1], "with the scale baked in");
         }
+
+        [Test]
+        public void NormalizeHierarchyPreservesWorldGeometryThroughNestedAndMirroredTransforms()
+        {
+            var root = Node("Body", null, Quad("RootMesh"));
+            root.transform.SetPositionAndRotation(new Vector3(7, 2, -3), Quaternion.Euler(12, 35, -8));
+            root.transform.localScale = new Vector3(-.01f, .02f, .03f);
+            var container = Node("Container", root.transform);
+            container.transform.localPosition = new Vector3(2, 3, 4);
+            container.transform.localRotation = Quaternion.Euler(20, -15, 40);
+            var shared = Quad("Shared");
+            var child = Node("Body_LOD0", container.transform, shared);
+            child.transform.localScale = new Vector3(2, 1, 3);
+            var sibling = Node("Body_LOD1", container.transform, shared);
+            sibling.transform.localPosition = new Vector3(-1, 2, 0);
+            var filters = root.GetComponentsInChildren<MeshFilter>();
+            var expected = new List<Vector3[]>();
+            foreach (var filter in filters) {
+                var v = filter.sharedMesh.vertices;
+                for (int i = 0; i < v.Length; ++i) v[i] = filter.transform.TransformPoint(v[i]) - root.transform.position;
+                expected.Add(v);
+            }
+            var sink = new List<Mesh>();
+            FbxExport.NormalizeExportHierarchy(root, sink);
+            scratch.AddRange(sink);
+            for (int f = 0; f < filters.Length; ++f) {
+                var v = filters[f].sharedMesh.vertices;
+                for (int i = 0; i < v.Length; ++i)
+                    Assert.That((filters[f].transform.TransformPoint(v[i]) - expected[f][i]).magnitude, Is.LessThan(1e-6f));
+                Assert.AreEqual(new[] { 0, 2, 1, 0, 3, 2 }, filters[f].sharedMesh.triangles);
+            }
+            foreach (var t in root.GetComponentsInChildren<Transform>()) {
+                Assert.AreEqual(Vector3.zero, t.localPosition);
+                Assert.AreEqual(Quaternion.identity, t.localRotation);
+                Assert.AreEqual(Vector3.one, t.localScale);
+            }
+            Assert.AreEqual(Vector3.right, shared.vertices[1], "shared source buffers are untouched");
+            Assert.AreNotSame(child.GetComponent<MeshFilter>().sharedMesh, sibling.GetComponent<MeshFilter>().sharedMesh);
+        }
+
+        [Test]
+        public void NormalizeHierarchyRejectsSkinBeforeChangingTransforms()
+        {
+            var root = Node("Animated", null);
+            root.transform.localScale = Vector3.one * .01f;
+            root.AddComponent<SkinnedMeshRenderer>().sharedMesh = Quad("Skin");
+            Assert.Throws<System.InvalidOperationException>(() => FbxExport.NormalizeExportHierarchy(root, new List<Mesh>()));
+            Assert.AreEqual(Vector3.one * .01f, root.transform.localScale);
+        }
+
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [TestCase(false)]
+        [TestCase(true)]
+        public void NormalizedFbxHasMeterUnitsIdentityNodesAndPreservesSizeOnReimport(bool atomic)
+        {
+            string folderName = "MeshLabFbxNormalize_" + System.Guid.NewGuid().ToString("N");
+            string folder = "Assets/" + folderName;
+            AssetDatabase.CreateFolder("Assets", folderName);
+            try {
+                var root = Node("Normalized", null);
+                root.transform.localRotation = Quaternion.Euler(18, 42, -9);
+                root.transform.localScale = new Vector3(.01f, .02f, .03f);
+                var mesh = Quad("Surface");
+                mesh.RecalculateNormals(); mesh.RecalculateTangents();
+                var child = Node("Normalized_LOD0", root.transform, mesh, renderer: true);
+                child.transform.localPosition = new Vector3(3, 2, 1);
+                var matrix = child.transform.localToWorldMatrix;
+                var expected = new Bounds(matrix.MultiplyPoint3x4(mesh.vertices[0]), Vector3.zero);
+                foreach (var v in mesh.vertices) expected.Encapsulate(matrix.MultiplyPoint3x4(v));
+                var expectedNormal = matrix.inverse.transpose.MultiplyVector(mesh.normals[0]).normalized;
+                Vector3 expectedTangent = matrix.MultiplyVector(mesh.tangents[0]);
+                expectedTangent = (expectedTangent - expectedNormal * Vector3.Dot(expectedNormal, expectedTangent)).normalized;
+                var expectedBitangent = Vector3.Cross(expectedNormal, expectedTangent) * mesh.tangents[0].w;
+                var sink = new List<Mesh>();
+                FbxExport.NormalizeExportHierarchy(root, sink);
+                scratch.AddRange(sink);
+                string path = folder + "/normalized.fbx";
+                if (atomic) FbxExport.WriteAtomic(path, root, normalizedTransforms: true);
+                else FbxExport.Write(path, root, normalizedTransforms: true);
+
+                using (var manager = FbxManager.Create()) {
+                    var io = FbxIOSettings.Create(manager, Globals.IOSROOT);
+                    manager.SetIOSettings(io);
+                    var scene = FbxScene.Create(manager, "Check");
+                    using (var importer = FbxImporter.Create(manager, "Read")) {
+                        Assert.IsTrue(importer.Initialize(Path.GetFullPath(path), -1, io));
+                        Assert.IsTrue(importer.Import(scene));
+                    }
+                    Assert.AreEqual(100, scene.GetGlobalSettings().GetSystemUnit().GetScaleFactor());
+                    Assert.AreEqual(FbxAxisSystem.Max, scene.GetGlobalSettings().GetAxisSystem());
+                    var nodes = new Stack<FbxNode>(); nodes.Push(scene.GetRootNode());
+                    while (nodes.Count > 0) {
+                        var node = nodes.Pop();
+                        var p = node.LclTranslation.Get(); var r = node.LclRotation.Get(); var s = node.LclScaling.Get();
+                        var pre = node.GetPreRotation(FbxNode.EPivotSet.eSourcePivot);
+                        var post = node.GetPostRotation(FbxNode.EPivotSet.eSourcePivot);
+                        for (int axis = 0; axis < 3; ++axis) {
+                            Assert.AreEqual(0, p[axis], 1e-6); Assert.AreEqual(0, r[axis], 1e-6);
+                            Assert.AreEqual(1, s[axis], 1e-6);
+                            Assert.AreEqual(0, pre[axis], 1e-6); Assert.AreEqual(0, post[axis], 1e-6);
+                        }
+                        for (int i = 0; i < node.GetChildCount(); ++i) nodes.Push(node.GetChild(i));
+                    }
+                }
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+                var settings = (ModelImporter)AssetImporter.GetAtPath(path);
+                settings.isReadable = true; settings.bakeAxisConversion = true;
+                settings.importNormals = ModelImporterNormals.Import;
+                settings.importTangents = ModelImporterTangents.Import;
+                settings.SaveAndReimport();
+                var imported = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                var importedFilter = imported.GetComponentInChildren<MeshFilter>();
+                var importedVertices = importedFilter.sharedMesh.vertices;
+                var bounds = new Bounds(importedFilter.transform.TransformPoint(importedVertices[0]), Vector3.zero);
+                foreach (var v in importedVertices) bounds.Encapsulate(importedFilter.transform.TransformPoint(v));
+                Assert.That((bounds.center - expected.center).magnitude, Is.LessThan(1e-5f),
+                    $"expected {expected.center:F6}, imported {bounds.center:F6}, matrix {importedFilter.transform.localToWorldMatrix}, first vertex {importedVertices[0]:F6}");
+                Assert.That((bounds.size - expected.size).magnitude, Is.LessThan(1e-5f));
+                foreach (var normal in importedFilter.sharedMesh.normals)
+                    Assert.That(Vector3.Dot(importedFilter.transform.localToWorldMatrix.inverse.transpose.MultiplyVector(normal).normalized,
+                        expectedNormal), Is.GreaterThan(.9999f));
+                var normals = importedFilter.sharedMesh.normals;
+                var tangents = importedFilter.sharedMesh.tangents;
+                Assert.AreEqual(normals.Length, tangents.Length);
+                for (int i = 0; i < tangents.Length; ++i) {
+                    Vector3 t = importedFilter.transform.localToWorldMatrix.MultiplyVector(tangents[i]).normalized;
+                    var n = importedFilter.transform.localToWorldMatrix.inverse.transpose.MultiplyVector(normals[i]).normalized;
+                    var b = Vector3.Cross(n, t) * tangents[i].w;
+                    Assert.That(Vector3.Dot(t, expectedTangent), Is.GreaterThan(.9999f));
+                    Assert.That(Vector3.Dot(b, expectedBitangent), Is.GreaterThan(.9999f));
+                }
+            }
+            finally { AssetDatabase.DeleteAsset(folder); }
+        }
+
+        [Test]
+        public void FailedNormalizedAtomicWriteLeavesExistingFbxBytesAndMetaUntouched()
+        {
+            string folderName = "MeshLabFbxAtomic_" + System.Guid.NewGuid().ToString("N");
+            string folder = "Assets/" + folderName;
+            AssetDatabase.CreateFolder("Assets", folderName);
+            try {
+                var root = Node("Atomic", null, Quad("Atomic"), renderer: true);
+                string path = folder + "/atomic.fbx";
+                FbxExport.Write(path, root, normalizedTransforms: true);
+                AssetDatabase.ImportAsset(path);
+                var original = File.ReadAllBytes(path);
+                var meta = File.ReadAllBytes(path + ".meta");
+                root.transform.localScale = Vector3.one * 2;
+                Assert.Throws<IOException>(() => FbxExport.WriteAtomic(path, root, normalizedTransforms: true));
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
+                CollectionAssert.AreEqual(meta, File.ReadAllBytes(path + ".meta"));
+                Assert.IsFalse(File.Exists(path + ".tmp"));
+                Assert.IsFalse(File.Exists(path + ".tmp.normalized.tmp"));
+            }
+            finally { AssetDatabase.DeleteAsset(folder); }
+        }
+
+        [Test]
+        public void NormalizedFbxRetainsEmbeddedTexturesAfterDeletingTheOriginalMap()
+        {
+            string folderName = "MeshLabFbxEmbedded_" + System.Guid.NewGuid().ToString("N");
+            string folder = "Assets/" + folderName;
+            AssetDatabase.CreateFolder("Assets", folderName);
+            try {
+                var texture = new Texture2D(2, 2);
+                scratch.Add(texture);
+                texture.SetPixels(new[] { Color.red, Color.green, Color.blue, Color.white });
+                texture.Apply();
+                string mapPath = folder + "/original.png";
+                File.WriteAllBytes(mapPath, texture.EncodeToPNG());
+                AssetDatabase.ImportAsset(mapPath);
+                var material = new Material(Shader.Find("Standard"));
+                scratch.Add(material);
+                material.mainTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(mapPath);
+                var root = Node("Embedded", null, Quad("Embedded"), renderer: true);
+                root.GetComponent<MeshRenderer>().sharedMaterial = material;
+                string path = folder + "/embedded.fbx";
+                FbxExport.Write(path, root, embedTextures: true, normalizedTransforms: true);
+                AssetDatabase.DeleteAsset(mapPath);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+                AssetDatabase.CreateFolder(folder, "Extracted");
+                Assert.IsTrue(((ModelImporter)AssetImporter.GetAtPath(path)).ExtractTextures(folder + "/Extracted"));
+                AssetDatabase.Refresh();
+                Assert.IsNotEmpty(AssetDatabase.FindAssets("t:Texture2D", new[] { folder + "/Extracted" }),
+                    "the converted file carries the map independently of its source path");
+            }
+            finally { AssetDatabase.DeleteAsset(folder); }
+        }
+#endif
 
         [Test]
         public void InjectCollisionMeshesReplacesExistingColChildren()

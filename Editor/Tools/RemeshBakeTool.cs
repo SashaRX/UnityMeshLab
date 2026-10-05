@@ -500,9 +500,9 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField(pipeline.IsHierarchy
                 ? $"{pipeline.Nodes.Count} node(s) · largest {result.vertexCount:N0} vertices · {result.GetIndexCount(0) / 3:N0} triangles"
                 : $"{result.vertexCount:N0} vertices · {result.GetIndexCount(0) / 3:N0} triangles");
-            settings.normalizeSize = EditorGUILayout.Toggle(new GUIContent("Normalize size (saved at scale 1)",
-                "Bakes the source's world scale into the saved geometry, so the model keeps its real size with a " +
-                "scale-1 transform regardless of how the source is scaled. Off: the saved transform carries the " +
+            settings.normalizeSize = EditorGUILayout.Toggle(new GUIContent("Normalize saved transform",
+                "Bakes the captured world rotation and scale into the saved geometry, preserving its size and orientation " +
+                "with Position 0, Rotation 0, Scale 1 (100% in a meter-based 3ds Max scene). Normalized FBX uses meters and Z-up axes. Off: the saved transform carries the " +
                 "source's scale instead. Keep-hierarchy saves always carry the scale on the root."),
                 settings.normalizeSize);
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER

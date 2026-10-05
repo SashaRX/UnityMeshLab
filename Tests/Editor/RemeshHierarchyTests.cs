@@ -224,8 +224,24 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                         string path = folder + "/" + source.name + "_Remesh/" + source.name + ".prefab";
                         var saved = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                         Assert.IsNotNull(saved);
-                        Assert.That(Quaternion.Angle(expectedRotation, saved.transform.localRotation), Is.LessThan(.01f));
+                        Assert.That(Quaternion.Angle(mode == 1 ? Quaternion.identity : expectedRotation,
+                            saved.transform.localRotation), Is.LessThan(.01f));
                         Assert.That(saved.transform.localPosition, Is.EqualTo(Vector3.zero));
+                        if (mode == 1) {
+                            Assert.AreEqual(Vector3.one, saved.transform.localScale);
+                            var expectedBounds = new Bounds();
+                            var matrix = pipeline.Primary.spaceToWorld;
+                            matrix.SetColumn(3, new Vector4(0, 0, 0, 1));
+                            var originalVertices = pipeline.ResultMesh.vertices;
+                            expectedBounds = new Bounds(matrix.MultiplyPoint3x4(originalVertices[0]), Vector3.zero);
+                            foreach (var v in originalVertices) expectedBounds.Encapsulate(matrix.MultiplyPoint3x4(v));
+                            var filter = saved.GetComponentInChildren<MeshFilter>();
+                            var savedVertices = filter.sharedMesh.vertices;
+                            var savedBounds = new Bounds(filter.transform.TransformPoint(savedVertices[0]), Vector3.zero);
+                            foreach (var v in savedVertices) savedBounds.Encapsulate(filter.transform.TransformPoint(v));
+                            Assert.That((savedBounds.size - expectedBounds.size).magnitude, Is.LessThan(1e-5f));
+                            Assert.That((savedBounds.center - expectedBounds.center).magnitude, Is.LessThan(1e-5f));
+                        }
                     }
                 }
             }

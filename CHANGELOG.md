@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.17] - 2026-10-05
+
+### Fixed
+- Normalize saved static FBX geometry at its original pivot with identity node transforms while preserving world size, orientation and tangent frames. Bake accumulated root and nested transforms into separate mesh copies before resetting ancestors. Normalized FBX uses meters and Z-up axes for a meter-based 3ds Max scene; Unity reimport bakes axis conversion without an extra object scale. Embedded maps survive conversion. Skinned hierarchy normalization is rejected before modifying the export clone.
+
 ## [1.1.16] - 2026-10-05
 
 ### Fixed

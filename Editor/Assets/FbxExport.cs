@@ -13,6 +13,9 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+using Autodesk.Fbx;
+#endif
 
 namespace SashaRX.UnityMeshLab
 {
@@ -685,7 +688,7 @@ namespace SashaRX.UnityMeshLab
                 // write triggers — otherwise an isolated UV2 export would be overwritten by
                 // stale sidecar data at once.
                 Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
-                WriteAtomic(targetFbxPath, tempRoot);
+                WriteAtomic(targetFbxPath, tempRoot, (intent & FbxExportIntent.Hierarchy) != 0);
                 UvtLog.Info($"[FBX Export] Isolated channels {intent} ({updated} updates) -> {targetFbxPath}");
                 exported = true;
             }
@@ -703,6 +706,15 @@ namespace SashaRX.UnityMeshLab
 
             // ── Phase 4: reimport and relink ──
             AssetDatabase.Refresh();
+            if ((intent & FbxExportIntent.Hierarchy) != 0) {
+                var normalizedImporter = AssetImporter.GetAtPath(targetFbxPath) as ModelImporter;
+                if (normalizedImporter != null) {
+                    normalizedImporter.globalScale = 1;
+                    normalizedImporter.useFileScale = true;
+                    normalizedImporter.bakeAxisConversion = true;
+                    ReimportWithoutSidecars(targetFbxPath, normalizedImporter.SaveAndReimport);
+                }
+            }
             if (isVariantExport)
             {
                 // The variant was written with the source's quad topology; pin keepQuads
@@ -736,15 +748,11 @@ namespace SashaRX.UnityMeshLab
         /// throws when the exporter produced nothing. For new files; a re-save of an
         /// existing asset goes through <see cref="WriteAtomic"/>.
         /// </summary>
-        internal static void Write(string fbxPath, GameObject root, bool embedTextures = false)
+        internal static void Write(string fbxPath, GameObject root, bool embedTextures = false, bool normalizedTransforms = false)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            UnityEditor.Formats.Fbx.Exporter.ModelExporter.ExportObjects(fbxPath, new Object[] { root },
-                new UnityEditor.Formats.Fbx.Exporter.ExportModelOptions {
-                    ExportFormat = UnityEditor.Formats.Fbx.Exporter.ExportFormat.Binary,
-                    // Embedded maps make the FBX self-contained; a linked FBX would
-                    // reference this machine's absolute paths instead.
-                    EmbedTextures = embedTextures });
+            ExportFile(fbxPath, root, embedTextures, normalizedTransforms);
+            if (normalizedTransforms) ConvertNormalizedFile(fbxPath, embedTextures);
             var info = new FileInfo(Path.GetFullPath(fbxPath));
             if (!info.Exists || info.Length == 0)
                 throw new IOException($"FBX Exporter produced an empty/missing file at '{fbxPath}'.");
@@ -753,13 +761,101 @@ namespace SashaRX.UnityMeshLab
 #endif
         }
 
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        static void ExportFile(string path, GameObject root, bool embedTextures, bool normalizedTransforms)
+        {
+            GameObject exportRoot = root;
+            var copies = new List<Mesh>();
+            try {
+                if (normalizedTransforms) {
+                    exportRoot = Object.Instantiate(root);
+                    exportRoot.name = root.name;
+                    // Unity's exporter changes handedness by reflecting X; Unity's
+                    // importer reflects Z. Rotate geometry (including its tangent frame)
+                    // so this does not introduce a 180-degree turn on reimport. Keep
+                    // node transforms at identity for the DCC file.
+                    var orientation = Matrix4x4.Scale(new Vector3(-1, 1, -1));
+                    foreach (var filter in exportRoot.GetComponentsInChildren<MeshFilter>(true)) {
+                        if (filter.sharedMesh == null) continue;
+                        var mesh = Object.Instantiate(filter.sharedMesh);
+                        mesh.name = filter.sharedMesh.name;
+                        copies.Add(mesh); filter.sharedMesh = mesh;
+                        MeshTransform.BakeMatrix(mesh, orientation);
+                    }
+                }
+                UnityEditor.Formats.Fbx.Exporter.ModelExporter.ExportObjects(path, new Object[] { exportRoot },
+                    new UnityEditor.Formats.Fbx.Exporter.ExportModelOptions {
+                        ExportFormat = UnityEditor.Formats.Fbx.Exporter.ExportFormat.Binary,
+                        EmbedTextures = embedTextures });
+            }
+            finally {
+                if (exportRoot != root) Object.DestroyImmediate(exportRoot);
+                DestroyTempMeshes(copies);
+            }
+        }
+
+        // Unity's exporter always writes centimeters/Y-up. A meter-based Max scene
+        // imports that with 1% scale. Convert coordinates as well as metadata; setting
+        // only UnitScaleFactor would enlarge the geometry 100 times.
+        static void ConvertNormalizedFile(string path, bool embedTextures)
+        {
+            string fullPath = Path.GetFullPath(path);
+            string converted = fullPath + ".normalized.tmp";
+            string mediaScratch = Path.Combine(Path.GetTempPath(), "meshlab-fbx-" + Guid.NewGuid().ToString("N"));
+            try {
+                Directory.CreateDirectory(mediaScratch);
+                string input = Path.Combine(mediaScratch, "input.fbx");
+                File.Copy(fullPath, input);
+                using var manager = FbxManager.Create();
+                var io = FbxIOSettings.Create(manager, Globals.IOSROOT);
+                manager.SetIOSettings(io);
+                io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, embedTextures);
+                var scene = FbxScene.Create(manager, "NormalizedMeshLabExport");
+                using (var importer = FbxImporter.Create(manager, "MeshLabImport")) {
+                    if (!importer.Initialize(input, -1, io) || !importer.Import(scene))
+                        throw new IOException("Cannot read FBX for transform normalization.");
+                }
+                FbxAxisSystem.Max.DeepConvertScene(scene);
+                double factor = scene.GetGlobalSettings().GetSystemUnit().GetScaleFactor() / FbxSystemUnit.m.GetScaleFactor();
+                var meshes = new HashSet<FbxMesh>();
+                var nodes = new Stack<FbxNode>();
+                nodes.Push(scene.GetRootNode());
+                while (nodes.Count > 0) {
+                    var node = nodes.Pop();
+                    var p = node.LclTranslation.Get(); var r = node.LclRotation.Get(); var s = node.LclScaling.Get();
+                    for (int axis = 0; axis < 3; ++axis)
+                        if (Math.Abs(p[axis]) > 1e-6 || Math.Abs(r[axis]) > 1e-6 || Math.Abs(s[axis] - 1) > 1e-6)
+                            throw new IOException("Normalized FBX contains an unbaked node transform.");
+                    var mesh = node.GetMesh();
+                    if (mesh != null && meshes.Add(mesh))
+                        for (int i = 0; i < mesh.GetControlPointsCount(); ++i) {
+                            var v = mesh.GetControlPointAt(i);
+                            for (int axis = 0; axis < 3; ++axis) v[axis] *= factor;
+                            mesh.SetControlPointAt(v, i);
+                        }
+                    for (int i = 0; i < node.GetChildCount(); ++i) nodes.Push(node.GetChild(i));
+                }
+                scene.GetGlobalSettings().SetSystemUnit(FbxSystemUnit.m);
+                using (var exporter = FbxExporter.Create(manager, "MeshLabExport")) {
+                    if (!exporter.Initialize(converted, -1, io) || !exporter.Export(scene))
+                        throw new IOException("Cannot write normalized FBX.");
+                }
+                File.Copy(converted, fullPath, true);
+            }
+            finally {
+                if (File.Exists(converted)) File.Delete(converted);
+                if (Directory.Exists(mediaScratch)) Directory.Delete(mediaScratch, true);
+            }
+        }
+#endif
+
         /// <summary>
         /// Writes <paramref name="root"/> to `<target>.tmp`, verifies it, and replaces the
         /// target in one rename (a plain move for a new path), keeping the target's `.meta`
         /// as it was. If the exporter throws or writes an empty file the target on disk is
         /// untouched. Throws on failure after removing the temp file.
         /// </summary>
-        internal static void WriteAtomic(string targetFbxPath, GameObject root)
+        internal static void WriteAtomic(string targetFbxPath, GameObject root, bool normalizedTransforms = false)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             string fullPath = Path.GetFullPath(targetFbxPath);
@@ -775,10 +871,9 @@ namespace SashaRX.UnityMeshLab
             if (File.Exists(tmpAbsPath)) File.Delete(tmpAbsPath); // leftover from a crashed run
             try
             {
-                UnityEditor.Formats.Fbx.Exporter.ModelExporter.ExportObjects(tmpRelPath, new Object[] { root },
-                    new UnityEditor.Formats.Fbx.Exporter.ExportModelOptions
-                        { ExportFormat = UnityEditor.Formats.Fbx.Exporter.ExportFormat.Binary });
+                ExportFile(tmpRelPath, root, false, normalizedTransforms);
 
+                if (normalizedTransforms) ConvertNormalizedFile(tmpAbsPath, false);
                 var tmpInfo = new FileInfo(tmpAbsPath);
                 if (!tmpInfo.Exists || tmpInfo.Length == 0)
                     throw new IOException($"FBX Exporter produced an empty/missing file at '{tmpRelPath}'.");
@@ -984,10 +1079,11 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Normalizes the export hierarchy: root transform reset to identity, the direct
+        /// Normalizes static export geometry at the root pivot, preserving its world size
+        /// and orientation with identity node transforms. The direct
         /// child named like the root renamed `_LOD0`, each LOD chain renumbered to
-        /// contiguous `_LOD0.._LODN` per prefix, every child's transform baked into a copy
-        /// of its mesh and reset. Returns oldName → newName for the renamed nodes (for the
+        /// contiguous `_LOD0.._LODN` per prefix. Accumulated transforms are baked into mesh
+        /// copies before ancestors are reset. Returns oldName → newName for the renamed nodes (for the
         /// post-reimport scene relink). Every mesh copy goes to <paramref name="bakedMeshSink"/>;
         /// the caller destroys them after the write.
         /// </summary>
@@ -1000,9 +1096,7 @@ namespace SashaRX.UnityMeshLab
             string sanitizedBaseName = MeshHygieneUtility.SanitizeName(baseName);
             if (string.IsNullOrEmpty(sanitizedBaseName)) sanitizedBaseName = "Unnamed";
 
-            root.transform.localPosition = Vector3.zero;
-            root.transform.localRotation = Quaternion.identity;
-            root.transform.localScale = Vector3.one;
+            BakeNormalizedStaticHierarchy(root, bakedMeshSink);
 
             foreach (Transform child in root.transform)
             {
@@ -1059,31 +1153,40 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            // Bake non-identity transforms into the vertices (an FBX imported at 0.01 with a
-            // compensating 100× node scale is the common case) so every exported node has
-            // a clean identity transform.
-            foreach (var childMf in root.GetComponentsInChildren<MeshFilter>(true))
-            {
-                if (childMf == null || childMf.sharedMesh == null) continue;
-                if (childMf.transform == root.transform) continue;
-                var t = childMf.transform;
-                if (t.localPosition == Vector3.zero && t.localRotation == Quaternion.identity && t.localScale == Vector3.one)
-                    continue;
-                var mesh = childMf.sharedMesh;
-                if (!mesh.isReadable) continue;
+            return renameMap;
+        }
 
-                // Several nodes can instance the same Mesh; baking into it directly would
-                // apply each node's transform cumulatively. Every node gets its own copy.
-                var bakedMesh = Object.Instantiate(mesh);
-                bakedMesh.name = mesh.name;
-                childMf.sharedMesh = bakedMesh;
-                bakedMeshSink.Add(bakedMesh);
-                MeshTransform.BakeMatrix(bakedMesh, Matrix4x4.TRS(t.localPosition, t.localRotation, t.localScale));
+        internal static void BakeNormalizedStaticHierarchy(GameObject root, List<Mesh> bakedMeshSink)
+        {
+            // Bone bind poses and animation cannot be preserved by a static vertex bake.
+            if (root.GetComponentInChildren<SkinnedMeshRenderer>(true) != null)
+                throw new InvalidOperationException("Transform normalization supports static meshes only; export skinned models without hierarchy normalization.");
+            var filters = root.GetComponentsInChildren<MeshFilter>(true);
+            var matrices = new Matrix4x4[filters.Length];
+            var recenter = Matrix4x4.Translate(-root.transform.position);
+            // Capture every accumulated matrix before changing any ancestor. This also
+            // preserves shear from rotated children under non-uniformly scaled parents.
+            for (int i = 0; i < filters.Length; ++i) {
+                matrices[i] = recenter * filters[i].transform.localToWorldMatrix;
+                var mesh = filters[i].sharedMesh;
+                if (mesh != null && !mesh.isReadable)
+                    throw new InvalidOperationException($"Cannot normalize unreadable mesh '{mesh.name}'. Enable Read/Write before exporting.");
+            }
+            for (int i = 0; i < filters.Length; ++i) {
+                var mesh = filters[i].sharedMesh;
+                if (mesh == null || matrices[i] == Matrix4x4.identity) continue;
+                var baked = Object.Instantiate(mesh);
+                baked.name = mesh.name;
+                bakedMeshSink.Add(baked);
+                MeshTransform.BakeMatrix(baked, matrices[i]);
+                filters[i].sharedMesh = baked;
+            }
+            foreach (var t in root.GetComponentsInChildren<Transform>(true)) {
                 t.localPosition = Vector3.zero;
                 t.localRotation = Quaternion.identity;
                 t.localScale = Vector3.one;
             }
-            return renameMap;
+            foreach (var group in root.GetComponentsInChildren<LODGroup>(true)) group.RecalculateBounds();
         }
 
         /// <summary>

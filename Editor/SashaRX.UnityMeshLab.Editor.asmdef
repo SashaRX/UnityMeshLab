@@ -2,7 +2,8 @@
   "name": "SashaRX.UnityMeshLab.Editor",
   "rootNamespace": "SashaRX.UnityMeshLab",
   "references": [
-    "Unity.Formats.Fbx.Editor"
+    "Unity.Formats.Fbx.Editor",
+    "Autodesk.Fbx"
   ],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],
