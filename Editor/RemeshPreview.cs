@@ -150,17 +150,21 @@ namespace SashaRX.UnityMeshLab
 
         void DrawStageButtons(Data data)
         {
-            var area = GUILayoutUtility.GetRect(0, 62, GUILayout.ExpandWidth(true));
+            const float buttonHeight = 44, gap = 6;
+            var area = GUILayoutUtility.GetRect(0, buttonHeight * 2 + gap, GUILayout.ExpandWidth(true));
             var running = PreviewStage(data.runningStage);
             var labels = new[] { "Source", "Remesh", "Simplify", "Result" };
             var ready = new[] { data.sourceVertices > 0 || data.meshes[0], data.remeshReady, data.simplifyReady, data.unwrapReady };
             var stale = new[] { false, data.remeshStale, data.simplifyStale, data.unwrapStale || data.bakeStale };
-            var style = new GUIStyle(EditorStyles.miniButton) { alignment = TextAnchor.MiddleCenter, fontSize = 11 };
-            style.normal.background = style.hover.background = style.active.background = null;
-            style.normal.textColor = style.hover.textColor = style.active.textColor = Color.white;
+            var titleStyle = new GUIStyle(EditorStyles.label) {
+                alignment = TextAnchor.MiddleCenter, fontSize = 12, fontStyle = FontStyle.Bold,
+                padding = new RectOffset(), margin = new RectOffset(), fixedHeight = 0, wordWrap = false
+            };
+            var stateStyle = new GUIStyle(titleStyle) { fontSize = 11, fontStyle = FontStyle.Normal };
             for (int i = 0; i < 4; i++) {
                 var value = (Stage)i;
-                var r = new Rect(area.x + (i % 2) * (area.width + 4) * .5f, area.y + (i / 2) * 32, (area.width - 4) * .5f, 28);
+                var r = new Rect(area.x + (i % 2) * (area.width + gap) * .5f,
+                    area.y + (i / 2) * (buttonHeight + gap), (area.width - gap) * .5f, buttonHeight);
                 bool working = running == value;
                 var color = working ? new Color(.12f, .38f, .62f) : stale[i] ? new Color(.48f, .32f, .12f) :
                     ready[i] ? new Color(.18f, .38f, .25f) : new Color(.25f, .25f, .25f);
@@ -168,7 +172,7 @@ namespace SashaRX.UnityMeshLab
                 if (working) {
                     float width = data.progress >= 0 ? r.width * Mathf.Clamp01(data.progress) : r.width * .25f;
                     float offset = data.progress >= 0 ? 0 : (r.width - width) * Mathf.PingPong((float)EditorApplication.timeSinceStartup, 1);
-                    EditorGUI.DrawRect(new Rect(r.x + offset, r.yMax - 3, width, 3), new Color(.35f, .75f, 1));
+                    EditorGUI.DrawRect(new Rect(r.x + offset, r.yMax - 5, width, 3), new Color(.35f, .75f, 1));
                     RequestRepaint?.Invoke();
                 }
                 if (stage == value) {
@@ -179,8 +183,12 @@ namespace SashaRX.UnityMeshLab
                 string state = working ? (data.runningStage == RemeshPipeline.Stage.Unwrap ? "Unwrapping…" : data.runningStage == RemeshPipeline.Stage.Bake ? "Baking…" : "Working…") :
                     stale[i] ? "Settings changed" : ready[i] ? (value == Stage.Result ? data.bakeReady ? "Baked" : "UV ready" : "Ready") : "Not built";
                 if (working && data.progress >= 0) state += $" {data.progress * 100:0}%";
+                titleStyle.normal.textColor = ready[i] || working ? Color.white : new Color(.75f, .75f, .75f);
+                stateStyle.normal.textColor = new Color(.8f, .8f, .8f);
+                GUI.Label(new Rect(r.x + 4, r.y + 5, Mathf.Max(0, r.width - 8), 17), labels[i], titleStyle);
+                GUI.Label(new Rect(r.x + 4, r.y + 23, Mathf.Max(0, r.width - 8), 15), state, stateStyle);
                 using (new EditorGUI.DisabledScope(!ready[i]))
-                    if (GUI.Button(r, new GUIContent(labels[i] + "\n" + state, "Select the preview stage. Orange border: selected; green: ready; blue: running; amber: changed settings."), style)) {
+                    if (GUI.Button(r, new GUIContent("", labels[i] + ": " + state + ". Select the preview stage. Orange border: selected; green: ready; blue: running; amber: changed settings."), GUIStyle.none)) {
                         stage = value; RequestRepaint?.Invoke();
                     }
             }
