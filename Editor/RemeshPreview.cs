@@ -50,6 +50,32 @@ namespace SashaRX.UnityMeshLab
         Stage stage = Stage.Result;
         Channel channel;
         bool textured = true, bumpMap = true, cageView, trimMaskView = true;
+
+        [Serializable]
+        sealed class WindowSettings
+        {
+            public View view;
+            public Stage stage = Stage.Result;
+            public Channel channel;
+            public bool textured = true, bumpMap = true, cageView, trimMaskView = true;
+        }
+
+        internal void RestoreWindowSettings()
+        {
+            var state = MeshLabWindowPreferences.Load<WindowSettings>("RemeshPreview");
+            view = MeshLabWindowPreferences.ValidEnum(state.view, View.Mesh);
+            stage = MeshLabWindowPreferences.ValidEnum(state.stage, Stage.Result);
+            channel = MeshLabWindowPreferences.ValidEnum(state.channel, Channel.BaseColor);
+            textured = state.textured; bumpMap = state.bumpMap;
+            cageView = state.cageView; trimMaskView = state.trimMaskView;
+        }
+
+        internal void SaveWindowSettings()
+            => MeshLabWindowPreferences.Save("RemeshPreview", new WindowSettings {
+                view = view, stage = stage, channel = channel, textured = textured,
+                bumpMap = bumpMap, cageView = cageView, trimMaskView = trimMaskView
+            });
+
         Material surface;
         Material resultSurface;
         Texture2D emissionTexture;

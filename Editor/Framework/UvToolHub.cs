@@ -11,7 +11,7 @@ using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
-    public class UvToolHub : EditorWindow
+    public partial class UvToolHub : EditorWindow
     {
         const string WindowTitle = nameof(UvToolHub);
         const string WindowBrand = "Mesh Lab";
@@ -133,6 +133,7 @@ namespace SashaRX.UnityMeshLab
             MeshLabProjectSettings.ModulesChanged -= OnModulesChanged;
             MeshLabProjectSettings.ModulesChanged += OnModulesChanged;
             ConfigureModules();
+            RestoreWindowSettings();
             SelectToolById(pendingToolId);
 
             SceneView.duringSceneGui -= OnSceneGUI;
@@ -514,6 +515,7 @@ namespace SashaRX.UnityMeshLab
 
         void OnLostFocus()
         {
+            SaveWindowSettings();
             if (sideDragging || rightSideDragging) GUIUtility.hotControl = 0;
             sideDragging = rightSideDragging = false;
         }
@@ -1491,6 +1493,7 @@ namespace SashaRX.UnityMeshLab
 
         void DeactivateTool()
         {
+            SaveFillPreference();
             try { ActiveTool?.OnDeactivate(); }
             catch (Exception ex) { UvtLog.Warn("[Modules] Deactivation failed: " + ex.Message); }
             if (canvas == null) return;
@@ -1509,6 +1512,7 @@ namespace SashaRX.UnityMeshLab
             {
                 ActiveTool.OnActivate(ctx, canvas);
                 canvas.SetFillModes(ActiveTool.GetFillModes()?.ToList() ?? new List<UvCanvasView.FillModeEntry>());
+                RestoreFillPreference();
             }
             catch (Exception ex)
             {

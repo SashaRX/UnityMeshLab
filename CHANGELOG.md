@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.19] - 2026-10-05
+
+### Fixed
+- Restore Mesh Lab window preferences per Unity project after closing the window or reloading scripts: active tool, panel widths and scroll positions, UV/3D display controls, per-tool UV fill, and Remesh/Bake preview toggles and foldouts.
+
 ## [1.1.18] - 2026-10-05
 
 ### Changed

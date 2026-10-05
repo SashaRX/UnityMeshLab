@@ -49,6 +49,13 @@ namespace SashaRX.UnityMeshLab
         bool sourcePreviewDirty = true, previewLod0Only;
         internal GameObject Source => source;
 
+        [Serializable]
+        sealed class WindowSettings
+        {
+            public bool[] folds = { true, true, true, true };
+            public bool chartFold;
+        }
+
         public RemeshBakeTool()
         {
             string json = EditorPrefs.GetString(SettingsKey, "");
@@ -56,10 +63,20 @@ namespace SashaRX.UnityMeshLab
                 var restored = RemeshSettings.FromSavedJson(json);
                 if (restored != null) settings = restored;
             }
+            var window = MeshLabWindowPreferences.Load<WindowSettings>("RemeshBake");
+            if (window.folds != null)
+                Array.Copy(window.folds, folds, Math.Min(window.folds.Length, folds.Length));
+            chartFold = window.chartFold;
+            previews.RestoreWindowSettings();
             pipeline.Changed = () => { saveStatus = null; RequestRepaint?.Invoke(); };
         }
 
-        internal void SaveSettings() => EditorPrefs.SetString(SettingsKey, JsonUtility.ToJson(settings));
+        internal void SaveSettings()
+        {
+            EditorPrefs.SetString(SettingsKey, JsonUtility.ToJson(settings));
+            MeshLabWindowPreferences.Save("RemeshBake", new WindowSettings { folds = folds, chartFold = chartFold });
+            previews.SaveWindowSettings();
+        }
 
         public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
         {
