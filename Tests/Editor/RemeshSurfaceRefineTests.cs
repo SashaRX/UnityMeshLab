@@ -7,6 +7,48 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public sealed class RemeshSurfaceRefineTests
     {
+        [TestCase(false, 1f)]
+        [TestCase(true, 1f)]
+        [TestCase(false, .001f)]
+        [TestCase(true, .001f)]
+        public void ParallelSurfaceDistancePreservesSerialProbeReductionExactly(bool centroidsOnly, float scale)
+        {
+            const int side = 75; // crosses the bounded 8192-face query window
+            var p = new Vector3[(side + 1) * (side + 1)];
+            var ix = new int[side * side * 6];
+            for (int y = 0; y <= side; ++y)
+                for (int x = 0; x <= side; ++x)
+                    p[y * (side + 1) + x] = new Vector3(x / (float)side, y / (float)side,
+                        .01f + .02f * Mathf.Sin(x * .43f + y * .17f)) * scale;
+            for (int y = 0; y < side; ++y)
+                for (int x = 0; x < side; ++x) {
+                    int v = y * (side + 1) + x, f = (y * side + x) * 6;
+                    ix[f] = v; ix[f + 1] = v + 1; ix[f + 2] = v + side + 2;
+                    ix[f + 3] = v; ix[f + 4] = v + side + 2; ix[f + 5] = v + side + 1;
+                }
+            var source = new[] { Vector3.zero, Vector3.right * scale, new Vector3(1, 1, 0) * scale, Vector3.up * scale };
+            var bvh = new TriangleBvh(source, new[] { 0, 1, 2, 0, 2, 3 });
+            // Original serial oracle, including its repeated area additions.
+            double area = 0, sum = 0, max = 0;
+            for (int f = 0; f < ix.Length; f += 3) {
+                var a = p[ix[f]]; var b = p[ix[f + 1]]; var c = p[ix[f + 2]];
+                double weight = Vector3.Cross(b - a, c - a).magnitude;
+                var probes = centroidsOnly ? new[] { (a + b + c) / 3 } :
+                    new[] { (a + b) * .5f, (b + c) * .5f, (c + a) * .5f, (a + b + c) / 3 };
+                foreach (var probe in probes) {
+                    double distance2 = bvh.FindNearest(probe).distSq;
+                    area += weight; sum += weight * distance2; max = Math.Max(max, distance2);
+                }
+            }
+            for (int repeat = 0; repeat < 3; ++repeat) {
+                var actual = RemeshSurfaceRefine.SampleErrorCore(bvh, p, ix, CancellationToken.None, centroidsOnly);
+                Assert.AreEqual(Math.Sqrt(sum / area), actual.rms);
+                Assert.AreEqual(Math.Sqrt(max), actual.max);
+            }
+            using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
+            Assert.Throws<OperationCanceledException>(() => RemeshSurfaceRefine.SampleErrorCore(bvh, p, ix, cancellation.Token, centroidsOnly));
+        }
+
         [TestCase(1f)]
         [TestCase(.001f)]
         public void CurvedPatchChoosesSourceDiagonalEvenWithEqualTriangleQuality(float scale)

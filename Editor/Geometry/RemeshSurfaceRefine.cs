@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -23,16 +24,40 @@ namespace SashaRX.UnityMeshLab
         internal static RemeshNative.IndexedMesh Simplify(RemeshNative.IndexedMesh input,
             Vector3[] sourcePositions, int[] sourceIndices, RemeshSettings settings, CancellationToken token, out float error)
         {
-            var baseline = RemeshNative.Simplify(input, settings, token, out error);
+            var timer = Stopwatch.StartNew();
+            try { return SimplifyCore(input, sourcePositions, sourceIndices, settings, token, out error); }
+            finally { LogTiming("total", timer.Elapsed.TotalMilliseconds); }
+        }
+
+        static T Timed<T>(string phase, Func<T> operation)
+        {
+            var timer = Stopwatch.StartNew();
+            try { return operation(); }
+            finally { LogTiming(phase, timer.Elapsed.TotalMilliseconds); }
+        }
+
+        static void LogTiming(string phase, double milliseconds)
+            => UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
+                $"[Simplify timing] {phase}: {milliseconds:F1} ms; phase times include nested validation work."));
+
+        static RemeshNative.IndexedMesh SimplifyCore(RemeshNative.IndexedMesh input,
+            Vector3[] sourcePositions, int[] sourceIndices, RemeshSettings settings, CancellationToken token, out float error)
+        {
+            float collapseError = 0;
+            var baseline = Timed("native baseline collapse", () => RemeshNative.Simplify(input, settings, token, out collapseError));
+            error = collapseError;
             if (sourcePositions.Length == 0 || sourceIndices.Length == 0) return baseline;
             float baselineError = error;
             var low = sourcePositions[0]; var high = low;
             foreach (var point in sourcePositions) { low = Vector3.Min(low, point); high = Vector3.Max(high, point); }
             var span = high - low;
             float cell = Mathf.Max(span.x, Mathf.Max(span.y, span.z)) / settings.voxelResolution;
-            var prepared = Apply(input, sourcePositions, sourceIndices, cell, token, out var pre);
+            Report pre = default;
+            var prepared = Timed("pre-refinement", () => Apply(input, sourcePositions, sourceIndices, cell, token, out pre));
             Log(pre, cell, "before simplify");
-            var candidate = ReferenceEquals(input, prepared) ? baseline : RemeshNative.Simplify(prepared, settings, token, out error);
+            var candidate = ReferenceEquals(input, prepared) ? baseline :
+                Timed("native refined collapse", () => RemeshNative.Simplify(prepared, settings, token, out collapseError));
+            error = collapseError;
             var bvh = new TriangleBvh(sourcePositions, sourceIndices);
             float triangleLimit = Math.Max(baseline.TriangleCount * 1.1f, baseline.TriangleCount + 2);
             bool exceedsTriangleBudget = candidate.TriangleCount > triangleLimit;
@@ -44,14 +69,18 @@ namespace SashaRX.UnityMeshLab
                     "retaining ordinary Simplify; pre-refinement changes discarded before final triangle refinement.");
                 candidate = baseline; error = baselineError;
             }
-            var result = Apply(candidate, sourcePositions, sourceIndices, cell, token, out var post);
+            Report post = default;
+            var result = Timed("post-refinement", () => Apply(candidate, sourcePositions, sourceIndices, cell, token, out post));
             Log(post, cell, "after simplify");
-            var aligned = Retriangulate(result, sourcePositions, sourceIndices, cell, token, out var triangles);
+            Report triangles = default;
+            var aligned = Timed("source-aligned triangulation", () => Retriangulate(result, sourcePositions, sourceIndices, cell, token, out triangles));
             Log(triangles, cell, "source-aligned triangulation");
-            aligned = FitCoarse(aligned, sourcePositions, sourceIndices, cell, token, out var fit);
+            Report fit = default;
+            aligned = Timed("coarse source fit", () => FitCoarse(aligned, sourcePositions, sourceIndices, cell, token, out fit));
             Log(fit, cell, "coarse source fit");
             if (fit.moves == 0 || fit.reverted) return aligned;
-            var regularized = RegularizeFitted(aligned, sourcePositions, sourceIndices, cell, token, out var shape);
+            Report shape = default;
+            var regularized = Timed("fitted triangle regularization", () => RegularizeFitted(aligned, sourcePositions, sourceIndices, cell, token, out shape));
             Log(shape, cell, "fitted triangle regularization");
             return regularized;
         }
@@ -154,11 +183,26 @@ namespace SashaRX.UnityMeshLab
             foreach (var pair in before.edges)
                 if (pair.Value.count != 2) { boundarySlots.Add(pair.Key.Item1); boundarySlots.Add(pair.Key.Item2); }
             for (int v = 0; v < p.Length; v++) locked[v] = boundarySlots.Contains(before.slots[v]);
+            var cachedPosition = new Vector3[p.Length];
+            var cachedHit = new TriangleBvh.HitResult[p.Length];
+            var cached = new bool[p.Length];
+            int nearestQueries = 0, nearestReused = 0;
+            TriangleBvh.HitResult VertexNearest(int vertex)
+            {
+                // Source, normal and reach are fixed for this pass. Position uses
+                // exact equality; a move always invalidates its previous answer.
+                if (cached[vertex] && p[vertex].Equals(cachedPosition[vertex])) {
+                    ++nearestReused; return cachedHit[vertex];
+                }
+                ++nearestQueries; cached[vertex] = true; cachedPosition[vertex] = p[vertex];
+                return cachedHit[vertex] = source.Nearest(p[vertex], normals[vertex], cell * 1.5f);
+            }
+            var motionTimer = Stopwatch.StartNew();
             for (int pass = 0; pass < 3; pass++)
                 for (int v = 0; v < p.Length; v++) {
                     if ((v & 255) == 0) token.ThrowIfCancellationRequested();
                     if (locked[v] || fans[v].Count == 0) continue;
-                    var hit = source.Nearest(p[v], normals[v], cell * 1.5f);
+                    var hit = VertexNearest(v);
                     if (hit.triangleIndex < 0) continue; // Preserve the back of a thin sheet.
                     Vector3 target;
                     if (pass == 0) {
@@ -173,7 +217,7 @@ namespace SashaRX.UnityMeshLab
                         bool smooth = true; var center = Vector3.zero;
                         foreach (int n in neighbours[v]) {
                             center += p[n];
-                            var other = source.Nearest(p[n], normals[n], cell * 1.5f);
+                            var other = VertexNearest(n);
                             if (other.triangleIndex < 0 || Vector3.Dot(source.normals[hit.triangleIndex], source.normals[other.triangleIndex]) < .9f) smooth = false;
                         }
                         if (!smooth) continue;
@@ -187,7 +231,11 @@ namespace SashaRX.UnityMeshLab
                     }
                     if (Move(p, ix, v, target, input.positions[v], fans[v], cell, minCross, pass > 0)) report.moves++;
                 }
+            LogTiming("vertex fitting", motionTimer.Elapsed.TotalMilliseconds);
+            UvtLog.Info(UvtLog.Category.RemeshDiag, $"[Simplify queries] vertex nearest: {nearestQueries:N0} executed, {nearestReused:N0} exact-position answers reused; seed queries remain independent.");
+            motionTimer.Restart();
             for (int pass = 0; pass < 4; pass++) report.flips += Flip(p, ix, source, cell, minCross, token);
+            LogTiming("initial edge flips", motionTimer.Elapsed.TotalMilliseconds);
             report.attemptedMoves = report.moves; report.attemptedFeatures = report.features;
             for (int v = 0; v < p.Length; v++)
                 report.attemptedMaxDisplacement = Mathf.Max(report.attemptedMaxDisplacement, (p[v] - input.positions[v]).magnitude);
@@ -242,7 +290,9 @@ namespace SashaRX.UnityMeshLab
                     continue;
                 }
                 var ix = (int[])input.indices.Clone(); int flips = 0;
+                var flipTimer = Stopwatch.StartNew();
                 for (int pass = 0; pass < 4; pass++) flips += Flip(p, ix, source, cell, minCross, token);
+                LogTiming("backtrack edge flips trial " + trial, flipTimer.Elapsed.TotalMilliseconds);
                 if (!PreservesSurface(source.bvh, source.positions, source.indices, input.positions, input.indices, p, ix, cell, token, out var reason)) {
                     report.backtrackReason = reason;
                     continue;
@@ -647,16 +697,43 @@ namespace SashaRX.UnityMeshLab
         // Area-weighted centroid/edge-midpoint probes. This is a surface-error
         // guard, not a certified Hausdorff bound or a 3D intersection test.
         static (double rms, double max) SampleError(TriangleBvh bvh, Vector3[] p, int[] ix, CancellationToken token, bool centroidsOnly = false)
+            => Timed(centroidsOnly ? "source-to-target distance probes" : "target-to-source distance probes",
+                () => SampleErrorCore(bvh, p, ix, token, centroidsOnly));
+
+        internal static (double rms, double max) SampleErrorCore(TriangleBvh bvh, Vector3[] p, int[] ix, CancellationToken token, bool centroidsOnly = false)
         {
+            token.ThrowIfCancellationRequested();
             double area = 0, sum = 0, max = 0;
-            for (int f = 0; f < ix.Length; f += 3) {
-                if ((f & 255) == 0) token.ThrowIfCancellationRequested();
-                var a = p[ix[f]]; var b = p[ix[f + 1]]; var c = p[ix[f + 2]];
-                double weight = Vector3.Cross(b - a, c - a).magnitude;
-                var probes = centroidsOnly ? new[] { (a + b + c) / 3 } : new[] { (a + b) * .5f, (b + c) * .5f, (c + a) * .5f, (a + b + c) / 3 };
-                foreach (var point in probes) {
-                    double distance2 = bvh.FindNearest(point).distSq;
-                    area += weight; sum += weight * distance2; max = Math.Max(max, distance2);
+            int faceCount = ix.Length / 3, probes = centroidsOnly ? 1 : 4;
+            const int batchFaces = 8192;
+            var distances = new double[Math.Min(faceCount, batchFaces) * probes];
+            var options = new ParallelOptions { CancellationToken = token,
+                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) };
+            for (int first = 0; first < faceCount; first += batchFaces) {
+                token.ThrowIfCancellationRequested();
+                int start = first, count = Math.Min(batchFaces, faceCount - first);
+                void Query(int local) {
+                    int f = (start + local) * 3, sample = local * probes;
+                    var a = p[ix[f]]; var b = p[ix[f + 1]]; var c = p[ix[f + 2]];
+                    if (!centroidsOnly) {
+                        distances[sample++] = bvh.FindNearest((a + b) * .5f).distSq;
+                        distances[sample++] = bvh.FindNearest((b + c) * .5f).distSq;
+                        distances[sample++] = bvh.FindNearest((c + a) * .5f).distSq;
+                    }
+                    distances[sample] = bvh.FindNearest((a + b + c) / 3).distSq;
+                }
+                if (count >= 256) Parallel.For(0, count, options, Query);
+                else for (int local = 0; local < count; ++local) { token.ThrowIfCancellationRequested(); Query(local); }
+                // Queries are independent, but floating-point reduction is not.
+                // Keep every probe, weight and addition in the original serial order.
+                for (int local = 0; local < count; ++local) {
+                    int f = (start + local) * 3;
+                    var a = p[ix[f]]; var b = p[ix[f + 1]]; var c = p[ix[f + 2]];
+                    double weight = Vector3.Cross(b - a, c - a).magnitude;
+                    for (int probe = 0; probe < probes; ++probe) {
+                        double distance2 = distances[local * probes + probe];
+                        area += weight; sum += weight * distance2; max = Math.Max(max, distance2);
+                    }
                 }
             }
             return (Math.Sqrt(sum / area), Math.Sqrt(max));

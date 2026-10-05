@@ -44,6 +44,9 @@ namespace SashaRX.UnityMeshLab
             public long gpuQueries;
             public double gpuPrepareMs, gpuSetupMs, gpuBuildRequestsMs, gpuResolveMs, gpuEvaluateMs, gpuAoMs, gpuFinishMs;
             public double gpuPipelineMs;
+            public double gpuSubmitMs, gpuReadbackReadyMs, gpuResumeMs, gpuReadbackCopyMs;
+            public double gpuWorkerResumeMs;
+            public int gpuQueryBatchSize;
         }
 
         // ── Batched bake ──
@@ -88,7 +91,8 @@ namespace SashaRX.UnityMeshLab
                 timer.Restart();
                 gpu = SystemInfo.supportsAsyncGPUReadback ? createGpu(ctx) : null;
                 if (gpu != null) {
-                    ctx.queryBudget = GpuBvh.AsyncBatch;
+                    ctx.queryBudget = Math.Clamp(gpu.ProjectionBatchSize, 1, GpuBvh.MaxBatch);
+                    ctx.result.gpuQueryBatchSize = ctx.queryBudget;
                     ctx.bandRows = Mathf.Clamp(ctx.queryBudget / Math.Max(1, ctx.size * ctx.offsets.Length), 1, ctx.size);
                 }
                 if (gpuSourceAO) aoGpu = ctx.aoBaker?.TryCreateGpu(gpu);
@@ -127,6 +131,10 @@ namespace SashaRX.UnityMeshLab
                 if (gpu != null) {
                     ctx.result.gpuRayBatches = gpu.RayBatchCount; ctx.result.gpuNearestBatches = gpu.NearestBatchCount;
                     ctx.result.gpuProjectionBatches = gpu.ProjectionBatchCount;
+                    ctx.result.gpuSubmitMs = gpu.ProjectionSubmitMs;
+                    ctx.result.gpuReadbackReadyMs = gpu.ProjectionReadbackMs;
+                    ctx.result.gpuResumeMs = gpu.ProjectionResumeMs;
+                    ctx.result.gpuReadbackCopyMs = gpu.ReadbackCopyMs;
                 }
                 timer.Restart();
                 var result = await Task.Run(() => Finish(ctx, token), token);
@@ -159,9 +167,13 @@ namespace SashaRX.UnityMeshLab
                     bool hasNext = current.nextPixel < ctx.owners.Length;
                     int firstPixel = current.nextPixel;
                     var evaluate = previous; var build = spare;
+                    long workerFinished = 0;
                     worker = Task.Run(() => {
-                        if (evaluate != null) EvaluateTimed(ctx, evaluate, token);
-                        if (hasNext) BuildTimed(ctx, build, firstPixel, token);
+                        try {
+                            if (evaluate != null) EvaluateTimed(ctx, evaluate, token);
+                            if (hasNext) BuildTimed(ctx, build, firstPixel, token);
+                        }
+                        finally { workerFinished = Stopwatch.GetTimestamp(); }
                     }, token);
                     await queries;
                     ctx.result.gpuResolveMs += queryTimer.Elapsed.TotalMilliseconds;
@@ -173,6 +185,7 @@ namespace SashaRX.UnityMeshLab
                         ctx.result.gpuAoMs += aoTimer.Elapsed.TotalMilliseconds;
                     }
                     await worker;
+                    ctx.result.gpuWorkerResumeMs += (Stopwatch.GetTimestamp() - workerFinished) * (1000.0 / Stopwatch.Frequency);
                     if (!hasNext) {
                         var last = current;
                         await Task.Run(() => EvaluateTimed(ctx, last, token), token);

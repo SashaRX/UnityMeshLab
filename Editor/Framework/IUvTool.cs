@@ -72,6 +72,11 @@ namespace SashaRX.UnityMeshLab
         object FrameContext { get; }
     }
 
+    internal interface IUvToolWindowPreferences
+    {
+        void SaveWindowPreferences();
+    }
+
     /// <summary>
     /// Opt-in for tools that take part in the shared 3D canvas (the hub's UV | 3D
     /// switch). Without it a tool's 3D view shows the context's meshes for the

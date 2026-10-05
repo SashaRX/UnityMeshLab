@@ -385,7 +385,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var source = Source(); var bvh = new TriangleBvh(source.positions, source.indices);
             using (var gpu = GpuBvh.TryCreate(bvh, new[] { Vector3.forward })) {
                 Assert.IsNotNull(gpu);
-                const int count = GpuBvh.AsyncBatch + 17; // crosses the asynchronous dispatch boundary
+                int count = gpu.ProjectionBatchSize + 17; // crosses the configured projection dispatch boundary
                 var origins = new Vector4[count]; var directions = new Vector4[count];
                 var points = new Vector4[count]; var normals = new Vector4[count];
                 var hits = new GpuBvh.RayHit[count]; var nearest = new GpuBvh.NearestHit[count];

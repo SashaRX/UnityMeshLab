@@ -19,6 +19,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.21] - 2026-10-06
+
+### Changed
+- GPU surface projection uses 256k query bands on GPUs reporting more than 1 GiB of memory, retaining 64k bands on low-memory/unknown devices. Projection upload, readback callbacks, result copies and continuation delays are reported separately.
+- Source refinement queries independent surface-distance probes in parallel with bounded storage and the original serial floating-point reduction. Vertex fitting reuses nearest answers only while the exact query position is unchanged; all quality gates, motion backtracks and collapse comparisons remain enabled. Per-phase Simplify timings expose the remaining work.
+
+### Fixed
+- Window preference saving uses an optional tool contract instead of a direct Hub dependency on the Remesh tab, restoring the CI dependency guard.
+
 ## [1.1.20] - 2026-10-05
 
 ### Changed

@@ -104,6 +104,12 @@ namespace SashaRX.UnityMeshLab
                         $"build requests {maps.gpuBuildRequestsMs:F1} ms, resolve/readback {maps.gpuResolveMs:F1} ms, " +
                         $"evaluate {maps.gpuEvaluateMs:F1} ms, AO {maps.gpuAoMs:F1} ms, finish {maps.gpuFinishMs:F1} ms " +
                         $"(pipeline wall {maps.gpuPipelineMs:F1} ms; stage spans overlap, await spans include Editor scheduling waits).");
+                if (maps.gpu)
+                    UvtLog.Info(UvtLog.Category.RemeshDiag, prefix +
+                        $"GPU projection waits: batch limit {maps.gpuQueryBatchSize:N0}; CPU upload/dispatch {maps.gpuSubmitMs:F1} ms, " +
+                        $"dispatch-to-readback callbacks {maps.gpuReadbackReadyMs:F1} ms, callback copies {maps.gpuReadbackCopyMs:F1} ms, " +
+                        $"readback continuation delay {maps.gpuResumeMs:F1} ms, CPU-worker completion-to-resume {maps.gpuWorkerResumeMs:F1} ms. " +
+                        "Callback copies are included in callback latency; worker resume can overlap GPU/AO work. This is not GPU kernel time.");
             }
             foreach (var w in r.Warnings)
                 UvtLog.Warn(UvtLog.Category.RemeshDiag, prefix + w);

@@ -642,8 +642,8 @@ namespace SashaRX.UnityMeshLab.Tests
         public System.Collections.IEnumerator DenseStreamingBakePreservesEveryAffineTexelOnCpuAndGpu()
         {
             var target = FullAtlas(out var source);
-            var settings = new RemeshSettings { textureResolution = 128, padding = 1, dilationRadius = 0, bakeSamples = 16, vertexColorTint = true };
-            Assert.That(128 * 128 * settings.bakeSamples, Is.GreaterThan(GpuBvh.AsyncBatch * 2), "fixture must stream through both GPU query bands repeatedly");
+            var settings = new RemeshSettings { textureResolution = 256, padding = 1, dilationRadius = 0, bakeSamples = 16, vertexColorTint = true };
+            Assert.That(256 * 256 * settings.bakeSamples, Is.GreaterThan(262144 * 2), "fixture must stream through both enlarged GPU query bands repeatedly");
             using (var cancellation = new CancellationTokenSource())
             try {
                 var cpu = RemeshBaker.BakeAsync(source, target, target.tangents, settings, cancellation.Token, null, _ => null);
@@ -661,7 +661,7 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             RequireGpu();
             var target = FullAtlas(out var source);
-            var settings = new RemeshSettings { textureResolution = 128, padding = 1, dilationRadius = 0,
+            var settings = new RemeshSettings { textureResolution = 256, padding = 1, dilationRadius = 0,
                 bakeSamples = 9, vertexColorTint = true, bakeSourceAO = true, sourceAO = new SourceAoSettings { samples = 16 } };
             var cpu = RemeshBaker.BakeAsync(source, target, target.tangents, settings, Token, null, _ => null);
             yield return Await(cpu); AssertFullAtlasOracle(cpu.Result);

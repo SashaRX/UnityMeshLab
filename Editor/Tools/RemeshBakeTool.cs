@@ -12,7 +12,7 @@ namespace SashaRX.UnityMeshLab
     /// <see cref="RemeshPipeline"/>, the export in <see cref="RemeshExporter"/>.
     /// </summary>
     [MeshLabTool("remesh_bake", MeshLabLibraries.Remesh, MeshLabLibraries.Baking, MeshLabLibraries.Assets)]
-    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvToolUvContent, IUvTool3DFrameContext
+    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvToolUvContent, IUvTool3DFrameContext, IUvToolWindowPreferences
     {
         public string ToolName => "Remesh & Bake";
         public string ToolId => "remesh_bake";
@@ -70,6 +70,8 @@ namespace SashaRX.UnityMeshLab
             previews.RestoreWindowSettings();
             pipeline.Changed = () => { saveStatus = null; RequestRepaint?.Invoke(); };
         }
+
+        void IUvToolWindowPreferences.SaveWindowPreferences() => SaveSettings();
 
         internal void SaveSettings()
         {

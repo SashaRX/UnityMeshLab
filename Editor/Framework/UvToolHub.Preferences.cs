@@ -69,7 +69,7 @@ namespace SashaRX.UnityMeshLab
                 axes = viewport.ShowAxes, background = viewport.Background
             });
             SaveFillPreference();
-            FindTool<RemeshBakeTool>()?.SaveSettings();
+            (ActiveTool as IUvToolWindowPreferences)?.SaveWindowPreferences();
         }
 
         // Fill menus differ between tools. Store the name, not a transient menu index.

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -29,6 +30,12 @@ namespace SashaRX.UnityMeshLab
         // Keep readbacks bounded while amortizing Editor-frame completion latency.
         // A full async chunk occupies 7 MiB of reusable query buffers.
         internal const int AsyncBatch = 65536;
+        // 28 MiB of query buffers at 256k; keep the 7 MiB path on low-memory GPUs.
+        internal int ProjectionBatchSize { get; set; } = SystemInfo.graphicsMemorySize > 1024 ? 262144 : AsyncBatch;
+        internal double ProjectionSubmitMs { get; private set; }
+        internal double ProjectionReadbackMs { get; private set; }
+        internal double ProjectionResumeMs { get; private set; }
+        internal double ReadbackCopyMs { get; private set; }
 
         public static bool Supported => SystemInfo.supportsComputeShaders;
 
@@ -193,9 +200,11 @@ namespace SashaRX.UnityMeshLab
         public async Task ProjectSurfaceAsync(Vector4[] origins, Vector4[] dirs, Vector4[] pts, Vector4[] normals,
             int count, bool facingFilter, RayHit[] rays, NearestHit[] nearest, CancellationToken token)
         {
-            for (int start = 0; start < count; start += AsyncBatch) {
+            int batchSize = Math.Clamp(ProjectionBatchSize, 1, MaxBatch);
+            for (int start = 0; start < count; start += batchSize) {
                 token.ThrowIfCancellationRequested();
-                int n = Math.Min(AsyncBatch, count - start);
+                int n = Math.Min(batchSize, count - start);
+                var submit = Stopwatch.StartNew();
                 Ensure(n);
                 rayOrigins.SetData(origins, start, 0, n); rayDirs.SetData(dirs, start, 0, n);
                 points.SetData(pts, start, 0, n); queryNormals.SetData(normals, start, 0, n);
@@ -209,24 +218,32 @@ namespace SashaRX.UnityMeshLab
                 shader.SetInt("_QueryCount", n);
                 shader.SetInt("_FacingFilter", facingFilter ? 1 : 0);
                 shader.Dispatch(projectionKernel, (n + 63) / 64, 1, 1);
+                ProjectionSubmitMs += submit.Elapsed.TotalMilliseconds;
+                long submitted = Stopwatch.GetTimestamp(), rayReady = 0, nearestReady = 0;
                 ++ProjectionBatchCount;
-                var rayRead = ReadAsync(rayHits, n, rays, start);
-                try { await Task.WhenAll(rayRead, ReadAsync(nearestHits, n, nearest, start)); }
+                var rayRead = ReadAsync(rayHits, n, rays, start, () => rayReady = Stopwatch.GetTimestamp());
+                try { await Task.WhenAll(rayRead, ReadAsync(nearestHits, n, nearest, start, () => nearestReady = Stopwatch.GetTimestamp())); }
                 // Even a synchronous failure submitting the second readback must
                 // not let the caller dispose buffers still used by the first.
                 finally { await rayRead; }
+                long ready = Math.Max(rayReady, nearestReady);
+                ProjectionReadbackMs += (ready - submitted) * (1000.0 / Stopwatch.Frequency);
+                ProjectionResumeMs += (Stopwatch.GetTimestamp() - ready) * (1000.0 / Stopwatch.Frequency);
                 token.ThrowIfCancellationRequested();
             }
         }
 
-        static Task ReadAsync<T>(ComputeBuffer buffer, int count, T[] results, int start) where T : struct
+        Task ReadAsync<T>(ComputeBuffer buffer, int count, T[] results, int start, Action ready = null) where T : struct
         {
             var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             AsyncGPUReadback.Request(buffer, count * buffer.stride, 0, request => {
                 try {
                     if (request.hasError) throw new InvalidOperationException("GPU BVH readback failed.");
+                    var copy = Stopwatch.StartNew();
                     var data = request.GetData<T>();
                     for (int i = 0; i < count; ++i) results[start + i] = data[i];
+                    ReadbackCopyMs += copy.Elapsed.TotalMilliseconds;
+                    ready?.Invoke();
                     completion.TrySetResult(true);
                 }
                 catch (Exception exception) { completion.TrySetException(exception); }
