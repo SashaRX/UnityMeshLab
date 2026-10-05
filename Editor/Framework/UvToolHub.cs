@@ -1195,6 +1195,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 HandleViewportSpot(rect);
                 var tool3D = ActiveTool as IUvTool3D;
+                viewport.FramingContext = (ActiveTool as IUvTool3DFrameContext)?.FrameContext;
                 viewport.Draw(rect, items, view =>
                 {
                     uvLayer.Draw(view, canvas, ctx, viewportItems, viewportEntries);

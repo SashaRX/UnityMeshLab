@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.12] - 2026-10-05
+
+### Fixed
+- Remesh & Bake preserves the 3D camera's pan, orbit and zoom when switching Source, Remesh, Simplified and Result stages or the trim-mask display. Automatic framing follows the selected source object; explicit Frame still fits the current stage.
+
 ## [1.1.11] - 2026-10-05
 
 ### Fixed

@@ -12,11 +12,12 @@ namespace SashaRX.UnityMeshLab
     /// <see cref="RemeshPipeline"/>, the export in <see cref="RemeshExporter"/>.
     /// </summary>
     [MeshLabTool("remesh_bake", MeshLabLibraries.Remesh, MeshLabLibraries.Baking, MeshLabLibraries.Assets)]
-    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvToolUvContent
+    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvToolUvContent, IUvTool3DFrameContext
     {
         public string ToolName => "Remesh & Bake";
         public string ToolId => "remesh_bake";
         public int ToolOrder => 35;
+        object IUvTool3DFrameContext.FrameContext => source ? source : null;
         public Action RequestRepaint { private get; set; }
 
         // Settings survive domain reloads and tab switches so a tuned pipeline

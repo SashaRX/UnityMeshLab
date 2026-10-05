@@ -48,6 +48,8 @@ namespace SashaRX.UnityMeshLab
         float distance = 5f, radius = 1f;
         int framedKey;
         bool framedOnce;
+        object framedContext;
+        internal object FramingContext { get; set; }
 
         static readonly int ColorId = Shader.PropertyToID("_Color");
         static readonly int UseVertexColorId = Shader.PropertyToID("_UseVertexColor");
@@ -92,7 +94,7 @@ namespace SashaRX.UnityMeshLab
         {
             currentRect = rect;
             var bounds = BoundsOf(items, out int key, out bool any);
-            if (any && (!framedOnce || key != framedKey)) { Frame(bounds); framedKey = key; framedOnce = true; }
+            AutoFrame(bounds, key, any);
             HandleInput(rect, any ? bounds : (Bounds?)null);
             if (Event.current.type != EventType.Repaint) return;
             EditorGUI.DrawRect(rect, Background);
@@ -359,6 +361,16 @@ namespace SashaRX.UnityMeshLab
         // ═══════════════════════════════════════════════════════════
         //  Camera
         // ═══════════════════════════════════════════════════════════
+
+        void AutoFrame(Bounds bounds, int key, bool any)
+        {
+            if (!any) return;
+            bool changed = FramingContext != null ? !ReferenceEquals(framedContext, FramingContext)
+                : framedContext != null || key != framedKey;
+            if (!framedOnce || changed) {
+                Frame(bounds); framedKey = key; framedContext = FramingContext; framedOnce = true;
+            }
+        }
 
         /// <summary>Centres the camera on bounds at a distance that fits them.</summary>
         public void Frame(Bounds bounds)

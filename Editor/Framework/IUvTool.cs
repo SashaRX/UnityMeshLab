@@ -66,6 +66,12 @@ namespace SashaRX.UnityMeshLab
         System.Action RequestRepaint { set; }
     }
 
+    internal interface IUvTool3DFrameContext
+    {
+        // Stable model identity across intermediate meshes of one pipeline.
+        object FrameContext { get; }
+    }
+
     /// <summary>
     /// Opt-in for tools that take part in the shared 3D canvas (the hub's UV | 3D
     /// switch). Without it a tool's 3D view shows the context's meshes for the
