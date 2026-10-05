@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using NUnit.Framework;
 using UnityEditor;
@@ -9,6 +10,21 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public sealed class ComputeShaderImportTests
     {
+        [Test]
+        public void VertexAoRejectsAMissingKernelBeforePreparingGpuGeometry()
+        {
+            var shader = AssetDatabase.LoadAssetAtPath<ComputeShader>("Packages/com.sasharx.unitymeshlab/Shaders/BvhQueries.compute");
+            Assert.IsNotNull(shader);
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up }, triangles = new[] { 0, 1, 2 } };
+            try {
+                var targets = new List<(Mesh mesh, Matrix4x4 transform)> { (mesh, Matrix4x4.identity) };
+                var error = Assert.Throws<InvalidOperationException>(() =>
+                    new VertexAOBaker.GpuAOBakeJob(shader, targets, null, new VertexAOSettings(), null, null));
+                Assert.That(error.Message, Does.Contain("Vertex AO kernels"));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
         [TestCase("BvhQueries", "Raycast", "Nearest")]
         [TestCase("SourceAORayTrace", "BakeAO", "FinalizeAO")]
         [TestCase("VertexAORayTrace", "BakeAO", "FinalizeAO")]

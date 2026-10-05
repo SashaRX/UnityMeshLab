@@ -168,6 +168,16 @@ namespace SashaRX.UnityMeshLab
                 if (targets == null || targets.Count == 0)
                     throw new Exception("GPU bake requires at least one target mesh.");
 
+                // Kernel indices alone do not prove support on the active API.
+                // Reject this backend before uploading geometry; the tool can
+                // then fall back to CPU on devices with tighter GPU limits.
+                if (!cs.HasKernel("BakeAO") || !cs.HasKernel("FinalizeAO"))
+                    throw new InvalidOperationException("Vertex AO kernels are missing or unsupported.");
+                bakeKernel = cs.FindKernel("BakeAO");
+                finalKernel = cs.FindKernel("FinalizeAO");
+                if (!cs.IsSupported(bakeKernel) || !cs.IsSupported(finalKernel))
+                    throw new InvalidOperationException("Vertex AO kernels are unsupported or failed to compile.");
+
                 bool isThickness = settings.bakeType == AOBakeType.Thickness;
 
                 // Build combined BVH from all meshes
@@ -243,19 +253,7 @@ namespace SashaRX.UnityMeshLab
                     slots[i].counterBuf.SetData(new uint[verts.Length * 2]);
                 }
 
-                // Find kernels and bind shared state
-                bakeKernel = cs.FindKernel("BakeAO");
-                finalKernel = cs.FindKernel("FinalizeAO");
-
-                if (bakeKernel < 0 || finalKernel < 0)
-                {
-                    throw new Exception(
-                        "VertexAORayTrace.compute kernels missing " +
-                        $"(BakeAO={bakeKernel}, FinalizeAO={finalKernel}). " +
-                        "The compute shader likely failed to compile — check the " +
-                        "Console for shader compilation errors.");
-                }
-
+                // Bind shared state to the validated kernels.
                 gpuBvh.Bind(cs, bakeKernel);
                 cs.SetBuffer(bakeKernel, "_Directions", dirBuf);
 

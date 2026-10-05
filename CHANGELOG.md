@@ -19,6 +19,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.9] - 2026-10-05
+
+### Fixed
+- GPU BVH filters guard optional normal and either-side buffer loads explicitly rather than relying on HLSL logical operators to short-circuit. Unfiltered queries and absent masks remain safe on OpenGL/Vulkan as well as Direct3D.
+- Vertex AO verifies both compute kernels on the active graphics API before uploading geometry, allowing the existing CPU fallback to handle unsupported kernels.
+
+### Added
+- Graphics API validation covers actual DX11, DX12, OpenGL Core and Vulkan execution, both XYZ/DXT5nm normal encodings, and Android GLES3/Vulkan shader bundle compilation. See `Documentation~/GRAPHICS_API_VALIDATION.md` for the checks and device-validation limits.
+
 ## [1.1.8] - 2026-10-05
 
 ### Fixed

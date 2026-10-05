@@ -45,7 +45,11 @@ struct BvhNearestHit
 
 bool BvhEitherSide(int f)
 {
-    return _EitherSideCount > (uint)f && _EitherSide[f] != 0;
+    // HLSL logical operators need not short-circuit. Without a mask the caller
+    // binds a one-element dummy, so guard the load rather than its result.
+    bool eitherSide = false;
+    [branch] if ((uint)f < _EitherSideCount) eitherSide = _EitherSide[f] != 0;
+    return eitherSide;
 }
 
 // Slab test; tEnter is the parametric entry (0 when the origin is inside).
@@ -219,7 +223,11 @@ BvhRayHit BvhRaycast(float3 origin, float3 dir, float maxDist, bool facingFilter
                 for (int i = node.triStart; i < node.triStart + node.triCount; i++)
                 {
                     int f = _TriIndices[i];
-                    if (facingFilter && dot(_FaceNormals[f], dir) > 0.0 && !BvhEitherSide(f)) continue;
+                    // Unfiltered queries bind only a one-element normal dummy.
+                    [branch] if (facingFilter)
+                    {
+                        if (dot(_FaceNormals[f], dir) > 0.0 && !BvhEitherSide(f)) continue;
+                    }
                     float3 a = _TriVerts[_Tris[f * 3]];
                     float3 b = _TriVerts[_Tris[f * 3 + 1]];
                     float3 c = _TriVerts[_Tris[f * 3 + 2]];
@@ -313,7 +321,10 @@ BvhRayHit BvhRaycastClosestToTarget(float3 origin, float3 dir, float maxDist, bo
                 for (int i = node.triStart; i < node.triStart + node.triCount; ++i)
                 {
                     int f = _TriIndices[i];
-                    if (facingFilter && dot(_FaceNormals[f], dir) > 0.0 && !BvhEitherSide(f)) continue;
+                    [branch] if (facingFilter)
+                    {
+                        if (dot(_FaceNormals[f], dir) > 0.0 && !BvhEitherSide(f)) continue;
+                    }
                     float3 a = _TriVerts[_Tris[f * 3]], b = _TriVerts[_Tris[f * 3 + 1]], c = _TriVerts[_Tris[f * 3 + 2]];
                     float t; float3 bary;
                     if (!BvhWatertight(frame, origin, a, b, c, maxDist, t, bary)) continue;

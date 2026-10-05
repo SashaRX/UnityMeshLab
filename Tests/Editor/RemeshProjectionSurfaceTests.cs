@@ -160,6 +160,44 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator GpuQueriesKeepAbsentFilterBuffersSafeAcrossManyFaces()
+        {
+            if (!GpuBvh.Supported || !SystemInfo.supportsAsyncGPUReadback) Assert.Ignore("Async GPU queries unavailable on this device.");
+            var depths = new float[41]; var backNormals = new Vector3[depths.Length];
+            for (int f = 0; f < depths.Length; ++f) { depths[f] = -.8f + f * .04f; backNormals[f] = Vector3.back; }
+            Layers(1, depths, out var positions, out var indices);
+            var bvh = new TriangleBvh(positions, indices);
+            foreach (bool filtered in new[] { false, true }) {
+                // The unfiltered backend has one-element normal and mask buffers;
+                // the filtered backend has full normals but no either-side mask.
+                using (var gpu = GpuBvh.TryCreate(bvh, filtered ? backNormals : null)) {
+                    Assert.IsNotNull(gpu);
+                    var origins = new Vector4[depths.Length]; var directions = new Vector4[origins.Length];
+                    var points = new Vector4[origins.Length]; var normals = new Vector4[origins.Length];
+                    var rays = new GpuBvh.RayHit[origins.Length]; var nearest = new GpuBvh.NearestHit[origins.Length];
+                    for (int q = 0; q < origins.Length; ++q) {
+                        origins[q] = new Vector4(.25f, .25f, 1.2f, 3);
+                        directions[q] = new Vector4(0, 0, -1, q % 2 == 0 ? 0 : 1.2f - depths[q] + .002f);
+                        points[q] = new Vector4(.25f, .25f, depths[q] + .002f, .01f);
+                        normals[q] = new Vector4(0, 0, 1, .5f);
+                    }
+                    yield return Await(gpu.RaycastAsync(origins, directions, rays.Length, filtered, rays, CancellationToken.None));
+                    yield return Await(gpu.NearestAsync(points, normals, nearest.Length, filtered, nearest, CancellationToken.None));
+                    for (int q = 0; q < rays.Length; ++q) {
+                        var cpuRay = bvh.RaycastClosestToTarget(origins[q], directions[q], origins[q].w, directions[q].w,
+                            filtered ? backNormals : null);
+                        var cpuNearest = filtered ? bvh.FindNearestNormalFiltered(points[q], Vector3.forward, backNormals, .5f, points[q].w)
+                            : bvh.FindNearest(points[q], points[q].w);
+                        Assert.AreEqual(cpuRay.triangleIndex, rays[q].tri, "absent filter ray " + q + ", filtered=" + filtered);
+                        Assert.AreEqual(cpuNearest.triangleIndex, nearest[q].tri, "absent filter nearest " + q + ", filtered=" + filtered);
+                        if (rays[q].tri >= 0) Assert.That(rays[q].t, Is.EqualTo(cpuRay.t).Within(1e-5));
+                        if (nearest[q].tri >= 0) Assert.That(nearest[q].distSq, Is.EqualTo(cpuNearest.distSq).Within(1e-6));
+                    }
+                }
+            }
+        }
+
+        [UnityTest]
         public IEnumerator GpuNearestMatchesAllTriangleRegionsAtOrdinaryAndTinyScale()
         {
             if (!GpuBvh.Supported || !SystemInfo.supportsAsyncGPUReadback) Assert.Ignore("Async GPU queries unavailable on this device.");
