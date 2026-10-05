@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.20] - 2026-10-05
+
+### Changed
+- Pipeline GPU baking through two bounded query bands: overlap projection/readback with ordered CPU evaluation and request preparation. Compute ray hits and the same nearest-surface fallback in one GPU dispatch, without the CPU miss-mask round trip. Preserve samples, order, tangent transport, AO and quality checks; drain both readbacks and CPU work on cancellation. Log overlapping stage spans separately from pipeline wall time.
+
 ## [1.1.19] - 2026-10-05
 
 ### Fixed

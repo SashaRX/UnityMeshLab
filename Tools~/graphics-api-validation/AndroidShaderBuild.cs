@@ -64,7 +64,7 @@ public static class AndroidShaderBuild
                 report.cases.Add(current);
                 if (!manifest) throw new InvalidOperationException("Shader bundle failed: " + api + " / " + encoding);
                 string platform = api == GraphicsDeviceType.OpenGLES3 ? "/GLES3x" : "/Vulkan";
-                foreach (string kernel in new[] { "BvhQueries/Raycast", "BvhQueries/Nearest", "SourceAORayTrace/BakeAO", "SourceAORayTrace/FinalizeAO", "VertexAORayTrace/BakeAO", "VertexAORayTrace/FinalizeAO" })
+                foreach (string kernel in new[] { "BvhQueries/Raycast", "BvhQueries/Nearest", "BvhQueries/ProjectSurface", "SourceAORayTrace/BakeAO", "SourceAORayTrace/FinalizeAO", "VertexAORayTrace/BakeAO", "VertexAORayTrace/FinalizeAO" })
                     if (!MeshLabShaderCompileTrace.Compiled.Contains(kernel + platform)) throw new InvalidOperationException("Missing target compilation: " + kernel + platform);
                 Debug.Log("MESHLAB_ANDROID_SHADER_CASE " + api + " " + encoding + " shaders=" + assets.Length + " variants=" + current.compiled.Length);
             }

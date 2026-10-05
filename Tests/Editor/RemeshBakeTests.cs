@@ -385,7 +385,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var source = Source(); var bvh = new TriangleBvh(source.positions, source.indices);
             using (var gpu = GpuBvh.TryCreate(bvh, new[] { Vector3.forward })) {
                 Assert.IsNotNull(gpu);
-                const int count = 16401; // crosses the asynchronous dispatch boundary
+                const int count = GpuBvh.AsyncBatch + 17; // crosses the asynchronous dispatch boundary
                 var origins = new Vector4[count]; var directions = new Vector4[count];
                 var points = new Vector4[count]; var normals = new Vector4[count];
                 var hits = new GpuBvh.RayHit[count]; var nearest = new GpuBvh.NearestHit[count];
@@ -411,8 +411,26 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.That(hits[i].t, Is.EqualTo(1f).Within(1e-5f));
                     Assert.That(nearest[i].distSq, Is.EqualTo(.25f).Within(1e-5f));
                 }
+                // Compare the fused kernel with independent legacy queries, including
+                // ray hits, successful nearest fallbacks and radius-zero misses.
+                for (int i = 0; i < count; ++i)
+                    points[i] = new Vector4(.2f, .2f, .5f, i % 3 == 0 ? 0 : 1);
+                var referenceNearest = gpu.NearestAsync(points, normals, count, true, nearest, CancellationToken.None);
+                deadline = EditorApplication.timeSinceStartup + 10;
+                while (!referenceNearest.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(referenceNearest.IsCompleted); Assert.IsFalse(referenceNearest.IsFaulted, referenceNearest.Exception?.ToString());
+                var projectedRays = new GpuBvh.RayHit[count]; var projectedNearest = new GpuBvh.NearestHit[count];
+                var projection = gpu.ProjectSurfaceAsync(origins, directions, points, normals, count, true, projectedRays, projectedNearest, CancellationToken.None);
+                while (!projection.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(projection.IsCompleted); Assert.IsFalse(projection.IsFaulted, projection.Exception?.ToString());
+                Assert.That(gpu.ProjectionBatchCount, Is.EqualTo(2));
+                for (int i = 0; i < count; ++i) {
+                    Assert.AreEqual(hits[i], projectedRays[i], "combined ray " + i);
+                    if (hits[i].tri < 0) Assert.AreEqual(nearest[i], projectedNearest[i], "combined fallback " + i);
+                    else Assert.AreEqual(-1, projectedNearest[i].tri, "a hit must not trigger nearest traversal");
+                }
                 using (var cancellation = new CancellationTokenSource()) {
-                    var cancelled = gpu.RaycastAsync(origins, directions, count, false, hits, cancellation.Token);
+                    var cancelled = gpu.ProjectSurfaceAsync(origins, directions, points, normals, count, false, projectedRays, projectedNearest, cancellation.Token);
                     cancellation.Cancel();
                     while (!cancelled.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
                     Assert.IsTrue(cancelled.IsCanceled, "Cancellation waits until the submitted GPU readback has drained");

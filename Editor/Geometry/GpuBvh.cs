@@ -33,7 +33,7 @@ namespace SashaRX.UnityMeshLab
         public static bool Supported => SystemInfo.supportsComputeShaders;
 
         readonly ComputeShader shader;
-        readonly int rayKernel, nearestKernel;
+        readonly int rayKernel, nearestKernel, projectionKernel;
         ComputeBuffer nodes, triIndices, verts, tris, faceNormals, eitherSide;
         ComputeBuffer rayOrigins, rayDirs, rayHits, points, queryNormals, nearestHits;
         int capacity;
@@ -41,6 +41,7 @@ namespace SashaRX.UnityMeshLab
         public int FaceCount { get; }
         internal int RayBatchCount { get; private set; }
         internal int NearestBatchCount { get; private set; }
+        internal int ProjectionBatchCount { get; private set; }
 
         /// <summary>Null when compute shaders are unavailable or the kernel asset is missing (logged once).</summary>
         public static GpuBvh TryCreate(TriangleBvh bvh, Vector3[] faceNormals = null, bool[] eitherSide = null)
@@ -57,9 +58,10 @@ namespace SashaRX.UnityMeshLab
             this.shader = shader;
             rayKernel = shader.FindKernel("Raycast");
             nearestKernel = shader.FindKernel("Nearest");
+            projectionKernel = shader.FindKernel("ProjectSurface");
             // FindKernel can return an index even when that kernel failed to compile.
             // Reject the backend before allocating buffers or reading invalid results.
-            if (!shader.IsSupported(rayKernel) || !shader.IsSupported(nearestKernel))
+            if (!shader.IsSupported(rayKernel) || !shader.IsSupported(nearestKernel) || !shader.IsSupported(projectionKernel))
                 throw new InvalidOperationException("BvhQueries kernels are not supported or failed to compile");
             bvh.GetGPUData(out var gpuNodes, out var gpuTriIndices, out var gpuVerts, out var gpuTris);
             FaceCount = gpuTris.Length / 3;
@@ -184,6 +186,37 @@ namespace SashaRX.UnityMeshLab
             shader.SetInt("_QueryCount", n);
             shader.SetInt("_NormalFilter", normalFilter ? 1 : 0);
             shader.Dispatch(nearestKernel, (n + 63) / 64, 1, 1);
+        }
+
+        /// <summary>Ray projection plus the identical nearest fallback in one dispatch.
+        /// Both readbacks drain before cancellation or buffer reuse.</summary>
+        public async Task ProjectSurfaceAsync(Vector4[] origins, Vector4[] dirs, Vector4[] pts, Vector4[] normals,
+            int count, bool facingFilter, RayHit[] rays, NearestHit[] nearest, CancellationToken token)
+        {
+            for (int start = 0; start < count; start += AsyncBatch) {
+                token.ThrowIfCancellationRequested();
+                int n = Math.Min(AsyncBatch, count - start);
+                Ensure(n);
+                rayOrigins.SetData(origins, start, 0, n); rayDirs.SetData(dirs, start, 0, n);
+                points.SetData(pts, start, 0, n); queryNormals.SetData(normals, start, 0, n);
+                Bind(shader, projectionKernel);
+                shader.SetBuffer(projectionKernel, "_RayOrigins", rayOrigins);
+                shader.SetBuffer(projectionKernel, "_RayDirs", rayDirs);
+                shader.SetBuffer(projectionKernel, "_Points", points);
+                shader.SetBuffer(projectionKernel, "_QueryNormals", queryNormals);
+                shader.SetBuffer(projectionKernel, "_RayHits", rayHits);
+                shader.SetBuffer(projectionKernel, "_NearestHits", nearestHits);
+                shader.SetInt("_QueryCount", n);
+                shader.SetInt("_FacingFilter", facingFilter ? 1 : 0);
+                shader.Dispatch(projectionKernel, (n + 63) / 64, 1, 1);
+                ++ProjectionBatchCount;
+                var rayRead = ReadAsync(rayHits, n, rays, start);
+                try { await Task.WhenAll(rayRead, ReadAsync(nearestHits, n, nearest, start)); }
+                // Even a synchronous failure submitting the second readback must
+                // not let the caller dispose buffers still used by the first.
+                finally { await rayRead; }
+                token.ThrowIfCancellationRequested();
+            }
         }
 
         static Task ReadAsync<T>(ComputeBuffer buffer, int count, T[] results, int start) where T : struct

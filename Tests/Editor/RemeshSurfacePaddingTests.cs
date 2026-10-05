@@ -34,11 +34,15 @@ namespace SashaRX.UnityMeshLab.Tests
                 proxy = true, faceDirs = new[] { Vector3.forward, Vector3.right }, depth = 2 };
         }
 
-        [TestCase(1, 5)]
-        [TestCase(2, 7)]
-        [TestCase(4, 31)]
-        [TestCase(4, 16384)]
-        public void ParallelRequestsMatchSerialFootprintsAcrossMidRowCutoffsAndCacheWrap(int grid, int budget)
+        [TestCase(1, 5, false)]
+        [TestCase(2, 7, false)]
+        [TestCase(4, 31, false)]
+        [TestCase(4, 16384, false)]
+        [TestCase(1, 5, true)]
+        [TestCase(2, 7, true)]
+        [TestCase(4, 31, true)]
+        [TestCase(4, 16384, true)]
+        public void ParallelRequestsMatchSerialFootprintsAcrossMidRowCutoffsAndCacheWrap(int grid, int budget, bool swapBands)
         {
             var reference = RequestContext(grid, budget);
             var expected = new List<RemeshBaker.Request>();
@@ -53,8 +57,9 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             var context = RequestContext(grid, budget);
             var band = new RemeshBaker.Band(context);
+            var spare = swapBands ? new RemeshBaker.Band(context, band) : band;
             int compared = 0, continued = 0, boundary = 0;
-            for (int pixel = 0; pixel < context.owners.Length; pixel = band.nextPixel) {
+            for (int pixel = 0; pixel < context.owners.Length;) {
                 RemeshBaker.BuildRequests(context, band, pixel, Token);
                 Assert.That(band.nextPixel, Is.GreaterThan(pixel));
                 Assert.That(band.rowStart[band.y1 - band.y0], Is.EqualTo(band.count));
@@ -73,6 +78,8 @@ namespace SashaRX.UnityMeshLab.Tests
                     if (wanted.sample.boundary) ++boundary;
                     else if (wanted.sample.face != context.receivers[wanted.pixel]) ++continued;
                 }
+                pixel = band.nextPixel;
+                var completed = band; band = spare; spare = completed;
             }
             Assert.AreEqual(expected.Count, compared);
             Assert.AreEqual(boundary, context.boundarySamples);
@@ -618,10 +625,10 @@ namespace SashaRX.UnityMeshLab.Tests
 
         static void AssertFullAtlasOracle(RemeshBaker.Maps maps)
         {
-            Assert.AreEqual(64 * 64, maps.covered); Assert.AreEqual(0, maps.misses); Assert.AreEqual(0, maps.partialMisses);
+            Assert.AreEqual(maps.size * maps.size, maps.covered); Assert.AreEqual(0, maps.misses); Assert.AreEqual(0, maps.partialMisses);
             Assert.AreEqual(0, maps.gutterTexels, "full atlas coverage has no margin despite the settings' minimum padding of one");
-            for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
-                int pixel = y * 64 + x; float u = (x + .5f) / 64, v = (y + .5f) / 64;
+            for (int y = 0; y < maps.size; ++y) for (int x = 0; x < maps.size; ++x) {
+                int pixel = y * maps.size + x; float u = (x + .5f) / maps.size, v = (y + .5f) / maps.size;
                 Color actual = ((Color)maps.color[pixel]).linear;
                 Assert.AreEqual(255, maps.color[pixel].a, "pixel " + pixel);
                 Assert.That(actual.r, Is.EqualTo(.3f + .2f * u).Within(.006f), "red pixel " + pixel);
@@ -635,8 +642,8 @@ namespace SashaRX.UnityMeshLab.Tests
         public System.Collections.IEnumerator DenseStreamingBakePreservesEveryAffineTexelOnCpuAndGpu()
         {
             var target = FullAtlas(out var source);
-            var settings = new RemeshSettings { textureResolution = 64, padding = 1, dilationRadius = 0, bakeSamples = 16, vertexColorTint = true };
-            Assert.That(64 * 64 * settings.bakeSamples, Is.GreaterThan(RemeshBaker.QueryBudget), "fixture must span several Baker query budgets");
+            var settings = new RemeshSettings { textureResolution = 128, padding = 1, dilationRadius = 0, bakeSamples = 16, vertexColorTint = true };
+            Assert.That(128 * 128 * settings.bakeSamples, Is.GreaterThan(GpuBvh.AsyncBatch * 2), "fixture must stream through both GPU query bands repeatedly");
             using (var cancellation = new CancellationTokenSource())
             try {
                 var cpu = RemeshBaker.BakeAsync(source, target, target.tangents, settings, cancellation.Token, null, _ => null);
@@ -644,8 +651,48 @@ namespace SashaRX.UnityMeshLab.Tests
                 RequireGpu();
                 var gpu = RemeshBaker.BakeAsync(source, target, target.tangents, settings, cancellation.Token, null, RemeshBaker.CreateGpu);
                 yield return Await(gpu); AssertFullAtlasOracle(gpu.Result); AssertGpuParity(cpu.Result, gpu.Result);
+                Assert.That(gpu.Result.gpuBands, Is.GreaterThanOrEqualTo(4));
             }
             finally { cancellation.Cancel(); }
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator StreamingGpuSourceAoRetainsTheFlatSurfaceOracle()
+        {
+            RequireGpu();
+            var target = FullAtlas(out var source);
+            var settings = new RemeshSettings { textureResolution = 128, padding = 1, dilationRadius = 0,
+                bakeSamples = 9, vertexColorTint = true, bakeSourceAO = true, sourceAO = new SourceAoSettings { samples = 16 } };
+            var cpu = RemeshBaker.BakeAsync(source, target, target.tangents, settings, Token, null, _ => null);
+            yield return Await(cpu); AssertFullAtlasOracle(cpu.Result);
+            var gpu = RemeshBaker.BakeAsync(source, target, target.tangents, settings, Token, null, RemeshBaker.CreateGpu, true);
+            yield return Await(gpu); AssertFullAtlasOracle(gpu.Result); AssertGpuParity(cpu.Result, gpu.Result);
+            Assert.IsTrue(gpu.Result.gpuAO, "the shared BVH AO backend must run");
+            Assert.That(gpu.Result.gpuBands, Is.GreaterThanOrEqualTo(3));
+            CollectionAssert.AreEqual(cpu.Result.ao, gpu.Result.ao);
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator StreamingCancellationDrainsTheSubmittedProjectionAndWorker()
+        {
+            RequireGpu();
+            var target = FullAtlas(out var source);
+            var settings = new RemeshSettings { textureResolution = 128, padding = 1, dilationRadius = 0, bakeSamples = 16 };
+            using (var cancellation = new CancellationTokenSource()) {
+                GpuBvh backend = null;
+                var cancelled = RemeshBaker.BakeAsync(source, target, target.tangents, settings, cancellation.Token, null,
+                    ctx => { backend = RemeshBaker.CreateGpu(ctx); return backend; });
+                double deadline = EditorApplication.timeSinceStartup + 30;
+                while (!cancelled.IsCompleted && (backend == null || backend.ProjectionBatchCount == 0) && EditorApplication.timeSinceStartup < deadline)
+                    yield return null;
+                Assert.IsNotNull(backend); Assert.That(backend.ProjectionBatchCount, Is.GreaterThan(0));
+                Assert.IsFalse(cancelled.IsCompleted, "cancel with a submitted readback and CPU producer in flight");
+                cancellation.Cancel();
+                while (!cancelled.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(cancelled.IsCompleted); Assert.IsTrue(cancelled.IsCanceled, cancelled.Exception?.ToString());
+            }
+            var restarted = RemeshBaker.BakeAsync(source, target, target.tangents, settings, Token, null, RemeshBaker.CreateGpu);
+            yield return Await(restarted); AssertFullAtlasOracle(restarted.Result);
         }
 
         [Test]

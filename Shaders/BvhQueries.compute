@@ -4,6 +4,7 @@
 // TriangleBvh.Raycast / FindNearest(NormalFiltered) results.
 #pragma kernel Raycast
 #pragma kernel Nearest
+#pragma kernel ProjectSurface
 
 #include "Packages/com.sasharx.unitymeshlab/Shaders/BvhTraversal.hlsl"
 
@@ -43,4 +44,28 @@ void Nearest(uint3 id : SV_DispatchThreadID)
         _NearestHits[id.x] = BvhNearest(p.xyz, p.w * p.w, _NormalFilter != 0, n.xyz, n.w);
     else
         _NearestHits[id.x] = miss;
+}
+
+// The fallback depends only on this thread's ray result. Keep it on the GPU to
+// avoid a ray readback -> CPU miss mask -> second dispatch/readback round trip.
+[numthreads(64, 1, 1)]
+void ProjectSurface(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _QueryCount) return;
+    float4 o = _RayOrigins[id.x];
+    float4 d = _RayDirs[id.x];
+    BvhRayHit ray;
+    if (d.w > 0.0)
+        ray = BvhRaycastClosestToTarget(o.xyz, d.xyz, o.w, _FacingFilter != 0, d.w);
+    else
+        ray = BvhRaycast(o.xyz, d.xyz, o.w, _FacingFilter != 0);
+    _RayHits[id.x] = ray;
+
+    float4 p = _Points[id.x];
+    float4 n = _QueryNormals[id.x];
+    BvhNearestHit nearest;
+    nearest.tri = -1; nearest.distSq = 0; nearest.closestPoint = p.xyz; nearest.bary = float3(0, 0, 0);
+    if (ray.tri < 0 && p.w > 0.0)
+        nearest = BvhNearest(p.xyz, p.w * p.w, _FacingFilter != 0, n.xyz, n.w);
+    _NearestHits[id.x] = nearest;
 }

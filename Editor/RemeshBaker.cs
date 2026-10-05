@@ -37,11 +37,13 @@ namespace SashaRX.UnityMeshLab
             public bool beauty;
             public bool gpu;            // the geometry queries ran on the GPU
             public bool gpuAO;          // source AO rays ran on the GPU
-            // Async pipeline timings include await/Editor-pump latency, so they
-            // distinguish query/readback waiting from footprint/material work.
-            public int gpuBands, gpuRayBatches, gpuNearestBatches;
+            // In the pipelined GPU path build/evaluate measure worker execution;
+            // resolve/AO include await/Editor-pump latency. These spans overlap:
+            // use gpuPipelineMs for wall time, never their sum.
+            public int gpuBands, gpuRayBatches, gpuNearestBatches, gpuProjectionBatches;
             public long gpuQueries;
             public double gpuPrepareMs, gpuSetupMs, gpuBuildRequestsMs, gpuResolveMs, gpuEvaluateMs, gpuAoMs, gpuFinishMs;
+            public double gpuPipelineMs;
         }
 
         // ── Batched bake ──
@@ -100,15 +102,15 @@ namespace SashaRX.UnityMeshLab
                     return prepared;
                 }, token);
                 ctx.result.gpuSetupMs = timer.Elapsed.TotalMilliseconds;
-                for (int pixel = 0; pixel < ctx.owners.Length; pixel = band.nextPixel) {
+                if (gpu != null) await RunGpuPipeline(ctx, band, gpu, aoGpu, token);
+                else for (int pixel = 0; pixel < ctx.owners.Length; pixel = band.nextPixel) {
                     int firstPixel = pixel;
                     timer.Restart();
                     await Task.Run(() => BuildRequests(ctx, band, firstPixel, token), token);
                     ctx.result.gpuBuildRequestsMs += timer.Elapsed.TotalMilliseconds;
                     ++ctx.result.gpuBands; ctx.result.gpuQueries += band.count;
                     timer.Restart();
-                    if (gpu != null) await ResolveGpuAsync(ctx, band, gpu, token);
-                    else await Task.Run(() => ResolveCpu(ctx, band, token), token);
+                    await Task.Run(() => ResolveCpu(ctx, band, token), token);
                     ctx.result.gpuResolveMs += timer.Elapsed.TotalMilliseconds;
                     if (aoGpu != null) {
                         timer.Restart();
@@ -122,13 +124,83 @@ namespace SashaRX.UnityMeshLab
                 }
                 ctx.result.gpu = gpu != null;
                 ctx.result.gpuAO = aoGpu != null;
-                if (gpu != null) { ctx.result.gpuRayBatches = gpu.RayBatchCount; ctx.result.gpuNearestBatches = gpu.NearestBatchCount; }
+                if (gpu != null) {
+                    ctx.result.gpuRayBatches = gpu.RayBatchCount; ctx.result.gpuNearestBatches = gpu.NearestBatchCount;
+                    ctx.result.gpuProjectionBatches = gpu.ProjectionBatchCount;
+                }
                 timer.Restart();
                 var result = await Task.Run(() => Finish(ctx, token), token);
                 result.gpuFinishMs = timer.Elapsed.TotalMilliseconds;
                 return result;
             }
             finally { aoGpu?.Dispose(); gpu?.Dispose(); }
+        }
+
+        // Two bounded query bands, one CPU producer and one GPU query at a time.
+        // While the GPU resolves band N, the worker evaluates N-1 then builds N+1
+        // in the released band. Evaluation and sample reduction retain their order.
+        static async Task RunGpuPipeline(Context ctx, Band current, GpuBvh gpu, SourceAoBaker.Gpu aoGpu, CancellationToken token)
+        {
+            var wall = Stopwatch.StartNew();
+            var spare = new Band(ctx, current);
+            if (aoGpu != null) {
+                spare.aoPoints = new SourceAoBaker.SurfacePoint[spare.pixel.Length];
+                spare.aoValues = new float[spare.pixel.Length];
+            }
+            Band previous = null;
+            Task queries = Task.CompletedTask, worker = Task.CompletedTask;
+            try {
+                await Task.Run(() => BuildTimed(ctx, current, 0, token), token);
+                while (true) {
+                    token.ThrowIfCancellationRequested();
+                    ++ctx.result.gpuBands; ctx.result.gpuQueries += current.count;
+                    var queryTimer = Stopwatch.StartNew();
+                    queries = ResolveGpuAsync(ctx, current, gpu, token);
+                    bool hasNext = current.nextPixel < ctx.owners.Length;
+                    int firstPixel = current.nextPixel;
+                    var evaluate = previous; var build = spare;
+                    worker = Task.Run(() => {
+                        if (evaluate != null) EvaluateTimed(ctx, evaluate, token);
+                        if (hasNext) BuildTimed(ctx, build, firstPixel, token);
+                    }, token);
+                    await queries;
+                    ctx.result.gpuResolveMs += queryTimer.Elapsed.TotalMilliseconds;
+                    if (aoGpu != null) {
+                        var aoTimer = Stopwatch.StartNew();
+                        var resolved = current;
+                        await Task.Run(() => PrepareAoPoints(ctx, resolved, token), token);
+                        await aoGpu.SampleAsync(current.aoPoints, current.count, current.aoValues, token);
+                        ctx.result.gpuAoMs += aoTimer.Elapsed.TotalMilliseconds;
+                    }
+                    await worker;
+                    if (!hasNext) {
+                        var last = current;
+                        await Task.Run(() => EvaluateTimed(ctx, last, token), token);
+                        break;
+                    }
+                    previous = current; current = spare; spare = previous;
+                }
+            }
+            // GPU readbacks and CPU work must both finish on fault/cancellation;
+            // only then may BakeAsync release GPU buffers or discard the context.
+            finally {
+                await Task.WhenAll(queries, worker);
+                ctx.result.gpuPipelineMs = wall.Elapsed.TotalMilliseconds;
+            }
+        }
+
+        static void BuildTimed(Context ctx, Band band, int firstPixel, CancellationToken token)
+        {
+            var timer = Stopwatch.StartNew();
+            BuildRequests(ctx, band, firstPixel, token);
+            ctx.result.gpuBuildRequestsMs += timer.Elapsed.TotalMilliseconds;
+        }
+
+        static void EvaluateTimed(Context ctx, Band band, CancellationToken token)
+        {
+            var timer = Stopwatch.StartNew();
+            EvaluateBand(ctx, band, token);
+            ctx.result.gpuEvaluateMs += timer.Elapsed.TotalMilliseconds;
         }
 
         /// <summary>The GPU tree for a prepared bake: the source BVH with the oriented face normals and the either-side mask the filters use.</summary>
@@ -165,7 +237,6 @@ namespace SashaRX.UnityMeshLab
             public Quaternion[] normalTransport;
             public Vector4[] rayOrigin, rayDir, point, pointNormal;   // queries (w = reach / dotMin)
             public GpuBvh.RayHit[] rayHit; public GpuBvh.NearestHit[] nearest;
-            public bool[] needNearest;
             internal SourceAoBaker.SurfacePoint[] aoPoints;
             internal float[] aoValues;
             internal readonly List<Request> requests = new List<Request>(QueryBudget);
@@ -173,23 +244,32 @@ namespace SashaRX.UnityMeshLab
             // cutoff. Each footprint is computed once, including its diagnostics,
             // even when a band ends halfway through a row.
             internal readonly List<RemeshTexelFootprint.Sample>[] cachedSamples;
-            int gatheredUntil;
+            sealed class FootprintWindow
+            {
+                internal readonly List<RemeshTexelFootprint.Sample>[] samples;
+                internal int gatheredUntil;
+                internal FootprintWindow(int size) { samples = new List<RemeshTexelFootprint.Sample>[size]; }
+            }
+            readonly FootprintWindow window;
 
-            public Band(Context ctx)
+            public Band(Context ctx, Band previous = null)
             {
                 int capacity = Math.Min(ctx.queryBudget, ctx.bandRows * ctx.size * ctx.offsets.Length);
                 rowStart = new int[ctx.bandRows + 1];
-                cachedSamples = new List<RemeshTexelFootprint.Sample>[Math.Min(FootprintWindowPixels, checked(ctx.bandRows * ctx.size))];
+                // The producer alone accesses this shared window. Swapping query
+                // bands must not gather/count prefetched footprints a second time.
+                window = previous?.window ?? new FootprintWindow(Math.Min(FootprintWindowPixels, checked(ctx.bandRows * ctx.size)));
+                cachedSamples = window.samples;
                 pixel = new int[capacity]; face = new int[capacity]; weights = new Vector3[capacity];
                 area = new float[capacity];
                 normalTransport = new Quaternion[capacity];
                 rayOrigin = new Vector4[capacity]; rayDir = new Vector4[capacity]; point = new Vector4[capacity]; pointNormal = new Vector4[capacity];
-                rayHit = new GpuBvh.RayHit[capacity]; nearest = new GpuBvh.NearestHit[capacity]; needNearest = new bool[capacity];
+                rayHit = new GpuBvh.RayHit[capacity]; nearest = new GpuBvh.NearestHit[capacity];
             }
 
             internal List<RemeshTexelFootprint.Sample> Footprint(Context ctx, int pixel, int limitPixel, int grid, CancellationToken token)
             {
-                if (pixel >= gatheredUntil)
+                if (pixel >= window.gatheredUntil)
                     GatherFootprints(ctx, pixel, Math.Min(limitPixel, pixel + cachedSamples.Length), grid, token);
                 return cachedSamples[pixel % cachedSamples.Length];
             }
@@ -198,7 +278,7 @@ namespace SashaRX.UnityMeshLab
             {
                 // Only newly exposed pixels overwrite slots. The whole live window
                 // fits cachedSamples, so unconsumed prefetched pixels survive.
-                Parallel.For(Math.Max(firstPixel, gatheredUntil), limitPixel,
+                Parallel.For(Math.Max(firstPixel, window.gatheredUntil), limitPixel,
                     new ParallelOptions { CancellationToken = token,
                         MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, pixel => {
                     int slot = pixel % cachedSamples.Length;
@@ -212,7 +292,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     ctx.footprint.Gather(receiver, pixel % ctx.size, pixel / ctx.size, grid, samples, token);
                 });
-                gatheredUntil = limitPixel;
+                window.gatheredUntil = limitPixel;
             }
 
             internal void EnsureCapacity(int count)
@@ -224,7 +304,7 @@ namespace SashaRX.UnityMeshLab
                 Array.Resize(ref normalTransport, capacity);
                 Array.Resize(ref rayOrigin, capacity); Array.Resize(ref rayDir, capacity);
                 Array.Resize(ref point, capacity); Array.Resize(ref pointNormal, capacity);
-                Array.Resize(ref rayHit, capacity); Array.Resize(ref nearest, capacity); Array.Resize(ref needNearest, capacity);
+                Array.Resize(ref rayHit, capacity); Array.Resize(ref nearest, capacity);
                 if (aoPoints != null) { Array.Resize(ref aoPoints, capacity); Array.Resize(ref aoValues, capacity); }
             }
         }
@@ -397,25 +477,9 @@ namespace SashaRX.UnityMeshLab
             });
         }
 
-        // GPU resolver: one ray batch, then one nearest batch for the misses only.
-        static async Task ResolveGpuAsync(Context ctx, Band band, GpuBvh gpu, CancellationToken token)
-        {
-            await gpu.RaycastAsync(band.rayOrigin, band.rayDir, band.count, ctx.facingFilter, band.rayHit, token);
-            int pending = await Task.Run(() => {
-                int misses = 0;
-                for (int i = 0; i < band.count; ++i) {
-                    if ((i & 255) == 0) token.ThrowIfCancellationRequested();
-                    band.nearest[i].tri = -1;
-                    bool miss = band.rayHit[i].tri < 0;
-                    band.needNearest[i] = miss;
-                    // Skipped points carry radius 0 so the kernel answers "none" without traversing.
-                    if (!miss) { var q = band.point[i]; band.point[i] = new Vector4(q.x, q.y, q.z, 0f); }
-                    else ++misses;
-                }
-                return misses;
-            }, token);
-            if (pending > 0) await gpu.NearestAsync(band.point, band.pointNormal, band.count, ctx.facingFilter, band.nearest, token);
-        }
+        static Task ResolveGpuAsync(Context ctx, Band band, GpuBvh gpu, CancellationToken token)
+            => gpu.ProjectSurfaceAsync(band.rayOrigin, band.rayDir, band.point, band.pointNormal,
+                band.count, ctx.facingFilter, band.rayHit, band.nearest, token);
 
         static void PrepareAoPoints(Context ctx, Band band, CancellationToken token)
         {
