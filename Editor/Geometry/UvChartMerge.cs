@@ -754,8 +754,18 @@ namespace SashaRX.UnityMeshLab
             return oversample > 4 && RepackWithPrecision(geometry, settings, token, oversample);
         }
 
-        static bool RepackWithPrecision(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token, int oversample)
+        internal static bool RepackForRepair(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token,
+            int oversample = 4)
         {
+            if (oversample > 4)
+                oversample = Math.Min(oversample, HighPrecisionLimit(geometry.chartCount, settings.textureResolution));
+            return oversample >= 4 && RepackWithPrecision(geometry, settings, token, oversample, waitForSession: true);
+        }
+
+        static bool RepackWithPrecision(RemeshNative.Geometry geometry, RemeshSettings settings, CancellationToken token,
+            int oversample, bool waitForSession = false)
+        {
+            token.ThrowIfCancellationRequested();
             int vertexCount = geometry.positions.Length;
             int faceCount = geometry.indices.Length / 3;
             var faceChart = new int[faceCount];
@@ -792,13 +802,21 @@ namespace SashaRX.UnityMeshLab
             var faceMaterials = new uint[faceCount];
             for (int f = 0; f < faceCount; ++f) faceMaterials[f] = (uint)faceChart[f];
 
+            bool waited = false;
             if (!XatlasRepack.TryAcquireNativeSession())
             {
-                UvtLog.Warn("[Remesh] Chart merge skipped: an xatlas repack session is already in progress.");
-                return false;
+                if (!waitForSession) {
+                    UvtLog.Warn("[Remesh] Chart merge skipped: an xatlas repack session is already in progress.");
+                    return false;
+                }
+                UvtLog.Info(UvtLog.Category.RemeshDiag, "[UV] repair-packing-wait: waiting for the active xatlas repack session; cancellation remains available.");
+                XatlasRepack.AcquireNativeSession(token);
+                waited = true;
             }
             try
             {
+                token.ThrowIfCancellationRequested();
+                if (waited) UvtLog.Info(UvtLog.Category.RemeshDiag, "[UV] repair-packing-resumed: acquired the xatlas repack session.");
                 int rotate = settings.packRotate ? 1 : 0;
                 if (PackAndRead(geometry, settings, flatUv, indices, faceMaterials, rotate, rotate, token, oversample)) return true;
                 // Both rotation flags are separate xatlas knobs; a rotate placement is the

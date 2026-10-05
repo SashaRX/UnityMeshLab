@@ -447,6 +447,14 @@ The *Normal weighting* option selects the accumulation weight — face area
 (meshopt's own), corner angle, or both multiplied (the Blender Weighted
 Normal modifier analog). Tangents are re-orthogonalized against the final
 normals so the saved frame matches the one the bake encodes against.
+
+UV overlap repair must finish before the atlas is accepted. Its ordinary and
+high-precision packs wait for the shared xatlas repack session on the Remesh
+worker, with cancellation available while waiting. This leaves the Editor free
+to finish an interactive owner. A waiting cancellation never releases or destroys
+that owner's atlas. Optional merge and public repack calls retain their immediate
+busy rejection. The existing overlap, stretch, padding and cost gates still apply.
+
 v1.3 removed the non-functional Thicken flag and renumbered `meshopt_RemeshShell`
 and `meshopt_RemeshSolve`. The bridge keeps its own flag bits (1 = fit source
 surface, 2 = two-sided shell) and maps them by name, so the C# ABI is unchanged;

@@ -19,6 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.7] - 2026-10-05
+
+### Fixed
+- Mandatory UV overlap repair waits for an occupied xatlas repack session with cancellation support instead of treating temporary contention as packing failure. Cancelling a waiter preserves the current owner's session; optional repack calls retain their busy rejection.
+
 ## [1.1.6] - 2026-10-05
 
 ### Fixed

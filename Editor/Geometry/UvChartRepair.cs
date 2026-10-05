@@ -20,7 +20,7 @@ namespace SashaRX.UnityMeshLab
             var repaired = SplitConflicts(geometry, report.conflicts, token);
             UvtLog.Info(UvtLog.Category.RemeshDiag,
                 $"[UV] repair-cuts: baseline charts={geometry.chartCount}, overlapPairs={report.pairs}; cut charts={repaired.chartCount}. UV triangle shapes preserved.");
-            if (!UvChartMerge.Repack(repaired, settings, token))
+            if (!UvChartMerge.RepackForRepair(repaired, settings, token))
                 throw new InvalidOperationException("UV overlap repair could not pack its seam cuts safely.");
             var check = UvAtlasDiagnostics.Measure(repaired, token);
             var post = UvChartQuality.Measure(repaired, token);
@@ -37,7 +37,7 @@ namespace SashaRX.UnityMeshLab
                     previous = precision;
                     token.ThrowIfCancellationRequested();
                     var precise = SplitConflicts(geometry, report.conflicts, token);
-                    if (!UvChartMerge.RepackHighPrecision(precise, settings, token, precision)) continue;
+                    if (!UvChartMerge.RepackForRepair(precise, settings, token, precision)) continue;
                     repaired = precise;
                     check = UvAtlasDiagnostics.Measure(repaired, token);
                     post = UvChartQuality.Measure(repaired, token);

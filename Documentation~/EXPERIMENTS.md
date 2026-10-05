@@ -5,6 +5,18 @@
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
+- **UV repair contention 2026-10-05 (продолжение Exp #1):** занятая legacy
+  xatlas session ошибочно превращалась в отказ обязательного overlap repair.
+  Repair теперь ждёт session на worker с отменой, обычный optional repack
+  сохраняет fail-fast. 95 Unity tests passed, включая ожидание, отмену без
+  освобождения чужого atlas и сохранение corners; обе FBX compile variants passed.
+  Свежий capture 1598 faces / 1024 px воспроизвёл 72 charts / 5 overlap pairs;
+  с heuristic packing шесть off/on повторов дали 74 / 47 charts, zero overlaps,
+  mean/worst 1.02925/3.07848 и 1.03342/1.68071, одинаковые buffers и corners.
+  Original Best packing не завершил первый pack за 6 min 35 s и был остановлен
+  только в изолированном harness; его full replay не подтверждён. Production
+  packing settings, native source/binaries и quality gates не менялись.
+
 - **Первый trainer 2026-10-04 (подготовка следующего этапа Exp #1):**
   `train.py` перепроверяет independent train/val/test и hashes/geometry, использует
   train-only normalization и val-only best/threshold; модель/optimizer/RNG
