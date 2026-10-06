@@ -106,6 +106,7 @@ namespace SashaRX.UnityMeshLab
             var allVerts = new List<Vector3>();
             var allTris = new List<int>();
             var copies = new List<Mesh>();
+            try {
             AppendGeometryBuffers(targets, allVerts, allTris, copies);
             AppendGeometryBuffers(occluders, allVerts, allTris, copies);
             if (allVerts.Count == 0 || allTris.Count == 0)
@@ -130,9 +131,12 @@ namespace SashaRX.UnityMeshLab
                 result[mesh] = FaceAreaCorrection(rawAO[mesh], mesh, xform, bvh,
                     directions, maxDist, normalOffset, settings, groundY);
             }
-            foreach (var c in copies)
-                UnityEngine.Object.DestroyImmediate(c);
             return result;
+            }
+            finally {
+                foreach (var copy in copies)
+                    if (copy != null) UnityEngine.Object.DestroyImmediate(copy);
+            }
         }
 
         /// <summary>

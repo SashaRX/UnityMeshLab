@@ -103,7 +103,8 @@ namespace SashaRX.UnityMeshLab
 
         public void OnDeactivate()
         {
-            preview?.Restore();
+            preview?.Dispose();
+            preview = null;
             previewMode = PreviewMode.None;
         }
 

@@ -37,6 +37,78 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void StaticPreviewResourcesAreDestroyedOnReloadAndRecreatedOnDemand()
+        {
+            const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Static;
+            var root = Root(); var source = Plane();
+            var mf = root.AddComponent<MeshFilter>(); mf.sharedMesh = source;
+            var renderer = root.AddComponent<MeshRenderer>();
+            var originalMaterial = new Material(Shader.Find("Hidden/Internal-Colored")); owned.Add(originalMaterial);
+            renderer.sharedMaterial = originalMaterial;
+            try {
+                for (int cycle = 0; cycle < 3; ++cycle) {
+                    CheckerTexturePreview.Apply(new List<(Renderer, Mesh)> { (renderer, source) });
+                    var checker = CheckerTexturePreview.GetCheckerTexture();
+                    var material = renderer.sharedMaterial;
+                    var pngMaterial = (Material)typeof(UvPngWriter).GetMethod("GetMat", flags).Invoke(null, null);
+                    typeof(PreviewSafetyGuard).GetMethod("OnBeforeAssemblyReload", flags).Invoke(null, null);
+                    Assert.IsTrue(checker == null); Assert.IsTrue(material == null); Assert.IsTrue(pngMaterial == null);
+                    Assert.AreSame(source, mf.sharedMesh); Assert.AreSame(originalMaterial, renderer.sharedMaterial);
+                    ShellColorModelPreview.Apply(new List<(Renderer, Mesh, int[])> { (renderer, source, new[] { 0, 1 }) },
+                        new[] { new Color32(255, 0, 0, 255), new Color32(0, 255, 0, 255) });
+                    var shellMesh = mf.sharedMesh; var shellMaterial = renderer.sharedMaterial;
+                    PreviewSafetyGuard.ReleaseResources(); PreviewSafetyGuard.ReleaseResources();
+                    Assert.IsTrue(shellMesh == null); Assert.IsTrue(shellMaterial == null);
+                    Assert.AreSame(source, mf.sharedMesh); Assert.AreSame(originalMaterial, renderer.sharedMaterial);
+                }
+            }
+            finally { PreviewSafetyGuard.ReleaseResources(); }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void ToolPreviewTeardownDestroysItsOwnClonesEvenAfterSceneChanges(bool vertexBake, bool deleted)
+        {
+            const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
+            var source = Plane();
+            for (int cycle = 0; cycle < 4; ++cycle) {
+                var root = Root(); var mf = root.AddComponent<MeshFilter>(); mf.sharedMesh = source;
+                var renderer = root.AddComponent<MeshRenderer>();
+                var originalMaterial = new Material(Shader.Find("Hidden/Internal-Colored")); owned.Add(originalMaterial);
+                renderer.sharedMaterial = originalMaterial;
+                var ctx = new UvToolContext();
+                ctx.MeshEntries.Add(new MeshEntry { originalMesh = source, fbxMesh = source, meshFilter = mf, renderer = renderer, include = true });
+                Action teardown;
+                if (vertexBake) {
+                    var tool = new VertexColorBakingTool(); tool.OnActivate(ctx, null);
+                    typeof(VertexColorBakingTool).GetField("bakedFinalAO", flags).SetValue(tool,
+                        new Dictionary<Mesh, float[]> { { source, new[] { 1f, 1f, 1f, 1f } } });
+                    typeof(VertexColorBakingTool).GetMethod("ActivatePreview", flags).Invoke(tool, null);
+                    teardown = tool.OnDeactivate;
+                } else {
+                    var tool = new PrefabBuilderTool(); tool.OnActivate(ctx, null);
+                    var preview = (PrefabBuilderPreview)typeof(PrefabBuilderTool).GetField("preview", flags).GetValue(tool);
+                    preview.ActivateVertexColorPreview(ctx);
+                    teardown = tool.OnDeactivate;
+                }
+                var clone = mf.sharedMesh; var material = renderer.sharedMaterial;
+                Assert.AreNotSame(source, clone); Assert.AreNotSame(originalMaterial, material);
+                var replacement = Plane("External replacement");
+                try {
+                    if (deleted) Object.DestroyImmediate(root);
+                    else mf.sharedMesh = replacement;
+                    teardown(); teardown();
+                    Assert.IsTrue(clone == null); Assert.IsTrue(material == null);
+                    Assert.IsTrue(source != null); Assert.IsTrue(replacement != null); Assert.IsTrue(originalMaterial != null);
+                    if (!deleted) Assert.AreSame(source, mf.sharedMesh);
+                }
+                finally { teardown(); }
+            }
+        }
+
+        [Test]
         public void SaveOutputCreatesMissingParentsAndReusesTheirGuids()
         {
             string path = Scratch + "/MeshLab/Output";

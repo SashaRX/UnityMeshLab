@@ -11,7 +11,7 @@ using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
-    internal class PrefabBuilderPreview
+    internal class PrefabBuilderPreview : System.IDisposable
     {
         // ── Backup ──
 
@@ -23,6 +23,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         readonly List<RendererBackup> backups = new List<RendererBackup>();
+        readonly List<Mesh> ownedMeshes = new List<Mesh>();
         Material vertexColorMat;
         bool isActive;
 
@@ -108,6 +109,7 @@ namespace SashaRX.UnityMeshLab
 
                 // Ensure mesh has vertex colors; if not, add white
                 var clone = Object.Instantiate(mesh);
+                ownedMeshes.Add(clone);
                 clone.hideFlags = HideFlags.HideAndDontSave;
                 if (clone.colors32 == null || clone.colors32.Length != clone.vertexCount)
                 {
@@ -218,6 +220,7 @@ namespace SashaRX.UnityMeshLab
                 });
 
                 var clone = Object.Instantiate(mesh);
+                ownedMeshes.Add(clone);
                 clone.hideFlags = HideFlags.HideAndDontSave;
                 clone.colors32 = colors;
                 e.meshFilter.sharedMesh = clone;
@@ -297,6 +300,7 @@ namespace SashaRX.UnityMeshLab
                 });
 
                 var clone = Object.Instantiate(mesh);
+                ownedMeshes.Add(clone);
                 clone.hideFlags = HideFlags.HideAndDontSave;
                 clone.colors32 = colors;
                 e.meshFilter.sharedMesh = clone;
@@ -377,6 +381,7 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 var clone = Object.Instantiate(mesh);
+                ownedMeshes.Add(clone);
                 clone.hideFlags = HideFlags.HideAndDontSave;
                 clone.colors32 = colors;
                 mf.sharedMesh = clone;
@@ -531,14 +536,14 @@ namespace SashaRX.UnityMeshLab
             foreach (var b in backups)
             {
                 if (b.meshFilter == null) continue;
-                // Destroy temp clone
-                if (b.meshFilter.sharedMesh != null && b.meshFilter.sharedMesh != b.originalMesh)
-                    Object.DestroyImmediate(b.meshFilter.sharedMesh);
                 b.meshFilter.sharedMesh = b.originalMesh;
                 var mr = b.meshFilter.GetComponent<MeshRenderer>();
                 if (mr != null) mr.sharedMaterials = b.originalMats;
             }
             backups.Clear();
+            foreach (var mesh in ownedMeshes)
+                if (mesh != null) Object.DestroyImmediate(mesh);
+            ownedMeshes.Clear();
 
             edgeOverlays = null;
             unusedVertOverlays = null;
@@ -549,6 +554,13 @@ namespace SashaRX.UnityMeshLab
                 if (ActiveInstance == this) ActiveInstance = null;
                 SceneView.RepaintAll();
             }
+        }
+
+        public void Dispose()
+        {
+            Restore();
+            if (vertexColorMat != null) Object.DestroyImmediate(vertexColorMat);
+            vertexColorMat = null;
         }
 
         void MarkActive()

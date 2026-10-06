@@ -20,13 +20,14 @@ namespace SashaRX.UnityMeshLab
             bool ownsProgress = !UvProgress.IsActive;
             if (ownsProgress)
                 UvProgress.Begin("Vertex AO (CPU, parallel)", cancelable: true);
+            var cpuCopies = new List<Mesh>();
+            Mesh targetCopy = null;
             try
             {
 
             // Build combined BVH from all meshes
             var allVerts = new List<Vector3>();
             var allTris = new List<int>();
-            var cpuCopies = new List<Mesh>();
             AppendGeometryBuffers(targets, allVerts, allTris, cpuCopies);
             AppendGeometryBuffers(occluders, allVerts, allTris, cpuCopies);
             if (allVerts.Count == 0 || allTris.Count == 0)
@@ -55,6 +56,7 @@ namespace SashaRX.UnityMeshLab
             foreach (var (mesh, xform) in targets)
             {
                 var readable = EnsureReadable(mesh);
+                targetCopy = readable != mesh ? readable : null;
                 var verts = readable.vertices;
                 var norms = readable.normals;
                 if (norms == null || norms.Length != verts.Length)
@@ -166,16 +168,18 @@ namespace SashaRX.UnityMeshLab
 
                 processed += verts.Length;
 
-                if (readable != mesh) UnityEngine.Object.DestroyImmediate(readable);
+                if (targetCopy != null) UnityEngine.Object.DestroyImmediate(targetCopy);
+                targetCopy = null;
                 result[mesh] = ao;
             }
 
-            foreach (var c in cpuCopies)
-                UnityEngine.Object.DestroyImmediate(c);
             return result;
             }
             finally
             {
+                if (targetCopy != null) UnityEngine.Object.DestroyImmediate(targetCopy);
+                foreach (var copy in cpuCopies)
+                    if (copy != null) UnityEngine.Object.DestroyImmediate(copy);
                 if (ownsProgress) UvProgress.End();
             }
         }

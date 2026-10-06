@@ -19,6 +19,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews use the source root's axes; saved output preserves captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.24] - 2026-10-06
+
+### Fixed
+- Release Vertex Color Baking and Prefab Builder preview materials on tool deactivation. Track and destroy only owned preview meshes, including after their scene objects are deleted or their mesh assignments are replaced. Restore partial previews as well as fully activated ones.
+- Explicitly destroy cached checker, shell-color and UV PNG resources before assembly reload or editor shutdown, restoring scene references first. Recreate caches on demand.
+- Release readable mesh copies when CPU AO baking/correction is cancelled, returns early or throws. Destroy a partially populated readable mesh when mesh-data capture or importer fallback fails.
+
 ## [1.1.23] - 2026-10-06
 
 ### Fixed

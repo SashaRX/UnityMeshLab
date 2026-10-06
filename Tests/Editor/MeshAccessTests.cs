@@ -21,6 +21,59 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ReadableCopyFailureDoesNotLeaveAnAllocatedMesh()
+        {
+            int count = Resources.FindObjectsOfTypeAll<Mesh>().Length;
+            for (int attempt = 0; attempt < 5; ++attempt)
+                Assert.Throws<System.NullReferenceException>(() => MeshAccess.ReadableCopy(null));
+            Assert.AreEqual(count, Resources.FindObjectsOfTypeAll<Mesh>().Length);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void CpuAoFailureReleasesUnreadableCopies(bool correction)
+        {
+            var source = QuadTopology();
+            source.SetIndices(new[] { 0, 1, 2, 0, 2, 3 }, MeshTopology.Triangles, 0);
+            source.UploadMeshData(true);
+            try {
+                // Probe the engine's read-only MeshData path before measuring.
+                var readable = MeshAccess.Readable(source, out bool isCopy);
+                Assert.IsTrue(isCopy); Object.DestroyImmediate(readable);
+                var targets = new System.Collections.Generic.List<(Mesh, Matrix4x4)> { (source, Matrix4x4.identity) };
+                var settings = new VertexAOSettings { sampleCount = -1, useGPU = false };
+                int count = Resources.FindObjectsOfTypeAll<Mesh>().Length;
+                for (int attempt = 0; attempt < 3; ++attempt) {
+                    if (correction) {
+                        var ao = new System.Collections.Generic.Dictionary<Mesh, float[]> { { source, new[] { 1f, 1f, 1f, 1f } } };
+                        Assert.Throws<System.OverflowException>(() => VertexAOBaker.ApplyFaceAreaCorrection(ao, targets, null, settings));
+                    } else Assert.Throws<System.OverflowException>(() => VertexAOBaker.BakeMultiMesh(targets, settings));
+                    Assert.AreEqual(count, Resources.FindObjectsOfTypeAll<Mesh>().Length);
+                }
+            }
+            finally { Object.DestroyImmediate(source); }
+        }
+
+        [Test]
+        public void CpuAoCancellationReleasesBothBvhAndTargetCopies()
+        {
+            var source = QuadTopology();
+            source.SetIndices(new[] { 0, 1, 2, 0, 2, 3 }, MeshTopology.Triangles, 0);
+            source.UploadMeshData(true);
+            try {
+                var readable = MeshAccess.Readable(source, out bool isCopy);
+                Assert.IsTrue(isCopy); Object.DestroyImmediate(readable);
+                var targets = new System.Collections.Generic.List<(Mesh, Matrix4x4)> { (source, Matrix4x4.identity) };
+                int count = Resources.FindObjectsOfTypeAll<Mesh>().Length;
+                UvProgress.Begin("AO cancellation resource test", cancelable: true);
+                UvProgress.RequestCancel();
+                VertexAOBaker.BakeMultiMesh(targets, new VertexAOSettings { sampleCount = 8, useGPU = false });
+                Assert.AreEqual(count, Resources.FindObjectsOfTypeAll<Mesh>().Length);
+            }
+            finally { UvProgress.End(); Object.DestroyImmediate(source); }
+        }
+
+        [Test]
         public void ReadableCopyKeepsTopologyEveryUvChannelAndFloatColours()
         {
             var src = QuadTopology();
