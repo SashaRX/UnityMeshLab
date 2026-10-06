@@ -20,6 +20,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews use the source root's axes; saved output preserves captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.25] - 2026-10-06
+
+### Changed
+- Simplify exposes an Error only button and shows whether a triangle count will stop reduction early. Per-node diagnostics report input/output/source counts, the requested stop count and native collapse error. Existing settings and geometric quality gates are preserved.
+
 ## [1.1.24] - 2026-10-06
 
 ### Fixed

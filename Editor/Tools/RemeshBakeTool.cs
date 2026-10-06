@@ -400,9 +400,16 @@ namespace SashaRX.UnityMeshLab
                     using (new EditorGUI.DisabledScope(!settings.simplify)) {
                         settings.maximumError = EditorGUILayout.Slider(new GUIContent("Maximum error",
                             "Relative to the mesh size. Flat areas collapse first; raise it for fewer triangles."), settings.maximumError, 0, 0.2f);
-                        settings.targetTriangles = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Stop at triangles",
-                            "Simplification stops at this count or at Maximum error, whichever comes first. 0 = go as far as the error allows."),
-                            settings.targetTriangles), 0, 5000000);
+                        using (new EditorGUILayout.HorizontalScope()) {
+                            settings.targetTriangles = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Stop at triangles",
+                                "A nonzero count stops reduction even if the shape could be represented with fewer triangles. 0 = reduce until Maximum error is reached."),
+                                settings.targetTriangles), 0, 5000000);
+                            using (new EditorGUI.DisabledScope(settings.targetTriangles == 0))
+                                if (GUILayout.Button(new GUIContent("Error only", "Remove the triangle-count stop. Flat surfaces can collapse to a few faces; Maximum error still protects the shape."), GUILayout.Width(75)))
+                                    settings.targetTriangles = 0;
+                        }
+                        EditorGUILayout.LabelField(settings.targetTriangles == 0 ? "Adaptive reduction: surface error only." :
+                            $"Stops at {settings.targetTriangles:N0} triangles even if further reduction is possible.", EditorStyles.wordWrappedMiniLabel);
                         settings.regularize = (RemeshRegularize)EditorGUILayout.EnumPopup(new GUIContent("Regularize",
                             "None keeps density where the shape needs it; Light/Strong even out triangle sizes."), settings.regularize);
                         settings.preserveFolds = EditorGUILayout.Toggle("Preserve folds", settings.preserveFolds);

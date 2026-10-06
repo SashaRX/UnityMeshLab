@@ -414,6 +414,8 @@ namespace SashaRX.UnityMeshLab
                             : RemeshNative.Simplify(input, options, token, out error);
                     }, token);
                     node.simplifyError = error;
+                    UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
+                        $"[{node.name}] Simplify: {input.TriangleCount} -> {node.simplified.TriangleCount} triangles; source={node.source.indices.Length / 3}; stopAt={options.targetTriangles}, maximumError={options.maximumError:G6}, achievedCollapseError={error:G6}."));
                 }
                 else { node.simplified = node.voxel; node.simplifyError = 0; }
                 before += node.voxel.TriangleCount; after += node.simplified.TriangleCount;
