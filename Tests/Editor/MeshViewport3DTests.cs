@@ -1,6 +1,7 @@
 using NUnit.Framework;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Threading;
 using UnityEditor;
 using UnityEngine;
@@ -222,12 +223,16 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(mesh); }
         }
 
-        [Test]
-        public void InspectionPreservesFourComponentUv7AndTangentAndColorAlpha()
+        [TestCase("en-US")]
+        [TestCase("ru-RU")]
+        [TestCase("hu-HU")]
+        public void InspectionPreservesFourComponentUv7AndTangentAndColorAlpha(string cultureName)
         {
+            var previousCulture = Thread.CurrentThread.CurrentCulture;
             var mesh = Quad();
             using (var inspection = new MeshInspection())
             try {
+                Thread.CurrentThread.CurrentCulture = CultureInfo.GetCultureInfo(cultureName);
                 mesh.SetUVs(7, new List<Vector4> { new Vector4(2.5f, -.25f, 3, 4), Vector4.zero, Vector4.one, Vector4.zero });
                 mesh.colors = new[] { new Color(.1f, .2f, .3f, .25f), Color.white, Color.white, Color.white };
                 Assert.IsTrue(MeshInspection.Supports(mesh, MeshViewport3D.Shading.UV7));
@@ -235,13 +240,13 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreEqual(new Color32(127, 191, 0, 255), uv[0]);
                 string report = inspection.Report(mesh);
                 StringAssert.Contains("UV7: Float32 ×4", report);
-                StringAssert.Contains("U 0…2.5", report);
-                StringAssert.Contains("V -0.25…1", report);
+                StringAssert.Contains($"U 0…{2.5f:0.###}", report);
+                StringAssert.Contains($"V {-.25f:0.###}…1", report);
                 Assert.AreEqual(new Color32(64, 64, 64, 255), MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.ColorAlpha)[0]);
                 Assert.AreNotEqual(MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.TangentSign)[0],
                     MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.TangentSign)[1]);
             }
-            finally { Object.DestroyImmediate(mesh); }
+            finally { Thread.CurrentThread.CurrentCulture = previousCulture; Object.DestroyImmediate(mesh); }
         }
 
         [Test]
@@ -302,31 +307,47 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(mesh); }
         }
 
-        [Test]
-        public void AttributeColorsRenderIntoUvLayoutUsingTheSameEncodingAs3D()
+        [TestCase(RenderTextureReadWrite.Default)]
+        [TestCase(RenderTextureReadWrite.Linear)]
+        [TestCase(RenderTextureReadWrite.sRGB)]
+        public void AttributeColorsRenderIntoUvLayoutUsingTheSameEncodingAs3D(RenderTextureReadWrite readWrite)
         {
             var mesh = Quad(); var canvas = new UvCanvasView { FillHidden = false, ShowBorder = false,
                 InspectionShading = MeshViewport3D.Shading.Normals };
-            RenderTexture layer = null; Texture2D pixels = null;
+            RenderTexture layer = null, sampled = null; Texture2D pixels = null;
             var previous = RenderTexture.active;
+            bool previousSrgbWrite = GL.sRGBWrite;
             try {
                 mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
                 mesh.normals = new[] { Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward };
                 canvas.Init();
+                // Default exercises the layer allocated by the canvas; the other cases
+                // exercise caller-provided targets with explicit storage encodings.
+                if (readWrite != RenderTextureReadWrite.Default)
+                    layer = new RenderTexture(32, 32, 0, RenderTextureFormat.ARGB32, readWrite);
                 layer = canvas.RenderUvLayer(new UvToolContext { PreviewUvChannel = 0 }, mesh,
-                    new MeshEntry { originalMesh = mesh }, null, 32, false);
-                RenderTexture.active = layer;
-                pixels = new Texture2D(32, 32, TextureFormat.RGBA32, false);
+                    new MeshEntry { originalMesh = mesh }, layer, 32, false);
+                Assert.IsNotNull(layer);
+                // Read the values a shader samples, including the layer's sRGB decode.
+                // Raw ReadPixels bytes from an sRGB target encode linear 0.5 as ~0.735.
+                sampled = new RenderTexture(32, 32, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                GL.sRGBWrite = false;
+                Graphics.Blit(layer, sampled);
+                RenderTexture.active = sampled;
+                pixels = new Texture2D(32, 32, TextureFormat.RGBA32, false, true);
                 pixels.ReadPixels(new Rect(0, 0, 32, 32), 0, 0); pixels.Apply();
                 var color = pixels.GetPixel(16, 16);
-                Assert.That(color.b, Is.GreaterThan(.95f));
-                Assert.That(color.r, Is.InRange(.45f, .55f));
-                Assert.That(color.g, Is.InRange(.45f, .55f));
-                Assert.That(color.a, Is.GreaterThan(.95f));
+                Color expected = MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.Normals)[0];
+                Assert.That(color.r, Is.EqualTo(expected.r).Within(.01f));
+                Assert.That(color.g, Is.EqualTo(expected.g).Within(.01f));
+                Assert.That(color.b, Is.EqualTo(expected.b).Within(.01f));
+                Assert.That(color.a, Is.EqualTo(expected.a).Within(.01f));
             }
             finally {
+                GL.sRGBWrite = previousSrgbWrite;
                 RenderTexture.active = previous; canvas.Cleanup();
                 if (layer) { layer.Release(); Object.DestroyImmediate(layer); }
+                if (sampled) { sampled.Release(); Object.DestroyImmediate(sampled); }
                 if (pixels) Object.DestroyImmediate(pixels); Object.DestroyImmediate(mesh);
             }
         }

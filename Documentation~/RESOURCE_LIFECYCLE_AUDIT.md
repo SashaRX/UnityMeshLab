@@ -86,6 +86,24 @@ The final 211-test selection omits these two known environment-sensitive
 assertions and includes the remaining selected viewport checks. No production
 rendering code, CI test settings or exclusions were changed to hide them.
 
+### Follow-up: environment-sensitive tests corrected
+
+The two failures above are now fixed in the tests. Inspector UV ranges are
+verified under en-US, ru-RU and hu-HU with the expected decimal separator;
+the original thread culture is restored on every exit. The color regression
+samples the UV layer through a shader into a linear target before CPU readback,
+matching how the 3D overlay samples it. Default, explicit linear and explicit
+sRGB render targets are all covered, with a 0.01 channel tolerance against the
+actual encoded vertex attributes. sRGB storage conversions are described in
+[Unity's RenderTexture.sRGB documentation](https://docs.unity3d.com/6000.0/Documentation/ScriptReference/RenderTexture-sRGB.html).
+
+Unity 6000.2.6f2 / D3D11: all 217 tests in the combined resource, viewport,
+shader-import, mesh-access, AO and Remesh baking selection passed, with no
+omitted viewport tests. All six new locale/render-target cases also passed
+in Gamma color space. The isolated project's Linear setting was restored.
+Logs and XML: `_results~/preview-test-fixes/`. Production rendering and
+inspection code is unchanged.
+
 ## Reviewed paths without new changes
 
 MeshViewport3D destroys its temporary meshes and all five materials in Dispose.
