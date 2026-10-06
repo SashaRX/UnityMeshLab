@@ -21,6 +21,7 @@ namespace SashaRX.UnityMeshLab
             public bool uvWire = true, uvBorder = true, fillHidden, spot;
             public MeshViewport3D.Shading shading;
             public MeshViewport3D.Projection viewProjection;
+            public MeshViewport3D.UpAxis upAxis = MeshViewport3D.UpAxis.Y;
             public bool wire, lit = true, grid = true, axes = true;
             public Color background = new Color(.16f, .19f, .24f, 1);
         }
@@ -46,6 +47,7 @@ namespace SashaRX.UnityMeshLab
             canvas.FillHidden = state.fillHidden; canvas.SpotMode = state.spot;
             viewport.Mode = MeshLabWindowPreferences.ValidEnum(state.shading, MeshViewport3D.Shading.Shaded);
             viewport.ViewProjection = MeshLabWindowPreferences.ValidEnum(state.viewProjection, MeshViewport3D.Projection.Perspective);
+            viewport.Up = MeshLabWindowPreferences.ValidEnum(state.upAxis, MeshViewport3D.UpAxis.Y);
             viewport.Wireframe = state.wire; viewport.Lit = state.lit;
             viewport.ShowGrid = state.grid; viewport.ShowAxes = state.axes; viewport.Background = state.background;
         }
@@ -64,7 +66,7 @@ namespace SashaRX.UnityMeshLab
                 zoom = canvas.Zoom, pan = canvas.Pan, fillAlpha = canvas.FillAlpha, exposure = canvas.LmExposure,
                 uvWire = canvas.ShowWireframe, uvBorder = canvas.ShowBorder,
                 fillHidden = canvas.FillHidden, spot = canvas.SpotMode,
-                shading = viewport.Mode, viewProjection = viewport.ViewProjection,
+                shading = viewport.Mode, viewProjection = viewport.ViewProjection, upAxis = viewport.Up,
                 wire = viewport.Wireframe, lit = viewport.Lit, grid = viewport.ShowGrid,
                 axes = viewport.ShowAxes, background = viewport.Background
             });

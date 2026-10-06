@@ -273,12 +273,18 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(mesh); }
         }
 
-        [TestCase(MeshViewport3D.Projection.XY)]
-        [TestCase(MeshViewport3D.Projection.XZ)]
-        [TestCase(MeshViewport3D.Projection.YZ)]
-        public void PlanarPickingUsesParallelRays(MeshViewport3D.Projection projection)
+        [TestCase(MeshViewport3D.Projection.XY, (int)MeshViewport3D.UpAxis.X)]
+        [TestCase(MeshViewport3D.Projection.XY, (int)MeshViewport3D.UpAxis.Y)]
+        [TestCase(MeshViewport3D.Projection.XY, (int)MeshViewport3D.UpAxis.Z)]
+        [TestCase(MeshViewport3D.Projection.XZ, (int)MeshViewport3D.UpAxis.X)]
+        [TestCase(MeshViewport3D.Projection.XZ, (int)MeshViewport3D.UpAxis.Y)]
+        [TestCase(MeshViewport3D.Projection.XZ, (int)MeshViewport3D.UpAxis.Z)]
+        [TestCase(MeshViewport3D.Projection.YZ, (int)MeshViewport3D.UpAxis.X)]
+        [TestCase(MeshViewport3D.Projection.YZ, (int)MeshViewport3D.UpAxis.Y)]
+        [TestCase(MeshViewport3D.Projection.YZ, (int)MeshViewport3D.UpAxis.Z)]
+        public void PlanarPickingUsesParallelRays(MeshViewport3D.Projection projection, int up)
         {
-            using (var viewport = new MeshViewport3D { ViewProjection = projection }) {
+            using (var viewport = new MeshViewport3D { ViewProjection = projection, Up = (MeshViewport3D.UpAxis)up }) {
                 viewport.Frame(new Bounds(Vector3.zero, Vector3.one));
                 typeof(MeshViewport3D).GetField("currentRect", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
                     .SetValue(viewport, new Rect(0, 0, 100, 100));
@@ -287,7 +293,48 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.That((direction - other).sqrMagnitude, Is.LessThan(1e-10f));
                 Assert.That((left - right).magnitude, Is.GreaterThan(.1f));
                 Assert.That(Mathf.Abs(Vector3.Dot(left - right, direction)), Is.LessThan(1e-6f));
+                Vector3 expected = projection == MeshViewport3D.Projection.XY ? Vector3.forward :
+                    projection == MeshViewport3D.Projection.XZ ? Vector3.down : Vector3.left;
+                Assert.That((direction - expected).sqrMagnitude, Is.LessThan(1e-10f));
             }
+        }
+
+        [TestCase((int)MeshViewport3D.UpAxis.X)]
+        [TestCase((int)MeshViewport3D.UpAxis.Y)]
+        [TestCase((int)MeshViewport3D.UpAxis.Z)]
+        public void PerspectivePickingAndFloorFollowTheChosenVerticalWithoutMovingTheMesh(int axis)
+        {
+            var up = (MeshViewport3D.UpAxis)axis;
+            Vector3 vertical = up == MeshViewport3D.UpAxis.X ? Vector3.right :
+                up == MeshViewport3D.UpAxis.Z ? Vector3.forward : Vector3.up;
+            Vector3 horizontal = up == MeshViewport3D.UpAxis.X ? Vector3.down : Vector3.right;
+            var center = new Vector3(.3f, -.2f, .4f);
+            var positions = new[] { center - horizontal * 2 - vertical * 2, center + horizontal * 2 - vertical * 2,
+                center + horizontal * 2 + vertical * 2, center - horizontal * 2 + vertical * 2 };
+            var mesh = new Mesh { vertices = positions, triangles = new[] { 0, 1, 2, 0, 2, 3 } };
+            using var viewport = new MeshViewport3D();
+            using var inspection = new MeshInspection();
+            try {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var type = typeof(MeshViewport3D);
+                type.GetField("currentRect", flags).SetValue(viewport, new Rect(0, 0, 100, 100));
+                type.GetField("orbit", flags).SetValue(viewport, Vector2.zero);
+                viewport.Frame(mesh.bounds);
+                var pivot = type.GetField("pivot", flags).GetValue(viewport);
+                var distance = type.GetField("distance", flags).GetValue(viewport);
+                viewport.Up = up;
+                Assert.AreEqual(pivot, type.GetField("pivot", flags).GetValue(viewport));
+                Assert.AreEqual(distance, type.GetField("distance", flags).GetValue(viewport));
+                Assert.IsTrue(viewport.TryScreenRay(new Vector2(50, 25), out var origin, out var direction));
+                Assert.That(Vector3.Dot(direction, vertical), Is.GreaterThan(.1f), "the upper screen half points up the model's selected axis");
+                Assert.IsTrue(inspection.Pick(new[] { new MeshViewport3D.Item(mesh, Matrix4x4.identity) }, origin, direction, out int item));
+                Assert.AreEqual(0, item);
+                var a = viewport.GridPoint(mesh.bounds, 1, 2); var b = viewport.GridPoint(mesh.bounds, -3, 7);
+                Assert.That(Vector3.Dot(b - a, vertical), Is.EqualTo(0).Within(1e-6f));
+                Assert.That(Vector3.Dot(a, vertical), Is.LessThan(Vector3.Dot(mesh.bounds.min, vertical)), "floor lies below the model");
+                CollectionAssert.AreEqual(positions, mesh.vertices);
+            }
+            finally { Object.DestroyImmediate(mesh); }
         }
 
         [Test]

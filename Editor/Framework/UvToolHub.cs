@@ -845,7 +845,12 @@ namespace SashaRX.UnityMeshLab
             // ── Zoom + Fit ──
             if (canvas3D || UseGeometry2D) {
                 viewport.Lit = GUILayout.Toggle(viewport.Lit, "Lit", EditorStyles.toolbarButton, GUILayout.Width(30));
-                viewport.ShowGrid = GUILayout.Toggle(viewport.ShowGrid, "Grid", EditorStyles.toolbarButton, GUILayout.Width(36));
+                viewport.ShowGrid = GUILayout.Toggle(viewport.ShowGrid,
+                    new GUIContent(canvas3D ? "Floor" : "Grid", "Show or hide the reference grid in the preview."),
+                    EditorStyles.toolbarButton, GUILayout.Width(40));
+                if (canvas3D)
+                    viewport.Up = (MeshViewport3D.UpAxis)EditorGUILayout.Popup((int)viewport.Up, UpAxisLabels,
+                        EditorStyles.toolbarPopup, GUILayout.Width(60));
                 if (GUILayout.Button("Frame", EditorStyles.toolbarButton, GUILayout.Width(44))) viewport.FrameContent();
             }
             else {
@@ -855,6 +860,12 @@ namespace SashaRX.UnityMeshLab
 
             DrawToolbarTail();
         }
+
+        static readonly GUIContent[] UpAxisLabels = {
+            new GUIContent("X Up", "Use X as vertical for the perspective camera and floor."),
+            new GUIContent("Y Up", "Use Y as vertical for the perspective camera and floor (Unity convention)."),
+            new GUIContent("Z Up", "Use Z as vertical for the perspective camera and floor (3ds Max convention).")
+        };
 
         void DrawUvChannelToggle()
         {

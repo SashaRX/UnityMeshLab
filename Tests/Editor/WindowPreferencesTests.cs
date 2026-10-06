@@ -53,6 +53,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 canvas.ActiveFillModeIndex = canvas.FillModes.FindIndex(mode => mode.name == "None");
                 var viewport = Get<MeshViewport3D>(window, "viewport");
                 viewport.Mode = MeshViewport3D.Shading.Normals; viewport.ShowGrid = false; viewport.Lit = false;
+                viewport.Up = MeshViewport3D.UpAxis.Z;
                 var tool = window.FindTool<RemeshBakeTool>();
                 Set(tool, "chartFold", true); Get<bool[]>(tool, "folds")[1] = false;
                 Set(Get<RemeshPreview>(tool, "previews"), "bumpMap", false);
@@ -74,6 +75,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var viewport = Get<MeshViewport3D>(window, "viewport");
                 Assert.That(viewport.Mode, Is.EqualTo(MeshViewport3D.Shading.Normals));
                 Assert.That(viewport.ShowGrid, Is.False); Assert.That(viewport.Lit, Is.False);
+                Assert.That(viewport.Up, Is.EqualTo(MeshViewport3D.UpAxis.Z));
                 var tool = window.FindTool<RemeshBakeTool>();
                 Assert.That(Get<bool>(tool, "chartFold"), Is.True);
                 Assert.That(Get<bool[]>(tool, "folds")[1], Is.False);
@@ -102,13 +104,14 @@ namespace SashaRX.UnityMeshLab.Tests
         public void ObsoleteToolAndInvalidValuesDoNotBreakWindowLayout()
         {
             EditorPrefs.SetString(MeshLabWindowPreferences.Key("Hub"),
-                "{\"toolId\":\"removed_tool\",\"leftWidth\":-1,\"rightWidth\":9999,\"zoom\":-5,\"shading\":999}");
+                "{\"toolId\":\"removed_tool\",\"leftWidth\":-1,\"rightWidth\":9999,\"zoom\":-5,\"shading\":999,\"upAxis\":999}");
             var window = ScriptableObject.CreateInstance<UvToolHub>();
             try {
                 Assert.That(Get<float>(window, "sideW"), Is.EqualTo(220));
                 Assert.That(Get<float>(window, "rightSideW"), Is.EqualTo(700));
                 Assert.That(Get<UvCanvasView>(window, "canvas").Zoom, Is.EqualTo(.01f));
                 Assert.That(Get<MeshViewport3D>(window, "viewport").Mode, Is.EqualTo(MeshViewport3D.Shading.Shaded));
+                Assert.That(Get<MeshViewport3D>(window, "viewport").Up, Is.EqualTo(MeshViewport3D.UpAxis.Y));
                 Assert.That(Get<int>(window, "activeToolIndex"), Is.GreaterThanOrEqualTo(0));
             }
             finally { UnityEngine.Object.DestroyImmediate(window); }

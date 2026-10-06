@@ -20,6 +20,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews use the source root's axes; saved output preserves captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.26] - 2026-10-06
+
+### Added
+- 3D preview has X Up, Y Up and Z Up choices for its perspective camera and floor. The choice persists across window restarts and applies consistently to every displayed stage without transforming mesh/export data or resetting pan/zoom. Planar XY/XZ/YZ views keep their coordinate planes.
+
+### Changed
+- The 3D Grid toggle is labelled Floor and can hide the reference floor grid independently of surface wireframe. Its enabled state remains saved with window preferences.
+
 ## [1.1.25] - 2026-10-06
 
 ### Changed
