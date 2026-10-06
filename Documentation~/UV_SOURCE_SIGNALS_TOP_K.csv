@@ -1,0 +1,13 @@
+label,family,selected,matched,precisionAtK
+hard,low_geometry,163,54,0.3312883435582822
+hard,low_plus_AO,163,65,0.3987730061349693
+hard,low_plus_curvature,163,69,0.4233128834355828
+hard,low_plus_source,163,74,0.4539877300613497
+seamV1,low_geometry,204,76,0.37254901960784315
+seamV1,low_plus_AO,204,91,0.44607843137254904
+seamV1,low_plus_curvature,204,82,0.4019607843137255
+seamV1,low_plus_source,204,83,0.4068627450980392
+seamV2,low_geometry,270,117,0.43333333333333335
+seamV2,low_plus_AO,270,127,0.4703703703703704
+seamV2,low_plus_curvature,270,131,0.48518518518518516
+seamV2,low_plus_source,270,137,0.5074074074074074

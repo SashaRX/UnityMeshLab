@@ -34,7 +34,7 @@ namespace SashaRX.UnityMeshLab
         internal static extern void meshLabMeshDestroy(IntPtr handle);
 
         internal static IndexedGeometry SimplifyGeometry(Vector3[] positions, int[] indices,
-            GeometrySettings settings, CancellationToken token, out float error)
+            GeometrySettings settings, CancellationToken token, out float error, bool allowEmpty = false)
         {
             token.ThrowIfCancellationRequested();
             if (positions == null || indices == null || positions.Length == 0 || indices.Length < 3 || indices.Length % 3 != 0 ||
@@ -49,6 +49,7 @@ namespace SashaRX.UnityMeshLab
                     (uint)indices.Length, (uint)settings.targetTriangles, settings.maximumError, settings.flags,
                     out handle, out uint vertexCount, out uint indexCount, out error);
                 token.ThrowIfCancellationRequested();
+                if (code == 3 && allowEmpty) return null;
                 if (code != 0) throw new InvalidOperationException("Simplification failed: " + SimplificationError(code));
                 return CopyGeometry(handle, vertexCount, indexCount);
             }

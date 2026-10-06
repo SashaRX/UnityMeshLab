@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.20)
+project(seam_region_probe LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(XATLAS "${CMAKE_CURRENT_LIST_DIR}/../../Native~/third_party/xatlas")
+add_executable(seam_region_probe region_probe.cpp "${XATLAS}/xatlas.cpp")
+target_include_directories(seam_region_probe PRIVATE "${XATLAS}")

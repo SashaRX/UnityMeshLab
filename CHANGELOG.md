@@ -15,9 +15,133 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Removed the obsolete standalone Python/BAT sweep-gallery generator. It only understood the retired flat `BenchmarkReports/*_sweep_*.csv` + `{csvBase}_png/` layout; sweeps now generate their own `index.html` in the current nested run layout. Benchmark documentation and hierarchical-repack artefact descriptions now name the files the current code actually writes.
 
 ### Fixed
+- Viewport regressions respect localized UV-range formatting and compare shader-sampled attribute colors after sRGB decoding. Cover English, Russian and Hungarian locales plus default, linear and sRGB render targets.
 - Address CodeRabbit/Graphify findings: restore failed FBX overwrites and importer state, export computed channels, isolate all xatlas sessions, keep GPU cancellation terminal, preserve canonical inspection entries, align lightmap picking and fill visibility, deduplicate wire edges and retain prefab LOD overrides. Skinned source previews apply renderer scale once.
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
-- Remesh previews and saved output preserve captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
+- Remesh previews use the source root's axes; saved output preserves captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
+
+## [1.1.26] - 2026-10-06
+
+### Added
+- 3D preview has X Up, Y Up and Z Up choices for its perspective camera and floor. The choice persists across window restarts and applies consistently to every displayed stage without transforming mesh/export data or resetting pan/zoom. Planar XY/XZ/YZ views keep their coordinate planes.
+
+### Changed
+- The 3D Grid toggle is labelled Floor and can hide the reference floor grid independently of surface wireframe. Its enabled state remains saved with window preferences.
+
+## [1.1.25] - 2026-10-06
+
+### Changed
+- Simplify exposes an Error only button and shows whether a triangle count will stop reduction early. Per-node diagnostics report input/output/source counts, the requested stop count and native collapse error. Existing settings and geometric quality gates are preserved.
+
+## [1.1.24] - 2026-10-06
+
+### Fixed
+- Release Vertex Color Baking and Prefab Builder preview materials on tool deactivation. Track and destroy only owned preview meshes, including after their scene objects are deleted or their mesh assignments are replaced. Restore partial previews as well as fully activated ones.
+- Explicitly destroy cached checker, shell-color and UV PNG resources before assembly reload or editor shutdown, restoring scene references first. Recreate caches on demand.
+- Release readable mesh copies when CPU AO baking/correction is cancelled, returns early or throws. Destroy a partially populated readable mesh when mesh-data capture or importer fallback fails.
+
+## [1.1.23] - 2026-10-06
+
+### Fixed
+- Native Simplify retains positive-area sliver faces instead of opening holes during cleanup and forcing all managed retries to fall back to dense remesh geometry. Staged Unwrap also retains these faces and rejects an unsupported atlas mapping explicitly instead of silently deleting surface faces. Topology, surface-fit and quality gates remain enabled; native binaries come from the matching Build Native Libraries run.
+- Save All creates every missing parent of its output folder through AssetDatabase, normalizes path separators, and refuses invalid paths or files occupying a requested folder. Existing folders keep their GUIDs.
+
+## [1.1.22] - 2026-10-06
+
+### Fixed
+- Remesh 3D previews remove the scene root's position and rotation in every stage, including Source before running the pipeline. Root scale and child-relative transforms remain visible; generated stage and cage previews use the captured display frame. Saved prefab/FBX transforms continue to use the captured export frame.
+
+## [1.1.21] - 2026-10-06
+
+### Changed
+- GPU surface projection uses 256k query bands on GPUs reporting more than 1 GiB of memory, retaining 64k bands on low-memory/unknown devices. Projection upload, readback callbacks, result copies and continuation delays are reported separately.
+- Source refinement queries independent surface-distance probes in parallel with bounded storage and the original serial floating-point reduction. Vertex fitting reuses nearest answers only while the exact query position is unchanged; all quality gates, motion backtracks and collapse comparisons remain enabled. Per-phase Simplify timings expose the remaining work.
+
+### Fixed
+- Window preference saving uses an optional tool contract instead of a direct Hub dependency on the Remesh tab, restoring the CI dependency guard.
+
+## [1.1.20] - 2026-10-05
+
+### Changed
+- Pipeline GPU baking through two bounded query bands: overlap projection/readback with ordered CPU evaluation and request preparation. Compute ray hits and the same nearest-surface fallback in one GPU dispatch, without the CPU miss-mask round trip. Preserve samples, order, tangent transport, AO and quality checks; drain both readbacks and CPU work on cancellation. Log overlapping stage spans separately from pipeline wall time.
+
+## [1.1.19] - 2026-10-05
+
+### Fixed
+- Restore Mesh Lab window preferences per Unity project after closing the window or reloading scripts: active tool, panel widths and scroll positions, UV/3D display controls, per-tool UV fill, and Remesh/Bake preview toggles and foldouts.
+
+## [1.1.18] - 2026-10-05
+
+### Changed
+- Calculate independent 3D bake footprints and coarse source-fit motion candidates in parallel. Preserve sample ordering, vertex update ordering, every candidate/trial, projection settings and quality gates. Retain prefetched footprints across query cutoffs so their diagnostics are counted once.
+
+## [1.1.17] - 2026-10-05
+
+### Fixed
+- Normalize saved static FBX geometry at its original pivot with identity node transforms while preserving world size, orientation and tangent frames. Bake accumulated root and nested transforms into separate mesh copies before resetting ancestors. Normalized FBX uses meters and Z-up axes for a meter-based 3ds Max scene; Unity reimport bakes axis conversion without an extra object scale. Embedded maps survive conversion. Skinned hierarchy normalization is rejected before modifying the export clone.
+
+## [1.1.16] - 2026-10-05
+
+### Fixed
+- Preserve positive-area voxel triangles below the model-relative Simplify cleanup threshold. Dense solid remesh outputs stay closed before source trimming, with and without source fitting; exact collapsed faces and non-finite data remain rejected by cleanup/topology guards. Native plugins require the matching Build Native Libraries result.
+
+## [1.1.15] - 2026-10-05
+
+### Fixed
+- Give preview stage buttons sufficient height for separate title and status labels instead of clipped multiline mini-button text. Keep the progress strip clear of the selected-stage border and include full status in the tooltip.
+
+## [1.1.14] - 2026-10-05
+
+### Fixed
+- Keep both sidebars and the canvas inside the window, including after shrinking the window or dragging an oversized sidebar. Release splitter mouse capture on mouse-up and focus loss; contain toolbar tabs within their own scroll area.
+- Replace the Remesh preview stage dropdown with Source, Remesh, Simplify and Result buttons showing selection, ready/stale states and active pipeline progress.
+
+## [1.1.13] - 2026-10-05
+
+### Fixed
+- Fit coarse Simplify vertices to the original source using their full one-ring error, then regularize poor triangle pairs with a bounded sub-voxel shape budget. Preserve boundaries, source folds and bidirectional surface-error guards; rebuild normals/UVs after the changed geometry.
+
+## [1.1.12] - 2026-10-05
+
+### Fixed
+- Remesh & Bake preserves the 3D camera's pan, orbit and zoom when switching Source, Remesh, Simplified and Result stages or the trim-mask display. Automatic framing follows the selected source object; explicit Frame still fits the current stage.
+
+## [1.1.11] - 2026-10-05
+
+### Fixed
+- Simplify compares both diagonals of coarse organic patches against the captured source surface after vertex fitting. Curvature can drive a diagonal change without requiring better triangle shape; the final pass preserves vertex positions, face count, boundaries and component topology, and retains the sampled surface-error gates.
+
+## [1.1.10] - 2026-10-05
+
+### Fixed
+- Merged-chart tangents rebuild from final UVs on small models instead of retaining the previous atlas frames. Copies of a removed seam share tangent accumulations when their final position, normal, UV and chart match; UV and smoothing discontinuities remain independent.
+- Surface padding continues the receiving chart's tangent frame beyond its UV boundary. Normal detail crosses smooth physical edges without an artificial geometric-frame twist; singular or reversed frame continuations fall back to their reachable boundary frame.
+
+## [1.1.9] - 2026-10-05
+
+### Fixed
+- GPU BVH filters guard optional normal and either-side buffer loads explicitly rather than relying on HLSL logical operators to short-circuit. Unfiltered queries and absent masks remain safe on OpenGL/Vulkan as well as Direct3D.
+- Vertex AO verifies both compute kernels on the active graphics API before uploading geometry, allowing the existing CPU fallback to handle unsupported kernels.
+
+### Added
+- Graphics API validation covers actual DX11, DX12, OpenGL Core and Vulkan execution, both XYZ/DXT5nm normal encodings, and Android GLES3/Vulkan shader bundle compilation. See `Documentation~/GRAPHICS_API_VALIDATION.md` for the checks and device-validation limits.
+
+## [1.1.8] - 2026-10-05
+
+### Fixed
+- GPU BVH, source AO and vertex AO compute shaders resolve their shared traversal include through the canonical UPM package path. This avoids relying on sibling include lookup during package imports.
+- Shared GPU intersection and nearest-point helpers return initialized results through a single exit, avoiding uninitialized-value diagnostics during Android/Vulkan compilation while preserving intersection predicates and hit ranking.
+
+## [1.1.7] - 2026-10-05
+
+### Fixed
+- Mandatory UV overlap repair waits for an occupied xatlas repack session with cancellation support instead of treating temporary contention as packing failure. Cancelling a waiter preserves the current owner's session; optional repack calls retain their busy rejection.
+
+## [1.1.6] - 2026-10-05
+
+### Fixed
+- Remesh Result preview packs normal maps for the active Lit decoder, eliminating chart-shaped shading patches with Android DXT5nm encoding. Maps and exported PNG bytes remain unchanged.
+- GPU bake uses larger bounded asynchronous query batches to reduce Editor scheduling overhead, reports stage timings, and compiles without the BVH traversal initialization warning.
 
 ## [1.1.4] - 2026-10-03
 

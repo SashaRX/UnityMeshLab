@@ -1,0 +1,65 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index eae9c9b..faa5700 100755
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2,0 +3,3 @@ project(OptCuts)
++if(MSVC)
++  add_compile_definitions(_USE_MATH_DEFINES NOMINMAX _CRT_SECURE_NO_WARNINGS __DBL_MAX__=1.7976931348623157e308)
++endif()
+diff --git a/cmake/DownloadProject.cmake b/cmake/DownloadProject.cmake
+index e300f42..dc3f0e9 100644
+--- a/cmake/DownloadProject.cmake
++++ b/cmake/DownloadProject.cmake
+@@ -163,0 +164 @@ function(download_project)
++                        -D "CMAKE_POLICY_VERSION_MINIMUM=3.5"
+diff --git a/ext/libigl/external/glfw/CMakeLists.txt b/ext/libigl/external/glfw/CMakeLists.txt
+index a50c6e3..ea25fb6 100755
+--- a/ext/libigl/external/glfw/CMakeLists.txt
++++ b/ext/libigl/external/glfw/CMakeLists.txt
+@@ -10 +10 @@ if (NOT CMAKE_VERSION VERSION_LESS "3.0")
+-    cmake_policy(SET CMP0042 OLD)
++    cmake_policy(SET CMP0042 NEW)
+diff --git a/ext/libigl/external/stb_image/igl_stb_image_export.h b/ext/libigl/external/stb_image/igl_stb_image_export.h
+index 2e92f00..7b0875e 100755
+--- a/ext/libigl/external/stb_image/igl_stb_image_export.h
++++ b/ext/libigl/external/stb_image/igl_stb_image_export.h
+@@ -12 +12 @@
+-#      define IGL_STB_IMAGE_EXPORT __attribute__((visibility("default")))
++#      define IGL_STB_IMAGE_EXPORT __declspec(dllexport)
+@@ -15 +15 @@
+-#      define IGL_STB_IMAGE_EXPORT __attribute__((visibility("default")))
++#      define IGL_STB_IMAGE_EXPORT __declspec(dllimport)
+@@ -20 +20 @@
+-#    define IGL_STB_IMAGE_NO_EXPORT __attribute__((visibility("hidden")))
++#    define IGL_STB_IMAGE_NO_EXPORT
+@@ -25 +25 @@
+-#  define IGL_STB_IMAGE_DEPRECATED __attribute__ ((__deprecated__))
++#  define IGL_STB_IMAGE_DEPRECATED __declspec(deprecated)
+@@ -35,0 +36 @@
++/* NOLINTNEXTLINE(readability-avoid-unconditional-preprocessor-if) */
+diff --git a/src/Optimizer.cpp b/src/Optimizer.cpp
+index f36f159..d3b0759 100755
+--- a/src/Optimizer.cpp
++++ b/src/Optimizer.cpp
+@@ -29,2 +29,2 @@ extern OptCuts::MethodType methodType;
+-extern const std::string outputFolderPath;
+-extern const bool fractureMode;
++extern std::string outputFolderPath;
++extern bool fractureMode;
+diff --git a/src/main.cpp b/src/main.cpp
+index fbf4b3c..260ed1f 100755
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -29,0 +30,6 @@
++#ifdef _WIN32
++#include <direct.h>
++static int createOutputDirectory(const char* path) { return _mkdir(path); }
++#else
++static int createOutputDirectory(const char* path) { return mkdir(path, 0777); }
++#endif
+@@ -1134 +1140 @@ int main(int argc, char *argv[])
+-    mkdir(outputFolderPath.c_str(), 0777);
++    createOutputDirectory(outputFolderPath.c_str());
+@@ -1542 +1548 @@ int main(int argc, char *argv[])
+-    mkdir(outputFolderPath.c_str(), 0777);
++    createOutputDirectory(outputFolderPath.c_str());

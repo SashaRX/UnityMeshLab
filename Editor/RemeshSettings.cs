@@ -82,6 +82,7 @@ namespace SashaRX.UnityMeshLab
     public sealed class RemeshSettings
     {
         // 1 · Voxel remesh
+        internal const int MaxVoxelResolution = 1024;
         public int voxelResolution = 128;
         public bool solve = true;
         public bool shell;
@@ -133,12 +134,18 @@ namespace SashaRX.UnityMeshLab
         // Compare the requested chart settings with two bounded alternatives and
         // keep fewer islands only within bounded UV stretch.
         public bool reduceUvFragmentation = true;
+        // Merge adjacent islands after the unwrap when their seam aligns within bounded
+        // stretch and texel density, then re-pack the atlas. Deterministic; off while
+        // the chart-merge experiment runs (Documentation~/EXPERIMENTS.md).
+        public bool mergeCharts;
         // Regenerated after the UV cut, weighted per this mode (Blender Weighted
         // Normal analog); smooth inside every split group, hard across every split.
         public RemeshNormalWeighting normalWeighting = RemeshNormalWeighting.FaceArea;
         public float chartMaxCost = 2;
         public float chartNormalDeviation = 2;
-        public float chartRoundness = 0.01f;
+        // Measured balanced preset: compact charts avoid slivers without increasing
+        // cost/iterations globally. Corpus and packing comparisons: EXPERIMENTS.md.
+        public float chartRoundness = 0.5f;
         public float chartStraightness = 6;
         public float chartNormalSeam = 4;
         public int chartIterations = 1;
@@ -194,6 +201,24 @@ namespace SashaRX.UnityMeshLab
         // own scaling. Off: the saved transform carries the source's scale instead.
         public bool normalizeSize = true;
 
+        /// <summary>Apply the measured xatlas preset without resetting the mesh,
+        /// shading, atlas resolution/padding, optimizer toggles or bake settings.</summary>
+        internal void ApplyDefaultXatlasSettings()
+        {
+            var defaults = new RemeshSettings();
+            chartMaxCost = defaults.chartMaxCost;
+            chartNormalDeviation = defaults.chartNormalDeviation;
+            chartRoundness = defaults.chartRoundness;
+            chartStraightness = defaults.chartStraightness;
+            chartNormalSeam = defaults.chartNormalSeam;
+            chartIterations = defaults.chartIterations;
+            maxChartArea = defaults.maxChartArea;
+            maxChartBoundary = defaults.maxChartBoundary;
+            packBruteForce = defaults.packBruteForce;
+            packRotate = defaults.packRotate;
+            packBlockAlign = defaults.packBlockAlign;
+        }
+
         internal static RemeshSettings FromSavedJson(string json)
         {
             var restored = UnityEngine.JsonUtility.FromJson<RemeshSettings>(json);
@@ -212,7 +237,7 @@ namespace SashaRX.UnityMeshLab
                 if (sourceAO == null) throw new ArgumentException("Source AO settings are missing.");
                 sourceAO.Validate();
             }
-            if (voxelResolution < 4 || voxelResolution > 256 || targetTriangles < 0 || targetTriangles > 5000000 ||
+            if (voxelResolution < 4 || voxelResolution > MaxVoxelResolution || targetTriangles < 0 || targetTriangles > 5000000 ||
                 !Finite(maximumError) || maximumError < 0 || maximumError > 1 ||
                 !Finite(normalCrease) || normalCrease < 0 || normalCrease > 180 ||
                 !Finite(normalSmoothing) || normalSmoothing < 0 || normalSmoothing > 10 ||

@@ -84,7 +84,7 @@ Before the UV stage the canvas shows the selected model as usual.
    meshes; pose the model the way you want it baked. Every contributing submesh
    needs UV0. Read/Write-disabled imports are read through MeshData; the source
    importers are never touched (no reimports).
-2. **Voxel remesh** — voxel resolution (4–256), fit to source surface, two-sided
+2. **Voxel remesh** — voxel resolution (4–1024), fit to source surface, two-sided
    shell. Higher resolution preserves smaller gaps but produces a denser,
    uniform intermediate mesh. **Trim to source surface** (default on) masks the
    result against the source: the voxelizer closes every surface, so an open
@@ -170,6 +170,13 @@ Before the UV stage the canvas shows the selected model as usual.
    break on hard edges), straightness, roundness, iterations, max island area and
    border length (source units, 0 = unlimited), rotation, 4×4 block alignment and
    brute-force packing. Texture size and padding set the atlas.
+   The measured balanced chart default uses max cost 2, normal deviation 2,
+   **roundness 0.5**, straightness 6, hard-edge seam 4 and one iteration.
+   Rotation is on; block alignment and brute force are off. Previously saved
+   values stay intact. **Recommended xatlas settings** explicitly applies these
+   chart/packing defaults while preserving texture size/padding, optimizer
+   toggles, mesh, shading and bake settings. See the
+   [settings comparison](XATLAS_DEFAULTS_BENCHMARK.md) for the corpus and tradeoffs.
    **Reduce UV fragmentation** is enabled by default, including restored settings.
    It compares the requested unwrap with up to two chart-growth alternatives
    (max cost 5, normal deviation 2, roundness 0.01, normal seam 4, one iteration,
@@ -186,6 +193,28 @@ Before the UV stage the canvas shows the selected model as usual.
    status reports before/after island counts. Turn it off to use only the
    manually configured chart settings. Automatic charting still chooses its
    own seams; this control does not specify anatomical seams on a head or suit.
+   **Merge charts** (off by default) runs after the fragmentation search and
+   deterministically merges adjacent island pairs: a Procrustes similarity
+   (rotation + uniform scale + translation, no mirror) fits one chart's UVs onto
+   its neighbour through the seam vertices, the seam is snapped bit-exact onto
+   the acceptor's UVs, and the merge is accepted only within bounded seam
+   residual (≤ 0.02 of the acceptor's UV size), texel-density change (≤ 2×),
+   the island area/border limits, a full UV-triangle overlap test (contact along
+   the new seam is allowed, and the moved chart is also checked against itself
+   after the snap) and the same stretch bounds the fragmentation search uses.
+   Before repacking merged charts through xatlas, a bounded distortion relax
+   runs on the resulting UV islands. Relax moves
+   free UV vertices while keeping joined seam copies exactly colocal, preserving
+   each island's UV area, and accepting only non-increasing mean/worst stretch
+   with a complete zero-overlap scan. Existing cuts and unsupported topology are
+   skipped. It runs only after an accepted merge; the xatlas charting settings
+   and unmerged unwrap stay as configured. The
+   [relax comparison](UV_MERGE_RELAX_BENCHMARK.md) includes UV distortion heatmaps.
+   Tangent frames are rebuilt
+   from the final atlas layout — covering the fit rotation, the seam snap's
+   per-vertex displacement and the packer's per-axis stretch alike — and any
+   anomaly reverts to the unmerged unwrap. Adds one xatlas pack pass on the
+   worker.
    Baking first fills that padding, then applies **Dilation radius (px)**
    (default 64, 0 disables the extra pass). Dilation extends all maps into the
    remaining background from the nearest filled pixel within the additional
@@ -388,6 +417,12 @@ Texture snapshots and Unity mesh/asset APIs stay on the main thread.
 
 `Native~/src/remesh.cpp` uses meshoptimizer v1.3
 (`9e1f07b159d3cb777f1c67ed31fc11fd117986f4`, 2026-09-25), pinned by full commit SHA.
+The reviewed copy of its remesher in `Native~/third_party/meshoptimizer/` keeps
+byte grid offsets for resolutions up to 256 and uses 16-bit offsets from 257 to
+1024. The default remains 128. The grid alone uses 256 MiB at 512 and 2 GiB at
+1024; surface data and intermediate mesh buffers add to that. Resolution means
+cells along the longest axis, and the five-million-triangle output budget still
+applies. Native libraries must come from the completed `build-native.yml` run.
 Staged exports (ABI 3) run voxel remesh + position weld (`meshLabVoxelRemesh`),
 simplifyWithUpdate with the selected regularize/fold/prune options plus degenerate
 cleanup (`meshLabSimplify`), and averaged normal generation + xatlas unwrap
@@ -412,6 +447,14 @@ The *Normal weighting* option selects the accumulation weight — face area
 (meshopt's own), corner angle, or both multiplied (the Blender Weighted
 Normal modifier analog). Tangents are re-orthogonalized against the final
 normals so the saved frame matches the one the bake encodes against.
+
+UV overlap repair must finish before the atlas is accepted. Its ordinary and
+high-precision packs wait for the shared xatlas repack session on the Remesh
+worker, with cancellation available while waiting. This leaves the Editor free
+to finish an interactive owner. A waiting cancellation never releases or destroys
+that owner's atlas. Optional merge and public repack calls retain their immediate
+busy rejection. The existing overlap, stretch, padding and cost gates still apply.
+
 v1.3 removed the non-functional Thicken flag and renumbered `meshopt_RemeshShell`
 and `meshopt_RemeshSolve`. The bridge keeps its own flag bits (1 = fit source
 surface, 2 = two-sided shell) and maps them by name, so the C# ABI is unchanged;
@@ -436,6 +479,19 @@ nearest-point query. Barycentric source UV0 selects the original submesh materia
 Normal maps are decoded on the GPU before readback and transformed from source
 TBN to destination TBN. Metallic/smoothness, occlusion and emission stay separate
 from base color. The output normal map is imported as a Unity normal map.
+
+The bake and Maps view store canonical RGB normals. The Result Lit preview uses
+a separate linear GPU texture packed for the active shader decoder. Android's
+DXT5nm setting enables AG decoding in URP, so its preview places normal X in alpha;
+feeding a raw RGB texture with alpha 1 would make lighting depend on chart tangents.
+Built-in and URP use their respective decoder precedence. The preview cache follows
+the active target, normal encoding and pipeline, and releases its owned textures
+when invalidated. This conversion does not alter baked bytes or PNG export.
+
+GPU surface queries use bounded 65,536-query chunks; CPU bands remain at 16,384.
+`RemeshDiag` reports band/query/dispatch counts and stage timings, including Editor
+scheduling and asynchronous readback waits. GPU performance depends on query count
+and Editor scheduling; it must be measured against CPU with identical bake inputs.
 
 Material textures are read at their imported dimensions, without the web demo's
 1K rescaling. The readback cache has a 512 MiB limit (HDR emission costs 16 bytes
@@ -466,8 +522,7 @@ compression or max-size settings.
   occlusion, emission and scalar metallic/smoothness from common property names;
   every such downgrade is logged as a warning. Result materials target Built-in
   and URP; HDRP export is not implemented.
-- CPU projection is slower than a dedicated GPU baker, particularly at 4K.
-  Source snapshot/readback and export are synchronous editor operations.
+- Source snapshot/readback and export are synchronous editor operations.
 - Cancellation is observed after the current native remesh/unwrap completes,
   and throughout CPU projection. Assembly reload is deferred while the job owns
   native resources. Switching tabs requests cancellation and disposes previews.
@@ -507,6 +562,14 @@ coverage of a chart thinner than a texel, independent vertex color/alpha transfe
 UV-island hard edges and source-root selection following. Run these in
 Unity 6000.0+ after the native binaries are updated. The repository's Unity CI is
 license-gated; a skipped job is not a passed compilation/test run.
+
+`RemeshPreviewNormalPackingTests` renders the actual Result material against an
+independent mesh-normal control, including neutral/tilted normals and rotated or
+mirrored chart tangents. Run the graphics fixtures with Android DXT5nm and XYZ
+normal encoding, and Built-in and URP. They also check canonical Maps bytes,
+texture ownership and render-target restoration. `RemeshProjectionSurfaceTests`
+checks mixed ray traversal and hit/miss slots across the GPU chunk boundary, plus
+the actual Unity compute compiler's uninitialized-variable diagnostics.
 
 Manual gate: textured multi-submesh prop, nested transforms including negative
 scale, normal-mapped high-poly with bevels, thin sheet, LODGroup, 4K source texture,

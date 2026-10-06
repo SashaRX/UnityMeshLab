@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "input_npz": "D:\\sourceProject\\repos\\UnityMeshLab\\_results~\\learned-seams\\prepared-bust-variants-reviewed\\capture-0000.npz",
+  "input_sha256": "7a748b68b077972961b7524fd73dff5c07d830782094c047d3d8baf844dd25c8",
+  "probe_source_sha256": "3ea649c903ea6eec78263bae5e8b632c484ae48692bb74f46b9a3df64981be96",
+  "random_state_sha256": "59bcfdebda4ed0dbd3814b4bd32759036657880846c5bf8464aa1b6b61c74568",
+  "torch_version": "2.5.1+cu118",
+  "cuda_version": "11.8",
+  "device": "cuda:0",
+  "gpu": {
+    "index": 0,
+    "name": "NVIDIA GeForce GTX 980 Ti",
+    "capability": [
+      5,
+      2
+    ],
+    "total_memory_bytes": 6442319872
+  },
+  "memory": {
+    "baseline_allocated_bytes": 17473024,
+    "peak_allocated_bytes": 56292352,
+    "peak_reserved_bytes": 81788928,
+    "incremental_peak_bytes": 38819328
+  },
+  "batch_size": 1,
+  "edges": 2784,
+  "input_features": 2,
+  "width": 64,
+  "residual_blocks": 4,
+  "parameters": 79169,
+  "precision": "float32",
+  "finite_logits_and_gradients": true,
+  "warmup_passes": 1,
+  "measured_forward_backward_passes": 1,
+  "parameter_updates": 0,
+  "trained": false,
+  "quality_evaluated": false,
+  "outputs_saved": false,
+  "memory_scope": "PyTorch allocated/reserved tensors after warmup; CUDA context/other applications excluded"
+}

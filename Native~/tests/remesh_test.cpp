@@ -1,8 +1,11 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <string>
+#include <unordered_map>
 #include <vector>
 extern "C" int meshLabRemeshVersion();
 extern "C" int meshLabRemeshBuild(const float*, uint32_t, const uint32_t*, uint32_t,
@@ -20,7 +23,172 @@ extern "C" int meshLabUnwrapCopy(void*, float*, uint32_t, uint32_t*, uint32_t, i
 static void check(bool condition, const char* message) {
     if (!condition) { std::cerr << message << '\n'; std::exit(1); }
 }
-int main() {
+
+// A long, thin closed box has a row with hundreds of occupied voxels, exercising
+// the old byte-offset overflow without creating a five-million-triangle output.
+// Axis permutations also pin all three ten-bit packed coordinate components.
+static uint32_t checkHighResolutionBox(const float* cube, const uint32_t* triangles,
+    int resolution, int longAxis, uint32_t flags)
+{
+    const float halfExtent[3] = {1.0f, 0.04f, 0.02f};
+    float points[24], expected[3] = {};
+    for (int k = 0; k < 3; ++k) {
+        int axis = (k + longAxis) % 3;
+        expected[axis] = halfExtent[k];
+        for (int i = 0; i < 8; ++i)
+            points[i * 3 + axis] = cube[i * 3 + k] * halfExtent[k];
+    }
+    void* handle = nullptr;
+    uint32_t vertices = 0, indexCount = 0;
+    check(meshLabVoxelRemesh(points, 8, triangles, 36, resolution, flags,
+        &handle, &vertices, &indexCount) == 0 && handle, "high grid: voxel remesh");
+    check(vertices > 0 && indexCount > 0 && indexCount % 3 == 0, "high grid: valid counts");
+    std::vector<float> positions(size_t(vertices) * 3);
+    std::vector<uint32_t> indices(indexCount);
+    check(meshLabMeshCopy(handle, positions.data(), vertices, indices.data(), indexCount) == 0,
+        "high grid: copy");
+    meshLabMeshDestroy(handle);
+
+    float lower[3] = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+    float upper[3] = {-lower[0], -lower[1], -lower[2]};
+    const float cell = 2.0f / float(resolution - 2);
+    for (uint32_t i = 0; i < vertices; ++i)
+        for (int k = 0; k < 3; ++k) {
+            float value = positions[size_t(i) * 3 + k];
+            check(std::isfinite(value), "high grid: finite position");
+            check(value >= -expected[k] - cell && value <= expected[k] + cell,
+                "high grid: coordinates stay at source");
+            lower[k] = std::min(lower[k], value);
+            upper[k] = std::max(upper[k], value);
+        }
+    for (int k = 0; k < 3; ++k)
+        check(lower[k] <= -expected[k] + cell && upper[k] >= expected[k] - cell,
+            "high grid: both source extents retained");
+
+    std::unordered_map<uint64_t, uint32_t> edges;
+    for (size_t i = 0; i < indices.size(); i += 3) {
+        uint32_t a = indices[i], b = indices[i + 1], c = indices[i + 2];
+        check(a < vertices && b < vertices && c < vertices, "high grid: valid indices");
+        check(a != b && a != c && b != c, "high grid: distinct corners");
+        uint32_t corners[] = {a, b, c, a};
+        for (int k = 0; k < 3; ++k) {
+            uint32_t lo = std::min(corners[k], corners[k + 1]);
+            uint32_t hi = std::max(corners[k], corners[k + 1]);
+            ++edges[(uint64_t(lo) << 32) | hi];
+        }
+    }
+    for (const auto& edge : edges) {
+        // A two-sided shell may weld coincident opposed faces into one edge
+        // with four incidences. Only the solid mode promises a manifold surface.
+        check((flags & 2) ? edge.second >= 2 && edge.second % 2 == 0 : edge.second == 2,
+            "high grid: no open surface edges");
+    }
+    std::cout << "high grid " << resolution << " axis " << longAxis << " flags " << flags
+              << ": " << vertices << " vertices, " << indexCount / 3 << " triangles\n";
+    return indexCount / 3;
+}
+// A rotated, closed box makes a valid voxel triangle smaller than the old
+// model-relative cleanup floor. Its deletion used to open the fitted solid
+// even at resolution 48; dense grids can lose unfitted triangles as well.
+static void checkVoxelSlivers(int resolution, uint32_t flags, float scale) {
+    float points[] = {
+        -0.0020011793822050095f, -0.001458699000068009f, -0.0001976821367861703f,
+         0.00184518878813833f, -0.0011100758565589786f, -0.0012387937167659402f,
+         0.0018915702821686864f, 0.0016025769291445613f, -0.00015908811474218965f,
+        -0.001954797888174653f, 0.0012539536692202091f, 0.0008820234215818346f,
+        -0.0018915702821686864f, -0.0016025769291445613f, 0.00015908811474218965f,
+         0.001954797888174653f, -0.0012539536692202091f, -0.0008820234215818346f,
+         0.0020011793822050095f, 0.001458699000068009f, 0.0001976821367861703f,
+        -0.00184518878813833f, 0.0011100758565589786f, 0.0012387937167659402f
+    };
+    uint32_t triangles[] = {0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4,
+        1,2,6, 1,6,5, 2,3,7, 2,7,6, 3,0,4, 3,4,7};
+    for (float& value : points) value *= scale;
+    void* handle = nullptr; uint32_t vertices = 0, count = 0;
+    check(meshLabVoxelRemesh(points, 8, triangles, 36, resolution, flags, &handle, &vertices, &count) == 0 && handle,
+        "voxel slivers: remesh");
+    std::vector<float> p(size_t(vertices) * 3);
+    std::vector<uint32_t> ix(count);
+    check(meshLabMeshCopy(handle, p.data(), vertices, ix.data(), count) == 0, "voxel slivers: copy");
+    meshLabMeshDestroy(handle);
+    double minArea = std::numeric_limits<double>::max(), extent = 0;
+    for (int k = 0; k < 3; ++k) {
+        float lo = p[k], hi = p[k];
+        for (uint32_t v = 0; v < vertices; ++v) {
+            float value = p[size_t(v) * 3 + k];
+            check(std::isfinite(value), "voxel slivers: finite position");
+            lo = std::min(lo, value); hi = std::max(hi, value);
+        }
+        extent = std::max(extent, double(hi) - lo);
+    }
+    std::unordered_map<uint64_t, std::pair<int, int>> edges;
+    for (size_t f = 0; f < ix.size(); f += 3) {
+        uint32_t a = ix[f], b = ix[f + 1], c = ix[f + 2];
+        check(a < vertices && b < vertices && c < vertices, "voxel slivers: valid indices");
+        check(a != b && a != c && b != c, "voxel slivers: distinct corners");
+        double ab[3], ac[3];
+        for (int k = 0; k < 3; ++k) {
+            ab[k] = double(p[size_t(b) * 3 + k]) - p[size_t(a) * 3 + k];
+            ac[k] = double(p[size_t(c) * 3 + k]) - p[size_t(a) * 3 + k];
+        }
+        double x = ab[1] * ac[2] - ab[2] * ac[1], y = ab[2] * ac[0] - ab[0] * ac[2], z = ab[0] * ac[1] - ab[1] * ac[0];
+        double area = .5 * std::sqrt(x*x + y*y + z*z);
+        check(std::isfinite(area) && area > 0, "voxel slivers: positive triangle area");
+        minArea = std::min(minArea, area);
+        uint32_t corners[] = {a, b, c, a};
+        for (int k = 0; k < 3; ++k) {
+            uint32_t lo = std::min(corners[k], corners[k + 1]), hi = std::max(corners[k], corners[k + 1]);
+            auto& edge = edges[(uint64_t(lo) << 32) | hi];
+            ++edge.first; edge.second += corners[k] < corners[k + 1] ? 1 : -1;
+        }
+    }
+    for (const auto& edge : edges)
+        check(edge.second.first == 2 && edge.second.second == 0, "voxel slivers: closed oriented surface");
+    if (resolution == 48 && flags == 1 && scale == 1)
+        check(minArea < extent * extent * std::numeric_limits<float>::epsilon(), "voxel slivers: retained regression face");
+    std::cout << "voxel slivers " << resolution << " flags " << flags << " scale " << scale
+              << ": " << count / 3 << " triangles, closed\n";
+}
+
+// A very thin closed tetrahedron still has four positive-area faces. Cleanup
+// must not turn a no-op simplification into an open sheet at either scale.
+static void checkSimplifySlivers(float scale) {
+    float p[] = {0,0,0, scale,0,0, 0,scale,0, 0,0,scale * 1e-8f};
+    uint32_t ix[] = {0,2,1, 0,1,3, 1,2,3, 2,0,3};
+    void* handle = nullptr; uint32_t vertices = 0, count = 0; float error = -1;
+    check(meshLabSimplify(p, 4, ix, 12, 4, 0, 0, &handle, &vertices, &count, &error) == 0 && handle,
+        "simplify slivers: native call");
+    check(vertices == 4 && count == 12 && error == 0, "simplify slivers: all four faces retained");
+    std::vector<float> points(size_t(vertices) * 3);
+    std::vector<uint32_t> indices(count);
+    check(meshLabMeshCopy(handle, points.data(), vertices, indices.data(), count) == 0, "simplify slivers: copy");
+    meshLabMeshDestroy(handle);
+    std::unordered_map<uint64_t, std::pair<int, int>> edges;
+    for (size_t f = 0; f < indices.size(); f += 3) {
+        uint32_t corners[] = {indices[f], indices[f + 1], indices[f + 2], indices[f]};
+        for (int k = 0; k < 3; ++k) {
+            uint32_t a = corners[k], b = corners[k + 1];
+            check(a < vertices && b < vertices && a != b, "simplify slivers: valid corners");
+            auto& edge = edges[(uint64_t(std::min(a, b)) << 32) | std::max(a, b)];
+            ++edge.first; edge.second += a < b ? 1 : -1;
+        }
+    }
+    for (const auto& edge : edges)
+        check(edge.second.first == 2 && edge.second.second == 0, "simplify slivers: closed oriented surface");
+    // This apex is below xatlas's numerical face-area limit. Report failure;
+    // silently deleting its two side faces and returning an open UV mesh is
+    // not an acceptable way to make chart generation succeed.
+    handle = nullptr;
+    check(meshLabUnwrap(p, 4, ix, 12, 3.1415926f, 0, nullptr, 0, &handle, &vertices, &count, nullptr) != 0 &&
+        !handle && vertices == 0 && count == 0, "unwrap slivers: reject instead of deleting surface faces");
+}
+
+int main(int argc, char** argv) {
+    for (float scale : {1.f, .001f}) checkSimplifySlivers(scale);
+    for (int resolution : {48, 512})
+        for (uint32_t flags : {0u, 1u})
+            for (float scale : {1.f, .001f}) checkVoxelSlivers(resolution, flags, scale);
+    if (argc == 2 && std::string(argv[1]) == "--voxel-slivers-only") return 0;
     float p[] = {-1,-1,-1, 1,-1,-1, 1,1,-1, -1,1,-1, -1,-1,1, 1,-1,1, 1,1,1, -1,1,1};
     uint32_t t[] = {0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5};
     check(meshLabRemeshVersion() == 3, "ABI version");
@@ -32,6 +200,35 @@ int main() {
     p[0]=std::numeric_limits<float>::quiet_NaN();
     check(meshLabRemeshBuild(p,8,t,36,16,100,0.01f,1,0,256,4,1,&h,&v,&n)==1 && !h, "reject NaN");
     p[0]=-1;
+    check(meshLabRemeshBuild(p,8,t,36,1025,100,0.01f,1,0,256,4,1,&h,&v,&n)==1 && !h && !v && !n,
+        "reject grid above packed coordinate range");
+    check(meshLabVoxelRemesh(p,8,t,36,1025,1,&h,&v,&n)==1 && !h && !v && !n,
+        "staged: reject grid above packed coordinate range");
+    check(meshLabVoxelRemesh(p,8,t,36,std::numeric_limits<int>::max(),1,&h,&v,&n)==1 && !h,
+        "staged: reject overflowing resolution before allocation");
+    checkHighResolutionBox(p, t, 256, 0, 1);
+    checkHighResolutionBox(p, t, 257, 0, 1);
+    uint32_t wideSolid[2], wideShell[2];
+    for (uint32_t solve = 0; solve < 2; ++solve) {
+        wideSolid[solve] = checkHighResolutionBox(p, t, 512, 0, solve);
+        wideShell[solve] = checkHighResolutionBox(p, t, 512, 0, solve | 2);
+        check(wideShell[solve] > wideSolid[solve], "high grid: shell retains both surfaces");
+    }
+    checkHighResolutionBox(p, t, 1024, 0, 1);
+    checkHighResolutionBox(p, t, 1024, 1, 0);
+    checkHighResolutionBox(p, t, 1024, 2, 3);
+    // The cap extension must not bypass the existing intermediate triangle budget.
+    check(meshLabVoxelRemesh(p,8,t,36,1024,1,&h,&v,&n)==2 && !h && !v && !n,
+        "high grid: five-million-triangle budget preserved");
+    {
+        float thin[24];
+        for (int i = 0; i < 8; ++i)
+            for (int k = 0; k < 3; ++k)
+                thin[i * 3 + k] = p[i * 3 + k] * (k == 0 ? 1.0f : 0.04f);
+        check(meshLabRemeshBuild(thin,8,t,36,512,1000,0.1f,1,0,512,2,1,&h,&v,&n)==0 && h,
+            "high grid: legacy pipeline accepts wide grid");
+        meshLabRemeshDestroy(h); h=nullptr;
+    }
     for (int pass=0; pass<2; ++pass) {
         check(meshLabRemeshBuild(p,8,t,36,16,100,pass ? 1.0f : 0.01f,1,0,256,4,1,&h,&v,&n)==0 && h, "cube pipeline");
         check(v>0 && n>0 && n%3==0, "valid counts");

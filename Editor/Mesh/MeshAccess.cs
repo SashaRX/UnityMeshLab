@@ -37,6 +37,15 @@ namespace SashaRX.UnityMeshLab
         public static Mesh ReadableCopy(Mesh src)
         {
             var dst = new Mesh();
+            try { return ReadableCopyCore(src, dst); }
+            catch {
+                UnityEngine.Object.DestroyImmediate(dst);
+                throw;
+            }
+        }
+
+        static Mesh ReadableCopyCore(Mesh src, Mesh dst)
+        {
             dst.indexFormat = src.indexFormat;
             MeshUvState.SetDraft(dst, MeshUvState.IsDraft(src));
             if (!src.isReadable) {

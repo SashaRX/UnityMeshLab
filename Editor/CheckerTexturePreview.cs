@@ -36,8 +36,18 @@ namespace SashaRX.UnityMeshLab
                 RestoreAll();
         }
 
-        static void OnBeforeAssemblyReload() => RestoreAll();
-        static void OnQuitting() => RestoreAll();
+        static void OnBeforeAssemblyReload() => ReleaseResources();
+        static void OnQuitting() => ReleaseResources();
+
+        internal static void ReleaseResources()
+        {
+            var prefabPreview = PrefabBuilderPreview.ActiveInstance;
+            RestoreAll();
+            prefabPreview?.Dispose();
+            CheckerTexturePreview.ReleaseResources();
+            ShellColorModelPreview.ReleaseResources();
+            UvPngWriter.ReleaseResources();
+        }
 
         static void OnSceneSaving(UnityEngine.SceneManagement.Scene scene, string path)
         {
@@ -210,6 +220,15 @@ namespace SashaRX.UnityMeshLab
                 checkerMat = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };
                 checkerMat.mainTexture = checkerTex;
             }
+        }
+
+        internal static void ReleaseResources()
+        {
+            Restore();
+            if (checkerMat != null) Object.DestroyImmediate(checkerMat);
+            if (checkerTex != null) Object.DestroyImmediate(checkerTex);
+            checkerMat = null;
+            checkerTex = null;
         }
 
         // ═══════════════════════════════════════════════════════════

@@ -65,6 +65,9 @@ namespace SashaRX.UnityMeshLab
         {
             public Color32[] pixels;
             public bool srgb;
+            // GPU readback preserves unscaled canonical channels. Alpha records
+            // the source shader's platform-specific Z reconstruction convention.
+            public bool normalReadback;
             public Color[] hdrPixels;
             public int width, height;
             public TextureWrapMode wrapU, wrapV;
@@ -102,6 +105,7 @@ namespace SashaRX.UnityMeshLab
             public Map color, normal, metal, ao, emission;
             public Color tint, emissionTint;
             public float metallic, smoothness, normalScale, aoStrength;
+            public RemeshNormalFrame.Mode normalFrameMode;
             public bool smoothnessFromAlbedo;
             // The material renders both sides (Cull Off / double-sided), so its back
             // faces are surface the player sees.
@@ -660,10 +664,12 @@ namespace SashaRX.UnityMeshLab
 
         sealed class Reader : IDisposable
         {
-            readonly Dictionary<(Texture, bool, bool, bool), Image> cache = new Dictionary<(Texture, bool, bool, bool), Image>();
+            readonly Dictionary<(Texture, bool, bool, bool, RemeshNormalFrame.Mode), Image> cache =
+                new Dictionary<(Texture, bool, bool, bool, RemeshNormalFrame.Mode), Image>();
             readonly Material blit;
             long bytes;
             readonly bool asyncTextures, readNormals, readAO;
+            readonly RemeshNormalFrame.Mode fallbackNormalFrameMode;
             readonly List<Task> pending = new List<Task>();
             public Task Readbacks => Task.WhenAll(pending);
             public Reader(RemeshSettings aoSettings = null, bool asynchronous = false)
@@ -671,6 +677,12 @@ namespace SashaRX.UnityMeshLab
                 asyncTextures = asynchronous || aoSettings != null;
                 readNormals = aoSettings == null || aoSettings.sourceAO.normalMap;
                 readAO = aoSettings == null || aoSettings.multiplySourceAO;
+                // Unknown custom shaders use the active pipeline's convention. HDRP
+                // and other pipelines fall back to Built-in; their custom normal
+                // encodings cannot be inferred from a texture property name.
+                var pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+                fallbackNormalFrameMode = pipeline && pipeline.GetType().FullName == "UnityEngine.Rendering.Universal.UniversalRenderPipelineAsset"
+                    ? RemeshNormalFrame.Mode.Urp : RemeshNormalFrame.Mode.BuiltIn;
                 var shader = Shader.Find("Hidden/MeshLab/RemeshReadback");
                 if (!shader || !shader.isSupported) throw new InvalidOperationException("Remesh readback shader is unavailable.");
                 blit = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
@@ -706,6 +718,7 @@ namespace SashaRX.UnityMeshLab
                     normal = readNormals && hasUv && normal != null ? ReadMap(material, normal, false, true) : new Map(),
                     ao = readAO && hasUv && material ? ReadMap(material, "_OcclusionMap", false) : new Map(),
                     tint = Color.white, normalScale = material ? FloatOr(material, 1, "_BumpScale", "_NormalScale") : 1,
+                    normalFrameMode = NormalFrameMode(material),
                     aoStrength = material ? FloatOr(material, 1, "_OcclusionStrength") : 1,
                     twoSided = material && IsTwoSided(material)
                 };
@@ -733,6 +746,7 @@ namespace SashaRX.UnityMeshLab
                     metallic = specular ? 0 : m.GetFloat("_Metallic"),
                     smoothness = m.GetFloat(urp ? "_Smoothness" : (metal || m.IsKeywordEnabled("_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A") ? "_GlossMapScale" : "_Glossiness")),
                     normalScale = m.GetFloat("_BumpScale"), aoStrength = m.GetFloat("_OcclusionStrength"),
+                    normalFrameMode = urp ? RemeshNormalFrame.Mode.Urp : RemeshNormalFrame.Mode.BuiltIn,
                     smoothnessFromAlbedo = m.IsKeywordEnabled("_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A"),
                     twoSided = IsTwoSided(m)
                 };
@@ -759,12 +773,21 @@ namespace SashaRX.UnityMeshLab
                     emissionTint = emissive ? m.GetColor("_EmissionColor").linear : Color.black,
                     metallic = FloatOr(m, 0, "_Metallic"), smoothness = FloatOr(m, 0.5f, "_Smoothness", "_Glossiness"),
                     normalScale = FloatOr(m, 1, "_BumpScale", "_NormalScale"), aoStrength = FloatOr(m, 1, "_OcclusionStrength"),
+                    normalFrameMode = NormalFrameMode(m),
                     twoSided = IsTwoSided(m)
                 };
                 // Unknown shaders get no shared base transform: each map keeps the tiling
                 // and offset its own property carries (Read captured them), since nothing
                 // says this shader samples everything through the base map's ST.
                 return surface;
+            }
+
+            RemeshNormalFrame.Mode NormalFrameMode(Material material)
+            {
+                string shader = material && material.shader ? material.shader.name : "";
+                if (shader == "Universal Render Pipeline/Lit") return RemeshNormalFrame.Mode.Urp;
+                if (shader == "Standard" || shader == "Standard (Specular setup)") return RemeshNormalFrame.Mode.BuiltIn;
+                return fallbackNormalFrameMode;
             }
 
             // Standard and URP/Lit sample these maps with the base UV transform.
@@ -811,14 +834,16 @@ namespace SashaRX.UnityMeshLab
                     return map;
                 }
                 map.scale = material.GetTextureScale(property); map.offset = material.GetTextureOffset(property);
-                var key = (texture, color, normal, hdr);
+                var normalMode = normal ? NormalFrameMode(material) : RemeshNormalFrame.Mode.BuiltIn;
+                var key = (texture, color, normal, hdr, normalMode);
                 if (!cache.TryGetValue(key, out var image)) {
                     bytes += (long)texture.width * texture.height * (hdr ? 16 : 4);
                     if (bytes > 512L * 1024 * 1024) throw new InvalidOperationException("Source texture readback exceeds 512 MiB. Process the model in smaller groups.");
                     blit.SetFloat("_HDR", hdr ? 1 : 0);
                     blit.SetFloat("_DecodeNormal", normal ? 1 : 0); blit.SetFloat("_ColorMap", color ? 1 : 0);
+                    blit.SetFloat("_NormalConvention", (float)normalMode);
                     if (asyncTextures && SystemInfo.supportsAsyncGPUReadback) {
-                        image = new Image { srgb = color && !hdr, width = texture.width, height = texture.height,
+                        image = new Image { srgb = color && !hdr, normalReadback = normal, width = texture.width, height = texture.height,
                             wrapU = texture.wrapModeU, wrapV = texture.wrapModeV };
                         pending.Add(hdr
                             ? PopulateHdrPixels(image, GpuReadback.ReadColorsAsync(texture, texture.width, texture.height, blit))
@@ -830,7 +855,8 @@ namespace SashaRX.UnityMeshLab
                     var copy = GpuReadback.Read(texture, texture.width, texture.height, hdr, blit);
                     if (!copy) throw new InvalidOperationException(material.name + "." + property + ": GPU readback of '" + texture.name + "' failed.");
                     try {
-                        image = new Image { pixels = hdr ? null : copy.GetPixels32(), hdrPixels = hdr ? copy.GetPixels() : null, srgb = color && !hdr, width = texture.width, height = texture.height,
+                        image = new Image { pixels = hdr ? null : copy.GetPixels32(), hdrPixels = hdr ? copy.GetPixels() : null, srgb = color && !hdr,
+                            normalReadback = normal, width = texture.width, height = texture.height,
                             wrapU = texture.wrapModeU, wrapV = texture.wrapModeV };
                         cache.Add(key, image);
                     }

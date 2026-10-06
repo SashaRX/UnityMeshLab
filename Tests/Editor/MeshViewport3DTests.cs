@@ -1,6 +1,7 @@
 using NUnit.Framework;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Threading;
 using UnityEditor;
 using UnityEngine;
@@ -10,6 +11,46 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class MeshViewport3DTests
     {
+        [TestCase(0f, 900f, 700f, true)]
+        [TestCase(320f, 900f, 700f, true)]
+        [TestCase(500f, 900f, 700f, true)]
+        [TestCase(800f, 900f, 700f, true)]
+        [TestCase(1900f, 900f, 700f, true)]
+        [TestCase(800f, 300f, 360f, true)]
+        [TestCase(500f, 900f, 700f, false)]
+        [TestCase(800f, 900f, 700f, false)]
+        public void SidebarColumnsRemainInsideTheWindow(float windowWidth, float left, float right, bool hasRight)
+        {
+            var widths = UvToolHub.ResolveColumnWidths(windowWidth, left, right, hasRight);
+            float handles = UvToolHub.SplitterWidth(windowWidth, hasRight) * (hasRight ? 2 : 1);
+            Assert.GreaterOrEqual(widths.x, 0); Assert.GreaterOrEqual(widths.y, 0); Assert.GreaterOrEqual(widths.z, 0);
+            Assert.That(widths.x + widths.y + widths.z + handles, Is.EqualTo(windowWidth).Within(.001f));
+            if (!hasRight) Assert.AreEqual(0, widths.z);
+            if (windowWidth >= 800) {
+                Assert.GreaterOrEqual(widths.x, 220); Assert.GreaterOrEqual(widths.y, 120);
+                if (hasRight) Assert.GreaterOrEqual(widths.z, 220);
+            }
+        }
+
+        [Test]
+        public void RightSplitterCanGrowWhenTheLeftPanelUsedAllAvailableRoom()
+        {
+            var initial = UvToolHub.ResolveColumnWidths(800, 900, 700, true);
+            var resized = UvToolHub.ResizeColumns(800, initial, initial.z + 100, true, true);
+            Assert.That(resized.z, Is.EqualTo(initial.z + 100).Within(.001f));
+            Assert.Less(resized.x, initial.x); Assert.GreaterOrEqual(resized.y, 120);
+        }
+
+        [Test]
+        public void PipelineWorkMapsToItsPreviewButton()
+        {
+            Assert.IsNull(RemeshPreview.PreviewStage(null));
+            Assert.AreEqual(RemeshPreview.Stage.Remesh, RemeshPreview.PreviewStage(RemeshPipeline.Stage.Remesh));
+            Assert.AreEqual(RemeshPreview.Stage.Simplified, RemeshPreview.PreviewStage(RemeshPipeline.Stage.Simplify));
+            Assert.AreEqual(RemeshPreview.Stage.Result, RemeshPreview.PreviewStage(RemeshPipeline.Stage.Unwrap));
+            Assert.AreEqual(RemeshPreview.Stage.Result, RemeshPreview.PreviewStage(RemeshPipeline.Stage.Bake));
+        }
+
         [UnityTest]
         public IEnumerator PreviewPreparationRunsOnWorkerAndCoalescesSupersededRequests()
         {
@@ -182,12 +223,16 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(mesh); }
         }
 
-        [Test]
-        public void InspectionPreservesFourComponentUv7AndTangentAndColorAlpha()
+        [TestCase("en-US")]
+        [TestCase("ru-RU")]
+        [TestCase("hu-HU")]
+        public void InspectionPreservesFourComponentUv7AndTangentAndColorAlpha(string cultureName)
         {
+            var previousCulture = Thread.CurrentThread.CurrentCulture;
             var mesh = Quad();
             using (var inspection = new MeshInspection())
             try {
+                Thread.CurrentThread.CurrentCulture = CultureInfo.GetCultureInfo(cultureName);
                 mesh.SetUVs(7, new List<Vector4> { new Vector4(2.5f, -.25f, 3, 4), Vector4.zero, Vector4.one, Vector4.zero });
                 mesh.colors = new[] { new Color(.1f, .2f, .3f, .25f), Color.white, Color.white, Color.white };
                 Assert.IsTrue(MeshInspection.Supports(mesh, MeshViewport3D.Shading.UV7));
@@ -195,13 +240,13 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreEqual(new Color32(127, 191, 0, 255), uv[0]);
                 string report = inspection.Report(mesh);
                 StringAssert.Contains("UV7: Float32 ×4", report);
-                StringAssert.Contains("U 0…2.5", report);
-                StringAssert.Contains("V -0.25…1", report);
+                StringAssert.Contains($"U 0…{2.5f:0.###}", report);
+                StringAssert.Contains($"V {-.25f:0.###}…1", report);
                 Assert.AreEqual(new Color32(64, 64, 64, 255), MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.ColorAlpha)[0]);
                 Assert.AreNotEqual(MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.TangentSign)[0],
                     MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.TangentSign)[1]);
             }
-            finally { Object.DestroyImmediate(mesh); }
+            finally { Thread.CurrentThread.CurrentCulture = previousCulture; Object.DestroyImmediate(mesh); }
         }
 
         [Test]
@@ -228,12 +273,18 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(mesh); }
         }
 
-        [TestCase(MeshViewport3D.Projection.XY)]
-        [TestCase(MeshViewport3D.Projection.XZ)]
-        [TestCase(MeshViewport3D.Projection.YZ)]
-        public void PlanarPickingUsesParallelRays(MeshViewport3D.Projection projection)
+        [TestCase(MeshViewport3D.Projection.XY, (int)MeshViewport3D.UpAxis.X)]
+        [TestCase(MeshViewport3D.Projection.XY, (int)MeshViewport3D.UpAxis.Y)]
+        [TestCase(MeshViewport3D.Projection.XY, (int)MeshViewport3D.UpAxis.Z)]
+        [TestCase(MeshViewport3D.Projection.XZ, (int)MeshViewport3D.UpAxis.X)]
+        [TestCase(MeshViewport3D.Projection.XZ, (int)MeshViewport3D.UpAxis.Y)]
+        [TestCase(MeshViewport3D.Projection.XZ, (int)MeshViewport3D.UpAxis.Z)]
+        [TestCase(MeshViewport3D.Projection.YZ, (int)MeshViewport3D.UpAxis.X)]
+        [TestCase(MeshViewport3D.Projection.YZ, (int)MeshViewport3D.UpAxis.Y)]
+        [TestCase(MeshViewport3D.Projection.YZ, (int)MeshViewport3D.UpAxis.Z)]
+        public void PlanarPickingUsesParallelRays(MeshViewport3D.Projection projection, int up)
         {
-            using (var viewport = new MeshViewport3D { ViewProjection = projection }) {
+            using (var viewport = new MeshViewport3D { ViewProjection = projection, Up = (MeshViewport3D.UpAxis)up }) {
                 viewport.Frame(new Bounds(Vector3.zero, Vector3.one));
                 typeof(MeshViewport3D).GetField("currentRect", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
                     .SetValue(viewport, new Rect(0, 0, 100, 100));
@@ -242,7 +293,48 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.That((direction - other).sqrMagnitude, Is.LessThan(1e-10f));
                 Assert.That((left - right).magnitude, Is.GreaterThan(.1f));
                 Assert.That(Mathf.Abs(Vector3.Dot(left - right, direction)), Is.LessThan(1e-6f));
+                Vector3 expected = projection == MeshViewport3D.Projection.XY ? Vector3.forward :
+                    projection == MeshViewport3D.Projection.XZ ? Vector3.down : Vector3.left;
+                Assert.That((direction - expected).sqrMagnitude, Is.LessThan(1e-10f));
             }
+        }
+
+        [TestCase((int)MeshViewport3D.UpAxis.X)]
+        [TestCase((int)MeshViewport3D.UpAxis.Y)]
+        [TestCase((int)MeshViewport3D.UpAxis.Z)]
+        public void PerspectivePickingAndFloorFollowTheChosenVerticalWithoutMovingTheMesh(int axis)
+        {
+            var up = (MeshViewport3D.UpAxis)axis;
+            Vector3 vertical = up == MeshViewport3D.UpAxis.X ? Vector3.right :
+                up == MeshViewport3D.UpAxis.Z ? Vector3.forward : Vector3.up;
+            Vector3 horizontal = up == MeshViewport3D.UpAxis.X ? Vector3.down : Vector3.right;
+            var center = new Vector3(.3f, -.2f, .4f);
+            var positions = new[] { center - horizontal * 2 - vertical * 2, center + horizontal * 2 - vertical * 2,
+                center + horizontal * 2 + vertical * 2, center - horizontal * 2 + vertical * 2 };
+            var mesh = new Mesh { vertices = positions, triangles = new[] { 0, 1, 2, 0, 2, 3 } };
+            using var viewport = new MeshViewport3D();
+            using var inspection = new MeshInspection();
+            try {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var type = typeof(MeshViewport3D);
+                type.GetField("currentRect", flags).SetValue(viewport, new Rect(0, 0, 100, 100));
+                type.GetField("orbit", flags).SetValue(viewport, Vector2.zero);
+                viewport.Frame(mesh.bounds);
+                var pivot = type.GetField("pivot", flags).GetValue(viewport);
+                var distance = type.GetField("distance", flags).GetValue(viewport);
+                viewport.Up = up;
+                Assert.AreEqual(pivot, type.GetField("pivot", flags).GetValue(viewport));
+                Assert.AreEqual(distance, type.GetField("distance", flags).GetValue(viewport));
+                Assert.IsTrue(viewport.TryScreenRay(new Vector2(50, 25), out var origin, out var direction));
+                Assert.That(Vector3.Dot(direction, vertical), Is.GreaterThan(.1f), "the upper screen half points up the model's selected axis");
+                Assert.IsTrue(inspection.Pick(new[] { new MeshViewport3D.Item(mesh, Matrix4x4.identity) }, origin, direction, out int item));
+                Assert.AreEqual(0, item);
+                var a = viewport.GridPoint(mesh.bounds, 1, 2); var b = viewport.GridPoint(mesh.bounds, -3, 7);
+                Assert.That(Vector3.Dot(b - a, vertical), Is.EqualTo(0).Within(1e-6f));
+                Assert.That(Vector3.Dot(a, vertical), Is.LessThan(Vector3.Dot(mesh.bounds.min, vertical)), "floor lies below the model");
+                CollectionAssert.AreEqual(positions, mesh.vertices);
+            }
+            finally { Object.DestroyImmediate(mesh); }
         }
 
         [Test]
@@ -262,31 +354,47 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(mesh); }
         }
 
-        [Test]
-        public void AttributeColorsRenderIntoUvLayoutUsingTheSameEncodingAs3D()
+        [TestCase(RenderTextureReadWrite.Default)]
+        [TestCase(RenderTextureReadWrite.Linear)]
+        [TestCase(RenderTextureReadWrite.sRGB)]
+        public void AttributeColorsRenderIntoUvLayoutUsingTheSameEncodingAs3D(RenderTextureReadWrite readWrite)
         {
             var mesh = Quad(); var canvas = new UvCanvasView { FillHidden = false, ShowBorder = false,
                 InspectionShading = MeshViewport3D.Shading.Normals };
-            RenderTexture layer = null; Texture2D pixels = null;
+            RenderTexture layer = null, sampled = null; Texture2D pixels = null;
             var previous = RenderTexture.active;
+            bool previousSrgbWrite = GL.sRGBWrite;
             try {
                 mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
                 mesh.normals = new[] { Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward };
                 canvas.Init();
+                // Default exercises the layer allocated by the canvas; the other cases
+                // exercise caller-provided targets with explicit storage encodings.
+                if (readWrite != RenderTextureReadWrite.Default)
+                    layer = new RenderTexture(32, 32, 0, RenderTextureFormat.ARGB32, readWrite);
                 layer = canvas.RenderUvLayer(new UvToolContext { PreviewUvChannel = 0 }, mesh,
-                    new MeshEntry { originalMesh = mesh }, null, 32, false);
-                RenderTexture.active = layer;
-                pixels = new Texture2D(32, 32, TextureFormat.RGBA32, false);
+                    new MeshEntry { originalMesh = mesh }, layer, 32, false);
+                Assert.IsNotNull(layer);
+                // Read the values a shader samples, including the layer's sRGB decode.
+                // Raw ReadPixels bytes from an sRGB target encode linear 0.5 as ~0.735.
+                sampled = new RenderTexture(32, 32, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                GL.sRGBWrite = false;
+                Graphics.Blit(layer, sampled);
+                RenderTexture.active = sampled;
+                pixels = new Texture2D(32, 32, TextureFormat.RGBA32, false, true);
                 pixels.ReadPixels(new Rect(0, 0, 32, 32), 0, 0); pixels.Apply();
                 var color = pixels.GetPixel(16, 16);
-                Assert.That(color.b, Is.GreaterThan(.95f));
-                Assert.That(color.r, Is.InRange(.45f, .55f));
-                Assert.That(color.g, Is.InRange(.45f, .55f));
-                Assert.That(color.a, Is.GreaterThan(.95f));
+                Color expected = MeshViewport3D.EncodeColors(mesh, MeshViewport3D.Shading.Normals)[0];
+                Assert.That(color.r, Is.EqualTo(expected.r).Within(.01f));
+                Assert.That(color.g, Is.EqualTo(expected.g).Within(.01f));
+                Assert.That(color.b, Is.EqualTo(expected.b).Within(.01f));
+                Assert.That(color.a, Is.EqualTo(expected.a).Within(.01f));
             }
             finally {
+                GL.sRGBWrite = previousSrgbWrite;
                 RenderTexture.active = previous; canvas.Cleanup();
                 if (layer) { layer.Release(); Object.DestroyImmediate(layer); }
+                if (sampled) { sampled.Release(); Object.DestroyImmediate(sampled); }
                 if (pixels) Object.DestroyImmediate(pixels); Object.DestroyImmediate(mesh);
             }
         }

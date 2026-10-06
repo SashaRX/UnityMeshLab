@@ -20,6 +20,7 @@ namespace SashaRX.UnityMeshLab
         public enum Shading { Shaded, VertexColors, Normals, Tangents, UV0, UV1, UV2, UV3,
             UV4, UV5, UV6, UV7, Positions, TangentSign, ColorAlpha, BoneWeights, BoneIndices }
         public enum Projection { Perspective, XY, XZ, YZ }
+        internal enum UpAxis { X, Y, Z }
 
         /// <summary>One mesh to show: its matrix (any common space) and the materials the
         /// Shaded mode draws it with (null or short arrays fall back to a lit grey).</summary>
@@ -36,6 +37,7 @@ namespace SashaRX.UnityMeshLab
 
         public Shading Mode = Shading.Shaded;
         public Projection ViewProjection;
+        internal UpAxis Up = UpAxis.Y;
         public bool Wireframe;
         public bool Lit = true;
         public bool ShowGrid = true, ShowAxes = true;
@@ -48,6 +50,8 @@ namespace SashaRX.UnityMeshLab
         float distance = 5f, radius = 1f;
         int framedKey;
         bool framedOnce;
+        object framedContext;
+        internal object FramingContext { get; set; }
 
         static readonly int ColorId = Shader.PropertyToID("_Color");
         static readonly int UseVertexColorId = Shader.PropertyToID("_UseVertexColor");
@@ -59,7 +63,23 @@ namespace SashaRX.UnityMeshLab
             if (ViewProjection == Projection.XZ) return Quaternion.Euler(90, 0, 0);
             if (ViewProjection == Projection.YZ) return Quaternion.Euler(0, -90, 0);
             float pitch = orbit.y, yaw = orbit.x;
-            return Quaternion.Euler(pitch, yaw, 0f);
+            return Quaternion.FromToRotation(Vector3.up, UpDirection) * Quaternion.Euler(pitch, yaw, 0f);
+        }
+
+        internal Vector3 UpDirection => Up == UpAxis.X ? Vector3.right : Up == UpAxis.Z ? Vector3.forward : Vector3.up;
+
+        // Planar views keep their named coordinate plane; only the perspective
+        // floor follows the chosen vertical axis.
+        internal Projection GridProjection => ViewProjection != Projection.Perspective ? ViewProjection :
+            Up == UpAxis.X ? Projection.YZ : Up == UpAxis.Z ? Projection.XY : Projection.XZ;
+
+        internal Vector3 GridPoint(Bounds bounds, float x, float y)
+        {
+            float offset = radius * .002f;
+            if (GridProjection == Projection.XY)
+                return new Vector3(x, y, ViewProjection == Projection.Perspective ? bounds.min.z - offset : bounds.max.z + offset);
+            if (GridProjection == Projection.YZ) return new Vector3(bounds.min.x - offset, y, x);
+            return new Vector3(x, bounds.min.y - offset, y);
         }
 
         PreviewRenderUtility utility;
@@ -92,7 +112,7 @@ namespace SashaRX.UnityMeshLab
         {
             currentRect = rect;
             var bounds = BoundsOf(items, out int key, out bool any);
-            if (any && (!framedOnce || key != framedKey)) { Frame(bounds); framedKey = key; framedOnce = true; }
+            AutoFrame(bounds, key, any);
             HandleInput(rect, any ? bounds : (Bounds?)null);
             if (Event.current.type != EventType.Repaint) return;
             EditorGUI.DrawRect(rect, Background);
@@ -268,7 +288,7 @@ namespace SashaRX.UnityMeshLab
         // content's size, fading toward the rim, every fifth line brighter.
         void DrawGrid(Bounds bounds)
         {
-            bool xy = ViewProjection == Projection.XY, yz = ViewProjection == Projection.YZ;
+            bool xy = GridProjection == Projection.XY, yz = GridProjection == Projection.YZ;
             float sx = yz ? bounds.size.z : bounds.size.x, sy = xy || yz ? bounds.size.y : bounds.size.z;
             float ex = yz ? bounds.extents.z : bounds.extents.x, ey = xy || yz ? bounds.extents.y : bounds.extents.z;
             float step = NiceStep(Mathf.Max(sx, sy) / 8f);
@@ -284,17 +304,10 @@ namespace SashaRX.UnityMeshLab
                 float fade = 1f - Mathf.Abs(o) / reach;
                 float a = (i % 5 == 0 ? 0.40f : 0.18f) * fade;
                 var c = new Color(tone.r, tone.g, tone.b, a);
-                pairs.Add(GridPoint(cx + o, cz - reach)); pairs.Add(GridPoint(cx + o, cz + reach)); colors.Add(c);
-                pairs.Add(GridPoint(cx - reach, cz + o)); pairs.Add(GridPoint(cx + reach, cz + o)); colors.Add(c);
+                pairs.Add(GridPoint(bounds, cx + o, cz - reach)); pairs.Add(GridPoint(bounds, cx + o, cz + reach)); colors.Add(c);
+                pairs.Add(GridPoint(bounds, cx - reach, cz + o)); pairs.Add(GridPoint(bounds, cx + reach, cz + o)); colors.Add(c);
             }
             DrawLines(pairs, colors, Matrix4x4.identity);
-
-            Vector3 GridPoint(float x, float y)
-            {
-                if (xy) return new Vector3(x, y, bounds.max.z + radius * .002f);
-                if (yz) return new Vector3(bounds.min.x - radius * .002f, y, x);
-                return new Vector3(x, bounds.min.y - radius * .002f, y);
-            }
         }
 
         // The pivot's axes: X red, Y green, Z blue, a quarter of the content radius long.
@@ -359,6 +372,16 @@ namespace SashaRX.UnityMeshLab
         // ═══════════════════════════════════════════════════════════
         //  Camera
         // ═══════════════════════════════════════════════════════════
+
+        void AutoFrame(Bounds bounds, int key, bool any)
+        {
+            if (!any) return;
+            bool changed = FramingContext != null ? !ReferenceEquals(framedContext, FramingContext)
+                : framedContext != null || key != framedKey;
+            if (!framedOnce || changed) {
+                Frame(bounds); framedKey = key; framedContext = FramingContext; framedOnce = true;
+            }
+        }
 
         /// <summary>Centres the camera on bounds at a distance that fits them.</summary>
         public void Frame(Bounds bounds)

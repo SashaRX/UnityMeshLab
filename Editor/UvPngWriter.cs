@@ -27,6 +27,12 @@ namespace SashaRX.UnityMeshLab
         };
 
         static Material s_mat;
+        internal static void ReleaseResources()
+        {
+            if (s_mat != null) Object.DestroyImmediate(s_mat);
+            s_mat = null;
+        }
+
         static Material GetMat()
         {
             if (s_mat != null) return s_mat;

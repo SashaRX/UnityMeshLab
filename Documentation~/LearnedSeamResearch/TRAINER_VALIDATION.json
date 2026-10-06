@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-04",
+  "scope": "trainer mechanics on synthetic tetrahedra only",
+  "artistic_uv_quality_evaluated": false,
+  "user_models_trained": false,
+  "generated_uvs": false,
+  "device": {
+    "capability": [
+      5,
+      2
+    ],
+    "name": "NVIDIA GeForce GTX 980 Ti",
+    "total_memory_bytes": 6442319872
+  },
+  "torch_version": "2.5.1+cu118",
+  "cuda_version": "11.8",
+  "dataset_fingerprint": "fb846c4bbc156d0dec494b80e0f3f8ac5694e247266c1c31c7338e4dd565edfe",
+  "synthetic_independent_models": 4,
+  "synthetic_captures": 5,
+  "train_val_test_models": [
+    2,
+    1,
+    1
+  ],
+  "feature_count": 2,
+  "width": 64,
+  "residual_blocks": 4,
+  "parameters": 79169,
+  "epochs": 4,
+  "paused_after_epoch": 2,
+  "resumed_model_optimizer_metrics_equal": true,
+  "partial_test_evaluated": false,
+  "final_report_recovered": true,
+  "single_bust_rejected_before_output_creation": true,
+  "single_bust_rejection": "Explicit train/val/test splits and valid record IDs are required",
+  "elapsed_seconds": 1.8338499999990745,
+  "peak_pytorch_allocated_bytes": 70808576,
+  "peak_pytorch_reserved_bytes": 71303168,
+  "memory_scope": "entire synthetic fixture verification; CUDA context/other apps excluded; not a bust or laptop benchmark",
+  "checkpoint_sha256": {
+    "whole": "9f0172f2c8dbdd4316b005123fb7204b219d5cba4c9ce8d081f1bb15b870a3d6",
+    "resumed": "acf85f506ea7a5b2f2d77f9ccf3c4faaa6c27403a7de163e0e1863500d716f0e"
+  },
+  "source_sha256": {
+    "model_probe.py": "3ea649c903ea6eec78263bae5e8b632c484ae48692bb74f46b9a3df64981be96",
+    "prepare.py": "686f98e8ffcc7a2447e4ef75206daa85cbc424d9643aca620d99e172845a1f15",
+    "step_timing.py": "d51e1beb12001793072736702fe3688fa024b8e28fb968ddf3b49549b7575878",
+    "train.py": "c41985ce5a3410a9cf59c0319f4b333789a93f4e2513a4c44c09eb9e13426c3a"
+  },
+  "checkpoint_files_committed": false
+}

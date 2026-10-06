@@ -11,7 +11,7 @@ using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
-    public class UvToolHub : EditorWindow
+    public partial class UvToolHub : EditorWindow
     {
         const string WindowTitle = nameof(UvToolHub);
         const string WindowBrand = "Mesh Lab";
@@ -63,7 +63,9 @@ namespace SashaRX.UnityMeshLab
         // IUvToolRightSidebar. Reapportioned by the right-edge resize handle.
         float rightSideW = 360f;
         bool rightSideDragging;
+        float resizeStartX, resizeStartWidth;
         Vector2 rightSideScroll;
+        Vector2 toolTabsScroll;
         int _cachedLodCount;
         int _cachedRendererCount;
         int _checkerUvChannel = 1;
@@ -131,6 +133,7 @@ namespace SashaRX.UnityMeshLab
             MeshLabProjectSettings.ModulesChanged -= OnModulesChanged;
             MeshLabProjectSettings.ModulesChanged += OnModulesChanged;
             ConfigureModules();
+            RestoreWindowSettings();
             SelectToolById(pendingToolId);
 
             SceneView.duringSceneGui -= OnSceneGUI;
@@ -161,6 +164,7 @@ namespace SashaRX.UnityMeshLab
 
         void OnDisable()
         {
+            OnLostFocus();
             // Cleanup order matters:
             // 1. Deactivate active tool (lets it restore its own preview state)
             // 2. Restore all remaining previews (checker, shell color, lightmap)
@@ -354,48 +358,32 @@ namespace SashaRX.UnityMeshLab
 
             DrawHubToolbar();
 
-            // Pre-compute layout widths so the canvas (middle column) gets an
-            // explicit Width and shrinks first when the window is too narrow,
-            // while the sidebars hold their user-set widths down to their
-            // legibility minimums. Without an explicit canvas width IMGUI
-            // sized the middle column to its content, which pushed the
-            // right sidebar past the window's right edge.
-            const float LeftSidebarMinW  = 220f;
-            const float RightSidebarMinW = 220f;
-            const float RightSidebarMaxW = 700f;
-            const float CanvasMinW       = 120f;
-            const float HandleW          = 4f;
-
-            sideW = Mathf.Max(LeftSidebarMinW, sideW);
-
             var rightSidebar = ActiveTool as IUvToolRightSidebar;
-            float rightHandleW = rightSidebar != null ? HandleW : 0f;
-            if (rightSidebar != null)
-            {
-                float roomForRight = position.width - sideW - HandleW - rightHandleW - CanvasMinW;
-                float upper = Mathf.Clamp(roomForRight, RightSidebarMinW, RightSidebarMaxW);
-                rightSideW = Mathf.Clamp(rightSideW, RightSidebarMinW, upper);
-            }
-
-            float canvasW = Mathf.Max(0f,
-                position.width - sideW - HandleW
-                - (rightSidebar != null ? (rightSideW + rightHandleW) : 0f));
-
-            EditorGUILayout.BeginHorizontal();
+            var widths = ResolveColumnWidths(position.width, sideW, rightSideW, rightSidebar != null);
+            float handleW = SplitterWidth(position.width, rightSidebar != null);
+            float toolbarHeight = EditorGUIUtility.singleLineHeight + 2;
+            var body = new Rect(0, toolbarHeight, position.width, Mathf.Max(0, position.height - toolbarHeight - kProgressStripHeight));
+            // Areas isolate content's minimum widths (toolbars, long labels and
+            // scroll views) from adjacent columns. Always use the window width,
+            // even if the toolbar's GUILayout group requests a wider root.
+            body.x = 0; body.width = position.width;
+            var leftRect = new Rect(body.x, body.y, widths.x, body.height);
+            var canvasRect = new Rect(leftRect.xMax + handleW, body.y, widths.y, body.height);
+            var rightRect = new Rect(canvasRect.xMax + handleW, body.y, widths.z, body.height);
 
             // ── Left sidebar ���─
-            EditorGUILayout.BeginVertical(GUILayout.Width(sideW));
+            GUILayout.BeginArea(leftRect);
             sideScroll = EditorGUILayout.BeginScrollView(sideScroll);
             ActiveTool?.OnDrawSidebar();
             EditorGUILayout.EndScrollView();
             DrawSidebarFooter();
-            EditorGUILayout.EndVertical();
+            GUILayout.EndArea();
 
-            DrawResizeHandle();
+            DrawResizeHandle(new Rect(leftRect.xMax, body.y, handleW, body.height), false, widths, rightSidebar != null);
 
             // Middle column with explicit Width so it's the first thing to
             // shrink when the window is too narrow.
-            EditorGUILayout.BeginVertical(GUILayout.Width(canvasW));
+            GUILayout.BeginArea(canvasRect);
             // A tool may put its own output in the UV canvas (the Remesh & Bake result);
             // resolved every frame so it follows the tool's stages and tab switches.
             uvContentEntries.Clear();
@@ -452,57 +440,84 @@ namespace SashaRX.UnityMeshLab
                 EditorGUILayout.EndHorizontal();
             }
 
-            EditorGUILayout.EndVertical();
+            GUILayout.EndArea();
 
             // Right sidebar (opt-in via IUvToolRightSidebar). The clamp + width
             // computation already happened at the top of OnGUI so we just
             // render at the resolved rightSideW here.
             if (rightSidebar != null)
             {
-                DrawRightResizeHandle();
-                EditorGUILayout.BeginVertical(GUILayout.Width(rightSideW));
+                DrawResizeHandle(new Rect(canvasRect.xMax, body.y, handleW, body.height), true, widths, true);
+                GUILayout.BeginArea(rightRect);
                 rightSideScroll = EditorGUILayout.BeginScrollView(rightSideScroll);
                 rightSidebar.OnDrawRightSidebar();
                 EditorGUILayout.EndScrollView();
-                EditorGUILayout.EndVertical();
+                GUILayout.EndArea();
             }
-
-            EditorGUILayout.EndHorizontal();
 
             // Progress strip sits at the very bottom of the window — it is a
             // status-bar-style row that doesn't displace the toolbar / sub-tabs
             // layout when the active state toggles. The reserved height is
             // unconditional so appearing / disappearing also doesn't shift.
+            GUILayout.BeginArea(new Rect(0, position.height - kProgressStripHeight, position.width, kProgressStripHeight));
             DrawProgressStrip();
+            GUILayout.EndArea();
         }
 
-        void DrawRightResizeHandle()
+        internal static float SplitterWidth(float width, bool right)
+            => Mathf.Min(6f, Mathf.Max(0, width) / (right ? 2 : 1));
+
+        internal static Vector3 ResolveColumnWidths(float width, float left, float right, bool hasRight)
         {
-            var r = GUILayoutUtility.GetRect(4, 4, GUILayout.ExpandHeight(true));
+            float available = Mathf.Max(0, width - SplitterWidth(width, hasRight) * (hasRight ? 2 : 1));
+            float minimum = hasRight ? 560f : 340f;
+            if (available < minimum) {
+                float scale = available / minimum;
+                return new Vector3(220 * scale, 120 * scale, hasRight ? 220 * scale : 0);
+            }
+            left = Mathf.Clamp(left, 220, Mathf.Min(900, available - 120 - (hasRight ? 220 : 0)));
+            right = hasRight ? Mathf.Clamp(right, 220, Mathf.Min(700, available - left - 120)) : 0;
+            return new Vector3(left, available - left - right, right);
+        }
+
+        internal static Vector3 ResizeColumns(float width, Vector3 columns, float requested, bool right, bool hasRight)
+        {
+            float available = width - SplitterWidth(width, hasRight) * (hasRight ? 2 : 1);
+            // Growing the right panel must also be able to shrink an overwide
+            // left panel, rather than leaving the right splitter stuck at its minimum.
+            float left = right ? Mathf.Min(columns.x, available - 120 - Mathf.Clamp(requested, 220, 700)) : requested;
+            return ResolveColumnWidths(width, left, right ? requested : columns.z, hasRight);
+        }
+
+        void DrawResizeHandle(Rect r, bool right, Vector3 widths, bool hasRight)
+        {
             EditorGUI.DrawRect(r, new Color(.13f, .13f, .13f));
             EditorGUIUtility.AddCursorRect(r, MouseCursor.ResizeHorizontal);
-            int id = GUIUtility.GetControlID(FocusType.Passive);
-            if (Event.current.type == EventType.MouseDown && r.Contains(Event.current.mousePosition))
-            { GUIUtility.hotControl = id; rightSideDragging = true; Event.current.Use(); }
-            if (rightSideDragging && Event.current.type == EventType.MouseDrag)
-            {
-                // Mirror the per-frame clamp so dragging can never push the
-                // sidebar off-screen or shrink the canvas past its minimum.
-                // The constants here intentionally match the pre-compute
-                // block at the top of OnGUI.
-                const float RightSidebarMinW = 220f;
-                const float RightSidebarMaxW = 700f;
-                const float CanvasMinW       = 120f;
-                const float HandleW          = 4f;
-                float roomForRight = position.width - sideW - HandleW - HandleW - CanvasMinW;
-                float upper = Mathf.Clamp(roomForRight, RightSidebarMinW, RightSidebarMaxW);
-                rightSideW = Mathf.Clamp(position.width - Event.current.mousePosition.x,
-                    RightSidebarMinW, upper);
-                Event.current.Use();
-                Repaint();
+            int id = GUIUtility.GetControlID(right ? 0x4d5202 : 0x4d5201, FocusType.Passive);
+            var e = Event.current;
+            if (e.type == EventType.MouseDown && e.button == 0 && r.Contains(e.mousePosition)) {
+                GUIUtility.hotControl = id;
+                rightSideDragging = right; sideDragging = !right;
+                resizeStartX = e.mousePosition.x; resizeStartWidth = right ? widths.z : widths.x;
+                e.Use();
             }
-            if (Event.current.rawType == EventType.MouseUp && rightSideDragging)
-            { rightSideDragging = false; Event.current.Use(); }
+            if (GUIUtility.hotControl != id) return;
+            if (e.type == EventType.MouseDrag) {
+                float requested = resizeStartWidth + (right ? -1 : 1) * (e.mousePosition.x - resizeStartX);
+                var resolved = ResizeColumns(position.width, widths, requested, right, hasRight);
+                sideW = resolved.x; if (hasRight) rightSideW = resolved.z;
+                e.Use(); Repaint();
+            }
+            if (e.rawType == EventType.MouseUp) {
+                GUIUtility.hotControl = 0; rightSideDragging = sideDragging = false; e.Use();
+            }
+        }
+
+        void OnLostFocus()
+        {
+            SaveWindowSettings();
+            if (sideDragging || rightSideDragging) GUIUtility.hotControl = 0;
+            sideDragging = rightSideDragging = false;
         }
 
         void OnSceneGUI(SceneView sv)
@@ -516,42 +531,52 @@ namespace SashaRX.UnityMeshLab
 
         void DrawHubToolbar()
         {
-            EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+            float height = EditorGUIUtility.singleLineHeight + 2;
+            var bar = new Rect(0, 0, position.width, height);
+            GUI.Box(bar, GUIContent.none, EditorStyles.toolbar);
 
             // Debug-only tabs (IUvToolDebugOnly) show with Show Debug UI on; when the
             // setting goes off while one is active, the hub falls back to the first tab.
             bool debug = DebugUi.Enabled;
             if (!debug && activeToolIndex >= 0 && activeToolIndex < tools.Count && tools[activeToolIndex] is IUvToolDebugOnly)
                 SwitchTool(tools.FindIndex(t => !(t is IUvToolDebugOnly)));
+            float brandWidth = position.width >= 1100 ? 220 : 0;
+            float controlsWidth = 154 + brandWidth;
+            float tabsWidth = Mathf.Max(0, position.width - controlsWidth);
+            float contentWidth = 0;
+            foreach (var tool in tools)
+                if (debug || !(tool is IUvToolDebugOnly)) contentWidth += Mathf.Max(80, EditorStyles.toolbarButton.CalcSize(new GUIContent(tool.ToolName)).x);
+            toolTabsScroll = GUI.BeginScrollView(new Rect(0, 0, tabsWidth, height), toolTabsScroll,
+                new Rect(0, 0, contentWidth, height), false, false, GUIStyle.none, GUIStyle.none);
+            float x = 0;
             for (int i = 0; i < tools.Count; i++)
             {
                 if (!debug && tools[i] is IUvToolDebugOnly) continue;
                 var bg = GUI.backgroundColor;
                 if (i == activeToolIndex)
                     GUI.backgroundColor = new Color(.35f, .65f, 1f);
-                if (GUILayout.Button(tools[i].ToolName, EditorStyles.toolbarButton, GUILayout.MinWidth(80)))
+                float width = Mathf.Max(80, EditorStyles.toolbarButton.CalcSize(new GUIContent(tools[i].ToolName)).x);
+                if (GUI.Button(new Rect(x, 0, width, height), tools[i].ToolName, EditorStyles.toolbarButton))
                 {
                     if (i != activeToolIndex)
                         SwitchTool(i);
                 }
                 GUI.backgroundColor = bg;
+                x += width;
             }
-
-            GUILayout.FlexibleSpace();
-
-            EditorGUILayout.LabelField(BuildWindowBrandText(),
-                EditorStyles.miniLabel, GUILayout.Width(220));
-            GUILayout.Space(6);
-
-            if (GUILayout.Button("Modules", EditorStyles.toolbarButton, GUILayout.Width(60)))
+            GUI.EndScrollView();
+            x = tabsWidth;
+            if (brandWidth > 0) {
+                GUI.Label(new Rect(x, 0, brandWidth, height), BuildWindowBrandText(), EditorStyles.miniLabel);
+                x += brandWidth;
+            }
+            if (GUI.Button(new Rect(x, 0, 60, height), "Modules", EditorStyles.toolbarButton))
                 SettingsService.OpenProjectSettings("Project/Mesh Lab");
 
             // ── Log level ──
-            EditorGUILayout.LabelField("Log:", EditorStyles.miniLabel, GUILayout.Width(24));
-            var lvl = (UvtLog.Level)EditorGUILayout.EnumPopup(UvtLog.Current, EditorStyles.toolbarPopup, GUILayout.Width(64));
+            GUI.Label(new Rect(x + 62, 0, 24, height), "Log:", EditorStyles.miniLabel);
+            var lvl = (UvtLog.Level)EditorGUI.EnumPopup(new Rect(x + 86, 0, 64, height), UvtLog.Current, EditorStyles.toolbarPopup);
             if (lvl != UvtLog.Current) UvtLog.Current = lvl;
-
-            EditorGUILayout.EndHorizontal();
         }
 
         // ════════════════════════════════════════════════════════════
@@ -820,7 +845,12 @@ namespace SashaRX.UnityMeshLab
             // ── Zoom + Fit ──
             if (canvas3D || UseGeometry2D) {
                 viewport.Lit = GUILayout.Toggle(viewport.Lit, "Lit", EditorStyles.toolbarButton, GUILayout.Width(30));
-                viewport.ShowGrid = GUILayout.Toggle(viewport.ShowGrid, "Grid", EditorStyles.toolbarButton, GUILayout.Width(36));
+                viewport.ShowGrid = GUILayout.Toggle(viewport.ShowGrid,
+                    new GUIContent(canvas3D ? "Floor" : "Grid", "Show or hide the reference grid in the preview."),
+                    EditorStyles.toolbarButton, GUILayout.Width(40));
+                if (canvas3D)
+                    viewport.Up = (MeshViewport3D.UpAxis)EditorGUILayout.Popup((int)viewport.Up, UpAxisLabels,
+                        EditorStyles.toolbarPopup, GUILayout.Width(60));
                 if (GUILayout.Button("Frame", EditorStyles.toolbarButton, GUILayout.Width(44))) viewport.FrameContent();
             }
             else {
@@ -830,6 +860,12 @@ namespace SashaRX.UnityMeshLab
 
             DrawToolbarTail();
         }
+
+        static readonly GUIContent[] UpAxisLabels = {
+            new GUIContent("X Up", "Use X as vertical for the perspective camera and floor."),
+            new GUIContent("Y Up", "Use Y as vertical for the perspective camera and floor (Unity convention)."),
+            new GUIContent("Z Up", "Use Z as vertical for the perspective camera and floor (3ds Max convention).")
+        };
 
         void DrawUvChannelToggle()
         {
@@ -1195,6 +1231,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 HandleViewportSpot(rect);
                 var tool3D = ActiveTool as IUvTool3D;
+                viewport.FramingContext = (ActiveTool as IUvTool3DFrameContext)?.FrameContext;
                 viewport.Draw(rect, items, view =>
                 {
                     uvLayer.Draw(view, canvas, ctx, viewportItems, viewportEntries);
@@ -1467,6 +1504,7 @@ namespace SashaRX.UnityMeshLab
 
         void DeactivateTool()
         {
+            SaveFillPreference();
             try { ActiveTool?.OnDeactivate(); }
             catch (Exception ex) { UvtLog.Warn("[Modules] Deactivation failed: " + ex.Message); }
             if (canvas == null) return;
@@ -1485,6 +1523,7 @@ namespace SashaRX.UnityMeshLab
             {
                 ActiveTool.OnActivate(ctx, canvas);
                 canvas.SetFillModes(ActiveTool.GetFillModes()?.ToList() ?? new List<UvCanvasView.FillModeEntry>());
+                RestoreFillPreference();
             }
             catch (Exception ex)
             {
@@ -1738,20 +1777,6 @@ namespace SashaRX.UnityMeshLab
 
             UvtLog.Info($"[Cleanup] Deleted {deleted} sidecar(s).");
             EditorUtility.DisplayDialog("Done", $"Deleted {deleted} sidecar(s).", "OK");
-        }
-
-        void DrawResizeHandle()
-        {
-            var r = GUILayoutUtility.GetRect(4, 4, GUILayout.ExpandHeight(true));
-            EditorGUI.DrawRect(r, new Color(.13f, .13f, .13f));
-            EditorGUIUtility.AddCursorRect(r, MouseCursor.ResizeHorizontal);
-            int id = GUIUtility.GetControlID(FocusType.Passive);
-            if (Event.current.type == EventType.MouseDown && r.Contains(Event.current.mousePosition))
-            { GUIUtility.hotControl = id; sideDragging = true; Event.current.Use(); }
-            if (sideDragging && Event.current.type == EventType.MouseDrag)
-            { sideW = Mathf.Clamp(Event.current.mousePosition.x, 200, 900); Event.current.Use(); Repaint(); }
-            if (Event.current.rawType == EventType.MouseUp && sideDragging)
-            { sideDragging = false; Event.current.Use(); }
         }
 
         void SetPreviewLod(int lodIndex)

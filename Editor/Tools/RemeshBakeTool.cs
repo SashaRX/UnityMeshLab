@@ -12,11 +12,12 @@ namespace SashaRX.UnityMeshLab
     /// <see cref="RemeshPipeline"/>, the export in <see cref="RemeshExporter"/>.
     /// </summary>
     [MeshLabTool("remesh_bake", MeshLabLibraries.Remesh, MeshLabLibraries.Baking, MeshLabLibraries.Assets)]
-    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvToolUvContent
+    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvToolUvContent, IUvTool3DFrameContext, IUvToolWindowPreferences
     {
         public string ToolName => "Remesh & Bake";
         public string ToolId => "remesh_bake";
         public int ToolOrder => 35;
+        object IUvTool3DFrameContext.FrameContext => source ? source : null;
         public Action RequestRepaint { private get; set; }
 
         // Settings survive domain reloads and tab switches so a tuned pipeline
@@ -48,6 +49,13 @@ namespace SashaRX.UnityMeshLab
         bool sourcePreviewDirty = true, previewLod0Only;
         internal GameObject Source => source;
 
+        [Serializable]
+        sealed class WindowSettings
+        {
+            public bool[] folds = { true, true, true, true };
+            public bool chartFold;
+        }
+
         public RemeshBakeTool()
         {
             string json = EditorPrefs.GetString(SettingsKey, "");
@@ -55,10 +63,22 @@ namespace SashaRX.UnityMeshLab
                 var restored = RemeshSettings.FromSavedJson(json);
                 if (restored != null) settings = restored;
             }
+            var window = MeshLabWindowPreferences.Load<WindowSettings>("RemeshBake");
+            if (window.folds != null)
+                Array.Copy(window.folds, folds, Math.Min(window.folds.Length, folds.Length));
+            chartFold = window.chartFold;
+            previews.RestoreWindowSettings();
             pipeline.Changed = () => { saveStatus = null; RequestRepaint?.Invoke(); };
         }
 
-        internal void SaveSettings() => EditorPrefs.SetString(SettingsKey, JsonUtility.ToJson(settings));
+        void IUvToolWindowPreferences.SaveWindowPreferences() => SaveSettings();
+
+        internal void SaveSettings()
+        {
+            EditorPrefs.SetString(SettingsKey, JsonUtility.ToJson(settings));
+            MeshLabWindowPreferences.Save("RemeshBake", new WindowSettings { folds = folds, chartFold = chartFold });
+            previews.SaveWindowSettings();
+        }
 
         public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
         {
@@ -286,13 +306,25 @@ namespace SashaRX.UnityMeshLab
             previewData.meshes[(int)RemeshPreview.Stage.Result] = pipeline.ResultMesh;
             previewData.geometry = pipeline.Geometry; previewData.maps = pipeline.Maps; previewData.baseColor = pipeline.BaseColorPreview;
             previewData.trimMask = pipeline.TrimMaskMesh;
-            previewData.spaceToWorld = pipeline.Primary?.spaceToWorld ?? Matrix4x4.identity;
+            previewData.spaceToWorld = pipeline.PreviewSpaceToWorld;
             // Live from the current settings so the cage preview reflects projection
             // distance changes before a re-bake; zero until a source snapshot exists.
             previewData.cageDistance = pipeline.SourceDiagonal * settings.projectionDistance;
             previewData.cageSmoothing = settings.cageSmoothing;
             previewData.cageFit = settings.cageFit && settings.sourceShape == RemeshShape.LOD0;
+            previewData.sourceBackfaces = settings.sourceBackfaces;
             previewData.source = pipeline.Source;
+            previewData.twoSided = pipeline.Primary?.twoSided ?? false;
+            previewData.remeshReady = pipeline.Has(RemeshPipeline.Stage.Remesh);
+            previewData.simplifyReady = pipeline.Has(RemeshPipeline.Stage.Simplify);
+            previewData.unwrapReady = pipeline.Has(RemeshPipeline.Stage.Unwrap);
+            previewData.bakeReady = pipeline.Has(RemeshPipeline.Stage.Bake);
+            previewData.remeshStale = pipeline.IsStale(RemeshPipeline.Stage.Remesh, settings, source);
+            previewData.simplifyStale = previewData.remeshStale || pipeline.IsStale(RemeshPipeline.Stage.Simplify, settings, source);
+            previewData.unwrapStale = previewData.simplifyStale || pipeline.IsStale(RemeshPipeline.Stage.Unwrap, settings, source);
+            previewData.bakeStale = previewData.unwrapStale || pipeline.IsStale(RemeshPipeline.Stage.Bake, settings, source);
+            previewData.runningStage = pipeline.RunningStage;
+            previewData.progress = pipeline.IsRunning && UvProgress.Current.active ? UvProgress.Current.fraction : -1;
         }
 
         // The shared 3D canvas shows the selected pipeline stage (in capture space) with
@@ -302,10 +334,11 @@ namespace SashaRX.UnityMeshLab
         {
             SyncPreviewData();
             if (previews.IsSource) {
+                var worldToFrame = previewSourceRoot ? RemeshPipeline.PreviewRootFrameInverse(previewSourceRoot.transform) : Matrix4x4.identity;
                 for (int i = 0; i < sourceEntries.Count; ++i) {
                     var renderer = sourceRenderers[i];
                     if (renderer) items.Add(new MeshViewport3D.Item(sourceEntries[i].originalMesh,
-                        renderer.localToWorldMatrix, renderer.sharedMaterials));
+                        worldToFrame * renderer.localToWorldMatrix, renderer.sharedMaterials));
                 }
                 return true;
             }
@@ -346,7 +379,9 @@ namespace SashaRX.UnityMeshLab
                         "Remesh every renderer SEPARATELY and save the result as a hierarchy of meshes with per-node baked materials under one root, instead of welding everything into one mesh with one material."), settings.keepHierarchy);
                     DrawHighlightToggle();
                     using (new EditorGUI.DisabledScope(settings.sourceShape != RemeshShape.LOD0)) {
-                        settings.voxelResolution = EditorGUILayout.IntSlider("Voxel resolution", settings.voxelResolution, 4, 256);
+                        settings.voxelResolution = EditorGUILayout.IntSlider(new GUIContent("Voxel resolution",
+                            "Voxels along the model's longest axis. Higher values preserve finer geometry and increase memory use and processing time."),
+                            settings.voxelResolution, 4, RemeshSettings.MaxVoxelResolution);
                         settings.solve = EditorGUILayout.Toggle("Fit source surface", settings.solve);
                         settings.shell = EditorGUILayout.Toggle("Two-sided shell", settings.shell);
                         settings.trimToSource = EditorGUILayout.Toggle(new GUIContent("Trim to source surface",
@@ -365,9 +400,16 @@ namespace SashaRX.UnityMeshLab
                     using (new EditorGUI.DisabledScope(!settings.simplify)) {
                         settings.maximumError = EditorGUILayout.Slider(new GUIContent("Maximum error",
                             "Relative to the mesh size. Flat areas collapse first; raise it for fewer triangles."), settings.maximumError, 0, 0.2f);
-                        settings.targetTriangles = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Stop at triangles",
-                            "Simplification stops at this count or at Maximum error, whichever comes first. 0 = go as far as the error allows."),
-                            settings.targetTriangles), 0, 5000000);
+                        using (new EditorGUILayout.HorizontalScope()) {
+                            settings.targetTriangles = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Stop at triangles",
+                                "A nonzero count stops reduction even if the shape could be represented with fewer triangles. 0 = reduce until Maximum error is reached."),
+                                settings.targetTriangles), 0, 5000000);
+                            using (new EditorGUI.DisabledScope(settings.targetTriangles == 0))
+                                if (GUILayout.Button(new GUIContent("Error only", "Remove the triangle-count stop. Flat surfaces can collapse to a few faces; Maximum error still protects the shape."), GUILayout.Width(75)))
+                                    settings.targetTriangles = 0;
+                        }
+                        EditorGUILayout.LabelField(settings.targetTriangles == 0 ? "Adaptive reduction: surface error only." :
+                            $"Stops at {settings.targetTriangles:N0} triangles even if further reduction is possible.", EditorStyles.wordWrappedMiniLabel);
                         settings.regularize = (RemeshRegularize)EditorGUILayout.EnumPopup(new GUIContent("Regularize",
                             "None keeps density where the shape needs it; Light/Strong even out triangle sizes."), settings.regularize);
                         settings.preserveFolds = EditorGUILayout.Toggle("Preserve folds", settings.preserveFolds);
@@ -398,9 +440,17 @@ namespace SashaRX.UnityMeshLab
                         "Compare the current chart settings with two alternatives; keep fewer islands and small fragments only within bounded UV stretch. " +
                         "Crease edges, island size limits and packing stay as configured. Adds up to two unwrap passes on the worker."),
                         settings.reduceUvFragmentation);
+                    settings.mergeCharts = EditorGUILayout.Toggle(new GUIContent("Merge charts",
+                        "Deterministically merges adjacent island pairs whose seam UVs align within bounded stretch and texel density, " +
+                        "respecting max island area/border. Relaxes the resulting UV islands to reduce distortion before packing. Adds one xatlas pack pass on the worker."),
+                        settings.mergeCharts);
                     chartFold = EditorGUILayout.Foldout(chartFold, "Islands & packing", true);
                     if (chartFold) {
                         using (new EditorGUI.IndentLevelScope()) {
+                            if (GUILayout.Button(new GUIContent("Recommended xatlas settings", "Apply tested island-growth and packing defaults."))) {
+                                settings.ApplyDefaultXatlasSettings();
+                                SaveSettings();
+                            }
                             settings.chartMaxCost = EditorGUILayout.Slider(new GUIContent("Max cost", "Lower = more, smaller islands."), settings.chartMaxCost, 0.1f, 10);
                             settings.chartNormalDeviation = EditorGUILayout.Slider(new GUIContent("Normal deviation", "Penalty for bending inside one island."), settings.chartNormalDeviation, 0, 10);
                             settings.chartNormalSeam = EditorGUILayout.Slider(new GUIContent("Hard edge seam", "Prefer island borders on hard edges (>1000 always)."), settings.chartNormalSeam, 0, 1000);
@@ -437,10 +487,10 @@ namespace SashaRX.UnityMeshLab
                             "How deep behind a proxy face a texel looks for the source, as a fraction of the model's diagonal: the ray along the face " +
                             "normal, then the nearest surface within the same reach. Short keeps each face to what sits behind it and bakes fast; " +
                             "long lets a face see across courtyards and costs a full traversal per empty texel."), settings.proxyDepth, 0.01f, 1f);
-                    settings.bakeSamples = EditorGUILayout.IntPopup(new GUIContent("Samples per texel", "Supersampling for smoother edges and detail."),
+                    settings.bakeSamples = EditorGUILayout.IntPopup(new GUIContent("Samples per texel", "Integrate texel coverage over the surface, including neighbouring faces across UV seams. More samples capture finer texture detail."),
                         settings.bakeSamples, Array.ConvertAll(SampleNames, n => new GUIContent(n)), SampleCounts);
                     settings.dilationRadius = Mathf.Clamp(EditorGUILayout.IntField(new GUIContent("Dilation radius (px)",
-                        "After atlas padding, extend every baked map from its nearest filled pixel by this additional radius. 0 keeps padding alone."),
+                        "After atlas padding, extend each shell by this additional radius, sampling the connected 3D surface across UV seams. Open edges clamp to their surface boundary. 0 keeps padding alone."),
                         settings.dilationRadius), 0, RemeshSettings.MaxDilationRadius);
                     using (new EditorGUI.DisabledScope(!GpuBvh.Supported))
                         settings.gpuProjection = EditorGUILayout.Toggle(new GUIContent("GPU projection",
@@ -477,9 +527,9 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField(pipeline.IsHierarchy
                 ? $"{pipeline.Nodes.Count} node(s) · largest {result.vertexCount:N0} vertices · {result.GetIndexCount(0) / 3:N0} triangles"
                 : $"{result.vertexCount:N0} vertices · {result.GetIndexCount(0) / 3:N0} triangles");
-            settings.normalizeSize = EditorGUILayout.Toggle(new GUIContent("Normalize size (saved at scale 1)",
-                "Bakes the source's world scale into the saved geometry, so the model keeps its real size with a " +
-                "scale-1 transform regardless of how the source is scaled. Off: the saved transform carries the " +
+            settings.normalizeSize = EditorGUILayout.Toggle(new GUIContent("Normalize saved transform",
+                "Bakes the captured world rotation and scale into the saved geometry, preserving its size and orientation " +
+                "with Position 0, Rotation 0, Scale 1 (100% in a meter-based 3ds Max scene). Normalized FBX uses meters and Z-up axes. Off: the saved transform carries the " +
                 "source's scale instead. Keep-hierarchy saves always carry the scale on the root."),
                 settings.normalizeSize);
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER

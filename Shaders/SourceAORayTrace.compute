@@ -2,7 +2,7 @@
 // source normal-map hemispheres, geometric offsets and the world-horizontal floor.
 #pragma kernel BakeAO
 #pragma kernel FinalizeAO
-#include "BvhTraversal.hlsl"
+#include "Packages/com.sasharx.unitymeshlab/Shaders/BvhTraversal.hlsl"
 
 struct SurfacePoint
 {

@@ -1,0 +1,5 @@
+method,faces,charts,overlapPairs,sameChartPairs,zeroAreaFaces,outOfBoundsVertices,captureSha256
+bust-baseline,1886,72,0,0,0,0,3f5de9fad8b7f5cbadf26e8f1290efcdf1adcf9935ca9577862a2b7ef72ce7df
+bust-refined,1886,72,0,0,0,0,72bc7e6f9916241c7b9f52bf4a61222221419df60a9f1e36cfa2b6d1fe2f3c3c
+diagonal-box-baseline,98,10,0,0,0,0,d61ffc93b204708b682e51b029ca64af77c87f578a2451822b54675b365844c9
+diagonal-box-refined,98,13,0,0,0,0,33a841e58cd79edc3d701228fa350f52be9597d623a0de63a4350654ddb6eb92

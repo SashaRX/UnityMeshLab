@@ -10,7 +10,7 @@
 
 // The BVH buffers, ray–triangle test and traversal come from the shared include
 // (the same tree GpuBvh uploads for every GPU query in the package).
-#include "BvhTraversal.hlsl"
+#include "Packages/com.sasharx.unitymeshlab/Shaders/BvhTraversal.hlsl"
 
 // ── Per-vertex Data ──
 StructuredBuffer<float3>   _Positions;
@@ -42,9 +42,13 @@ float BVHRaycast(float3 origin, float3 dir, float maxDist, out float3 hitFaceNor
 {
     hitFaceNorm = float3(0, 0, 0);
     BvhRayHit hit = BvhRaycast(origin, dir, maxDist, false);
-    if (hit.tri < 0) return maxDist;
-    hitFaceNorm = _FaceNormals[hit.tri];
-    return hit.t;
+    float distance = maxDist;
+    if (hit.tri >= 0)
+    {
+        hitFaceNorm = _FaceNormals[hit.tri];
+        distance = hit.t;
+    }
+    return distance;
 }
 
 // ══════════════════════════════════════════════════════════
