@@ -845,11 +845,12 @@ namespace SashaRX.UnityMeshLab
         /// starts behind the surface it belongs to.
         ///
         /// The reach is the projection distance everywhere, or, fitted, the distance the
-        /// source actually sits at along each side's ray (times a margin for oblique
-        /// surfaces, clamped between the projection distance and 8 × it) smoothed over
-        /// the side connectivity — a cage that hugs the source where the decimation
-        /// stayed close and opens where it drifted, instead of one global distance that
-        /// misses here and bleeds through there.
+        /// source actually sits at along the final per-corner rays (times a margin for
+        /// oblique surfaces, clamped between the projection distance and 8 × it). Each
+        /// side uses the greatest need among its corner rays before smoothing over the
+        /// side connectivity — a cage that hugs the source where the decimation stayed
+        /// close and opens where it drifted, instead of one global distance that misses
+        /// here and bleeds through there.
         /// </summary>
         internal sealed class Cage
         {
@@ -968,7 +969,7 @@ namespace SashaRX.UnityMeshLab
                 if (firstSide[slot] >= 0 && nextSide[firstSide[slot]] >= 0) ++cage.folded;
             cage.maxReach = distance;
             if (source != null && distance > 0f)
-                FitReach(cage, welded.normals, sideDir, sideVertex, positions, source, sourceNormals, eitherSide, token);
+                FitReach(cage, positions, indices, source, sourceNormals, eitherSide, token);
             if (diag != null) {
                 diag.weldedPositions = cage.positions;
                 diag.splitCopies = positions.Length - cage.positions;
@@ -985,25 +986,27 @@ namespace SashaRX.UnityMeshLab
         static bool Facing(Vector3 d, Vector3 faceNormal)
             => d.sqrMagnitude > 1e-20f && (faceNormal.sqrMagnitude < 1e-20f || Vector3.Dot(d, faceNormal) >= Cage.MinFacing);
 
-        // Per side: the distance the source sits at along the side's ray (either way),
-        // or the nearest source point when the ray meets nothing — the bake's nearest
-        // fallback is bounded by the same reach, so a fitted reach lets it catch what
-        // the ray cannot. Smoothed over the side connectivity, never below a side's own
-        // measured need, so the shells stay shells instead of spiking per vertex.
-        static void FitReach(Cage cage, Vector3[] smoothed, Vector3[] sideDir, System.Collections.Generic.List<int> sideVertex,
-            Vector3[] positions, TriangleBvh source, Vector3[] sourceNormals, bool[] eitherSide, CancellationToken token)
+        // Per side: the greatest distance the source sits at along any final corner ray
+        // (either way), or the nearest source point when a ray meets nothing — the bake's
+        // nearest fallback is bounded by the same reach, so a fitted reach lets it catch
+        // what the ray cannot. Smoothed over the side connectivity, never below a side's
+        // own measured need, so the shells stay shells instead of spiking per vertex.
+        static void FitReach(Cage cage, Vector3[] positions, int[] indices, TriangleBvh source,
+            Vector3[] sourceNormals, bool[] eitherSide, CancellationToken token)
         {
             float distance = cage.distance, range = distance * Cage.FitRange;
-            int sides = sideDir.Length;
+            int sides = cage.sides;
             var need = new float[sides];
+            for (int sd = 0; sd < sides; ++sd) need[sd] = distance;
             // Both searches need dot(source normal, cage direction) >= 0, as
             // the bake casts inward from the outer cage. Reversing only the
             // outward search's filter normals keeps that eligibility fixed.
             Vector3[] outwardNormals = sourceNormals == null ? null : Array.ConvertAll(sourceNormals, normal => -normal);
-            for (int sd = 0; sd < sides; ++sd) {
-                if ((sd & 255) == 0) token.ThrowIfCancellationRequested();
-                Vector3 d = smoothed[sd].sqrMagnitude > 1e-20f ? smoothed[sd] : sideDir[sd];
-                Vector3 p = positions[sideVertex[sd]];
+            for (int c = 0; c < cage.side.Length; ++c) {
+                if ((c & 255) == 0) token.ThrowIfCancellationRequested();
+                int sd = cage.side[c];
+                Vector3 d = cage.directions[c];
+                Vector3 p = positions[indices[c]];
                 float found = -1f;
                 if (d.sqrMagnitude > 1e-20f) {
                     float eps = distance * 1e-3f;
@@ -1019,7 +1022,8 @@ namespace SashaRX.UnityMeshLab
                         source.FindNearestNormalFiltered(p, d, sourceNormals, 0f, range, eitherSide);
                     if (nearest.triangleIndex >= 0) found = Mathf.Sqrt(nearest.distSq);
                 }
-                need[sd] = found < 0f ? distance : Mathf.Clamp(found * Cage.FitMargin, distance, range);
+                if (found >= 0f)
+                    need[sd] = Mathf.Max(need[sd], Mathf.Clamp(found * Cage.FitMargin, distance, range));
             }
             var reach = (float[])need.Clone();
             var sum = new float[sides]; var count = new int[sides];
