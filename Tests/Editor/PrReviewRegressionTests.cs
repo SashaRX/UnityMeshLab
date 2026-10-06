@@ -37,6 +37,33 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void SaveOutputCreatesMissingParentsAndReusesTheirGuids()
+        {
+            string path = Scratch + "/MeshLab/Output";
+            Assert.IsTrue(MeshAssetOperations.EnsureOutputFolder(path));
+            string guid = AssetDatabase.AssetPathToGUID(path);
+            Assert.IsTrue(MeshAssetOperations.EnsureOutputFolder(path.Replace('/', '\\') + "\\"));
+            Assert.AreEqual(guid, AssetDatabase.AssetPathToGUID(path));
+            Assert.IsTrue(AssetDatabase.IsValidFolder(Scratch + "/MeshLab"));
+        }
+
+        [Test]
+        public void SaveOutputRejectsInvalidPathsAndAFileInPlaceOfTheParent()
+        {
+            foreach (string path in new[] { "Packages/Output", Scratch + "/../Output", Scratch + "//Output", "Assets/./Output" })
+                Assert.IsFalse(MeshAssetOperations.EnsureOutputFolder(path));
+            Assert.IsFalse(AssetDatabase.IsValidFolder(Scratch));
+            Assert.IsTrue(MeshAssetOperations.EnsureOutputFolder(Scratch));
+            string pathToMesh = Scratch + "/Parent.asset";
+            var saved = Object.Instantiate(Plane());
+            AssetDatabase.CreateAsset(saved, pathToMesh);
+            string guid = AssetDatabase.AssetPathToGUID(pathToMesh);
+            Assert.IsFalse(MeshAssetOperations.EnsureOutputFolder(pathToMesh + "/Output"));
+            Assert.AreEqual(guid, AssetDatabase.AssetPathToGUID(pathToMesh));
+            Assert.IsFalse(AssetDatabase.IsValidFolder(pathToMesh + " 1"));
+        }
+
+        [Test]
         public void PickingRebuildsAfterSameSizePositionAndIndexEdits()
         {
             var mesh = Plane();

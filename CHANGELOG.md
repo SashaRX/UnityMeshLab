@@ -19,6 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.
 - Remesh previews use the source root's axes; saved output preserves captured source orientation. Mesh asset saving clones working meshes so window cleanup cannot destroy persisted output.
 
+## [1.1.23] - 2026-10-06
+
+### Fixed
+- Native Simplify retains positive-area sliver faces instead of opening holes during cleanup and forcing all managed retries to fall back to dense remesh geometry. Staged Unwrap also retains these faces and rejects an unsupported atlas mapping explicitly instead of silently deleting surface faces. Topology, surface-fit and quality gates remain enabled; native binaries come from the matching Build Native Libraries run.
+- Save All creates every missing parent of its output folder through AssetDatabase, normalizes path separators, and refuses invalid paths or files occupying a requested folder. Existing folders keep their GUIDs.
+
 ## [1.1.22] - 2026-10-06
 
 ### Fixed

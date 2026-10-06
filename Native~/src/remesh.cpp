@@ -152,7 +152,10 @@ int Simplify(PosMesh& m, uint32_t targetTriangles, float error, unsigned int opt
     if (!simplified) return Empty;
     m.idx.resize(simplified);
     if (resultError) *resultError = achieved;
-    return Clean(m);
+    // A positive-area sliver still closes the surface. Removing it after an
+    // edge collapse opens holes and makes the managed topology gate reject an
+    // otherwise valid simplification. Only discard exactly collapsed faces.
+    return Clean(m, 0.0);
 }
 
 struct UnwrapOptions {
@@ -442,7 +445,9 @@ EXPORT int meshLabUnwrap(const float* positions, uint32_t vertexCount,
         PosMesh mesh;
         mesh.pos.assign(positions, positions + size_t(vertexCount) * 3);
         mesh.idx.assign(indices, indices + indexCount);
-        if (int code = Clean(mesh)) return code;
+        // UV charting may split vertices, but must not remove a valid surface
+        // face that Simplify kept. Invalid atlas mappings still fail explicitly.
+        if (int code = Clean(mesh, 0.0)) return code;
         auto result = std::make_unique<Result>();
         if (int code = Unwrap(mesh, crease, smoothing, parsed, *result)) return code;
         int32_t charts = 0;

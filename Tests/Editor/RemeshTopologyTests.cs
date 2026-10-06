@@ -10,6 +10,22 @@ namespace SashaRX.UnityMeshLab.Tests
         static readonly int[] Tetrahedron = { 0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3 };
         static Vector3[] TetraPositions() => new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.forward };
 
+        static void AssertCompactedTetraPositions(Vector3[] input, Vector3[] output)
+        {
+            // Native compaction visits the first triangle (0,2,1) first. Compare
+            // scalar coordinates with a tolerance far below the apex height;
+            // Vector3's approximate == treats the
+            // thin apex as equal to the origin and confuses multiset assertions.
+            Assert.AreEqual(4, output.Length);
+            int[] order = { 0, 2, 1, 3 };
+            float tolerance = input[1].magnitude * 1e-12f;
+            for (int v = 0; v < order.Length; ++v) {
+                Assert.AreEqual(input[order[v]].x, output[v].x, tolerance);
+                Assert.AreEqual(input[order[v]].y, output[v].y, tolerance);
+                Assert.AreEqual(input[order[v]].z, output[v].z, tolerance);
+            }
+        }
+
         [TestCase(1f)]
         [TestCase(.001f)]
         public void FittedSolidHoleRetriesBeforeTrimAndKeepsClosedGeometry(float scale)
@@ -259,8 +275,27 @@ namespace SashaRX.UnityMeshLab.Tests
             var result = RemeshNative.Simplify(input, settings, CancellationToken.None, out float error);
             var topology = RemeshTopology.Inspect(result.positions, result.indices);
             Assert.IsTrue(topology.Valid, topology.Description); Assert.AreEqual(0, topology.boundary.Count);
-            CollectionAssert.AreEqual(p, result.positions); CollectionAssert.AreEqual(Tetrahedron, result.indices);
+            AssertCompactedTetraPositions(p, result.positions);
+            Assert.AreEqual(4, result.TriangleCount);
+            CollectionAssert.AreEqual(Tetrahedron, input.indices);
             Assert.AreEqual(0, error);
+        }
+
+        [TestCase(1f)]
+        [TestCase(.001f)]
+        public void NativeSimplifyDirectlyRetainsThinFacesWithoutManagedFallback(float scale)
+        {
+            RequireNative();
+            var p = TetraPositions(); p[3] *= 1e-8f;
+            for (int v = 0; v < p.Length; ++v) p[v] *= scale;
+            var original = (Vector3[])p.Clone(); var ix = (int[])Tetrahedron.Clone();
+            var settings = new MeshSimplifier.GeometrySettings { targetTriangles = 4, maximumError = 0 };
+            var result = MeshSimplifier.SimplifyGeometry(p, ix, settings, CancellationToken.None, out float error);
+            var topology = RemeshTopology.Inspect(result.positions, result.indices);
+            Assert.IsTrue(topology.Valid, topology.Description); Assert.AreEqual(0, topology.boundary.Count);
+            Assert.AreEqual(12, result.indices.Length); Assert.AreEqual(0, error);
+            AssertCompactedTetraPositions(p, result.positions);
+            CollectionAssert.AreEqual(original, p); CollectionAssert.AreEqual(Tetrahedron, ix);
         }
 
         [Test]

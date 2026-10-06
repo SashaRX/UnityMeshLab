@@ -150,7 +150,41 @@ static void checkVoxelSlivers(int resolution, uint32_t flags, float scale) {
               << ": " << count / 3 << " triangles, closed\n";
 }
 
+// A very thin closed tetrahedron still has four positive-area faces. Cleanup
+// must not turn a no-op simplification into an open sheet at either scale.
+static void checkSimplifySlivers(float scale) {
+    float p[] = {0,0,0, scale,0,0, 0,scale,0, 0,0,scale * 1e-8f};
+    uint32_t ix[] = {0,2,1, 0,1,3, 1,2,3, 2,0,3};
+    void* handle = nullptr; uint32_t vertices = 0, count = 0; float error = -1;
+    check(meshLabSimplify(p, 4, ix, 12, 4, 0, 0, &handle, &vertices, &count, &error) == 0 && handle,
+        "simplify slivers: native call");
+    check(vertices == 4 && count == 12 && error == 0, "simplify slivers: all four faces retained");
+    std::vector<float> points(size_t(vertices) * 3);
+    std::vector<uint32_t> indices(count);
+    check(meshLabMeshCopy(handle, points.data(), vertices, indices.data(), count) == 0, "simplify slivers: copy");
+    meshLabMeshDestroy(handle);
+    std::unordered_map<uint64_t, std::pair<int, int>> edges;
+    for (size_t f = 0; f < indices.size(); f += 3) {
+        uint32_t corners[] = {indices[f], indices[f + 1], indices[f + 2], indices[f]};
+        for (int k = 0; k < 3; ++k) {
+            uint32_t a = corners[k], b = corners[k + 1];
+            check(a < vertices && b < vertices && a != b, "simplify slivers: valid corners");
+            auto& edge = edges[(uint64_t(std::min(a, b)) << 32) | std::max(a, b)];
+            ++edge.first; edge.second += a < b ? 1 : -1;
+        }
+    }
+    for (const auto& edge : edges)
+        check(edge.second.first == 2 && edge.second.second == 0, "simplify slivers: closed oriented surface");
+    // This apex is below xatlas's numerical face-area limit. Report failure;
+    // silently deleting its two side faces and returning an open UV mesh is
+    // not an acceptable way to make chart generation succeed.
+    handle = nullptr;
+    check(meshLabUnwrap(p, 4, ix, 12, 3.1415926f, 0, nullptr, 0, &handle, &vertices, &count, nullptr) != 0 &&
+        !handle && vertices == 0 && count == 0, "unwrap slivers: reject instead of deleting surface faces");
+}
+
 int main(int argc, char** argv) {
+    for (float scale : {1.f, .001f}) checkSimplifySlivers(scale);
     for (int resolution : {48, 512})
         for (uint32_t flags : {0u, 1u})
             for (float scale : {1.f, .001f}) checkVoxelSlivers(resolution, flags, scale);
