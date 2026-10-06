@@ -558,6 +558,13 @@ namespace SashaRX.UnityMeshLab
 
         public void Dispose()
         {
+            Dispose(true);
+            System.GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposing) return;
             Restore();
             if (vertexColorMat != null) Object.DestroyImmediate(vertexColorMat);
             vertexColorMat = null;
