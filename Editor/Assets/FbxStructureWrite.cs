@@ -296,15 +296,18 @@ namespace SashaRX.UnityMeshLab
             /// <summary>Set by <see cref="Apply"/>: the names of the materials the file had before the save.</summary>
             internal HashSet<string> sceneMaterials = new HashSet<string>(StringComparer.Ordinal);
 
-            // The FBX material name for a Unity material: its own name, unless that name already
-            // maps (in this save or in the importer) to another material, or names a material of
-            // the file that is not mapped to this one (its other nodes would follow the remap).
+            // The FBX material name for a Unity material: its own name made FBX-safe (ASCII
+            // letters, digits and underscores, as the pipeline's naming rules require), unless
+            // that name already maps (in this save or in the importer) to another material, or
+            // names a material of the file that is not mapped to this one (its other nodes
+            // would follow the remap).
             internal string MaterialName(Material material)
             {
-                string name = material.name;
+                string stem = MeshHygieneUtility.SanitizeName(material.name);
+                string name = stem;
                 int n = 0;
                 while (MapsElsewhere(name, material))
-                    name = $"{material.name}_{++n}";
+                    name = $"{stem}_{++n}";
                 materialRemaps[name] = material;
                 return name;
             }

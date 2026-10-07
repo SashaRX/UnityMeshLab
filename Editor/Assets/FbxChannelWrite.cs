@@ -415,15 +415,18 @@ namespace SashaRX.UnityMeshLab
                     any = true;
                 }
             }
-            if ((capture.intent & FbxExportIntent.Tangents) != 0 && capture.fileTangents)
+            // A written normal moves the binormal (cross(normal, tangent)·w), so the tangent
+            // frame follows written normals even when only the normals were asked for.
+            bool tangentIntent = (capture.intent & FbxExportIntent.Tangents) != 0;
+            if (capture.fileTangents && (tangentIntent || donor.normals != null))
             {
                 if (hasTangents && hasNormals)
                 {
                     var tangents = mesh.tangents;
-                    // A written normal moves the binormal (cross(normal, tangent)·w) even where the tangent stays.
                     bool unchanged = donor.normals == null && imported != null && imported.tangents.SequenceEqual(tangents);
                     if (!unchanged) { donor.tangents = tangents; donor.frameNormals = mesh.normals; any = true; }
                 }
+                else if (!tangentIntent) { /* a normals-only save adds or drops no tangents */ }
                 else if (hasTangents)
                 {
                     // The file's binormal is built from the normal: changed tangents on a mesh
