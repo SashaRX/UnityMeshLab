@@ -590,8 +590,6 @@ namespace SashaRX.UnityMeshLab
             return reasons;
         }
 
-        // The scene renderer's materials differ from the model's (e.g. after Cleanup's material
-        // fixes): a material change is the rebuild's to write, not the channel save's.
         // Normals or tangents the channel save cannot write: the attribute was added or removed
         // (Cleanup), or the normals changed on a working copy that kept the import's vertices.
         // Tangent values are not compared: tools recompute them, which is no edit of the file's.
@@ -606,6 +604,8 @@ namespace SashaRX.UnityMeshLab
             return !imported.normals.SequenceEqual(result.normals);
         }
 
+        // The scene renderer's materials differ from the model's (e.g. after Cleanup's material
+        // fixes): a material change is the rebuild's to write, not the channel save's.
         internal static bool MaterialsChanged(MeshEntry entry)
         {
             if (entry?.renderer == null) return false;
