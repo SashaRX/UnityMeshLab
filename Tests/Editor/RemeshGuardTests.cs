@@ -112,6 +112,36 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(report.comparisons, Is.LessThan(64L * atlas.indices.Length / 3));
         }
 
+        // A convex fan around one vertex: every bounding box contains the centre, so the
+        // candidate count is quadratic whatever the grid; the pairs themselves only touch.
+        static RemeshNative.Geometry FanAtlas(int faces)
+        {
+            var uv = new Vector2[faces * 3]; var indices = new int[faces * 3]; var charts = new int[faces * 3];
+            var centre = new Vector2(.5f, .5f);
+            // One rim point per index, so the last triangle closes on the first one
+            // bit-exactly instead of on a float sin(2π) a hair off it.
+            var rim = new Vector2[faces];
+            for (int k = 0; k < faces; ++k) { float angle = Mathf.PI * 2f * k / faces; rim[k] = centre + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * .5f; }
+            for (int f = 0; f < faces; ++f)
+            {
+                int i = f * 3;
+                uv[i] = centre; uv[i + 1] = rim[f]; uv[i + 2] = rim[(f + 1) % faces];
+                indices[i] = i; indices[i + 1] = i + 1; indices[i + 2] = i + 2;
+                charts[i] = charts[i + 1] = charts[i + 2] = 0;
+            }
+            return new RemeshNative.Geometry { uv = uv, indices = indices, charts = charts, chartCount = 1,
+                positions = new Vector3[faces * 3], normals = new Vector3[faces * 3], tangents = new Vector4[faces * 3] };
+        }
+
+        [Test]
+        public void OverlapScanCertifiesAHighValenceFan()
+        {
+            var atlas = FanAtlas(10000);
+            var report = UvAtlasDiagnostics.Measure(atlas, CancellationToken.None);
+            Assert.That(report.complete, Is.True, "a quadratic candidate count must still certify a valid atlas");
+            Assert.That(report.pairs, Is.EqualTo(0), "fan triangles share edges and the centre, never area");
+        }
+
         [Test]
         public void OverlapScanHonoursItsBudget()
         {
