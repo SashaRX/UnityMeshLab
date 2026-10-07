@@ -85,8 +85,8 @@ namespace UnityEditor.Formats.Fbx.Exporter
     }
 }
 
-// Autodesk's SDK surface: normalized static FBX output and the in-place channel edit
-// (FbxDocumentEdit / FbxChannelWrite). Signatures mirror com.autodesk.fbx 5.1.
+// Autodesk's SDK surface: normalized static FBX output, the in-place channel edit
+// (FbxDocumentEdit / FbxChannelWrite) and the node edit (FbxStructureEdit). Signatures mirror com.autodesk.fbx 5.1.
 namespace Autodesk.Fbx
 {
     public class FbxManager : System.IDisposable {
@@ -103,9 +103,15 @@ namespace Autodesk.Fbx
         public void SetBoolProp(string name, bool value) { }
     }
     public static class Globals { public const string IOSROOT = ""; public const string EXP_FBX_EMBEDDED = ""; }
-    public class FbxObject { }
+    public class FbxObject {
+        public string GetName() => "";
+        public void SetName(string name) { }
+        public FbxScene GetScene() => null;
+        public virtual void Destroy() { }
+    }
     public class FbxScene : FbxObject {
         public static FbxScene Create(FbxManager manager, string name) => new FbxScene();
+        public int GetMaterialCount() => 0;
         public FbxGlobalSettings GetGlobalSettings() => new FbxGlobalSettings();
         public FbxNode GetRootNode() => new FbxNode();
     }
@@ -116,14 +122,63 @@ namespace Autodesk.Fbx
     }
     public class FbxSystemUnit { public static FbxSystemUnit m => new FbxSystemUnit(); public double GetScaleFactor() => 100; }
     public class FbxAxisSystem { public static FbxAxisSystem Max => new FbxAxisSystem(); public void DeepConvertScene(FbxScene scene) { } }
-    public struct FbxDouble3 { public double this[int i] { get => 0; set { } } }
-    public struct FbxVector4 {
-        public FbxVector4(double x, double y, double z, double w = 1) { }
+    public struct FbxDouble3 {
+        public double X, Y, Z;
+        public FbxDouble3(double x, double y, double z) { X = x; Y = y; Z = z; }
         public double this[int i] { get => 0; set { } }
     }
-    public class FbxPropertyDouble3 { public FbxDouble3 Get() => new FbxDouble3(); }
-    public class FbxNode {
-        public enum EPivotSet { eSourcePivot }
+    public struct FbxVector4 {
+        public double X, Y, Z, W;
+        public FbxVector4(double x, double y, double z, double w = 1) { X = x; Y = y; Z = z; W = w; }
+        public double this[int i] { get => 0; set { } }
+        public static bool operator ==(FbxVector4 a, FbxVector4 b) => a.X == b.X && a.Y == b.Y && a.Z == b.Z && a.W == b.W;
+        public static bool operator !=(FbxVector4 a, FbxVector4 b) => !(a == b);
+        public override bool Equals(object obj) => obj is FbxVector4 v && v == this;
+        public override int GetHashCode() => X.GetHashCode();
+    }
+    public class FbxPropertyDouble3 { public FbxDouble3 Get() => new FbxDouble3(); public FbxPropertyDouble3 Set(FbxDouble3 value) => this; }
+    public class FbxTransform { public enum EInheritType { eInheritRrSs, eInheritRSrs, eInheritRrs } }
+    public class FbxPropertyEInheritType {
+        public FbxTransform.EInheritType Get() => FbxTransform.EInheritType.eInheritRSrs;
+        public FbxPropertyEInheritType Set(FbxTransform.EInheritType value) => this;
+    }
+    public class FbxEuler { public enum EOrder { eOrderXYZ, eOrderXZY, eOrderYZX, eOrderYXZ, eOrderZXY, eOrderZYX, eOrderSphericXYZ } }
+    public class FbxAMatrix { public double Get(int row, int column) => 0; }
+    public class FbxSurfaceMaterial : FbxObject { }
+    public class FbxSurfaceLambert : FbxSurfaceMaterial { }
+    public class FbxSurfacePhong : FbxSurfaceLambert {
+        public static FbxSurfacePhong Create(FbxObject container, string name) => new FbxSurfacePhong();
+    }
+    public class FbxNode : FbxObject {
+        public enum EPivotSet { eSourcePivot, eDestinationPivot }
+        public FbxPropertyEInheritType InheritType => new FbxPropertyEInheritType();
+        public FbxNode GetParent() => null;
+        public FbxNode RemoveChild(FbxNode node) => node;
+        public FbxNodeAttribute GetNodeAttribute() => null;
+        public void SetRotationOrder(EPivotSet pivot, FbxEuler.EOrder order) { }
+        public void GetRotationOrder(EPivotSet pivot, out int order) { order = 0; }
+        public void SetRotationActive(bool value) { }
+        public bool GetRotationActive() => false;
+        public void SetRotationOffset(EPivotSet pivot, FbxVector4 v) { }
+        public FbxVector4 GetRotationOffset(EPivotSet pivot) => new FbxVector4();
+        public void SetRotationPivot(EPivotSet pivot, FbxVector4 v) { }
+        public FbxVector4 GetRotationPivot(EPivotSet pivot) => new FbxVector4();
+        public void SetPreRotation(EPivotSet pivot, FbxVector4 v) { }
+        public void SetPostRotation(EPivotSet pivot, FbxVector4 v) { }
+        public void SetScalingOffset(EPivotSet pivot, FbxVector4 v) { }
+        public FbxVector4 GetScalingOffset(EPivotSet pivot) => new FbxVector4();
+        public void SetScalingPivot(EPivotSet pivot, FbxVector4 v) { }
+        public FbxVector4 GetScalingPivot(EPivotSet pivot) => new FbxVector4();
+        public void SetGeometricTranslation(EPivotSet pivot, FbxVector4 v) { }
+        public FbxVector4 GetGeometricTranslation(EPivotSet pivot) => new FbxVector4();
+        public void SetGeometricRotation(EPivotSet pivot, FbxVector4 v) { }
+        public FbxVector4 GetGeometricRotation(EPivotSet pivot) => new FbxVector4();
+        public void SetGeometricScaling(EPivotSet pivot, FbxVector4 v) { }
+        public FbxVector4 GetGeometricScaling(EPivotSet pivot) => new FbxVector4();
+        public FbxAMatrix EvaluateGlobalTransform() => new FbxAMatrix();
+        public int AddMaterial(FbxSurfaceMaterial material) => 0;
+        public int GetMaterialCount() => 0;
+        public FbxSurfaceMaterial GetMaterial(int index) => null;
         public FbxPropertyDouble3 LclTranslation => new FbxPropertyDouble3();
         public FbxPropertyDouble3 LclRotation => new FbxPropertyDouble3();
         public FbxPropertyDouble3 LclScaling => new FbxPropertyDouble3();
@@ -136,12 +191,14 @@ namespace Autodesk.Fbx
         public FbxNodeAttribute SetNodeAttribute(FbxNodeAttribute attribute) => attribute;
         public bool AddChild(FbxNode node) => true;
     }
-    public class FbxNodeAttribute : FbxObject { }
+    public class FbxNodeAttribute : FbxObject {
+        public int GetNodeCount() => 0;
+        public FbxNode GetNode(int index) => null;
+    }
     public class FbxLayerContainer : FbxNodeAttribute {
         public int CreateLayer() => 0;
         public int GetLayerCount() => 0;
         public FbxLayer GetLayer(int index) => null;
-        public string GetName() => "";
     }
     public class FbxMesh : FbxLayerContainer {
         public static FbxMesh Create(FbxObject container, string name) => new FbxMesh();
@@ -155,6 +212,7 @@ namespace Autodesk.Fbx
         public int GetPolygonCount() => 0;
         public int GetPolygonSize(int polygon) => 0;
         public int GetPolygonVertex(int polygon, int position) => 0;
+        public int GetDeformerCount() => 0;
     }
     public struct FbxVector2 { public double X, Y; public FbxVector2(double x, double y) { X = x; Y = y; } }
     public struct FbxColor {
@@ -167,6 +225,7 @@ namespace Autodesk.Fbx
         public int Add(int item) => 0;
         public int Add(FbxColor item) => 0;
         public int Add(FbxVector2 item) => 0;
+        public int Add(FbxVector4 item) => 0;
         public void SetAt(int index, int item) { }
         public void SetAt(int index, FbxColor item) { }
         public void SetAt(int index, FbxVector2 item) { }
@@ -195,6 +254,20 @@ namespace Autodesk.Fbx
         public FbxLayerElementArrayTemplateFbxColor GetDirectArray() => new FbxLayerElementArrayTemplateFbxColor();
         public FbxLayerElementArrayTemplateInt GetIndexArray() => new FbxLayerElementArrayTemplateInt();
     }
+    public class FbxLayerElementArrayTemplateFbxVector4 : FbxLayerElementArray { public FbxVector4 GetAt(int index) => new FbxVector4(); }
+    public class FbxLayerElementTemplateFbxVector4 : FbxLayerElement {
+        public FbxLayerElementArrayTemplateFbxVector4 GetDirectArray() => new FbxLayerElementArrayTemplateFbxVector4();
+        public FbxLayerElementArrayTemplateInt GetIndexArray() => new FbxLayerElementArrayTemplateInt();
+    }
+    public class FbxLayerElementNormal : FbxLayerElementTemplateFbxVector4 {
+        public static FbxLayerElementNormal Create(FbxLayerContainer owner, string name) => new FbxLayerElementNormal();
+    }
+    public class FbxLayerElementTemplateFbxSurfaceMaterial : FbxLayerElement {
+        public FbxLayerElementArrayTemplateInt GetIndexArray() => new FbxLayerElementArrayTemplateInt();
+    }
+    public class FbxLayerElementMaterial : FbxLayerElementTemplateFbxSurfaceMaterial {
+        public static FbxLayerElementMaterial Create(FbxLayerContainer owner, string name) => new FbxLayerElementMaterial();
+    }
     public class FbxLayerElementUV : FbxLayerElementTemplateFbxVector2 {
         public static FbxLayerElementUV Create(FbxLayerContainer owner, string name) => new FbxLayerElementUV();
     }
@@ -206,6 +279,10 @@ namespace Autodesk.Fbx
         public FbxLayerElementVertexColor GetVertexColors() => null;
         public void SetUVs(FbxLayerElementUV uvs, FbxLayerElement.EType type) { }
         public void SetVertexColors(FbxLayerElementVertexColor colors) { }
+        public FbxLayerElementNormal GetNormals() => null;
+        public void SetNormals(FbxLayerElementNormal normals) { }
+        public FbxLayerElementMaterial GetMaterials() => null;
+        public void SetMaterials(FbxLayerElementMaterial materials) { }
     }
     public class FbxImporter : System.IDisposable {
         public static FbxImporter Create(FbxManager manager, string name) => new FbxImporter();

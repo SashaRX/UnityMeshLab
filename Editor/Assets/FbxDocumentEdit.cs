@@ -455,7 +455,7 @@ namespace SashaRX.UnityMeshLab
             return v;
         }
 
-        static FbxLayer Layer(FbxMesh mesh, int index)
+        internal static FbxLayer Layer(FbxMesh mesh, int index)
         {
             while (mesh.GetLayerCount() <= index)
                 if (mesh.CreateLayer() < 0) throw new InvalidOperationException($"Cannot create layer {index} on '{mesh.GetName()}'.");
@@ -476,7 +476,7 @@ namespace SashaRX.UnityMeshLab
             return Layer(mesh, last + 1);
         }
 
-        readonly struct ValueKey : IEquatable<ValueKey>
+        internal readonly struct ValueKey : IEquatable<ValueKey>
         {
             readonly long a, b, c, d;
             public ValueKey(double[] v)
