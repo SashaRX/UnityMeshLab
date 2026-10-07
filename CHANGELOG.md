@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Removed the obsolete standalone Python/BAT sweep-gallery generator. It only understood the retired flat `BenchmarkReports/*_sweep_*.csv` + `{csvBase}_png/` layout; sweeps now generate their own `index.html` in the current nested run layout. Benchmark documentation and hierarchical-repack artefact descriptions now name the files the current code actually writes.
 
 ### Fixed
+- The checker, 3D shells and lightmap previews follow a LOD switch from the canvas toolbar instead of staying on the renderers the switch just hid, and the UV channel picked for the canvas returns when the new LOD carries it.
 - Viewport regressions respect localized UV-range formatting and compare shader-sampled attribute colors after sRGB decoding. Cover English, Russian and Hungarian locales plus default, linear and sRGB render targets.
 - Address CodeRabbit/Graphify findings: restore failed FBX overwrites and importer state, export computed channels, isolate all xatlas sessions, keep GPU cancellation terminal, preserve canonical inspection entries, align lightmap picking and fill visibility, deduplicate wire edges and retain prefab LOD overrides. Skinned source previews apply renderer scale once.
 - GPU BVH kernels compile correctly and unsupported kernels are rejected before dispatch; queries and normal/cage calculations retain precision on small meshes.

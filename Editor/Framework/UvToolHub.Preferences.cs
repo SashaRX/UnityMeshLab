@@ -36,7 +36,7 @@ namespace SashaRX.UnityMeshLab
             toolTabsScroll = state.tabsScroll; inspectionScroll = state.inspectScroll;
             canvas3D = state.canvas3D; inspectMesh = state.inspect;
             planarProjection = Mathf.Clamp(state.projection, 0, 3);
-            ctx.PreviewUvChannel = Mathf.Clamp(state.uvChannel, 0, 3);
+            ctx.PreviewUvChannel = preferredUvChannel = Mathf.Clamp(state.uvChannel, 0, 3);
             _checkerUvChannel = Mathf.Clamp(state.checkerUvChannel, 0, 3);
             _checkerColorMode = state.checkerColor; _checkerShowR = state.checkerR; _checkerShowG = state.checkerG;
             canvas.Zoom = MeshLabWindowPreferences.Clamp(state.zoom, .01f, 20, 1);

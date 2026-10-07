@@ -51,6 +51,8 @@ namespace SashaRX.UnityMeshLab
         readonly List<MeshEntry> viewportEntries = new List<MeshEntry>();   // parallel to viewportItems; null for tool content
         readonly List<MeshEntry> uvContentEntries = new List<MeshEntry>();  // a tool's own UV canvas content (IUvToolUvContent)
         int uvContentKey;
+        bool reapplyPreview;        // a LOD switch: re-apply the 3D preview once the entries list the new LOD
+        int preferredUvChannel = 1; // the channel the user picked; a LOD switch returns to it when the LOD has it
         Vector2 viewportSpotPointer;
         bool viewportSpotPointerValid, selectViewportSpotWhenReady;
         Rect canvasArea;   // the canvas column's content rect, from the last repaint
@@ -384,25 +386,7 @@ namespace SashaRX.UnityMeshLab
             // Middle column with explicit Width so it's the first thing to
             // shrink when the window is too narrow.
             GUILayout.BeginArea(canvasRect);
-            // A tool may put its own output in the UV canvas (the Remesh & Bake result);
-            // resolved every frame so it follows the tool's stages and tab switches.
-            uvContentEntries.Clear();
-            toolOwnsUvContent = ActiveTool is IUvToolUvContent uvContent && uvContent.GetUvContent(uvContentEntries);
-            canvas.EntriesOverride = toolOwnsUvContent ? uvContentEntries : null;
-            CollectViewportItems();
-            canvas.EntriesOverride = viewportEntries;
-            int contentKey = toolOwnsUvContent ? 1 : 0;
-            foreach (var entry in viewportEntries) {
-                var mesh = canvas.DisplayMesh(ctx, entry);
-                unchecked { contentKey = (contentKey * 31 + (mesh ? mesh.GetInstanceID() : 0)) * 31 + entry.GetHashCode(); }
-            }
-            if (uvContentKey != contentKey) {
-                uvContentKey = contentKey;
-                canvas.ClearHoverState(); canvas.ClearFrameCaches();
-                InvalidateViewportCaches(false);
-            }
-            if (canvas.EnsurePreviewChannel(ctx) && canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Checker)
-                ApplyPreviewMode(UvCanvasView.PreviewMode.Checker);
+            CollectCanvasEntries();
             DrawCanvasToolbar();
             DrawInspectionToolbar();
             canvas.InspectionShading = viewport.Mode;
@@ -1119,6 +1103,42 @@ namespace SashaRX.UnityMeshLab
 
         bool toolOwnsUvContent;
 
+        // The canvas entries for this frame: a tool's own UV canvas content (the Remesh &
+        // Bake result) or the preview LOD's renderers; resolved every frame so it follows
+        // the tool's stages, tab switches and the LOD row. A LOD switch lands here on the
+        // frame after the click, once the list holds the renderers now shown: the channel
+        // the user picked comes back when the new LOD has it, and the active 3D preview
+        // moves to those renderers (applied from the click itself it would land on the
+        // previous LOD's, which ForceLOD just hid).
+        void CollectCanvasEntries()
+        {
+            uvContentEntries.Clear();
+            toolOwnsUvContent = ActiveTool is IUvToolUvContent uvContent && uvContent.GetUvContent(uvContentEntries);
+            canvas.EntriesOverride = toolOwnsUvContent ? uvContentEntries : null;
+            CollectViewportItems();
+            canvas.EntriesOverride = viewportEntries;
+            int contentKey = toolOwnsUvContent ? 1 : 0;
+            foreach (var entry in viewportEntries) {
+                var mesh = canvas.DisplayMesh(ctx, entry);
+                unchecked { contentKey = (contentKey * 31 + (mesh ? mesh.GetInstanceID() : 0)) * 31 + entry.GetHashCode(); }
+            }
+            if (uvContentKey != contentKey) {
+                uvContentKey = contentKey;
+                canvas.ClearHoverState(); canvas.ClearFrameCaches();
+                InvalidateViewportCaches(false);
+            }
+            if (reapplyPreview && ctx.PreviewUvChannel != preferredUvChannel && canvas.HasPreviewChannel(ctx, preferredUvChannel))
+            {
+                ctx.PreviewUvChannel = preferredUvChannel;
+                canvas.ClearHoverState();
+            }
+            bool channelSwitched = canvas.EnsurePreviewChannel(ctx);
+            var mode = canvas.CurrentPreviewMode;
+            if (mode != UvCanvasView.PreviewMode.Off && (reapplyPreview || (channelSwitched && mode == UvCanvasView.PreviewMode.Checker)))
+                ApplyPreviewMode(mode);
+            reapplyPreview = false;
+        }
+
         void PrepareInspectionEntries()
         {
             var active = new HashSet<(int, int)>();
@@ -1787,9 +1807,9 @@ namespace SashaRX.UnityMeshLab
             ctx.PreviewLod = clamped;
             canvas.ClearHoverState();
             if (ctx.LodGroup != null) ctx.LodGroup.ForceLOD(clamped);
-            // Reapply active 3D preview to new LOD's renderers
-            if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
-                ApplyPreviewMode(canvas.CurrentPreviewMode);
+            // The canvas still lists the previous LOD's entries: CollectCanvasEntries
+            // re-applies the active 3D preview next frame, to the renderers now shown.
+            reapplyPreview = true;
             Repaint();
         }
 
@@ -1848,7 +1868,7 @@ namespace SashaRX.UnityMeshLab
                     bool hasCheckerUv = canvas.HasPreviewChannel(ctx, _checkerUvChannel);
                     foreach (var e in canvas.Entries(ctx))
                     {
-                        if (!e.include || e.renderer == null) continue;
+                        if (e == null || !e.include || e.renderer == null) continue;
                         Mesh uvMesh = e.transferredMesh ?? e.repackedMesh;
                         if (uvMesh == null)
                         {
@@ -1881,7 +1901,7 @@ namespace SashaRX.UnityMeshLab
                     bool hasShellUv = canvas.HasPreviewChannel(ctx, ctx.PreviewUvChannel);
                     foreach (var e in canvas.Entries(ctx))
                     {
-                        if (!e.include || e.renderer == null) continue;
+                        if (e == null || !e.include || e.renderer == null) continue;
                         Mesh mesh = ctx.DMesh(e);
                         if (mesh != null) shellEntries.Add((e.renderer, mesh));
                     }
@@ -1986,7 +2006,7 @@ namespace SashaRX.UnityMeshLab
 
         void OnPreviewChannelChanged(int newChannel)
         {
-            ctx.PreviewUvChannel = newChannel;
+            ctx.PreviewUvChannel = preferredUvChannel = newChannel;
             if (canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Checker)
                 ApplyPreviewMode(UvCanvasView.PreviewMode.Checker);
             canvas.ClearHoverState();
