@@ -177,6 +177,51 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
+        /// <summary>
+        /// After generated LODs were written into the FBX and it was reimported: every LOD slot
+        /// holding a generated scene object takes the imported renderer of the same name under
+        /// the group instead (transitions kept), and the generated objects are cleared. When
+        /// any generated object has no imported counterpart (the scene object is not an
+        /// instance of the model), nothing is changed. Returns the renderers adopted.
+        /// </summary>
+        internal static int AdoptImportedLods(UvToolContext ctx)
+        {
+            if (ctx?.LodGroup == null || ctx.GeneratedLodObjects.Count == 0) return 0;
+            var generated = new HashSet<GameObject>();
+            foreach (var go in ctx.GeneratedLodObjects)
+                if (go != null) generated.Add(go);
+            var imported = new Dictionary<string, Renderer>();
+            foreach (var r in ctx.LodGroup.GetComponentsInChildren<Renderer>(true))
+                if (r != null && !generated.Contains(r.gameObject) && !imported.ContainsKey(r.name)) imported[r.name] = r;
+
+            var lods = ctx.LodGroup.GetLODs();
+            int adopted = 0;
+            foreach (var lod in lods)
+            {
+                if (lod.renderers == null) continue;
+                for (int i = 0; i < lod.renderers.Length; i++)
+                {
+                    var r = lod.renderers[i];
+                    if (r == null || !generated.Contains(r.gameObject)) continue;
+                    if (!imported.TryGetValue(r.name, out var written))
+                    {
+                        UvtLog.Warn($"[LOD] '{r.name}' has no imported counterpart under '{ctx.LodGroup.name}'; the generated LOD objects stay.");
+                        return 0;
+                    }
+                    lod.renderers[i] = written;
+                    adopted++;
+                }
+            }
+            if (adopted == 0) return 0;
+            Undo.RecordObject(ctx.LodGroup, "Adopt Written LODs");
+            ctx.LodGroup.SetLODs(lods);
+            ctx.LodGroup.RecalculateBounds();
+            if (PrefabUtility.IsPartOfPrefabInstance(ctx.LodGroup))
+                PrefabUtility.RecordPrefabInstancePropertyModifications(ctx.LodGroup);
+            ClearGeneratedLods(ctx);
+            return adopted;
+        }
+
         internal static void ClearGeneratedLods(UvToolContext ctx)
         {
             if (ctx.GeneratedLodObjects.Count == 0) return;

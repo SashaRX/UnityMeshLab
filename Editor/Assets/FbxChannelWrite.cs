@@ -12,6 +12,10 @@
 // vertices are bit-identical in position to the working meshes. FbxCornerMatch then
 // pairs every corner with the working mesh's vertex. A corner that cannot be paired
 // keeps its stored value; a write that would have to invent values is refused.
+//
+// The hub's full save also hands over a structure plan (generated LODs, sidecar
+// collision, meshes with edited faces); FbxStructureWrite applies it to the same
+// document after the channels, so one load and one save cover both.
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
 using System;
@@ -50,35 +54,43 @@ namespace SashaRX.UnityMeshLab
         }
 
         // What the tagged import says about each FBX corner of one mesh.
-        sealed class Tagged
+        internal sealed class Tagged
         {
             public int ordinal;
             public float[] cornerPositions;
             public readonly Vector2[][] uvs = new Vector2[8][];
             public Color32[] colors32;
             public Color[] colors;
+            /// <summary>The FBX corner of each vertex of the import's triangles, submesh by submesh.</summary>
+            public int[][] submeshCorners;
         }
 
         /// <summary>
         /// Writes the intent's channels of <paramref name="entries"/> into the FBX at
         /// <paramref name="sourceFbxPath"/> (or into a new file at <paramref name="outputFbxPath"/>),
-        /// then reimports it and relinks <paramref name="sceneRoot"/>. Returns true when a file was written.
+        /// together with the new and replaced geometry of <paramref name="structure"/> when one
+        /// is given, then reimports it and relinks <paramref name="sceneRoot"/>. Everything goes
+        /// into one load and one save of the document: a refusal anywhere leaves the file as
+        /// it was. Returns true when a file was written.
         /// </summary>
         internal static bool Write(string sourceFbxPath, IEnumerable<MeshEntry> entries, FbxExportIntent intent,
-            string outputFbxPath, LODGroup sceneRoot)
+            string outputFbxPath, LODGroup sceneRoot, FbxStructurePlan structure = null)
         {
             string targetFbxPath = string.IsNullOrEmpty(outputFbxPath) ? sourceFbxPath : outputFbxPath;
             bool isVariant = !string.Equals(targetFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
+            bool hasStructure = structure != null && !structure.IsEmpty;
 
             var importer = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             bool swapUv = importer != null && importer.swapUVChannels;
             bool generatedUv1 = importer != null && importer.generateSecondaryUV;
-            var donors = CaptureDonors(entries, intent, generatedUv1, false);
+            // Meshes the structure step writes whole are not channel donors.
+            var skip = hasStructure ? structure.WholeMeshNames : null;
+            var donors = CaptureDonors(entries, intent, generatedUv1, false, skip);
             // Writing UV1 switches 'Generate Lightmap UVs' off for the whole model, so every
             // mesh's generated UV1 goes into the file with it, edited or not.
             bool bakeUv1 = generatedUv1 && intent.IncludesUv(1) && donors.Any(d => d.uvs[1] != null);
-            if (bakeUv1) donors = CaptureDonors(entries, intent, generatedUv1, true);
-            if (donors.Count == 0)
+            if (bakeUv1) donors = CaptureDonors(entries, intent, generatedUv1, true, skip);
+            if (donors.Count == 0 && !hasStructure)
             {
                 UvtLog.Warn($"[FBX Export] No meshes carry data for {intent}.");
                 return false;
@@ -110,13 +122,21 @@ namespace SashaRX.UnityMeshLab
                 cornersWritten += corners;
             }
 
-            if (meshesWritten == 0)
+            bool uv1Written = channelsWritten.Contains("UV1");
+            // After the channels: new nodes take the UV sets their source has by now, and UV1
+            // too when it is being baked for the whole model.
+            var structureLog = new List<string>();
+            int structural = hasStructure
+                ? FbxStructureWrite.Apply(document, tagged, structure, swapUv, importer != null && importer.preserveHierarchy,
+                    bakeUv1 && uv1Written ? 2 : 0, structureLog)
+                : 0;
+
+            if (meshesWritten == 0 && structural == 0)
             {
-                UvtLog.Info($"[FBX Export] '{Path.GetFileName(sourceFbxPath)}': {intent} unchanged; file left as is.");
+                UvtLog.Info($"[FBX Export] '{Path.GetFileName(sourceFbxPath)}': nothing changed; file left as is.");
                 return false;
             }
-            bool uv1Written = channelsWritten.Contains("UV1");
-            if (bakeUv1 && uv1Written) RequireEveryUv1(sourceFbxPath, donors, importedNames);
+            if (bakeUv1 && uv1Written) RequireEveryUv1(sourceFbxPath, donors, hasStructure ? structure.WholeMeshNames : null, importedNames);
 
             // The sidecar's UV2 replay is held off for the import that follows only when that
             // import brings a UV1 written here; otherwise the sidecar still applies.
@@ -124,8 +144,11 @@ namespace SashaRX.UnityMeshLab
             try { FbxExport.ReplaceAtomically(targetFbxPath, temp => document.Save(Path.GetFullPath(temp))); }
             catch { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
             if (!isVariant && uv1Written) KeepWrittenUv1(sourceFbxPath);
-            UvtLog.Info($"[FBX Export] {meshesWritten} mesh(es), {cornersWritten} corner value(s) of {string.Join(", ", channelsWritten.OrderBy(c => c))} -> {targetFbxPath} " +
-                $"(FBX {document.Major}.{document.Minor}, {(document.Binary ? "binary" : "ASCII")}; polygons and other channels untouched)");
+            string format = $"FBX {document.Major}.{document.Minor}, {(document.Binary ? "binary" : "ASCII")}";
+            if (meshesWritten > 0)
+                UvtLog.Info($"[FBX Export] {meshesWritten} mesh(es), {cornersWritten} corner value(s) of {string.Join(", ", channelsWritten.OrderBy(c => c))} -> {targetFbxPath} " +
+                    $"({format}; polygons and other channels untouched)");
+            foreach (string line in structureLog) UvtLog.Info($"[FBX Export] {line} -> {targetFbxPath} ({format})");
 
             // A save-as outside the project is a plain file; nothing to import.
             if (!targetFbxPath.StartsWith("Assets/", StringComparison.Ordinal) && !targetFbxPath.StartsWith("Packages/", StringComparison.Ordinal))
@@ -141,9 +164,10 @@ namespace SashaRX.UnityMeshLab
 
         // With generation switched off, a mesh whose UV1 is not in the file has none: refuse
         // rather than drop the lightmap UVs of meshes the save did not see.
-        static void RequireEveryUv1(string sourceFbxPath, List<Donor> donors, HashSet<string> importedNames)
+        static void RequireEveryUv1(string sourceFbxPath, List<Donor> donors, ICollection<string> wholeMeshes, HashSet<string> importedNames)
         {
             var withUv1 = new HashSet<string>(donors.Where(d => d.uvs[1] != null).Select(d => d.name), StringComparer.Ordinal);
+            if (wholeMeshes != null) withUv1.UnionWith(wholeMeshes);
             var lost = importedNames.Where(n => !withUv1.Contains(n) && !MeshNaming.IsCollision(n)).OrderBy(n => n, StringComparer.Ordinal).ToList();
             if (lost.Count == 0) return;
             throw new InvalidOperationException(
@@ -155,16 +179,16 @@ namespace SashaRX.UnityMeshLab
         // ── Donors ──
 
         // Unity UV channel ↔ FBX UV set: 'Swap UVs' on the importer exchanges the first two.
-        static int FbxUvSet(int unityChannel, bool swapUv) => swapUv && unityChannel < 2 ? 1 - unityChannel : unityChannel;
+        internal static int FbxUvSet(int unityChannel, bool swapUv) => swapUv && unityChannel < 2 ? 1 - unityChannel : unityChannel;
 
-        static List<Donor> CaptureDonors(IEnumerable<MeshEntry> entries, FbxExportIntent intent, bool generatedUv1, bool bakeUv1)
+        static List<Donor> CaptureDonors(IEnumerable<MeshEntry> entries, FbxExportIntent intent, bool generatedUv1, bool bakeUv1, ICollection<string> skip)
         {
             var donors = new List<Donor>();
             var byName = new Dictionary<string, Donor>(StringComparer.Ordinal);
             foreach (var entry in entries.Where(e => e != null && e.include))
             {
                 var donor = CaptureDonor(entry, intent, generatedUv1, bakeUv1);
-                if (donor == null) continue;
+                if (donor == null || (skip != null && skip.Contains(donor.name))) continue;
                 // Instances of one FBX mesh share its data: the same edit twice is one edit,
                 // different edits cannot both be written.
                 if (byName.TryGetValue(donor.name, out var first))
@@ -381,6 +405,10 @@ namespace SashaRX.UnityMeshLab
                 int c = cornerOf[v] = Mathf.RoundToInt(tags[v].x);
                 tag.cornerPositions[c * 3] = vertices[v].x; tag.cornerPositions[c * 3 + 1] = vertices[v].y; tag.cornerPositions[c * 3 + 2] = vertices[v].z;
             }
+            tag.submeshCorners = new int[mesh.subMeshCount][];
+            for (int s = 0; s < mesh.subMeshCount; s++)
+                tag.submeshCorners[s] = mesh.GetTopology(s) == MeshTopology.Triangles
+                    ? Array.ConvertAll(mesh.GetIndices(s), i => cornerOf[i]) : new int[0];
             var list = new List<Vector2>();
             for (int ch = 0; ch < 8; ch++)
             {

@@ -297,10 +297,46 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   the saved UVs after the hub's save.
 * "Unchanged geometry" means the same faces per submesh (position loops,
   same winding, any order or vertex numbering), not just the same counts.
-* The hub's Overwrite / Export New FBX (`All`) takes this path when the work
-  changed only channels of meshes the file already has. Generated LODs or
-  sidecar collision need the LOD-rebuild path; the dialog says what that
-  costs and offers "Save channels only".
+* The hub's Overwrite / Export New FBX (`All`) takes this path, together with
+  the structure edit below, in one load and one save of the document.
+
+### Structure edit in the FBX document (generated LODs, collision, edited faces)
+
+The hub's `All` save adds or replaces geometry in the same document
+(`Editor/Assets/FbxStructureWrite.cs`, SDK half `FbxStructureEdit.cs`):
+
+* A generated LOD becomes a node next to the node it was generated from
+  (same parent), with its local TRS, rotation order, pivots, pre/post
+  rotation, geometric transform, inherit type and materials; the copy must
+  evaluate to the source's global transform or the save is refused. Unity
+  then groups it by name (`base_LOD0` … `base_LODn`).
+* Sidecar collision becomes `{key}_COL` (one simplified mesh) or a `{key}_COL`
+  container of `{key}_COL_Hull{i}` nodes next to its source, with the source's
+  first material and positions / triangles / normals only. Collision the file
+  already holds with the same geometry is left alone.
+* A mesh whose faces or points changed gets a new FBX mesh on the same
+  node(s); node, transform and materials stay.
+* Unity-space geometry goes back into control-point space through the affine
+  map fitted to the source mesh's tagged import (`FbxSpaceFit`): whatever
+  axis conversion, unit scale, mirroring or baked pivot the import applied is
+  in that map. A position the source import had takes its exact control
+  point; a flat source takes its mirror from the import's winding. The
+  triangle winding is reversed when the import reversed it, so a reimport
+  gives the Unity triangles back. New meshes carry normals, the source's
+  number of UV sets (`UVChannel_N`, set i on layer i) and layer-0 colours
+  when the source has them, all per corner, indexed and shared only within a
+  control point.
+* Nothing is renamed, moved or normalised; a node is removed only when a new
+  one takes its name (a replaced node with children is refused). Hierarchy
+  normalisation stays the explicit Prefab Builder action (the LOD-rebuild path).
+* Refused, nothing written, then a dialog offers the rebuild or "Save channels
+  only": a LOD source node without an `_LOD<N>` suffix, a source that is the
+  file's only top-level node (Unity imports it as the model root) unless the
+  importer preserves the hierarchy, a skinned or blend-shaped source, an import
+  that is not an affine image of its control points, a generated LOD whose
+  source mesh cannot be told.
+* After an overwrite, the scene LODGroup's slots take the imported renderers
+  of the written LODs (transitions kept) and the generated objects go.
 
 ### `FbxExportIntent` flags
 

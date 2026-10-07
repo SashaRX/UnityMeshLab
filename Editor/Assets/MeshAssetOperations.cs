@@ -298,8 +298,7 @@ namespace SashaRX.UnityMeshLab
         void ExportNarrowIntentGroups(
             Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>> fbxGroups,
             FbxExportIntent intent,
-            bool overwriteSource,
-            bool syncSidecar = false)
+            bool overwriteSource)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             int okCount = 0;
@@ -312,11 +311,8 @@ namespace SashaRX.UnityMeshLab
                 if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath)) continue;
 
                 RestoreAllPreviews();
-                if (!ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath)) continue;
-                okCount++;
-                bool isVariant = !string.IsNullOrEmpty(outputFbxPath)
-                    && !string.Equals(outputFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
-                if (syncSidecar && !isVariant) SyncPersistentSidecar(sourceFbxPath, kv.Value);
+                if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
+                    okCount++;
             }
             UvtLog.Info($"[FBX Export] Narrow-intent export: {okCount}/{totalCount} group(s) succeeded.");
 #else
@@ -462,8 +458,10 @@ namespace SashaRX.UnityMeshLab
 
         // ExportFbx with intent. Narrow intent (no Hierarchy and no LodGroup bits)
         // delegates per group to the isolated channel re-save (atomic write, preflight,
-        // nothing but the intended channels touched). Wide intent (Hierarchy or LodGroup)
-        // is the LOD-rebuild pipeline: mesh replacement by name, new LOD children, stale-
+        // nothing but the intended channels touched). The hub's All edits the FBX document
+        // (channels plus generated LODs, sidecar collision and edited faces as nodes next to
+        // their source). Other wide intents (Prefab Builder's explicit Hierarchy / LodGroup)
+        // are the LOD-rebuild pipeline: mesh replacement by name, new LOD children, stale-
         // child pruning, hierarchy normalisation, collision injection from the sidecar.
         // The mechanics live in FbxExport; the policy — dialogs, backups, importer lock,
         // sidecar storage, relink, what to refresh — stays here. Migrating the wide path
@@ -504,30 +502,14 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            // "Save everything" (the hub's Overwrite / Export New FBX): when the work changed
-            // only UV sets and vertex colours of meshes the FBX already has, write just those
-            // into the file. A rebuild through Unity's FBX Exporter is only for structure the
-            // file lacks, and only after saying what it costs.
+            // "Save everything" (the hub's Overwrite / Export New FBX): changed UV sets and
+            // vertex colours, generated LODs, sidecar collision and edited faces all go into the
+            // FBX document itself (FbxChannelWrite + FbxStructureWrite). A rebuild through
+            // Unity's FBX Exporter runs only when that is refused and the user picks it.
             if (intent == FbxExportIntent.All)
             {
-                var reasons = StructuralChanges(fbxGroups);
-                if (reasons.Count == 0)
-                {
-                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource, syncSidecar: true);
-                    return;
-                }
-                int choice = EditorUtility.DisplayDialogComplex("Rebuild FBX?",
-                    "Saving this needs structure the FBX does not have:\n\n• " + string.Join("\n• ", reasons) +
-                    "\n\nA rebuild re-exports every mesh from Unity's data through the FBX Exporter: polygons become " +
-                    "triangles, vertices are split at seams, vertex colours are stored as 8-bit, and the hierarchy is normalised.\n\n" +
-                    "'Save channels only' writes the changed UV sets and vertex colours into the existing file and leaves the rest of it untouched.",
-                    "Rebuild", CancelButton, "Save channels only");
-                if (choice == 1) return;
-                if (choice == 2)
-                {
-                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource, syncSidecar: true);
-                    return;
-                }
+                ExportDocumentGroups(fbxGroups, overwriteSource);
+                return;
             }
 
             bool allGroupsSucceeded = true;
@@ -540,84 +522,68 @@ namespace SashaRX.UnityMeshLab
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-        // What a save of these groups needs beyond per-vertex channels of existing FBX meshes.
-        static List<string> StructuralChanges(Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>> fbxGroups)
+        // The hub's full save, one FBX at a time, through the document edit.
+        void ExportDocumentGroups(Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>> fbxGroups, bool overwriteSource)
         {
-            var reasons = new List<string>();
+            int okCount = 0;
             foreach (var kv in fbxGroups)
             {
-                string file = System.IO.Path.GetFileName(kv.Key);
-                int added = kv.Value.Count(p => p.entry.fbxMesh == null
-                    || !string.Equals(AssetDatabase.GetAssetPath(p.entry.fbxMesh), kv.Key, StringComparison.OrdinalIgnoreCase));
-                if (added > 0) reasons.Add($"{added} mesh(es) not in '{file}' yet (generated LODs)");
-                int reshaped = kv.Value.Count(p => p.entry.fbxMesh != null && GeometryDiffers(p.entry.fbxMesh, p.resultMesh));
-                if (reshaped > 0) reasons.Add($"{reshaped} mesh(es) of '{file}' with changed geometry (simplified or edited faces)");
-                int collision = SidecarStore.CollisionMeshes(kv.Key)?.Count ?? 0;
-                if (collision > 0) reasons.Add($"{collision} collision mesh set(s) from the sidecar for '{file}'");
+                string sourceFbxPath = kv.Key;
+                using var plan = FbxStructureWrite.Plan(sourceFbxPath, kv.Value, ctx.SourceLodIndex);
+                if (!TryChooseNarrowExportPath(sourceFbxPath, FbxExportIntent.All, overwriteSource, out string outputFbxPath)) continue;
+                bool isVariant = !string.IsNullOrEmpty(outputFbxPath)
+                    && !string.Equals(outputFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
+                var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
+                RestoreAllPreviews();
+
+                bool written;
+                try
+                {
+                    written = FbxChannelWrite.Write(sourceFbxPath, entries, FbxChannelWrite.Supported, outputFbxPath,
+                        isVariant ? null : ctx?.LodGroup, plan);
+                }
+                catch (FbxStructureRefusal refusal)
+                {
+                    written = ExportAfterRefusal(sourceFbxPath, kv.Value, entries, outputFbxPath, overwriteSource, refusal.Message);
+                    if (written) okCount++;
+                    continue;
+                }
+                catch (Exception ex)
+                {
+                    UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
+                    UvtLog.Verbose(ex.ToString());
+                    continue;
+                }
+                if (!written) continue;
+                okCount++;
+                if (isVariant) continue;
+                SyncPersistentSidecar(sourceFbxPath, kv.Value);
+                if (plan.lods.Count > 0) LodGroupUtility.AdoptImportedLods(ctx);
+                if (ctx?.LodGroup != null) ctx.Refresh(ctx.LodGroup);
+                RestoreWorkingCopiesToScene();
+                AfterWrite?.Invoke();
             }
-            return reasons;
+            UvtLog.Info($"[FBX Export] FBX document save: {okCount}/{fbxGroups.Count} file(s) written.");
         }
 
-        // Faces differ from the import: per submesh, the same faces (as position loops, any
-        // starting corner, same winding) in any order and any vertex numbering. Vertex dedup,
-        // UV welds and symmetry splits keep that and are channel work, not geometry; a
-        // re-triangulated quad, a flipped or moved face, or a submesh change is geometry.
-        internal static bool GeometryDiffers(Mesh imported, Mesh result)
+        // The document edit refused the structure (the file is untouched): say why and let the
+        // user pick the rebuild, the channels alone, or nothing.
+        bool ExportAfterRefusal(string sourceFbxPath, List<(MeshEntry entry, Mesh resultMesh)> group, List<MeshEntry> entries,
+            string outputFbxPath, bool overwriteSource, string reason)
         {
-            if (result == null || result == imported || !imported.isReadable || !result.isReadable) return false;
-            if (imported.subMeshCount != result.subMeshCount) return true;
-            var importedVertices = imported.vertices;
-            var resultVertices = result.vertices;
-            for (int s = 0; s < imported.subMeshCount; s++)
-            {
-                if (imported.GetTopology(s) != result.GetTopology(s)) return true;
-                int size = imported.GetTopology(s) == MeshTopology.Quads ? 4 : 3;
-                if (!SameFaces(importedVertices, imported.GetIndices(s), resultVertices, result.GetIndices(s), size)) return true;
-            }
-            return false;
-        }
-
-        static bool SameFaces(Vector3[] aVertices, int[] aIndices, Vector3[] bVertices, int[] bIndices, int size)
-        {
-            if (aIndices.Length != bIndices.Length) return false;
-            var counts = new Dictionary<(Vector3, Vector3, Vector3, Vector3), int>();
-            for (int f = 0; f + size <= aIndices.Length; f += size)
-            {
-                var key = FaceLoop(aVertices, aIndices, f, size);
-                counts.TryGetValue(key, out int n);
-                counts[key] = n + 1;
-            }
-            for (int f = 0; f + size <= bIndices.Length; f += size)
-            {
-                var key = FaceLoop(bVertices, bIndices, f, size);
-                if (!counts.TryGetValue(key, out int n) || n == 0) return false;
-                counts[key] = n - 1;
-            }
-            return true;
-        }
-
-        // The face's positions in winding order, started at the rotation that is smallest.
-        static (Vector3, Vector3, Vector3, Vector3) FaceLoop(Vector3[] vertices, int[] indices, int start, int size)
-        {
-            int best = 0;
-            for (int r = 1; r < size; r++)
-                if (CompareRotations(vertices, indices, start, size, r, best) < 0) best = r;
-            Vector3 At(int k) => k < size ? vertices[indices[start + (best + k) % size]] : default;
-            return (At(0), At(1), At(2), At(3));
-        }
-
-        static int CompareRotations(Vector3[] vertices, int[] indices, int start, int size, int r1, int r2)
-        {
-            for (int k = 0; k < size; k++)
-            {
-                var a = vertices[indices[start + (r1 + k) % size]];
-                var b = vertices[indices[start + (r2 + k) % size]];
-                int c = a.x.CompareTo(b.x);
-                if (c == 0) c = a.y.CompareTo(b.y);
-                if (c == 0) c = a.z.CompareTo(b.z);
-                if (c != 0) return c;
-            }
-            return 0;
+            UvtLog.Warn($"[FBX Export] '{sourceFbxPath}': {reason}.");
+            int choice = EditorUtility.DisplayDialogComplex("Rebuild FBX?",
+                $"'{System.IO.Path.GetFileName(sourceFbxPath)}' cannot take this save as an edit of the file:\n\n{reason}.\n\n" +
+                "A rebuild re-exports every mesh from Unity's data through the FBX Exporter: polygons become triangles, " +
+                "vertices are split at seams, vertex colours are stored as 8-bit, and the hierarchy is normalised.\n\n" +
+                "'Save channels only' writes the changed UV sets and vertex colours into the existing file and leaves the rest of it untouched.",
+                "Rebuild", CancelButton, "Save channels only");
+            if (choice == 1) return false;
+            if (choice == 2) return ExportFbxIsolatedCore(sourceFbxPath, entries, FbxChannelWrite.Supported, outputFbxPath);
+            var batch = new HierarchyExportBatch();
+            bool ok = ExportHierarchyGroup(sourceFbxPath, group, overwriteSource, batch);
+            FinishHierarchyExports(batch, overwriteSource, ok);
+            return ok;
         }
 
         void FinishHierarchyExports(HierarchyExportBatch batch, bool overwriteSource, bool allGroupsSucceeded)
