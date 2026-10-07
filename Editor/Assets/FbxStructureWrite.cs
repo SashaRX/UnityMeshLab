@@ -427,7 +427,7 @@ namespace SashaRX.UnityMeshLab
             // which must already be the ones the source renderer was given.
             foreach (var (edit, node, slots) in materialTargets)
             {
-                int changed = ReplaceSlots(scene, node, slots, edit.materials, edit.replaced, options);
+                int changed = ReplaceSlots(scene, node, node.GetMesh()?.GetName(), slots, edit.materials, edit.replaced, options);
                 if (changed == 0) continue;
                 log.Add($"'{edit.nodeName}': {changed} material slot(s) take the renderer's materials");
                 changes++;
@@ -439,7 +439,8 @@ namespace SashaRX.UnityMeshLab
                 var data = FbxMeshData.FromTriangles(SourceOf(lod.mesh, r, options), r.fit, r.reverse, r.submeshMaterials);
                 var node = FbxStructureEdit.AddSibling(r.node, lod.name, true);
                 FbxStructureEdit.AddMaterials(node, r.node, Enumerable.Range(0, r.node.GetMaterialCount()));
-                int slots = lod.materials != null ? ReplaceSlots(scene, node, r.submeshMaterials, lod.materials, lod.replaced, options) : 0;
+                // The LOD's mesh is made from its source's and carries its UV set names.
+                int slots = lod.materials != null ? ReplaceSlots(scene, node, r.mesh.GetName(), r.submeshMaterials, lod.materials, lod.replaced, options) : 0;
                 node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, lod.name, data));
                 log.Add($"'{lod.name}': {data.polygonSizes.Length} polygon(s) next to '{r.node.GetName()}'{(removed > 0 ? " (replacing the node of that name)" : "")}" +
                     (slots > 0 ? $", {slots} material slot(s) of its own" : ""));
@@ -507,17 +508,23 @@ namespace SashaRX.UnityMeshLab
         // The slots of the submeshes whose material changed take an FBX material named after
         // the Unity material (the scene's own of that name, or a new one), and the importer
         // maps that name to the asset. Other slots and other nodes are left as they are.
-        static int ReplaceSlots(FbxScene scene, FbxNode node, int[] slots, Material[] materials, Material[] replaced, Options options)
+        static int ReplaceSlots(FbxScene scene, FbxNode node, string uvSetMesh, int[] slots, Material[] materials, Material[] replaced, Options options)
         {
+            // Submeshes sharing a slot must all ask for one material, changed or not: the slot
+            // can hold only one.
+            var wanted = new Dictionary<int, Material>();
+            for (int s = 0; s < materials.Length && s < slots.Length; s++)
+            {
+                if (wanted.TryGetValue(slots[s], out var earlier) && earlier != materials[s])
+                    throw new FbxStructureRefusalException($"'{node.GetName()}': submeshes sharing material slot {slots[s]} were given different materials");
+                wanted[slots[s]] = materials[s];
+            }
             // All slots change in one step: two submeshes exchanging materials are no duplicate.
             var bySlot = new Dictionary<int, Autodesk.Fbx.FbxSurfaceMaterial>();
             for (int s = 0; s < materials.Length && s < slots.Length; s++)
             {
-                if (materials[s] == (s < replaced.Length ? replaced[s] : null)) continue;
-                var material = FbxMaterial(scene, node, materials[s], options);
-                if (bySlot.TryGetValue(slots[s], out var other) && other.GetName() != material.GetName())
-                    throw new FbxStructureRefusalException($"'{node.GetName()}': submeshes sharing material slot {slots[s]} were given different materials");
-                bySlot[slots[s]] = material;
+                if (materials[s] == (s < replaced.Length ? replaced[s] : null) || bySlot.ContainsKey(slots[s])) continue;
+                bySlot[slots[s]] = FbxMaterial(scene, uvSetMesh, materials[s], options);
             }
             if (bySlot.Count > 0) FbxStructureEdit.SetMaterials(node, bySlot);
             return bySlot.Count;
@@ -526,7 +533,7 @@ namespace SashaRX.UnityMeshLab
         // The FBX material for a Unity material: the file's own of its name, or a new one
         // carrying the material's colour and main texture (the file renders textured outside
         // Unity; inside Unity the importer remap maps it to the asset).
-        static Autodesk.Fbx.FbxSurfaceMaterial FbxMaterial(FbxScene scene, FbxNode node, Material material, Options options)
+        static Autodesk.Fbx.FbxSurfaceMaterial FbxMaterial(FbxScene scene, string uvSetMesh, Material material, Options options)
         {
             // A material the file itself imports (another of its slots' materials) is that FBX
             // material: no copy. A remap that sent its name to another asset is dropped, or the
@@ -557,8 +564,7 @@ namespace SashaRX.UnityMeshLab
                 relative = System.IO.Path.GetRelativePath(folder, file).Replace('\\', '/');
             }
             // The wrapper does not expose a layer element's name; the file's own names are read from it.
-            var mesh = node.GetMesh();
-            var uvSets = mesh != null ? options.uvSetNamesOf?.Invoke(mesh.GetName()) : null;
+            var uvSets = uvSetMesh != null ? options.uvSetNamesOf?.Invoke(uvSetMesh) : null;
             string uvSet = uvSets != null && uvSets.Count > 0 ? uvSets[0] : null;
             return FbxStructureEdit.NewMaterial(scene, name, color.r, color.g, color.b, texture != null ? MeshHygieneUtility.SanitizeName(texture.name) : null,
                 file, relative, uvSet);

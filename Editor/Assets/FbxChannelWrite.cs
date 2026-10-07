@@ -462,6 +462,10 @@ namespace SashaRX.UnityMeshLab
                     any = true;
                 }
             }
+            // Normals removed under a normals-only save would leave the file's tangent frame
+            // built on normals Unity no longer has.
+            if (donor.removedNormals && !tangentIntent && capture.fileTangents && importedAny.HasVertexAttribute(VertexAttribute.Tangent))
+                throw new FbxStructureRefusalException($"'{donor.name}': its normals were removed while the file keeps a tangent frame built on them; save tangents too");
             return any;
         }
 
