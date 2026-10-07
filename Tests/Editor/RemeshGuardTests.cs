@@ -80,6 +80,38 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(report.comparisons, Is.LessThan(64L * atlas.indices.Length / 3), "a few comparisons per face, not N·√N");
         }
 
+        // Thin bands across the whole atlas, stacked without overlap: a square grid
+        // sized from the total cell membership would pile hundreds of them into every
+        // cell; the per-axis grid keeps them apart along their thin axis.
+        static RemeshNative.Geometry BandAtlas(int bands, bool vertical)
+        {
+            var uv = new Vector2[bands * 3]; var indices = new int[bands * 3]; var charts = new int[bands * 3];
+            float step = 1f / bands;
+            for (int b = 0; b < bands; ++b)
+            {
+                float lo = b * step, hi = (b + 1) * step;
+                Vector2 a = new Vector2(0, lo), c = new Vector2(1, lo), d = new Vector2(.5f, hi);
+                if (vertical) { a = new Vector2(lo, 0); c = new Vector2(lo, 1); d = new Vector2(hi, .5f); }
+                int i = b * 3;
+                uv[i] = a; uv[i + 1] = c; uv[i + 2] = d;
+                indices[i] = i; indices[i + 1] = i + 1; indices[i + 2] = i + 2;
+                charts[i] = charts[i + 1] = charts[i + 2] = b % 3;
+            }
+            return new RemeshNative.Geometry { uv = uv, indices = indices, charts = charts, chartCount = 3,
+                positions = new Vector3[bands * 3], normals = new Vector3[bands * 3], tangents = new Vector4[bands * 3] };
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void OverlapScanCompletesOnLongSliverBands(bool vertical)
+        {
+            var atlas = BandAtlas(10000, vertical);
+            var report = UvAtlasDiagnostics.Measure(atlas, CancellationToken.None);
+            Assert.That(report.complete, Is.True, "slivers across the atlas must not exhaust the budget");
+            Assert.That(report.pairs, Is.EqualTo(0));
+            Assert.That(report.comparisons, Is.LessThan(64L * atlas.indices.Length / 3));
+        }
+
         [Test]
         public void OverlapScanHonoursItsBudget()
         {

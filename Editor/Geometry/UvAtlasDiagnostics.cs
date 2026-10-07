@@ -90,44 +90,58 @@ namespace SashaRX.UnityMeshLab
             }
             int count = triangles.Count;
             if (count < 2) return report;
-            // A uniform grid over the atlas, each pair tested once from the lowest-index
-            // cell both bounding boxes share. The former x-sweep visited every pair whose
-            // x-extents overlapped, about N·√N of them on a packed atlas, and ran out of
-            // its fixed budget past some twenty thousand faces; the repair then refused
-            // the atlas as uncertifiable. Cells scale with the face count, so a packed
-            // atlas costs a few comparisons per face whatever its size.
+            // A grid over the atlas, each pair tested once from the lowest-index cell both
+            // bounding boxes share. The former x-sweep visited every pair whose x-extents
+            // overlapped, about N·√N of them on a packed atlas, and ran out of its fixed
+            // budget past some twenty thousand faces; the repair then refused the atlas as
+            // uncertifiable. Each axis gets about one cell per average triangle extent on
+            // that axis, so long slivers (thin bands across the whole atlas) get a fine
+            // grid along their thin axis instead of a coarse square one that would pile
+            // hundreds of them into every cell; a packed atlas costs a few comparisons
+            // per face whatever its size.
             double minX = double.PositiveInfinity, minY = double.PositiveInfinity, maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
-            foreach (var t in triangles) { minX = Math.Min(minX, t.minX); maxX = Math.Max(maxX, t.maxX); minY = Math.Min(minY, t.minY); maxY = Math.Max(maxY, t.maxY); }
+            double extentX = 0, extentY = 0;
+            foreach (var t in triangles)
+            {
+                minX = Math.Min(minX, t.minX); maxX = Math.Max(maxX, t.maxX); minY = Math.Min(minY, t.minY); maxY = Math.Max(maxY, t.maxY);
+                extentX += t.maxX - t.minX; extentY += t.maxY - t.minY;
+            }
             double width = Math.Max(maxX - minX, 1e-12), height = Math.Max(maxY - minY, 1e-12);
-            int resolution = Math.Clamp((int)Math.Ceiling(Math.Sqrt(count)), 1, 4096);
+            int resX = AxisResolution(width, extentX / count, count), resY = AxisResolution(height, extentY / count, count);
+            // Both axes fine (tiny triangles) would make a grid far larger than the face
+            // count; the cell arrays stay proportional to N.
+            while ((long)resX * resY > Math.Max(16L * count, 4096))
+                if (resX >= resY) resX = Math.Max(1, resX / 2); else resY = Math.Max(1, resY / 2);
             var cells = new int[count * 4]; // cx0, cy0, cx1, cy1 per triangle
             long entries;
             while (true)
             {
-                entries = 0;
+                entries = 0; long spanX = 0, spanY = 0;
                 for (int i = 0; i < count; ++i)
                 {
                     var t = triangles[i];
-                    int cx0 = Cell(t.minX, minX, width, resolution), cx1 = Cell(t.maxX, minX, width, resolution);
-                    int cy0 = Cell(t.minY, minY, height, resolution), cy1 = Cell(t.maxY, minY, height, resolution);
+                    int cx0 = Cell(t.minX, minX, width, resX), cx1 = Cell(t.maxX, minX, width, resX);
+                    int cy0 = Cell(t.minY, minY, height, resY), cy1 = Cell(t.maxY, minY, height, resY);
                     cells[i * 4] = cx0; cells[i * 4 + 1] = cy0; cells[i * 4 + 2] = cx1; cells[i * 4 + 3] = cy1;
                     entries += (long)(cx1 - cx0 + 1) * (cy1 - cy0 + 1);
+                    spanX += cx1 - cx0 + 1; spanY += cy1 - cy0 + 1;
                 }
-                // Large triangles span many cells; a coarser grid keeps the lists bounded.
-                if (entries <= 8L * count + 65536 || resolution == 1) break;
-                resolution = Math.Max(1, resolution / 2);
+                // Triangles spanning many cells inflate the lists: coarsen the axis they
+                // span the most, never the one that keeps them apart.
+                if (entries <= 8L * count + 65536 || (resX == 1 && resY == 1)) break;
+                if (resY == 1 || (resX > 1 && spanX >= spanY)) resX = Math.Max(1, resX / 2); else resY = Math.Max(1, resY / 2);
             }
-            int cellCount = resolution * resolution;
+            int cellCount = resX * resY;
             var offsets = new int[cellCount + 1];
             for (int i = 0; i < count; ++i)
                 for (int cy = cells[i * 4 + 1]; cy <= cells[i * 4 + 3]; ++cy)
-                    for (int cx = cells[i * 4]; cx <= cells[i * 4 + 2]; ++cx) ++offsets[cy * resolution + cx + 1];
+                    for (int cx = cells[i * 4]; cx <= cells[i * 4 + 2]; ++cx) ++offsets[cy * resX + cx + 1];
             for (int c = 0; c < cellCount; ++c) offsets[c + 1] += offsets[c];
             var members = new int[entries];
             var fill = new int[cellCount];
             for (int i = 0; i < count; ++i)
                 for (int cy = cells[i * 4 + 1]; cy <= cells[i * 4 + 3]; ++cy)
-                    for (int cx = cells[i * 4]; cx <= cells[i * 4 + 2]; ++cx) { int c = cy * resolution + cx; members[offsets[c] + fill[c]++] = i; }
+                    for (int cx = cells[i * 4]; cx <= cells[i * 4 + 2]; ++cx) { int c = cy * resX + cx; members[offsets[c] + fill[c]++] = i; }
             if (comparisonBudget < 0) comparisonBudget = Math.Max(2_000_000L, 256L * count);
             var bufferA = new Point[8]; var bufferB = new Point[8];
             Scan();
@@ -140,7 +154,7 @@ namespace SashaRX.UnityMeshLab
                 for (int c = 0; c < cellCount; ++c)
                 {
                     if ((c & 255) == 0) token.ThrowIfCancellationRequested();
-                    int cx = c % resolution, cy = c / resolution;
+                    int cx = c % resX, cy = c / resX;
                     int begin = offsets[c], end = offsets[c + 1];
                     for (int m = begin; m < end; ++m)
                     {
@@ -174,6 +188,13 @@ namespace SashaRX.UnityMeshLab
 
         static int Cell(double value, double origin, double span, int resolution)
             => Math.Clamp((int)((value - origin) / span * resolution), 0, resolution - 1);
+
+        // About one cell per average triangle extent along the axis, at most one per face.
+        static int AxisResolution(double span, double meanExtent, int count)
+        {
+            double cells = meanExtent > 0 ? span / meanExtent : count;
+            return (int)Math.Clamp(Math.Round(cells), 1, Math.Min(4096, Math.Max(1, count)));
+        }
 
         /// <summary>Reusable scratch buffers for exact area checks during merge trials.</summary>
         internal sealed class IntersectionTest
