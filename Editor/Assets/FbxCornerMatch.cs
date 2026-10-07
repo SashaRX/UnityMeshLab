@@ -161,52 +161,52 @@ namespace SashaRX.UnityMeshLab
                     if (!sameWrittenValues(chosen, distinct[i])) { result.conflicts++; return -1; }
                 return chosen;
             }
-        }
 
-        static bool HasPosition(float[] p, int i) => !float.IsNaN(p[i * 3]);
-        static PositionKey CornerKey(float[] p, int i) => new PositionKey(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
-        static PositionKey VertexKey(float[] p, int v) => new PositionKey(p[v * 3], p[v * 3 + 1], p[v * 3 + 2]);
+            static bool HasPosition(float[] p, int i) => !float.IsNaN(p[i * 3]);
+            static PositionKey CornerKey(float[] p, int i) => new PositionKey(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
+            static PositionKey VertexKey(float[] p, int v) => new PositionKey(p[v * 3], p[v * 3 + 1], p[v * 3 + 2]);
 
-        static bool FaceOnPolygon(float[] positions, int[] faceIndices, int start, int size, List<PositionKey> polygonKeys)
-        {
-            for (int j = 0; j < size; j++)
-                if (!polygonKeys.Contains(VertexKey(positions, faceIndices[start + j]))) return false;
-            return true;
-        }
-
-        // Newell normal of the polygon's corners; zero when they are degenerate or missing.
-        static void Normal(float[] p, int start, int size, out double nx, out double ny, out double nz)
-        {
-            nx = ny = nz = 0;
-            for (int k = 0; k < size; k++)
+            static bool FaceOnPolygon(float[] positions, int[] faceIndices, int start, int size, List<PositionKey> polygonKeys)
             {
-                int a = start + k, b = start + (k + 1) % size;
-                if (!HasPosition(p, a) || !HasPosition(p, b)) { nx = ny = nz = 0; return; }
-                double ax = p[a * 3], ay = p[a * 3 + 1], az = p[a * 3 + 2];
-                double bx = p[b * 3], by = p[b * 3 + 1], bz = p[b * 3 + 2];
-                nx += (ay - by) * (az + bz);
-                ny += (az - bz) * (ax + bx);
-                nz += (ax - bx) * (ay + by);
+                for (int j = 0; j < size; j++)
+                    if (!polygonKeys.Contains(VertexKey(positions, faceIndices[start + j]))) return false;
+                return true;
             }
-        }
 
-        // +1 / -1 when the face's winding agrees / disagrees with the polygon normal, 0 when either is degenerate.
-        static int Orientation(float[] positions, int[] faceIndices, int start, int size, double nx, double ny, double nz)
-        {
-            double fx = 0, fy = 0, fz = 0;
-            for (int j = 0; j < size; j++)
+            // Newell normal of the polygon's corners; zero when they are degenerate or missing.
+            static void Normal(float[] p, int start, int size, out double nx, out double ny, out double nz)
             {
-                int a = faceIndices[start + j] * 3, b = faceIndices[start + (j + 1) % size] * 3;
-                double ax = positions[a], ay = positions[a + 1], az = positions[a + 2];
-                double bx = positions[b], by = positions[b + 1], bz = positions[b + 2];
-                fx += (ay - by) * (az + bz);
-                fy += (az - bz) * (ax + bx);
-                fz += (ax - bx) * (ay + by);
+                nx = ny = nz = 0;
+                for (int k = 0; k < size; k++)
+                {
+                    int a = start + k, b = start + (k + 1) % size;
+                    if (!HasPosition(p, a) || !HasPosition(p, b)) { nx = ny = nz = 0; return; }
+                    double ax = p[a * 3], ay = p[a * 3 + 1], az = p[a * 3 + 2];
+                    double bx = p[b * 3], by = p[b * 3 + 1], bz = p[b * 3 + 2];
+                    nx += (ay - by) * (az + bz);
+                    ny += (az - bz) * (ax + bx);
+                    nz += (ax - bx) * (ay + by);
+                }
             }
-            double dot = fx * nx + fy * ny + fz * nz;
-            double scale = Math.Sqrt((fx * fx + fy * fy + fz * fz) * (nx * nx + ny * ny + nz * nz));
-            if (scale <= 0 || Math.Abs(dot) <= 1e-9 * scale) return 0;
-            return dot > 0 ? 1 : -1;
+
+            // +1 / -1 when the face's winding agrees / disagrees with the polygon normal, 0 when either is degenerate.
+            static int Orientation(float[] positions, int[] faceIndices, int start, int size, double nx, double ny, double nz)
+            {
+                double fx = 0, fy = 0, fz = 0;
+                for (int j = 0; j < size; j++)
+                {
+                    int a = faceIndices[start + j] * 3, b = faceIndices[start + (j + 1) % size] * 3;
+                    double ax = positions[a], ay = positions[a + 1], az = positions[a + 2];
+                    double bx = positions[b], by = positions[b + 1], bz = positions[b + 2];
+                    fx += (ay - by) * (az + bz);
+                    fy += (az - bz) * (ax + bx);
+                    fz += (ax - bx) * (ay + by);
+                }
+                double dot = fx * nx + fy * ny + fz * nz;
+                double scale = Math.Sqrt((fx * fx + fy * fy + fz * fz) * (nx * nx + ny * ny + nz * nz));
+                if (scale <= 0 || Math.Abs(dot) <= 1e-9 * scale) return 0;
+                return dot > 0 ? 1 : -1;
+            }
         }
     }
 }
