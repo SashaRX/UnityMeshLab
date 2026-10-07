@@ -10,10 +10,11 @@ namespace SashaRX.UnityMeshLab
     internal static class UvAtlasDiagnostics
     {
         /// <summary>Capture source geometry and exact settings; rounded inspector
-        /// values and UV-only repack dumps cannot reproduce simplification output.</summary>
+        /// values and UV-only repack dumps cannot reproduce simplification output.
+        /// Verbose only: the dump is the whole input mesh, written on every unwrap.</summary>
         internal static void CaptureInput(RemeshNative.IndexedMesh input, RemeshSettings settings)
         {
-            if (UvtLog.Current < UvtLog.Level.Info || !UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag)) return;
+            if (UvtLog.Current < UvtLog.Level.Verbose || !UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag)) return;
             try
             {
                 string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "meshlab-uvmerge");
@@ -60,8 +61,15 @@ namespace SashaRX.UnityMeshLab
             internal double minX, maxX, minY, maxY, area;
         }
 
+        /// <summary>Every overlapping UV triangle pair of the atlas. The scan is exact and
+        /// complete by default: its cost follows the atlas's bounding-box structure (a
+        /// high-valence fan is quadratic, but every pair is rejected by a cheap separating-axis
+        /// test) and cancellation is the time guard. A non-negative <paramref name="comparisonBudget"/>
+        /// bounds the candidate pairs examined instead; a scan that runs out, or that finds
+        /// more than <see cref="MaxConflicts"/> overlapping pairs, reports <c>complete = false</c>
+        /// and its counts are lower bounds.</summary>
         internal static Report Measure(RemeshNative.Geometry g, CancellationToken token,
-            bool sameChartOnly = false, long comparisonBudget = 2_000_000, bool collectConflicts = false)
+            bool sameChartOnly = false, long comparisonBudget = -1, bool collectConflicts = false)
         {
             token.ThrowIfCancellationRequested();
             var report = new Report();
@@ -84,34 +92,149 @@ namespace SashaRX.UnityMeshLab
                 if (t.area <= 1e-16) { ++report.degenerateFaces; continue; }
                 triangles.Add(t);
             }
-            triangles.Sort((a, b) => {
-                int order = a.minX.CompareTo(b.minX);
-                return order != 0 ? order : a.face.CompareTo(b.face);
-            });
-            var bufferA = new Point[8]; var bufferB = new Point[8];
-            for (int i = 0; i < triangles.Count; ++i)
+            int count = triangles.Count;
+            if (count < 2) return report;
+            // A grid over the atlas, each pair tested once from the lowest-index cell both
+            // bounding boxes share. The former x-sweep visited every pair whose x-extents
+            // overlapped, about N·√N of them on a packed atlas, and ran out of its fixed
+            // budget past some twenty thousand faces; the repair then refused the atlas as
+            // uncertifiable. Each axis gets about one cell per average triangle extent on
+            // that axis, so long slivers (thin bands across the whole atlas) get a fine
+            // grid along their thin axis instead of a coarse square one that would pile
+            // hundreds of them into every cell; a packed atlas costs a few comparisons
+            // per face whatever its size.
+            double minX = double.PositiveInfinity, minY = double.PositiveInfinity, maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
+            double extentX = 0, extentY = 0;
+            foreach (var t in triangles)
             {
-                var a = triangles[i];
-                for (int j = i + 1; j < triangles.Count; ++j)
+                minX = Math.Min(minX, t.minX); maxX = Math.Max(maxX, t.maxX); minY = Math.Min(minY, t.minY); maxY = Math.Max(maxY, t.maxY);
+                extentX += t.maxX - t.minX; extentY += t.maxY - t.minY;
+            }
+            double width = Math.Max(maxX - minX, 1e-12), height = Math.Max(maxY - minY, 1e-12);
+            int resX = AxisResolution(width, extentX / count, count), resY = AxisResolution(height, extentY / count, count);
+            // Both axes fine (tiny triangles) would make a grid far larger than the face
+            // count; the cell arrays stay proportional to N.
+            while ((long)resX * resY > Math.Max(16L * count, 4096))
+                if (resX >= resY) resX = Math.Max(1, resX / 2); else resY = Math.Max(1, resY / 2);
+            var cells = new int[count * 4]; // cx0, cy0, cx1, cy1 per triangle
+            long entries;
+            while (true)
+            {
+                entries = 0; long spanX = 0, spanY = 0;
+                for (int i = 0; i < count; ++i)
                 {
-                    var b = triangles[j];
-                    if (b.minX >= a.maxX) break;
-                    if (++report.comparisons > comparisonBudget) { report.complete = false; return report; }
-                    if ((report.comparisons & 4095) == 0) token.ThrowIfCancellationRequested();
-                    if (sameChartOnly && a.chart != b.chart || b.minY >= a.maxY || a.minY >= b.maxY) continue;
-                    double area = IntersectionArea(a, b, bufferA, bufferB);
-                    // Ignore numerical slivers, not all neighbours. Relative tolerance
-                    // scales with the smaller triangle; absolute floor is in UV units².
-                    if (area <= Math.Max(1e-16, Math.Min(a.area, b.area) * 1e-8)) continue;
-                    ++report.pairs;
-                    if (collectConflicts) report.conflicts.Add((a.face, b.face));
-                    if (a.chart == b.chart) ++report.sameChartPairs; else ++report.crossChartPairs;
-                    report.pairAreaSum += area;
-                    if (report.samples.Count < 8)
-                        report.samples.Add(FormattableString.Invariant($"faces={a.face}/{b.face} charts={a.chart}/{b.chart} area={area:G6}"));
+                    var t = triangles[i];
+                    int cx0 = Cell(t.minX, minX, width, resX), cx1 = Cell(t.maxX, minX, width, resX);
+                    int cy0 = Cell(t.minY, minY, height, resY), cy1 = Cell(t.maxY, minY, height, resY);
+                    cells[i * 4] = cx0; cells[i * 4 + 1] = cy0; cells[i * 4 + 2] = cx1; cells[i * 4 + 3] = cy1;
+                    entries += (long)(cx1 - cx0 + 1) * (cy1 - cy0 + 1);
+                    spanX += cx1 - cx0 + 1; spanY += cy1 - cy0 + 1;
+                }
+                // Triangles spanning many cells inflate the lists: coarsen the axis they
+                // span the most, never the one that keeps them apart.
+                if (entries <= 8L * count + 65536 || (resX == 1 && resY == 1)) break;
+                if (resY == 1 || (resX > 1 && spanX >= spanY)) resX = Math.Max(1, resX / 2); else resY = Math.Max(1, resY / 2);
+            }
+            int cellCount = resX * resY;
+            var offsets = new int[cellCount + 1];
+            for (int i = 0; i < count; ++i)
+                for (int cy = cells[i * 4 + 1]; cy <= cells[i * 4 + 3]; ++cy)
+                    for (int cx = cells[i * 4]; cx <= cells[i * 4 + 2]; ++cx) ++offsets[cy * resX + cx + 1];
+            for (int c = 0; c < cellCount; ++c) offsets[c + 1] += offsets[c];
+            var members = new int[entries];
+            var fill = new int[cellCount];
+            for (int i = 0; i < count; ++i)
+                for (int cy = cells[i * 4 + 1]; cy <= cells[i * 4 + 3]; ++cy)
+                    for (int cx = cells[i * 4]; cx <= cells[i * 4 + 2]; ++cx) { int c = cy * resX + cx; members[offsets[c] + fill[c]++] = i; }
+            // No fixed budget by default. The only atlases whose candidate count is quadratic
+            // are those whose bounding boxes all overlap (a fan of thousands of triangles
+            // around one vertex) — valid atlases that a budget would refuse to certify, which
+            // is the failure this scan replaces. An explicit budget still applies.
+            if (comparisonBudget < 0) comparisonBudget = long.MaxValue;
+            var bufferA = new Point[8]; var bufferB = new Point[8];
+            Scan();
+            // Deterministic whatever the grid: the repair's greedy cover walks this list.
+            report.conflicts.Sort((x, y) => x.a != y.a ? x.a.CompareTo(y.a) : x.b.CompareTo(y.b));
+            return report;
+
+            void Scan()
+            {
+                // Cancellation is polled on raw member-pair visits, not on charged pairs: in a
+                // crowded cell most visits are duplicates of a pair another cell owns, and a
+                // poll behind the ownership guard would never run there.
+                long visits = 0;
+                for (int c = 0; c < cellCount; ++c)
+                {
+                    if ((c & 255) == 0) token.ThrowIfCancellationRequested();
+                    int cx = c % resX, cy = c / resX;
+                    int begin = offsets[c], end = offsets[c + 1];
+                    for (int m = begin; m < end; ++m)
+                    {
+                        int i = members[m]; var a = triangles[i];
+                        for (int n = m + 1; n < end; ++n)
+                        {
+                            if ((++visits & 4095) == 0) token.ThrowIfCancellationRequested();
+                            int j = members[n];
+                            // Once per pair: only the lowest-index cell the two boxes share tests
+                            // it, and only that visit is charged to the budget — a pair of long
+                            // triangles meets in many cells, which must not count many times.
+                            if (Math.Max(cells[i * 4], cells[j * 4]) != cx || Math.Max(cells[i * 4 + 1], cells[j * 4 + 1]) != cy) continue;
+                            if (++report.comparisons > comparisonBudget) { report.complete = false; return; }
+                            var b = triangles[j];
+                            if (sameChartOnly && a.chart != b.chart || b.minX >= a.maxX || a.minX >= b.maxX || b.minY >= a.maxY || a.minY >= b.maxY) continue;
+                            if (Separated(a, b)) continue;
+                            double area = IntersectionArea(a, b, bufferA, bufferB);
+                            // Ignore numerical slivers, not all neighbours. Relative tolerance
+                            // scales with the smaller triangle; absolute floor is in UV units².
+                            if (area <= Math.Max(1e-16, Math.Min(a.area, b.area) * 1e-8)) continue;
+                            // The memory guard: an atlas with millions of overlapping pairs is
+                            // beyond repair anyway, and its list must not grow without bound.
+                            if (report.pairs >= MaxConflicts) { report.complete = false; return; }
+                            ++report.pairs;
+                            if (collectConflicts) report.conflicts.Add((Math.Min(a.face, b.face), Math.Max(a.face, b.face)));
+                            if (a.chart == b.chart) ++report.sameChartPairs; else ++report.crossChartPairs;
+                            report.pairAreaSum += area;
+                            if (report.samples.Count < 8)
+                                report.samples.Add(FormattableString.Invariant($"faces={a.face}/{b.face} charts={a.chart}/{b.chart} area={area:G6}"));
+                        }
+                    }
                 }
             }
-            return report;
+        }
+
+        /// <summary>Overlapping pairs the scan records before giving up as incomplete.</summary>
+        internal const int MaxConflicts = 1 << 22;
+
+        static int Cell(double value, double origin, double span, int resolution)
+            => Math.Clamp((int)((value - origin) / span * resolution), 0, resolution - 1);
+
+        // Separating-axis test on the six edge normals. A pair that merely touches (a
+        // shared edge, a common vertex) or does not meet projects onto disjoint or
+        // touching intervals on one of them and is rejected here, far cheaper than
+        // clipping; in a fan or a packed chart almost every candidate pair is such a pair.
+        static bool Separated(Triangle a, Triangle b)
+            => SeparatedBy(a.a, a.b, a, b) || SeparatedBy(a.b, a.c, a, b) || SeparatedBy(a.c, a.a, a, b)
+            || SeparatedBy(b.a, b.b, a, b) || SeparatedBy(b.b, b.c, a, b) || SeparatedBy(b.c, b.a, a, b);
+
+        static bool SeparatedBy(Point p, Point q, Triangle a, Triangle b)
+        {
+            double nx = p.y - q.y, ny = q.x - p.x;
+            Project(a, nx, ny, out double aMin, out double aMax);
+            Project(b, nx, ny, out double bMin, out double bMax);
+            return aMax <= bMin || bMax <= aMin;
+        }
+
+        static void Project(Triangle t, double nx, double ny, out double min, out double max)
+        {
+            double pa = t.a.x * nx + t.a.y * ny, pb = t.b.x * nx + t.b.y * ny, pc = t.c.x * nx + t.c.y * ny;
+            min = Math.Min(pa, Math.Min(pb, pc)); max = Math.Max(pa, Math.Max(pb, pc));
+        }
+
+        // About one cell per average triangle extent along the axis, at most one per face.
+        static int AxisResolution(double span, double meanExtent, int count)
+        {
+            double cells = meanExtent > 0 ? span / meanExtent : count;
+            return (int)Math.Clamp(Math.Round(cells), 1, Math.Min(4096, Math.Max(1, count)));
         }
 
         /// <summary>Reusable scratch buffers for exact area checks during merge trials.</summary>

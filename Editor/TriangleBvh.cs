@@ -731,6 +731,26 @@ namespace SashaRX.UnityMeshLab
         /// Serialize BVH data for GPU compute shader.
         /// Returns: nodes array, triangle index remapping, vertices, triangle indices.
         /// </summary>
+        /// <summary>Levels below the root (0 for a lone root). The GPU traversal keeps a
+        /// fixed stack and drops what it cannot push, so <see cref="GpuBvh"/> checks this.</summary>
+        public int Depth
+        {
+            get
+            {
+                int depth = 0;
+                var pending = new System.Collections.Generic.Stack<(int node, int level)>();
+                pending.Push((0, 0));
+                while (pending.Count > 0)
+                {
+                    var (node, level) = pending.Pop();
+                    depth = Math.Max(depth, level);
+                    if (nodes[node].left >= 0) pending.Push((nodes[node].left, level + 1));
+                    if (nodes[node].right >= 0) pending.Push((nodes[node].right, level + 1));
+                }
+                return depth;
+            }
+        }
+
         public void GetGPUData(out GPUNode[] gpuNodes, out int[] gpuTriIndices,
             out Vector3[] gpuVerts, out int[] gpuTris)
         {

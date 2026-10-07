@@ -196,10 +196,7 @@ namespace SashaRX.UnityMeshLab
                         // like a static mesh under the same node.
                         if (renderer is SkinnedMeshRenderer skin) {
                             mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
-                            var bones = skin.bones;
-                            skin.bones = Array.Empty<Transform>();
-                            skin.bones = bones;
-                            skin.BakeMesh(mesh, true);
+                            BakePosed(skin, mesh);
                             MeshUvState.SetDraft(mesh, MeshUvState.IsDraft(skin.sharedMesh));
                             if (skin.sharedMesh) mesh.name = skin.sharedMesh.name;
                         }
@@ -603,6 +600,18 @@ namespace SashaRX.UnityMeshLab
         /// and, with lod0Only, `Name_LOD1`-and-higher names on either. The weld and the
         /// keep-hierarchy node list both come from here, so they agree by construction.
         /// </summary>
+        /// <summary>BakeMesh after forcing a skinning re-evaluation. In edit mode BakeMesh
+        /// returns the LAST evaluated pose, which can predate the current bone transforms
+        /// (every part at its authored origin); reassigning the bone list marks the skinning
+        /// dirty. Renderer scale is compensated; the caller applies the transform once.</summary>
+        internal static void BakePosed(SkinnedMeshRenderer skin, Mesh mesh)
+        {
+            var bones = skin.bones;
+            skin.bones = Array.Empty<Transform>();
+            skin.bones = bones;
+            skin.BakeMesh(mesh, true);
+        }
+
         internal static List<Renderer> CollectRenderers(GameObject root, bool lod0Only)
         {
             var excluded = new HashSet<Renderer>();
