@@ -428,6 +428,9 @@ namespace SashaRX.UnityMeshLab
                 FbxExport.FirstRealMaterial(ctx?.MeshEntries),
                 isVariantExport ? null : ctx?.LodGroup);
             if (!exported) return false;
+            // A variant written into the project may already have a persistent sidecar of its own.
+            if (isVariantExport && intent.IncludesUv(1) && outputFbxPathOverride.StartsWith("Assets/", StringComparison.Ordinal))
+                SyncPersistentSidecar(outputFbxPathOverride, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
             if (!isVariantExport)
             {
                 // Every source save that wrote UV1 leaves a persistent sidecar replaying the same.
@@ -577,6 +580,8 @@ namespace SashaRX.UnityMeshLab
                 if (added > 0) reasons.Add($"{added} mesh(es) not in '{file}' yet (generated LODs)");
                 int reshaped = kv.Value.Count(p => p.entry.fbxMesh != null && GeometryDiffers(p.entry.fbxMesh, p.resultMesh));
                 if (reshaped > 0) reasons.Add($"{reshaped} mesh(es) of '{file}' with changed geometry (simplified or edited faces)");
+                int reshaded = kv.Value.Count(p => p.entry.fbxMesh != null && ShadingChanged(p.entry.fbxMesh, p.resultMesh));
+                if (reshaded > 0) reasons.Add($"{reshaded} mesh(es) of '{file}' with changed normals or tangents");
                 int rematerialled = kv.Value.Count(p => MaterialsChanged(p.entry));
                 if (rematerialled > 0) reasons.Add($"{rematerialled} renderer(s) of '{file}' with changed materials (the file's material assignments)");
                 int collision = SidecarStore.CollisionMeshes(kv.Key)?.Count ?? 0;
@@ -587,6 +592,20 @@ namespace SashaRX.UnityMeshLab
 
         // The scene renderer's materials differ from the model's (e.g. after Cleanup's material
         // fixes): a material change is the rebuild's to write, not the channel save's.
+        // Normals or tangents the channel save cannot write: the attribute was added or removed
+        // (Cleanup), or the normals changed on a working copy that kept the import's vertices.
+        // Tangent values are not compared: tools recompute them, which is no edit of the file's.
+        internal static bool ShadingChanged(Mesh imported, Mesh result)
+        {
+            if (imported == null || result == null || imported == result) return false;
+            if (imported.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal) != result.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal)) return true;
+            if (imported.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent) != result.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent)) return true;
+            if (!imported.isReadable || !result.isReadable || imported.vertexCount != result.vertexCount) return false;
+            // Only an unrenumbered copy pairs vertices by index.
+            if (!imported.vertices.SequenceEqual(result.vertices)) return false;
+            return !imported.normals.SequenceEqual(result.normals);
+        }
+
         internal static bool MaterialsChanged(MeshEntry entry)
         {
             if (entry?.renderer == null) return false;

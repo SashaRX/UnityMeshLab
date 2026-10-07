@@ -300,8 +300,10 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
 * A channel the working mesh dropped (Cleanup's attribute removal) is removed
   from the file: the colour set, or the last UV sets. Removing a UV set before
   one that stays would renumber it and is refused.
-* Changed renderer materials (Cleanup's material fixes) are not channel work:
-  the hub's save names them and offers the rebuild.
+* Changed renderer materials (Cleanup's material fixes) and changed normals or
+  tangents (an attribute added or removed, or normals edited on an
+  unrenumbered copy) are not channel work: the hub's save names them and
+  offers the rebuild.
 * The hub's Overwrite / Export New FBX (`All`) takes this path when the work
   changed only channels of meshes the file already has. Generated LODs or
   sidecar collision need the LOD-rebuild path; the dialog says what that
