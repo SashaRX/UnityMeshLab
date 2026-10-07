@@ -143,6 +143,20 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void CancellationReachesACrowdedCell()
+        {
+            // Every box of the fan overlaps every other, so the grid's cells are crowded with
+            // pair visits that another cell owns; cancellation must land between them, not
+            // wait for the scan to finish.
+            var atlas = FanAtlas(10000);
+            using var cancel = new CancellationTokenSource();
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            cancel.CancelAfter(TimeSpan.FromMilliseconds(100));
+            Assert.Throws<OperationCanceledException>(() => UvAtlasDiagnostics.Measure(atlas, cancel.Token));
+            Assert.That(clock.ElapsedMilliseconds, Is.LessThan(1500), "the full scan takes seconds; cancellation must not wait for it");
+        }
+
+        [Test]
         public void OverlapScanHonoursItsBudget()
         {
             var atlas = RandomAtlas(400, 11);
