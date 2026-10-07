@@ -43,6 +43,12 @@ namespace SashaRX.UnityMeshLab
         public bool ShowGrid = true, ShowAxes = true;
         public Color Background = new Color(0.16f, 0.19f, 0.24f, 1f);
         public Action RequestRepaint;
+        /// <summary>The wire colour that reads on the current shading: near-black on the lit
+        /// grey (or scene materials) of Shaded, light on the attribute encodings.</summary>
+        public Color WireColor => Mode == Shading.Shaded ? new Color(0.05f, 0.05f, 0.05f, 1f) : new Color(0.4f, 0.85f, 1f, 1f);
+        /// <summary>Samples per pixel of the render; lines (wire, grid, borders) are one pixel
+        /// wide, so they are what the anti-aliasing is for.</summary>
+        const int MsaaSamples = 8;
 
         // ── camera ──
         Vector3 pivot;
@@ -134,12 +140,24 @@ namespace SashaRX.UnityMeshLab
             utility.ambientColor = new Color(0.25f, 0.25f, 0.25f, 1f);
 
             drawing = true;
+            // The preview utility's own target has no anti-aliasing and a 16-bit depth
+            // buffer: one-pixel lines come out jagged, and the wire fights the surface it
+            // outlines. The frame renders into a multisampled 24-bit-depth target of the
+            // same size and resolves into the utility's, which EndPreview then shows.
+            var target = camera.targetTexture;
+            RenderTexture multisampled = null;
             try {
+                if (target) {
+                    var descriptor = target.descriptor;
+                    descriptor.msaaSamples = MsaaSamples; descriptor.depthBufferBits = 24;
+                    multisampled = RenderTexture.GetTemporary(descriptor);
+                    camera.targetTexture = multisampled;
+                }
                 if (items != null)
                     foreach (var item in items) {
                         if (!item.mesh) continue;
                         DrawItem(item);
-                        if (Wireframe) DrawWire(item.mesh, item.matrix, Mode == Shading.Shaded ? new Color(0.05f, 0.05f, 0.05f, 1f) : new Color(0.4f, 0.85f, 1f, 1f));
+                        if (Wireframe) DrawWire(item.mesh, item.matrix, WireColor);
                     }
                 overlay?.Invoke(this);
                 if (any) {
@@ -148,10 +166,12 @@ namespace SashaRX.UnityMeshLab
                 }
                 // Scene materials of a URP project render through URP, not the built-in fallback.
                 utility.Render(true);
+                if (multisampled) multisampled.ResolveAntiAliasedSurface(target);
             }
             catch (Exception ex) { UvtLog.Warn("[3D] " + ex.Message); }
             finally {
                 drawing = false;
+                if (multisampled) { camera.targetTexture = target; RenderTexture.ReleaseTemporary(multisampled); }
                 GUI.DrawTexture(rect, utility.EndPreview(), ScaleMode.StretchToFill, false);
                 foreach (var mesh in frameMeshes) if (mesh) Object.DestroyImmediate(mesh);
                 frameMeshes.Clear(); frameBlocks.Clear();
@@ -464,10 +484,14 @@ namespace SashaRX.UnityMeshLab
             surface = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             flat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             flat.SetFloat("_DepthOffset", -1);
+            // Lines sit above the flat overlays and the UV layer (both at -1): at the same
+            // offset the layer, drawn later, covered the wire wherever it was opaque.
             wire = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-            wire.SetFloat("_Lit", 0); wire.SetFloat("_DepthOffset", -1);
+            wire.SetFloat("_Lit", 0); wire.SetFloat("_DepthOffset", -2);
             points = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-            points.SetFloat("_Lit", 0); points.SetFloat(UseVertexColorId, 1); points.SetFloat("_DepthOffset", -2);
+            points.SetFloat("_Lit", 0); points.SetFloat(UseVertexColorId, 1); points.SetFloat("_DepthOffset", -3);
+            // The grid's per-segment colours and fades are vertex colours.
+            translucent.SetFloat(UseVertexColorId, 1);
             return true;
         }
 
