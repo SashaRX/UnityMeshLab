@@ -21,6 +21,7 @@ using System.Linq;
 using UnityEditor;
 using UnityEditor.Presets;
 using UnityEngine;
+using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
 
 namespace SashaRX.UnityMeshLab
@@ -42,6 +43,8 @@ namespace SashaRX.UnityMeshLab
             public readonly Vector2[][] uvs = new Vector2[8][];
             public Color32[] colors32;
             public Color[] colors;
+            /// <summary>The mesh stores colours as bytes: compare them as Color32, not as floats.</summary>
+            public bool colorsAreBytes;
         }
 
         // What the tagged import says about each FBX corner of one mesh.
@@ -121,7 +124,7 @@ namespace SashaRX.UnityMeshLab
                 return true;
             }
             AssetDatabase.ImportAsset(targetFbxPath, ImportAssetOptions.ForceUpdate);
-            if (isVariant) ImportLikeSource(sourceFbxPath, targetFbxPath);
+            if (isVariant) ImportLikeSource(sourceFbxPath, targetFbxPath, channelsWritten.Contains("UV1"));
             else if (sceneRoot != null) FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, sceneRoot);
             return true;
         }
@@ -134,14 +137,14 @@ namespace SashaRX.UnityMeshLab
         static List<Donor> CaptureDonors(IEnumerable<MeshEntry> entries, FbxExportIntent intent, bool generatedUv1)
         {
             var donors = new List<Donor>();
-            var names = new HashSet<string>(StringComparer.Ordinal);
+            var byName = new Dictionary<string, Donor>(StringComparer.Ordinal);
             foreach (var entry in entries)
             {
                 if (entry == null || !entry.include) continue;
                 var source = entry.originalMesh ?? entry.fbxMesh;
                 var mesh = entry.repackedMesh ?? entry.transferredMesh ?? source;
                 var identity = entry.fbxMesh ?? source;
-                if (mesh == null || identity == null || !names.Add(identity.name)) continue;
+                if (mesh == null || identity == null) continue;
 
                 var donor = new Donor { name = identity.name };
                 var vertices = mesh.vertices;
@@ -174,17 +177,41 @@ namespace SashaRX.UnityMeshLab
                 }
                 if ((intent & FbxExportIntent.VertexColors) != 0)
                 {
-                    var c = mesh.colors32;
-                    if (c != null && c.Length == mesh.vertexCount && !(imported != null && imported.colors32.SequenceEqual(c, Color32Comparer.Instance)))
+                    var c = mesh.colors;
+                    bool bytes = mesh.HasVertexAttribute(VertexAttribute.Color)
+                        && mesh.GetVertexAttributeFormat(VertexAttribute.Color) == VertexAttributeFormat.UNorm8;
+                    bool unedited = imported != null && (bytes
+                        ? imported.colors32.SequenceEqual(mesh.colors32, Color32Comparer.Instance)
+                        : imported.colors.SequenceEqual(c));
+                    if (c != null && c.Length == mesh.vertexCount && !unedited)
                     {
-                        donor.colors32 = c;
-                        donor.colors = mesh.colors;
+                        donor.colors = c;
+                        donor.colors32 = mesh.colors32;
+                        donor.colorsAreBytes = bytes;
                         any = true;
                     }
                 }
-                if (any) donors.Add(donor);
+                if (!any) continue;
+                // Instances of one FBX mesh share its data: the same edit twice is one edit,
+                // different edits cannot both be written.
+                if (byName.TryGetValue(donor.name, out var first))
+                {
+                    if (!SameEdit(first, donor))
+                        throw new InvalidOperationException($"'{donor.name}' is instanced and its instances were edited differently; they share one FBX mesh, so only one edit can be written. Nothing was written.");
+                    continue;
+                }
+                byName[donor.name] = donor;
+                donors.Add(donor);
             }
             return donors;
+        }
+
+        static bool SameEdit(Donor a, Donor b)
+        {
+            if (!a.positions.SequenceEqual(b.positions) || !a.faces.SequenceEqual(b.faces)) return false;
+            for (int ch = 0; ch < 8; ch++)
+                if ((a.uvs[ch] == null) != (b.uvs[ch] == null) || (a.uvs[ch] != null && !a.uvs[ch].SequenceEqual(b.uvs[ch]))) return false;
+            return (a.colors == null) == (b.colors == null) && (a.colors == null || a.colors.SequenceEqual(b.colors));
         }
 
         static void ReadFaces(Mesh mesh, out int[] faces, out int[] faceSizes)
@@ -347,12 +374,17 @@ namespace SashaRX.UnityMeshLab
                 throw new InvalidOperationException(
                     $"'{donor.name}': {match.conflicts} FBX corner(s) get different values from different triangles of the same polygon " +
                     "(a UV seam or colour edge runs inside a polygon). The FBX polygon cannot hold that without being split; nothing was written.");
-            if (match.unresolved > 0 || match.missing > 0)
-                UvtLog.Warn($"[FBX Export] '{donor.name}': {match.unresolved + match.missing} corner(s) have no matching vertex (degenerate or edited faces); they keep their stored values.");
+            if (match.unresolved > 0)
+                throw new InvalidOperationException(
+                    $"'{donor.name}': {match.unresolved} FBX corner(s) have no face in the working mesh — its geometry differs from the file " +
+                    "(simplified or edited faces). Channels alone cannot carry that; save with a rebuild. Nothing was written.");
+            if (match.missing > 0)
+                UvtLog.Warn($"[FBX Export] '{donor.name}': {match.missing} corner(s) of degenerate polygons have no vertex in Unity's import; they keep their stored values.");
 
             int written = 0;
             int existingUvSets = FbxLayerChannels.UvElements(mesh).Count;
-            for (int ch = 0; ch < 8; ch++)
+            // In FBX set order: with 'Swap UVs', Unity UV0 is set 1, and set 0 must exist first.
+            foreach (int ch in Enumerable.Range(0, 8).OrderBy(c => FbxUvSet(c, swapUv)))
             {
                 if (donor.uvs[ch] == null) continue;
                 int set = FbxUvSet(ch, swapUv);
@@ -361,7 +393,7 @@ namespace SashaRX.UnityMeshLab
                 if (exists && stored == null)
                     UvtLog.Verbose($"[FBX Export] '{donor.name}': UV{ch} cannot be compared with the stored set (the tagged copy used that channel); it is written whole.");
                 int uvCorners = WriteChannel(donor.name, $"UV{ch}", topology, match.cornerToVertex, !exists, 2,
-                    (c, v) => stored != null && stored[c] == donor.uvs[ch][v],
+                    (c, v) => stored != null && stored[c].Equals(donor.uvs[ch][v]),
                     (v, values, at) => { values[at] = donor.uvs[ch][v].x; values[at + 1] = donor.uvs[ch][v].y; },
                     (values, changed) => FbxLayerChannels.WriteUv(mesh, set, topology, values, changed));
                 if (uvCorners > 0) channelsWritten.Add($"UV{ch}");
@@ -372,7 +404,7 @@ namespace SashaRX.UnityMeshLab
                 bool exists = FbxLayerChannels.ColorElement(mesh) != null;
                 bool comparable = exists && tag.colors != null;
                 int colorCorners = WriteChannel(donor.name, "vertex colours", topology, match.cornerToVertex, !exists, 4,
-                    (c, v) => comparable && (tag.colors[c] == donor.colors[v] || Same(tag.colors32[c], donor.colors32[v])),
+                    (c, v) => comparable && (donor.colorsAreBytes ? Same(tag.colors32[c], donor.colors32[v]) : tag.colors[c].Equals(donor.colors[v])),
                     (v, values, at) => { var col = donor.colors[v]; values[at] = col.r; values[at + 1] = col.g; values[at + 2] = col.b; values[at + 3] = col.a; },
                     (values, changed) => FbxLayerChannels.WriteColor(mesh, topology, values, changed));
                 if (colorCorners > 0) channelsWritten.Add("vertex colours");
@@ -425,7 +457,7 @@ namespace SashaRX.UnityMeshLab
             for (int ch = 0; ch < 8; ch++)
             {
                 if (intent.IncludesUv(ch) || tag.uvs[ch] == null) continue;
-                if (donor.uvs[ch] != null && donor.uvs[ch][vertex] != tag.uvs[ch][corner]) return false;
+                if (donor.uvs[ch] != null && !donor.uvs[ch][vertex].Equals(tag.uvs[ch][corner])) return false;
             }
             return true;
         }
@@ -433,8 +465,8 @@ namespace SashaRX.UnityMeshLab
         static bool SameWrittenValues(Donor donor, int a, int b)
         {
             for (int ch = 0; ch < 8; ch++)
-                if (donor.uvs[ch] != null && donor.uvs[ch][a] != donor.uvs[ch][b]) return false;
-            return donor.colors == null || donor.colors[a] == donor.colors[b];
+                if (donor.uvs[ch] != null && !donor.uvs[ch][a].Equals(donor.uvs[ch][b])) return false;
+            return donor.colors == null || donor.colors[a].Equals(donor.colors[b]);
         }
 
         static bool Same(Color32 a, Color32 b) => a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
@@ -462,13 +494,15 @@ namespace SashaRX.UnityMeshLab
         }
 
         // A variant is a new file: import it the way its source is imported, so its meshes
-        // carry the same names and layout as the source's.
-        static void ImportLikeSource(string sourceFbxPath, string variantFbxPath)
+        // carry the same names and layout as the source's — except a written UV1 is kept.
+        static void ImportLikeSource(string sourceFbxPath, string variantFbxPath, bool uv1Written)
         {
             var source = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             var variant = AssetImporter.GetAtPath(variantFbxPath) as ModelImporter;
             if (source == null || variant == null) return;
             new Preset(source).ApplyTo(variant);
+            // The variant's UV1 is the one just written; Unity must not regenerate it.
+            if (uv1Written) variant.generateSecondaryUV = false;
             variant.SaveAndReimport();
         }
     }

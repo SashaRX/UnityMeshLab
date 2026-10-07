@@ -536,10 +536,34 @@ namespace SashaRX.UnityMeshLab
                 int added = kv.Value.Count(p => p.entry.fbxMesh == null
                     || !string.Equals(AssetDatabase.GetAssetPath(p.entry.fbxMesh), kv.Key, StringComparison.OrdinalIgnoreCase));
                 if (added > 0) reasons.Add($"{added} mesh(es) not in '{file}' yet (generated LODs)");
+                int reshaped = kv.Value.Count(p => p.entry.fbxMesh != null && GeometryDiffers(p.entry.fbxMesh, p.resultMesh));
+                if (reshaped > 0) reasons.Add($"{reshaped} mesh(es) of '{file}' with changed geometry (simplified or edited faces)");
                 int collision = SidecarStore.CollisionMeshes(kv.Key)?.Count ?? 0;
                 if (collision > 0) reasons.Add($"{collision} collision mesh set(s) from the sidecar for '{file}'");
             }
             return reasons;
+        }
+
+        // Faces or positions differ from the import. Vertex dedup, UV welds and symmetry splits
+        // keep both (same triangles on the same points) and are channel work, not geometry.
+        static bool GeometryDiffers(Mesh imported, Mesh result)
+        {
+            if (result == null || result == imported || !imported.isReadable || !result.isReadable) return false;
+            if (TriangleCount(imported) != TriangleCount(result)) return true;
+            return !new HashSet<Vector3>(imported.vertices).SetEquals(result.vertices);
+        }
+
+        static long TriangleCount(Mesh mesh)
+        {
+            long count = 0;
+            for (int s = 0; s < mesh.subMeshCount; s++)
+            {
+                var topology = mesh.GetTopology(s);
+                long indices = mesh.GetIndexCount(s);
+                if (topology == MeshTopology.Triangles) count += indices / 3;
+                else if (topology == MeshTopology.Quads) count += indices / 4 * 2;
+            }
+            return count;
         }
 
         void FinishHierarchyExports(HierarchyExportBatch batch, bool overwriteSource, bool allGroupsSucceeded)
