@@ -356,15 +356,13 @@ namespace SashaRX.UnityMeshLab
             string name = collision.key + "_COL";
             int removed = FbxStructureEdit.FindNodes(scene, name).Count;
             foreach (var old in FbxStructureEdit.FindNodes(scene, name)) FbxStructureEdit.RemoveSubtree(old);
-            // Collision takes the source's first material, so Unity invents no default one.
-            int material = r.submeshMaterials != null ? r.submeshMaterials[0] : -1;
-            var materials = material >= 0 ? new[] { 0 } : null;
+            // Colliders never render: positions, triangles and normals only, no material
+            // (TS_UnityExport_SDK PIPELINE_RULES: no UV, no vertex colour, no material on _COL).
 
             if (IsSingle(collision))
             {
                 var node = FbxStructureEdit.AddSibling(r.node, name, true);
-                if (material >= 0) FbxStructureEdit.AddMaterials(node, r.node, new[] { material });
-                node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, name, CollisionData(collision.meshes[0], r, materials)));
+                node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, name, CollisionData(collision.meshes[0], r)));
             }
             else
             {
@@ -374,8 +372,7 @@ namespace SashaRX.UnityMeshLab
                     var hull = FbxStructureEdit.AddChild(container, HullName(collision.key, i), r.node);
                     if (!FbxStructureEdit.SamePlacement(r.node, hull, true))
                         throw new FbxStructureRefusal($"'{HullName(collision.key, i)}' does not land where '{r.node.GetName()}' is");
-                    if (material >= 0) FbxStructureEdit.AddMaterials(hull, r.node, new[] { material });
-                    hull.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, HullName(collision.key, i), CollisionData(collision.meshes[i], r, materials)));
+                    hull.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, HullName(collision.key, i), CollisionData(collision.meshes[i], r)));
                 }
             }
             log.Add($"'{name}': {collision.meshes.Count} collision mesh(es) next to '{r.node.GetName()}'{(removed > 0 ? " (replacing the node of that name)" : "")}");
@@ -383,12 +380,12 @@ namespace SashaRX.UnityMeshLab
         }
 
         // Positions, triangles and normals only.
-        static FbxMeshData CollisionData(Mesh mesh, Reference r, int[] materials)
+        static FbxMeshData CollisionData(Mesh mesh, Reference r)
         {
             var source = new FbxMeshData.Source { positions = Flatten(mesh.vertices), submeshTriangles = new[] { mesh.triangles } };
             var normals = mesh.normals;
             if (normals.Length == mesh.vertexCount) source.normals = Flatten(normals);
-            return FbxMeshData.FromTriangles(source, r.fit, r.reverse, materials);
+            return FbxMeshData.FromTriangles(source, r.fit, r.reverse, null);
         }
 
         // The file already holds this collision: same node layout, same triangles on the same

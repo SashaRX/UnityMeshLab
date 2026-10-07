@@ -311,9 +311,10 @@ The hub's `All` save adds or replaces geometry in the same document
   evaluate to the source's global transform or the save is refused. Unity
   then groups it by name (`base_LOD0` … `base_LODn`).
 * Sidecar collision becomes `{key}_COL` (one simplified mesh) or a `{key}_COL`
-  container of `{key}_COL_Hull{i}` nodes next to its source, with the source's
-  first material and positions / triangles / normals only. Collision the file
-  already holds with the same geometry is left alone.
+  container of `{key}_COL_Hull{i}` nodes next to its source, with positions /
+  triangles / normals only: no UV, no vertex colour, no material (the
+  TS_UnityExport_SDK collider rule). Collision the file already holds with the
+  same geometry is left alone.
 * A mesh whose faces or points changed gets a new FBX mesh on the same
   node(s); node, transform and materials stay.
 * Unity-space geometry goes back into control-point space through the affine
@@ -325,7 +326,15 @@ The hub's `All` save adds or replaces geometry in the same document
   gives the Unity triangles back. New meshes carry normals, the source's
   number of UV sets (`UVChannel_N`, set i on layer i) and layer-0 colours
   when the source has them, all per corner, indexed and shared only within a
-  control point.
+  control point. Normals, colours and the one material element sit on layer 0
+  (TS_UnityExport_SDK I4); polygons are begun without the legacy material
+  bookkeeping.
+* Not written, by limitation: a smoothing-group element (the C# FBX SDK
+  wrapper has no `FbxLayerElementSmoothing`), so a new or replaced mesh carries
+  its shading as explicit normals only; a DCC rebuilds smoothing from them
+  (TS_UnityExport_SDK `SmoothingFromNormals`). Tangents / binormals are not
+  written either; Unity computes MikkTSpace on import, as with the TS
+  exporter's `stripTangentsBinormals`.
 * Nothing is renamed, moved or normalised; a node is removed only when a new
   one takes its name (a replaced node with children is refused). Hierarchy
   normalisation stays the explicit Prefab Builder action (the LOD-rebuild path).
