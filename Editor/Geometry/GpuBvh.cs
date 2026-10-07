@@ -248,6 +248,11 @@ namespace SashaRX.UnityMeshLab
         {
             var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             AsyncGPUReadback.Request(buffer, count * buffer.stride, 0, request => {
+                // After the timeout below the task is already faulted and the caller may
+                // have released its buffers and dropped its arrays: a late callback must
+                // not write into results. (A request whose buffer was released reports an
+                // error; a hung one never calls back at all, which is what the timeout is for.)
+                if (completion.Task.IsCompleted) return;
                 try {
                     if (request.hasError) throw new InvalidOperationException("GPU BVH readback failed.");
                     var copy = Stopwatch.StartNew();
