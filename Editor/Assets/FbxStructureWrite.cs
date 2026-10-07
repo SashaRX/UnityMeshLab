@@ -511,10 +511,11 @@ namespace SashaRX.UnityMeshLab
         static int ReplaceSlots(FbxScene scene, FbxNode node, string uvSetMesh, int[] slots, Material[] materials, Material[] replaced, Options options)
         {
             // Submeshes sharing a slot must all ask for one material, changed or not: the slot
-            // can hold only one.
+            // can hold only one. A submesh no polygon tells about (-1) holds no slot.
             var wanted = new Dictionary<int, Material>();
             for (int s = 0; s < materials.Length && s < slots.Length; s++)
             {
+                if (slots[s] < 0) continue;
                 if (wanted.TryGetValue(slots[s], out var earlier) && earlier != materials[s])
                     throw new FbxStructureRefusalException($"'{node.GetName()}': submeshes sharing material slot {slots[s]} were given different materials");
                 wanted[slots[s]] = materials[s];
@@ -523,7 +524,7 @@ namespace SashaRX.UnityMeshLab
             var bySlot = new Dictionary<int, Autodesk.Fbx.FbxSurfaceMaterial>();
             for (int s = 0; s < materials.Length && s < slots.Length; s++)
             {
-                if (materials[s] == (s < replaced.Length ? replaced[s] : null) || bySlot.ContainsKey(slots[s])) continue;
+                if (slots[s] < 0 || materials[s] == (s < replaced.Length ? replaced[s] : null) || bySlot.ContainsKey(slots[s])) continue;
                 bySlot[slots[s]] = FbxMaterial(scene, uvSetMesh, materials[s], options);
             }
             if (bySlot.Count > 0) FbxStructureEdit.SetMaterials(node, bySlot);
@@ -551,7 +552,7 @@ namespace SashaRX.UnityMeshLab
             if (existing != null) return existing;
             var color = material.HasProperty("_BaseColor") ? material.GetColor("_BaseColor")
                 : material.HasProperty("_Color") ? material.GetColor("_Color") : Color.white;
-            var texture = material.HasProperty("_MainTex") || material.HasProperty("_BaseMap") ? material.mainTexture : null;
+            var texture = MainTexture(material);
             string assetPath = texture != null ? AssetDatabase.GetAssetPath(texture) : null;
             // Only an image file can be the FBX texture's file: a texture embedded in another
             // model (a sub-asset of an .fbx) or generated in memory leaves the colour alone.
@@ -569,6 +570,23 @@ namespace SashaRX.UnityMeshLab
             return FbxStructureEdit.NewMaterial(scene, name, color.r, color.g, color.b, texture != null ? MeshHygieneUtility.SanitizeName(texture.name) : null,
                 file, relative, uvSet);
         }
+
+        // The texture the shader declares as its main one ([MainTexture]), else the first of the
+        // common base-colour names. material.mainTexture would log an error on a shader with neither.
+        static Texture MainTexture(Material material)
+        {
+            var shader = material.shader;
+            if (shader != null)
+                for (int i = 0; i < shader.GetPropertyCount(); i++)
+                    if (shader.GetPropertyType(i) == UnityEngine.Rendering.ShaderPropertyType.Texture
+                        && (shader.GetPropertyFlags(i) & UnityEngine.Rendering.ShaderPropertyFlags.MainTexture) != 0)
+                        return material.GetTexture(shader.GetPropertyNameId(i));
+            foreach (string name in MainTextureNames)
+                if (material.HasProperty(name)) return material.GetTexture(name);
+            return null;
+        }
+
+        static readonly string[] MainTextureNames = { "_BaseMap", "_MainTex", "_BaseColorMap", "_AlbedoMap", "_Albedo" };
 
         static Reference Resolve(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged, string name)
         {

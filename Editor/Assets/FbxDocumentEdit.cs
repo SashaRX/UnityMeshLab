@@ -74,12 +74,25 @@ namespace SashaRX.UnityMeshLab
         }
 
         Dictionary<string, List<string>> uvSetNames;
+        Dictionary<string, bool> smoothing;
+
+        void ReadLayers()
+        {
+            if (uvSetNames == null) (uvSetNames, smoothing) = FbxUvSetNames.ReadLayers(Path.Combine(scratch, "input.fbx"));
+        }
 
         /// <summary>The file's UV set names of the mesh named <paramref name="meshName"/>, in element order; null when unknown.</summary>
         public List<string> UvSetNames(string meshName)
         {
-            if (uvSetNames == null) uvSetNames = FbxUvSetNames.Read(Path.Combine(scratch, "input.fbx"));
+            ReadLayers();
             return uvSetNames.TryGetValue(meshName, out var names) ? names : null;
+        }
+
+        /// <summary>Whether the mesh named <paramref name="meshName"/> has smoothing groups in the file; null when unknown.</summary>
+        public bool? HasSmoothing(string meshName)
+        {
+            ReadLayers();
+            return smoothing.TryGetValue(meshName, out bool has) ? has : (bool?)null;
         }
 
         public static FbxSourceDocument Load(string path)
@@ -361,15 +374,29 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Writes the changed corners of layer 0's normals (xyz per corner, FBX space),
-        /// creating the element there when the mesh has none.
+        /// creating the element there when the mesh has none. A new element on a mesh known
+        /// to have no smoothing groups (<paramref name="unsmoothed"/>) is per control point,
+        /// the layout Max reads for such a mesh, when every point has one normal; a hard edge
+        /// cannot be held per point and keeps the per-corner layout.
         /// </summary>
-        internal static int WriteNormals(FbxMesh mesh, in Topology topology, double[] values, bool[] changed)
+        internal static int WriteNormals(FbxMesh mesh, in Topology topology, double[] values, bool[] changed, bool unsmoothed = false)
         {
             var element = NormalElement(mesh);
             if (element == null)
             {
                 element = FbxLayerElementNormal.Create(mesh, "Normals");
                 Layer(mesh, 0).SetNormals(element);
+                if (unsmoothed && values.Length == topology.CornerCount * 3 && changed.Length == topology.CornerCount
+                    && changed.All(c => c) && ConsistentPerControlPoint(topology, values, changed, 3, out var perPoint))
+                {
+                    element.SetMappingMode(FbxLayerElement.EMappingMode.eByControlPoint);
+                    element.SetReferenceMode(FbxLayerElement.EReferenceMode.eDirect);
+                    var direct = element.GetDirectArray();
+                    // A point no polygon uses still takes an entry: the array is one per point.
+                    for (int p = 0; p < topology.controlPointCount; p++)
+                        direct.Add(perPoint.TryGetValue(p, out var n) ? new FbxVector4(n[0], n[1], n[2], 0) : new FbxVector4(0, 0, 1, 0));
+                    return changed.Length;
+                }
             }
             return WriteVectors(element, topology, values, changed);
         }

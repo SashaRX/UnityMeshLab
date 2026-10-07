@@ -225,6 +225,34 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void WriteNormals_NewElementOnAnUnsmoothedMeshIsPerControlPoint()
+        {
+            string source = WriteSource(true);
+            using var document = FbxSourceDocument.Load(source);
+            var mesh = document.Meshes[0];
+            var topology = new FbxLayerChannels.Topology(mesh);
+            int corners = topology.CornerCount;
+            var all = Enumerable.Repeat(true, corners).ToArray();
+            var smooth = Enumerable.Range(0, corners).SelectMany(_ => new double[] { 0, 0, 1 }).ToArray();
+            Assert.AreEqual(corners, FbxLayerChannels.WriteNormals(mesh, topology, smooth, all, true));
+            var element = FbxLayerChannels.NormalElement(mesh);
+            Assert.AreEqual(FbxLayerElement.EMappingMode.eByControlPoint, element.GetMappingMode());
+            Assert.AreEqual(FbxLayerElement.EReferenceMode.eDirect, element.GetReferenceMode());
+            Assert.AreEqual(topology.controlPointCount, element.GetDirectArray().GetCount());
+            CollectionAssert.AreEqual(smooth, FbxLayerChannels.ReadVectors(element, topology));
+
+            // A hard edge (two normals on one point: corner 1 shares point 1 with corner 4)
+            // cannot be held per point.
+            Assert.IsTrue(FbxLayerChannels.RemoveNormals(mesh));
+            var hard = (double[])smooth.Clone();
+            hard[3] = 1; hard[5] = 0;
+            Assert.AreEqual(corners, FbxLayerChannels.WriteNormals(mesh, topology, hard, all, true));
+            element = FbxLayerChannels.NormalElement(mesh);
+            Assert.AreEqual(FbxLayerElement.EMappingMode.eByPolygonVertex, element.GetMappingMode());
+            CollectionAssert.AreEqual(hard, FbxLayerChannels.ReadVectors(element, topology));
+        }
+
+        [Test]
         public void Edit_WritesColoursOnLayerZero()
         {
             using var document = FbxSourceDocument.Load(WriteSource(true));

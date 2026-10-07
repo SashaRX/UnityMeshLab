@@ -167,7 +167,7 @@ namespace SashaRX.UnityMeshLab
                 if (tag.ambiguous)
                     throw new FbxStructureRefusalException($"'{donor.name}': several meshes of '{Path.GetFileName(sourceFbxPath)}' import under that name; which one it is cannot be told");
                 var mesh = document.Meshes[tag.ordinal];
-                int corners = WriteMesh(mesh, donor, tag, swapUv, channelsWritten);
+                int corners = WriteMesh(mesh, donor, tag, swapUv, document.HasSmoothing(mesh.GetName()) == false, channelsWritten);
                 if (corners == 0) continue;
                 if (!written.Add(tag.ordinal))
                     throw new InvalidOperationException($"FBX mesh '{mesh.GetName()}' is instanced by several Unity meshes; it cannot take edits from more than one.");
@@ -687,9 +687,9 @@ namespace SashaRX.UnityMeshLab
         // ── Per mesh ──
 
         // Returns the number of corner values written into the document.
-        static int WriteMesh(Autodesk.Fbx.FbxMesh mesh, Donor donor, Tagged tag, bool swapUv, HashSet<string> channelsWritten)
+        static int WriteMesh(Autodesk.Fbx.FbxMesh mesh, Donor donor, Tagged tag, bool swapUv, bool unsmoothed, HashSet<string> channelsWritten)
         {
-            int written = donor.HasValues ? WriteValues(mesh, donor, tag, swapUv, channelsWritten) : 0;
+            int written = donor.HasValues ? WriteValues(mesh, donor, tag, swapUv, unsmoothed, channelsWritten) : 0;
             return written + WriteRemovals(mesh, donor, swapUv, channelsWritten);
         }
 
@@ -724,7 +724,7 @@ namespace SashaRX.UnityMeshLab
             return removed;
         }
 
-        static int WriteValues(Autodesk.Fbx.FbxMesh mesh, Donor donor, Tagged tag, bool swapUv, HashSet<string> channelsWritten)
+        static int WriteValues(Autodesk.Fbx.FbxMesh mesh, Donor donor, Tagged tag, bool swapUv, bool unsmoothed, HashSet<string> channelsWritten)
         {
             var topology = new FbxLayerChannels.Topology(mesh);
             var cornerToVertex = PairCorners(donor, tag, topology);
@@ -765,7 +765,7 @@ namespace SashaRX.UnityMeshLab
                 written += colorCorners;
             }
             if (donor.normals != null || donor.tangents != null)
-                written += WriteShading(mesh, donor, tag, topology, cornerToVertex, channelsWritten);
+                written += WriteShading(mesh, donor, tag, topology, cornerToVertex, unsmoothed, channelsWritten);
             return written;
         }
 
@@ -773,7 +773,7 @@ namespace SashaRX.UnityMeshLab
         // back into the file through the map fitted to the mesh's import (FbxSpaceFit), and
         // corners whose value the import already has keep their stored doubles.
         static int WriteShading(Autodesk.Fbx.FbxMesh mesh, Donor donor, Tagged tag, FbxLayerChannels.Topology topology,
-            int[] cornerToVertex, HashSet<string> channelsWritten)
+            int[] cornerToVertex, bool unsmoothed, HashSet<string> channelsWritten)
         {
             // Fitted only when a corner changed: a mesh whose shading matches the file needs no map.
             FbxSpaceFit fitted = null;
@@ -791,7 +791,7 @@ namespace SashaRX.UnityMeshLab
                         var n = donor.normals[v];
                         Fit().NormalToFbx(n.x, n.y, n.z, out values[at], out values[at + 1], out values[at + 2]);
                     },
-                    (values, changed) => FbxLayerChannels.WriteNormals(mesh, topology, values, changed));
+                    (values, changed) => FbxLayerChannels.WriteNormals(mesh, topology, values, changed, unsmoothed));
                 if (corners > 0) channelsWritten.Add("normals");
                 written += corners;
             }

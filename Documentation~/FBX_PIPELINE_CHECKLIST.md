@@ -42,7 +42,7 @@ exists to catch what slipped through.
 | Diffuse-texture `UVSet` name = name of `mesh->GetElementUV(0)` | Without it Max drops the texture-mesh binding (UV resolution fails) |
 | `_COL` meshes (node name suffix `_COL`, case-insensitive) ship **no UV channels and no vcolor layers** | Collision meshes never render — pure dead weight |
 | One vcolor layer per mesh on layer 0 | Multiple vcolor layers surface as unnamed map channels (4:map, 5:map…) in Max and confuse material setup |
-| `FbxLayerElementNormal::mapping = eByPolygonVertex` if the mesh has smoothing groups, `eByControlPoint` if not | Max reads the two cases differently |
+| `FbxLayerElementNormal::mapping = eByPolygonVertex` if the mesh has smoothing groups, `eByControlPoint` if not (MeshLab's document edit: a new normal element on a mesh without smoothing groups is per control point when each point has one normal; a hard edge cannot be held per point and stays per corner) | Max reads the two cases differently |
 
 ## 4. Vertex colors
 

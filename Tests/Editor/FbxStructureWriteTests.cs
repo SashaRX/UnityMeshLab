@@ -449,6 +449,35 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(names.ContainsKey("Twin"), "two meshes of one name cannot be told apart");
             using var document = FbxSourceDocument.Load(path);
             CollectionAssert.AreEqual(new[] { "map1", "lightmap" }, document.UvSetNames("Plane"));
+            Assert.AreEqual(false, document.HasSmoothing("Plane"), "the mesh has no smoothing element");
+            Assert.IsNull(document.HasSmoothing("Twin"), "a shared name is unknown");
+        }
+
+        [Test]
+        public void HasSmoothing_SeesTheSmoothingElement()
+        {
+            string path = Path.Combine(folder, "smoothing.fbx");
+            File.WriteAllText(path, string.Join("\n",
+                "; FBX 7.4.0 project file",
+                "Objects:  {",
+                "\tGeometry: 1, \"Geometry::Smooth\", \"Mesh\" {",
+                "\t\tLayerElementSmoothing: 0 {",
+                "\t\t\tMappingInformationType: \"ByPolygon\"",
+                "\t\t}",
+                "\t\tLayerElementUV: 0 {",
+                "\t\t\tName: \"map1\"",
+                "\t\t}",
+                "\t}",
+                "\tGeometry: 2, \"Geometry::Flat\", \"Mesh\" {",
+                "\t\tLayerElementUV: 0 {",
+                "\t\t\tName: \"UVMap\"",
+                "\t\t}",
+                "\t}",
+                "}"));
+            var (names, smoothing) = FbxUvSetNames.ReadLayers(path);
+            Assert.IsTrue(smoothing["Smooth"]);
+            Assert.IsFalse(smoothing["Flat"]);
+            CollectionAssert.AreEqual(new[] { "map1" }, names["Smooth"], "the smoothing element does not hide the UV set after it");
         }
 
         [Test]
