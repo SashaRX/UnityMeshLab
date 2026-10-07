@@ -422,14 +422,22 @@ namespace SashaRX.UnityMeshLab
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             bool isVariantExport = !string.IsNullOrEmpty(outputFbxPathOverride)
                 && !string.Equals(outputFbxPathOverride, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
+            var list = entries as IList<MeshEntry> ?? entries.ToList();
             bool exported = FbxExport.WriteChannels(
-                sourceFbxPath, entries, intent, outputFbxPathOverride,
+                sourceFbxPath, list, intent, outputFbxPathOverride,
                 FbxExport.FirstRealMaterial(ctx?.MeshEntries),
                 isVariantExport ? null : ctx?.LodGroup);
             if (!exported) return false;
             if (!isVariantExport)
             {
-                if (ctx?.LodGroup != null) ctx.Refresh(ctx.LodGroup);
+                // Every source save that wrote UV1 leaves a persistent sidecar replaying the same.
+                if (intent.IncludesUv(1))
+                    SyncPersistentSidecar(sourceFbxPath, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
+                if (ctx?.LodGroup != null)
+                {
+                    ReleaseWorkingMeshes();
+                    ctx.Refresh(ctx.LodGroup);
+                }
                 RestoreWorkingCopiesToScene();
                 AfterWrite?.Invoke();
             }
@@ -438,6 +446,27 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
             return false;
 #endif
+        }
+
+        static Mesh WorkingMesh(MeshEntry e) => e.repackedMesh ?? e.transferredMesh ?? e.originalMesh ?? e.fbxMesh;
+
+        // After a source re-save the working copies are in the file, and the refresh that
+        // follows drops the entries holding them: give the renderers their asset meshes
+        // back and free the copies instead of leaking them.
+        void ReleaseWorkingMeshes()
+        {
+            if (ctx?.MeshEntries == null) return;
+            foreach (var e in ctx.MeshEntries)
+            {
+                var copies = new[] { e.transferredMesh, e.repackedMesh, e.originalMesh != e.fbxMesh ? e.originalMesh : null };
+                foreach (var copy in copies)
+                {
+                    if (copy == null || EditorUtility.IsPersistent(copy)) continue;
+                    if (e.meshFilter != null && e.fbxMesh != null && e.meshFilter.sharedMesh == copy) e.meshFilter.sharedMesh = e.fbxMesh;
+                    UnityEngine.Object.DestroyImmediate(copy);
+                }
+                e.transferredMesh = e.repackedMesh = null;
+            }
         }
 
         string ResolveFbxPath()
@@ -558,6 +587,8 @@ namespace SashaRX.UnityMeshLab
                 okCount++;
                 if (isVariant) continue;
                 SyncPersistentSidecar(sourceFbxPath, kv.Value);
+                // Free the working copies before anything refreshes the entries holding them.
+                if (ctx?.LodGroup != null) ReleaseWorkingMeshes();
                 if (plan.lods.Count > 0) LodGroupUtility.AdoptImportedLods(ctx);
                 if (ctx?.LodGroup != null) ctx.Refresh(ctx.LodGroup);
                 RestoreWorkingCopiesToScene();

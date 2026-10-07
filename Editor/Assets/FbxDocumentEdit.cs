@@ -293,6 +293,40 @@ namespace SashaRX.UnityMeshLab
                 (i, v) => direct.SetAt(i, new FbxVector2(v[0], v[1])));
         }
 
+        /// <summary>
+        /// Removes UV set <paramref name="channel"/> (Unity numbering). Only the last set can go:
+        /// Unity numbers sets in order, so removing one before others would renumber them.
+        /// </summary>
+        internal static void RemoveUv(FbxMesh mesh, int channel)
+        {
+            var sets = UvElements(mesh);
+            if (channel >= sets.Count) return;
+            if (channel != sets.Count - 1)
+                throw new InvalidOperationException(
+                    $"Mesh '{mesh.GetName()}': UV{channel} cannot be removed while UV{sets.Count - 1} stays — the sets after it would be renumbered.");
+            // The wrapper hands out a new object per call, so the set is found by its place in
+            // the order UvElements walks (layer, then texture type), not by reference.
+            int index = 0;
+            for (int l = 0; l < mesh.GetLayerCount(); l++)
+            {
+                var layer = mesh.GetLayer(l);
+                if (layer == null) continue;
+                foreach (var type in UvTypes)
+                {
+                    if (layer.GetUVs(type) == null) continue;
+                    if (index++ == channel) { layer.SetUVs(null, type); return; }
+                }
+            }
+        }
+
+        /// <summary>Removes layer 0's colour set (the one Unity imports).</summary>
+        internal static bool RemoveColor(FbxMesh mesh)
+        {
+            if (ColorElement(mesh) == null) return false;
+            mesh.GetLayer(0).SetVertexColors(null);
+            return true;
+        }
+
         /// <summary>Writes the changed corners of layer 0's colour set, creating it there when layer 0 has none.</summary>
         internal static int WriteColor(FbxMesh mesh, in Topology topology, double[] values, bool[] changed)
         {

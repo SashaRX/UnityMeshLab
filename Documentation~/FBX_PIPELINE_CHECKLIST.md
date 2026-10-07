@@ -297,6 +297,11 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   the saved UVs after the hub's save.
 * "Unchanged geometry" means the same faces per submesh (position loops,
   same winding, any order or vertex numbering), not just the same counts.
+* A channel the working mesh dropped (Cleanup's attribute removal) is removed
+  from the file: the colour set, or the last UV sets. Removing a UV set before
+  one that stays would renumber it and is refused.
+* Changed renderer materials (Cleanup's material fixes) are not channel work:
+  the hub's save names them and offers the rebuild.
 * The hub's Overwrite / Export New FBX (`All`) takes this path, together with
   the structure edit below, in one load and one save of the document.
 

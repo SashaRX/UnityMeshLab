@@ -92,8 +92,20 @@ namespace SashaRX.UnityMeshLab
                 if (from.Count == 1) plan.lods.Add(new FbxStructurePlan.NewLod { name = name, sourceName = from[0], mesh = result });
                 else plan.refusals.Add($"'{name}' cannot be paired with the LOD{sourceLodIndex} mesh of '{System.IO.Path.GetFileName(fbxPath)}' it was generated from");
             }
+            int rematerialled = group.Count(p => MaterialsChanged(p.entry));
+            if (rematerialled > 0)
+                plan.refusals.Add($"{rematerialled} renderer(s) of '{System.IO.Path.GetFileName(fbxPath)}' have changed materials; the document save does not rewrite material assignments");
             plan.collisions.AddRange(SidecarStore.CollisionMeshes(fbxPath));
             return plan;
+        }
+
+        // The scene renderer's materials differ from the model's (e.g. after Cleanup's material
+        // fixes): a material change is the rebuild's to write, not the channel save's.
+        internal static bool MaterialsChanged(MeshEntry entry)
+        {
+            if (entry?.renderer == null) return false;
+            var source = PrefabUtility.GetCorrespondingObjectFromSource(entry.renderer);
+            return source != null && !entry.renderer.sharedMaterials.SequenceEqual(source.sharedMaterials);
         }
 
         // Faces differ from the import: per submesh, the same faces (as position loops, any
