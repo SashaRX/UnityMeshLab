@@ -59,6 +59,9 @@ namespace SashaRX.UnityMeshLab
         /// <summary>A mesh written whole carries UV1 work (repack, transfer) of its own.</summary>
         internal bool wholeMeshUv1Edited;
 
+        /// <summary>Renderer or generated-LOD materials the save puts into node slots.</summary>
+        internal bool HasMaterialEdits => materials.Count > 0 || lods.Any(l => l.materials != null);
+
         public bool IsEmpty => lods.Count == 0 && reshaped.Count == 0 && collisions.Count == 0 && materials.Count == 0 && refusals.Count == 0;
 
         /// <summary>Meshes written whole by the structure step; the channel step leaves them out.</summary>

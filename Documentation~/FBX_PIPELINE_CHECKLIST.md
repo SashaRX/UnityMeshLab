@@ -397,7 +397,8 @@ The hub's `All` save adds or replaces geometry in the same document
 * Refused, nothing written, then a dialog offers the rebuild or "Save channels
   only": a changed material that is not an asset or has no slot in the FBX, a
   renderer with fewer materials than its node's slots, renderers of one node given
-  different materials, a LOD source node without an `_LOD<N>` suffix, a source that is the
+  different materials, changed materials in a file written outside the project (no
+  importer to remap them), changed tangents on a mesh whose normals were removed, a LOD source node without an `_LOD<N>` suffix, a source that is the
   file's only top-level node (Unity imports it as the model root) unless the
   importer preserves the hierarchy, a skinned or blend-shaped source, a source
   whose transform is animated (a sibling copies the values, not the curves),

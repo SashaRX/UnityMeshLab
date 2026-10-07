@@ -112,6 +112,12 @@ namespace SashaRX.UnityMeshLab
             string targetFbxPath = string.IsNullOrEmpty(outputFbxPath) ? sourceFbxPath : outputFbxPath;
             bool isVariant = !string.Equals(targetFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
             bool hasStructure = structure != null && !structure.IsEmpty;
+            // A changed material reaches Unity through the written file's importer remap; a file
+            // written outside the project has no importer, so its slots would carry a name only.
+            bool inProject = targetFbxPath.StartsWith("Assets/", StringComparison.Ordinal) || targetFbxPath.StartsWith("Packages/", StringComparison.Ordinal);
+            if (!inProject && hasStructure && structure.HasMaterialEdits)
+                throw new FbxStructureRefusalException(
+                    $"'{Path.GetFileName(targetFbxPath)}' is written outside the project: the changed materials could only go in as names, without the importer remap that maps them to their assets");
 
             var importer = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             bool swapUv = importer != null && importer.swapUVChannels;
@@ -200,7 +206,7 @@ namespace SashaRX.UnityMeshLab
             foreach (string line in structureLog) UvtLog.Info($"[FBX Export] {line} -> {targetFbxPath} ({format})");
 
             // A save-as outside the project is a plain file; nothing to import.
-            if (!targetFbxPath.StartsWith("Assets/", StringComparison.Ordinal) && !targetFbxPath.StartsWith("Packages/", StringComparison.Ordinal))
+            if (!inProject)
             {
                 Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath);
                 return true;
@@ -418,7 +424,14 @@ namespace SashaRX.UnityMeshLab
                     bool unchanged = donor.normals == null && imported != null && imported.tangents.SequenceEqual(tangents);
                     if (!unchanged) { donor.tangents = tangents; donor.frameNormals = mesh.normals; any = true; }
                 }
-                else if (!hasTangents && importedAny.HasVertexAttribute(VertexAttribute.Tangent))
+                else if (hasTangents)
+                {
+                    // The file's binormal is built from the normal: changed tangents on a mesh
+                    // whose normals were dropped have no frame to go into.
+                    if (imported == null || !imported.tangents.SequenceEqual(mesh.tangents))
+                        throw new FbxStructureRefusalException($"'{donor.name}': its tangents changed while its normals were removed; the FBX tangent frame needs the normals");
+                }
+                else if (importedAny.HasVertexAttribute(VertexAttribute.Tangent))
                 {
                     donor.removedTangents = true;
                     any = true;
