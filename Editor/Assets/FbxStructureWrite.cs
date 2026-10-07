@@ -524,6 +524,11 @@ namespace SashaRX.UnityMeshLab
                             throw new FbxStructureRefusalException(
                                 $"'{mesh.name}' has no UV{channel} but has UV{FbxChannelWrite.FbxUvSet(later, options.swapUv)}; written whole it would renumber its UV sets");
                     }
+                    // A baked UV1 switches 'Generate Lightmap UVs' off for the whole model: a mesh
+                    // written without one would lose its lightmap UVs on reimport.
+                    if (set < options.requiredUvSets)
+                        throw new FbxStructureRefusalException(
+                            $"'{mesh.name}' has no UV{channel}, and writing UV1 switches 'Generate Lightmap UVs' off for the whole model");
                     if (set < required)
                         UvtLog.Warn($"[FBX Export] '{mesh.name}' has no UV{channel}; it gets {set} of the {required} UV set(s) of '{reference.name}'.");
                     break;

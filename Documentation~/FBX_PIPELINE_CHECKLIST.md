@@ -387,8 +387,8 @@ The hub's `All` save adds or replaces geometry in the same document
   (the new node takes the source node's), a sibling of a mesh instanced by
   several nodes (which instance it belongs with cannot be told), a mesh
   written whole that lacks a UV set before one it has (its sets would be
-  renumbered), a new node whose copied transform does not evaluate to its
-  source's placement,
+  renumbered) or lacks the UV1 a bake writes for the whole model, a new node
+  whose copied transform does not evaluate to its source's placement,
   a `_COL` mesh of the file carrying UVs or colours that no sidecar collision
   replaces (Cleanup sends it to the overwrite; the rebuild strips it).
 * After an overwrite, the scene LODGroup's slots take the imported renderers
