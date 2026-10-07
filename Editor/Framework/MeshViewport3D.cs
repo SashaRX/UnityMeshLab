@@ -145,8 +145,13 @@ namespace SashaRX.UnityMeshLab
             // buffer: one-pixel lines come out jagged, and the wire fights the surface it
             // outlines. The frame renders into a multisampled 24-bit-depth target of the
             // same size and resolves into the utility's, which EndPreview then shows.
+            // Built-in only: a scriptable pipeline (URP) cannot write its final blit and
+            // depth copy into a multisampled camera target ("Missing resolve surface"), so
+            // there the camera keeps the utility's target and the pipeline's own MSAA applies.
             var target = camera.targetTexture;
-            bool multisample = target && Multisampled(target);
+            bool scriptable = GraphicsSettings.currentRenderPipeline != null;
+            if (scriptable) { camera.allowMSAA = true; ReleaseMultisampled(); }
+            bool multisample = !scriptable && target && Multisampled(target);
             try {
                 if (multisample) camera.targetTexture = multisampled;
                 if (items != null)
