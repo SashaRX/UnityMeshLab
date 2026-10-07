@@ -577,7 +577,11 @@ namespace SashaRX.UnityMeshLab
         /// Re-saves the FBX at <paramref name="sourceFbxPath"/> (or writes a new file at
         /// <paramref name="outputFbxPath"/>) overwriting only the channels in
         /// <paramref name="intent"/>; everything else comes from the source FBX on disk.
-        /// Phases: importer prep (one reimport, scoped to the intent; the source importer
+        /// UV and vertex-colour intents edit the FBX document in place
+        /// (<see cref="FbxChannelWrite"/>): only the changed corners of the changed channels
+        /// are written, and the source importer is left alone except for switching off
+        /// 'Generate Lightmap UVs' when UV1 is written. Any other intent takes the clone path:
+        /// importer prep (one reimport, scoped to the intent; the source importer
         /// ends as it started except for the deliberate generateSecondaryUV/keepQuads
         /// locks), clone and overwrite, atomic write, reimport and relink of
         /// <paramref name="sceneRoot"/>'s references (source re-save only). The caller
@@ -596,6 +600,21 @@ namespace SashaRX.UnityMeshLab
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (string.IsNullOrEmpty(sourceFbxPath) || entries == null) return false;
 
+            // UV sets and vertex colours are written into the FBX document itself; nothing
+            // else in the file is rebuilt (see FbxChannelWrite).
+            if (FbxChannelWrite.Handles(intent))
+            {
+                try { return FbxChannelWrite.Write(sourceFbxPath, entries, intent, outputFbxPath, sceneRoot); }
+                catch (Exception ex)
+                {
+                    UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
+                    UvtLog.Verbose(ex.ToString());
+                    return false;
+                }
+            }
+
+            // Normals, tangents, hierarchy and material intents still re-export the file
+            // through Unity's FBX Exporter (polygons are rebuilt from Unity's triangles).
             string targetFbxPath = string.IsNullOrEmpty(outputFbxPath) ? sourceFbxPath : outputFbxPath;
             bool isVariantExport = !string.IsNullOrEmpty(outputFbxPath)
                 && !string.Equals(outputFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
@@ -858,6 +877,24 @@ namespace SashaRX.UnityMeshLab
         internal static void WriteAtomic(string targetFbxPath, GameObject root, bool normalizedTransforms = false)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            ReplaceAtomically(targetFbxPath, tmpRelPath =>
+            {
+                ExportFile(tmpRelPath, root, false, normalizedTransforms);
+                if (normalizedTransforms) ConvertNormalizedFile(Path.GetFullPath(tmpRelPath), false);
+            });
+#else
+            throw new InvalidOperationException("FBX Exporter package not installed.");
+#endif
+        }
+
+        /// <summary>
+        /// Lets <paramref name="write"/> produce the file at `<target>.tmp`, verifies it, and
+        /// replaces the target in one rename (a plain move for a new path), keeping the
+        /// target's `.meta` as it was. If the writer throws or writes an empty file the
+        /// target on disk is untouched. Throws on failure after removing the temp file.
+        /// </summary>
+        internal static void ReplaceAtomically(string targetFbxPath, Action<string> write)
+        {
             string fullPath = Path.GetFullPath(targetFbxPath);
             // Hash the full path so two FBX files with the same filename get distinct
             // backup names. unchecked cast rather than Math.Abs — Math.Abs(int.MinValue) throws.
@@ -871,12 +908,10 @@ namespace SashaRX.UnityMeshLab
             if (File.Exists(tmpAbsPath)) File.Delete(tmpAbsPath); // leftover from a crashed run
             try
             {
-                ExportFile(tmpRelPath, root, false, normalizedTransforms);
-
-                if (normalizedTransforms) ConvertNormalizedFile(tmpAbsPath, false);
+                write(tmpRelPath);
                 var tmpInfo = new FileInfo(tmpAbsPath);
                 if (!tmpInfo.Exists || tmpInfo.Length == 0)
-                    throw new IOException($"FBX Exporter produced an empty/missing file at '{tmpRelPath}'.");
+                    throw new IOException($"FBX writer produced an empty/missing file at '{tmpRelPath}'.");
 
                 // File.Replace needs an existing target (overwrite + backup); a fresh path
                 // is a move.
@@ -910,9 +945,6 @@ namespace SashaRX.UnityMeshLab
                 catch { /* the leftover .tmp is cosmetic; the exception below is the real error */ }
                 throw;
             }
-#else
-            throw new InvalidOperationException("FBX Exporter package not installed.");
-#endif
         }
 
         // ─────────────────────────────────────────────────────────────────
