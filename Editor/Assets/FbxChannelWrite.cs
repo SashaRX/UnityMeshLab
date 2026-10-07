@@ -193,8 +193,12 @@ namespace SashaRX.UnityMeshLab
             if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
             try { FbxExport.ReplaceAtomically(targetFbxPath, temp => document.Save(Path.GetFullPath(temp))); }
             catch { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
-            if (!isVariant && uv1Written) KeepWrittenUv1(sourceFbxPath);
-            if (!isVariant) MapMaterials(sourceFbxPath, options.materialRemaps);
+            try
+            {
+                if (!isVariant && uv1Written) KeepWrittenUv1(sourceFbxPath);
+                if (!isVariant) MapMaterials(sourceFbxPath, options.materialRemaps);
+            }
+            catch { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
             string format = $"FBX {document.Major}.{document.Minor}, {(document.Binary ? "binary" : "ASCII")}";
             if (meshesWritten > 0)
                 UvtLog.Info($"[FBX Export] {meshesWritten} mesh(es), {cornersWritten} corner value(s) of {string.Join(", ", channelsWritten.OrderBy(c => c))} -> {targetFbxPath} " +
@@ -411,7 +415,8 @@ namespace SashaRX.UnityMeshLab
                 if (hasTangents && hasNormals)
                 {
                     var tangents = mesh.tangents;
-                    bool unchanged = imported != null && imported.tangents.SequenceEqual(tangents);
+                    // A written normal moves the binormal (cross(normal, tangent)·w) even where the tangent stays.
+                    bool unchanged = donor.normals == null && imported != null && imported.tangents.SequenceEqual(tangents);
                     if (!unchanged) { donor.tangents = tangents; donor.frameNormals = mesh.normals; any = true; }
                 }
                 else if (!hasTangents && importedAny.HasVertexAttribute(VertexAttribute.Tangent))
@@ -755,7 +760,8 @@ namespace SashaRX.UnityMeshLab
                 // Unity keeps a tangent and the bitangent's sign; the file keeps both vectors:
                 // binormal = cross(normal, tangent) · w, both mapped as directions.
                 int corners = WriteChannel(donor.name, "tangents", topology, cornerToVertex, !exists, 6,
-                    (c, v) => comparable && tag.tangents[c].Equals(donor.tangents[v]),
+                    (c, v) => comparable && tag.tangents[c].Equals(donor.tangents[v])
+                        && (donor.normals == null || (tag.normals != null && tag.normals[c].Equals(donor.frameNormals[v]))),
                     (v, values, at) =>
                     {
                         var t = donor.tangents[v];
