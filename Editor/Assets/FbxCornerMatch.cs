@@ -26,7 +26,7 @@ namespace SashaRX.UnityMeshLab
             public int missing;
         }
 
-        readonly struct PositionKey : IEquatable<PositionKey>, IComparable<PositionKey>
+        internal readonly struct PositionKey : IEquatable<PositionKey>, IComparable<PositionKey>
         {
             readonly int x, y, z;
             public PositionKey(float px, float py, float pz) { x = Bits(px); y = Bits(py); z = Bits(pz); }
@@ -36,6 +36,12 @@ namespace SashaRX.UnityMeshLab
             public override bool Equals(object obj) => obj is PositionKey k && Equals(k);
             public int CompareTo(PositionKey o) => x != o.x ? x.CompareTo(o.x) : y != o.y ? y.CompareTo(o.y) : z.CompareTo(o.z);
             public override int GetHashCode() => unchecked((x * 73856093) ^ (y * 19349663) ^ (z * 83492791));
+            public static bool operator ==(PositionKey a, PositionKey b) => a.Equals(b);
+            public static bool operator !=(PositionKey a, PositionKey b) => !a.Equals(b);
+            public static bool operator <(PositionKey a, PositionKey b) => a.CompareTo(b) < 0;
+            public static bool operator <=(PositionKey a, PositionKey b) => a.CompareTo(b) <= 0;
+            public static bool operator >(PositionKey a, PositionKey b) => a.CompareTo(b) > 0;
+            public static bool operator >=(PositionKey a, PositionKey b) => a.CompareTo(b) >= 0;
         }
 
         // The distinct corner positions of a face, sorted: a face lies on a polygon exactly when

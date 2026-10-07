@@ -314,15 +314,89 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   one that stays would renumber it and is refused.
 * Changed renderer materials (Cleanup's material fixes; a renderer that is no
   prefab instance is compared with the model's renderer of the same mesh, unless
-  the importer imports no materials), changed normals or tangents (an attribute
-  added or removed, or values that differ at the same position, renumbered or
-  not; tangents only where the importer imports them) and `_COL` meshes
-  carrying UVs or colours (Cleanup sends these to the overwrite) are not
+  the importer imports no materials) and changed normals or tangents (an
+  attribute added or removed, or values that differ at the same position,
+  renumbered or not; tangents only where the importer imports them) are not
   channel work: the hub's save names them and offers the rebuild.
-* The hub's Overwrite / Export New FBX (`All`) takes this path when the work
-  changed only channels of meshes the file already has. Generated LODs or
-  sidecar collision need the LOD-rebuild path; the dialog says what that
-  costs and offers "Save channels only".
+* The hub's Overwrite / Export New FBX (`All`) takes this path, together with
+  the structure edit below, in one load and one save of the document.
+
+### Structure edit in the FBX document (generated LODs, collision, edited faces)
+
+The hub's `All` save adds or replaces geometry in the same document
+(`Editor/Assets/FbxStructureWrite.cs`, SDK half `FbxStructureEdit.cs`):
+
+* A generated LOD becomes a node next to the node it was generated from
+  (same parent), with its local TRS, rotation order, pivots, pre/post
+  rotation, geometric transform, inherit type and materials; the copy must
+  evaluate to the source's global transform or the save is refused. Unity
+  then groups it by name (`base_LOD0` … `base_LODn`).
+* Sidecar collision becomes `{key}_COL` (one simplified mesh) or a `{key}_COL`
+  container of `{key}_COL_Hull{i}` nodes next to its source, with positions /
+  triangles / normals only: no UV, no vertex colour, no material (the
+  TS_UnityExport_SDK collider rule). Collision the file already holds with the
+  same geometry and no UVs or colours is left alone; one with UVs or colours
+  is rewritten clean.
+* A mesh whose faces or points changed gets a new FBX mesh on the same
+  node(s); node, transform and materials stay. Quads (Keep Quads imports) are
+  written as quads, and each submesh keeps its material slot. Instances edited
+  differently (any written attribute: positions, faces, normals, tangents,
+  colours, UVs) are refused.
+* Collision is placed next to the mesh named by its sidecar key, or the one
+  LOD0 / unsuffixed mesh with that group key. Collision the file already holds
+  is compared as triangle loops on the same points, not only point sets.
+* Unity-space geometry goes back into control-point space through the affine
+  map fitted to the source mesh's tagged import (`FbxSpaceFit`): whatever
+  axis conversion, unit scale, mirroring or baked pivot the import applied is
+  in that map. A position the source import had takes its exact control
+  point; a flat source takes its mirror from the import's winding. The
+  triangle winding is reversed when the import reversed it, so a reimport
+  gives the Unity triangles back. A flat source tells the map only within its
+  plane: geometry leaving that plane is refused unless the plane maps without
+  stretch and the source's geometric scaling is uniform. New meshes carry
+  normals, the source's UV sets under the source's set names (read from the
+  file by `FbxUvSetNames`, since a texture finds its set by name; `UVChannel_N`
+  when they cannot be read), plus the UV sets MeshLab added within the save's
+  intent (a repacked UV1 the file lacked; never a UV1 the import regenerates:
+  with 'Generate Lightmap UVs' on and no UV1 bake, a source's set there is
+  kept in the count but is no UV1 write and leaves the setting on),
+  set i on layer i, and layer-0 colours when the source has them or the save
+  writes colours, all per corner, indexed and shared only within a control
+  point. Faces without area (repeated or collinear corners) are left out. Normals, colours, the tangent frame and the one material
+  element sit on layer 0 (TS_UnityExport_SDK I4); polygons are begun without
+  the legacy material bookkeeping; a node given materials gets texture
+  shading.
+* Not written, by limitation: a smoothing-group element (the C# FBX SDK
+  wrapper has no `FbxLayerElementSmoothing`), so a new or replaced mesh carries
+  its shading as explicit normals only; a DCC rebuilds smoothing from them
+  (TS_UnityExport_SDK `SmoothingFromNormals`). Tangents / binormals are
+  written only when the importer imports tangents (otherwise Unity computes
+  MikkTSpace, as with the TS exporter's `stripTangentsBinormals`).
+* Nothing is renamed, moved or normalised; a node is removed only when a new
+  one takes its name next to the same source (same parent; a same-named node
+  in another branch is left alone; a replaced node with children is refused). Hierarchy
+  normalisation stays the explicit Prefab Builder action (the LOD-rebuild path).
+* Refused, nothing written, then a dialog offers the rebuild or "Save channels
+  only": a LOD source node without an `_LOD<N>` suffix, a source that is the
+  file's only top-level node (Unity imports it as the model root) unless the
+  importer preserves the hierarchy, a skinned or blend-shaped source, a source
+  whose transform is animated (a sibling copies the values, not the curves),
+  an import that is not an affine image of its control points, a generated LOD
+  whose source mesh cannot be told or whose name two branches generate, a
+  generated LOD whose renderer's materials differ from its source renderer's
+  (the new node takes the source node's), a sibling of a mesh instanced by
+  several nodes (which instance it belongs with cannot be told), a mesh
+  written whole that lacks a UV set before one it has (its sets would be
+  renumbered) or lacks the UV1 a bake writes for the whole model, a new node
+  whose copied transform does not evaluate to its source's placement,
+  a `_COL` mesh of the file carrying UVs or colours that no sidecar collision
+  replaces (Cleanup sends it to the overwrite; the rebuild strips it).
+* After an overwrite, the scene LODGroup's slots take the imported renderers
+  of the written LODs (transitions kept) and those generated objects go; one
+  whose name matches no imported renderer or several keeps its slot. A save of
+  several FBX files frees the working copies, adopts the LODs and reloads the
+  scene once, after the last file; a rebuild picked for a refused file
+  finishes after that.
 
 ### `FbxExportIntent` flags
 
