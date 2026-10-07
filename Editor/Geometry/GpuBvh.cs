@@ -38,6 +38,12 @@ namespace SashaRX.UnityMeshLab
         internal double ReadbackCopyMs { get; private set; }
 
         public static bool Supported => SystemInfo.supportsComputeShaders;
+        /// <summary>BVH_MAX_STACK in BvhTraversal.hlsl: a node at depth d holds up to d
+        /// pending siblings and pushes two children, so the tree must satisfy depth + 2 ≤ this.</summary>
+        internal const int TraversalStack = 48;
+        // A readback that never completes (a lost device, a stalled driver) would hold
+        // the bake and its buffers forever; the vertex-AO bake gives up after the same time.
+        const double ReadbackTimeoutSec = 120.0;
 
         readonly ComputeShader shader;
         readonly int rayKernel, nearestKernel, projectionKernel;
@@ -70,6 +76,11 @@ namespace SashaRX.UnityMeshLab
             // Reject the backend before allocating buffers or reading invalid results.
             if (!shader.IsSupported(rayKernel) || !shader.IsSupported(nearestKernel) || !shader.IsSupported(projectionKernel))
                 throw new InvalidOperationException("BvhQueries kernels are not supported or failed to compile");
+            // The traversal silently skips the children it cannot push; a deeper tree
+            // would miss hits on the GPU that the CPU finds, so it stays on the CPU.
+            int depth = bvh.Depth;
+            if (depth + 2 > TraversalStack)
+                throw new InvalidOperationException($"BVH depth {depth} exceeds the GPU traversal stack of {TraversalStack} entries");
             bvh.GetGPUData(out var gpuNodes, out var gpuTriIndices, out var gpuVerts, out var gpuTris);
             FaceCount = gpuTris.Length / 3;
             // A ComputeBuffer allocation can throw mid-way (out of GPU memory);
@@ -248,6 +259,14 @@ namespace SashaRX.UnityMeshLab
                 }
                 catch (Exception exception) { completion.TrySetException(exception); }
             });
+            // The timer is cancelled by the readback's own completion, so a healthy bake
+            // keeps no two-minute timers alive; a late callback then finds the task set.
+            var timeout = new CancellationTokenSource();
+            completion.Task.ContinueWith(_ => timeout.Cancel(), TaskScheduler.Default);
+            Task.Delay(TimeSpan.FromSeconds(ReadbackTimeoutSec), timeout.Token).ContinueWith(delay => {
+                if (!delay.IsCanceled)
+                    completion.TrySetException(new TimeoutException($"GPU BVH readback did not complete within {ReadbackTimeoutSec:F0}s."));
+            }, TaskScheduler.Default);
             return completion.Task;
         }
 
@@ -255,11 +274,17 @@ namespace SashaRX.UnityMeshLab
         {
             if (n <= capacity) return;
             ReleaseQueryBuffers();
-            capacity = Math.Max(n, 4096);
-            rayOrigins = new ComputeBuffer(capacity, 16); rayDirs = new ComputeBuffer(capacity, 16);
-            rayHits = new ComputeBuffer(capacity, Marshal.SizeOf<RayHit>());
-            points = new ComputeBuffer(capacity, 16); queryNormals = new ComputeBuffer(capacity, 16);
-            nearestHits = new ComputeBuffer(capacity, Marshal.SizeOf<NearestHit>());
+            int size = Math.Max(n, 4096);
+            // capacity is set last: a failed allocation leaves it at zero, so the next
+            // batch allocates again instead of dispatching into null buffers.
+            try {
+                rayOrigins = new ComputeBuffer(size, 16); rayDirs = new ComputeBuffer(size, 16);
+                rayHits = new ComputeBuffer(size, Marshal.SizeOf<RayHit>());
+                points = new ComputeBuffer(size, 16); queryNormals = new ComputeBuffer(size, 16);
+                nearestHits = new ComputeBuffer(size, Marshal.SizeOf<NearestHit>());
+            }
+            catch { ReleaseQueryBuffers(); throw; }
+            capacity = size;
         }
 
         void ReleaseQueryBuffers()

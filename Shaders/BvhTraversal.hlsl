@@ -182,10 +182,23 @@ float3 BvhClosestPointOnTriangle(float3 p, float3 a, float3 b, float3 c, out flo
                         }
                         else
                         {
-                            float denom = 1.0 / (va + vb + vc);
-                            float v2 = vb * denom, w2 = vc * denom;
-                            bary = float3(1 - v2 - w2, v2, w2);
-                            closest = a + ab * v2 + ac * w2;
+                            float sum = va + vb + vc;
+                            if (!(sum > 0.0))
+                            {
+                                // Degenerate triangle: the nearest vertex, the CPU's choice
+                                // (TriangleBvh.ClosestPointOnTriangle) instead of a division by zero.
+                                float da = dot(ap, ap), db = dot(bp, bp), dc = dot(cp, cp);
+                                if (da <= db && da <= dc) { bary = float3(1, 0, 0); closest = a; }
+                                else if (db <= dc) { bary = float3(0, 1, 0); closest = b; }
+                                else { bary = float3(0, 0, 1); closest = c; }
+                            }
+                            else
+                            {
+                                float denom = 1.0 / sum;
+                                float v2 = vb * denom, w2 = vc * denom;
+                                bary = float3(1 - v2 - w2, v2, w2);
+                                closest = a + ab * v2 + ac * w2;
+                            }
                         }
                     }
                 }
