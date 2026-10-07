@@ -6,6 +6,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Threading;
 using UnityEditor;
 using UnityEngine;
@@ -144,12 +145,13 @@ namespace SashaRX.UnityMeshLab
             // The preview utility's own target has no anti-aliasing and a 16-bit depth
             // buffer: one-pixel lines come out jagged, and the wire fights the surface it
             // outlines. The frame renders into a 24-bit-depth target of the same size and
-            // goes into the utility's, which EndPreview then shows. With the built-in
-            // pipeline that target is 8x multisampled and resolved; a scriptable pipeline
-            // (URP) cannot write its final blit and depth copy into a multisampled camera
-            // target ("Missing resolve surface"), so there it is single-sampled and copied.
+            // goes into the utility's, which EndPreview then shows: 8x multisampled and
+            // resolved, or single-sampled and copied under a scriptable pipeline that has
+            // no MSAA setting to match it to (see PipelineMsaa).
             var target = camera.targetTexture;
-            int samples = GraphicsSettings.currentRenderPipeline != null ? 1 : MsaaSamples;
+            var pipeline = GraphicsSettings.currentRenderPipeline;
+            var pipelineMsaa = PipelineMsaa(pipeline);
+            int samples = pipeline == null || pipelineMsaa != null ? MsaaSamples : 1;
             bool own = target && Offscreen(target, samples);
             try {
                 if (own) camera.targetTexture = offscreen;
@@ -165,7 +167,19 @@ namespace SashaRX.UnityMeshLab
                     if (ShowAxes) DrawAxes(bounds);
                 }
                 // Scene materials of a URP project render through URP, not the built-in fallback.
-                utility.Render(true);
+                // URP renders a camera multisampled only while its asset enables MSAA, and then
+                // with the sample count of the camera's target; a target whose count differs
+                // from what it renders with fails its final blit and depth copy ("Missing
+                // resolve surface"). The asset's count is the target's for this render only.
+                int restoreMsaa = 0;
+                bool raiseMsaa = own && samples > 1 && pipelineMsaa != null;
+                if (raiseMsaa) {
+                    camera.allowMSAA = true;
+                    restoreMsaa = (int)pipelineMsaa.GetValue(pipeline);
+                    pipelineMsaa.SetValue(pipeline, samples);
+                }
+                try { utility.Render(true); }
+                finally { if (raiseMsaa) pipelineMsaa.SetValue(pipeline, restoreMsaa); }
                 if (own && samples > 1) offscreen.ResolveAntiAliasedSurface(target);
                 else if (own) Graphics.CopyTexture(offscreen, 0, 0, target, 0, 0);
             }
@@ -177,6 +191,24 @@ namespace SashaRX.UnityMeshLab
                 foreach (var mesh in frameMeshes) if (mesh) Object.DestroyImmediate(mesh);
                 frameMeshes.Clear(); frameBlocks.Clear();
             }
+        }
+
+        // A scriptable pipeline's MSAA sample count (URP's msaaSampleCount), or null when it
+        // has none to set or its renderer does not do MSAA (URP's deferred renderer): there
+        // the frame renders single-sampled.
+        static PropertyInfo PipelineMsaa(RenderPipelineAsset pipeline)
+        {
+            const BindingFlags Public = BindingFlags.Public | BindingFlags.Instance;
+            var property = pipeline?.GetType().GetProperty("msaaSampleCount", Public);
+            if (property == null || property.PropertyType != typeof(int) || !property.CanRead || !property.CanWrite) return null;
+            try {
+                var renderer = pipeline.GetType().GetProperty("scriptableRenderer", Public)?.GetValue(pipeline);
+                var features = renderer?.GetType().GetProperty("supportedRenderingFeatures", Public)?.GetValue(renderer);
+                var msaa = features?.GetType().GetProperty("msaa", Public)?.GetValue(features);
+                if (msaa is bool supported && !supported) return null;
+            }
+            catch (Exception) { return null; }
+            return property;
         }
 
         // The frame target matching the preview utility's: kept across frames and replaced
