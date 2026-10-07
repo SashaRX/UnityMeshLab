@@ -449,7 +449,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(names.ContainsKey("Twin"), "two meshes of one name cannot be told apart");
             using var document = FbxSourceDocument.Load(path);
             CollectionAssert.AreEqual(new[] { "map1", "lightmap" }, document.UvSetNames("Plane"));
-            Assert.AreEqual(false, document.HasSmoothing("Plane"), "the mesh has no smoothing element");
+            Assert.That(document.HasSmoothing("Plane"), Is.False, "the mesh has no smoothing element");
             Assert.IsNull(document.HasSmoothing("Twin"), "a shared name is unknown");
         }
 
