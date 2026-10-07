@@ -16,6 +16,28 @@ set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 FetchContent_MakeAvailable(meshoptimizer)
 
+# Only the remesher needs a local, reviewed extension: upstream stores row offsets
+# in one byte and supports at most 256 cells. Preserve its byte path for existing
+# jobs and use 16-bit offsets above that. Keep the rest of meshoptimizer pinned.
+get_target_property(MESHOPT_SOURCES meshoptimizer SOURCES)
+set(MESHOPT_FILTERED_SOURCES "")
+set(MESHOPT_REMESHER_FOUND OFF)
+foreach(MESHOPT_SOURCE IN LISTS MESHOPT_SOURCES)
+    if(MESHOPT_SOURCE MATCHES "(^|/)remesher\\.cpp$")
+        set(MESHOPT_REMESHER_FOUND ON)
+    else()
+        get_filename_component(MESHOPT_SOURCE_ABSOLUTE "${MESHOPT_SOURCE}"
+            ABSOLUTE BASE_DIR "${meshoptimizer_SOURCE_DIR}")
+        list(APPEND MESHOPT_FILTERED_SOURCES "${MESHOPT_SOURCE_ABSOLUTE}")
+    endif()
+endforeach()
+if(NOT MESHOPT_REMESHER_FOUND)
+    message(FATAL_ERROR "Pinned meshoptimizer remesher source was not found")
+endif()
+set_property(TARGET meshoptimizer PROPERTY SOURCES "${MESHOPT_FILTERED_SOURCES}")
+target_sources(meshoptimizer PRIVATE third_party/meshoptimizer/remesher.cpp)
+target_include_directories(meshoptimizer PRIVATE "${meshoptimizer_SOURCE_DIR}/src")
+
 # Keep xatlas vendored so native builds never execute or compile code from a
 # moving upstream branch. Update this reviewed snapshot explicitly when needed.
 set(XATLAS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xatlas")

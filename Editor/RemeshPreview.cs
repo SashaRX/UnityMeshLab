@@ -35,7 +35,13 @@ namespace SashaRX.UnityMeshLab
             // Smoothing and fit mirror the bake settings; the source feeds the fit.
             public float cageDistance, cageSmoothing;
             public bool cageFit;
+            public RemeshBackfaces sourceBackfaces;
             public RemeshSource source;
+            public bool twoSided;
+            public bool remeshReady, simplifyReady, unwrapReady, bakeReady;
+            public bool remeshStale, simplifyStale, unwrapStale, bakeStale;
+            public RemeshPipeline.Stage? runningStage;
+            public float progress = -1;
         }
 
         static readonly string[] ViewNames = { "3D", "Maps" };
@@ -44,7 +50,40 @@ namespace SashaRX.UnityMeshLab
         Stage stage = Stage.Result;
         Channel channel;
         bool textured = true, bumpMap = true, cageView, trimMaskView = true;
+
+        [Serializable]
+        sealed class WindowSettings
+        {
+            public View view;
+            public Stage stage = Stage.Result;
+            public Channel channel;
+            public bool textured = true, bumpMap = true, cageView, trimMaskView = true;
+        }
+
+        internal void RestoreWindowSettings()
+        {
+            var state = MeshLabWindowPreferences.Load<WindowSettings>("RemeshPreview");
+            view = MeshLabWindowPreferences.ValidEnum(state.view, View.Mesh);
+            stage = MeshLabWindowPreferences.ValidEnum(state.stage, Stage.Result);
+            channel = MeshLabWindowPreferences.ValidEnum(state.channel, Channel.BaseColor);
+            textured = state.textured; bumpMap = state.bumpMap;
+            cageView = state.cageView; trimMaskView = state.trimMaskView;
+        }
+
+        internal void SaveWindowSettings()
+            => MeshLabWindowPreferences.Save("RemeshPreview", new WindowSettings {
+                view = view, stage = stage, channel = channel, textured = textured,
+                bumpMap = bumpMap, cageView = cageView, trimMaskView = trimMaskView
+            });
+
         Material surface;
+        Material resultSurface;
+        Texture2D emissionTexture;
+        RenderTexture litNormalTexture;
+        bool litNormalUrp;
+        BuildTarget litNormalTarget;
+        NormalMapEncoding litNormalEncoding;
+        string resultShaderWarning;
         Mesh cageOuter, cageInner; int cageMeshId; string cageKey;
         bool cageReady;
         RemeshNative.Geometry cageGeometryRef;
@@ -74,6 +113,11 @@ namespace SashaRX.UnityMeshLab
             foreach (var texture in mapTextures) if (texture) Object.DestroyImmediate(texture);
             Array.Clear(mapTextures, 0, mapTextures.Length);
             mapSource = null;
+            if (emissionTexture) Object.DestroyImmediate(emissionTexture);
+            emissionTexture = null;
+            ReleaseLitNormal();
+            if (resultSurface) Object.DestroyImmediate(resultSurface);
+            resultSurface = null;
         }
 
         public void Dispose()
@@ -94,12 +138,12 @@ namespace SashaRX.UnityMeshLab
         // to the stage mesh like to any other.
         void DrawMesh(Data data)
         {
-            stage = (Stage)EditorGUILayout.EnumPopup("Stage", stage);
+            DrawStageButtons(data);
             bool result = stage == Stage.Result;
             using (new EditorGUI.DisabledScope(!result || !data.baseColor))
                 textured = EditorGUILayout.ToggleLeft(new GUIContent("Baked base color", "Result stage: show the baked base color on the surface."), textured);
             using (new EditorGUI.DisabledScope(!result || data.maps == null))
-                bumpMap = EditorGUILayout.ToggleLeft(new GUIContent("Baked normal map", "Result stage: shade with the baked tangent-space normal map (the saved material's look)."), bumpMap);
+                bumpMap = EditorGUILayout.ToggleLeft(new GUIContent("Baked normal map", "Result stage: shade with the baked tangent-space normal map using the saved material's shader and the viewport lights."), bumpMap);
             using (new EditorGUI.DisabledScope(stage != Stage.Remesh || !data.trimMask))
                 trimMaskView = EditorGUILayout.ToggleLeft(new GUIContent("Trim mask", "Remesh stage: colour the untrimmed remesh by what Trim to source surface did with each face."), trimMaskView);
             using (new EditorGUI.DisabledScope(!result || data.geometry == null))
@@ -113,6 +157,10 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField(meshSummary, EditorStyles.miniLabel);
             if (ShowTrimMask(data))
                 EditorGUILayout.LabelField("Trim mask: green kept · red back of a sheet (opposite normal) · orange rim / no source within reach", EditorStyles.wordWrappedMiniLabel);
+            if (result && data.maps != null && data.maps.beauty && textured)
+                EditorGUILayout.LabelField("Beauty contains baked scene lighting and renders unlit.", EditorStyles.wordWrappedMiniLabel);
+            if (result && data.twoSided && resultSurface && !resultSurface.HasProperty("_Cull"))
+                EditorGUILayout.HelpBox("This result shader renders only front faces, including after export. Use a two-sided shader to show the back of a sheet.", MessageType.Warning);
             var g = data.geometry;
             if (g != null) {
                 string coverage = data.maps != null ? $" · {100.0 * data.maps.covered / ((double)data.maps.size * data.maps.size):0.#}% texels used" : "";
@@ -120,6 +168,56 @@ namespace SashaRX.UnityMeshLab
             }
             EditorGUILayout.LabelField("Wire, shading modes, UV fill and island borders: canvas controls (status bar, 3D shading row).", EditorStyles.wordWrappedMiniLabel);
             if (GUI.changed) RequestRepaint?.Invoke();
+        }
+
+        internal static Stage? PreviewStage(RemeshPipeline.Stage? running)
+            => !running.HasValue ? (Stage?)null : running == RemeshPipeline.Stage.Remesh ? Stage.Remesh :
+                running == RemeshPipeline.Stage.Simplify ? Stage.Simplified : Stage.Result;
+
+        void DrawStageButtons(Data data)
+        {
+            const float buttonHeight = 44, gap = 6;
+            var area = GUILayoutUtility.GetRect(0, buttonHeight * 2 + gap, GUILayout.ExpandWidth(true));
+            var running = PreviewStage(data.runningStage);
+            var labels = new[] { "Source", "Remesh", "Simplify", "Result" };
+            var ready = new[] { data.sourceVertices > 0 || data.meshes[0], data.remeshReady, data.simplifyReady, data.unwrapReady };
+            var stale = new[] { false, data.remeshStale, data.simplifyStale, data.unwrapStale || data.bakeStale };
+            var titleStyle = new GUIStyle(EditorStyles.label) {
+                alignment = TextAnchor.MiddleCenter, fontSize = 12, fontStyle = FontStyle.Bold,
+                padding = new RectOffset(), margin = new RectOffset(), fixedHeight = 0, wordWrap = false
+            };
+            var stateStyle = new GUIStyle(titleStyle) { fontSize = 11, fontStyle = FontStyle.Normal };
+            for (int i = 0; i < 4; i++) {
+                var value = (Stage)i;
+                var r = new Rect(area.x + (i % 2) * (area.width + gap) * .5f,
+                    area.y + (i / 2) * (buttonHeight + gap), (area.width - gap) * .5f, buttonHeight);
+                bool working = running == value;
+                var color = working ? new Color(.12f, .38f, .62f) : stale[i] ? new Color(.48f, .32f, .12f) :
+                    ready[i] ? new Color(.18f, .38f, .25f) : new Color(.25f, .25f, .25f);
+                EditorGUI.DrawRect(r, color);
+                if (working) {
+                    float width = data.progress >= 0 ? r.width * Mathf.Clamp01(data.progress) : r.width * .25f;
+                    float offset = data.progress >= 0 ? 0 : (r.width - width) * Mathf.PingPong((float)EditorApplication.timeSinceStartup, 1);
+                    EditorGUI.DrawRect(new Rect(r.x + offset, r.yMax - 5, width, 3), new Color(.35f, .75f, 1));
+                    RequestRepaint?.Invoke();
+                }
+                if (stage == value) {
+                    var border = new Color(1f, .55f, .15f);
+                    EditorGUI.DrawRect(new Rect(r.x, r.y, r.width, 2), border);
+                    EditorGUI.DrawRect(new Rect(r.x, r.yMax - 2, r.width, 2), border);
+                }
+                string state = working ? (data.runningStage == RemeshPipeline.Stage.Unwrap ? "Unwrapping…" : data.runningStage == RemeshPipeline.Stage.Bake ? "Baking…" : "Working…") :
+                    stale[i] ? "Settings changed" : ready[i] ? (value == Stage.Result ? data.bakeReady ? "Baked" : "UV ready" : "Ready") : "Not built";
+                if (working && data.progress >= 0) state += $" {data.progress * 100:0}%";
+                titleStyle.normal.textColor = ready[i] || working ? Color.white : new Color(.75f, .75f, .75f);
+                stateStyle.normal.textColor = new Color(.8f, .8f, .8f);
+                GUI.Label(new Rect(r.x + 4, r.y + 5, Mathf.Max(0, r.width - 8), 17), labels[i], titleStyle);
+                GUI.Label(new Rect(r.x + 4, r.y + 23, Mathf.Max(0, r.width - 8), 15), state, stateStyle);
+                using (new EditorGUI.DisabledScope(!ready[i]))
+                    if (GUI.Button(r, new GUIContent("", labels[i] + ": " + state + ". Select the preview stage. Orange border: selected; green: ready; blue: running; amber: changed settings."), GUIStyle.none)) {
+                        stage = value; RequestRepaint?.Invoke();
+                    }
+            }
         }
 
         bool ShowTrimMask(Data data) => trimMaskView && stage == Stage.Remesh && data.trimMask;
@@ -133,6 +231,18 @@ namespace SashaRX.UnityMeshLab
             var mesh = DisplayMesh(data);
             if (!mesh) return false;
             if (!EnsureResources()) return false;
+            // Source uses its original materials under the viewport lights. Result
+            // must use the exported PBR shader under those same lights, not the
+            // geometry/trim preview's camera-facing light approximation.
+            if (stage == Stage.Result) {
+                var material = ResultMaterial(data);
+                if (material) {
+                    var resultMaterials = new Material[mesh.subMeshCount];
+                    for (int sub = 0; sub < resultMaterials.Length; ++sub) resultMaterials[sub] = material;
+                    items.Add(new MeshViewport3D.Item(mesh, data.spaceToWorld, resultMaterials));
+                    return true;
+                }
+            }
             bool trimMask = ShowTrimMask(data);
             bool useTexture = textured && stage == Stage.Result && data.baseColor;
             surface.SetTexture("_MainTex", useTexture ? data.baseColor : null);
@@ -151,6 +261,37 @@ namespace SashaRX.UnityMeshLab
             for (int sub = 0; sub < materials.Length; ++sub) materials[sub] = surface;
             items.Add(new MeshViewport3D.Item(mesh, data.spaceToWorld, materials));
             return true;
+        }
+
+        Material ResultMaterial(Data data)
+        {
+            bool unlit = textured && data.baseColor && data.maps != null && data.maps.beauty;
+            Shader shader;
+            bool urp;
+            try { shader = RemeshExporter.ResolveShader(unlit, out urp); }
+            catch (InvalidOperationException ex) {
+                if (resultShaderWarning != ex.Message) UvtLog.Warn("[Remesh preview] " + ex.Message);
+                resultShaderWarning = ex.Message;
+                return null;
+            }
+            resultShaderWarning = null;
+            if (!resultSurface || resultSurface.shader != shader) {
+                if (resultSurface) Object.DestroyImmediate(resultSurface);
+                resultSurface = new Material(shader) { name = "Remesh result preview", hideFlags = HideFlags.HideAndDontSave };
+            }
+            SyncMapSource(data.maps);
+            var maps = new Texture[5];
+            maps[0] = textured ? data.baseColor : null;
+            if (data.maps != null && !unlit) {
+                maps[1] = bumpMap ? LitNormalTexture(data.maps, urp) : null;
+                maps[2] = MapTexture(data.maps, Channel.MetallicSmoothness);
+                maps[3] = MapTexture(data.maps, Channel.Occlusion);
+                maps[4] = EmissionTexture(data.maps);
+            }
+            RemeshExporter.ConfigureMaterial(resultSurface, urp, unlit, maps);
+            if (resultSurface.HasProperty("_Cull"))
+                resultSurface.SetFloat("_Cull", (float)(data.twoSided ? CullMode.Off : CullMode.Back));
+            return resultSurface;
         }
 
         /// <summary>The cage overlay for the result in the shared 3D canvas (the wire is
@@ -189,17 +330,18 @@ namespace SashaRX.UnityMeshLab
         {
             var geometry = data.geometry;
             int id = mesh.GetInstanceID();
-            string key = $"{data.cageDistance:R}|{data.cageSmoothing:R}|{data.cageFit}|{(data.source != null ? data.source.GetHashCode() : 0)}";
+            string key = $"{data.cageDistance:R}|{data.cageSmoothing:R}|{data.cageFit}|{data.sourceBackfaces}|{(data.source != null ? data.source.GetHashCode() : 0)}";
             if (id == cageMeshId && key == cageKey && ReferenceEquals(geometry, cageGeometryRef)) return;
             cageMeshId = id; cageKey = key; cageGeometryRef = geometry; cageReady = false;
             var source = data.cageFit ? data.source : null;
             float distance = data.cageDistance, smoothing = data.cageSmoothing;
+            var sourceBackfaces = data.sourceBackfaces;
             cageWork.Enqueue(() => {
                 if (cageOuter) Object.DestroyImmediate(cageOuter);
                 if (cageInner) Object.DestroyImmediate(cageInner);
                 cageOuter = cageInner = null;
                 var cachedSource = ReferenceEquals(cageSourceRef, source) ? cageSourceBvh : null;
-                return token => BuildCageData(geometry, source, cachedSource, distance, smoothing, token);
+                return token => BuildCageData(geometry, source, cachedSource, distance, smoothing, sourceBackfaces, token);
             }, prepared => {
                 if (!mesh) return;
                 cageSourceRef = source; cageSourceBvh = prepared.source;
@@ -213,12 +355,21 @@ namespace SashaRX.UnityMeshLab
         sealed class CageData { public Vector3[] outer, inner; public int[] lines; public TriangleBvh source; }
 
         static CageData BuildCageData(RemeshNative.Geometry geometry, RemeshSource source, TriangleBvh sourceBvh,
-            float distance, float smoothing, CancellationToken token)
+            float distance, float smoothing, RemeshBackfaces sourceBackfaces, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
             if (sourceBvh == null && source?.indices != null && source.indices.Length > 0)
                 sourceBvh = new TriangleBvh(source.positions, source.indices);
-            var cage = RemeshBaker.BuildCage(geometry, distance, smoothing, sourceBvh, token: token);
+            Vector3[] sourceNormals = null; bool[] eitherSide = null;
+            if (sourceBvh != null && source != null) {
+                eitherSide = source.TwoSidedFaces(sourceBackfaces);
+                sourceNormals = MeshGeometry.FaceNormals(source.positions, source.indices);
+                int winding = RemeshBaker.ProbeWinding(sourceBvh, source.positions, sourceNormals, eitherSide);
+                if (winding == 0) { sourceNormals = null; eitherSide = null; }
+                else if (winding < 0)
+                    for (int f = 0; f < sourceNormals.Length; ++f) sourceNormals[f] = -sourceNormals[f];
+            }
+            var cage = RemeshBaker.BuildCageWithFacing(geometry, distance, smoothing, sourceBvh, sourceNormals, eitherSide, token: token);
             token.ThrowIfCancellationRequested();
             var folds = new TriangleBvh(geometry.positions, geometry.indices);
             var outer = CageVertices(geometry, cage, 1f, folds, token);
@@ -300,11 +451,7 @@ namespace SashaRX.UnityMeshLab
 
         Texture2D MapTexture(RemeshBaker.Maps maps, Channel which)
         {
-            if (!ReferenceEquals(maps, mapSource)) {
-                foreach (var t in mapTextures) if (t) Object.DestroyImmediate(t);
-                Array.Clear(mapTextures, 0, mapTextures.Length);
-                mapSource = maps;
-            }
+            SyncMapSource(maps);
             int index = (int)which;
             if (mapTextures[index]) return mapTextures[index];
             Color32[] pixels;
@@ -321,7 +468,54 @@ namespace SashaRX.UnityMeshLab
                     }
                     break;
             }
-            return mapTextures[index] = TextureAssets.FromPixels(pixels, maps.size, maps.size, linear: which != Channel.BaseColor);
+            var texture = TextureAssets.FromPixels(pixels, maps.size, maps.size, linear: which != Channel.BaseColor);
+            if (texture) texture.wrapMode = TextureWrapMode.Clamp;
+            return mapTextures[index] = texture;
+        }
+
+        void SyncMapSource(RemeshBaker.Maps maps)
+        {
+            if (ReferenceEquals(maps, mapSource)) return;
+            foreach (var t in mapTextures) if (t) Object.DestroyImmediate(t);
+            Array.Clear(mapTextures, 0, mapTextures.Length);
+            if (emissionTexture) Object.DestroyImmediate(emissionTexture);
+            emissionTexture = null;
+            ReleaseLitNormal();
+            mapSource = maps;
+        }
+
+        Texture LitNormalTexture(RemeshBaker.Maps maps, bool urp)
+        {
+            var canonical = MapTexture(maps, Channel.Normal);
+            if (!canonical) return null;
+            var target = EditorUserBuildSettings.activeBuildTarget;
+            var encoding = RemeshNormalPreviewPacking.ActiveEncoding();
+            if (litNormalTexture && litNormalUrp == urp && litNormalTarget == target && litNormalEncoding == encoding) return litNormalTexture;
+            ReleaseLitNormal();
+            litNormalTexture = RemeshNormalPreviewPacking.Create(canonical, urp);
+            litNormalUrp = urp; litNormalTarget = target; litNormalEncoding = encoding;
+            return litNormalTexture;
+        }
+
+        void ReleaseLitNormal()
+        {
+            if (!litNormalTexture) return;
+            litNormalTexture.Release();
+            Object.DestroyImmediate(litNormalTexture);
+            litNormalTexture = null;
+        }
+
+        Texture2D EmissionTexture(RemeshBaker.Maps maps)
+        {
+            if (emissionTexture) return emissionTexture;
+            if (maps.emission == null || maps.emission.Length != maps.size * maps.size) return null;
+            // Emission is linear HDR, unlike the clipped swatch in the Maps panel.
+            emissionTexture = new Texture2D(maps.size, maps.size, TextureFormat.RGBAHalf, false, true) {
+                name = "Remesh emission preview", hideFlags = HideFlags.HideAndDontSave, wrapMode = TextureWrapMode.Clamp
+            };
+            emissionTexture.SetPixels(maps.emission);
+            emissionTexture.Apply();
+            return emissionTexture;
         }
     }
 }

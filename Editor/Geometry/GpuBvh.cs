@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,17 +27,28 @@ namespace SashaRX.UnityMeshLab
         public struct NearestHit { public int tri; public float distSq; public Vector3 point, bary; } // 32 bytes
 
         public const int MaxBatch = 1 << 20;
-        const int AsyncBatch = 16384;
+        // Keep readbacks bounded while amortizing Editor-frame completion latency.
+        // A full async chunk occupies 7 MiB of reusable query buffers.
+        internal const int AsyncBatch = 65536;
+        // 28 MiB of query buffers at 256k; keep the 7 MiB path on low-memory GPUs.
+        internal int ProjectionBatchSize { get; set; } = SystemInfo.graphicsMemorySize > 1024 ? 262144 : AsyncBatch;
+        internal double ProjectionSubmitMs { get; private set; }
+        internal double ProjectionReadbackMs { get; private set; }
+        internal double ProjectionResumeMs { get; private set; }
+        internal double ReadbackCopyMs { get; private set; }
 
         public static bool Supported => SystemInfo.supportsComputeShaders;
 
         readonly ComputeShader shader;
-        readonly int rayKernel, nearestKernel;
+        readonly int rayKernel, nearestKernel, projectionKernel;
         ComputeBuffer nodes, triIndices, verts, tris, faceNormals, eitherSide;
         ComputeBuffer rayOrigins, rayDirs, rayHits, points, queryNormals, nearestHits;
         int capacity;
         readonly int eitherSideCount;
         public int FaceCount { get; }
+        internal int RayBatchCount { get; private set; }
+        internal int NearestBatchCount { get; private set; }
+        internal int ProjectionBatchCount { get; private set; }
 
         /// <summary>Null when compute shaders are unavailable or the kernel asset is missing (logged once).</summary>
         public static GpuBvh TryCreate(TriangleBvh bvh, Vector3[] faceNormals = null, bool[] eitherSide = null)
@@ -53,9 +65,10 @@ namespace SashaRX.UnityMeshLab
             this.shader = shader;
             rayKernel = shader.FindKernel("Raycast");
             nearestKernel = shader.FindKernel("Nearest");
+            projectionKernel = shader.FindKernel("ProjectSurface");
             // FindKernel can return an index even when that kernel failed to compile.
             // Reject the backend before allocating buffers or reading invalid results.
-            if (!shader.IsSupported(rayKernel) || !shader.IsSupported(nearestKernel))
+            if (!shader.IsSupported(rayKernel) || !shader.IsSupported(nearestKernel) || !shader.IsSupported(projectionKernel))
                 throw new InvalidOperationException("BvhQueries kernels are not supported or failed to compile");
             bvh.GetGPUData(out var gpuNodes, out var gpuTriIndices, out var gpuVerts, out var gpuTris);
             FaceCount = gpuTris.Length / 3;
@@ -128,6 +141,7 @@ namespace SashaRX.UnityMeshLab
 
         void DispatchRays(Vector4[] origins, Vector4[] dirs, int start, int n, bool facingFilter)
         {
+            ++RayBatchCount;
             Ensure(n);
             rayOrigins.SetData(origins, start, 0, n);
             rayDirs.SetData(dirs, start, 0, n);
@@ -168,6 +182,7 @@ namespace SashaRX.UnityMeshLab
 
         void DispatchNearest(Vector4[] pts, Vector4[] normals, int start, int n, bool normalFilter)
         {
+            ++NearestBatchCount;
             Ensure(n);
             points.SetData(pts, start, 0, n);
             queryNormals.SetData(normals, start, 0, n);
@@ -180,14 +195,55 @@ namespace SashaRX.UnityMeshLab
             shader.Dispatch(nearestKernel, (n + 63) / 64, 1, 1);
         }
 
-        static Task ReadAsync<T>(ComputeBuffer buffer, int count, T[] results, int start) where T : struct
+        /// <summary>Ray projection plus the identical nearest fallback in one dispatch.
+        /// Both readbacks drain before cancellation or buffer reuse.</summary>
+        public async Task ProjectSurfaceAsync(Vector4[] origins, Vector4[] dirs, Vector4[] pts, Vector4[] normals,
+            int count, bool facingFilter, RayHit[] rays, NearestHit[] nearest, CancellationToken token)
+        {
+            int batchSize = Math.Clamp(ProjectionBatchSize, 1, MaxBatch);
+            for (int start = 0; start < count; start += batchSize) {
+                token.ThrowIfCancellationRequested();
+                int n = Math.Min(batchSize, count - start);
+                var submit = Stopwatch.StartNew();
+                Ensure(n);
+                rayOrigins.SetData(origins, start, 0, n); rayDirs.SetData(dirs, start, 0, n);
+                points.SetData(pts, start, 0, n); queryNormals.SetData(normals, start, 0, n);
+                Bind(shader, projectionKernel);
+                shader.SetBuffer(projectionKernel, "_RayOrigins", rayOrigins);
+                shader.SetBuffer(projectionKernel, "_RayDirs", rayDirs);
+                shader.SetBuffer(projectionKernel, "_Points", points);
+                shader.SetBuffer(projectionKernel, "_QueryNormals", queryNormals);
+                shader.SetBuffer(projectionKernel, "_RayHits", rayHits);
+                shader.SetBuffer(projectionKernel, "_NearestHits", nearestHits);
+                shader.SetInt("_QueryCount", n);
+                shader.SetInt("_FacingFilter", facingFilter ? 1 : 0);
+                shader.Dispatch(projectionKernel, (n + 63) / 64, 1, 1);
+                ProjectionSubmitMs += submit.Elapsed.TotalMilliseconds;
+                long submitted = Stopwatch.GetTimestamp(), rayReady = 0, nearestReady = 0;
+                ++ProjectionBatchCount;
+                var rayRead = ReadAsync(rayHits, n, rays, start, () => rayReady = Stopwatch.GetTimestamp());
+                try { await Task.WhenAll(rayRead, ReadAsync(nearestHits, n, nearest, start, () => nearestReady = Stopwatch.GetTimestamp())); }
+                // Even a synchronous failure submitting the second readback must
+                // not let the caller dispose buffers still used by the first.
+                finally { await rayRead; }
+                long ready = Math.Max(rayReady, nearestReady);
+                ProjectionReadbackMs += (ready - submitted) * (1000.0 / Stopwatch.Frequency);
+                ProjectionResumeMs += (Stopwatch.GetTimestamp() - ready) * (1000.0 / Stopwatch.Frequency);
+                token.ThrowIfCancellationRequested();
+            }
+        }
+
+        Task ReadAsync<T>(ComputeBuffer buffer, int count, T[] results, int start, Action ready = null) where T : struct
         {
             var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             AsyncGPUReadback.Request(buffer, count * buffer.stride, 0, request => {
                 try {
                     if (request.hasError) throw new InvalidOperationException("GPU BVH readback failed.");
+                    var copy = Stopwatch.StartNew();
                     var data = request.GetData<T>();
                     for (int i = 0; i < count; ++i) results[start + i] = data[i];
+                    ReadbackCopyMs += copy.Elapsed.TotalMilliseconds;
+                    ready?.Invoke();
                     completion.TrySetResult(true);
                 }
                 catch (Exception exception) { completion.TrySetException(exception); }

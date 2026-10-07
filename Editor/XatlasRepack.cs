@@ -192,7 +192,7 @@ namespace SashaRX.UnityMeshLab
         // every managed xatlas session exclusive: async packing yields back
         // to the editor, so UI or API callers can otherwise destroy an atlas
         // while a background pack is still using it.
-        static int s_nativeSessionInFlight;
+        static readonly System.Threading.SemaphoreSlim s_nativeSession = new System.Threading.SemaphoreSlim(1, 1);
 
         const string kSessionBusyError =
             "An xatlas repack operation is already in progress.";
@@ -205,12 +205,16 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         internal static bool TryAcquireNativeSession()
         {
-            return System.Threading.Interlocked.CompareExchange(
-                ref s_nativeSessionInFlight, 1, 0) == 0;
+            return s_nativeSession.Wait(0);
         }
 
+        /// <summary>Waits on a worker for mandatory repair. The editor must remain
+        /// free to finish an interactive owner's asynchronous native pack.</summary>
+        internal static void AcquireNativeSession(System.Threading.CancellationToken token)
+            => s_nativeSession.Wait(token);
+
         internal static void ReleaseNativeSession()
-            => System.Threading.Volatile.Write(ref s_nativeSessionInFlight, 0);
+            => s_nativeSession.Release();
 
         const uint ORPHAN_CHART = uint.MaxValue;
         const long kBruteCostBudget = 500_000_000L;        // ~5-10s wall

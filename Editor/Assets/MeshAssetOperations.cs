@@ -798,22 +798,39 @@ namespace SashaRX.UnityMeshLab
             return sidecarEntries;
         }
 
+        internal static bool EnsureOutputFolder(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            string[] parts = path.Replace('\\', '/').TrimEnd('/').Split('/');
+            if (parts[0] != "Assets") return false;
+            foreach (string part in parts)
+                if (string.IsNullOrEmpty(part) || part == "." || part == ".." ||
+                    part.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) >= 0) return false;
+            string parent = "Assets";
+            for (int i = 1; i < parts.Length; ++i)
+            {
+                string folder = parent + "/" + parts[i];
+                if (!AssetDatabase.IsValidFolder(folder))
+                {
+                    // Never accept CreateFolder's auto-renamed sibling when a
+                    // file already occupies the requested output path.
+                    if (!string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(folder, AssetPathToGUIDOptions.OnlyExistingAssets))) return false;
+                    string guid = AssetDatabase.CreateFolder(parent, parts[i]);
+                    if (string.IsNullOrEmpty(guid) || AssetDatabase.GUIDToAssetPath(guid) != folder ||
+                        !AssetDatabase.IsValidFolder(folder)) return false;
+                }
+                parent = folder;
+            }
+            return AssetDatabase.IsValidFolder(parent);
+        }
+
         void SaveAll()
         {
             RestoreAllPreviews();
             string p = ctx.PipeSettings.savePath;
             if (string.IsNullOrEmpty(p)) p = "Assets/UnityMeshLab/Output";
-            if (!AssetDatabase.IsValidFolder(p))
-            {
-                var par = System.IO.Path.GetDirectoryName(p);
-                var fld = System.IO.Path.GetFileName(p);
-                if (!string.IsNullOrEmpty(par)) AssetDatabase.CreateFolder(par, fld);
-            }
-            // CreateFolder only makes one level; a deeper missing savePath or a
-            // locked parent leaves the folder absent and every generated path
-            // invalid — bail out with a readable error instead of throwing
-            // inside OnGUI.
-            if (!AssetDatabase.IsValidFolder(p))
+            p = p.Replace('\\', '/').TrimEnd('/');
+            if (!EnsureOutputFolder(p))
             {
                 UvtLog.Error("[Save] Output folder does not exist and could not be created: " + p);
                 return;

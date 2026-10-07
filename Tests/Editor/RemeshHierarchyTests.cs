@@ -98,6 +98,8 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                 first.transform.SetParent(root.transform); second.transform.SetParent(root.transform);
                 first.transform.localRotation = Quaternion.Euler(45, 25, 10);
                 second.transform.localPosition = Vector3.right * 2;
+                root.transform.SetPositionAndRotation(new Vector3(12, -3, 5), Quaternion.Euler(20, 70, -15));
+                root.transform.localScale = Vector3.one * 2;
                 mesh.uv2 = mesh.uv;
                 mesh.SetUVs(7, new List<Vector2>(mesh.uv));
                 first.GetComponent<MeshFilter>().sharedMesh = mesh;
@@ -114,7 +116,10 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                 for (int i = 0; i < entries.Count; ++i) Assert.AreSame(entries[i].originalMesh, items[i].mesh);
                 var index = items.FindIndex(item => item.mesh == mesh);
                 Assert.That(index, Is.GreaterThanOrEqualTo(0));
-                Assert.AreEqual(first.transform.localToWorldMatrix, items[index].matrix);
+                var expected = Matrix4x4.Scale(root.transform.localScale) *
+                    Matrix4x4.TRS(first.transform.localPosition, first.transform.localRotation, first.transform.localScale);
+                for (int k = 0; k < 16; ++k) Assert.That(items[index].matrix[k], Is.EqualTo(expected[k]).Within(1e-5f));
+                Assert.That(Quaternion.Angle(Quaternion.Euler(20, 70, -15), root.transform.rotation), Is.LessThan(.01f));
                 Assert.AreSame(mesh, first.GetComponent<MeshFilter>().sharedMesh);
                 // Switching the source field must replace the preview instead of
                 // showing meshes inherited from the hub or the previous root.
@@ -135,7 +140,10 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
         public IEnumerator RemeshToolUsesSameStageMeshForUvAnd3D()
         {
             var source = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            source.transform.SetPositionAndRotation(new Vector3(3, -4, 5), Quaternion.Euler(35, 20, 10));
+            source.transform.localScale = Vector3.one * 2;
             var tool = new RemeshBakeTool();
+            tool.SetSource(source);
             var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
             var pipeline = (RemeshPipeline)typeof(RemeshBakeTool).GetField("pipeline", flags).GetValue(tool);
             var preview = (RemeshPreview)typeof(RemeshBakeTool).GetField("previews", flags).GetValue(tool);
@@ -152,6 +160,8 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                     Assert.IsTrue(tool.Get3DContent(items));
                     Assert.AreEqual(1, entries.Count);
                     Assert.AreSame(items[0].mesh, entries[0].originalMesh, stage.ToString());
+                    Assert.That(Quaternion.Angle(Quaternion.identity, items[0].matrix.rotation), Is.LessThan(.01f));
+                    Assert.That(((Vector3)items[0].matrix.GetColumn(3)).magnitude, Is.LessThan(1e-5f));
                     var context = new UvToolContext { PreviewUvChannel = 1 };
                     var canvas = new UvCanvasView { EntriesOverride = entries };
                     canvas.EnsurePreviewChannel(context);
@@ -178,7 +188,41 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
         }
 
         [UnityTest]
-        public IEnumerator RotatedSourceKeepsOrientationInPreviewAndSavedPrefab()
+        public IEnumerator CapturedChildPreviewKeepsRelativeTransformAfterSceneRootChanges()
+        {
+            var root = new GameObject("PreviewRoot");
+            var child = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            child.transform.SetParent(root.transform, false);
+            root.transform.SetPositionAndRotation(new Vector3(9, -2, 4), Quaternion.Euler(40, 15, 80));
+            root.transform.localScale = Vector3.one * 2;
+            child.transform.localPosition = new Vector3(1, 2, 3);
+            child.transform.localRotation = Quaternion.Euler(10, 20, 30);
+            child.transform.localScale = new Vector3(.5f, 1, 2);
+            var expected = Matrix4x4.Scale(root.transform.localScale) *
+                Matrix4x4.TRS(child.transform.localPosition, child.transform.localRotation, child.transform.localScale);
+            using (var pipeline = new RemeshPipeline())
+            try {
+                var settings = new RemeshSettings { keepHierarchy = true, sourceShape = RemeshShape.BoundingBox,
+                    minPartSize = 0, minRodVoxels = 0 };
+                var run = pipeline.Run(root, settings, RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Remesh);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                var captured = pipeline.PreviewSpaceToWorld;
+                var authored = child.GetComponent<MeshFilter>().sharedMesh.vertices;
+                var previewVertices = pipeline.SourceMesh.vertices;
+                Assert.AreEqual(authored.Length, previewVertices.Length);
+                for (int v = 0; v < authored.Length; ++v)
+                    Assert.That((captured.MultiplyPoint3x4(previewVertices[v]) - expected.MultiplyPoint3x4(authored[v])).magnitude,
+                        Is.LessThan(1e-5f), "node capture compensates its TRS decomposition");
+                root.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
+                root.transform.localScale = Vector3.one;
+                Assert.AreEqual(captured, pipeline.PreviewSpaceToWorld);
+            }
+            finally { Object.DestroyImmediate(root); }
+        }
+
+        [UnityTest]
+        public IEnumerator RotatedSourceUsesZeroRootPreviewRotationAndPreservesSavedOrientation()
         {
             const string folder = "Assets/MeshLabOrientationRegression";
             Assert.IsFalse(AssetDatabase.IsValidFolder(folder), "test folder must be unused");
@@ -188,6 +232,7 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
             source.transform.SetParent(parent.transform, false);
             parent.transform.rotation = Quaternion.Euler(0, 25, 15);
             parent.transform.localScale = Vector3.one * 2;
+            parent.transform.position = new Vector3(10, 20, 30);
             var expectedRotation = Quaternion.identity;
             try {
                 for (int mode = 0; mode < 3; ++mode) {
@@ -206,17 +251,17 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                         Assert.IsTrue(run.Result, pipeline.Status);
                         Assert.IsTrue(UvTopology.HasUv(pipeline.SourceMesh, 0), "captured source preview retains UV0");
                         Assert.That(Quaternion.Angle(expectedRotation, pipeline.RootRotation), Is.LessThan(.01f));
-                        var data = new RemeshPreview.Data { spaceToWorld = pipeline.Primary.spaceToWorld };
+                        var data = new RemeshPreview.Data { spaceToWorld = pipeline.PreviewSpaceToWorld };
                         data.meshes[0] = pipeline.SourceMesh; data.meshes[1] = pipeline.VoxelMesh;
                         data.meshes[2] = pipeline.SimplifiedMesh; data.meshes[3] = pipeline.ResultMesh;
                         foreach (RemeshPreview.Stage stage in System.Enum.GetValues(typeof(RemeshPreview.Stage))) {
                             preview.Show(stage);
                             var items = new List<MeshViewport3D.Item>();
                             Assert.IsTrue(preview.Fill3D(data, items), stage.ToString());
-                            Assert.That(Quaternion.Angle(expectedRotation, items[0].matrix.rotation), Is.LessThan(.01f));
+                            Assert.That(Quaternion.Angle(Quaternion.identity, items[0].matrix.rotation), Is.LessThan(.01f));
                             var vertex = items[0].mesh.vertices[0];
                             Assert.That((items[0].matrix.MultiplyPoint3x4(vertex) -
-                                pipeline.Primary.spaceToWorld.MultiplyPoint3x4(vertex)).magnitude, Is.LessThan(1e-6f));
+                                Vector3.Scale(source.transform.lossyScale, vertex)).magnitude, Is.LessThan(1e-5f));
                         }
                         // Saving uses the captured transform even if the source changes later.
                         source.transform.rotation = Quaternion.identity;
@@ -224,8 +269,24 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                         string path = folder + "/" + source.name + "_Remesh/" + source.name + ".prefab";
                         var saved = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                         Assert.IsNotNull(saved);
-                        Assert.That(Quaternion.Angle(expectedRotation, saved.transform.localRotation), Is.LessThan(.01f));
+                        Assert.That(Quaternion.Angle(mode == 1 ? Quaternion.identity : expectedRotation,
+                            saved.transform.localRotation), Is.LessThan(.01f));
                         Assert.That(saved.transform.localPosition, Is.EqualTo(Vector3.zero));
+                        if (mode == 1) {
+                            Assert.AreEqual(Vector3.one, saved.transform.localScale);
+                            var expectedBounds = new Bounds();
+                            var matrix = pipeline.Primary.spaceToWorld;
+                            matrix.SetColumn(3, new Vector4(0, 0, 0, 1));
+                            var originalVertices = pipeline.ResultMesh.vertices;
+                            expectedBounds = new Bounds(matrix.MultiplyPoint3x4(originalVertices[0]), Vector3.zero);
+                            foreach (var v in originalVertices) expectedBounds.Encapsulate(matrix.MultiplyPoint3x4(v));
+                            var filter = saved.GetComponentInChildren<MeshFilter>();
+                            var savedVertices = filter.sharedMesh.vertices;
+                            var savedBounds = new Bounds(filter.transform.TransformPoint(savedVertices[0]), Vector3.zero);
+                            foreach (var v in savedVertices) savedBounds.Encapsulate(filter.transform.TransformPoint(v));
+                            Assert.That((savedBounds.size - expectedBounds.size).magnitude, Is.LessThan(1e-5f));
+                            Assert.That((savedBounds.center - expectedBounds.center).magnitude, Is.LessThan(1e-5f));
+                        }
                     }
                 }
             }

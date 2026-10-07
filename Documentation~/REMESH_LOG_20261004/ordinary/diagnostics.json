@@ -1,0 +1,29 @@
+{
+  "inputs": {
+    "ordinary-plain-uv.bin": "b151f0de58cc14a396c8927cb9b7e156a10e8d7007cc295e3c272d1d1b6e07cb",
+    "ordinary-merge-uv.bin": "885b43d258b9091623b03e4f6368dcac38e02ab3dbc3add4cbe1f2aa5546e707"
+  },
+  "uv": {
+    "plain": {
+      "faces": 1598,
+      "charts": 81,
+      "smallCharts": 44,
+      "meanStretch": 1.065086462935488,
+      "worstStretch": 4.209148370955917,
+      "triangleUvArea": 0.560787991553378,
+      "largestChartSurfaceFraction": 0.16561404402437727,
+      "outOfBoundsVertices": 0
+    },
+    "merge": {
+      "faces": 1598,
+      "charts": 35,
+      "smallCharts": 12,
+      "meanStretch": 1.051170565929962,
+      "worstStretch": 2.2556985520591337,
+      "triangleUvArea": 0.5723888790542726,
+      "largestChartSurfaceFraction": 0.16561404402437727,
+      "outOfBoundsVertices": 0
+    },
+    "same3dTriangleCorners": true
+  }
+}

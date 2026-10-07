@@ -3,6 +3,7 @@
   "rootNamespace": "SashaRX.UnityMeshLab.Tests",
   "references": [
     "SashaRX.UnityMeshLab.Editor",
+    "Autodesk.Fbx",
     "UnityEngine.TestRunner",
     "UnityEditor.TestRunner"
   ],

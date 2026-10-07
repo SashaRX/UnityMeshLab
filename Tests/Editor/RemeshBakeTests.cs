@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using NUnit.Framework;
 using UnityEditor;
@@ -9,6 +10,66 @@ namespace SashaRX.UnityMeshLab.Tests
     public class RemeshBakeTests
     {
         static RemeshSource.Map Map() => new RemeshSource.Map();
+
+        [TestCase(257)]
+        [TestCase(512)]
+        [TestCase(1024)]
+        public void HighVoxelResolutionPersistsAndInvalidatesRemesh(int resolution)
+        {
+            var settings = new RemeshSettings { voxelResolution = resolution };
+            Assert.DoesNotThrow(settings.Validate);
+            var restored = RemeshSettings.FromSavedJson(JsonUtility.ToJson(settings));
+            Assert.AreEqual(resolution, restored.voxelResolution);
+            Assert.DoesNotThrow(restored.Validate);
+            string before = RemeshPipeline.Key(RemeshPipeline.Stage.Remesh, settings, null);
+            settings.voxelResolution = 256;
+            Assert.AreNotEqual(before, RemeshPipeline.Key(RemeshPipeline.Stage.Remesh, settings, null));
+        }
+
+        [TestCase(3)]
+        [TestCase(1025)]
+        public void UnsupportedVoxelResolutionIsRejected(int resolution)
+        {
+            var settings = new RemeshSettings { voxelResolution = resolution };
+            Assert.Throws<ArgumentException>(settings.Validate);
+        }
+
+        [Test]
+        public void RecommendedXatlasSettings_PreserveOtherStagesAndExplicitSavedSettings()
+        {
+            var settings = new RemeshSettings {
+                voxelResolution = 64, maximumError = .004f, hardEdges = RemeshHardEdges.Smooth,
+                textureResolution = 512, padding = 2, reduceUvFragmentation = false, mergeCharts = true,
+                chartMaxCost = 10, chartNormalDeviation = 7.1f, chartRoundness = .73f,
+                chartStraightness = 20, chartNormalSeam = 251, chartIterations = 16,
+                maxChartArea = 2, maxChartBoundary = 3, packBruteForce = true, packRotate = false, packBlockAlign = true,
+                projectionDistance = .01f, bakeSamples = 16
+            };
+            // Upgrading defaults must not replace manually saved chart settings.
+            string saved = JsonUtility.ToJson(settings);
+            Assert.AreEqual(saved, JsonUtility.ToJson(RemeshSettings.FromSavedJson(saved)));
+            var unaffected = new[] { RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Simplify, RemeshPipeline.Stage.Bake };
+            var keys = Array.ConvertAll(unaffected, stage => RemeshPipeline.Key(stage, settings, null));
+            string unwrap = RemeshPipeline.Key(RemeshPipeline.Stage.Unwrap, settings, null);
+            settings.ApplyDefaultXatlasSettings();
+            for (int i = 0; i < unaffected.Length; ++i)
+                Assert.AreEqual(keys[i], RemeshPipeline.Key(unaffected[i], settings, null));
+            Assert.AreNotEqual(unwrap, RemeshPipeline.Key(RemeshPipeline.Stage.Unwrap, settings, null));
+            Assert.AreEqual(RemeshHardEdges.Smooth, settings.hardEdges);
+            Assert.AreEqual(512, settings.textureResolution); Assert.AreEqual(2, settings.padding);
+            Assert.IsFalse(settings.reduceUvFragmentation); Assert.IsTrue(settings.mergeCharts);
+            var defaults = new RemeshSettings();
+            Assert.AreEqual(defaults.chartMaxCost, settings.chartMaxCost);
+            Assert.AreEqual(defaults.chartNormalDeviation, settings.chartNormalDeviation);
+            Assert.AreEqual(defaults.chartRoundness, settings.chartRoundness);
+            Assert.AreEqual(defaults.chartStraightness, settings.chartStraightness);
+            Assert.AreEqual(defaults.chartNormalSeam, settings.chartNormalSeam);
+            Assert.AreEqual(defaults.chartIterations, settings.chartIterations);
+            Assert.AreEqual(0, settings.maxChartArea); Assert.AreEqual(0, settings.maxChartBoundary);
+            Assert.AreEqual(defaults.packRotate, settings.packRotate);
+            Assert.AreEqual(defaults.packBruteForce, settings.packBruteForce);
+            Assert.AreEqual(defaults.packBlockAlign, settings.packBlockAlign);
+        }
 
         [Test]
         public void FragmentationSettingMigratesWithoutReplacingManualChartSettings()
@@ -325,7 +386,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var source = Source(); var bvh = new TriangleBvh(source.positions, source.indices);
             using (var gpu = GpuBvh.TryCreate(bvh, new[] { Vector3.forward })) {
                 Assert.IsNotNull(gpu);
-                const int count = 16401; // crosses the asynchronous dispatch boundary
+                int count = gpu.ProjectionBatchSize + 17; // crosses the configured projection dispatch boundary
                 var origins = new Vector4[count]; var directions = new Vector4[count];
                 var points = new Vector4[count]; var normals = new Vector4[count];
                 var hits = new GpuBvh.RayHit[count]; var nearest = new GpuBvh.NearestHit[count];
@@ -351,8 +412,26 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.That(hits[i].t, Is.EqualTo(1f).Within(1e-5f));
                     Assert.That(nearest[i].distSq, Is.EqualTo(.25f).Within(1e-5f));
                 }
+                // Compare the fused kernel with independent legacy queries, including
+                // ray hits, successful nearest fallbacks and radius-zero misses.
+                for (int i = 0; i < count; ++i)
+                    points[i] = new Vector4(.2f, .2f, .5f, i % 3 == 0 ? 0 : 1);
+                var referenceNearest = gpu.NearestAsync(points, normals, count, true, nearest, CancellationToken.None);
+                deadline = EditorApplication.timeSinceStartup + 10;
+                while (!referenceNearest.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(referenceNearest.IsCompleted); Assert.IsFalse(referenceNearest.IsFaulted, referenceNearest.Exception?.ToString());
+                var projectedRays = new GpuBvh.RayHit[count]; var projectedNearest = new GpuBvh.NearestHit[count];
+                var projection = gpu.ProjectSurfaceAsync(origins, directions, points, normals, count, true, projectedRays, projectedNearest, CancellationToken.None);
+                while (!projection.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(projection.IsCompleted); Assert.IsFalse(projection.IsFaulted, projection.Exception?.ToString());
+                Assert.That(gpu.ProjectionBatchCount, Is.EqualTo(2));
+                for (int i = 0; i < count; ++i) {
+                    Assert.AreEqual(hits[i], projectedRays[i], "combined ray " + i);
+                    if (hits[i].tri < 0) Assert.AreEqual(nearest[i], projectedNearest[i], "combined fallback " + i);
+                    else Assert.AreEqual(-1, projectedNearest[i].tri, "a hit must not trigger nearest traversal");
+                }
                 using (var cancellation = new CancellationTokenSource()) {
-                    var cancelled = gpu.RaycastAsync(origins, directions, count, false, hits, cancellation.Token);
+                    var cancelled = gpu.ProjectSurfaceAsync(origins, directions, points, normals, count, false, projectedRays, projectedNearest, cancellation.Token);
                     cancellation.Cancel();
                     while (!cancelled.IsCompleted && EditorApplication.timeSinceStartup < deadline) yield return null;
                     Assert.IsTrue(cancelled.IsCanceled, "Cancellation waits until the submitted GPU readback has drained");
@@ -807,6 +886,213 @@ namespace SashaRX.UnityMeshLab.Tests
             var near=new TriangleBvh(new[] { new Vector3(-2,-2,0.02f), new Vector3(3,-2,0.02f), new Vector3(3,3,0.02f), new Vector3(-2,3,0.02f) }, new[] { 0,1,2, 0,2,3 });
             foreach (float r in RemeshBaker.BuildCage(target, 0.1f, 2f, near).reach) Assert.That(r, Is.EqualTo(0.1f).Within(1e-6f));
         }
+        [Test]
+        public void CageFitUsesPerCornerFacingFallbackDirections()
+        {
+            var positions = new List<Vector3> { Vector3.zero };
+            var indices = new List<int>();
+            foreach (int angle in new[] { 0, 30, 60, 90, 120, 150, 180, 200 }) {
+                Vector3 normal = Quaternion.AngleAxis(angle, Vector3.up) * Vector3.forward;
+                Vector3 u = Vector3.up, v = Vector3.Cross(normal, u);
+                int first = positions.Count;
+                positions.Add(u); positions.Add(v);
+                indices.Add(0); indices.Add(first); indices.Add(first + 1);
+            }
+            var target = new RemeshNative.Geometry {
+                positions = positions.ToArray(), normals = new Vector3[positions.Count], indices = indices.ToArray()
+            };
+            var unsmoothed = RemeshBaker.BuildCage(target, 0.1f, 0f, null);
+            for (int c = 0; c < target.indices.Length; c += 3)
+                Assert.AreEqual(unsmoothed.side[0], unsmoothed.side[c], "fan corners share a side");
+            Assert.That(Vector3.Dot(unsmoothed.directions[0], Vector3.forward), Is.GreaterThan(0.999f),
+                "the first corner falls back from the averaged side direction to its face normal");
+            Vector3 sideDirection = Vector3.zero;
+            for (int angle = 0; angle <= 180; angle += 30)
+                sideDirection += Quaternion.AngleAxis(angle, Vector3.up) * Vector3.forward;
+            sideDirection += Quaternion.AngleAxis(200, Vector3.up) * Vector3.forward;
+            sideDirection.Normalize();
+            Assert.That(Vector3.Dot(sideDirection, Vector3.forward), Is.LessThan(0.05f));
+
+            var sourcePositions = new List<Vector3>();
+            var sourceIndices = new List<int>();
+            AddPatch(sideDirection, 0.05f);
+            AddPatch(Vector3.forward, 0.3f);
+            var source = new TriangleBvh(sourcePositions.ToArray(), sourceIndices.ToArray());
+            var fitted = RemeshBaker.BuildCage(target, 0.1f, 0f, source);
+            for (int c = 0; c < target.indices.Length; c += 3)
+                Assert.That(fitted.reach[c], Is.EqualTo(0.6f).Within(1e-4f), "side reach includes each corner's actual ray");
+
+            void AddPatch(Vector3 normal, float distance)
+            {
+                Vector3 center = normal * distance;
+                Vector3 tangent = Vector3.Cross(normal, Vector3.up).normalized * 0.005f;
+                Vector3 bitangent = Vector3.Cross(normal, tangent).normalized * 0.005f;
+                int first = sourcePositions.Count;
+                sourcePositions.Add(center - tangent - bitangent);
+                sourcePositions.Add(center + tangent - bitangent);
+                sourcePositions.Add(center + tangent + bitangent);
+                sourcePositions.Add(center - tangent + bitangent);
+                sourceIndices.Add(first); sourceIndices.Add(first + 1); sourceIndices.Add(first + 2);
+                sourceIndices.Add(first); sourceIndices.Add(first + 2); sourceIndices.Add(first + 3);
+            }
+        }
+
+        [TestCase(1f, false, 1f)]
+        [TestCase(0.001f, false, 1f)]
+        [TestCase(0.0001f, false, 1f)]
+        [TestCase(1f, false, -1f)]
+        [TestCase(0.001f, false, -1f)]
+        [TestCase(0.0001f, false, -1f)]
+        [TestCase(1f, true, 1f)]
+        [TestCase(0.001f, true, 1f)]
+        [TestCase(0.0001f, true, 1f)]
+        public void CageFitIgnoresBackFacingLayers(float scale, bool offRay, float direction)
+        {
+            var target = CageFitTarget(scale);
+            var bvh = CageFitLayers(scale, offRay, direction, out var normals, out _, out _);
+            float distance = .1f * scale;
+            var legacy = RemeshBaker.BuildCage(target, distance, 0f, bvh);
+            var fitted = RemeshBaker.BuildCageWithFacing(target, distance, 0f, bvh, normals, null);
+            var weights = new Vector3(1f / 3, 1f / 3, 1f / 3);
+            var point = (target.positions[0] + target.positions[1] + target.positions[2]) / 3;
+            var dir = fitted.Direction(0, weights);
+            // The closer layer has the wrong winding for the actual cage ray.
+            // The unfiltered fit cannot reach the farther eligible layer.
+            var tooShort = bvh.FindNearestNormalFiltered(point, dir, normals, 0f, legacy.Reach(0, weights));
+            Assert.That(tooShort.triangleIndex, Is.EqualTo(-1));
+            var eligible = bvh.FindNearestNormalFiltered(point, dir, normals, 0f, fitted.Reach(0, weights));
+            Assert.That(eligible.triangleIndex, Is.GreaterThanOrEqualTo(2));
+            foreach (float reach in fitted.reach) {
+                Assert.That(reach, Is.GreaterThanOrEqualTo(distance));
+                Assert.That(reach, Is.LessThanOrEqualTo(distance * RemeshBaker.Cage.FitRange));
+            }
+            if (!offRay) {
+                var reach = fitted.Reach(0, weights);
+                var hit = bvh.RaycastFacingFiltered(point + dir * reach, -dir, reach * 2f, normals);
+                Assert.That(hit.triangleIndex, Is.GreaterThanOrEqualTo(2));
+                foreach (float value in fitted.reach) Assert.That(value, Is.EqualTo(.6f * scale).Within(scale * 1e-4f));
+            }
+        }
+
+        [TestCase(1f)]
+        [TestCase(0.001f)]
+        [TestCase(0.0001f)]
+        public void CageFitKeepsTwoSidedNearbyLayerEligible(float scale)
+        {
+            var target = CageFitTarget(scale);
+            var bvh = CageFitLayers(scale, false, 1f, out var normals, out _, out _);
+            var eitherSide = new[] { true, true, false, false };
+            float distance = .1f * scale;
+            var fitted = RemeshBaker.BuildCageWithFacing(target, distance, 0f, bvh, normals, eitherSide);
+            foreach (float value in fitted.reach) Assert.That(value, Is.EqualTo(distance).Within(scale * 1e-5f));
+            var weights = new Vector3(1f / 3, 1f / 3, 1f / 3);
+            var point = (target.positions[0] + target.positions[1] + target.positions[2]) / 3;
+            var dir = fitted.Direction(0, weights);
+            var hit = bvh.RaycastFacingFiltered(point + dir * distance, -dir, distance * 2f, normals, eitherSide);
+            Assert.That(hit.triangleIndex, Is.InRange(0, 1));
+        }
+
+        [TestCase(1f)]
+        [TestCase(0.001f)]
+        [TestCase(0.0001f)]
+        public void FittedBakeReachesEligibleLayerBeyondCloserBackFace(float scale)
+        {
+            var target = CageFitTarget(scale);
+            target.uv = new[] { Vector2.zero, Vector2.right, Vector2.up };
+            var source = CageFitLayerSource(scale);
+            var tangents = new[] { new Vector4(1, 0, 0, 1), new Vector4(1, 0, 0, 1), new Vector4(1, 0, 0, 1) };
+            var settings = new RemeshSettings { textureResolution = 64, padding = 1, bakeSamples = 1,
+                sourceBackfaces = RemeshBackfaces.Never, projectionDistance = .1f * scale / source.diagonal,
+                cageSmoothing = 0, cageFit = false, dilationRadius = 0 };
+            var unfitted = RemeshBaker.Bake(source, target, tangents, settings, CancellationToken.None);
+            Assert.IsTrue(unfitted.facingFilter, "Both outer layers give an outward winding vote.");
+            Assert.That(unfitted.covered, Is.GreaterThan(0));
+            Assert.That(unfitted.misses, Is.EqualTo(unfitted.covered));
+            settings.cageFit = true;
+            var fitted = RemeshBaker.Bake(source, target, tangents, settings, CancellationToken.None);
+            Assert.IsTrue(fitted.facingFilter);
+            Assert.That(fitted.covered, Is.EqualTo(unfitted.covered));
+            Assert.That(fitted.misses, Is.Zero);
+            Assert.That(fitted.rayFallbacks, Is.Zero);
+            Assert.That(fitted.maxReachRatio, Is.EqualTo(6f).Within(.001f));
+            Assert.That(fitted.maxTiltDeg, Is.LessThan(1f));
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator CagePreviewRebuildsWhenSourceBackfacesChange()
+        {
+            var outerField = typeof(RemeshPreview).GetField("cageOuter", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            foreach (float scale in new[] { 1f, .001f }) {
+                var target = CageFitTarget(scale);
+                var mesh = new Mesh { vertices = target.positions, triangles = target.indices, normals = target.normals };
+                using (var preview = new RemeshPreview())
+                try {
+                    var data = new RemeshPreview.Data { geometry = target, source = CageFitLayerSource(scale),
+                        cageDistance = .1f * scale, cageFit = true, cageSmoothing = 0, sourceBackfaces = RemeshBackfaces.Never };
+                    preview.PrepareCage(mesh, data);
+                    double deadline = EditorApplication.timeSinceStartup + 10;
+                    Mesh outer = null;
+                    while (!outer && EditorApplication.timeSinceStartup < deadline) {
+                        yield return null;
+                        outer = (Mesh)outerField.GetValue(preview);
+                    }
+                    Assert.IsTrue(outer);
+                    Assert.That(outer.vertices[0].z, Is.EqualTo(.6f * scale).Within(scale * 1e-4f));
+                    var previous = outer;
+                    data.sourceBackfaces = RemeshBackfaces.Always;
+                    preview.PrepareCage(mesh, data);
+                    deadline = EditorApplication.timeSinceStartup + 10;
+                    while (EditorApplication.timeSinceStartup < deadline) {
+                        yield return null;
+                        outer = (Mesh)outerField.GetValue(preview);
+                        if (outer && !ReferenceEquals(outer, previous)) break;
+                    }
+                    Assert.IsTrue(outer); Assert.IsFalse(ReferenceEquals(outer, previous));
+                    Assert.IsFalse(previous, "Changing the filter replaces the old preview mesh.");
+                    Assert.That(outer.vertices[0].z, Is.EqualTo(.1f * scale).Within(scale * 1e-5f));
+                }
+                finally { UnityEngine.Object.DestroyImmediate(mesh); }
+            }
+        }
+
+        static RemeshSource CageFitLayerSource(float scale)
+        {
+            CageFitLayers(scale, false, 1f, out _, out var positions, out var indices);
+            var source = Source();
+            source.positions = positions; source.indices = indices; source.faceMaterials = new int[4];
+            source.uv = new Vector2[8]; source.normals = new Vector3[8]; source.tangents = new Vector4[8];
+            source.hasColors = false; source.colors = null;
+            for (int i = 0; i < 8; ++i) {
+                source.normals[i] = i < 4 ? Vector3.back : Vector3.forward;
+                source.tangents[i] = new Vector4(1, 0, 0, 1);
+            }
+            source.diagonal = new Vector3(1, 1, .25f).magnitude * scale;
+            return source;
+        }
+
+        static RemeshNative.Geometry CageFitTarget(float scale)
+            => new RemeshNative.Geometry {
+                positions = new[] { Vector3.zero, Vector3.right * (.1f * scale), Vector3.up * (.1f * scale) },
+                normals = new[] { Vector3.forward, Vector3.forward, Vector3.forward }, indices = new[] { 0, 1, 2 }
+            };
+
+        static TriangleBvh CageFitLayers(float scale, bool offRay, float direction, out Vector3[] normals,
+            out Vector3[] positions, out int[] indices)
+        {
+            positions = new Vector3[8];
+            for (int layer = 0; layer < 2; ++layer) {
+                float left = offRay && layer == 1 ? .25f : -.5f, right = offRay && layer == 1 ? .45f : .5f;
+                float z = (layer == 0 ? .05f : .3f) * direction;
+                positions[layer * 4] = new Vector3(left, -.5f, z) * scale;
+                positions[layer * 4 + 1] = new Vector3(right, -.5f, z) * scale;
+                positions[layer * 4 + 2] = new Vector3(right, .5f, z) * scale;
+                positions[layer * 4 + 3] = new Vector3(left, .5f, z) * scale;
+            }
+            indices = new[] { 0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7 };
+            normals = MeshGeometry.FaceNormals(positions, indices);
+            return new TriangleBvh(positions, indices);
+        }
+
         [Test]
         public void UvIslandNormalsAreHardOnlyAtSplitVertices()
         {
@@ -1523,15 +1809,32 @@ namespace SashaRX.UnityMeshLab.Tests
         [UnityEngine.TestTools.UnityTest]
         public System.Collections.IEnumerator TextureAoSourceMapsReadBackAsynchronouslyAndSkipDisabledMaps()
         {
+            string normalPath = "Assets/AO_SourceNormal_" + Guid.NewGuid().ToString("N") + ".png";
             var root = new GameObject("AO textured source");
             var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up },
                 uv = new[] { Vector2.zero, Vector2.right, Vector2.up }, triangles = new[] { 0, 1, 2 } };
-            var normal = new Texture2D(1, 1, TextureFormat.RGBA32, false, true);
+            var normalWriter = new Texture2D(4, 4, TextureFormat.RGBA32, false, true);
             var ao = new Texture2D(1, 1, TextureFormat.RGBA32, false, true);
             var material = new Material(Shader.Find("Standard"));
             try {
                 if (!SystemInfo.supportsAsyncGPUReadback) Assert.Ignore("Graphics device has no async readback.");
-                normal.SetPixel(0, 0, new Color(0.5f, 0.5f, 1, 1)); normal.Apply(false, true);
+                // An authored normal map goes through the independent importer.
+                // Raw RGBA is not the Standard shader's packed normal layout on
+                // every active target (ASTC can store X in alpha).
+                var normalPixels = new Color[16];
+                Array.Fill(normalPixels, new Color(.5f, .5f, 1, 1));
+                normalWriter.SetPixels(normalPixels); normalWriter.Apply();
+                System.IO.File.WriteAllBytes(System.IO.Path.GetFullPath(normalPath), normalWriter.EncodeToPNG());
+                AssetDatabase.ImportAsset(normalPath, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (TextureImporter)AssetImporter.GetAtPath(normalPath);
+                Assert.IsNotNull(importer);
+                importer.textureType = TextureImporterType.NormalMap;
+                importer.sRGBTexture = false; importer.isReadable = false;
+                importer.textureCompression = TextureImporterCompression.Uncompressed;
+                importer.mipmapEnabled = false; importer.filterMode = FilterMode.Point;
+                importer.wrapMode = TextureWrapMode.Clamp; importer.SaveAndReimport();
+                var normal = AssetDatabase.LoadAssetAtPath<Texture2D>(normalPath);
+                Assert.IsNotNull(normal); Assert.IsFalse(normal.isReadable, "the readback must operate on an unreadable imported normal map");
                 ao.SetPixel(0, 0, new Color32(64, 64, 64, 255)); ao.Apply(false, true);
                 material.SetTexture("_BumpMap", normal); material.SetTexture("_OcclusionMap", ao);
                 root.AddComponent<MeshFilter>().sharedMesh = mesh;
@@ -1554,7 +1857,8 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             finally {
                 UnityEngine.Object.DestroyImmediate(root); UnityEngine.Object.DestroyImmediate(mesh);
-                UnityEngine.Object.DestroyImmediate(normal); UnityEngine.Object.DestroyImmediate(ao); UnityEngine.Object.DestroyImmediate(material);
+                UnityEngine.Object.DestroyImmediate(normalWriter); UnityEngine.Object.DestroyImmediate(ao); UnityEngine.Object.DestroyImmediate(material);
+                AssetDatabase.DeleteAsset(normalPath);
             }
         }
 

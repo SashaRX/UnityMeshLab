@@ -188,8 +188,11 @@ namespace SashaRX.UnityMeshLab
                     throw new InvalidOperationException($"'{mesh.name}' has draft UV0. Unwrap it before texture AO baking.");
                 var uv = UvTopology.ReadUv(readable, channel);
                 if (uv == null || uv.Length != readable.vertexCount) throw new InvalidOperationException($"'{mesh.name}' has no complete UV{channel} stream.");
+                var pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+                bool urp = pipeline && pipeline.GetType().Name.Contains("Universal");
                 return new RemeshNative.Geometry { positions = readable.vertices, indices = readable.triangles,
-                    normals = readable.normals, tangents = readable.tangents, uv = uv };
+                    normals = readable.normals, tangents = readable.tangents, uv = uv,
+                    normalFrameMode = urp ? RemeshNormalFrame.Mode.Urp : RemeshNormalFrame.Mode.BuiltIn };
             }
             finally { if (copy) Object.DestroyImmediate(readable); }
         }

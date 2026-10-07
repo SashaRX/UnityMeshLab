@@ -70,6 +70,7 @@ namespace SashaRX.UnityMeshLab
         public IReadOnlyList<Node> Nodes => nodes;
         public bool IsHierarchy => hierarchy;
         public bool IsRunning => Volatile.Read(ref running) != 0;
+        public Stage? RunningStage { get; private set; }
         public bool CanCancel => cancellation != null && !cancellation.IsCancellationRequested;
         public string Status { get; private set; } = "Select a static model root. LODGroups contribute only LOD0.";
         public string ResultName { get; private set; }
@@ -77,6 +78,12 @@ namespace SashaRX.UnityMeshLab
         public Vector3 RootScale { get; private set; } = Vector3.one;
         /// <summary>The source root's world rotation at capture time; the save carries it.</summary>
         public Quaternion RootRotation { get; private set; } = Quaternion.identity;
+        Matrix4x4 previewWorldToFrame = Matrix4x4.identity;
+        internal Matrix4x4 PreviewSpaceToWorld => Primary is Node node ? previewWorldToFrame * node.spaceToWorld : Matrix4x4.identity;
+        // Remove the scene root's position/rotation from display only. Scale and
+        // child transforms still match capture space; export uses the original TRS.
+        internal static Matrix4x4 PreviewRootFrameInverse(Transform root) =>
+            Matrix4x4.TRS(root.position, root.rotation, Vector3.one).inverse;
         public Action Changed;
 
         public Node Primary
@@ -151,7 +158,7 @@ namespace SashaRX.UnityMeshLab
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
-                    $"{s.maxChartArea}|{s.maxChartBoundary}|{s.packRotate}|{s.packBlockAlign}|{s.packBruteForce}|{s.reduceUvFragmentation}";
+                    $"{s.maxChartArea}|{s.maxChartBoundary}|{s.packRotate}|{s.packBlockAlign}|{s.packBruteForce}|{s.reduceUvFragmentation}|{s.mergeCharts}";
                 default: return $"{s.bakeMode}|{s.projectionDistance}|{s.cageSmoothing:F3}|{s.cageFit}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}|{s.sourceBackfaces}|{s.bakeSourceAO}|{s.multiplySourceAO}|{s.sourceAO?.Key}|{s.dilationRadius}";
             }
         }
@@ -189,6 +196,7 @@ namespace SashaRX.UnityMeshLab
                 ClearFrom(from);
                 EditorApplication.LockReloadAssemblies(); locked = true;
                 for (var stage = from; stage <= to; ++stage) {
+                    RunningStage = stage; Changed?.Invoke();
                     string key = Key(stage, options, source);
                     switch (stage) {
                         case Stage.Remesh: await RunRemesh(source, options, token); break;
@@ -208,6 +216,7 @@ namespace SashaRX.UnityMeshLab
                 // A Dispose() that arrived mid-run waited for this point: the stage code
                 // above never sees a cleared node list or a destroyed mesh.
                 if (disposeRequested) { disposeRequested = false; ClearFrom(Stage.Remesh); }
+                RunningStage = null;
                 Interlocked.Exchange(ref running, 0); Changed?.Invoke();
             }
         }
@@ -227,6 +236,7 @@ namespace SashaRX.UnityMeshLab
             ResultName = root.name;
             RootScale = root.transform.lossyScale;
             RootRotation = root.transform.rotation;
+            previewWorldToFrame = PreviewRootFrameInverse(root.transform);
             var rootToWorld = root.transform.localToWorldMatrix;
             var worldToRoot = root.transform.worldToLocalMatrix;
             var captures = new List<Node>();
@@ -297,7 +307,10 @@ namespace SashaRX.UnityMeshLab
                     if (shape == RemeshShape.BoundingBox) return captured.OrientedBoxes();
                     if (shape == RemeshShape.Hull) return Hull(captured, options, token);
                     var voxel = RemeshNative.Voxelize(captured.positions, captured.indices, options, token);
-                    if (!options.trimToSource || voxel == null) return voxel;
+                    if (!options.trimToSource || voxel == null) {
+                        if (voxel != null) RemeshGeometryDiagnostics.Capture(captured, voxel, voxel, options);
+                        return voxel;
+                    }
                     // The remesh surface sits within a cell of the source; two cells of reach
                     // keep a closed source whole and still find nothing behind an open sheet.
                     Vector3 mn = captured.positions[0], mx = captured.positions[0];
@@ -306,6 +319,7 @@ namespace SashaRX.UnityMeshLab
                     float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, options.voxelResolution);
                     trim = RemeshTrim.Trim(voxel, captured.positions, captured.indices, cell * 2f, token);
                     node.voxelRaw = voxel; node.trimClasses = trim.classes;
+                    RemeshGeometryDiagnostics.Capture(captured, voxel, trim.mesh, options);
                     return trim.mesh;
                 }, token);
                 if (node.voxel == null || node.voxel.TriangleCount == 0) throw new InvalidOperationException("The remesh produced no geometry.");
@@ -394,8 +408,14 @@ namespace SashaRX.UnityMeshLab
                 if (options.simplify) {
                     float error = 0;
                     var input = node.voxel;
-                    node.simplified = await Task.Run(() => RemeshNative.Simplify(input, options, token, out error), token);
+                    node.simplified = await Task.Run(() => {
+                        bool fit = options.solve && !options.shell && options.sourceShape == RemeshShape.LOD0;
+                        return fit ? RemeshSurfaceRefine.Simplify(input, node.source.positions, node.source.indices, options, token, out error)
+                            : RemeshNative.Simplify(input, options, token, out error);
+                    }, token);
                     node.simplifyError = error;
+                    UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
+                        $"[{node.name}] Simplify: {input.TriangleCount} -> {node.simplified.TriangleCount} triangles; source={node.source.indices.Length / 3}; stopAt={options.targetTriangles}, maximumError={options.maximumError:G6}, achievedCollapseError={error:G6}."));
                 }
                 else { node.simplified = node.voxel; node.simplifyError = 0; }
                 before += node.voxel.TriangleCount; after += node.simplified.TriangleCount;
@@ -444,7 +464,7 @@ namespace SashaRX.UnityMeshLab
                 beauty = new RemeshBeauty(root, SourceDiagonal);
                 if (!string.IsNullOrEmpty(beauty.occluderSummary)) UvtLog.Info("[Remesh] Beauty shadows also test " + beauty.occluderSummary + ".");
             }
-            long sourceTriangles = 0, targetTriangles = 0, misses = 0, covered = 0, empty = 0; int warnings = 0;
+            long sourceTriangles = 0, targetTriangles = 0, misses = 0, covered = 0, empty = 0, partialMisses = 0; int warnings = 0;
             var clock = System.Diagnostics.Stopwatch.StartNew();
             for (int i = 0; i < nodes.Count; ++i) {
                 var node = nodes[i];
@@ -469,13 +489,15 @@ namespace SashaRX.UnityMeshLab
                 VertexChannels.SetColors(node.mesh, node.maps.vertexColors);
                 sourceTriangles += source.indices.Length / 3; targetTriangles += target.indices.Length / 3;
                 misses += node.maps.misses; covered += node.maps.covered; empty += node.maps.empty; warnings += source.warnings.Length;
+                partialMisses += node.maps.partialMisses;
                 LogDiagnostics(node, options.sourceShape);
             }
             token.ThrowIfCancellationRequested();
             var primary = Primary;
             baseColorPreview = TextureAssets.FromPixels(primary.maps.color, primary.maps.size, primary.maps.size, linear: false);
             Status = (hierarchy ? $"{nodes.Count} node(s): " : "") + $"{sourceTriangles:N0} → {targetTriangles:N0} triangles. " +
-                (misses == 0 ? "All covered texels projected." : $"{misses:N0} / {covered:N0} texels missed (magenta). Increase projection distance and rebake.") +
+                (misses == 0 && partialMisses == 0 ? "All covered texels projected." :
+                    $"{misses:N0} / {covered:N0} texels missed (magenta), {partialMisses:N0} partially projected. Check projection distance and rebake.") +
                 (empty > 0 ? $" {empty:N0} proxy texels see no geometry (alpha 0, filled from neighbours)." : "") +
                 (warnings > 0 ? $" {warnings} material warning(s), see Console." : "") +
                 $" Bake {clock.Elapsed.TotalSeconds:F1} s ({(primary.maps.gpu ? "GPU" : "CPU")} queries).";
@@ -498,6 +520,9 @@ namespace SashaRX.UnityMeshLab
         // tangents are missing.
         internal static Mesh BuildResultMesh(string name, RemeshNative.Geometry unwrapped, out Vector4[] tangents)
         {
+            var pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+            bool urp = pipeline && pipeline.GetType().Name.Contains("Universal");
+            unwrapped.normalFrameMode = urp ? RemeshNormalFrame.Mode.Urp : RemeshNormalFrame.Mode.BuiltIn;
             var mesh = new Mesh { name = name, indexFormat = IndexFormat.UInt32, hideFlags = HideFlags.HideAndDontSave };
             bool missingUv = unwrapped.uv == null || unwrapped.uv.Length != unwrapped.positions.Length;
             mesh.vertices = unwrapped.positions; mesh.normals = unwrapped.normals;

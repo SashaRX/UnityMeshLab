@@ -139,6 +139,29 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
+        /// Intersection on [0, maxDist) closest to origin + direction * preferredT.
+        /// Facing eligibility is unchanged: faceNormals, when supplied, must oppose
+        /// direction, except either-side faces. The returned t is the actual ray
+        /// parameter, not the distance from preferredT. Nonpositive preferredT keeps
+        /// the ordinary first-hit behavior used by proxy and visibility queries.
+        /// </summary>
+        public RayHit RaycastClosestToTarget(Vector3 origin, Vector3 direction, float maxDist, float preferredT,
+            Vector3[] faceNormals = null, bool[] eitherSide = null)
+        {
+            if (!(preferredT > 0f))
+                return faceNormals == null ? Raycast(origin, direction, maxDist)
+                    : RaycastFacingFiltered(origin, direction, maxDist, faceNormals, eitherSide);
+            var best = new RayHit { triangleIndex = -1, t = maxDist };
+            if (!(maxDist > 0f)) return best;
+            preferredT = Mathf.Min(preferredT, maxDist);
+            float distance = Mathf.Max(preferredT, maxDist - preferredT);
+            var frame = new RayFrame(direction);
+            RaycastTargetRecursive(0, origin, direction, in frame, maxDist, preferredT,
+                faceNormals, eitherSide, ref distance, ref best);
+            return best;
+        }
+
+        /// <summary>
         /// Ray-along-normal projection: shoots ray in both directions (+normal, -normal).
         /// Always prefers forward hit (along normal = same side of thin geometry).
         /// Backward hit is only used when forward misses entirely.
@@ -419,6 +442,64 @@ namespace SashaRX.UnityMeshLab
             OrderChildren(node, origin, dir, best.t, out int first, out int second);
             if (first >= 0) RaycastFacingRecursive(first, origin, dir, in frame, fNrm, eitherSide, ref best);
             if (second >= 0) RaycastFacingRecursive(second, origin, dir, in frame, fNrm, eitherSide, ref best);
+        }
+
+        void RaycastTargetRecursive(int nodeIdx, Vector3 origin, Vector3 dir, in RayFrame frame,
+            float maxT, float preferredT, Vector3[] fNrm, bool[] eitherSide, ref float distance, ref RayHit best)
+        {
+            ref Node node = ref nodes[nodeIdx];
+            if (!RayTargetAabb(origin, dir, node.bMin, node.bMax, maxT, preferredT, out float bound)
+                || bound > distance) return;
+            if (node.left == -1) {
+                for (int i = node.triStart; i < node.triStart + node.triCount; ++i) {
+                    int f = triIndices[i];
+                    if (fNrm != null && Vector3.Dot(fNrm[f], dir) > 0f
+                        && !(eitherSide != null && f < eitherSide.Length && eitherSide[f])) continue;
+                    int a = tris[f * 3], b = tris[f * 3 + 1], c = tris[f * 3 + 2];
+                    // best.t cannot bound this test: a later intersection may be
+                    // closer to the target than the current outer-layer hit.
+                    if (!Watertight(in frame, origin, verts[a], verts[b], verts[c], maxT, out float t, out Vector3 bary)) continue;
+                    float candidate = Mathf.Abs(t - preferredT);
+                    int distanceOrder = candidate.CompareTo(distance);
+                    int hitOrder = t.CompareTo(best.t);
+                    if (distanceOrder > 0 || (distanceOrder == 0 && best.triangleIndex >= 0
+                        && (hitOrder > 0 || (hitOrder == 0 && f >= best.triangleIndex)))) continue;
+                    distance = candidate;
+                    best = new RayHit { triangleIndex = f, t = t, barycentric = bary };
+                }
+                return;
+            }
+            ref Node left = ref nodes[node.left]; ref Node right = ref nodes[node.right];
+            bool hitL = RayTargetAabb(origin, dir, left.bMin, left.bMax, maxT, preferredT, out float dl);
+            bool hitR = RayTargetAabb(origin, dir, right.bMin, right.bMax, maxT, preferredT, out float dr);
+            int first = node.left, second = node.right;
+            if ((!hitL && hitR) || (hitL && hitR && dr < dl)) { first = node.right; second = node.left; }
+            if (hitL || hitR) RaycastTargetRecursive(first, origin, dir, in frame, maxT, preferredT, fNrm, eitherSide, ref distance, ref best);
+            if (hitL && hitR) RaycastTargetRecursive(second, origin, dir, in frame, maxT, preferredT, fNrm, eitherSide, ref distance, ref best);
+        }
+
+        // A box covers an interval on the segment; its lower bound is the distance
+        // from preferredT to that interval, rather than distance from the ray origin.
+        // Strict '>' pruning retains exact target hits and deterministic equal-distance
+        // ties (outer hit, then face index). Only an exactly zero component is
+        // parallel: a small nonzero direction can enter a thin/nearby slab.
+        static bool RayTargetAabb(Vector3 origin, Vector3 dir, Vector3 bMin, Vector3 bMax,
+            float maxT, float preferredT, out float distance)
+        {
+            float loT = 0f, hiT = maxT;
+            distance = 0f;
+            for (int axis = 0; axis < 3; ++axis) {
+                float o = GetComponent(origin, axis), d = GetComponent(dir, axis);
+                float lo = GetComponent(bMin, axis), hi = GetComponent(bMax, axis);
+                if (d == 0f) { if (o < lo || o > hi) return false; }
+                else {
+                    float a = (lo - o) / d, b = (hi - o) / d;
+                    loT = Mathf.Max(loT, Mathf.Min(a, b)); hiT = Mathf.Min(hiT, Mathf.Max(a, b));
+                    if (loT > hiT) return false;
+                }
+            }
+            distance = Mathf.Max(0f, Mathf.Max(loT - preferredT, preferredT - hiT));
+            return true;
         }
 
         // The children the ray enters, nearer entry first; -1 for a child the ray misses

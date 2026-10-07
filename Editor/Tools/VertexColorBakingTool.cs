@@ -142,6 +142,7 @@ namespace SashaRX.UnityMeshLab
         List<(MeshFilter mf, Mesh originalMesh, Material[] originalMats)> previewBackups
             = new List<(MeshFilter, Mesh, Material[])>();
         Material previewMaterial;
+        readonly List<Mesh> previewMeshes = new List<Mesh>();
 
         // ── Lifecycle ──
 
@@ -181,6 +182,8 @@ namespace SashaRX.UnityMeshLab
             EditorApplication.hierarchyChanged -= OnEditorHierarchyChanged;
             CancelGpuJob();
             RestorePreview();
+            if (previewMaterial != null) UnityEngine.Object.DestroyImmediate(previewMaterial);
+            previewMaterial = null;
             ClearResults();
             hierarchyEntries.Clear();
             hierarchyRoot = null;
@@ -2235,6 +2238,7 @@ namespace SashaRX.UnityMeshLab
 
                 // Clone mesh with AO in vertex colors
                 var clone = UnityEngine.Object.Instantiate(mesh);
+                previewMeshes.Add(clone);
                 clone.hideFlags = HideFlags.HideAndDontSave;
                 clone.colors32 = VertexChannels.Greyscale(bakedFinalAO[mesh]);
                 mf.sharedMesh = clone;
@@ -2251,18 +2255,18 @@ namespace SashaRX.UnityMeshLab
 
         internal void RestorePreview()
         {
-            if (!previewActive) return;
-
+            if (!previewActive && previewBackups.Count == 0 && previewMeshes.Count == 0) return;
             foreach (var (mf, originalMesh, originalMats) in previewBackups)
             {
                 if (mf == null) continue;
-                if (mf.sharedMesh != null && mf.sharedMesh != originalMesh)
-                    UnityEngine.Object.DestroyImmediate(mf.sharedMesh);
                 mf.sharedMesh = originalMesh;
                 var mr = mf.GetComponent<MeshRenderer>();
                 if (mr != null) mr.sharedMaterials = originalMats;
             }
             previewBackups.Clear();
+            foreach (var mesh in previewMeshes)
+                if (mesh != null) UnityEngine.Object.DestroyImmediate(mesh);
+            previewMeshes.Clear();
             previewActive = false;
             SceneView.RepaintAll();
         }

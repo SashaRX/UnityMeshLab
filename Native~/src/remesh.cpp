@@ -32,6 +32,8 @@ struct Result { std::vector<Vertex> vertices; std::vector<unsigned int> indices;
 struct PosMesh { std::vector<float> pos; std::vector<unsigned int> idx; };
 struct AtlasDelete { void operator()(xatlas::Atlas* a) const { xatlas::Destroy(a); } };
 constexpr size_t MaxTriangles = 5000000;
+// The reviewed remesher packs each axis into ten bits; larger grids do not fit.
+constexpr int MaxVoxelResolution = 1024;
 
 // Return codes shared by every entry point.
 enum : int { Ok = 0, Invalid = 1, Budget = 2, Empty = 3, AtlasRejected = 4, MultipleAtlases = 5,
@@ -82,7 +84,7 @@ int Voxelize(const float* positions, uint32_t vertexCount, const uint32_t* indic
 // generic unwrap failure makes one collapsed triangle abort the whole remesh.
 // Filter them using a relative area scale, then drop unreferenced vertices so every
 // later xref points at geometry that can own UVs.
-int Clean(PosMesh& m)
+int Clean(PosMesh& m, double relativeAreaFloor = double(FLT_EPSILON))
 {
     const size_t unique = m.pos.size() / 3;
     float lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
@@ -100,7 +102,7 @@ int Clean(PosMesh& m)
     if (!haveBounds) return Empty;
     const double extent = std::max(double(hi[0] - lo[0]), std::max(double(hi[1] - lo[1]), double(hi[2] - lo[2])));
     if (!std::isfinite(extent) || extent <= 0.0) return Empty;
-    const double minTriangleArea = extent * extent * double(FLT_EPSILON);
+    const double minTriangleArea = extent * extent * relativeAreaFloor;
 
     std::vector<unsigned int> cleaned;
     cleaned.reserve(m.idx.size());
@@ -150,7 +152,10 @@ int Simplify(PosMesh& m, uint32_t targetTriangles, float error, unsigned int opt
     if (!simplified) return Empty;
     m.idx.resize(simplified);
     if (resultError) *resultError = achieved;
-    return Clean(m);
+    // A positive-area sliver still closes the surface. Removing it after an
+    // edge collapse opens holes and makes the managed topology gate reject an
+    // otherwise valid simplification. Only discard exactly collapsed faces.
+    return Clean(m, 0.0);
 }
 
 struct UnwrapOptions {
@@ -332,7 +337,7 @@ EXPORT int meshLabRemeshBuild(const float* positions, uint32_t vertexCount,
 {
     if (!handle || !outVertices || !outIndices) return Invalid;
     *handle = nullptr; *outVertices = 0; *outIndices = 0;
-    if (resolution < 4 || resolution > 256 || targetTriangles < 1 || targetTriangles > MaxTriangles ||
+    if (resolution < 4 || resolution > MaxVoxelResolution || targetTriangles < 1 || targetTriangles > MaxTriangles ||
         !std::isfinite(error) || error < 0 || error > 1 ||
         !std::isfinite(crease) || crease < 0 || crease > 3.141593f ||
         !std::isfinite(smoothing) || smoothing < 0 || smoothing > 10 ||
@@ -371,12 +376,16 @@ EXPORT int meshLabVoxelRemesh(const float* positions, uint32_t vertexCount,
 {
     if (!handle || !outVertices || !outIndices) return Invalid;
     *handle = nullptr; *outVertices = 0; *outIndices = 0;
-    if (resolution < 4 || resolution > 256 || (flags & ~3u)) return Invalid;
+    if (resolution < 4 || resolution > MaxVoxelResolution || (flags & ~3u)) return Invalid;
     if (int code = ValidateMesh(positions, vertexCount, indices, indexCount)) return code;
     try {
         auto mesh = std::make_unique<PosMesh>();
         if (int code = Voxelize(positions, vertexCount, indices, indexCount, resolution, RemeshOptions(flags), *mesh)) return code;
-        if (int code = Clean(*mesh)) return code;
+        // Dense voxel surfaces can contain valid sub-cell slivers. The simplify
+        // cleanup's model-relative area floor deletes those faces and opens the
+        // solid, increasingly often as resolution grows. Keep every positive-area
+        // voxel face; still reject non-finite data and remove exact collapses.
+        if (int code = Clean(*mesh, 0.0)) return code;
         *outVertices = uint32_t(mesh->pos.size() / 3); *outIndices = uint32_t(mesh->idx.size());
         Publish(mesh, handle);
         return Ok;
@@ -436,7 +445,9 @@ EXPORT int meshLabUnwrap(const float* positions, uint32_t vertexCount,
         PosMesh mesh;
         mesh.pos.assign(positions, positions + size_t(vertexCount) * 3);
         mesh.idx.assign(indices, indices + indexCount);
-        if (int code = Clean(mesh)) return code;
+        // UV charting may split vertices, but must not remove a valid surface
+        // face that Simplify kept. Invalid atlas mappings still fail explicitly.
+        if (int code = Clean(mesh, 0.0)) return code;
         auto result = std::make_unique<Result>();
         if (int code = Unwrap(mesh, crease, smoothing, parsed, *result)) return code;
         int32_t charts = 0;

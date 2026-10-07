@@ -179,6 +179,13 @@ namespace SashaRX.UnityMeshLab
             SceneView.RepaintAll();
         }
 
+        internal static void ReleaseResources()
+        {
+            Restore();
+            if (vertexColorMaterial != null) Object.DestroyImmediate(vertexColorMaterial);
+            vertexColorMaterial = null;
+        }
+
         static void ApplyToRenderer(Renderer renderer, Mesh tempMesh)
         {
             var backup = new RendererBackup

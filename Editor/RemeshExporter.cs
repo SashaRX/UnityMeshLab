@@ -102,8 +102,8 @@ namespace SashaRX.UnityMeshLab
                     for (int i = 0; i < nodes.Count; ++i) ConfigureMaps(paths[i], nodes[i].maps.size);
 
                 // Materials, meshes and the object tree. The result meshes live in their
-                // capture space; the weld bakes the root's world scale into the vertices
-                // when Normalize size is on (real size at scale 1), a hierarchy keeps the
+                // capture space; the weld bakes the captured world linear matrix into
+                // vertices when normalization is on (real size at identity), a hierarchy keeps the
                 // root scale on the prefab root (no single vertex space to bake it into).
                 bool normalize = settings.normalizeSize && !hierarchy;
                 if (settings.normalizeSize && hierarchy)
@@ -111,7 +111,7 @@ namespace SashaRX.UnityMeshLab
                 var root = new GameObject(clean + "_LOD0");
                 temporary.Add(root);
                 root.transform.localScale = normalize ? Vector3.one : pipeline.RootScale;
-                root.transform.localRotation = pipeline.RootRotation;
+                root.transform.localRotation = normalize ? Quaternion.identity : pipeline.RootRotation;
                 var materials = new Material[nodes.Count];
                 var meshes = new Mesh[nodes.Count];
                 bool twoSidedWarned = false;
@@ -132,7 +132,11 @@ namespace SashaRX.UnityMeshLab
                     meshes[i] = Object.Instantiate(node.mesh);
                     meshes[i].name = names[i] + "_LOD0"; meshes[i].hideFlags = HideFlags.None;
                     temporary.Add(meshes[i]);
-                    if (normalize) BakeScaleIntoMesh(meshes[i], pipeline.RootScale);
+                    if (normalize) {
+                        var linear = node.spaceToWorld;
+                        linear.SetColumn(3, new Vector4(0, 0, 0, 1));
+                        MeshTransform.BakeMatrix(meshes[i], linear);
+                    }
                     var go = hierarchy ? new GameObject(names[i]) : root;
                     go.AddComponent<MeshFilter>().sharedMesh = meshes[i];
                     go.AddComponent<MeshRenderer>().sharedMaterial = materials[i];
@@ -151,7 +155,7 @@ namespace SashaRX.UnityMeshLab
                 Object ping;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
                 if (!hierarchy) {
-                    ping = ExportFbx(folder + "/" + clean + ".fbx", root, materials[0], prefabPath, settings.embedFbxTextures);
+                    ping = ExportFbx(folder + "/" + clean + ".fbx", root, materials[0], prefabPath, settings.embedFbxTextures, normalize);
                 }
                 else
 #endif
@@ -190,11 +194,11 @@ namespace SashaRX.UnityMeshLab
         // channel re-save of a source FBX, so the isolated-export core's same-vertex-
         // count snapshot contract does not apply; a failed export still rolls the
         // whole folder back.
-        static Object ExportFbx(string fbxPath, GameObject root, Material material, string prefabPath, bool embedTextures)
+        static Object ExportFbx(string fbxPath, GameObject root, Material material, string prefabPath, bool embedTextures, bool normalizedTransforms)
         {
             // Embedded maps make the FBX self-contained; a linked FBX would reference
             // this machine's absolute paths instead.
-            FbxExport.Write(fbxPath, root, embedTextures);
+            FbxExport.Write(fbxPath, root, embedTextures, normalizedTransforms);
             var modelImporter = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
             if (modelImporter != null) {
                 // The curated material + prefab ship next to the FBX; keep the importer
@@ -205,6 +209,11 @@ namespace SashaRX.UnityMeshLab
                 // which green-flips chunks of the baked map.
                 modelImporter.importNormals = ModelImporterNormals.Import;
                 modelImporter.importTangents = ModelImporterTangents.Import;
+                if (normalizedTransforms) {
+                    modelImporter.globalScale = 1;
+                    modelImporter.useFileScale = true;
+                    modelImporter.bakeAxisConversion = true;
+                }
                 modelImporter.SaveAndReimport();
             }
             var fbxRoot = AssetDatabase.LoadMainAssetAtPath(fbxPath) as GameObject;
@@ -222,7 +231,7 @@ namespace SashaRX.UnityMeshLab
 
         // ── pieces ──
 
-        static Shader ResolveShader(bool unlit, out bool urp)
+        internal static Shader ResolveShader(bool unlit, out bool urp)
         {
             var pipeline = GraphicsSettings.currentRenderPipeline;
             urp = pipeline != null;
@@ -283,27 +292,41 @@ namespace SashaRX.UnityMeshLab
         static Material CreateMaterial(Shader shader, bool urp, bool unlit, string name, string[] paths)
         {
             var material = new Material(shader) { name = name };
-            Texture2D Map(int i) => AssetDatabase.LoadAssetAtPath<Texture2D>(paths[i]);
+            var maps = new Texture[paths.Length];
+            for (int i = 0; i < paths.Length; ++i) maps[i] = AssetDatabase.LoadAssetAtPath<Texture2D>(paths[i]);
+            ConfigureMaterial(material, urp, unlit, maps);
+            return material;
+        }
+
+        // Preview and export use the same shader, channels and strengths. Preview
+        // textures are transient; exported ones are imported assets.
+        internal static void ConfigureMaterial(Material material, bool urp, bool unlit, IReadOnlyList<Texture> maps)
+        {
+            material.SetTexture(urp ? "_BaseMap" : "_MainTex", maps[0]);
+            string colorProperty = urp ? "_BaseColor" : "_Color";
+            if (material.HasProperty(colorProperty)) material.SetColor(colorProperty, Color.white);
             if (unlit) {
                 // One lit texture in, one texture out — the other maps still export
                 // alongside for reference, but nothing samples them.
-                material.SetTexture(urp ? "_BaseMap" : "_MainTex", Map(0));
-                if (urp) material.SetColor("_BaseColor", Color.white);
-                return material;
+                return;
             }
-            material.SetTexture(urp ? "_BaseMap" : "_MainTex", Map(0));
-            material.SetColor(urp ? "_BaseColor" : "_Color", Color.white);
-            material.SetTexture("_BumpMap", Map(1));
-            material.SetTexture("_MetallicGlossMap", Map(2));
-            material.SetTexture("_OcclusionMap", Map(3));
-            material.SetTexture("_EmissionMap", Map(4));
-            material.SetColor("_EmissionColor", Color.white);
-            material.SetFloat("_Metallic", 1); material.SetFloat(urp ? "_Smoothness" : "_GlossMapScale", 1);
+            material.SetTexture("_BumpMap", maps[1]);
+            material.SetTexture("_MetallicGlossMap", maps[2]);
+            material.SetTexture("_OcclusionMap", maps[3]);
+            material.SetTexture("_EmissionMap", maps[4]);
+            material.SetColor("_EmissionColor", maps[4] ? Color.white : Color.black);
+            material.SetFloat("_Metallic", maps[2] ? 1 : 0); material.SetFloat(urp ? "_Smoothness" : "_GlossMapScale", maps[2] ? 1 : 0);
+            if (!urp) material.SetFloat("_Glossiness", 0);
             material.SetFloat("_BumpScale", 1); material.SetFloat("_OcclusionStrength", 1);
-            material.EnableKeyword("_NORMALMAP"); material.EnableKeyword("_EMISSION");
-            material.EnableKeyword(urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP");
-            if (urp) material.EnableKeyword("_OCCLUSIONMAP");
-            return material;
+            SetKeyword(material, "_NORMALMAP", maps[1]);
+            SetKeyword(material, "_EMISSION", maps[4]);
+            SetKeyword(material, urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP", maps[2]);
+            if (urp) SetKeyword(material, "_OCCLUSIONMAP", maps[3]);
+        }
+
+        static void SetKeyword(Material material, string keyword, bool enabled)
+        {
+            if (enabled) material.EnableKeyword(keyword); else material.DisableKeyword(keyword);
         }
 
         // Bakes a world scale into the vertex data so the saved root sits at scale 1:

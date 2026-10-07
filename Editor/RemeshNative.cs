@@ -52,6 +52,9 @@ namespace SashaRX.UnityMeshLab
             public Vector2[] uv;
             public Vector4[] tangents;
             public int[] indices, charts;
+            // Physical half-edge neighbours from the indexed mesh, before UV/normal splits.
+            public int[] surfaceNeighbors;
+            public RemeshNormalFrame.Mode normalFrameMode;
             public int chartCount;
             public bool draftUv;
             public int originalChartCount, originalSmallChartCount, smallChartCount;
@@ -74,14 +77,50 @@ namespace SashaRX.UnityMeshLab
         {
             settings.Validate();
             token.ThrowIfCancellationRequested();
+            uint flags = (settings.solve ? 1u : 0u) | (settings.shell ? 2u : 0u);
+            int resolution = settings.voxelResolution;
+            var result = VoxelizeRaw(positions, indices, resolution, flags, token);
+            return GuardVoxelSolid(result, flags, resolution, token,
+                retryFlags => VoxelizeRaw(positions, indices, resolution, retryFlags, token)).PrepareChannels(token);
+        }
+
+        // A raw solid voxel result must be closed BEFORE source trimming. Otherwise
+        // Simplify would treat native cleanup's missing triangle as an authored border.
+        // The injected factory also lets managed tests verify retry flags and failure
+        // handling without loading the plugin or changing serialized settings.
+        internal static IndexedMesh GuardVoxelSolid(IndexedMesh result, uint flags, int resolution, CancellationToken token,
+            Func<uint, IndexedMesh> retryWithoutSolve)
+        {
+            token.ThrowIfCancellationRequested();
+            if ((flags & 2u) != 0) return result;
+            var topology = RemeshTopology.Inspect(result.positions, result.indices, token);
+            if (result.TriangleCount > 0 && topology.Valid && topology.boundary.Count == 0) return result;
+            if ((flags & 1u) == 0)
+                throw new InvalidOperationException($"Solid voxel remesh is not a valid closed surface before trim ({topology.Description}). " +
+                    "Source trimming and Simplify were not run on this result.");
+            UvtLog.Warn($"[Remesh] Source-fitted solid voxel output is not a valid closed surface before trim ({topology.Description}). " +
+                $"Retrying voxel resolution {resolution} without source fitting; settings are unchanged.");
+            var retry = retryWithoutSolve(flags & ~1u);
+            token.ThrowIfCancellationRequested();
+            var after = RemeshTopology.Inspect(retry.positions, retry.indices, token);
+            if (retry.TriangleCount == 0 || !after.Valid || after.boundary.Count != 0)
+                throw new InvalidOperationException($"Solid voxel retry without source fitting is not a valid closed surface before trim ({after.Description}). " +
+                    "Source trimming and Simplify were not run on this result.");
+            UvtLog.Info(UvtLog.Category.RemeshDiag, $"Solid voxel fallback accepted at resolution {resolution}: " +
+                $"{result.TriangleCount} → {retry.TriangleCount} faces, boundary {topology.boundary.Count} → 0; source fitting disabled for this native attempt only.");
+            return retry;
+        }
+
+        static IndexedMesh VoxelizeRaw(Vector3[] positions, int[] indices, int resolution, uint flags, CancellationToken token)
+        {
             IntPtr handle = IntPtr.Zero;
             try {
                 int code = meshLabVoxelRemesh(MeshSimplifier.PackPositions(positions), (uint)positions.Length, indices, (uint)indices.Length,
-                    settings.voxelResolution, (settings.solve ? 1u : 0u) | (settings.shell ? 2u : 0u),
+                    resolution, flags,
                     out handle, out uint vertexCount, out uint indexCount);
                 token.ThrowIfCancellationRequested();
                 if (code != 0) throw new InvalidOperationException("Voxel remesh failed: " + Error(code));
-                return CopyMesh(handle, vertexCount, indexCount).PrepareChannels(token);
+                return CopyMesh(handle, vertexCount, indexCount);
             }
             finally { if (handle != IntPtr.Zero) MeshSimplifier.meshLabMeshDestroy(handle); }
         }
@@ -96,8 +135,33 @@ namespace SashaRX.UnityMeshLab
                     (settings.regularize == RemeshRegularize.Strong ? 2u : 0u) |
                     (settings.preserveFolds ? 4u : 0u) | (settings.pruneSmallParts ? 16u : 0u)
             };
-            var result = MeshSimplifier.SimplifyGeometry(input.positions, input.indices, options, token, out error);
-            return new IndexedMesh { positions = result.positions, indices = result.indices }.PrepareChannels(token);
+            var topology = RemeshTopology.Inspect(input.positions, input.indices, token);
+            if (!topology.Valid)
+                throw new InvalidOperationException("Simplify input has invalid topology (" + topology.Description + "). Rerun Remesh or repair the source.");
+            // Keep real sheet borders fixed. This also lets the postflight distinguish
+            // existing openings from holes introduced by native area cleanup.
+            if (topology.boundary.Count > 0) options.flags |= 8u;
+            for (int attempt = 0; attempt < 6; attempt++) {
+                var result = MeshSimplifier.SimplifyGeometry(input.positions, input.indices, options, token, out error, allowEmpty: true);
+                if (result != null) {
+                    var candidate = RemeshTopology.RemoveCollapsedFins(new IndexedMesh { positions = result.positions, indices = result.indices }, token, out int fins);
+                    var after = RemeshTopology.Inspect(candidate.positions, candidate.indices, token);
+                    if (after.Valid && after.PreservesBoundary(topology) && after.PreservesComponents(topology, settings.pruneSmallParts)) {
+                        if (fins > 0 || attempt > 0)
+                            UvtLog.Info(UvtLog.Category.RemeshDiag, $"Simplify topology: removed {fins} collapsed fin faces; retry {attempt}; " + after.Description);
+                        return candidate.PrepareChannels(token);
+                    }
+                    UvtLog.Warn($"[Remesh] Simplify candidate rejected ({after.Description}; boundary preserved {after.PreservesBoundary(topology)}; component topology preserved {after.PreservesComponents(topology, settings.pruneSmallParts)}). Retrying with less collapse.");
+                }
+                else UvtLog.Warn("[Remesh] Simplify candidate was empty. Retrying with less collapse.");
+                options.maximumError *= .5f;
+                options.targetTriangles = Math.Max(options.targetTriangles, Math.Max(1, input.TriangleCount / (1 << (5 - attempt))));
+            }
+            // A reversible fallback preserves every input face rather than deleting a
+            // bad triangle and leaving a new hole. Report zero error for this snapshot.
+            error = 0;
+            UvtLog.Warn("[Remesh] No topologically valid simplification found; retaining the remesh geometry. Increase the triangle budget or repair thin features.");
+            return new IndexedMesh { positions = (Vector3[])input.positions.Clone(), indices = (int[])input.indices.Clone() }.PrepareChannels(token);
         }
 
         public static Geometry Unwrap(IndexedMesh input, RemeshSettings settings, CancellationToken token)
@@ -105,6 +169,7 @@ namespace SashaRX.UnityMeshLab
             settings.Validate();
             token.ThrowIfCancellationRequested();
             // Matches ParseUnwrapOptions in Native~/src/remesh.cpp.
+            UvAtlasDiagnostics.CaptureInput(input, settings);
             float[] options = {
                 settings.maxChartArea, settings.maxChartBoundary, settings.chartNormalDeviation, settings.chartRoundness,
                 settings.chartStraightness, settings.chartNormalSeam, 0.5f, settings.chartMaxCost, settings.chartIterations,
@@ -143,7 +208,13 @@ namespace SashaRX.UnityMeshLab
             result.originalChartCount = original.charts;
             result.originalSmallChartCount = original.smallCharts;
             result.smallChartCount = best.smallCharts;
+            result = UvChartRepair.Apply(result, settings, token);
+            best = UvChartQuality.Measure(result, token);
+            if (settings.mergeCharts && result.chartCount > 1 && !result.draftUv)
+                UvChartMerge.Apply(result, best, settings, token);
             RemeshNormals.ApplyFinal(result, settings, token);
+            result.surfaceNeighbors = RemeshSurfaceTopology.Transfer(input.positions, input.indices, result, token);
+            UvAtlasDiagnostics.Log(result, $"unwrap-final mergeCharts={settings.mergeCharts}", token);
             return result;
         }
 
