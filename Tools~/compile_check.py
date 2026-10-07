@@ -105,6 +105,8 @@ namespace Autodesk.Fbx
     public static class Globals { public const string IOSROOT = ""; public const string EXP_FBX_EMBEDDED = ""; }
     public class FbxObject {
         public bool DisconnectSrcObject(FbxObject source) => true;
+        public bool ConnectDstProperty(FbxProperty property) => true;
+        public FbxProperty FindProperty(string name) => new FbxProperty();
         public string GetName() => "";
         public void SetName(string name) { }
         public FbxScene GetScene() => null;
@@ -140,10 +142,28 @@ namespace Autodesk.Fbx
         public override bool Equals(object obj) => obj is FbxVector4 v && v == this;
         public override int GetHashCode() => X.GetHashCode();
     }
-    public class FbxPropertyDouble3 {
+    public class FbxProperty {
+        public bool IsValid() => false;
+        public FbxDouble3 GetFbxDouble3() => new FbxDouble3();
+        public int GetSrcObjectCount() => 0;
+        public FbxObject GetSrcObject(int index) => null;
+    }
+    public class FbxTexture : FbxObject {
+        public enum ETextureUse { eStandard, eShadowMap, eLightMap, eSphericalReflectionMap, eSphereReflectionMap, eBumpNormalMap }
+        public enum EMappingType { eNull, ePlanar, eSpherical, eCylindrical, eBox, eFace, eUV, eEnvironment }
+        public void SetTextureUse(ETextureUse use) { }
+        public void SetMappingType(EMappingType type) { }
+    }
+    public class FbxFileTexture : FbxTexture {
+        public static FbxFileTexture Create(FbxObject container, string name) => new FbxFileTexture();
+        public bool SetFileName(string name) => true;
+        public bool SetRelativeFileName(string name) => true;
+        public string GetFileName() => "";
+        public string GetRelativeFileName() => "";
+    }
+    public class FbxPropertyDouble3 : FbxProperty {
         public FbxDouble3 Get() => new FbxDouble3();
         public FbxPropertyDouble3 Set(FbxDouble3 value) => this;
-        public int GetSrcObjectCount() => 0;
         public FbxAnimCurveNode GetCurveNode() => null;
         public FbxAnimCurveNode GetCurveNode(FbxAnimLayer layer, bool create) => null;
         public FbxAnimCurve GetCurve(FbxAnimLayer layer, string channel, bool create) => null;
@@ -174,8 +194,11 @@ namespace Autodesk.Fbx
     }
     public class FbxEuler { public enum EOrder { eOrderXYZ, eOrderXZY, eOrderYZX, eOrderYXZ, eOrderZXY, eOrderZYX, eOrderSphericXYZ } }
     public class FbxAMatrix { public double Get(int row, int column) => 0; }
-    public class FbxSurfaceMaterial : FbxObject { }
-    public class FbxSurfaceLambert : FbxSurfaceMaterial { }
+    public class FbxSurfaceMaterial : FbxObject {
+        public static string sDiffuse => "DiffuseColor";
+        public static string sShininess => "ShininessExponent";
+    }
+    public class FbxSurfaceLambert : FbxSurfaceMaterial { public FbxPropertyDouble3 Diffuse => new FbxPropertyDouble3(); }
     public class FbxSurfacePhong : FbxSurfaceLambert {
         public static FbxSurfacePhong Create(FbxObject container, string name) => new FbxSurfacePhong();
     }

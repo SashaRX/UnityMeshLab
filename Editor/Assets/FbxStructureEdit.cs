@@ -289,6 +289,26 @@ namespace SashaRX.UnityMeshLab
             => scene.GetMaterial(name) ?? FbxSurfacePhong.Create(scene, name);
 
         /// <summary>
+        /// A new Phong material with a diffuse colour and, when <paramref name="textureFile"/> is
+        /// given, a file texture on its diffuse (absolute and relative paths, as the pipeline's
+        /// material rules require), so the file renders textured outside Unity too.
+        /// </summary>
+        internal static FbxSurfacePhong NewMaterial(FbxScene scene, string name, double r, double g, double b,
+            string textureName, string textureFile, string relativeTextureFile)
+        {
+            var material = FbxSurfacePhong.Create(scene, name);
+            material.Diffuse.Set(new FbxDouble3(r, g, b));
+            if (string.IsNullOrEmpty(textureFile)) return material;
+            var texture = FbxFileTexture.Create(scene, textureName);
+            texture.SetFileName(textureFile);
+            texture.SetRelativeFileName(relativeTextureFile ?? textureFile);
+            texture.SetTextureUse(FbxTexture.ETextureUse.eStandard);
+            texture.SetMappingType(FbxTexture.EMappingType.eUV);
+            texture.ConnectDstProperty(material.Diffuse);
+            return material;
+        }
+
+        /// <summary>
         /// Puts <paramref name="material"/> into slot <paramref name="slot"/> of <paramref name="node"/>;
         /// the other slots keep their materials and order (the polygons' material indices stay valid).
         /// </summary>

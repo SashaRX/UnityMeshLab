@@ -182,6 +182,7 @@ namespace SashaRX.UnityMeshLab
                 uv1Regenerated = generatedUv1 && !bakeUv1,
                 writeColors = (intent & FbxExportIntent.VertexColors) != 0,
                 existingRemaps = MaterialRemaps(importer),
+                fbxPath = targetFbxPath,
             };
             int structural = hasStructure ? FbxStructureWrite.Apply(document, tagged, structure, options, structureLog) : 0;
             bool uv1Written = channelsWritten.Contains("UV1") || (options.uv1Written && structural > 0);

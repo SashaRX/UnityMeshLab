@@ -289,6 +289,8 @@ namespace SashaRX.UnityMeshLab
             public bool uv1Regenerated;
             /// <summary>Set by <see cref="Apply"/>: some mesh got the UV set Unity imports as UV1.</summary>
             public bool uv1Written;
+            /// <summary>The FBX file being written; new materials' texture paths are made relative to it.</summary>
+            public string fbxPath;
             /// <summary>The importer's material remaps already in place, by FBX material name.</summary>
             public Dictionary<string, Material> existingRemaps = new Dictionary<string, Material>(StringComparer.Ordinal);
             /// <summary>Filled by <see cref="Apply"/>: FBX material name → the Unity material the importer must map it to.</summary>
@@ -483,13 +485,35 @@ namespace SashaRX.UnityMeshLab
             for (int s = 0; s < materials.Length && s < slots.Length; s++)
             {
                 if (materials[s] == (s < replaced.Length ? replaced[s] : null)) continue;
-                var material = FbxStructureEdit.SceneMaterial(scene, options.MaterialName(materials[s]));
+                var material = FbxMaterial(scene, materials[s], options);
                 if (bySlot.TryGetValue(slots[s], out var other) && other.GetName() != material.GetName())
                     throw new FbxStructureRefusalException($"'{node.GetName()}': submeshes sharing material slot {slots[s]} were given different materials");
                 bySlot[slots[s]] = material;
             }
             if (bySlot.Count > 0) FbxStructureEdit.SetMaterials(node, bySlot);
             return bySlot.Count;
+        }
+
+        // The FBX material for a Unity material: the file's own of its name, or a new one
+        // carrying the material's colour and main texture (the file renders textured outside
+        // Unity; inside Unity the importer remap maps it to the asset).
+        static Autodesk.Fbx.FbxSurfaceMaterial FbxMaterial(FbxScene scene, Material material, Options options)
+        {
+            string name = options.MaterialName(material);
+            var existing = scene.GetMaterial(name);
+            if (existing != null) return existing;
+            var color = material.HasProperty("_BaseColor") ? material.GetColor("_BaseColor")
+                : material.HasProperty("_Color") ? material.GetColor("_Color") : Color.white;
+            var texture = material.HasProperty("_MainTex") || material.HasProperty("_BaseMap") ? material.mainTexture : null;
+            string assetPath = texture != null ? AssetDatabase.GetAssetPath(texture) : null;
+            string file = string.IsNullOrEmpty(assetPath) ? null : System.IO.Path.GetFullPath(assetPath).Replace('\\', '/');
+            string relative = null;
+            if (file != null && !string.IsNullOrEmpty(options.fbxPath))
+            {
+                string folder = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(options.fbxPath));
+                relative = System.IO.Path.GetRelativePath(folder, file).Replace('\\', '/');
+            }
+            return FbxStructureEdit.NewMaterial(scene, name, color.r, color.g, color.b, texture != null ? texture.name : null, file, relative);
         }
 
         static Reference Resolve(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged, string name)
