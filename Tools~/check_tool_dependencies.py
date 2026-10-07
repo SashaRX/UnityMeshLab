@@ -18,6 +18,7 @@ ATTRIBUTES = re.compile(r'(?:\[[^\]]*\]\s*)+$')
 SCOPES = re.compile(
     r'\bnamespace\s+([\w.]+)\s*([;{])'
     r'|\b(?:record(?:\s+(?:class|struct))?(?=\s+\w+\s*[({<:;])|class|struct|interface|enum)\s+(\w+)'
+    r'|\bdelegate\s+[\w.<>\[\],?\s]+?\s+(\w+)\s*[<(]'
     r'|[{}]'
 )
 USING = re.compile(r'^\s*(?:global\s+)?using\s+([\w.]+)\s*;', re.M)
@@ -41,8 +42,8 @@ def declarations(code):
                 file_namespace = token.group(1)
             else:
                 stack.append(token.group(1))
-        elif token.group(3):
-            types.append((token.group(3), namespace, all(stack)))
+        elif token.group(3) or token.group(4):
+            types.append((token.group(3) or token.group(4), namespace, all(stack)))
         elif token.group() == '{':
             stack.append(None)
         elif stack:
@@ -174,6 +175,11 @@ def main():
             (tools / 'Pair.cs').write_text('namespace N { public readonly record struct Pair(int A); }', encoding='utf-8')
             found = tool_folder('namespace N { class Library { Pair pair; } }')
             assert any('Pair from Tools/' in item[2] for item in found), 'Record declarations capture the type name'
+            (tools / 'Callback.cs').write_text('namespace N { public delegate Task<bool> ExportCallback(int a); }', encoding='utf-8')
+            found = tool_folder('namespace N { class Library { ExportCallback callback; } }')
+            assert any('ExportCallback from Tools/' in item[2] for item in found), 'Delegate declarations are types'
+            assert not tool_folder('namespace N { class Library { void M() { System.Action a = delegate (int x) { }; } } }'), \
+                'Anonymous delegates declare no type'
         print('tool dependency guard self-test passed')
         return 0
     owners, findings = scan(args.editor_root)
