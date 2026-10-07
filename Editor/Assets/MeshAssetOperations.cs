@@ -490,6 +490,32 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
+            // "Save everything" (the hub's Overwrite / Export New FBX): when the work changed
+            // only UV sets and vertex colours of meshes the FBX already has, write just those
+            // into the file. A rebuild through Unity's FBX Exporter is only for structure the
+            // file lacks, and only after saying what it costs.
+            if (intent == FbxExportIntent.All)
+            {
+                var reasons = StructuralChanges(fbxGroups);
+                if (reasons.Count == 0)
+                {
+                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource);
+                    return;
+                }
+                int choice = EditorUtility.DisplayDialogComplex("Rebuild FBX?",
+                    "Saving this needs structure the FBX does not have:\n\n• " + string.Join("\n• ", reasons) +
+                    "\n\nA rebuild re-exports every mesh from Unity's data through the FBX Exporter: polygons become " +
+                    "triangles, vertices are split at seams, vertex colours are stored as 8-bit, and the hierarchy is normalised.\n\n" +
+                    "'Save channels only' writes the changed UV sets and vertex colours into the existing file and leaves the rest of it untouched.",
+                    "Rebuild", CancelButton, "Save channels only");
+                if (choice == 1) return;
+                if (choice == 2)
+                {
+                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource);
+                    return;
+                }
+            }
+
             bool allGroupsSucceeded = true;
             var batch = new HierarchyExportBatch();
             foreach (var kv in fbxGroups)
@@ -500,6 +526,22 @@ namespace SashaRX.UnityMeshLab
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        // What a save of these groups needs beyond per-vertex channels of existing FBX meshes.
+        static List<string> StructuralChanges(Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>> fbxGroups)
+        {
+            var reasons = new List<string>();
+            foreach (var kv in fbxGroups)
+            {
+                string file = System.IO.Path.GetFileName(kv.Key);
+                int added = kv.Value.Count(p => p.entry.fbxMesh == null
+                    || !string.Equals(AssetDatabase.GetAssetPath(p.entry.fbxMesh), kv.Key, StringComparison.OrdinalIgnoreCase));
+                if (added > 0) reasons.Add($"{added} mesh(es) not in '{file}' yet (generated LODs)");
+                int collision = SidecarStore.CollisionMeshes(kv.Key)?.Count ?? 0;
+                if (collision > 0) reasons.Add($"{collision} collision mesh set(s) from the sidecar for '{file}'");
+            }
+            return reasons;
+        }
+
         void FinishHierarchyExports(HierarchyExportBatch batch, bool overwriteSource, bool allGroupsSucceeded)
         {
             // Generated scene LOD objects are embedded in the exported FBX
