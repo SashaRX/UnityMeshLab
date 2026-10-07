@@ -166,6 +166,36 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Edit_SharesValuesOnlyWithinAControlPoint()
+        {
+            using var document = FbxSourceDocument.Load(WriteSource(true));
+            var mesh = document.Meshes[0];
+            var topology = new FbxLayerChannels.Topology(mesh);
+            // Every corner gets (0.5, 0.5): corners on one control point may share an entry,
+            // corners on different points must not (separate islands stay separate).
+            var values = Enumerable.Repeat(0.5, topology.CornerCount * 2).ToArray();
+            FbxLayerChannels.WriteUv(mesh, 1, topology, values, Enumerable.Repeat(true, topology.CornerCount).ToArray());
+            var index = FbxLayerChannels.UvElements(mesh)[1].GetIndexArray();
+            for (int a = 0; a < topology.CornerCount; a++)
+                for (int b = a + 1; b < topology.CornerCount; b++)
+                {
+                    bool samePoint = topology.cornerControlPoint[a] == topology.cornerControlPoint[b];
+                    Assert.AreEqual(samePoint, index.GetAt(a) == index.GetAt(b), $"corners {a} and {b}");
+                }
+        }
+
+        [Test]
+        public void Edit_WritesColoursOnLayerZero()
+        {
+            using var document = FbxSourceDocument.Load(WriteSource(true));
+            var mesh = document.Meshes[0];
+            var topology = new FbxLayerChannels.Topology(mesh);
+            Assert.IsNotNull(FbxLayerChannels.ColorElement(mesh));
+            Assert.AreEqual(1, FbxLayerChannels.WriteColor(mesh, topology, new double[topology.CornerCount * 4], Enumerable.Range(0, topology.CornerCount).Select(c => c == 0).ToArray()));
+            Assert.IsNotNull(mesh.GetLayer(0).GetVertexColors(), "Unity reads colours from layer 0 only");
+        }
+
+        [Test]
         public void Edit_RefusesAUvSetThatWouldSkipAChannel()
         {
             using var document = FbxSourceDocument.Load(WriteSource(true));

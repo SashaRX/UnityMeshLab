@@ -177,16 +177,13 @@ namespace SashaRX.UnityMeshLab
             return list;
         }
 
-        /// <summary>The colour set Unity imports (the first one), or null.</summary>
+        /// <summary>
+        /// The colour set Unity imports: layer 0's, or null. Unity reads vertex colours from
+        /// layer 0 only (TS_UnityExport_SDK FBX_PIPELINE_CHECKLIST I4); a set on another
+        /// layer is invisible to it and is left alone.
+        /// </summary>
         internal static FbxLayerElementVertexColor ColorElement(FbxMesh mesh)
-        {
-            for (int l = 0; l < mesh.GetLayerCount(); l++)
-            {
-                var colors = mesh.GetLayer(l)?.GetVertexColors();
-                if (colors != null) return colors;
-            }
-            return null;
-        }
+            => mesh.GetLayerCount() > 0 ? mesh.GetLayer(0)?.GetVertexColors() : null;
 
         /// <summary>
         /// Adds a UV set holding (corner index, -(ordinal + 1)) per corner so a Unity import
@@ -276,7 +273,7 @@ namespace SashaRX.UnityMeshLab
                 (i, v) => direct.SetAt(i, new FbxVector2(v[0], v[1])));
         }
 
-        /// <summary>Writes the changed corners of the first colour set, creating it on layer 0 when the mesh has none.</summary>
+        /// <summary>Writes the changed corners of layer 0's colour set, creating it there when layer 0 has none.</summary>
         internal static int WriteColor(FbxMesh mesh, in Topology topology, double[] values, bool[] changed)
         {
             var element = ColorElement(mesh);
@@ -338,6 +335,8 @@ namespace SashaRX.UnityMeshLab
             if (written == 0) return 0;
 
             bool fresh = directCount == 0;
+            if (fresh && written != corners)
+                throw new InvalidOperationException("A new layer element needs a value at every corner.");
             var mapping = element.GetMappingMode();
             var reference = element.GetReferenceMode();
             int[] slots = fresh ? null : DirectSlots(element, index, directCount, topology);
@@ -363,14 +362,23 @@ namespace SashaRX.UnityMeshLab
 
             // Anything else becomes per corner, indexed: the existing values stay where they
             // are, unchanged corners keep pointing at them, changed corners point at new ones.
-            var added = new Dictionary<ValueKey, int>();
+            // Corners share an entry only on the same control point with the same value — a
+            // continuous UV there; equal values on different points (overlapping or mirrored
+            // shells) stay separate, or DCC importers would weld those islands together.
+            var shared = new Dictionary<(int point, ValueKey value), int>();
             var cornerIndex = new int[corners];
             for (int c = 0; c < corners; c++)
             {
-                if (!changed[c]) { cornerIndex[c] = slots[c]; continue; }
+                if (changed[c]) continue;
+                cornerIndex[c] = slots[c];
+                shared[(topology.cornerControlPoint[c], new ValueKey(get(slots[c])))] = slots[c];
+            }
+            for (int c = 0; c < corners; c++)
+            {
+                if (!changed[c]) continue;
                 var value = Slice(values, c, arity);
-                var key = new ValueKey(value);
-                if (!added.TryGetValue(key, out int at)) added[key] = at = add(value);
+                var key = (topology.cornerControlPoint[c], new ValueKey(value));
+                if (!shared.TryGetValue(key, out int at)) shared[key] = at = add(value);
                 cornerIndex[c] = at;
             }
             element.SetMappingMode(FbxLayerElement.EMappingMode.eByPolygonVertex);

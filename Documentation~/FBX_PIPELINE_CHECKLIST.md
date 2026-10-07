@@ -272,7 +272,12 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
 * Inside a written channel only the corners whose value changed are
   written; unchanged corners keep their stored doubles bit for bit. A
   by-control-point set stays by-control-point when the change allows it;
-  otherwise it becomes per-corner indexed with the old values kept.
+  otherwise it becomes per-corner indexed with the old values kept. New values
+  share an entry only between corners of the same control point with the
+  same value (eIndexToDirect, as TS_UnityExport_SDK writes it), so
+  overlapping or mirrored shells are never welded on a DCC re-import.
+* Vertex colours are read from and written to layer 0 only — the only
+  colour layer Unity's importer reads (TS_UnityExport_SDK checklist I4).
 * Which Unity vertex a corner became is recovered from a throwaway import
   of a tagged copy (corner index in an extra UV set, same importer settings,
   `Assets/__MeshLabTemp`, deleted afterwards). `FbxCornerMatch` pairs
