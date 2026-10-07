@@ -322,8 +322,6 @@ namespace SashaRX.UnityMeshLab
             public Dictionary<string, Material> existingRemaps = new Dictionary<string, Material>(StringComparer.Ordinal);
             /// <summary>Filled by <see cref="Apply"/>: FBX material name → the Unity material the importer must map it to.</summary>
             public readonly Dictionary<string, Material> materialRemaps = new Dictionary<string, Material>(StringComparer.Ordinal);
-            /// <summary>Filled by <see cref="Apply"/>: FBX material names whose importer remap goes (the slot shows the file's own material again).</summary>
-            public readonly HashSet<string> remapsToClear = new HashSet<string>(StringComparer.Ordinal);
             /// <summary>Set by <see cref="Apply"/>: a mesh's UV set names as the file stores them.</summary>
             internal Func<string, List<string>> uvSetNamesOf;
             /// <summary>Set by <see cref="Apply"/>: the names of the materials the file had before the save.</summary>
@@ -545,14 +543,17 @@ namespace SashaRX.UnityMeshLab
         static Autodesk.Fbx.FbxSurfaceMaterial FbxMaterial(FbxScene scene, string uvSetMesh, Material material, Options options)
         {
             // A material the file itself imports (another of its slots' materials) is that FBX
-            // material: no copy. A remap that sent its name to another asset is dropped, or the
-            // import would go on showing that asset.
+            // material: no copy. While the importer remaps its name to another asset, every slot
+            // of that name shows that asset; dropping the remap would change the slots this save
+            // does not touch, so the file's own material cannot come back for one slot.
             if (!string.IsNullOrEmpty(options.sourceFbxPath)
                 && string.Equals(AssetDatabase.GetAssetPath(material), options.sourceFbxPath, StringComparison.OrdinalIgnoreCase)
                 && scene.GetMaterial(material.name) is Autodesk.Fbx.FbxSurfaceMaterial own)
             {
                 if (options.existingRemaps.TryGetValue(material.name, out var mapped) && mapped != null && mapped != material)
-                    options.remapsToClear.Add(material.name);
+                    throw new FbxStructureRefusalException(
+                        $"'{material.name}' is remapped on the importer to '{mapped.name}', which every slot of that name shows; " +
+                        "the file's own material cannot come back for one slot (change the remap in the importer's Materials tab)");
                 return own;
             }
             string name = options.MaterialName(material);
@@ -565,11 +566,13 @@ namespace SashaRX.UnityMeshLab
             // Only an image file can be the FBX texture's file: a texture embedded in another
             // model (a sub-asset of an .fbx) or generated in memory leaves the colour alone.
             if (string.IsNullOrEmpty(assetPath) || !(AssetImporter.GetAtPath(assetPath) is TextureImporter)) { texture = null; assetPath = null; }
-            string file = assetPath == null ? null : System.IO.Path.GetFullPath(assetPath).Replace('\\', '/');
+            // A package's assets live elsewhere on disk (Library/PackageCache, a local package's folder).
+            string file = assetPath == null ? null : PhysicalPath(assetPath);
+            if (file != null && !System.IO.File.Exists(file)) { texture = null; file = null; }
             string relative = null;
             if (file != null && !string.IsNullOrEmpty(options.fbxPath))
             {
-                string folder = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(options.fbxPath));
+                string folder = System.IO.Path.GetDirectoryName(PhysicalPath(options.fbxPath));
                 relative = System.IO.Path.GetRelativePath(folder, file).Replace('\\', '/');
             }
             // The wrapper does not expose a layer element's name; the file's own names are read from it.
@@ -577,6 +580,16 @@ namespace SashaRX.UnityMeshLab
             string uvSet = uvSets != null && uvSets.Count > 0 ? uvSets[0] : null;
             return FbxStructureEdit.NewMaterial(scene, name, color.r, color.g, color.b, texture != null ? MeshHygieneUtility.SanitizeName(texture.name) : null,
                 file, relative, uvSet);
+        }
+
+        // An asset path (or a path outside the project) as a full path on disk: a package's
+        // assets resolve to the package's folder.
+        static string PhysicalPath(string path)
+        {
+            var package = UnityEditor.PackageManager.PackageInfo.FindForAssetPath(path);
+            if (package != null && !string.IsNullOrEmpty(package.resolvedPath) && path.StartsWith(package.assetPath + "/", StringComparison.Ordinal))
+                path = System.IO.Path.Combine(package.resolvedPath, path.Substring(package.assetPath.Length + 1));
+            return System.IO.Path.GetFullPath(path).Replace('\\', '/');
         }
 
         // The texture the shader declares as its main one ([MainTexture]), else the first of the

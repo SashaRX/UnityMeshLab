@@ -63,6 +63,11 @@ namespace SashaRX.UnityMeshLab
             public Vector4[] tangents;
             /// <summary>The tangents are taken only because the normals moved: a file without a frame keeps none.</summary>
             public bool tangentsFollowNormals;
+            /// <summary>
+            /// A normals-only save: the file's tangents stay, and only their binormals are rebuilt
+            /// on the new normals.
+            /// </summary>
+            public bool keepFileTangents;
             public bool HasValues => colors != null || normals != null || tangents != null || uvs.Any(uv => uv != null);
             public Color32[] colors32;
             public Color[] colors;
@@ -235,7 +240,7 @@ namespace SashaRX.UnityMeshLab
                         configured = SetImportSettings(targetFbxPath, () =>
                         {
                             if (uv1Written) KeepWrittenUv1(sourceFbxPath);
-                            MapMaterials(sourceFbxPath, options.materialRemaps, options.remapsToClear);
+                            MapMaterials(sourceFbxPath, options.materialRemaps);
                         });
                     AssetDatabase.ImportAsset(targetFbxPath, ImportAssetOptions.ForceUpdate);
                 }
@@ -243,7 +248,7 @@ namespace SashaRX.UnityMeshLab
                 if (isVariant)
                 {
                     // A new file has an importer only once imported: its settings follow the first import.
-                    configured = SetImportSettings(targetFbxPath, () => ConfigureLikeSource(sourceFbxPath, targetFbxPath, uv1Changed, options.materialRemaps, options.remapsToClear));
+                    configured = SetImportSettings(targetFbxPath, () => ConfigureLikeSource(sourceFbxPath, targetFbxPath, uv1Changed, options.materialRemaps));
                     if (configured) ReimportVariant(targetFbxPath, uv1Changed);
                 }
                 else if (sceneRoot != null) FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, sceneRoot);
@@ -455,6 +460,7 @@ namespace SashaRX.UnityMeshLab
                         // can be compared: a file without a frame gets none.
                         donor.tangentsFollowNormals = donor.normals != null
                             && (!tangentIntent || imported != null && imported.tangents.SequenceEqual(tangents));
+                        donor.keepFileTangents = donor.normals != null && !tangentIntent;
                     }
                 }
                 else if (!tangentIntent)
@@ -818,14 +824,16 @@ namespace SashaRX.UnityMeshLab
             {
                 bool exists = frameExists;
                 bool comparable = exists && tag.tangents != null;
+                // Tangents left out of the save keep the file's own (as the import read them).
+                bool keep = donor.keepFileTangents && comparable;
                 // Unity keeps a tangent and the bitangent's sign; the file keeps both vectors:
                 // binormal = cross(normal, tangent) · w, both mapped as directions.
                 int corners = WriteChannel(donor.name, "tangents", topology, cornerToVertex, !exists, 6,
-                    (c, v) => comparable && tag.tangents[c].Equals(donor.tangents[v])
+                    (c, v) => comparable && (keep || tag.tangents[c].Equals(donor.tangents[v]))
                         && (donor.normals == null || (tag.normals != null && tag.normals[c].Equals(donor.frameNormals[v]))),
                     (v, values, at) =>
                     {
-                        var t = donor.tangents[v];
+                        var t = keep ? tag.tangents[at / 6] : donor.tangents[v];
                         // The frame is built on the normal the file will hold: the written one, or
                         // (normals not written) the corner's stored normal as the import read it.
                         var normal = donor.normals == null && tag.normals != null ? tag.normals[at / 6] : donor.frameNormals[v];
@@ -1026,23 +1034,19 @@ namespace SashaRX.UnityMeshLab
 
         // A material the save put into a node slot maps, on import, to the asset the renderer
         // shows: the slot holds an FBX material of that name, the importer maps the name.
-        static void MapMaterials(string fbxPath, Dictionary<string, Material> remaps, ICollection<string> cleared)
+        static void MapMaterials(string fbxPath, Dictionary<string, Material> remaps)
         {
-            if (remaps.Count == 0 && cleared.Count == 0 || !(AssetImporter.GetAtPath(fbxPath) is ModelImporter importer)) return;
+            if (remaps.Count == 0 || !(AssetImporter.GetAtPath(fbxPath) is ModelImporter importer)) return;
             RequireWritableSettings(fbxPath);
-            foreach (string name in cleared) importer.RemoveRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), name));
             foreach (var kv in remaps) importer.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), kv.Key), kv.Value);
             EditorUtility.SetDirty(importer);
             AssetDatabase.WriteImportSettingsIfDirty(fbxPath);
-            if (remaps.Count > 0)
-                UvtLog.Info($"[FBX Export] '{fbxPath}': {string.Join(", ", remaps.Select(kv => $"'{kv.Key}' → {kv.Value.name}"))} mapped on the importer.");
-            if (cleared.Count > 0)
-                UvtLog.Info($"[FBX Export] '{fbxPath}': remap of {string.Join(", ", cleared.Select(n => $"'{n}'"))} removed (the file's own material again).");
+            UvtLog.Info($"[FBX Export] '{fbxPath}': {string.Join(", ", remaps.Select(kv => $"'{kv.Key}' → {kv.Value.name}"))} mapped on the importer.");
         }
 
         // A variant is a new file: import it the way its source is imported, so its meshes
         // carry the same names and layout as the source's — except a written UV1 is kept.
-        static void ConfigureLikeSource(string sourceFbxPath, string variantFbxPath, bool uv1Changed, Dictionary<string, Material> remaps, ICollection<string> cleared)
+        static void ConfigureLikeSource(string sourceFbxPath, string variantFbxPath, bool uv1Changed, Dictionary<string, Material> remaps)
         {
             var source = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             var variant = AssetImporter.GetAtPath(variantFbxPath) as ModelImporter;
@@ -1050,7 +1054,6 @@ namespace SashaRX.UnityMeshLab
             RequireWritableSettings(variantFbxPath);
             new Preset(source).ApplyTo(variant);
             // The materials the save wrote into the variant map to their assets like the source's do.
-            foreach (string name in cleared) variant.RemoveRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), name));
             foreach (var kv in remaps) variant.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), kv.Key), kv.Value);
             // The variant's UV1 is the one just written (or removed): Unity must not regenerate it.
             if (uv1Changed) variant.generateSecondaryUV = false;
