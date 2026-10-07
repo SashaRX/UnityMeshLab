@@ -46,6 +46,11 @@ namespace SashaRX.UnityMeshLab
         {
             /// <summary>The FBX mesh, and the node the renderer is (its GameObject's name).</summary>
             public string meshName, nodeName;
+            /// <summary>
+            /// The renderer is no prefab instance of the model: its node is known only by its
+            /// current name, which tells nothing among several nodes of one mesh.
+            /// </summary>
+            public bool nameOnly;
             /// <summary>The renderer's materials, and the model's it replaces, per submesh.</summary>
             public Material[] materials, replaced;
         }
@@ -198,7 +203,7 @@ namespace SashaRX.UnityMeshLab
                 // A prefab instance's child may be renamed, at any level of nested prefabs: its
                 // model node is its original source's name.
                 { meshName = entry.fbxMesh.name, nodeName = source != null ? PrefabUtility.GetCorrespondingObjectFromOriginalSource(entry.renderer).name : entry.renderer.name,
-                  materials = materials, replaced = model };
+                  nameOnly = source == null, materials = materials, replaced = model };
         }
 
         /// <summary>
@@ -473,6 +478,9 @@ namespace SashaRX.UnityMeshLab
             if (tag.ambiguous)
                 throw new FbxStructureRefusalException($"'{edit.nodeName}': several meshes of the FBX import as '{edit.meshName}'; which one it shows cannot be told");
             var mesh = document.Meshes[tag.ordinal];
+            // A renamed unpacked copy may carry another node's name.
+            if (edit.nameOnly && mesh.GetNodeCount() > 1)
+                throw new FbxStructureRefusalException($"'{edit.nodeName}' is no prefab instance of the model and '{edit.meshName}' is instanced by several nodes; which node it is cannot be told from its name");
             int index = -1, matches = 0;
             for (int i = 0; i < mesh.GetNodeCount(); i++)
                 if (mesh.GetNode(i).GetName() == edit.nodeName) { index = i; matches++; }

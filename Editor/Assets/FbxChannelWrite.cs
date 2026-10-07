@@ -108,7 +108,7 @@ namespace SashaRX.UnityMeshLab
         /// together with the new and replaced geometry of <paramref name="structure"/> when one
         /// is given, then reimports it and relinks <paramref name="sceneRoot"/>. Everything goes
         /// into one load and one save of the document: a refusal anywhere leaves the file as
-        /// it was. Returns true when a file was written.
+        /// it was. Returns true when a file was written and the import settings it needs were set.
         /// </summary>
         internal static bool Write(string sourceFbxPath, IEnumerable<MeshEntry> entries, FbxExportIntent intent,
             string outputFbxPath, LODGroup sceneRoot, FbxStructurePlan structure = null)
@@ -219,20 +219,33 @@ namespace SashaRX.UnityMeshLab
                 Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath);
                 return true;
             }
-            // The file is written from here on: import settings or an import that fail (read-only
-            // metadata, a third-party postprocessor) are reported, and the caller still finishes
-            // the save (sidecar, scene). The postprocessor consumes the overwrite marker; an
-            // import that throws before it runs must not leave it for a later, unrelated import.
+            // The file is written from here on. Import settings it needs (UV1 kept, material
+            // remaps) that cannot be set (read-only metadata) fail the save: the file is still
+            // imported, but the caller keeps the working copies unsaved, and a save once the
+            // cause is fixed sets them. An import that fails (a third-party postprocessor) is
+            // reported, and the caller still finishes the save (sidecar, scene). The
+            // postprocessor consumes the overwrite marker; an import that throws before it runs
+            // must not leave it for a later, unrelated import.
+            bool configured = true;
             try
             {
                 try
                 {
-                    if (!isVariant && uv1Written) KeepWrittenUv1(sourceFbxPath);
-                    if (!isVariant) MapMaterials(sourceFbxPath, options.materialRemaps, options.remapsToClear);
+                    if (!isVariant)
+                        configured = SetImportSettings(targetFbxPath, () =>
+                        {
+                            if (uv1Written) KeepWrittenUv1(sourceFbxPath);
+                            MapMaterials(sourceFbxPath, options.materialRemaps, options.remapsToClear);
+                        });
                     AssetDatabase.ImportAsset(targetFbxPath, ImportAssetOptions.ForceUpdate);
                 }
                 finally { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); }
-                if (isVariant) ImportLikeSource(sourceFbxPath, targetFbxPath, uv1Changed, options.materialRemaps, options.remapsToClear);
+                if (isVariant)
+                {
+                    // A new file has an importer only once imported: its settings follow the first import.
+                    configured = SetImportSettings(targetFbxPath, () => ConfigureLikeSource(sourceFbxPath, targetFbxPath, uv1Changed, options.materialRemaps, options.remapsToClear));
+                    if (configured) ReimportVariant(targetFbxPath, uv1Changed);
+                }
                 else if (sceneRoot != null) FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, sceneRoot);
             }
             catch (Exception ex)
@@ -240,7 +253,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Error($"[FBX Export] '{targetFbxPath}' was written, but setting up or running its import failed: {ex.Message}. Reimport it once the cause is fixed.");
                 UvtLog.Verbose(ex.ToString());
             }
-            return true;
+            return configured;
         }
 
         // With generation switched off, a mesh whose UV1 is not in the file has none: refuse
@@ -417,10 +430,10 @@ namespace SashaRX.UnityMeshLab
                     else if (imported != null)
                         UvtLog.Warn($"[FBX Export] '{donor.name}': its normals changed, but the importer calculates normals, so they are not saved into the file.");
                 }
-                else if (capture.fileNormals && importedAny.HasVertexAttribute(VertexAttribute.Normal))
+                else if (importedAny.HasVertexAttribute(VertexAttribute.Normal))
                 {
-                    donor.removedNormals = true;
-                    any = true;
+                    if (capture.fileNormals) { donor.removedNormals = true; any = true; }
+                    else UvtLog.Warn($"[FBX Export] '{donor.name}': its normals were removed, but the importer calculates normals, so the file's normals are left as they are.");
                 }
             }
             if ((capture.intent & FbxExportIntent.Tangents) != 0 && !capture.fileTangents && imported != null
@@ -958,6 +971,32 @@ namespace SashaRX.UnityMeshLab
             return sets;
         }
 
+        // Runs set (importer changes written to the .meta); false, reported, when they cannot be.
+        static bool SetImportSettings(string fbxPath, Action set)
+        {
+            try
+            {
+                set();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Error($"[FBX Export] '{fbxPath}' was written, but its import settings could not be set: {ex.Message}. " +
+                    "The edits stay unsaved; save again once the cause is fixed.");
+                UvtLog.Verbose(ex.ToString());
+                return false;
+            }
+        }
+
+        // Unity reports a .meta it cannot write without throwing: an importer about to change is
+        // checked first, before anything on it changes.
+        static void RequireWritableSettings(string fbxPath)
+        {
+            string meta = Path.GetFullPath(AssetDatabase.GetTextMetaFilePathFromAssetPath(fbxPath));
+            if (File.Exists(meta) && (File.GetAttributes(meta) & FileAttributes.ReadOnly) != 0)
+                throw new IOException($"'{meta}' is read-only");
+        }
+
         // generateSecondaryUV regenerates Unity UV channel 1 on import and would replace the
         // channel just written; switch it off for this model (the one importer setting the
         // write needs).
@@ -965,6 +1004,7 @@ namespace SashaRX.UnityMeshLab
         {
             var importer = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             if (importer == null || !importer.generateSecondaryUV) return;
+            RequireWritableSettings(sourceFbxPath);
             importer.generateSecondaryUV = false;
             EditorUtility.SetDirty(importer);
             AssetDatabase.WriteImportSettingsIfDirty(sourceFbxPath);
@@ -986,6 +1026,7 @@ namespace SashaRX.UnityMeshLab
         static void MapMaterials(string fbxPath, Dictionary<string, Material> remaps, ICollection<string> cleared)
         {
             if (remaps.Count == 0 && cleared.Count == 0 || !(AssetImporter.GetAtPath(fbxPath) is ModelImporter importer)) return;
+            RequireWritableSettings(fbxPath);
             foreach (string name in cleared) importer.RemoveRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), name));
             foreach (var kv in remaps) importer.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), kv.Key), kv.Value);
             EditorUtility.SetDirty(importer);
@@ -998,23 +1039,28 @@ namespace SashaRX.UnityMeshLab
 
         // A variant is a new file: import it the way its source is imported, so its meshes
         // carry the same names and layout as the source's — except a written UV1 is kept.
-        static void ImportLikeSource(string sourceFbxPath, string variantFbxPath, bool uv1Changed, Dictionary<string, Material> remaps, ICollection<string> cleared)
+        static void ConfigureLikeSource(string sourceFbxPath, string variantFbxPath, bool uv1Changed, Dictionary<string, Material> remaps, ICollection<string> cleared)
         {
             var source = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             var variant = AssetImporter.GetAtPath(variantFbxPath) as ModelImporter;
             if (source == null || variant == null) return;
+            RequireWritableSettings(variantFbxPath);
             new Preset(source).ApplyTo(variant);
             // The materials the save wrote into the variant map to their assets like the source's do.
             foreach (string name in cleared) variant.RemoveRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), name));
             foreach (var kv in remaps) variant.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), kv.Key), kv.Value);
-            // The variant's UV1 is the one just written (or removed): Unity must not regenerate
-            // it, and a sidecar at the variant's path must not replay over it.
-            if (uv1Changed)
-            {
-                variant.generateSecondaryUV = false;
-                Uv2AssetPostprocessor.fbxOverwritePaths.Add(variantFbxPath);
-            }
-            try { variant.SaveAndReimport(); }
+            // The variant's UV1 is the one just written (or removed): Unity must not regenerate it.
+            if (uv1Changed) variant.generateSecondaryUV = false;
+            EditorUtility.SetDirty(variant);
+            AssetDatabase.WriteImportSettingsIfDirty(variantFbxPath);
+        }
+
+        // The variant imported with its source's settings; a sidecar at the variant's path must
+        // not replay over a UV1 just written.
+        static void ReimportVariant(string variantFbxPath, bool uv1Changed)
+        {
+            if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(variantFbxPath);
+            try { AssetDatabase.ImportAsset(variantFbxPath, ImportAssetOptions.ForceUpdate); }
             finally { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(variantFbxPath); }
         }
     }
