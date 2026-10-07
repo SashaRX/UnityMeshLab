@@ -259,6 +259,37 @@ byte-identical from the source FBX clone (modulo what the
 Unity FBX Exporter itself rewrites at the FBX-document level;
 see §9).
 
+### Channel re-save in the FBX document (UV sets, vertex colours)
+
+An intent made only of `UV0`…`UV7` and `VertexColors` does not go through
+Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
+
+* The source file is loaded with the FBX SDK and saved back in its own
+  container format (binary/ASCII) and file version, with embedded media
+  re-embedded. Polygons (quads, n-gons), control points, smoothing,
+  materials, nodes, properties and every other layer element are never
+  rebuilt.
+* Inside a written channel only the corners whose value changed are
+  written; unchanged corners keep their stored doubles bit for bit. A
+  by-control-point set stays by-control-point when the change allows it;
+  otherwise it becomes per-corner indexed with the old values kept.
+* Which Unity vertex a corner became is recovered from a throwaway import
+  of a tagged copy (corner index in an extra UV set, same importer settings,
+  `Assets/__MeshLabTemp`, deleted afterwards). `FbxCornerMatch` pairs
+  corners with the working mesh by position (bit-identical: same file, same
+  import) and by the polygon's own corners, so welding, vertex splits and
+  triangle order do not matter.
+* Refused, nothing written: a value seam inside one polygon (the polygon
+  cannot hold it without being split), a UV set that would skip a channel
+  (UV3 on a mesh with one set), corner tags lost on import (Mesh
+  Compression), an instanced FBX mesh edited from more than one Unity mesh.
+* The source importer is left alone, except `generateSecondaryUV` is
+  switched off when UV1 was actually written (it would replace it).
+* The hub's Overwrite / Export New FBX (`All`) takes this path when the work
+  changed only channels of meshes the file already has. Generated LODs or
+  sidecar collision need the LOD-rebuild path; the dialog says what that
+  costs and offers "Save channels only".
+
 ### `FbxExportIntent` flags
 
 | Flag | When to set |
@@ -312,7 +343,11 @@ their index buffer, and the FBX exporter writes whatever topology the
 serialized mesh has — so the clone that reaches `ModelExporter` must be
 imported with `keepQuads = true`:
 
-* **Isolated core** — Phase 1 enables `keepQuads` on the source importer
+* **Channel re-save (UV / vertex colours)** — not affected: the FBX
+  document's polygons are never rewritten, so quads and n-gons stay as
+  authored whatever `keepQuads` is set to, and the importer is not touched.
+* **Isolated core (normals / tangents / hierarchy / materials intents)** —
+  Phase 1 enables `keepQuads` on the source importer
   (alongside `isReadable`) before the clone is loaded. `keepQuads` only
   reshapes the index buffer (4 indices per quad instead of two triangles);
   vertex order and count are untouched, so the snapshot/clone
