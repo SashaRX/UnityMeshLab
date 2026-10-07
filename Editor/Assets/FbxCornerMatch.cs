@@ -33,8 +33,8 @@ namespace SashaRX.UnityMeshLab
             // -0 and +0 are the same position.
             static int Bits(float v) => v == 0f ? 0 : BitConverter.SingleToInt32Bits(v);
             public bool Equals(PositionKey o) => x == o.x && y == o.y && z == o.z;
-            public int CompareTo(PositionKey o) => x != o.x ? x.CompareTo(o.x) : y != o.y ? y.CompareTo(o.y) : z.CompareTo(o.z);
             public override bool Equals(object obj) => obj is PositionKey k && Equals(k);
+            public int CompareTo(PositionKey o) => x != o.x ? x.CompareTo(o.x) : y != o.y ? y.CompareTo(o.y) : z.CompareTo(o.z);
             public override int GetHashCode() => unchecked((x * 73856093) ^ (y * 19349663) ^ (z * 83492791));
         }
 

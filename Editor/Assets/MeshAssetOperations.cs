@@ -612,7 +612,9 @@ namespace SashaRX.UnityMeshLab
             {
                 var a = vertices[indices[start + (r1 + k) % size]];
                 var b = vertices[indices[start + (r2 + k) % size]];
-                int c = a.x != b.x ? a.x.CompareTo(b.x) : a.y != b.y ? a.y.CompareTo(b.y) : a.z.CompareTo(b.z);
+                int c = a.x.CompareTo(b.x);
+                if (c == 0) c = a.y.CompareTo(b.y);
+                if (c == 0) c = a.z.CompareTo(b.z);
                 if (c != 0) return c;
             }
             return 0;

@@ -102,7 +102,7 @@ namespace SashaRX.UnityMeshLab
                     continue;
                 }
                 var mesh = document.Meshes[tag.ordinal];
-                int corners = WriteMesh(mesh, donor, tag, intent, swapUv, channelsWritten);
+                int corners = WriteMesh(mesh, donor, tag, swapUv, channelsWritten);
                 if (corners == 0) continue;
                 if (!written.Add(tag.ordinal))
                     throw new InvalidOperationException($"FBX mesh '{mesh.GetName()}' is instanced by several Unity meshes; it cannot take edits from more than one.");
@@ -404,7 +404,7 @@ namespace SashaRX.UnityMeshLab
         // ── Per mesh ──
 
         // Returns the number of corner values written into the document.
-        static int WriteMesh(Autodesk.Fbx.FbxMesh mesh, Donor donor, Tagged tag, FbxExportIntent intent, bool swapUv, HashSet<string> channelsWritten)
+        static int WriteMesh(Autodesk.Fbx.FbxMesh mesh, Donor donor, Tagged tag, bool swapUv, HashSet<string> channelsWritten)
         {
             var topology = new FbxLayerChannels.Topology(mesh);
             var cornerToVertex = PairCorners(donor, tag, topology);
