@@ -272,6 +272,7 @@ namespace SashaRX.UnityMeshLab
                 $"Mesh '{mesh.GetName()}' has {sets.Count} UV set(s); UV{channel} cannot be added without inventing the channels before it.");
             var direct = element.GetDirectArray();
             return Write(element, element.GetIndexArray(), direct.GetCount(), topology, values, changed, 2,
+                i => { var v = direct.GetAt(i); return new[] { v.X, v.Y }; },
                 v => direct.Add(new FbxVector2(v[0], v[1])),
                 (i, v) => direct.SetAt(i, new FbxVector2(v[0], v[1])));
         }
@@ -289,6 +290,7 @@ namespace SashaRX.UnityMeshLab
             }
             var direct = element.GetDirectArray();
             return Write(element, element.GetIndexArray(), direct.GetCount(), topology, values, changed, 4,
+                i => { var v = direct.GetAt(i); return new[] { v.mRed, v.mGreen, v.mBlue, v.mAlpha }; },
                 v => direct.Add(new FbxColor(v[0], v[1], v[2], v[3])),
                 (i, v) => direct.SetAt(i, new FbxColor(v[0], v[1], v[2], v[3])));
         }
@@ -327,7 +329,7 @@ namespace SashaRX.UnityMeshLab
 
         static int Write(FbxLayerElement element, FbxLayerElementArrayTemplateInt index, int directCount,
             in Topology topology, double[] values, bool[] changed, int arity,
-            Func<double[], int> add, Action<int, double[]> set)
+            Func<int, double[]> get, Func<double[], int> add, Action<int, double[]> set)
         {
             int corners = topology.CornerCount;
             if (values.Length != corners * arity || changed.Length != corners)
