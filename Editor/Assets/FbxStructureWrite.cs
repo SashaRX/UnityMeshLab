@@ -506,14 +506,17 @@ namespace SashaRX.UnityMeshLab
                 : material.HasProperty("_Color") ? material.GetColor("_Color") : Color.white;
             var texture = material.HasProperty("_MainTex") || material.HasProperty("_BaseMap") ? material.mainTexture : null;
             string assetPath = texture != null ? AssetDatabase.GetAssetPath(texture) : null;
-            string file = string.IsNullOrEmpty(assetPath) ? null : System.IO.Path.GetFullPath(assetPath).Replace('\\', '/');
+            // Only an image file can be the FBX texture's file: a texture embedded in another
+            // model (a sub-asset of an .fbx) or generated in memory leaves the colour alone.
+            if (string.IsNullOrEmpty(assetPath) || !(AssetImporter.GetAtPath(assetPath) is TextureImporter)) { texture = null; assetPath = null; }
+            string file = assetPath == null ? null : System.IO.Path.GetFullPath(assetPath).Replace('\\', '/');
             string relative = null;
             if (file != null && !string.IsNullOrEmpty(options.fbxPath))
             {
                 string folder = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(options.fbxPath));
                 relative = System.IO.Path.GetRelativePath(folder, file).Replace('\\', '/');
             }
-            return FbxStructureEdit.NewMaterial(scene, name, color.r, color.g, color.b, texture != null ? texture.name : null, file, relative);
+            return FbxStructureEdit.NewMaterial(scene, name, color.r, color.g, color.b, texture != null ? MeshHygieneUtility.SanitizeName(texture.name) : null, file, relative);
         }
 
         static Reference Resolve(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged, string name)

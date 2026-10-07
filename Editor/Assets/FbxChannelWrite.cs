@@ -427,7 +427,13 @@ namespace SashaRX.UnityMeshLab
                     bool unchanged = donor.normals == null && imported != null && imported.tangents.SequenceEqual(tangents);
                     if (!unchanged) { donor.tangents = tangents; donor.frameNormals = mesh.normals; any = true; }
                 }
-                else if (!tangentIntent) { /* a normals-only save adds or drops no tangents */ }
+                else if (!tangentIntent)
+                {
+                    // A normals-only save adds or drops no tangents; but new normals under the
+                    // file's old frame (the mesh dropped its tangents) would leave its binormals stale.
+                    if (hasNormals && importedAny.HasVertexAttribute(VertexAttribute.Tangent))
+                        throw new FbxStructureRefusalException($"'{donor.name}': its normals changed and its tangents were removed; save tangents too, so the FBX tangent frame goes with the normals");
+                }
                 else if (hasTangents)
                 {
                     // The file's binormal is built from the normal: changed tangents on a mesh
