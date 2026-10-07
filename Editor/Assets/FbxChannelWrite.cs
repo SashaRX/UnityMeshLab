@@ -72,6 +72,8 @@ namespace SashaRX.UnityMeshLab
         internal sealed class Tagged
         {
             public int ordinal;
+            /// <summary>Another FBX mesh imported under the same name: a lookup by name may mean either.</summary>
+            public bool ambiguous;
             public float[] cornerPositions;
             public readonly Vector2[][] uvs = new Vector2[8][];
             public Color32[] colors32;
@@ -550,7 +552,8 @@ namespace SashaRX.UnityMeshLab
                 {
                     importedNames.Add(mesh.name);
                     var tag = ReadTags(mesh, tagChannels);
-                    if (tag == null || tagged.ContainsKey(mesh.name)) continue;
+                    if (tag == null) continue;
+                    if (tagged.TryGetValue(mesh.name, out var first)) { first.ambiguous = true; continue; }
                     if (takenSets.TryGetValue(tag.ordinal, out var values)) tag.uvs[tagChannels[tag.ordinal]] = PerCornerUvs(values, tag.cornerPositions.Length / 3);
                     tagged[mesh.name] = tag;
                 }

@@ -442,6 +442,8 @@ namespace SashaRX.UnityMeshLab
         {
             if (!tagged.TryGetValue(edit.meshName, out var tag))
                 throw new FbxStructureRefusalException($"'{edit.meshName}' is not a mesh of the FBX (or its corner tags did not survive the import)");
+            if (tag.ambiguous)
+                throw new FbxStructureRefusalException($"'{edit.nodeName}': several meshes of the FBX import as '{edit.meshName}'; which one it shows cannot be told");
             var mesh = document.Meshes[tag.ordinal];
             int index = -1, matches = 0;
             for (int i = 0; i < mesh.GetNodeCount(); i++)
