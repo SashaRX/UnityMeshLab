@@ -26,15 +26,37 @@ namespace SashaRX.UnityMeshLab
             public int missing;
         }
 
-        readonly struct PositionKey : IEquatable<PositionKey>
+        readonly struct PositionKey : IEquatable<PositionKey>, IComparable<PositionKey>
         {
             readonly int x, y, z;
             public PositionKey(float px, float py, float pz) { x = Bits(px); y = Bits(py); z = Bits(pz); }
             // -0 and +0 are the same position.
             static int Bits(float v) => v == 0f ? 0 : BitConverter.SingleToInt32Bits(v);
             public bool Equals(PositionKey o) => x == o.x && y == o.y && z == o.z;
+            public int CompareTo(PositionKey o) => x != o.x ? x.CompareTo(o.x) : y != o.y ? y.CompareTo(o.y) : z.CompareTo(o.z);
             public override bool Equals(object obj) => obj is PositionKey k && Equals(k);
             public override int GetHashCode() => unchecked((x * 73856093) ^ (y * 19349663) ^ (z * 83492791));
+        }
+
+        // The distinct corner positions of a face, sorted: a face lies on a polygon exactly when
+        // this set is a subset of the polygon's positions.
+        readonly struct FaceKey : IEquatable<FaceKey>
+        {
+            readonly PositionKey a, b, c, d;
+            readonly int count;
+
+            public FaceKey(List<PositionKey> sorted)
+            {
+                count = sorted.Count;
+                a = sorted[0];
+                b = count > 1 ? sorted[1] : default;
+                c = count > 2 ? sorted[2] : default;
+                d = count > 3 ? sorted[3] : default;
+            }
+
+            public bool Equals(FaceKey o) => count == o.count && a.Equals(o.a) && b.Equals(o.b) && c.Equals(o.c) && d.Equals(o.d);
+            public override bool Equals(object obj) => obj is FaceKey k && Equals(k);
+            public override int GetHashCode() => unchecked(((a.GetHashCode() * 31 + b.GetHashCode()) * 31 + c.GetHashCode()) * 31 + d.GetHashCode() + count);
         }
 
         readonly struct Candidate
@@ -65,6 +87,9 @@ namespace SashaRX.UnityMeshLab
             readonly float[] cornerPositions, positions;
             readonly int[] faceIndices, faceSizes, faceStarts;
             readonly Dictionary<PositionKey, List<(int face, int slot)>> facesAt = new Dictionary<PositionKey, List<(int face, int slot)>>();
+            readonly Dictionary<FaceKey, List<int>> facesOn = new Dictionary<FaceKey, List<int>>();
+            readonly List<PositionKey> subset = new List<PositionKey>(4);
+            readonly List<int> polygonFaces = new List<int>();
             readonly List<Candidate>[] candidates;
             readonly List<PositionKey> polygonKeys = new List<PositionKey>(8);
             readonly List<int> distinct = new List<int>(4);
@@ -81,16 +106,25 @@ namespace SashaRX.UnityMeshLab
                 IndexFaces();
             }
 
-            // Result faces by the position of each of their corners.
+            // Result faces by the position of each of their corners, and by their position set.
             void IndexFaces()
             {
                 for (int f = 0; f < faceSizes.Length; f++)
+                {
+                    subset.Clear();
                     for (int j = 0; j < faceSizes[f]; j++)
                     {
                         var key = VertexKey(positions, faceIndices[faceStarts[f] + j]);
                         if (!facesAt.TryGetValue(key, out var list)) facesAt[key] = list = new List<(int, int)>(6);
                         list.Add((f, j));
+                        if (!subset.Contains(key)) subset.Add(key);
                     }
+                    if (subset.Count > 4) continue; // only triangles and quads are indexed by set
+                    subset.Sort();
+                    var faceKey = new FaceKey(subset);
+                    if (!facesOn.TryGetValue(faceKey, out var faces)) facesOn[faceKey] = faces = new List<int>(1);
+                    faces.Add(f);
+                }
             }
 
             public Result Run(int[] polygonSizes, Func<int, int, bool> signatureMatches, Func<int, int, bool> sameWrittenValues)
@@ -119,24 +153,67 @@ namespace SashaRX.UnityMeshLab
             {
                 polygonKeys.Clear();
                 for (int k = 0; k < size; k++)
-                    if (HasPosition(cornerPositions, start + k)) polygonKeys.Add(CornerKey(cornerPositions, start + k));
+                    if (HasPosition(cornerPositions, start + k))
+                    {
+                        var key = CornerKey(cornerPositions, start + k);
+                        if (!polygonKeys.Contains(key)) polygonKeys.Add(key);
+                    }
                 Normal(cornerPositions, start, size, out double nx, out double ny, out double nz);
 
                 int forward = 0, backward = 0;
-                for (int c = start; c < start + size; c++)
+                foreach (int face in FacesOnPolygon())
                 {
-                    if (!HasPosition(cornerPositions, c) || !facesAt.TryGetValue(CornerKey(cornerPositions, c), out var touching)) continue;
-                    foreach (var (face, slot) in touching)
+                    int orientation = Orientation(positions, faceIndices, faceStarts[face], faceSizes[face], nx, ny, nz);
+                    for (int j = 0; j < faceSizes[face]; j++)
                     {
-                        if (!FaceOnPolygon(positions, faceIndices, faceStarts[face], faceSizes[face], polygonKeys)) continue;
-                        int orientation = Orientation(positions, faceIndices, faceStarts[face], faceSizes[face], nx, ny, nz);
-                        (candidates[c] ??= new List<Candidate>(2)).Add(new Candidate(faceIndices[faceStarts[face] + slot], orientation));
-                        if (orientation > 0) forward++;
-                        else if (orientation < 0) backward++;
+                        int vertex = faceIndices[faceStarts[face] + j];
+                        var key = VertexKey(positions, vertex);
+                        for (int c = start; c < start + size; c++)
+                            if (HasPosition(cornerPositions, c) && CornerKey(cornerPositions, c).Equals(key))
+                                (candidates[c] ??= new List<Candidate>(2)).Add(new Candidate(vertex, orientation));
                     }
+                    if (orientation > 0) forward++;
+                    else if (orientation < 0) backward++;
                 }
                 if (forward == 0 && backward > 0) return -1;
                 return backward == 0 && forward > 0 ? 1 : 0;
+            }
+
+            // The result faces made only of the polygon's positions. Up to 8 distinct positions
+            // the faces are looked up by every position subset a triangle or quad can have, so a
+            // pole shared by many polygons costs nothing extra; larger polygons scan the faces
+            // around their corners.
+            List<int> FacesOnPolygon()
+            {
+                polygonFaces.Clear();
+                int n = polygonKeys.Count;
+                if (n <= 8)
+                {
+                    for (int mask = 1; mask < 1 << n; mask++)
+                    {
+                        if (BitCount(mask) > 4) continue;
+                        subset.Clear();
+                        for (int i = 0; i < n; i++) if ((mask & (1 << i)) != 0) subset.Add(polygonKeys[i]);
+                        subset.Sort();
+                        if (facesOn.TryGetValue(new FaceKey(subset), out var faces)) polygonFaces.AddRange(faces);
+                    }
+                    return polygonFaces;
+                }
+                foreach (var key in polygonKeys)
+                {
+                    if (!facesAt.TryGetValue(key, out var touching)) continue;
+                    foreach (var (face, _) in touching)
+                        if (!polygonFaces.Contains(face) && FaceOnPolygon(positions, faceIndices, faceStarts[face], faceSizes[face], polygonKeys))
+                            polygonFaces.Add(face);
+                }
+                return polygonFaces;
+            }
+
+            static int BitCount(int v)
+            {
+                int count = 0;
+                for (; v != 0; v &= v - 1) count++;
+                return count;
             }
 
             // The vertex for corner c, or -1 with the reason counted in result.

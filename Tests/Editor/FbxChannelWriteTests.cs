@@ -56,6 +56,23 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Match_PairsAFanAroundAPole()
+        {
+            // 400 triangles sharing one centre vertex; the import welds the ring and reverses
+            // the winding. Each polygon finds only its own face, not the 400 around the pole.
+            const int n = 400;
+            var ring = Enumerable.Range(0, n + 1).Select(i => ((float)Math.Cos(i * 0.01), (float)Math.Sin(i * 0.01))).ToArray();
+            var corners = Enumerable.Range(0, n).SelectMany(i => Positions((0, 0), ring[i], ring[i + 1])).ToArray();
+            var vertices = Positions(new[] { (0f, 0f) }.Concat(ring).ToArray());
+            var triangles = Enumerable.Range(0, n).SelectMany(i => new[] { 0, i + 2, i + 1 }).ToArray();
+            var result = FbxCornerMatch.Match(Enumerable.Repeat(3, n).ToArray(), corners, vertices, triangles,
+                Enumerable.Repeat(3, n).ToArray(), null, (a, b) => a == b);
+            Assert.AreEqual(0, result.unresolved + result.conflicts + result.missing);
+            for (int i = 0; i < n; i++)
+                CollectionAssert.AreEqual(new[] { 0, i + 1, i + 2 }, result.cornerToVertex.Skip(i * 3).Take(3).ToArray());
+        }
+
+        [Test]
         public void Match_CountsCornersTheImportDropped()
         {
             var corners = Positions((0, 0), (-1, 0), (-1, 1));

@@ -289,7 +289,14 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   (UV3 on a mesh with one set), corner tags lost on import (Mesh
   Compression), an instanced FBX mesh edited from more than one Unity mesh.
 * The source importer is left alone, except `generateSecondaryUV` is
-  switched off when UV1 was actually written (it would replace it).
+  switched off when UV1 was actually written (it would replace it). Since
+  that holds for the whole model, every mesh's generated UV1 is then written
+  too; a save that would leave a mesh of the model without UV1 (not loaded in
+  MeshLab) is refused. The sidecar's UV2 replay is held off only for an
+  import that brings a written UV1, and a persistent sidecar is updated to
+  the saved UVs after the hub's save.
+* "Unchanged geometry" means the same faces per submesh (position loops,
+  same winding, any order or vertex numbering), not just the same counts.
 * The hub's Overwrite / Export New FBX (`All`) takes this path when the work
   changed only channels of meshes the file already has. Generated LODs or
   sidecar collision need the LOD-rebuild path; the dialog says what that

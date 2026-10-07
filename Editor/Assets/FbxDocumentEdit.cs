@@ -42,25 +42,35 @@ namespace SashaRX.UnityMeshLab
             // the same media again.
             scratch = Path.Combine(Path.GetTempPath(), "meshlab-fbx-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(scratch);
-            string input = Path.Combine(scratch, "input.fbx");
-            File.Copy(path, input);
-            Binary = IsBinary(input);
-
-            Manager = FbxManager.Create();
-            var io = FbxIOSettings.Create(Manager, Globals.IOSROOT);
-            Manager.SetIOSettings(io);
-            Scene = FbxScene.Create(Manager, "MeshLabDocument");
-            using (var importer = FbxImporter.Create(Manager, "MeshLabImport"))
+            try
             {
-                if (!importer.Initialize(input, -1, io))
-                    throw new IOException($"FBX SDK cannot open '{path}'.");
-                importer.GetFileVersion(out Major, out Minor, out _);
-                if (!importer.Import(Scene))
-                    throw new IOException($"FBX SDK cannot read '{path}'.");
+                string input = Path.Combine(scratch, "input.fbx");
+                File.Copy(path, input);
+                Binary = IsBinary(input);
+
+                Manager = FbxManager.Create();
+                var io = FbxIOSettings.Create(Manager, Globals.IOSROOT);
+                Manager.SetIOSettings(io);
+                Scene = FbxScene.Create(Manager, "MeshLabDocument");
+                using (var importer = FbxImporter.Create(Manager, "MeshLabImport"))
+                {
+                    if (!importer.Initialize(input, -1, io))
+                        throw new IOException($"FBX SDK cannot open '{path}'.");
+                    importer.GetFileVersion(out Major, out Minor, out _);
+                    if (!importer.Import(Scene))
+                        throw new IOException($"FBX SDK cannot read '{path}'.");
+                }
+                string media = Path.Combine(scratch, "input.fbm");
+                EmbedsMedia = Directory.Exists(media) && Directory.GetFileSystemEntries(media).Length > 0;
+                CollectMeshes(Scene.GetRootNode(), Meshes);
             }
-            string media = Path.Combine(scratch, "input.fbm");
-            EmbedsMedia = Directory.Exists(media) && Directory.GetFileSystemEntries(media).Length > 0;
-            CollectMeshes(Scene.GetRootNode(), Meshes);
+            catch
+            {
+                // No document is returned, so Dispose never runs: release what was made here.
+                Manager?.Destroy();
+                DeleteScratch();
+                throw;
+            }
         }
 
         public static FbxSourceDocument Load(string path)
@@ -113,6 +123,11 @@ namespace SashaRX.UnityMeshLab
         public void Dispose()
         {
             Manager.Destroy();
+            DeleteScratch();
+        }
+
+        void DeleteScratch()
+        {
             try { if (Directory.Exists(scratch)) Directory.Delete(scratch, true); }
             catch (IOException) { /* a leftover temp folder is harmless */ }
         }

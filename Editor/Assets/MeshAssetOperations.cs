@@ -298,7 +298,8 @@ namespace SashaRX.UnityMeshLab
         void ExportNarrowIntentGroups(
             Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>> fbxGroups,
             FbxExportIntent intent,
-            bool overwriteSource)
+            bool overwriteSource,
+            bool syncSidecar = false)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             int okCount = 0;
@@ -311,8 +312,11 @@ namespace SashaRX.UnityMeshLab
                 if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath)) continue;
 
                 RestoreAllPreviews();
-                if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
-                    okCount++;
+                if (!ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath)) continue;
+                okCount++;
+                bool isVariant = !string.IsNullOrEmpty(outputFbxPath)
+                    && !string.Equals(outputFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
+                if (syncSidecar && !isVariant) SyncPersistentSidecar(sourceFbxPath, kv.Value);
             }
             UvtLog.Info($"[FBX Export] Narrow-intent export: {okCount}/{totalCount} group(s) succeeded.");
 #else
@@ -321,6 +325,16 @@ namespace SashaRX.UnityMeshLab
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        // A persistent sidecar re-applies its UV2 on every import; after a save wrote the
+        // meshes' UVs into the file, its entries must hold the same UVs or the next import
+        // would bring the old ones back.
+        void SyncPersistentSidecar(string sourceFbxPath, List<(MeshEntry entry, Mesh resultMesh)> group)
+        {
+            if (!PostprocessorDefineManager.IsEnabled() || SidecarStore.Load(sourceFbxPath) == null) return;
+            int saved = SidecarStore.SaveEntries(sourceFbxPath, BuildSidecarEntriesForExport(group));
+            if (saved > 0) UvtLog.Info($"[FBX Export] Updated {saved} UV2 entr(ies) in '{SidecarStore.PathFor(sourceFbxPath)}' to match the saved FBX.");
+        }
+
         static bool TryChooseNarrowExportPath(string sourceFbxPath, FbxExportIntent intent, bool overwriteSource, out string outputFbxPath)
         {
             outputFbxPath = null;
@@ -499,7 +513,7 @@ namespace SashaRX.UnityMeshLab
                 var reasons = StructuralChanges(fbxGroups);
                 if (reasons.Count == 0)
                 {
-                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource);
+                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource, syncSidecar: true);
                     return;
                 }
                 int choice = EditorUtility.DisplayDialogComplex("Rebuild FBX?",
@@ -511,7 +525,7 @@ namespace SashaRX.UnityMeshLab
                 if (choice == 1) return;
                 if (choice == 2)
                 {
-                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource);
+                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource, syncSidecar: true);
                     return;
                 }
             }
@@ -544,26 +558,64 @@ namespace SashaRX.UnityMeshLab
             return reasons;
         }
 
-        // Faces or positions differ from the import. Vertex dedup, UV welds and symmetry splits
-        // keep both (same triangles on the same points) and are channel work, not geometry.
-        static bool GeometryDiffers(Mesh imported, Mesh result)
+        // Faces differ from the import: per submesh, the same faces (as position loops, any
+        // starting corner, same winding) in any order and any vertex numbering. Vertex dedup,
+        // UV welds and symmetry splits keep that and are channel work, not geometry; a
+        // re-triangulated quad, a flipped or moved face, or a submesh change is geometry.
+        internal static bool GeometryDiffers(Mesh imported, Mesh result)
         {
             if (result == null || result == imported || !imported.isReadable || !result.isReadable) return false;
-            if (TriangleCount(imported) != TriangleCount(result)) return true;
-            return !new HashSet<Vector3>(imported.vertices).SetEquals(result.vertices);
+            if (imported.subMeshCount != result.subMeshCount) return true;
+            var importedVertices = imported.vertices;
+            var resultVertices = result.vertices;
+            for (int s = 0; s < imported.subMeshCount; s++)
+            {
+                if (imported.GetTopology(s) != result.GetTopology(s)) return true;
+                int size = imported.GetTopology(s) == MeshTopology.Quads ? 4 : 3;
+                if (!SameFaces(importedVertices, imported.GetIndices(s), resultVertices, result.GetIndices(s), size)) return true;
+            }
+            return false;
         }
 
-        static long TriangleCount(Mesh mesh)
+        static bool SameFaces(Vector3[] aVertices, int[] aIndices, Vector3[] bVertices, int[] bIndices, int size)
         {
-            long count = 0;
-            for (int s = 0; s < mesh.subMeshCount; s++)
+            if (aIndices.Length != bIndices.Length) return false;
+            var counts = new Dictionary<(Vector3, Vector3, Vector3, Vector3), int>();
+            for (int f = 0; f + size <= aIndices.Length; f += size)
             {
-                var topology = mesh.GetTopology(s);
-                long indices = mesh.GetIndexCount(s);
-                if (topology == MeshTopology.Triangles) count += indices / 3;
-                else if (topology == MeshTopology.Quads) count += indices / 4 * 2;
+                var key = FaceLoop(aVertices, aIndices, f, size);
+                counts.TryGetValue(key, out int n);
+                counts[key] = n + 1;
             }
-            return count;
+            for (int f = 0; f + size <= bIndices.Length; f += size)
+            {
+                var key = FaceLoop(bVertices, bIndices, f, size);
+                if (!counts.TryGetValue(key, out int n) || n == 0) return false;
+                counts[key] = n - 1;
+            }
+            return true;
+        }
+
+        // The face's positions in winding order, started at the rotation that is smallest.
+        static (Vector3, Vector3, Vector3, Vector3) FaceLoop(Vector3[] vertices, int[] indices, int start, int size)
+        {
+            int best = 0;
+            for (int r = 1; r < size; r++)
+                if (CompareRotations(vertices, indices, start, size, r, best) < 0) best = r;
+            Vector3 At(int k) => k < size ? vertices[indices[start + (best + k) % size]] : default;
+            return (At(0), At(1), At(2), At(3));
+        }
+
+        static int CompareRotations(Vector3[] vertices, int[] indices, int start, int size, int r1, int r2)
+        {
+            for (int k = 0; k < size; k++)
+            {
+                var a = vertices[indices[start + (r1 + k) % size]];
+                var b = vertices[indices[start + (r2 + k) % size]];
+                int c = a.x != b.x ? a.x.CompareTo(b.x) : a.y != b.y ? a.y.CompareTo(b.y) : a.z.CompareTo(b.z);
+                if (c != 0) return c;
+            }
+            return 0;
         }
 
         void FinishHierarchyExports(HierarchyExportBatch batch, bool overwriteSource, bool allGroupsSucceeded)
