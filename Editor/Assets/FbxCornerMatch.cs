@@ -57,87 +57,110 @@ namespace SashaRX.UnityMeshLab
             if (positions == null) throw new ArgumentNullException(nameof(positions));
             if (faceIndices == null || faceSizes == null) throw new ArgumentNullException(nameof(faceIndices));
             if (sameWrittenValues == null) throw new ArgumentNullException(nameof(sameWrittenValues));
+            return new Matcher(cornerPositions, positions, faceIndices, faceSizes).Run(polygonSizes, signatureMatches, sameWrittenValues);
+        }
 
-            int cornerCount = cornerPositions.Length / 3;
-            var faceStarts = new int[faceSizes.Length];
-            for (int f = 0, s = 0; f < faceSizes.Length; s += faceSizes[f], f++) faceStarts[f] = s;
+        sealed class Matcher
+        {
+            readonly float[] cornerPositions, positions;
+            readonly int[] faceIndices, faceSizes, faceStarts;
+            readonly Dictionary<PositionKey, List<(int face, int slot)>> facesAt = new Dictionary<PositionKey, List<(int face, int slot)>>();
+            readonly List<Candidate>[] candidates;
+            readonly List<PositionKey> polygonKeys = new List<PositionKey>(8);
+            readonly List<int> distinct = new List<int>(4);
+
+            public Matcher(float[] cornerPositions, float[] positions, int[] faceIndices, int[] faceSizes)
+            {
+                this.cornerPositions = cornerPositions;
+                this.positions = positions;
+                this.faceIndices = faceIndices;
+                this.faceSizes = faceSizes;
+                faceStarts = new int[faceSizes.Length];
+                for (int f = 0, s = 0; f < faceSizes.Length; s += faceSizes[f], f++) faceStarts[f] = s;
+                candidates = new List<Candidate>[cornerPositions.Length / 3];
+                IndexFaces();
+            }
 
             // Result faces by the position of each of their corners.
-            var facesAt = new Dictionary<PositionKey, List<(int face, int slot)>>();
-            for (int f = 0; f < faceSizes.Length; f++)
-                for (int j = 0; j < faceSizes[f]; j++)
-                {
-                    var key = VertexKey(positions, faceIndices[faceStarts[f] + j]);
-                    if (!facesAt.TryGetValue(key, out var list)) facesAt[key] = list = new List<(int, int)>(6);
-                    list.Add((f, j));
-                }
-
-            // Pass 1: every face of the result mesh lying on the polygon's own corners is a
-            // candidate for each corner it touches. Orientation is recorded, not yet used:
-            // whether Unity's import kept or reversed the winding depends on its axis
-            // conversion, so the relation is learned from the polygons whose faces all agree
-            // (a double-sided duplicate has faces both ways and does not vote).
-            var candidates = new List<Candidate>[cornerCount];
-            var result = new Result { cornerToVertex = new int[cornerCount] };
-            int orientationVotes = 0;
-            var polygonKeys = new List<PositionKey>(8);
-            for (int p = 0, start = 0; p < polygonSizes.Length; start += polygonSizes[p], p++)
+            void IndexFaces()
             {
-                int size = polygonSizes[p];
+                for (int f = 0; f < faceSizes.Length; f++)
+                    for (int j = 0; j < faceSizes[f]; j++)
+                    {
+                        var key = VertexKey(positions, faceIndices[faceStarts[f] + j]);
+                        if (!facesAt.TryGetValue(key, out var list)) facesAt[key] = list = new List<(int, int)>(6);
+                        list.Add((f, j));
+                    }
+            }
+
+            public Result Run(int[] polygonSizes, Func<int, int, bool> signatureMatches, Func<int, int, bool> sameWrittenValues)
+            {
+                // Pass 1: every face of the result mesh lying on the polygon's own corners is a
+                // candidate for each corner it touches. Orientation is recorded, not yet used:
+                // whether Unity's import kept or reversed the winding depends on its axis
+                // conversion, so the relation is learned from the polygons whose faces all agree
+                // (a double-sided duplicate has faces both ways and does not vote).
+                int orientationVotes = 0;
+                for (int p = 0, start = 0; p < polygonSizes.Length; start += polygonSizes[p], p++)
+                    orientationVotes += CollectPolygon(start, polygonSizes[p]);
+                // No polygon decides it: Unity mirrors X on import and reverses the winding to
+                // keep faces facing out, so a face runs against its polygon's corner order.
+                int relation = orientationVotes != 0 ? Math.Sign(orientationVotes) : -1;
+
+                // Pass 2: drop back-facing duplicates, then settle each corner.
+                var result = new Result { cornerToVertex = new int[candidates.Length] };
+                for (int c = 0; c < candidates.Length; c++)
+                    result.cornerToVertex[c] = Settle(c, relation, signatureMatches, sameWrittenValues, result);
+                return result;
+            }
+
+            // Records the candidates of one polygon's corners; returns its orientation vote.
+            int CollectPolygon(int start, int size)
+            {
                 polygonKeys.Clear();
                 for (int k = 0; k < size; k++)
                     if (HasPosition(cornerPositions, start + k)) polygonKeys.Add(CornerKey(cornerPositions, start + k));
                 Normal(cornerPositions, start, size, out double nx, out double ny, out double nz);
 
                 int forward = 0, backward = 0;
-                for (int k = 0; k < size; k++)
+                for (int c = start; c < start + size; c++)
                 {
-                    int c = start + k;
-                    if (!HasPosition(cornerPositions, c)) continue;
-                    if (!facesAt.TryGetValue(CornerKey(cornerPositions, c), out var touching)) continue;
+                    if (!HasPosition(cornerPositions, c) || !facesAt.TryGetValue(CornerKey(cornerPositions, c), out var touching)) continue;
                     foreach (var (face, slot) in touching)
                     {
                         if (!FaceOnPolygon(positions, faceIndices, faceStarts[face], faceSizes[face], polygonKeys)) continue;
                         int orientation = Orientation(positions, faceIndices, faceStarts[face], faceSizes[face], nx, ny, nz);
                         (candidates[c] ??= new List<Candidate>(2)).Add(new Candidate(faceIndices[faceStarts[face] + slot], orientation));
-                        if (orientation > 0) forward++; else if (orientation < 0) backward++;
+                        if (orientation > 0) forward++;
+                        else if (orientation < 0) backward++;
                     }
                 }
-                if (forward == 0 && backward > 0) orientationVotes--;
-                else if (backward == 0 && forward > 0) orientationVotes++;
+                if (forward == 0 && backward > 0) return -1;
+                return backward == 0 && forward > 0 ? 1 : 0;
             }
-            // No polygon decides it: Unity mirrors X on import and reverses the winding to
-            // keep faces facing out, so a face runs against its polygon's corner order.
-            int relation = orientationVotes != 0 ? Math.Sign(orientationVotes) : -1;
 
-            // Pass 2: drop back-facing duplicates, then settle each corner.
-            var distinct = new List<int>(4);
-            for (int c = 0; c < cornerCount; c++)
+            // The vertex for corner c, or -1 with the reason counted in result.
+            int Settle(int c, int relation, Func<int, int, bool> signatureMatches, Func<int, int, bool> sameWrittenValues, Result result)
             {
-                result.cornerToVertex[c] = -1;
-                if (!HasPosition(cornerPositions, c)) { result.missing++; continue; }
-                var list = candidates[c];
-                if (list == null) { result.unresolved++; continue; }
+                if (!HasPosition(cornerPositions, c)) { result.missing++; return -1; }
+                if (candidates[c] == null) { result.unresolved++; return -1; }
 
                 distinct.Clear();
-                foreach (var cand in list)
+                foreach (var cand in candidates[c])
                     if ((cand.orientation == 0 || cand.orientation == relation) && !distinct.Contains(cand.vertex))
                         distinct.Add(cand.vertex);
                 if (distinct.Count > 1 && signatureMatches != null)
                 {
-                    int corner = c;
-                    var agreeing = distinct.FindAll(v => signatureMatches(corner, v));
+                    var agreeing = distinct.FindAll(v => signatureMatches(c, v));
                     if (agreeing.Count > 0) { distinct.Clear(); distinct.AddRange(agreeing); }
                 }
-                if (distinct.Count == 0) { result.unresolved++; continue; }
+                if (distinct.Count == 0) { result.unresolved++; return -1; }
 
                 int chosen = distinct[0];
-                bool agree = true;
-                for (int i = 1; i < distinct.Count && agree; i++) agree = sameWrittenValues(chosen, distinct[i]);
-                if (!agree) { result.conflicts++; continue; }
-                result.cornerToVertex[c] = chosen;
+                for (int i = 1; i < distinct.Count; i++)
+                    if (!sameWrittenValues(chosen, distinct[i])) { result.conflicts++; return -1; }
+                return chosen;
             }
-            return result;
         }
 
         static bool HasPosition(float[] p, int i) => !float.IsNaN(p[i * 3]);

@@ -138,60 +138,10 @@ namespace SashaRX.UnityMeshLab
         {
             var donors = new List<Donor>();
             var byName = new Dictionary<string, Donor>(StringComparer.Ordinal);
-            foreach (var entry in entries)
+            foreach (var entry in entries.Where(e => e != null && e.include))
             {
-                if (entry == null || !entry.include) continue;
-                var source = entry.originalMesh ?? entry.fbxMesh;
-                var mesh = entry.repackedMesh ?? entry.transferredMesh ?? source;
-                var identity = entry.fbxMesh ?? source;
-                if (mesh == null || identity == null) continue;
-
-                var donor = new Donor { name = identity.name };
-                var vertices = mesh.vertices;
-                donor.positions = new float[vertices.Length * 3];
-                for (int i = 0; i < vertices.Length; i++)
-                {
-                    donor.positions[i * 3] = vertices[i].x; donor.positions[i * 3 + 1] = vertices[i].y; donor.positions[i * 3 + 2] = vertices[i].z;
-                }
-                ReadFaces(mesh, out donor.faces, out donor.faceSizes);
-
-                // A channel the working copy holds exactly as the current import does was not
-                // edited here (e.g. lightmap UVs Unity generates on import): leave it out. A
-                // mesh edited in place (the working copy is the asset mesh) cannot be told
-                // apart, so its channels go on to the per-corner comparison.
-                var imported = entry.fbxMesh != null && entry.fbxMesh != mesh && entry.fbxMesh.isReadable
-                    && entry.fbxMesh.vertexCount == mesh.vertexCount ? entry.fbxMesh : null;
-                bool any = false;
-                var list = new List<Vector2>();
-                var importedList = new List<Vector2>();
-                for (int ch = 0; ch < 8; ch++)
-                {
-                    if (!intent.IncludesUv(ch)) continue;
-                    // The asset mesh's UV1 is Unity's own when 'Generate Lightmap UVs' is on.
-                    if (ch == 1 && generatedUv1 && mesh == entry.fbxMesh) continue;
-                    mesh.GetUVs(ch, list);
-                    if (list.Count != mesh.vertexCount) continue;
-                    if (imported != null) { imported.GetUVs(ch, importedList); if (importedList.SequenceEqual(list)) continue; }
-                    donor.uvs[ch] = list.ToArray();
-                    any = true;
-                }
-                if ((intent & FbxExportIntent.VertexColors) != 0)
-                {
-                    var c = mesh.colors;
-                    bool bytes = mesh.HasVertexAttribute(VertexAttribute.Color)
-                        && mesh.GetVertexAttributeFormat(VertexAttribute.Color) == VertexAttributeFormat.UNorm8;
-                    bool unedited = imported != null && (bytes
-                        ? imported.colors32.SequenceEqual(mesh.colors32, Color32Comparer.Instance)
-                        : imported.colors.SequenceEqual(c));
-                    if (c != null && c.Length == mesh.vertexCount && !unedited)
-                    {
-                        donor.colors = c;
-                        donor.colors32 = mesh.colors32;
-                        donor.colorsAreBytes = bytes;
-                        any = true;
-                    }
-                }
-                if (!any) continue;
+                var donor = CaptureDonor(entry, intent, generatedUv1);
+                if (donor == null) continue;
                 // Instances of one FBX mesh share its data: the same edit twice is one edit,
                 // different edits cannot both be written.
                 if (byName.TryGetValue(donor.name, out var first))
@@ -204,6 +154,74 @@ namespace SashaRX.UnityMeshLab
                 donors.Add(donor);
             }
             return donors;
+        }
+
+        // The entry's working mesh with the intent's channels it edited, or null when it edited none.
+        static Donor CaptureDonor(MeshEntry entry, FbxExportIntent intent, bool generatedUv1)
+        {
+            var source = entry.originalMesh ?? entry.fbxMesh;
+            var mesh = entry.repackedMesh ?? entry.transferredMesh ?? source;
+            var identity = entry.fbxMesh ?? source;
+            if (mesh == null || identity == null) return null;
+
+            var donor = new Donor { name = identity.name };
+            // A channel the working copy holds exactly as the current import does was not
+            // edited here (e.g. lightmap UVs Unity generates on import): leave it out. A
+            // mesh edited in place (the working copy is the asset mesh) cannot be told
+            // apart, so its channels go on to the per-corner comparison.
+            var imported = entry.fbxMesh != null && entry.fbxMesh != mesh && entry.fbxMesh.isReadable
+                && entry.fbxMesh.vertexCount == mesh.vertexCount ? entry.fbxMesh : null;
+            // The asset mesh's UV1 is Unity's own when 'Generate Lightmap UVs' is on.
+            bool skipUv1 = generatedUv1 && mesh == entry.fbxMesh;
+            bool any = CaptureUvs(donor, mesh, imported, intent, skipUv1);
+            if ((intent & FbxExportIntent.VertexColors) != 0) any |= CaptureColors(donor, mesh, imported);
+            if (!any) return null;
+
+            var vertices = mesh.vertices;
+            donor.positions = new float[vertices.Length * 3];
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                donor.positions[i * 3] = vertices[i].x; donor.positions[i * 3 + 1] = vertices[i].y; donor.positions[i * 3 + 2] = vertices[i].z;
+            }
+            ReadFaces(mesh, out donor.faces, out donor.faceSizes);
+            return donor;
+        }
+
+        static bool CaptureUvs(Donor donor, Mesh mesh, Mesh imported, FbxExportIntent intent, bool skipUv1)
+        {
+            bool any = false;
+            var list = new List<Vector2>();
+            var importedList = new List<Vector2>();
+            for (int ch = 0; ch < 8; ch++)
+            {
+                if (!intent.IncludesUv(ch) || (ch == 1 && skipUv1)) continue;
+                mesh.GetUVs(ch, list);
+                if (list.Count != mesh.vertexCount) continue;
+                if (imported != null)
+                {
+                    imported.GetUVs(ch, importedList);
+                    if (importedList.SequenceEqual(list)) continue;
+                }
+                donor.uvs[ch] = list.ToArray();
+                any = true;
+            }
+            return any;
+        }
+
+        static bool CaptureColors(Donor donor, Mesh mesh, Mesh imported)
+        {
+            var colors = mesh.colors;
+            if (colors == null || colors.Length != mesh.vertexCount) return false;
+            bool bytes = mesh.HasVertexAttribute(VertexAttribute.Color)
+                && mesh.GetVertexAttributeFormat(VertexAttribute.Color) == VertexAttributeFormat.UNorm8;
+            if (imported != null && (bytes
+                ? imported.colors32.SequenceEqual(mesh.colors32, Color32Comparer.Instance)
+                : imported.colors.SequenceEqual(colors)))
+                return false;
+            donor.colors = colors;
+            donor.colors32 = mesh.colors32;
+            donor.colorsAreBytes = bytes;
+            return true;
         }
 
         static bool SameEdit(Donor a, Donor b)
@@ -356,30 +374,7 @@ namespace SashaRX.UnityMeshLab
         static int WriteMesh(Autodesk.Fbx.FbxMesh mesh, Donor donor, Tagged tag, FbxExportIntent intent, bool swapUv, HashSet<string> channelsWritten)
         {
             var topology = new FbxLayerChannels.Topology(mesh);
-            if (tag.cornerPositions.Length > topology.CornerCount * 3)
-                throw new InvalidOperationException($"'{donor.name}': the tagged import does not match the FBX polygons.");
-            var cornerPositions = tag.cornerPositions;
-            if (cornerPositions.Length < topology.CornerCount * 3)
-            {
-                // Trailing corners of degenerate polygons have no vertex in the import.
-                var padded = new float[topology.CornerCount * 3];
-                for (int i = 0; i < padded.Length; i++) padded[i] = i < cornerPositions.Length ? cornerPositions[i] : float.NaN;
-                cornerPositions = padded;
-            }
-
-            var match = FbxCornerMatch.Match(topology.polygonSizes, cornerPositions, donor.positions, donor.faces, donor.faceSizes,
-                (c, v) => SignatureMatches(donor, tag, intent, c, v),
-                (a, b) => SameWrittenValues(donor, a, b));
-            if (match.conflicts > 0)
-                throw new InvalidOperationException(
-                    $"'{donor.name}': {match.conflicts} FBX corner(s) get different values from different triangles of the same polygon " +
-                    "(a UV seam or colour edge runs inside a polygon). The FBX polygon cannot hold that without being split; nothing was written.");
-            if (match.unresolved > 0)
-                throw new InvalidOperationException(
-                    $"'{donor.name}': {match.unresolved} FBX corner(s) have no face in the working mesh — its geometry differs from the file " +
-                    "(simplified or edited faces). Channels alone cannot carry that; save with a rebuild. Nothing was written.");
-            if (match.missing > 0)
-                UvtLog.Warn($"[FBX Export] '{donor.name}': {match.missing} corner(s) of degenerate polygons have no vertex in Unity's import; they keep their stored values.");
+            var cornerToVertex = PairCorners(donor, tag, intent, topology);
 
             int written = 0;
             int existingUvSets = FbxLayerChannels.UvElements(mesh).Count;
@@ -392,7 +387,7 @@ namespace SashaRX.UnityMeshLab
                 var stored = exists ? tag.uvs[ch] : null;
                 if (exists && stored == null)
                     UvtLog.Verbose($"[FBX Export] '{donor.name}': UV{ch} cannot be compared with the stored set (the tagged copy used that channel); it is written whole.");
-                int uvCorners = WriteChannel(donor.name, $"UV{ch}", topology, match.cornerToVertex, !exists, 2,
+                int uvCorners = WriteChannel(donor.name, $"UV{ch}", topology, cornerToVertex, !exists, 2,
                     (c, v) => stored != null && stored[c].Equals(donor.uvs[ch][v]),
                     (v, values, at) => { values[at] = donor.uvs[ch][v].x; values[at + 1] = donor.uvs[ch][v].y; },
                     (values, changed) => FbxLayerChannels.WriteUv(mesh, set, topology, values, changed));
@@ -403,7 +398,7 @@ namespace SashaRX.UnityMeshLab
             {
                 bool exists = FbxLayerChannels.ColorElement(mesh) != null;
                 bool comparable = exists && tag.colors != null;
-                int colorCorners = WriteChannel(donor.name, "vertex colours", topology, match.cornerToVertex, !exists, 4,
+                int colorCorners = WriteChannel(donor.name, "vertex colours", topology, cornerToVertex, !exists, 4,
                     (c, v) => comparable && (donor.colorsAreBytes ? Same(tag.colors32[c], donor.colors32[v]) : tag.colors[c].Equals(donor.colors[v])),
                     (v, values, at) => { var col = donor.colors[v]; values[at] = col.r; values[at + 1] = col.g; values[at + 2] = col.b; values[at + 3] = col.a; },
                     (values, changed) => FbxLayerChannels.WriteColor(mesh, topology, values, changed));
@@ -411,6 +406,38 @@ namespace SashaRX.UnityMeshLab
                 written += colorCorners;
             }
             return written;
+        }
+
+        // Every FBX corner's vertex in the working mesh; refuses what the file cannot hold.
+        static int[] PairCorners(Donor donor, Tagged tag, FbxExportIntent intent, in FbxLayerChannels.Topology topology)
+        {
+            var match = FbxCornerMatch.Match(topology.polygonSizes, CornerPositions(donor, tag, topology), donor.positions, donor.faces, donor.faceSizes,
+                (c, v) => SignatureMatches(donor, tag, intent, c, v),
+                (a, b) => SameWrittenValues(donor, a, b));
+            if (match.conflicts > 0)
+                throw new InvalidOperationException(
+                    $"'{donor.name}': {match.conflicts} FBX corner(s) get different values from different triangles of the same polygon " +
+                    "(a UV seam or colour edge runs inside a polygon). The FBX polygon cannot hold that without being split; nothing was written.");
+            if (match.unresolved > 0)
+                throw new InvalidOperationException(
+                    $"'{donor.name}': {match.unresolved} FBX corner(s) have no face in the working mesh — its geometry differs from the file " +
+                    "(simplified or edited faces). Channels alone cannot carry that; save with a rebuild. Nothing was written.");
+            if (match.missing > 0)
+                UvtLog.Warn($"[FBX Export] '{donor.name}': {match.missing} corner(s) of degenerate polygons have no vertex in Unity's import; they keep their stored values.");
+            return match.cornerToVertex;
+        }
+
+        // The tagged corner positions, one per FBX corner; trailing corners of degenerate
+        // polygons have no vertex in the import and stay NaN.
+        static float[] CornerPositions(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)
+        {
+            int length = topology.CornerCount * 3;
+            if (tag.cornerPositions.Length > length)
+                throw new InvalidOperationException($"'{donor.name}': the tagged import does not match the FBX polygons.");
+            if (tag.cornerPositions.Length == length) return tag.cornerPositions;
+            var padded = new float[length];
+            for (int i = 0; i < length; i++) padded[i] = i < tag.cornerPositions.Length ? tag.cornerPositions[i] : float.NaN;
+            return padded;
         }
 
         static int WriteChannel(string meshName, string channel, in FbxLayerChannels.Topology topology, int[] cornerToVertex, bool newSet, int arity,
@@ -430,25 +457,29 @@ namespace SashaRX.UnityMeshLab
             }
             if (count == 0) return 0;
 
-            if (newSet)
-            {
-                // A new set needs a value at every corner; an unpaired corner takes the value
-                // of a paired corner on the same control point, never an invented one.
-                var byPoint = new Dictionary<int, int>();
-                for (int c = 0; c < corners; c++) if (changed[c]) byPoint[topology.cornerControlPoint[c]] = c;
-                for (int c = 0; c < corners; c++)
-                {
-                    if (changed[c]) continue;
-                    if (!byPoint.TryGetValue(topology.cornerControlPoint[c], out int from))
-                        throw new InvalidOperationException($"'{meshName}': {channel} would be a new set, but corner {c} has no matching vertex to take a value from; nothing was written.");
-                    Array.Copy(values, from * arity, values, c * arity, arity);
-                    changed[c] = true;
-                    count++;
-                }
-            }
+            if (newSet) count += FillFromControlPoints(meshName, channel, topology, values, changed, arity);
             write(values, changed);
             UvtLog.Verbose($"[FBX Export] '{meshName}': {channel} — {count}/{corners} corner(s) written.");
             return count;
+        }
+
+        // A new set needs a value at every corner; an unpaired corner takes the value of a
+        // paired corner on the same control point, never an invented one. Returns the corners filled.
+        static int FillFromControlPoints(string meshName, string channel, in FbxLayerChannels.Topology topology, double[] values, bool[] changed, int arity)
+        {
+            var byPoint = new Dictionary<int, int>();
+            for (int c = 0; c < changed.Length; c++) if (changed[c]) byPoint[topology.cornerControlPoint[c]] = c;
+            int filled = 0;
+            for (int c = 0; c < changed.Length; c++)
+            {
+                if (changed[c]) continue;
+                if (!byPoint.TryGetValue(topology.cornerControlPoint[c], out int from))
+                    throw new InvalidOperationException($"'{meshName}': {channel} would be a new set, but corner {c} has no matching vertex to take a value from; nothing was written.");
+                Array.Copy(values, from * arity, values, c * arity, arity);
+                changed[c] = true;
+                filled++;
+            }
+            return filled;
         }
 
         // Attributes the write leaves alone must agree between the corner and the vertex.

@@ -11,6 +11,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Autodesk.Fbx;
 
 namespace SashaRX.UnityMeshLab
@@ -301,22 +302,13 @@ namespace SashaRX.UnityMeshLab
         static int[] DirectSlots(FbxLayerElement element, FbxLayerElementArrayTemplateInt index, int directCount, in Topology topology)
         {
             var mapping = element.GetMappingMode();
-            var reference = element.GetReferenceMode();
-            int corners = topology.CornerCount;
-            var slots = new int[corners];
-            int indexCount = reference == FbxLayerElement.EReferenceMode.eDirect ? 0 : index.GetCount();
-            for (int c = 0; c < corners; c++)
+            bool indexed = element.GetReferenceMode() != FbxLayerElement.EReferenceMode.eDirect;
+            int indexCount = indexed ? index.GetCount() : 0;
+            var slots = new int[topology.CornerCount];
+            for (int c = 0; c < slots.Length; c++)
             {
-                int slot;
-                switch (mapping)
-                {
-                    case FbxLayerElement.EMappingMode.eByPolygonVertex: slot = c; break;
-                    case FbxLayerElement.EMappingMode.eByControlPoint: slot = topology.cornerControlPoint[c]; break;
-                    case FbxLayerElement.EMappingMode.eByPolygon: slot = topology.cornerPolygon[c]; break;
-                    case FbxLayerElement.EMappingMode.eAllSame: slot = 0; break;
-                    default: throw new InvalidDataException($"Unsupported layer element mapping {mapping}.");
-                }
-                if (reference != FbxLayerElement.EReferenceMode.eDirect)
+                int slot = MappedSlot(mapping, c, topology);
+                if (indexed)
                 {
                     if (slot >= indexCount) throw new InvalidDataException("Layer element index array is shorter than its mapping requires.");
                     slot = index.GetAt(slot);
@@ -327,6 +319,30 @@ namespace SashaRX.UnityMeshLab
             return slots;
         }
 
+        // The mapping's slot for corner c, before any index array.
+        static int MappedSlot(FbxLayerElement.EMappingMode mapping, int c, in Topology topology)
+        {
+            switch (mapping)
+            {
+                case FbxLayerElement.EMappingMode.eByPolygonVertex: return c;
+                case FbxLayerElement.EMappingMode.eByControlPoint: return topology.cornerControlPoint[c];
+                case FbxLayerElement.EMappingMode.eByPolygon: return topology.cornerPolygon[c];
+                case FbxLayerElement.EMappingMode.eAllSame: return 0;
+                default: throw new InvalidDataException($"Unsupported layer element mapping {mapping}.");
+            }
+        }
+
+        // One layer element's storage and the typed accessors of its direct array.
+        sealed class ElementAccess
+        {
+            public FbxLayerElement element;
+            public FbxLayerElementArrayTemplateInt index;
+            public int directCount, arity;
+            public Func<int, double[]> get;
+            public Func<double[], int> add;
+            public Action<int, double[]> set;
+        }
+
         static int Write(FbxLayerElement element, FbxLayerElementArrayTemplateInt index, int directCount,
             in Topology topology, double[] values, bool[] changed, int arity,
             Func<int, double[]> get, Func<double[], int> add, Action<int, double[]> set)
@@ -334,62 +350,69 @@ namespace SashaRX.UnityMeshLab
             int corners = topology.CornerCount;
             if (values.Length != corners * arity || changed.Length != corners)
                 throw new ArgumentException("Channel values do not match the mesh's corners.");
-            int written = 0;
-            for (int c = 0; c < corners; c++) if (changed[c]) written++;
+            int written = changed.Count(c => c);
             if (written == 0) return 0;
-
-            bool fresh = directCount == 0;
-            if (fresh && written != corners)
+            if (directCount == 0 && written != corners)
                 throw new InvalidOperationException("A new layer element needs a value at every corner.");
-            var mapping = element.GetMappingMode();
-            var reference = element.GetReferenceMode();
-            int[] slots = fresh ? null : DirectSlots(element, index, directCount, topology);
 
-            // Already per corner and stored directly: overwrite the changed corners in place.
-            if (!fresh && mapping == FbxLayerElement.EMappingMode.eByPolygonVertex && reference == FbxLayerElement.EReferenceMode.eDirect)
+            var access = new ElementAccess { element = element, index = index, directCount = directCount, arity = arity, get = get, add = add, set = set };
+            if (directCount > 0 && WriteInPlace(access, topology, values, changed)) return written;
+            WriteIndexedPerCorner(access, topology, values, changed);
+            return written;
+        }
+
+        // Keeps the element's layout when the change fits it: per corner and direct, or per
+        // control point with every corner of each touched point changed to one value.
+        static bool WriteInPlace(ElementAccess access, in Topology topology, double[] values, bool[] changed)
+        {
+            var mapping = access.element.GetMappingMode();
+            bool direct = access.element.GetReferenceMode() == FbxLayerElement.EReferenceMode.eDirect;
+            if (mapping == FbxLayerElement.EMappingMode.eByPolygonVertex && direct)
             {
-                for (int c = 0; c < corners; c++) if (changed[c]) set(c, Slice(values, c, arity));
-                return written;
+                for (int c = 0; c < changed.Length; c++)
+                    if (changed[c]) access.set(c, Slice(values, c, access.arity));
+                return true;
             }
-
-            // Per control point and every corner of each touched control point changed to one
-            // value: keep the mapping and update the control point's value.
-            if (!fresh && mapping == FbxLayerElement.EMappingMode.eByControlPoint && ConsistentPerControlPoint(topology, values, changed, arity, out var perPoint))
+            if (mapping != FbxLayerElement.EMappingMode.eByControlPoint
+                || !ConsistentPerControlPoint(topology, values, changed, access.arity, out var perPoint))
+                return false;
+            foreach (var kv in perPoint)
             {
-                foreach (var kv in perPoint)
-                {
-                    if (reference == FbxLayerElement.EReferenceMode.eDirect) set(kv.Key, kv.Value);
-                    else index.SetAt(kv.Key, add(kv.Value));
-                }
-                return written;
+                if (direct) access.set(kv.Key, kv.Value);
+                else access.index.SetAt(kv.Key, access.add(kv.Value));
             }
+            return true;
+        }
 
-            // Anything else becomes per corner, indexed: the existing values stay where they
-            // are, unchanged corners keep pointing at them, changed corners point at new ones.
-            // Corners share an entry only on the same control point with the same value — a
-            // continuous UV there; equal values on different points (overlapping or mirrored
-            // shells) stay separate, or DCC importers would weld those islands together.
+        // Anything else becomes per corner, indexed: the existing values stay where they
+        // are, unchanged corners keep pointing at them, changed corners point at new ones.
+        // Corners share an entry only on the same control point with the same value — a
+        // continuous UV there; equal values on different points (overlapping or mirrored
+        // shells) stay separate, or DCC importers would weld those islands together.
+        static void WriteIndexedPerCorner(ElementAccess access, in Topology topology, double[] values, bool[] changed)
+        {
+            int corners = topology.CornerCount;
+            int[] slots = access.directCount > 0 ? DirectSlots(access.element, access.index, access.directCount, topology) : null;
             var shared = new Dictionary<(int point, ValueKey value), int>();
             var cornerIndex = new int[corners];
             for (int c = 0; c < corners; c++)
             {
                 if (changed[c]) continue;
                 cornerIndex[c] = slots[c];
-                shared[(topology.cornerControlPoint[c], new ValueKey(get(slots[c])))] = slots[c];
+                shared[(topology.cornerControlPoint[c], new ValueKey(access.get(slots[c])))] = slots[c];
             }
             for (int c = 0; c < corners; c++)
             {
                 if (!changed[c]) continue;
-                var value = Slice(values, c, arity);
+                var value = Slice(values, c, access.arity);
                 var key = (topology.cornerControlPoint[c], new ValueKey(value));
-                if (!shared.TryGetValue(key, out int at)) shared[key] = at = add(value);
+                if (!shared.TryGetValue(key, out int at)) shared[key] = at = access.add(value);
                 cornerIndex[c] = at;
             }
-            element.SetMappingMode(FbxLayerElement.EMappingMode.eByPolygonVertex);
-            element.SetReferenceMode(FbxLayerElement.EReferenceMode.eIndexToDirect);
-            index.SetCount(corners);
-            for (int c = 0; c < corners; c++) index.SetAt(c, cornerIndex[c]);
-            return written;
+            access.element.SetMappingMode(FbxLayerElement.EMappingMode.eByPolygonVertex);
+            access.element.SetReferenceMode(FbxLayerElement.EReferenceMode.eIndexToDirect);
+            access.index.SetCount(corners);
+            for (int c = 0; c < corners; c++) access.index.SetAt(c, cornerIndex[c]);
         }
 
         static bool ConsistentPerControlPoint(in Topology topology, double[] values, bool[] changed, int arity, out Dictionary<int, double[]> perPoint)
@@ -407,8 +430,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 else perPoint[cp] = value;
             }
-            foreach (int cp in perPoint.Keys) if (untouched.Contains(cp)) return false;
-            return true;
+            return !perPoint.Keys.Any(untouched.Contains);
         }
 
         static double[] Slice(double[] values, int corner, int arity)
