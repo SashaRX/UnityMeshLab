@@ -121,9 +121,7 @@ namespace SashaRX.UnityMeshLab
                 faceIdx.Clear();
                 for (int i = 0; i < nf; i++) faceIdx[shell.faceIndices[i]] = i;
 
-                var parent = new int[nf];
-                var rankArr = new int[nf];
-                for (int i = 0; i < nf; i++) parent[i] = i;
+                var components = new DisjointSet(nf);
 
                 int hardCount = 0;
                 foreach (var kv in edgeFaces)
@@ -141,39 +139,25 @@ namespace SashaRX.UnityMeshLab
                             continue;
                         }
                         if (faceIdx.TryGetValue(f0, out int a) && faceIdx.TryGetValue(fj, out int b))
-                            Union(parent, rankArr, a, b);
+                            components.Union(a, b);
                     }
                 }
                 if (hardCount > 0) withHardEdges++;
 
-                // Component sizes (key = root index in `parent`).
-                var compSize = new Dictionary<int, int>();
-                for (int i = 0; i < nf; i++)
-                {
-                    int r = Find(parent, i);
-                    if (!compSize.TryGetValue(r, out int c)) c = 0;
-                    compSize[r] = c + 1;
-                }
+                // A stable component index per face (0..K-1), so the future
+                // actual split can read it directly, and the size of each.
+                var perFace = components.Labels(out int componentCount);
+                var compSize = new int[componentCount];
+                foreach (int component in perFace) compSize[component]++;
 
                 int eligible = 0;
-                foreach (var c in compSize.Values)
+                foreach (int c in compSize)
                     if (c >= minSubshellFaces) eligible++;
 
                 if (eligible >= 2)
                 {
-                    // Materialise a stable component index per face (0..K-1)
-                    // so the future actual split can read this directly.
-                    var rootToIdx = new Dictionary<int, int>();
-                    int next = 0;
-                    var perFace = new int[nf];
-                    for (int i = 0; i < nf; i++)
-                    {
-                        int r = Find(parent, i);
-                        if (!rootToIdx.TryGetValue(r, out int idx)) { idx = next++; rootToIdx[r] = idx; }
-                        perFace[i] = idx;
-                    }
                     splittableCount++;
-                    splittable.Add(new ShellSplitInfo(shell.shellId, compSize.Count, eligible, hardCount, perFace));
+                    splittable.Add(new ShellSplitInfo(shell.shellId, componentCount, eligible, hardCount, perFace));
                 }
             }
 
@@ -192,25 +176,6 @@ namespace SashaRX.UnityMeshLab
                 map[key] = list;
             }
             list.Add(face);
-        }
-
-        static int Find(int[] p, int i)
-        {
-            while (p[i] != i)
-            {
-                p[i] = p[p[i]];
-                i = p[i];
-            }
-            return i;
-        }
-
-        static void Union(int[] p, int[] r, int a, int b)
-        {
-            int ra = Find(p, a), rb = Find(p, b);
-            if (ra == rb) return;
-            if (r[ra] < r[rb]) p[ra] = rb;
-            else if (r[ra] > r[rb]) p[rb] = ra;
-            else { p[rb] = ra; r[ra]++; }
         }
     }
 }

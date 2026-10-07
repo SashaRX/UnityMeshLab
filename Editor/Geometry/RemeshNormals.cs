@@ -45,8 +45,7 @@ namespace SashaRX.UnityMeshLab
             var indices = geometry.indices;
             var slots = MeshGeometry.WeldPositions(geometry.positions, out _);
             var faces = MeshGeometry.FaceNormals(geometry.positions, indices);
-            var parent = new int[indices.Length];
-            for (int i = 0; i < parent.Length; ++i) parent[i] = i;
+            var fans = new DisjointSet(indices.Length);
             var edges = new Dictionary<(int, int), Edge>();
             for (int f = 0; f < indices.Length; f += 3) {
                 if ((f & 4095) == 0) token.ThrowIfCancellationRequested();
@@ -71,9 +70,9 @@ namespace SashaRX.UnityMeshLab
                 if (islands && geometry.charts[indices[a]] != geometry.charts[indices[b]]) continue;
                 int an = a / 3 * 3 + (a + 1) % 3, bn = b / 3 * 3 + (b + 1) % 3;
                 if (slots[indices[a]] == slots[indices[b]]) {
-                    Join(parent, a, b); Join(parent, an, bn);
+                    fans.Union(a, b); fans.Union(an, bn);
                 }
-                else { Join(parent, a, bn); Join(parent, an, b); }
+                else { fans.Union(a, bn); fans.Union(an, b); }
             }
             // Duplicate a render vertex for each normal fan that uses it. Copy
             // every channel verbatim, so splitting a hard normal cannot move a
@@ -90,7 +89,7 @@ namespace SashaRX.UnityMeshLab
             var output = new int[indices.Length];
             for (int corner = 0; corner < indices.Length; ++corner) {
                 if ((corner & 4095) == 0) token.ThrowIfCancellationRequested();
-                int root = Root(parent, corner);
+                int root = fans.Find(corner);
                 if (!compactGroups.TryGetValue(root, out int group)) { group = compactGroups.Count; compactGroups[root] = group; }
                 int v = indices[corner];
                 if (!remap.TryGetValue((v, group), out int dst)) {
@@ -110,20 +109,6 @@ namespace SashaRX.UnityMeshLab
             geometry.positions = p.ToArray(); geometry.normals = n.ToArray(); geometry.uv = uv.ToArray();
             geometry.tangents = t.ToArray(); geometry.charts = charts.ToArray(); geometry.indices = output;
             return groups.ToArray();
-        }
-
-        static int Root(int[] parent, int corner)
-        {
-            int root = corner;
-            while (parent[root] != root) root = parent[root];
-            while (parent[corner] != corner) { int next = parent[corner]; parent[corner] = root; corner = next; }
-            return root;
-        }
-
-        static void Join(int[] parent, int a, int b)
-        {
-            int ra = Root(parent, a), rb = Root(parent, b);
-            if (ra != rb) parent[Math.Max(ra, rb)] = Math.Min(ra, rb);
         }
     }
 }

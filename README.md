@@ -156,7 +156,7 @@ The editor assembly `SashaRX.UnityMeshLab.Editor` (namespace `SashaRX.UnityMeshL
 | `Editor/Tools/` | The tabs, one `IUvTool` each |
 | `Editor/Mesh/` | `MeshNaming` (the one reader of LOD / collision naming rules), `MeshSplitMerge`, `MeshAccess` (reading Read/Write-disabled meshes), `MeshTransform`, `LodHierarchy`, `VertexChannels`, `RendererSettings` |
 | `Editor/Uv/` | `UvTopology` (boundary edges, shells, point-in-triangle, UDIM tiles) |
-| `Editor/Geometry/` | `MeshGeometry`, `GpuReadback`; the BVHs in `Editor/TriangleBvh*.cs` |
+| `Editor/Geometry/` | `MeshGeometry`, `DisjointSet`, `GpuReadback`; the BVHs in `Editor/TriangleBvh*.cs` |
 | `Editor/Assets/` | `FbxExport` (every FBX write), `SidecarStore` (the `_uv2data.asset` sidecar), `TextureAssets` |
 | `Editor/Bench/` | `SweepRunner`, `BenchmarkRunner`, recorder, sweep reports, test suite asset |
 | `Editor/Diagnostics/` | `DebugUi`, `BakeHealth`, `HierarchicalDiag`, `FbxMetricsExporter` |
