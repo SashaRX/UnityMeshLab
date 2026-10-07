@@ -262,10 +262,13 @@ namespace SashaRX.UnityMeshLab
             // The timer is cancelled by the readback's own completion, so a healthy bake
             // keeps no two-minute timers alive; a late callback then finds the task set.
             var timeout = new CancellationTokenSource();
-            completion.Task.ContinueWith(_ => timeout.Cancel(), TaskScheduler.Default);
             Task.Delay(TimeSpan.FromSeconds(ReadbackTimeoutSec), timeout.Token).ContinueWith(delay => {
                 if (!delay.IsCanceled)
                     completion.TrySetException(new TimeoutException($"GPU BVH readback did not complete within {ReadbackTimeoutSec:F0}s."));
+            }, TaskScheduler.Default);
+            completion.Task.ContinueWith(_ => {
+                timeout.Cancel();
+                timeout.Dispose();
             }, TaskScheduler.Default);
             return completion.Task;
         }
