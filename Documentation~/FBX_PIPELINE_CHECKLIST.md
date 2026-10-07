@@ -259,6 +259,71 @@ byte-identical from the source FBX clone (modulo what the
 Unity FBX Exporter itself rewrites at the FBX-document level;
 see §9).
 
+### Channel re-save in the FBX document (UV sets, vertex colours)
+
+An intent made only of `UV0`…`UV7` and `VertexColors` does not go through
+Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
+
+* The source file is loaded with the FBX SDK and saved back in its own
+  container format (binary/ASCII) and file version, with embedded media
+  re-embedded. Two exceptions: a file older than FBX 7.1 is saved as 7.1
+  (the oldest version the SDK writes), and the SDK rewrites the header's
+  creator string and timestamps. Polygons (quads, n-gons), control points, smoothing,
+  materials, nodes, properties and every other layer element are never
+  rebuilt.
+* Inside a written channel only the corners whose value changed are
+  written; unchanged corners keep their stored doubles bit for bit. A
+  by-control-point set stays by-control-point when the change allows it;
+  otherwise it becomes per-corner indexed with the old values kept. New values
+  share an entry only between corners of the same control point with the
+  same value (eIndexToDirect, as TS_UnityExport_SDK writes it), so
+  overlapping or mirrored shells are never welded on a DCC re-import.
+* Vertex colours are read from and written to layer 0 only — the only
+  colour layer Unity's importer reads (TS_UnityExport_SDK checklist I4).
+  Written values are clamped to `[0, 1]` (§4); stored ones are left as they are.
+* Which Unity vertex a corner became is recovered from a throwaway import
+  of a tagged copy (corner index in an extra UV set, same importer settings,
+  `Assets/__MeshLabTemp`, deleted afterwards, also when it fails). A mesh with
+  all eight UV sets lends its last one to the tag; that set's values are read
+  from the file per corner instead. `FbxCornerMatch` pairs corners with the
+  working mesh by position (bit-identical: same file, same import), by the
+  polygon's own corners, and by the untouched UVs and colours, so welding,
+  vertex splits and triangle order do not matter.
+* Refused, nothing written: a value seam inside one polygon (the polygon
+  cannot hold it without being split), a UV set that would skip a channel
+  (UV3 on a mesh with one set), corner tags lost on import (Mesh
+  Compression), an instanced FBX mesh edited from more than one Unity mesh.
+* The source importer is left alone, except `generateSecondaryUV` is
+  switched off when UV1 was actually written (it would replace it). Since
+  that holds for the whole model, every mesh's generated UV1 is then written
+  too; a save that would leave a mesh of the model without UV1 (not loaded in
+  MeshLab) is refused; untouched Read/Write-disabled meshes are read through
+  `MeshAccess` for it. The sidecar's UV2 replay is held off only for an import
+  that brings a written or removed UV1, and a persistent sidecar is updated to
+  the saved UVs after the save (a removed UV1 drops its entry; the entries are
+  built before the write, from the meshes the file was read with). An import
+  that fails after the file is written is reported, and the save still
+  finishes. A standalone renderer (no LODGroup) is relinked to its reimported
+  mesh. A save of several files frees the working copies and reloads the scene
+  once, after the last file, and not at all when a file holding unsaved work
+  was not written (cancelled, refused, failed).
+* "Unchanged geometry" means the same faces per submesh (position loops,
+  same winding, any order or vertex numbering), not just the same counts.
+* A channel the working mesh dropped (Cleanup's attribute removal) is removed
+  from the file: the colour set, or the last UV sets. Removing a UV set before
+  one that stays would renumber it and is refused.
+* Changed renderer materials (Cleanup's material fixes; a renderer that is no
+  prefab instance is compared with the model's renderer of the same mesh, unless
+  the importer imports no materials), changed normals or tangents (an attribute
+  added or removed, or values that differ at the same position, renumbered or
+  not; tangents only where the importer imports them) and `_COL` meshes
+  carrying UVs or colours (Cleanup sends these to the overwrite) are not
+  channel work: the hub's save names them and offers the rebuild.
+* The hub's Overwrite / Export New FBX (`All`) takes this path when the work
+  changed only channels of meshes the file already has. Generated LODs or
+  sidecar collision need the LOD-rebuild path; the dialog says what that
+  costs and offers "Save channels only".
+
 ### `FbxExportIntent` flags
 
 | Flag | When to set |
@@ -312,7 +377,12 @@ their index buffer, and the FBX exporter writes whatever topology the
 serialized mesh has — so the clone that reaches `ModelExporter` must be
 imported with `keepQuads = true`:
 
-* **Isolated core** — Phase 1 enables `keepQuads` on the source importer
+* **Channel re-save (UV / vertex colours)** — not affected: the FBX
+  document's polygons are never rewritten, so quads and n-gons stay as
+  authored whatever `keepQuads` is set to, and `keepQuads` is not touched
+  (a save that writes UV1 does switch `generateSecondaryUV` off, see above).
+* **Isolated core (normals / tangents / hierarchy / materials intents)** —
+  Phase 1 enables `keepQuads` on the source importer
   (alongside `isReadable`) before the clone is loaded. `keepQuads` only
   reshapes the index buffer (4 indices per quad instead of two triangles);
   vertex order and count are untouched, so the snapshot/clone

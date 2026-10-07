@@ -85,20 +85,26 @@ namespace UnityEditor.Formats.Fbx.Exporter
     }
 }
 
-// Autodesk's SDK surface used only for normalized static FBX output.
+// Autodesk's SDK surface: normalized static FBX output and the in-place channel edit
+// (FbxDocumentEdit / FbxChannelWrite). Signatures mirror com.autodesk.fbx 5.1.
 namespace Autodesk.Fbx
 {
     public class FbxManager : System.IDisposable {
         public static FbxManager Create() => new FbxManager();
         public void SetIOSettings(FbxIOSettings io) { }
+        public FbxIOSettings GetIOSettings() => new FbxIOSettings();
+        public FbxIOPluginRegistry GetIOPluginRegistry() => new FbxIOPluginRegistry();
+        public void Destroy() { }
         public void Dispose() { }
     }
+    public class FbxIOPluginRegistry { public int FindWriterIDByDescription(string desc) => 0; }
     public class FbxIOSettings {
         public static FbxIOSettings Create(FbxManager manager, string name) => new FbxIOSettings();
         public void SetBoolProp(string name, bool value) { }
     }
     public static class Globals { public const string IOSROOT = ""; public const string EXP_FBX_EMBEDDED = ""; }
-    public class FbxScene {
+    public class FbxObject { }
+    public class FbxScene : FbxObject {
         public static FbxScene Create(FbxManager manager, string name) => new FbxScene();
         public FbxGlobalSettings GetGlobalSettings() => new FbxGlobalSettings();
         public FbxNode GetRootNode() => new FbxNode();
@@ -111,7 +117,10 @@ namespace Autodesk.Fbx
     public class FbxSystemUnit { public static FbxSystemUnit m => new FbxSystemUnit(); public double GetScaleFactor() => 100; }
     public class FbxAxisSystem { public static FbxAxisSystem Max => new FbxAxisSystem(); public void DeepConvertScene(FbxScene scene) { } }
     public struct FbxDouble3 { public double this[int i] { get => 0; set { } } }
-    public struct FbxVector4 { public double this[int i] { get => 0; set { } } }
+    public struct FbxVector4 {
+        public FbxVector4(double x, double y, double z, double w = 1) { }
+        public double this[int i] { get => 0; set { } }
+    }
     public class FbxPropertyDouble3 { public FbxDouble3 Get() => new FbxDouble3(); }
     public class FbxNode {
         public enum EPivotSet { eSourcePivot }
@@ -123,21 +132,92 @@ namespace Autodesk.Fbx
         public FbxMesh GetMesh() => null;
         public int GetChildCount() => 0;
         public FbxNode GetChild(int i) => null;
+        public static FbxNode Create(FbxObject container, string name) => new FbxNode();
+        public FbxNodeAttribute SetNodeAttribute(FbxNodeAttribute attribute) => attribute;
+        public bool AddChild(FbxNode node) => true;
     }
-    public class FbxMesh {
+    public class FbxNodeAttribute : FbxObject { }
+    public class FbxLayerContainer : FbxNodeAttribute {
+        public int CreateLayer() => 0;
+        public int GetLayerCount() => 0;
+        public FbxLayer GetLayer(int index) => null;
+        public string GetName() => "";
+    }
+    public class FbxMesh : FbxLayerContainer {
+        public static FbxMesh Create(FbxObject container, string name) => new FbxMesh();
+        public void InitControlPoints(int count) { }
+        public void BeginPolygon(int material = -1, int texture = -1, int group = -1, bool legacy = true) { }
+        public void AddPolygon(int index, int textureUvIndex = -1) { }
+        public void EndPolygon() { }
         public int GetControlPointsCount() => 0;
         public FbxVector4 GetControlPointAt(int i) => new FbxVector4();
         public void SetControlPointAt(FbxVector4 v, int i) { }
+        public int GetPolygonCount() => 0;
+        public int GetPolygonSize(int polygon) => 0;
+        public int GetPolygonVertex(int polygon, int position) => 0;
+    }
+    public struct FbxVector2 { public double X, Y; public FbxVector2(double x, double y) { X = x; Y = y; } }
+    public struct FbxColor {
+        public double mRed, mGreen, mBlue, mAlpha;
+        public FbxColor(double red, double green, double blue, double alpha = 1) { mRed = red; mGreen = green; mBlue = blue; mAlpha = alpha; }
+    }
+    public class FbxLayerElementArray {
+        public int GetCount() => 0;
+        public bool SetCount(int count) => true;
+        public int Add(int item) => 0;
+        public int Add(FbxColor item) => 0;
+        public int Add(FbxVector2 item) => 0;
+        public void SetAt(int index, int item) { }
+        public void SetAt(int index, FbxColor item) { }
+        public void SetAt(int index, FbxVector2 item) { }
+    }
+    public class FbxLayerElementArrayTemplateInt : FbxLayerElementArray { public int GetAt(int index) => 0; }
+    public class FbxLayerElementArrayTemplateFbxVector2 : FbxLayerElementArray { public FbxVector2 GetAt(int index) => new FbxVector2(); }
+    public class FbxLayerElementArrayTemplateFbxColor : FbxLayerElementArray { public FbxColor GetAt(int index) => new FbxColor(); }
+    public class FbxLayerElement {
+        public enum EType { eUnknown, eNormal, eBiNormal, eTangent, eMaterial, ePolygonGroup, eUV, eVertexColor, eSmoothing,
+            eVertexCrease, eEdgeCrease, eHole, eUserData, eVisibility, eTextureDiffuse, eTextureDiffuseFactor, eTextureEmissive,
+            eTextureEmissiveFactor, eTextureAmbient, eTextureAmbientFactor, eTextureSpecular, eTextureSpecularFactor,
+            eTextureShininess, eTextureNormalMap, eTextureBump, eTextureTransparency, eTextureTransparencyFactor,
+            eTextureReflection, eTextureReflectionFactor, eTextureDisplacement, eTextureDisplacementVector, eTypeCount }
+        public enum EMappingMode { eNone, eByControlPoint, eByPolygonVertex, eByPolygon, eByEdge, eAllSame }
+        public enum EReferenceMode { eDirect, eIndex, eIndexToDirect }
+        public void SetMappingMode(EMappingMode mode) { }
+        public void SetReferenceMode(EReferenceMode mode) { }
+        public EMappingMode GetMappingMode() => EMappingMode.eNone;
+        public EReferenceMode GetReferenceMode() => EReferenceMode.eDirect;
+    }
+    public class FbxLayerElementTemplateFbxVector2 : FbxLayerElement {
+        public FbxLayerElementArrayTemplateFbxVector2 GetDirectArray() => new FbxLayerElementArrayTemplateFbxVector2();
+        public FbxLayerElementArrayTemplateInt GetIndexArray() => new FbxLayerElementArrayTemplateInt();
+    }
+    public class FbxLayerElementTemplateFbxColor : FbxLayerElement {
+        public FbxLayerElementArrayTemplateFbxColor GetDirectArray() => new FbxLayerElementArrayTemplateFbxColor();
+        public FbxLayerElementArrayTemplateInt GetIndexArray() => new FbxLayerElementArrayTemplateInt();
+    }
+    public class FbxLayerElementUV : FbxLayerElementTemplateFbxVector2 {
+        public static FbxLayerElementUV Create(FbxLayerContainer owner, string name) => new FbxLayerElementUV();
+    }
+    public class FbxLayerElementVertexColor : FbxLayerElementTemplateFbxColor {
+        public static FbxLayerElementVertexColor Create(FbxLayerContainer owner, string name) => new FbxLayerElementVertexColor();
+    }
+    public class FbxLayer {
+        public FbxLayerElementUV GetUVs(FbxLayerElement.EType type) => null;
+        public FbxLayerElementVertexColor GetVertexColors() => null;
+        public void SetUVs(FbxLayerElementUV uvs, FbxLayerElement.EType type) { }
+        public void SetVertexColors(FbxLayerElementVertexColor colors) { }
     }
     public class FbxImporter : System.IDisposable {
         public static FbxImporter Create(FbxManager manager, string name) => new FbxImporter();
         public bool Initialize(string path, int format, FbxIOSettings io) => true;
+        public void GetFileVersion(out int major, out int minor, out int revision) { major = 7; minor = 4; revision = 0; }
         public bool Import(FbxScene scene) => true;
         public void Dispose() { }
     }
     public class FbxExporter : System.IDisposable {
         public static FbxExporter Create(FbxManager manager, string name) => new FbxExporter();
         public bool Initialize(string path, int format, FbxIOSettings io) => true;
+        public bool SetFileExportVersion(string version) => true;
         public bool Export(FbxScene scene) => true;
         public void Dispose() { }
     }

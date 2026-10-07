@@ -303,17 +303,28 @@ namespace SashaRX.UnityMeshLab
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             int okCount = 0;
             int totalCount = 0;
-            foreach (var kv in fbxGroups)
+            BeginSourceSaves();
+            try
             {
-                totalCount++;
-                string sourceFbxPath = kv.Key;
-                var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
-                if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath)) continue;
+                foreach (var kv in fbxGroups)
+                {
+                    totalCount++;
+                    string sourceFbxPath = kv.Key;
+                    var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
+                    if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath))
+                    {
+                        MarkUnsaved(kv.Value);
+                        continue;
+                    }
 
-                RestoreAllPreviews();
-                if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
-                    okCount++;
+                    RestoreAllPreviews();
+                    if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
+                        okCount++;
+                    else
+                        MarkUnsaved(kv.Value);
+                }
             }
+            finally { EndSourceSaves(); }
             UvtLog.Info($"[FBX Export] Narrow-intent export: {okCount}/{totalCount} group(s) succeeded.");
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
@@ -321,6 +332,42 @@ namespace SashaRX.UnityMeshLab
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        // A persistent sidecar re-applies its UV2 on every import; after a save wrote the
+        // meshes' UVs into the file, its entries must hold the same UVs or the next import
+        // would bring the old ones back. The entries are built before the write, from the
+        // meshes the file was read with (the import that follows recreates them), and stored
+        // only once the write succeeded.
+        sealed class SidecarSync
+        {
+            public string fbxPath;
+            public List<MeshUv2Entry> entries;
+            public List<string> dropped;
+        }
+
+        SidecarSync PrepareSidecarSync(string fbxPath, List<(MeshEntry entry, Mesh resultMesh)> group)
+        {
+            if (!PostprocessorDefineManager.IsEnabled() || SidecarStore.Load(fbxPath) == null) return null;
+            // A UV1 the working mesh dropped leaves the file too; its entry would bring it back.
+            const UnityEngine.Rendering.VertexAttribute uv1 = UnityEngine.Rendering.VertexAttribute.TexCoord1;
+            var dropped = group.Where(p => p.entry.fbxMesh != null && p.resultMesh != null && p.resultMesh != p.entry.fbxMesh
+                && p.entry.fbxMesh.HasVertexAttribute(uv1) && !p.resultMesh.HasVertexAttribute(uv1)).ToList();
+            return new SidecarSync
+            {
+                fbxPath = fbxPath,
+                entries = BuildSidecarEntriesForExport(group.Except(dropped).ToList()),
+                dropped = dropped.Select(p => p.entry.fbxMesh.name).ToList(),
+            };
+        }
+
+        static void ApplySidecarSync(SidecarSync sync)
+        {
+            if (sync == null) return;
+            int removed = SidecarStore.RemoveEntries(sync.fbxPath, sync.dropped);
+            int saved = SidecarStore.SaveEntries(sync.fbxPath, sync.entries);
+            if (saved + removed > 0)
+                UvtLog.Info($"[FBX Export] Updated {saved} and removed {removed} UV2 entr(ies) in '{SidecarStore.PathFor(sync.fbxPath)}' to match the saved FBX.");
+        }
+
         static bool TryChooseNarrowExportPath(string sourceFbxPath, FbxExportIntent intent, bool overwriteSource, out string outputFbxPath)
         {
             outputFbxPath = null;
@@ -412,22 +459,134 @@ namespace SashaRX.UnityMeshLab
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             bool isVariantExport = !string.IsNullOrEmpty(outputFbxPathOverride)
                 && !string.Equals(outputFbxPathOverride, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
+            var list = entries as IList<MeshEntry> ?? entries.ToList();
+            // Every UV1 save leaves a persistent sidecar replaying the same: the source's, or a
+            // variant's written into the project that may already have one of its own.
+            string sidecarFbx = !intent.IncludesUv(1) ? null
+                : !isVariantExport ? sourceFbxPath
+                : outputFbxPathOverride.StartsWith("Assets/", StringComparison.Ordinal) ? outputFbxPathOverride : null;
+            var sidecar = sidecarFbx == null ? null
+                : PrepareSidecarSync(sidecarFbx, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
+            if (!isVariantExport) PrepareStandaloneRelink(sourceFbxPath);
             bool exported = FbxExport.WriteChannels(
-                sourceFbxPath, entries, intent, outputFbxPathOverride,
+                sourceFbxPath, list, intent, outputFbxPathOverride,
                 FbxExport.FirstRealMaterial(ctx?.MeshEntries),
                 isVariantExport ? null : ctx?.LodGroup);
-            if (!exported) return false;
-            if (!isVariantExport)
-            {
-                if (ctx?.LodGroup != null) ctx.Refresh(ctx.LodGroup);
-                RestoreWorkingCopiesToScene();
-                AfterWrite?.Invoke();
-            }
+            if (!exported) { standaloneRelinks.Clear(); return false; }
+            ApplySidecarSync(sidecar);
+            if (!isVariantExport) AfterSourceSave();
             return true;
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
             return false;
 #endif
+        }
+
+        // A source re-save leaves the entries holding copies of what the file now has: the
+        // copies are freed and the scene reloaded. Within a save of several files that waits
+        // for the last one, since the groups still to be written hold the same entries.
+        // A file of the batch that was not written (cancelled, refused, failed) while its
+        // entries hold working copies keeps them: they are the only record of that work, so
+        // the batch then ends without freeing or reloading anything.
+        bool sourceSavesOpen, sceneReloadPending, workLeftUnsaved;
+
+        void BeginSourceSaves()
+        {
+            sourceSavesOpen = true;
+            sceneReloadPending = workLeftUnsaved = false;
+        }
+
+        void MarkUnsaved(List<(MeshEntry entry, Mesh resultMesh)> group)
+        {
+            if (group.Any(p => HoldsWorkingCopy(p.entry))) workLeftUnsaved = true;
+        }
+
+        static bool HoldsWorkingCopy(MeshEntry e)
+            => e != null && (e.repackedMesh != null || e.transferredMesh != null
+                || (e.originalMesh != null && e.originalMesh != e.fbxMesh && !EditorUtility.IsPersistent(e.originalMesh)));
+
+        void EndSourceSaves()
+        {
+            sourceSavesOpen = false;
+            if (!sceneReloadPending) return;
+            sceneReloadPending = false;
+            if (workLeftUnsaved)
+            {
+                UvtLog.Warn("[FBX Export] Not every file of this save was written; the working copies stay loaded so nothing unsaved is lost. " +
+                            "Save again to finish (the files already written keep what they got).");
+                standaloneRelinks.Clear();
+                RestoreWorkingCopiesToScene();
+                AfterWrite?.Invoke();
+                return;
+            }
+            AfterSourceSave();
+        }
+
+        void AfterSourceSave()
+        {
+            if (sourceSavesOpen) { sceneReloadPending = true; return; }
+            if (ctx?.LodGroup != null)
+            {
+                ReleaseWorkingMeshes();
+                ctx.Refresh(ctx.LodGroup);
+            }
+            else if (ctx != null && ctx.StandaloneMesh)
+            {
+                // No LODGroup for the write to relink: the renderer takes its reimported mesh here.
+                var renderer = ctx.MeshEntries.FirstOrDefault(e => e?.renderer is MeshRenderer)?.renderer as MeshRenderer;
+                ReleaseWorkingMeshes();
+                RelinkStandalone();
+                if (renderer != null) ctx.RefreshStandalone(renderer);
+            }
+            RestoreWorkingCopiesToScene();
+            AfterWrite?.Invoke();
+        }
+
+        // A standalone renderer's filter, with the FBX and mesh name it shows, taken before the
+        // write: the import that follows recreates the mesh it points at.
+        readonly List<(MeshFilter filter, string fbxPath, string meshName)> standaloneRelinks = new List<(MeshFilter, string, string)>();
+
+        void PrepareStandaloneRelink(string fbxPath)
+        {
+            if (ctx?.LodGroup != null || ctx == null || !ctx.StandaloneMesh || ctx.MeshEntries == null) return;
+            foreach (var e in ctx.MeshEntries)
+                if (e?.meshFilter != null && e.fbxMesh != null
+                    && string.Equals(AssetDatabase.GetAssetPath(e.fbxMesh), fbxPath, StringComparison.OrdinalIgnoreCase))
+                    standaloneRelinks.Add((e.meshFilter, fbxPath, e.fbxMesh.name));
+        }
+
+        void RelinkStandalone()
+        {
+            foreach (var (filter, fbxPath, meshName) in standaloneRelinks)
+            {
+                if (filter == null) continue;
+                var fresh = AssetDatabase.LoadAllAssetsAtPath(fbxPath).OfType<Mesh>().FirstOrDefault(m => m.name == meshName);
+                if (fresh == null || filter.sharedMesh == fresh) continue;
+                Undo.RecordObject(filter, "Relink Saved Mesh");
+                filter.sharedMesh = fresh;
+            }
+            standaloneRelinks.Clear();
+        }
+
+        static Mesh WorkingMesh(MeshEntry e) => e.repackedMesh ?? e.transferredMesh ?? e.originalMesh ?? e.fbxMesh;
+
+        // After a source re-save the working copies are in the file, and the refresh that
+        // follows drops the entries holding them: give the renderers their asset meshes
+        // back and free the copies instead of leaking them.
+        void ReleaseWorkingMeshes()
+        {
+            if (ctx?.MeshEntries == null) return;
+            foreach (var e in ctx.MeshEntries)
+            {
+                var copies = new[] { e.transferredMesh, e.repackedMesh, e.originalMesh != e.fbxMesh ? e.originalMesh : null };
+                foreach (var copy in copies)
+                {
+                    if (copy == null || EditorUtility.IsPersistent(copy)) continue;
+                    if (e.meshFilter != null && e.fbxMesh != null && e.meshFilter.sharedMesh == copy) e.meshFilter.sharedMesh = e.fbxMesh;
+                    UnityEngine.Object.DestroyImmediate(copy);
+                }
+                e.transferredMesh = e.repackedMesh = null;
+            }
         }
 
         string ResolveFbxPath()
@@ -490,6 +649,32 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
+            // "Save everything" (the hub's Overwrite / Export New FBX): when the work changed
+            // only UV sets and vertex colours of meshes the FBX already has, write just those
+            // into the file. A rebuild through Unity's FBX Exporter is only for structure the
+            // file lacks, and only after saying what it costs.
+            if (intent == FbxExportIntent.All)
+            {
+                var reasons = StructuralChanges(fbxGroups);
+                if (reasons.Count == 0)
+                {
+                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource);
+                    return;
+                }
+                int choice = EditorUtility.DisplayDialogComplex("Rebuild FBX?",
+                    "Saving this needs structure the FBX does not have:\n\n• " + string.Join("\n• ", reasons) +
+                    "\n\nA rebuild re-exports every mesh from Unity's data through the FBX Exporter: polygons become " +
+                    "triangles, vertices are split at seams, vertex colours are stored as 8-bit, and the hierarchy is normalised.\n\n" +
+                    "'Save channels only' writes the changed UV sets and vertex colours into the existing file and leaves the rest of it untouched.",
+                    "Rebuild", CancelButton, "Save channels only");
+                if (choice == 1) return;
+                if (choice == 2)
+                {
+                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource);
+                    return;
+                }
+            }
+
             bool allGroupsSucceeded = true;
             var batch = new HierarchyExportBatch();
             foreach (var kv in fbxGroups)
@@ -500,6 +685,147 @@ namespace SashaRX.UnityMeshLab
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        // What a save of these groups needs beyond per-vertex channels of existing FBX meshes.
+        static List<string> StructuralChanges(Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>> fbxGroups)
+        {
+            var reasons = new List<string>();
+            foreach (var kv in fbxGroups)
+            {
+                string file = System.IO.Path.GetFileName(kv.Key);
+                int added = kv.Value.Count(p => p.entry.fbxMesh == null
+                    || !string.Equals(AssetDatabase.GetAssetPath(p.entry.fbxMesh), kv.Key, StringComparison.OrdinalIgnoreCase));
+                if (added > 0) reasons.Add($"{added} mesh(es) not in '{file}' yet (generated LODs)");
+                int reshaped = kv.Value.Count(p => p.entry.fbxMesh != null && GeometryDiffers(p.entry.fbxMesh, p.resultMesh));
+                if (reshaped > 0) reasons.Add($"{reshaped} mesh(es) of '{file}' with changed geometry (simplified or edited faces)");
+                int reshaded = kv.Value.Count(p => p.entry.fbxMesh != null && !GeometryDiffers(p.entry.fbxMesh, p.resultMesh)
+                    && ShadingChanged(p.entry.fbxMesh, p.resultMesh));
+                if (reshaded > 0) reasons.Add($"{reshaded} mesh(es) of '{file}' with changed normals or tangents");
+                int rematerialled = kv.Value.Count(p => MaterialsChanged(p.entry));
+                if (rematerialled > 0) reasons.Add($"{rematerialled} renderer(s) of '{file}' with changed materials (the file's material assignments)");
+                int collision = SidecarStore.CollisionMeshes(kv.Key)?.Count ?? 0;
+                if (collision > 0) reasons.Add($"{collision} collision mesh set(s) from the sidecar for '{file}'");
+                int dirtyColliders = FbxExport.CollisionMeshesWithSurfaceData(kv.Key).Count;
+                if (dirtyColliders > 0) reasons.Add($"{dirtyColliders} collision mesh(es) in '{file}' carrying UVs or vertex colours (the rebuild strips them)");
+            }
+            return reasons;
+        }
+
+        // Normals or tangents the channel save cannot write: the attribute was added or removed
+        // (Cleanup), or the values changed on a working copy that kept the import's vertices.
+        // Tangent values count only when the importer reads the file's (Import); otherwise
+        // Unity computes them on every import and a recomputed set is no edit of the file.
+        internal static bool ShadingChanged(Mesh imported, Mesh result)
+        {
+            if (imported == null || result == null || imported == result) return false;
+            if (imported.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal) != result.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal)) return true;
+            if (imported.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent) != result.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent)) return true;
+            if (!imported.isReadable || !result.isReadable) return false;
+            bool tangents = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(imported)) is ModelImporter importer
+                && importer.importTangents == ModelImporterTangents.Import;
+            var importedVertices = imported.vertices;
+            var resultVertices = result.vertices;
+            if (importedVertices.SequenceEqual(resultVertices))
+                return !imported.normals.SequenceEqual(result.normals) || (tangents && !imported.tangents.SequenceEqual(result.tangents));
+            // Renumbered or welded: every vertex of the copy must carry a normal (and tangent)
+            // the import has at that position.
+            var importedNormals = imported.normals;
+            var importedTangents = tangents ? imported.tangents : null;
+            var known = new HashSet<(Vector3, Vector3, Vector4)>();
+            for (int v = 0; v < importedVertices.Length; v++)
+                known.Add((importedVertices[v], importedNormals[v], importedTangents != null ? importedTangents[v] : default));
+            var resultNormals = result.normals;
+            var resultTangents = tangents ? result.tangents : null;
+            for (int v = 0; v < resultVertices.Length; v++)
+                if (!known.Contains((resultVertices[v], resultNormals[v], resultTangents != null ? resultTangents[v] : default))) return true;
+            return false;
+        }
+
+        // The scene renderer's materials differ from the model's (e.g. after Cleanup's material
+        // fixes): a material change is the rebuild's to write, not the channel save's.
+        // A renderer that is no prefab instance (unpacked, assembled by hand, standalone) is
+        // compared with the model's renderers that show the same mesh; with material import
+        // off the model has no assignments of its own to compare with.
+        internal static bool MaterialsChanged(MeshEntry entry)
+        {
+            if (entry?.renderer == null) return false;
+            var materials = entry.renderer.sharedMaterials;
+            var source = PrefabUtility.GetCorrespondingObjectFromSource(entry.renderer);
+            if (source != null) return !materials.SequenceEqual(source.sharedMaterials);
+            if (entry.fbxMesh == null) return false;
+            string path = AssetDatabase.GetAssetPath(entry.fbxMesh);
+            if (!(AssetImporter.GetAtPath(path) is ModelImporter importer) || importer.materialImportMode == ModelImporterMaterialImportMode.None) return false;
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (model == null) return false;
+            var counterparts = model.GetComponentsInChildren<Renderer>(true).Where(r => RendererMesh(r) == entry.fbxMesh).ToList();
+            return counterparts.Count > 0 && !counterparts.Any(r => materials.SequenceEqual(r.sharedMaterials));
+        }
+
+        static Mesh RendererMesh(Renderer renderer)
+            => renderer is SkinnedMeshRenderer skinned ? skinned.sharedMesh
+             : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
+
+        // Faces differ from the import: per submesh, the same faces (as position loops, any
+        // starting corner, same winding) in any order and any vertex numbering. Vertex dedup,
+        // UV welds and symmetry splits keep that and are channel work, not geometry; a
+        // re-triangulated quad, a flipped or moved face, or a submesh change is geometry.
+        internal static bool GeometryDiffers(Mesh imported, Mesh result)
+        {
+            if (result == null || result == imported || !imported.isReadable || !result.isReadable) return false;
+            if (imported.subMeshCount != result.subMeshCount) return true;
+            var importedVertices = imported.vertices;
+            var resultVertices = result.vertices;
+            for (int s = 0; s < imported.subMeshCount; s++)
+            {
+                if (imported.GetTopology(s) != result.GetTopology(s)) return true;
+                int size = imported.GetTopology(s) == MeshTopology.Quads ? 4 : 3;
+                if (!SameFaces(importedVertices, imported.GetIndices(s), resultVertices, result.GetIndices(s), size)) return true;
+            }
+            return false;
+        }
+
+        static bool SameFaces(Vector3[] aVertices, int[] aIndices, Vector3[] bVertices, int[] bIndices, int size)
+        {
+            if (aIndices.Length != bIndices.Length) return false;
+            var counts = new Dictionary<(Vector3, Vector3, Vector3, Vector3), int>();
+            for (int f = 0; f + size <= aIndices.Length; f += size)
+            {
+                var key = FaceLoop(aVertices, aIndices, f, size);
+                counts.TryGetValue(key, out int n);
+                counts[key] = n + 1;
+            }
+            for (int f = 0; f + size <= bIndices.Length; f += size)
+            {
+                var key = FaceLoop(bVertices, bIndices, f, size);
+                if (!counts.TryGetValue(key, out int n) || n == 0) return false;
+                counts[key] = n - 1;
+            }
+            return true;
+        }
+
+        // The face's positions in winding order, started at the rotation that is smallest.
+        static (Vector3, Vector3, Vector3, Vector3) FaceLoop(Vector3[] vertices, int[] indices, int start, int size)
+        {
+            int best = 0;
+            for (int r = 1; r < size; r++)
+                if (CompareRotations(vertices, indices, start, size, r, best) < 0) best = r;
+            Vector3 At(int k) => k < size ? vertices[indices[start + (best + k) % size]] : default;
+            return (At(0), At(1), At(2), At(3));
+        }
+
+        static int CompareRotations(Vector3[] vertices, int[] indices, int start, int size, int r1, int r2)
+        {
+            for (int k = 0; k < size; k++)
+            {
+                var a = vertices[indices[start + (r1 + k) % size]];
+                var b = vertices[indices[start + (r2 + k) % size]];
+                int c = a.x.CompareTo(b.x);
+                if (c == 0) c = a.y.CompareTo(b.y);
+                if (c == 0) c = a.z.CompareTo(b.z);
+                if (c != 0) return c;
+            }
+            return 0;
+        }
+
         void FinishHierarchyExports(HierarchyExportBatch batch, bool overwriteSource, bool allGroupsSucceeded)
         {
             // Generated scene LOD objects are embedded in the exported FBX
