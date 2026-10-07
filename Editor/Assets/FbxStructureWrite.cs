@@ -186,9 +186,12 @@ namespace SashaRX.UnityMeshLab
                 var root = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                 if (root == null) return null;
                 var counterparts = root.GetComponentsInChildren<Renderer>(true).Where(r => RendererMesh(r) == entry.fbxMesh).ToList();
-                if (counterparts.Count == 0 || counterparts.Any(r => materials.SequenceEqual(r.sharedMaterials))) return null;
+                // The node of the renderer's name is its counterpart; only without one is a
+                // match with any instance of the mesh taken as no change.
                 var named = counterparts.FirstOrDefault(r => r.name == entry.renderer.name);
-                model = (named ?? counterparts[0]).sharedMaterials;
+                if (named != null) model = named.sharedMaterials;
+                else if (counterparts.Count == 0 || counterparts.Any(r => materials.SequenceEqual(r.sharedMaterials))) return null;
+                else model = counterparts[0].sharedMaterials;
             }
             if (materials.SequenceEqual(model)) return null;
             return new FbxStructurePlan.MaterialEdit
@@ -287,9 +290,12 @@ namespace SashaRX.UnityMeshLab
             public Dictionary<string, Material> existingRemaps = new Dictionary<string, Material>(StringComparer.Ordinal);
             /// <summary>Filled by <see cref="Apply"/>: FBX material name → the Unity material the importer must map it to.</summary>
             public readonly Dictionary<string, Material> materialRemaps = new Dictionary<string, Material>(StringComparer.Ordinal);
+            /// <summary>Set by <see cref="Apply"/>: the names of the materials the file had before the save.</summary>
+            internal HashSet<string> sceneMaterials = new HashSet<string>(StringComparer.Ordinal);
 
             // The FBX material name for a Unity material: its own name, unless that name already
-            // maps (in this save or in the importer) to another material.
+            // maps (in this save or in the importer) to another material, or names a material of
+            // the file that is not mapped to this one (its other nodes would follow the remap).
             internal string MaterialName(Material material)
             {
                 string name = material.name;
@@ -299,9 +305,13 @@ namespace SashaRX.UnityMeshLab
                 return name;
             }
 
-            bool MapsElsewhere(string name, Material material) =>
-                (materialRemaps.TryGetValue(name, out var mapped) && mapped != material)
-                || (existingRemaps.TryGetValue(name, out var existing) && existing != null && existing != material);
+            bool MapsElsewhere(string name, Material material)
+            {
+                if (materialRemaps.TryGetValue(name, out var mapped)) return mapped != material;
+                bool remapped = existingRemaps.TryGetValue(name, out var existing) && existing != null;
+                if (remapped) return existing != material;
+                return sceneMaterials.Contains(name);
+            }
         }
 
         // A source mesh as the document and its tagged import know it.
@@ -331,6 +341,12 @@ namespace SashaRX.UnityMeshLab
             bool preserveHierarchy = options.preserveHierarchy;
             if (plan.refusals.Count > 0) throw new FbxStructureRefusalException(plan.refusals[0]);
             var scene = document.Scene;
+            options.sceneMaterials = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < scene.GetMaterialCount(); i++)
+            {
+                var material = scene.GetMaterial(i);
+                if (material != null) options.sceneMaterials.Add(material.GetName());
+            }
             var references = new Dictionary<string, Reference>(StringComparer.Ordinal);
             Reference Ref(string name)
             {
@@ -355,7 +371,20 @@ namespace SashaRX.UnityMeshLab
             foreach (var (name, mesh) in plan.reshaped) RequirePlaceable(Ref(name), mesh, name);
             foreach (var lod in plan.lods.Where(l => l.materials != null))
                 RequireMaterials(Ref(lod.sourceName).submeshMaterials, lod.materials, lod.replaced, lod.name);
-            var materialTargets = plan.materials.Select(edit => MaterialTarget(document, tagged, edit)).ToList();
+            var materialTargets = new List<(FbxStructurePlan.MaterialEdit edit, FbxNode node, int[] slots)>();
+            var editedNodes = new Dictionary<(int mesh, int node), FbxStructurePlan.MaterialEdit>();
+            foreach (var edit in plan.materials)
+            {
+                var (target, key) = MaterialTarget(document, tagged, edit);
+                // Several renderers of one node (scene instances of the model) can take one set.
+                if (editedNodes.TryGetValue(key, out var earlier))
+                {
+                    if (earlier.materials.SequenceEqual(edit.materials)) continue;
+                    throw new FbxStructureRefusalException($"'{edit.nodeName}': renderers of the same FBX node were given different materials; the node can hold one set");
+                }
+                editedNodes[key] = edit;
+                materialTargets.Add(target);
+            }
 
             int changes = 0;
             foreach (var lod in plan.lods)
@@ -396,26 +425,31 @@ namespace SashaRX.UnityMeshLab
         // ── Materials ──
 
         // The node a material edit is about, and the node material slot of each submesh.
-        static (FbxStructurePlan.MaterialEdit edit, FbxNode node, int[] slots) MaterialTarget(FbxSourceDocument document,
-            Dictionary<string, FbxChannelWrite.Tagged> tagged, FbxStructurePlan.MaterialEdit edit)
+        // Keyed by the mesh's ordinal and the node's index among the mesh's nodes.
+        static ((FbxStructurePlan.MaterialEdit edit, FbxNode node, int[] slots) target, (int mesh, int node) key) MaterialTarget(
+            FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged, FbxStructurePlan.MaterialEdit edit)
         {
             if (!tagged.TryGetValue(edit.meshName, out var tag))
                 throw new FbxStructureRefusalException($"'{edit.meshName}' is not a mesh of the FBX (or its corner tags did not survive the import)");
             var mesh = document.Meshes[tag.ordinal];
-            FbxNode node = null;
-            for (int i = 0; i < mesh.GetNodeCount() && node == null; i++)
-                if (mesh.GetNode(i).GetName() == edit.nodeName) node = mesh.GetNode(i);
-            if (node == null && mesh.GetNodeCount() == 1) node = mesh.GetNode(0);
-            if (node == null)
+            int index = -1;
+            for (int i = 0; i < mesh.GetNodeCount() && index < 0; i++)
+                if (mesh.GetNode(i).GetName() == edit.nodeName) index = i;
+            if (index < 0 && mesh.GetNodeCount() == 1) index = 0;
+            if (index < 0)
                 throw new FbxStructureRefusalException($"'{edit.nodeName}': which node of the instanced mesh '{edit.meshName}' it is cannot be told");
+            var node = mesh.GetNode(index);
             var slots = SubmeshSlots(mesh, node, tag);
             RequireMaterials(slots, edit.materials, edit.replaced, edit.nodeName);
-            return (edit, node, slots);
+            return ((edit, node, slots), (tag.ordinal, index));
         }
 
         // What a slot write needs: a slot for each changed submesh and an asset to map it to.
         static void RequireMaterials(int[] slots, Material[] materials, Material[] replaced, string what)
         {
+            if (materials.Length < replaced.Length)
+                throw new FbxStructureRefusalException(
+                    $"'{what}': the renderer has {materials.Length} material(s) where the import gives it {replaced.Length}; the FBX node's slots are not dropped by a document save");
             for (int s = 0; s < materials.Length; s++)
             {
                 if (materials[s] == (s < replaced.Length ? replaced[s] : null)) continue;

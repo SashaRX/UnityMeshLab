@@ -114,6 +114,7 @@ namespace Autodesk.Fbx
         public static FbxScene Create(FbxManager manager, string name) => new FbxScene();
         public int GetMaterialCount() => 0;
         public FbxSurfaceMaterial GetMaterial(string name) => null;
+        public FbxSurfaceMaterial GetMaterial(int index) => null;
         public FbxGlobalSettings GetGlobalSettings() => new FbxGlobalSettings();
         public FbxNode GetRootNode() => new FbxNode();
         public void SetCurrentAnimationStack(FbxAnimStack stack) { }

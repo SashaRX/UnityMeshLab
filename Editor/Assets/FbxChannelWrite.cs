@@ -193,12 +193,6 @@ namespace SashaRX.UnityMeshLab
             if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
             try { FbxExport.ReplaceAtomically(targetFbxPath, temp => document.Save(Path.GetFullPath(temp))); }
             catch { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
-            try
-            {
-                if (!isVariant && uv1Written) KeepWrittenUv1(sourceFbxPath);
-                if (!isVariant) MapMaterials(sourceFbxPath, options.materialRemaps);
-            }
-            catch { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
             string format = $"FBX {document.Major}.{document.Minor}, {(document.Binary ? "binary" : "ASCII")}";
             if (meshesWritten > 0)
                 UvtLog.Info($"[FBX Export] {meshesWritten} mesh(es), {cornersWritten} corner value(s) of {string.Join(", ", channelsWritten.OrderBy(c => c))} -> {targetFbxPath} " +
@@ -211,20 +205,25 @@ namespace SashaRX.UnityMeshLab
                 Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath);
                 return true;
             }
-            // The file is written from here on: an import that fails (a third-party
-            // postprocessor) is reported, and the caller still finishes the save (sidecar,
-            // scene). The postprocessor consumes the overwrite marker; an import that throws
-            // before it runs must not leave it for a later, unrelated import.
+            // The file is written from here on: import settings or an import that fail (read-only
+            // metadata, a third-party postprocessor) are reported, and the caller still finishes
+            // the save (sidecar, scene). The postprocessor consumes the overwrite marker; an
+            // import that throws before it runs must not leave it for a later, unrelated import.
             try
             {
-                try { AssetDatabase.ImportAsset(targetFbxPath, ImportAssetOptions.ForceUpdate); }
+                try
+                {
+                    if (!isVariant && uv1Written) KeepWrittenUv1(sourceFbxPath);
+                    if (!isVariant) MapMaterials(sourceFbxPath, options.materialRemaps);
+                    AssetDatabase.ImportAsset(targetFbxPath, ImportAssetOptions.ForceUpdate);
+                }
                 finally { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); }
                 if (isVariant) ImportLikeSource(sourceFbxPath, targetFbxPath, uv1Changed, options.materialRemaps);
                 else if (sceneRoot != null) FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, sceneRoot);
             }
             catch (Exception ex)
             {
-                UvtLog.Error($"[FBX Export] '{targetFbxPath}' was written, but importing it failed: {ex.Message}. Reimport it once the cause is fixed.");
+                UvtLog.Error($"[FBX Export] '{targetFbxPath}' was written, but setting up or running its import failed: {ex.Message}. Reimport it once the cause is fixed.");
                 UvtLog.Verbose(ex.ToString());
             }
             return true;

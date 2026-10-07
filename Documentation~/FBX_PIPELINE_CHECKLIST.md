@@ -384,17 +384,20 @@ The hub's `All` save adds or replaces geometry in the same document
   normalisation stays the explicit Prefab Builder action (the LOD-rebuild path).
 * A renderer whose materials differ from the ones its mesh's node gives it
   (Cleanup's material fixes; compared with the prefab source renderer, or for a
-  renderer that is no prefab instance with the model's renderer of the same
-  mesh) changes only the node slots of those submeshes: each takes an FBX
-  material named after the Unity material (the scene's own of that name, or a
-  new one; `_1`, `_2`… when the name already maps to another material), and the
+  renderer that is no prefab instance with the model's renderer of its name, or
+  of the same mesh) changes only the node slots of those submeshes: each takes an FBX
+  material named after the Unity material (the scene's own of that name when the
+  importer already maps it to that asset, or a new one; `_1`, `_2`… when the name
+  maps to another material or names a file material not mapped to it), and the
   importer gets a remap from that name to the asset. Other slots and other nodes
   sharing the old material keep it. A generated LOD whose renderer's materials
   differ from its source renderer's gets them in its own slots the same way.
   With material import off nothing is written (Unity does not use the file's
   materials); an adopted LOD renderer keeps the generated one's materials.
 * Refused, nothing written, then a dialog offers the rebuild or "Save channels
-  only": a changed material that is not an asset or has no slot in the FBX, a LOD source node without an `_LOD<N>` suffix, a source that is the
+  only": a changed material that is not an asset or has no slot in the FBX, a
+  renderer with fewer materials than its node's slots, renderers of one node given
+  different materials, a LOD source node without an `_LOD<N>` suffix, a source that is the
   file's only top-level node (Unity imports it as the model root) unless the
   importer preserves the hierarchy, a skinned or blend-shaped source, a source
   whose transform is animated (a sibling copies the values, not the curves),
