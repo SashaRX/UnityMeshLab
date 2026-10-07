@@ -74,12 +74,25 @@ namespace SashaRX.UnityMeshLab
         }
 
         Dictionary<string, List<string>> uvSetNames;
+        Dictionary<string, bool> smoothing;
+
+        void ReadLayers()
+        {
+            if (uvSetNames == null) (uvSetNames, smoothing) = FbxUvSetNames.ReadLayers(Path.Combine(scratch, "input.fbx"));
+        }
 
         /// <summary>The file's UV set names of the mesh named <paramref name="meshName"/>, in element order; null when unknown.</summary>
         public List<string> UvSetNames(string meshName)
         {
-            if (uvSetNames == null) uvSetNames = FbxUvSetNames.Read(Path.Combine(scratch, "input.fbx"));
+            ReadLayers();
             return uvSetNames.TryGetValue(meshName, out var names) ? names : null;
+        }
+
+        /// <summary>Whether the mesh named <paramref name="meshName"/> has smoothing groups in the file; null when unknown.</summary>
+        public bool? HasSmoothing(string meshName)
+        {
+            ReadLayers();
+            return smoothing.TryGetValue(meshName, out bool has) ? has : (bool?)null;
         }
 
         public static FbxSourceDocument Load(string path)
@@ -352,6 +365,103 @@ namespace SashaRX.UnityMeshLab
                 i => { var v = direct.GetAt(i); return new[] { v.mRed, v.mGreen, v.mBlue, v.mAlpha }; },
                 v => direct.Add(new FbxColor(v[0], v[1], v[2], v[3])),
                 (i, v) => direct.SetAt(i, new FbxColor(v[0], v[1], v[2], v[3])));
+        }
+
+        /// <summary>Layer 0's normal, tangent and binormal elements: the ones Unity's importer reads.</summary>
+        internal static FbxLayerElementNormal NormalElement(FbxMesh mesh) => mesh.GetLayerCount() > 0 ? mesh.GetLayer(0)?.GetNormals() : null;
+        internal static FbxLayerElementTangent TangentElement(FbxMesh mesh) => mesh.GetLayerCount() > 0 ? mesh.GetLayer(0)?.GetTangents() : null;
+        internal static FbxLayerElementBinormal BinormalElement(FbxMesh mesh) => mesh.GetLayerCount() > 0 ? mesh.GetLayer(0)?.GetBinormals() : null;
+
+        /// <summary>
+        /// Writes the changed corners of layer 0's normals (xyz per corner, FBX space),
+        /// creating the element there when the mesh has none. A new element on a mesh known
+        /// to have no smoothing groups (<paramref name="unsmoothed"/>) is per control point,
+        /// the layout Max reads for such a mesh, when every point has one normal; a hard edge
+        /// cannot be held per point and keeps the per-corner layout.
+        /// </summary>
+        internal static int WriteNormals(FbxMesh mesh, in Topology topology, double[] values, bool[] changed, bool unsmoothed = false)
+        {
+            var element = NormalElement(mesh);
+            if (element == null)
+            {
+                element = FbxLayerElementNormal.Create(mesh, "Normals");
+                Layer(mesh, 0).SetNormals(element);
+                if (unsmoothed && values.Length == topology.CornerCount * 3 && changed.Length == topology.CornerCount
+                    && changed.All(c => c) && ConsistentPerControlPoint(topology, values, changed, 3, out var perPoint))
+                {
+                    element.SetMappingMode(FbxLayerElement.EMappingMode.eByControlPoint);
+                    element.SetReferenceMode(FbxLayerElement.EReferenceMode.eDirect);
+                    var direct = element.GetDirectArray();
+                    // A point no polygon uses still takes an entry: the array is one per point.
+                    for (int p = 0; p < topology.controlPointCount; p++)
+                        direct.Add(perPoint.TryGetValue(p, out var n) ? new FbxVector4(n[0], n[1], n[2], 0) : new FbxVector4(0, 0, 1, 0));
+                    return changed.Length;
+                }
+            }
+            return WriteVectors(element, topology, values, changed);
+        }
+
+        /// <summary>
+        /// Writes the changed corners of layer 0's tangents and binormals (xyz per corner each,
+        /// FBX space), creating the elements there when the mesh has none.
+        /// </summary>
+        internal static int WriteTangentFrame(FbxMesh mesh, in Topology topology, double[] tangents, double[] binormals, bool[] changed)
+        {
+            var tangent = TangentElement(mesh);
+            if (tangent == null)
+            {
+                tangent = FbxLayerElementTangent.Create(mesh, "Tangents");
+                Layer(mesh, 0).SetTangents(tangent);
+            }
+            var binormal = BinormalElement(mesh);
+            if (binormal == null)
+            {
+                binormal = FbxLayerElementBinormal.Create(mesh, "Binormals");
+                Layer(mesh, 0).SetBinormals(binormal);
+            }
+            int written = WriteVectors(tangent, topology, tangents, changed);
+            WriteVectors(binormal, topology, binormals, changed);
+            return written;
+        }
+
+        /// <summary>Per-corner xyz of a normal, tangent or binormal element.</summary>
+        internal static double[] ReadVectors(FbxLayerElementTemplateFbxVector4 element, in Topology topology)
+        {
+            var direct = element.GetDirectArray();
+            var slots = DirectSlots(element, element.GetIndexArray(), direct.GetCount(), topology);
+            var values = new double[slots.Length * 3];
+            for (int c = 0; c < slots.Length; c++)
+            {
+                var v = direct.GetAt(slots[c]);
+                values[c * 3] = v.X; values[c * 3 + 1] = v.Y; values[c * 3 + 2] = v.Z;
+            }
+            return values;
+        }
+
+        static int WriteVectors(FbxLayerElementTemplateFbxVector4 element, in Topology topology, double[] values, bool[] changed)
+        {
+            var direct = element.GetDirectArray();
+            return Write(element, element.GetIndexArray(), direct.GetCount(), topology, values, changed, 3,
+                i => { var v = direct.GetAt(i); return new[] { v.X, v.Y, v.Z }; },
+                v => direct.Add(new FbxVector4(v[0], v[1], v[2], 0)),
+                (i, v) => direct.SetAt(i, new FbxVector4(v[0], v[1], v[2], 0)));
+        }
+
+        /// <summary>Removes layer 0's normals (Unity then calculates them).</summary>
+        internal static bool RemoveNormals(FbxMesh mesh)
+        {
+            if (NormalElement(mesh) == null) return false;
+            mesh.GetLayer(0).SetNormals(null);
+            return true;
+        }
+
+        /// <summary>Removes layer 0's tangents and binormals (Unity then calculates them).</summary>
+        internal static bool RemoveTangentFrame(FbxMesh mesh)
+        {
+            bool any = false;
+            if (TangentElement(mesh) != null) { mesh.GetLayer(0).SetTangents(null); any = true; }
+            if (BinormalElement(mesh) != null) { mesh.GetLayer(0).SetBinormals(null); any = true; }
+            return any;
         }
 
         // ── Shared element logic ──

@@ -5,6 +5,7 @@
 // instances) and monotonically-decreasing transition heights.
 
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEditor;
 
@@ -219,6 +220,7 @@ namespace SashaRX.UnityMeshLab
                         continue;
                     }
                     lod.renderers[i] = written;
+                    KeepMaterials(r, written);
                     replaced.Add(r.gameObject);
                     adopted++;
                 }
@@ -238,6 +240,18 @@ namespace SashaRX.UnityMeshLab
             ctx.GeneratedLodObjects.RemoveAll(replaced.Contains);
             Undo.CollapseUndoOperations(undoGroup);
             return adopted;
+        }
+
+        // The imported renderer shows what the generated one did: materials the import does not
+        // give it (material import off, or a slot the save could not map) stay as an override.
+        static void KeepMaterials(Renderer generated, Renderer imported)
+        {
+            var materials = generated.sharedMaterials;
+            if (materials.SequenceEqual(imported.sharedMaterials)) return;
+            Undo.RecordObject(imported, "Adopt Written LODs");
+            imported.sharedMaterials = materials;
+            if (PrefabUtility.IsPartOfPrefabInstance(imported))
+                PrefabUtility.RecordPrefabInstancePropertyModifications(imported);
         }
 
         internal static void ClearGeneratedLods(UvToolContext ctx)

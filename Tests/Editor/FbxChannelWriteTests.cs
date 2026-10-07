@@ -225,6 +225,34 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void WriteNormals_NewElementOnAnUnsmoothedMeshIsPerControlPoint()
+        {
+            string source = WriteSource(true);
+            using var document = FbxSourceDocument.Load(source);
+            var mesh = document.Meshes[0];
+            var topology = new FbxLayerChannels.Topology(mesh);
+            int corners = topology.CornerCount;
+            var all = Enumerable.Repeat(true, corners).ToArray();
+            var smooth = Enumerable.Range(0, corners).SelectMany(_ => new double[] { 0, 0, 1 }).ToArray();
+            Assert.AreEqual(corners, FbxLayerChannels.WriteNormals(mesh, topology, smooth, all, true));
+            var element = FbxLayerChannels.NormalElement(mesh);
+            Assert.AreEqual(FbxLayerElement.EMappingMode.eByControlPoint, element.GetMappingMode());
+            Assert.AreEqual(FbxLayerElement.EReferenceMode.eDirect, element.GetReferenceMode());
+            Assert.AreEqual(topology.controlPointCount, element.GetDirectArray().GetCount());
+            CollectionAssert.AreEqual(smooth, FbxLayerChannels.ReadVectors(element, topology));
+
+            // A hard edge (two normals on one point: corner 1 shares point 1 with corner 4)
+            // cannot be held per point.
+            Assert.IsTrue(FbxLayerChannels.RemoveNormals(mesh));
+            var hard = (double[])smooth.Clone();
+            hard[3] = 1; hard[5] = 0;
+            Assert.AreEqual(corners, FbxLayerChannels.WriteNormals(mesh, topology, hard, all, true));
+            element = FbxLayerChannels.NormalElement(mesh);
+            Assert.AreEqual(FbxLayerElement.EMappingMode.eByPolygonVertex, element.GetMappingMode());
+            CollectionAssert.AreEqual(hard, FbxLayerChannels.ReadVectors(element, topology));
+        }
+
+        [Test]
         public void Edit_WritesColoursOnLayerZero()
         {
             using var document = FbxSourceDocument.Load(WriteSource(true));
@@ -233,6 +261,50 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNotNull(FbxLayerChannels.ColorElement(mesh));
             Assert.AreEqual(1, FbxLayerChannels.WriteColor(mesh, topology, new double[topology.CornerCount * 4], Enumerable.Range(0, topology.CornerCount).Select(c => c == 0).ToArray()));
             Assert.IsNotNull(mesh.GetLayer(0).GetVertexColors(), "Unity reads colours from layer 0 only");
+        }
+
+        [Test]
+        public void Edit_WritesNormalsAndTheTangentFrameOnLayerZeroKeepingUnchangedCorners()
+        {
+            string source = WriteSource(true), first = Path.Combine(folder, "first.fbx"), second = Path.Combine(folder, "second.fbx");
+            int corners;
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                var mesh = document.Meshes[0];
+                var topology = new FbxLayerChannels.Topology(mesh);
+                corners = topology.CornerCount;
+                Assert.IsNull(FbxLayerChannels.NormalElement(mesh), "the source has no normals");
+                var all = Enumerable.Repeat(true, corners).ToArray();
+                double[] Repeat(params double[] v) => Enumerable.Range(0, corners).SelectMany(_ => v).ToArray();
+                Assert.AreEqual(corners, FbxLayerChannels.WriteNormals(mesh, topology, Repeat(0, 0, 1), all));
+                Assert.AreEqual(corners, FbxLayerChannels.WriteTangentFrame(mesh, topology, Repeat(1, 0, 0), Repeat(0, 1, 0), all));
+                document.Save(first);
+            }
+            using (var document = FbxSourceDocument.Load(first))
+            {
+                var mesh = document.Meshes[0];
+                var topology = new FbxLayerChannels.Topology(mesh);
+                var normals = FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(mesh), topology);
+                normals[3 * 3] = 0.6; normals[3 * 3 + 2] = 0.8;
+                var changed = Enumerable.Range(0, corners).Select(c => c == 3).ToArray();
+                Assert.AreEqual(1, FbxLayerChannels.WriteNormals(mesh, topology, normals, changed));
+                document.Save(second);
+            }
+            using (var document = FbxSourceDocument.Load(second))
+            {
+                var mesh = document.Meshes[0];
+                var topology = new FbxLayerChannels.Topology(mesh);
+                var normals = FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(mesh), topology);
+                CollectionAssert.AreEqual(new[] { 0.6, 0, 0.8 }, normals.Skip(9).Take(3).ToArray(), "the changed corner");
+                CollectionAssert.AreEqual(new[] { 0.0, 0, 1 }, normals.Take(3).ToArray(), "an unchanged corner keeps its value");
+                CollectionAssert.AreEqual(new[] { 1.0, 0, 0 }, FbxLayerChannels.ReadVectors(FbxLayerChannels.TangentElement(mesh), topology).Take(3).ToArray());
+                CollectionAssert.AreEqual(new[] { 0.0, 1, 0 }, FbxLayerChannels.ReadVectors(FbxLayerChannels.BinormalElement(mesh), topology).Take(3).ToArray());
+                Assert.AreEqual(4, mesh.GetPolygonSize(0), "polygons untouched");
+                Assert.IsTrue(FbxLayerChannels.RemoveTangentFrame(mesh));
+                Assert.IsTrue(FbxLayerChannels.RemoveNormals(mesh));
+                Assert.IsNull(FbxLayerChannels.TangentElement(mesh));
+                Assert.IsNull(FbxLayerChannels.NormalElement(mesh));
+            }
         }
 
         [Test]

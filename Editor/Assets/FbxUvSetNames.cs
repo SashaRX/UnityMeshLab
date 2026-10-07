@@ -1,7 +1,9 @@
-// FbxUvSetNames.cs — the names of each mesh's UV sets, read from the FBX file itself.
-// The FBX SDK's C# wrapper does not expose a layer element's name, and a material's
-// texture finds its UV set by that name, so a mesh MeshLab rebuilds must carry the
-// names its source had. Reads FBX 7.x binary (32- and 64-bit records) and ASCII.
+// FbxUvSetNames.cs — the names of each mesh's UV sets, and whether it has smoothing
+// groups, read from the FBX file itself. The FBX SDK's C# wrapper exposes neither a
+// layer element's name nor a smoothing element: a material's texture finds its UV set
+// by that name, so a mesh MeshLab rebuilds must carry the names its source had, and a
+// new normal element's layout follows the smoothing (see WriteNormals). Reads FBX 7.x
+// binary (32- and 64-bit records) and ASCII.
 //
 // Plain bytes in, names out: no UnityEngine and no FBX SDK types.
 
@@ -20,7 +22,13 @@ namespace SashaRX.UnityMeshLab
         /// UV set names by mesh (geometry) name, in element order. A mesh whose name another
         /// mesh shares is left out: its names cannot be told apart.
         /// </summary>
-        internal static Dictionary<string, List<string>> Read(string path)
+        internal static Dictionary<string, List<string>> Read(string path) => ReadLayers(path).uvSetNames;
+
+        /// <summary>
+        /// The UV set names (as <see cref="Read"/>) and whether each mesh has a smoothing
+        /// element, by mesh name; a shared name is in neither.
+        /// </summary>
+        internal static (Dictionary<string, List<string>> uvSetNames, Dictionary<string, bool> smoothing) ReadLayers(string path)
         {
             var bytes = File.ReadAllBytes(path);
             var found = new Found();
@@ -28,13 +36,14 @@ namespace SashaRX.UnityMeshLab
                 ReadBinary(bytes, found);
             else
                 ReadAscii(Encoding.UTF8.GetString(bytes), found);
-            return found.Result();
+            return (found.Result(), found.Smoothing());
         }
 
         sealed class Found
         {
             readonly Dictionary<string, SortedDictionary<int, string>> names = new Dictionary<string, SortedDictionary<int, string>>(StringComparer.Ordinal);
             readonly HashSet<string> shared = new HashSet<string>(StringComparer.Ordinal);
+            readonly HashSet<SortedDictionary<int, string>> smoothed = new HashSet<SortedDictionary<int, string>>();
 
             public SortedDictionary<int, string> Mesh(string name)
             {
@@ -42,6 +51,17 @@ namespace SashaRX.UnityMeshLab
                 if (names.ContainsKey(name)) shared.Add(name);
                 else names[name] = sets;
                 return sets;
+            }
+
+            // The mesh whose UV sets are `sets` has a smoothing element.
+            public void Smoothed(SortedDictionary<int, string> sets) => smoothed.Add(sets);
+
+            public Dictionary<string, bool> Smoothing()
+            {
+                var result = new Dictionary<string, bool>(StringComparer.Ordinal);
+                foreach (var kv in names)
+                    if (!shared.Contains(kv.Key)) result[kv.Key] = smoothed.Contains(kv.Value);
+                return result;
             }
 
             public Dictionary<string, List<string>> Result()
@@ -75,6 +95,7 @@ namespace SashaRX.UnityMeshLab
                     var sets = found.Mesh(separator >= 0 ? fullName.Substring(0, separator) : fullName);
                     foreach (var element in Nodes(b, geometry.children, geometry.end, wide))
                     {
+                        if (element.name == "LayerElementSmoothing") found.Smoothed(sets);
                         if (element.name != "LayerElementUV" || !(Property(b, element, 0) is int index)) continue;
                         foreach (var child in Nodes(b, element.children, element.end, wide))
                             if (child.name == "Name" && Property(b, child, 0) is string name) sets[index] = name;
@@ -165,6 +186,11 @@ namespace SashaRX.UnityMeshLab
                     && int.TryParse(line.Substring(15, line.Length - 16).Trim(), out uvIndex))
                 {
                     uvDepth = depth;
+                }
+                else if (geometryDepth >= 0 && uvDepth < 0 && depth == geometryDepth + 1
+                    && line.StartsWith("LayerElementSmoothing:", StringComparison.Ordinal))
+                {
+                    found.Smoothed(sets);
                 }
                 else if (uvDepth >= 0 && depth == uvDepth + 1 && line.StartsWith("Name:", StringComparison.Ordinal))
                 {

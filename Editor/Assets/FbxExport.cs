@@ -613,8 +613,9 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            // Normals, tangents, hierarchy and material intents still re-export the file
-            // through Unity's FBX Exporter (polygons are rebuilt from Unity's triangles).
+            // Hierarchy, material and collision intents (Prefab Builder's explicit rebuild)
+            // still re-export the file through Unity's FBX Exporter (polygons are rebuilt
+            // from Unity's triangles).
             string targetFbxPath = string.IsNullOrEmpty(outputFbxPath) ? sourceFbxPath : outputFbxPath;
             bool isVariantExport = !string.IsNullOrEmpty(outputFbxPath)
                 && !string.Equals(outputFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);

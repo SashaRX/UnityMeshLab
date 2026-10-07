@@ -3,6 +3,7 @@
 // FBX mesh built from Unity triangles (FbxMeshData), and, with the FBX SDK, new nodes
 // placed next to their source node while the rest of the document stays as it was.
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using NUnit.Framework;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
@@ -448,6 +449,35 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(names.ContainsKey("Twin"), "two meshes of one name cannot be told apart");
             using var document = FbxSourceDocument.Load(path);
             CollectionAssert.AreEqual(new[] { "map1", "lightmap" }, document.UvSetNames("Plane"));
+            Assert.That(document.HasSmoothing("Plane"), Is.False, "the mesh has no smoothing element");
+            Assert.IsNull(document.HasSmoothing("Twin"), "a shared name is unknown");
+        }
+
+        [Test]
+        public void HasSmoothing_SeesTheSmoothingElement()
+        {
+            string path = Path.Combine(folder, "smoothing.fbx");
+            File.WriteAllText(path, string.Join("\n",
+                "; FBX 7.4.0 project file",
+                "Objects:  {",
+                "\tGeometry: 1, \"Geometry::Smooth\", \"Mesh\" {",
+                "\t\tLayerElementSmoothing: 0 {",
+                "\t\t\tMappingInformationType: \"ByPolygon\"",
+                "\t\t}",
+                "\t\tLayerElementUV: 0 {",
+                "\t\t\tName: \"map1\"",
+                "\t\t}",
+                "\t}",
+                "\tGeometry: 2, \"Geometry::Flat\", \"Mesh\" {",
+                "\t\tLayerElementUV: 0 {",
+                "\t\t\tName: \"UVMap\"",
+                "\t\t}",
+                "\t}",
+                "}"));
+            var (names, smoothing) = FbxUvSetNames.ReadLayers(path);
+            Assert.IsTrue(smoothing["Smooth"]);
+            Assert.IsFalse(smoothing["Flat"]);
+            CollectionAssert.AreEqual(new[] { "map1" }, names["Smooth"], "the smoothing element does not hide the UV set after it");
         }
 
         [Test]
@@ -484,6 +514,90 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(FbxStructureEdit.HasTransformAnimation(FbxStructureEdit.FindNodes(document.Scene, "Still").Single()));
             Assert.IsFalse(FbxStructureEdit.HasTransformAnimation(FbxStructureEdit.FindNodes(document.Scene, "Keyed").Single()), "keys at the value");
             Assert.IsTrue(FbxStructureEdit.HasTransformAnimation(FbxStructureEdit.FindNodes(document.Scene, "Moving").Single()));
+        }
+
+        [Test]
+        public void SetMaterial_ReplacesOneSlotAndLeavesTheOthersAndOtherNodes()
+        {
+            string source = WriteSource(), edited = Path.Combine(folder, "edited.fbx");
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                var scene = document.Scene;
+                var rock = FbxStructureEdit.FindNodes(scene, "Rock_LOD0").Single();
+                // Another node showing the same "Moss" material.
+                var twin = FbxStructureEdit.AddSibling(rock, "Rock_Twin", true);
+                FbxStructureEdit.AddMaterials(twin, rock, new[] { 1 });
+                int materials = scene.GetMaterialCount();
+                Assert.AreEqual("Stone", FbxStructureEdit.SceneMaterial(scene, "Stone").GetName());
+                Assert.AreEqual(materials, scene.GetMaterialCount(), "a material of that name is reused, not duplicated");
+
+                FbxStructureEdit.SetMaterial(rock, 1, FbxStructureEdit.SceneMaterial(scene, "Lichen"));
+                Assert.Throws<FbxStructureRefusalException>(() => FbxStructureEdit.SetMaterial(rock, 0, FbxStructureEdit.SceneMaterial(scene, "Lichen")),
+                    "one node cannot hold a material in two slots");
+                document.Save(edited);
+            }
+            using (var document = FbxSourceDocument.Load(edited))
+            {
+                var rock = FbxStructureEdit.FindNodes(document.Scene, "Rock_LOD0").Single();
+                Assert.AreEqual(2, rock.GetMaterialCount());
+                Assert.AreEqual("Stone", rock.GetMaterial(0).GetName(), "slot 0 untouched");
+                Assert.AreEqual("Lichen", rock.GetMaterial(1).GetName(), "slot 1 replaced in place");
+                var twin = FbxStructureEdit.FindNodes(document.Scene, "Rock_Twin").Single();
+                Assert.AreEqual("Moss", twin.GetMaterial(0).GetName(), "another node keeps the material it shared");
+            }
+        }
+
+        [Test]
+        public void NewMaterial_IsPhongWithItsDiffuseTextureAndBothPaths()
+        {
+            string source = WriteSource(), edited = Path.Combine(folder, "textured.fbx");
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                var scene = document.Scene;
+                var rock = FbxStructureEdit.FindNodes(scene, "Rock_LOD0").Single();
+                var bark = FbxStructureEdit.NewMaterial(scene, "Bark", 0.5, 0.25, 0.125, "T_Bark_Albedo",
+                    "C:/Project/Assets/Textures/T_Bark_Albedo.png", "../Textures/T_Bark_Albedo.png", "map1");
+                FbxStructureEdit.SetMaterial(rock, 1, bark);
+                document.Save(edited);
+            }
+            using (var document = FbxSourceDocument.Load(edited))
+            {
+                var rock = FbxStructureEdit.FindNodes(document.Scene, "Rock_LOD0").Single();
+                var bark = rock.GetMaterial(1);
+                Assert.AreEqual("Bark", bark.GetName());
+                Assert.IsTrue(bark.FindProperty(FbxSurfaceMaterial.sShininess).IsValid(), "a Phong material");
+                var diffuse = bark.FindProperty(FbxSurfaceMaterial.sDiffuse);
+                Assert.AreEqual(0.5, diffuse.GetFbxDouble3().X, 1e-9);
+                Assert.AreEqual(0.25, diffuse.GetFbxDouble3().Y, 1e-9);
+                Assert.AreEqual(1, diffuse.GetSrcObjectCount(), "a texture on the diffuse");
+                Assert.AreEqual("T_Bark_Albedo", diffuse.GetSrcObject(0).GetName());
+                Assert.AreEqual("map1", diffuse.GetSrcObject(0).FindProperty("UVSet").GetString(), "bound to the mesh's UV set");
+            }
+            // The wrapper does not downcast to FbxFileTexture: the path is read from the file. (The
+            // SDK writes the relative path anew on save, from the absolute one and the file's place.)
+            string written = System.Text.Encoding.ASCII.GetString(File.ReadAllBytes(edited));
+            StringAssert.Contains("C:/Project/Assets/Textures/T_Bark_Albedo.png", written, "absolute path");
+        }
+
+        [Test]
+        public void SetMaterials_SwapsTwoSlotsInOneStep()
+        {
+            string source = WriteSource(), edited = Path.Combine(folder, "swapped.fbx");
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                var scene = document.Scene;
+                var rock = FbxStructureEdit.FindNodes(scene, "Rock_LOD0").Single();
+                FbxStructureEdit.SetMaterials(rock, new Dictionary<int, FbxSurfaceMaterial>
+                    { [0] = FbxStructureEdit.SceneMaterial(scene, "Moss"), [1] = FbxStructureEdit.SceneMaterial(scene, "Stone") });
+                document.Save(edited);
+            }
+            using (var document = FbxSourceDocument.Load(edited))
+            {
+                var rock = FbxStructureEdit.FindNodes(document.Scene, "Rock_LOD0").Single();
+                Assert.AreEqual(2, rock.GetMaterialCount());
+                Assert.AreEqual("Moss", rock.GetMaterial(0).GetName());
+                Assert.AreEqual("Stone", rock.GetMaterial(1).GetName());
+            }
         }
 
         [Test]

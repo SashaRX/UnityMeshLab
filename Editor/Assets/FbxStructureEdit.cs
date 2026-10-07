@@ -284,6 +284,66 @@ namespace SashaRX.UnityMeshLab
             if (any) node.SetShadingMode(FbxNode.EShadingMode.eTextureShading);
         }
 
+        /// <summary>The scene's material named <paramref name="name"/>, or a new one of that name.</summary>
+        internal static FbxSurfaceMaterial SceneMaterial(FbxScene scene, string name)
+            => scene.GetMaterial(name) ?? FbxSurfacePhong.Create(scene, name);
+
+        /// <summary>
+        /// A new Phong material with a diffuse colour and, when <paramref name="textureFile"/> is
+        /// given, a file texture on its diffuse (absolute and relative paths, as the pipeline's
+        /// material rules require), so the file renders textured outside Unity too.
+        /// </summary>
+        internal static FbxSurfacePhong NewMaterial(FbxScene scene, string name, double r, double g, double b,
+            string textureName, string textureFile, string relativeTextureFile, string uvSet)
+        {
+            var material = FbxSurfacePhong.Create(scene, name);
+            material.Diffuse.Set(new FbxDouble3(r, g, b));
+            if (string.IsNullOrEmpty(textureFile)) return material;
+            var texture = FbxFileTexture.Create(scene, textureName);
+            texture.SetFileName(textureFile);
+            texture.SetRelativeFileName(relativeTextureFile ?? textureFile);
+            texture.SetTextureUse(FbxTexture.ETextureUse.eStandard);
+            texture.SetMappingType(FbxTexture.EMappingType.eUV);
+            // Max binds a texture to the mesh through the UV set's name (checklist rule).
+            if (!string.IsNullOrEmpty(uvSet)) texture.UVSet.Set(uvSet);
+            texture.ConnectDstProperty(material.Diffuse);
+            return material;
+        }
+
+        /// <summary>
+        /// Puts <paramref name="material"/> into slot <paramref name="slot"/> of <paramref name="node"/>;
+        /// the other slots keep their materials and order (the polygons' material indices stay valid).
+        /// </summary>
+        internal static void SetMaterial(FbxNode node, int slot, FbxSurfaceMaterial material)
+            => SetMaterials(node, new Dictionary<int, FbxSurfaceMaterial> { [slot] = material });
+
+        /// <summary>
+        /// Puts each material into its slot of <paramref name="node"/> in one step, so slots can
+        /// exchange materials; refuses when a slot would end up holding a material that another
+        /// slot of the node also holds.
+        /// </summary>
+        internal static void SetMaterials(FbxNode node, IDictionary<int, FbxSurfaceMaterial> bySlot)
+        {
+            int count = node.GetMaterialCount();
+            var list = new List<FbxSurfaceMaterial>(count);
+            for (int i = 0; i < count; i++) list.Add(node.GetMaterial(i));
+            var final = new List<FbxSurfaceMaterial>(list);
+            foreach (var kv in bySlot)
+            {
+                if (kv.Key < 0 || kv.Key >= count) throw new ArgumentOutOfRangeException(nameof(bySlot));
+                final[kv.Key] = kv.Value;
+            }
+            foreach (int slot in bySlot.Keys)
+                for (int i = 0; i < count; i++)
+                    if (i != slot && final[i].GetName() == final[slot].GetName())
+                        throw new FbxStructureRefusalException($"'{node.GetName()}': material '{final[slot].GetName()}' would fill slots {Math.Min(i, slot)} and {Math.Max(i, slot)}; one node cannot hold a material in two slots");
+            // A node's material order is its connection order: reconnect them all in order.
+            foreach (var m in list) node.DisconnectSrcObject(m);
+            foreach (var m in final) node.AddMaterial(m);
+            // A node with materials renders textured only in texture shading (checklist rule).
+            node.SetShadingMode(FbxNode.EShadingMode.eTextureShading);
+        }
+
         /// <summary>
         /// Removes <paramref name="node"/> with its children; their meshes go with them when
         /// no other node shows them.

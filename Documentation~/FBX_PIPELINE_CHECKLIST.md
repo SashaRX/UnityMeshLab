@@ -42,7 +42,7 @@ exists to catch what slipped through.
 | Diffuse-texture `UVSet` name = name of `mesh->GetElementUV(0)` | Without it Max drops the texture-mesh binding (UV resolution fails) |
 | `_COL` meshes (node name suffix `_COL`, case-insensitive) ship **no UV channels and no vcolor layers** | Collision meshes never render — pure dead weight |
 | One vcolor layer per mesh on layer 0 | Multiple vcolor layers surface as unnamed map channels (4:map, 5:map…) in Max and confuse material setup |
-| `FbxLayerElementNormal::mapping = eByPolygonVertex` if the mesh has smoothing groups, `eByControlPoint` if not | Max reads the two cases differently |
+| `FbxLayerElementNormal::mapping = eByPolygonVertex` if the mesh has smoothing groups, `eByControlPoint` if not (MeshLab's document edit: a new normal element on a mesh without smoothing groups is per control point when each point has one normal; a hard edge cannot be held per point and stays per corner) | Max reads the two cases differently |
 
 ## 4. Vertex colors
 
@@ -259,7 +259,7 @@ byte-identical from the source FBX clone (modulo what the
 Unity FBX Exporter itself rewrites at the FBX-document level;
 see §9).
 
-### Channel re-save in the FBX document (UV sets, vertex colours)
+### Channel re-save in the FBX document (UV sets, vertex colours, normals, tangents)
 
 An intent made only of `UV0`…`UV7` and `VertexColors` does not go through
 Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
@@ -312,12 +312,18 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
 * A channel the working mesh dropped (Cleanup's attribute removal) is removed
   from the file: the colour set, or the last UV sets. Removing a UV set before
   one that stays would renumber it and is refused.
-* Changed renderer materials (Cleanup's material fixes; a renderer that is no
-  prefab instance is compared with the model's renderer of the same mesh, unless
-  the importer imports no materials) and changed normals or tangents (an
-  attribute added or removed, or values that differ at the same position,
-  renumbered or not; tangents only where the importer imports them) are not
-  channel work: the hub's save names them and offers the rebuild.
+* Normals and tangents are channels too (hub save): layer 0's normal, tangent
+  and binormal elements take the changed corners, with each value mapped back
+  into the mesh's control-point space through the map fitted to its import
+  (`FbxSpaceFit`: normals by its transpose, tangent and binormal as directions;
+  binormal = cross(normal, tangent) · w). Unchanged corners keep their doubles;
+  an added set is written whole, a dropped one removed. They are written only
+  where the importer reads them from the file (`Normals: Import`, and for
+  tangents also `Tangents: Import`): under Calculate Unity recomputes them on
+  every import, so a changed set is reported in the log and left out. A hard
+  edge inside one polygon (two normals for one corner) is refused like a UV
+  seam. Smoothing groups are left as they are.
+* "Save channels only" writes UV sets and vertex colours only.
 * The hub's Overwrite / Export New FBX (`All`) takes this path, together with
   the structure edit below, in one load and one save of the document.
 
@@ -376,15 +382,32 @@ The hub's `All` save adds or replaces geometry in the same document
   one takes its name next to the same source (same parent; a same-named node
   in another branch is left alone; a replaced node with children is refused). Hierarchy
   normalisation stays the explicit Prefab Builder action (the LOD-rebuild path).
+* A renderer whose materials differ from the ones its mesh's node gives it
+  (Cleanup's material fixes; compared with the prefab source renderer, or for a
+  renderer that is no prefab instance with the model's renderer of its name, or
+  of the same mesh) changes only the node slots of those submeshes: each takes an FBX
+  material named after the Unity material, made FBX-safe (the scene's own of that
+  name when the importer already maps it to that asset, or a new `FbxSurfacePhong`
+  with the material's colour and its main texture as an `FbxFileTexture` on the
+  diffuse, absolute and relative paths; `_1`, `_2`… when the name maps to another
+  material or names a file material not mapped to it), and the
+  importer gets a remap from that name to the asset. Other slots and other nodes
+  sharing the old material keep it. A generated LOD whose renderer's materials
+  differ from its source renderer's gets them in its own slots the same way.
+  With material import off nothing is written (Unity does not use the file's
+  materials); an adopted LOD renderer keeps the generated one's materials.
 * Refused, nothing written, then a dialog offers the rebuild or "Save channels
-  only": a LOD source node without an `_LOD<N>` suffix, a source that is the
+  only": a changed material that is not an asset or has no slot in the FBX, a
+  renderer with fewer materials than its node's slots, renderers of one node given
+  different materials, changed materials in a file written outside the project (no
+  importer to remap them), a file's own material put back into one slot while the
+  importer remaps its name to another asset, changed tangents on a mesh whose normals were removed, a LOD source node without an `_LOD<N>` suffix, a source that is the
   file's only top-level node (Unity imports it as the model root) unless the
   importer preserves the hierarchy, a skinned or blend-shaped source, a source
   whose transform is animated (a sibling copies the values, not the curves),
   an import that is not an affine image of its control points, a generated LOD
   whose source mesh cannot be told or whose name two branches generate, a
-  generated LOD whose renderer's materials differ from its source renderer's
-  (the new node takes the source node's), a sibling of a mesh instanced by
+  sibling of a mesh instanced by
   several nodes (which instance it belongs with cannot be told), a mesh
   written whole that lacks a UV set before one it has (its sets would be
   renumbered) or lacks the UV1 a bake writes for the whole model, a new node
