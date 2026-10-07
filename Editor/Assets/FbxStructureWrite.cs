@@ -144,7 +144,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         // Normals or tangents a channel save cannot write: the attribute was added or removed
-        // (Cleanup), or the values changed on a working copy that kept the import's vertices.
+        // (Cleanup), or the values differ at the same position (renumbered copy or not).
         // Tangent values count only when the importer reads the file's (Import); otherwise
         // Unity computes them on every import and a recomputed set is no edit of the file.
         internal static bool ShadingChanged(Mesh imported, Mesh result)
@@ -152,13 +152,25 @@ namespace SashaRX.UnityMeshLab
             if (imported == null || result == null || imported == result) return false;
             if (imported.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal) != result.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal)) return true;
             if (imported.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent) != result.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent)) return true;
-            if (!imported.isReadable || !result.isReadable || imported.vertexCount != result.vertexCount) return false;
-            // Only an unrenumbered copy pairs vertices by index.
-            if (!imported.vertices.SequenceEqual(result.vertices)) return false;
-            if (!imported.normals.SequenceEqual(result.normals)) return true;
-            return AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(imported)) is ModelImporter importer
-                && importer.importTangents == ModelImporterTangents.Import
-                && !imported.tangents.SequenceEqual(result.tangents);
+            if (!imported.isReadable || !result.isReadable) return false;
+            bool tangents = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(imported)) is ModelImporter importer
+                && importer.importTangents == ModelImporterTangents.Import;
+            var importedVertices = imported.vertices;
+            var resultVertices = result.vertices;
+            if (importedVertices.SequenceEqual(resultVertices))
+                return !imported.normals.SequenceEqual(result.normals) || (tangents && !imported.tangents.SequenceEqual(result.tangents));
+            // Renumbered or welded: every vertex of the copy must carry a normal (and tangent)
+            // the import has at that position.
+            var importedNormals = imported.normals;
+            var importedTangents = tangents ? imported.tangents : null;
+            var known = new HashSet<(Vector3, Vector3, Vector4)>();
+            for (int v = 0; v < importedVertices.Length; v++)
+                known.Add((importedVertices[v], importedNormals[v], importedTangents != null ? importedTangents[v] : default));
+            var resultNormals = result.normals;
+            var resultTangents = tangents ? result.tangents : null;
+            for (int v = 0; v < resultVertices.Length; v++)
+                if (!known.Contains((resultVertices[v], resultNormals[v], resultTangents != null ? resultTangents[v] : default))) return true;
+            return false;
         }
 
         // The scene renderer's materials differ from the model's (e.g. after Cleanup's material
@@ -166,9 +178,23 @@ namespace SashaRX.UnityMeshLab
         internal static bool MaterialsChanged(MeshEntry entry)
         {
             if (entry?.renderer == null) return false;
+            var materials = entry.renderer.sharedMaterials;
             var source = PrefabUtility.GetCorrespondingObjectFromSource(entry.renderer);
-            return source != null && !entry.renderer.sharedMaterials.SequenceEqual(source.sharedMaterials);
+            if (source != null) return !materials.SequenceEqual(source.sharedMaterials);
+            // No prefab instance (unpacked, assembled by hand, standalone): the model's renderers
+            // of the same mesh, unless the importer imports no materials.
+            if (entry.fbxMesh == null) return false;
+            string path = AssetDatabase.GetAssetPath(entry.fbxMesh);
+            if (!(AssetImporter.GetAtPath(path) is ModelImporter importer) || importer.materialImportMode == ModelImporterMaterialImportMode.None) return false;
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (model == null) return false;
+            var counterparts = model.GetComponentsInChildren<Renderer>(true).Where(r => RendererMesh(r) == entry.fbxMesh).ToList();
+            return counterparts.Count > 0 && !counterparts.Any(r => materials.SequenceEqual(r.sharedMaterials));
         }
+
+        static Mesh RendererMesh(Renderer renderer)
+            => renderer is SkinnedMeshRenderer skinned ? skinned.sharedMesh
+             : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
 
         // Faces differ from the import: per submesh, the same faces (as position loops, any
         // starting corner, same winding) in any order and any vertex numbering. Vertex dedup,

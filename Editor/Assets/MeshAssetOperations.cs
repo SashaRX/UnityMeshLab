@@ -328,18 +328,38 @@ namespace SashaRX.UnityMeshLab
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
         // A persistent sidecar re-applies its UV2 on every import; after a save wrote the
         // meshes' UVs into the file, its entries must hold the same UVs or the next import
-        // would bring the old ones back.
-        void SyncPersistentSidecar(string sourceFbxPath, List<(MeshEntry entry, Mesh resultMesh)> group)
+        // would bring the old ones back. The entries are built before the write, from the
+        // meshes the file was read with (the import that follows recreates them), and stored
+        // only once the write succeeded.
+        sealed class SidecarSync
         {
-            if (!PostprocessorDefineManager.IsEnabled() || SidecarStore.Load(sourceFbxPath) == null) return;
-            // A UV1 the working mesh dropped left the file too; its entry would bring it back.
+            public string fbxPath;
+            public List<MeshUv2Entry> entries;
+            public List<string> dropped;
+        }
+
+        SidecarSync PrepareSidecarSync(string fbxPath, List<(MeshEntry entry, Mesh resultMesh)> group)
+        {
+            if (!PostprocessorDefineManager.IsEnabled() || SidecarStore.Load(fbxPath) == null) return null;
+            // A UV1 the working mesh dropped leaves the file too; its entry would bring it back.
             const UnityEngine.Rendering.VertexAttribute uv1 = UnityEngine.Rendering.VertexAttribute.TexCoord1;
             var dropped = group.Where(p => p.entry.fbxMesh != null && p.resultMesh != null && p.resultMesh != p.entry.fbxMesh
                 && p.entry.fbxMesh.HasVertexAttribute(uv1) && !p.resultMesh.HasVertexAttribute(uv1)).ToList();
-            int removed = SidecarStore.RemoveEntries(sourceFbxPath, dropped.Select(p => p.entry.fbxMesh.name));
-            int saved = SidecarStore.SaveEntries(sourceFbxPath, BuildSidecarEntriesForExport(group.Except(dropped).ToList()));
+            return new SidecarSync
+            {
+                fbxPath = fbxPath,
+                entries = BuildSidecarEntriesForExport(group.Except(dropped).ToList()),
+                dropped = dropped.Select(p => p.entry.fbxMesh.name).ToList(),
+            };
+        }
+
+        static void ApplySidecarSync(SidecarSync sync)
+        {
+            if (sync == null) return;
+            int removed = SidecarStore.RemoveEntries(sync.fbxPath, sync.dropped);
+            int saved = SidecarStore.SaveEntries(sync.fbxPath, sync.entries);
             if (saved + removed > 0)
-                UvtLog.Info($"[FBX Export] Updated {saved} and removed {removed} UV2 entr(ies) in '{SidecarStore.PathFor(sourceFbxPath)}' to match the saved FBX.");
+                UvtLog.Info($"[FBX Export] Updated {saved} and removed {removed} UV2 entr(ies) in '{SidecarStore.PathFor(sync.fbxPath)}' to match the saved FBX.");
         }
 
         static bool TryChooseNarrowExportPath(string sourceFbxPath, FbxExportIntent intent, bool overwriteSource, out string outputFbxPath)
@@ -434,21 +454,21 @@ namespace SashaRX.UnityMeshLab
             bool isVariantExport = !string.IsNullOrEmpty(outputFbxPathOverride)
                 && !string.Equals(outputFbxPathOverride, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
             var list = entries as IList<MeshEntry> ?? entries.ToList();
+            // Every UV1 save leaves a persistent sidecar replaying the same: the source's, or a
+            // variant's written into the project that may already have one of its own.
+            string sidecarFbx = !intent.IncludesUv(1) ? null
+                : !isVariantExport ? sourceFbxPath
+                : outputFbxPathOverride.StartsWith("Assets/", StringComparison.Ordinal) ? outputFbxPathOverride : null;
+            var sidecar = sidecarFbx == null ? null
+                : PrepareSidecarSync(sidecarFbx, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
+            if (!isVariantExport) PrepareStandaloneRelink(sourceFbxPath);
             bool exported = FbxExport.WriteChannels(
                 sourceFbxPath, list, intent, outputFbxPathOverride,
                 FbxExport.FirstRealMaterial(ctx?.MeshEntries),
                 isVariantExport ? null : ctx?.LodGroup);
-            if (!exported) return false;
-            // A variant written into the project may already have a persistent sidecar of its own.
-            if (isVariantExport && intent.IncludesUv(1) && outputFbxPathOverride.StartsWith("Assets/", StringComparison.Ordinal))
-                SyncPersistentSidecar(outputFbxPathOverride, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
-            if (!isVariantExport)
-            {
-                // Every source save that wrote UV1 leaves a persistent sidecar replaying the same.
-                if (intent.IncludesUv(1))
-                    SyncPersistentSidecar(sourceFbxPath, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
-                AfterSourceSave();
-            }
+            if (!exported) { standaloneRelinks.Clear(); return false; }
+            ApplySidecarSync(sidecar);
+            if (!isVariantExport) AfterSourceSave();
             return true;
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
@@ -484,8 +504,42 @@ namespace SashaRX.UnityMeshLab
             if (lodAdoptionPending) LodGroupUtility.AdoptImportedLods(ctx);
             lodAdoptionPending = false;
             if (ctx?.LodGroup != null) ctx.Refresh(ctx.LodGroup);
+            else if (ctx != null && ctx.StandaloneMesh)
+            {
+                // No LODGroup for the write to relink: the renderer takes its reimported mesh here.
+                var renderer = ctx.MeshEntries.FirstOrDefault(e => e?.renderer is MeshRenderer)?.renderer as MeshRenderer;
+                ReleaseWorkingMeshes();
+                RelinkStandalone();
+                if (renderer != null) ctx.RefreshStandalone(renderer);
+            }
             RestoreWorkingCopiesToScene();
             AfterWrite?.Invoke();
+        }
+
+        // A standalone renderer's filter, with the FBX and mesh name it shows, taken before the
+        // write: the import that follows recreates the mesh it points at.
+        readonly List<(MeshFilter filter, string fbxPath, string meshName)> standaloneRelinks = new List<(MeshFilter, string, string)>();
+
+        void PrepareStandaloneRelink(string fbxPath)
+        {
+            if (ctx?.LodGroup != null || ctx == null || !ctx.StandaloneMesh || ctx.MeshEntries == null) return;
+            foreach (var e in ctx.MeshEntries)
+                if (e?.meshFilter != null && e.fbxMesh != null
+                    && string.Equals(AssetDatabase.GetAssetPath(e.fbxMesh), fbxPath, StringComparison.OrdinalIgnoreCase))
+                    standaloneRelinks.Add((e.meshFilter, fbxPath, e.fbxMesh.name));
+        }
+
+        void RelinkStandalone()
+        {
+            foreach (var (filter, fbxPath, meshName) in standaloneRelinks)
+            {
+                if (filter == null) continue;
+                var fresh = AssetDatabase.LoadAllAssetsAtPath(fbxPath).OfType<Mesh>().FirstOrDefault(m => m.name == meshName);
+                if (fresh == null || filter.sharedMesh == fresh) continue;
+                Undo.RecordObject(filter, "Relink Saved Mesh");
+                filter.sharedMesh = fresh;
+            }
+            standaloneRelinks.Clear();
         }
 
         static Mesh WorkingMesh(MeshEntry e) => e.repackedMesh ?? e.transferredMesh ?? e.originalMesh ?? e.fbxMesh;
@@ -609,6 +663,8 @@ namespace SashaRX.UnityMeshLab
                         && !string.Equals(outputFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
                     var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
                     RestoreAllPreviews();
+                    var sidecar = isVariant ? null : PrepareSidecarSync(sourceFbxPath, kv.Value);
+                    if (!isVariant) PrepareStandaloneRelink(sourceFbxPath);
 
                     bool written;
                     try
@@ -628,10 +684,10 @@ namespace SashaRX.UnityMeshLab
                         UvtLog.Verbose(ex.ToString());
                         continue;
                     }
-                    if (!written) continue;
+                    if (!written) { standaloneRelinks.Clear(); continue; }
                     okCount++;
                     if (isVariant) continue;
-                    SyncPersistentSidecar(sourceFbxPath, kv.Value);
+                    ApplySidecarSync(sidecar);
                     AfterSourceSave(plan.lods.Count > 0);
                 }
             }
