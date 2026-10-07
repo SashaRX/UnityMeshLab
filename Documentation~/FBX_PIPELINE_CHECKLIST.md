@@ -386,9 +386,11 @@ The hub's `All` save adds or replaces geometry in the same document
   (Cleanup's material fixes; compared with the prefab source renderer, or for a
   renderer that is no prefab instance with the model's renderer of its name, or
   of the same mesh) changes only the node slots of those submeshes: each takes an FBX
-  material named after the Unity material (the scene's own of that name when the
-  importer already maps it to that asset, or a new one; `_1`, `_2`… when the name
-  maps to another material or names a file material not mapped to it), and the
+  material named after the Unity material, made FBX-safe (the scene's own of that
+  name when the importer already maps it to that asset, or a new `FbxSurfacePhong`
+  with the material's colour and its main texture as an `FbxFileTexture` on the
+  diffuse, absolute and relative paths; `_1`, `_2`… when the name maps to another
+  material or names a file material not mapped to it), and the
   importer gets a remap from that name to the asset. Other slots and other nodes
   sharing the old material keep it. A generated LOD whose renderer's materials
   differ from its source renderer's gets them in its own slots the same way.
