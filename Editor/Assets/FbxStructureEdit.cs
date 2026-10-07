@@ -284,6 +284,29 @@ namespace SashaRX.UnityMeshLab
             if (any) node.SetShadingMode(FbxNode.EShadingMode.eTextureShading);
         }
 
+        /// <summary>The scene's material named <paramref name="name"/>, or a new one of that name.</summary>
+        internal static FbxSurfaceMaterial SceneMaterial(FbxScene scene, string name)
+            => scene.GetMaterial(name) ?? FbxSurfacePhong.Create(scene, name);
+
+        /// <summary>
+        /// Puts <paramref name="material"/> into slot <paramref name="slot"/> of <paramref name="node"/>;
+        /// the other slots keep their materials and order (the polygons' material indices stay valid).
+        /// </summary>
+        internal static void SetMaterial(FbxNode node, int slot, FbxSurfaceMaterial material)
+        {
+            int count = node.GetMaterialCount();
+            if (slot < 0 || slot >= count) throw new ArgumentOutOfRangeException(nameof(slot));
+            var list = new List<FbxSurfaceMaterial>(count);
+            for (int i = 0; i < count; i++) list.Add(node.GetMaterial(i));
+            for (int i = 0; i < count; i++)
+                if (i != slot && list[i].GetName() == material.GetName())
+                    throw new FbxStructureRefusalException($"'{node.GetName()}': material '{material.GetName()}' already fills slot {i}; one node cannot hold a material in two slots");
+            // A node's material order is its connection order: reconnect them all in order.
+            foreach (var m in list) node.DisconnectSrcObject(m);
+            list[slot] = material;
+            foreach (var m in list) node.AddMaterial(m);
+        }
+
         /// <summary>
         /// Removes <paramref name="node"/> with its children; their meshes go with them when
         /// no other node shows them.

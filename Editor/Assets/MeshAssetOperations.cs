@@ -685,6 +685,8 @@ namespace SashaRX.UnityMeshLab
                 foreach (var kv in fbxGroups)
                 {
                     string sourceFbxPath = kv.Key;
+                    // The plan reads renderer materials: previews (checker, AO, shells) must be off.
+                    RestoreAllPreviews();
                     using var plan = FbxStructureWrite.Plan(sourceFbxPath, kv.Value, ctx.SourceLodIndex);
                     if (!TryChooseNarrowExportPath(sourceFbxPath, FbxExportIntent.All, overwriteSource, out string outputFbxPath))
                     {
@@ -748,7 +750,7 @@ namespace SashaRX.UnityMeshLab
                 "'Save channels only' writes the changed UV sets and vertex colours into the existing file and leaves the rest of it untouched.",
                 "Rebuild", CancelButton, "Save channels only");
             if (choice == 1) return false;
-            if (choice == 2) return ExportFbxIsolatedCore(sourceFbxPath, entries, FbxChannelWrite.Supported, outputFbxPath);
+            if (choice == 2) return ExportFbxIsolatedCore(sourceFbxPath, entries, FbxChannelWrite.ChannelsOnly, outputFbxPath);
             bool ok = ExportHierarchyGroup(sourceFbxPath, group, overwriteSource, rebuilds);
             rebuilds.Groups++;
             rebuilds.AllSucceeded &= ok;

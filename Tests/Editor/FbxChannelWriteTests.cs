@@ -236,6 +236,50 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Edit_WritesNormalsAndTheTangentFrameOnLayerZeroKeepingUnchangedCorners()
+        {
+            string source = WriteSource(true), first = Path.Combine(folder, "first.fbx"), second = Path.Combine(folder, "second.fbx");
+            int corners;
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                var mesh = document.Meshes[0];
+                var topology = new FbxLayerChannels.Topology(mesh);
+                corners = topology.CornerCount;
+                Assert.IsNull(FbxLayerChannels.NormalElement(mesh), "the source has no normals");
+                var all = Enumerable.Repeat(true, corners).ToArray();
+                double[] Repeat(params double[] v) => Enumerable.Range(0, corners).SelectMany(_ => v).ToArray();
+                Assert.AreEqual(corners, FbxLayerChannels.WriteNormals(mesh, topology, Repeat(0, 0, 1), all));
+                Assert.AreEqual(corners, FbxLayerChannels.WriteTangentFrame(mesh, topology, Repeat(1, 0, 0), Repeat(0, 1, 0), all));
+                document.Save(first);
+            }
+            using (var document = FbxSourceDocument.Load(first))
+            {
+                var mesh = document.Meshes[0];
+                var topology = new FbxLayerChannels.Topology(mesh);
+                var normals = FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(mesh), topology);
+                normals[3 * 3] = 0.6; normals[3 * 3 + 2] = 0.8;
+                var changed = Enumerable.Range(0, corners).Select(c => c == 3).ToArray();
+                Assert.AreEqual(1, FbxLayerChannels.WriteNormals(mesh, topology, normals, changed));
+                document.Save(second);
+            }
+            using (var document = FbxSourceDocument.Load(second))
+            {
+                var mesh = document.Meshes[0];
+                var topology = new FbxLayerChannels.Topology(mesh);
+                var normals = FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(mesh), topology);
+                CollectionAssert.AreEqual(new[] { 0.6, 0, 0.8 }, normals.Skip(9).Take(3).ToArray(), "the changed corner");
+                CollectionAssert.AreEqual(new[] { 0.0, 0, 1 }, normals.Take(3).ToArray(), "an unchanged corner keeps its value");
+                CollectionAssert.AreEqual(new[] { 1.0, 0, 0 }, FbxLayerChannels.ReadVectors(FbxLayerChannels.TangentElement(mesh), topology).Take(3).ToArray());
+                CollectionAssert.AreEqual(new[] { 0.0, 1, 0 }, FbxLayerChannels.ReadVectors(FbxLayerChannels.BinormalElement(mesh), topology).Take(3).ToArray());
+                Assert.AreEqual(4, mesh.GetPolygonSize(0), "polygons untouched");
+                Assert.IsTrue(FbxLayerChannels.RemoveTangentFrame(mesh));
+                Assert.IsTrue(FbxLayerChannels.RemoveNormals(mesh));
+                Assert.IsNull(FbxLayerChannels.TangentElement(mesh));
+                Assert.IsNull(FbxLayerChannels.NormalElement(mesh));
+            }
+        }
+
+        [Test]
         public void Edit_RefusesAUvSetThatWouldSkipAChannel()
         {
             using var document = FbxSourceDocument.Load(WriteSource(true));

@@ -354,6 +354,89 @@ namespace SashaRX.UnityMeshLab
                 (i, v) => direct.SetAt(i, new FbxColor(v[0], v[1], v[2], v[3])));
         }
 
+        /// <summary>Layer 0's normal, tangent and binormal elements: the ones Unity's importer reads.</summary>
+        internal static FbxLayerElementNormal NormalElement(FbxMesh mesh) => mesh.GetLayerCount() > 0 ? mesh.GetLayer(0)?.GetNormals() : null;
+        internal static FbxLayerElementTangent TangentElement(FbxMesh mesh) => mesh.GetLayerCount() > 0 ? mesh.GetLayer(0)?.GetTangents() : null;
+        internal static FbxLayerElementBinormal BinormalElement(FbxMesh mesh) => mesh.GetLayerCount() > 0 ? mesh.GetLayer(0)?.GetBinormals() : null;
+
+        /// <summary>
+        /// Writes the changed corners of layer 0's normals (xyz per corner, FBX space),
+        /// creating the element there when the mesh has none.
+        /// </summary>
+        internal static int WriteNormals(FbxMesh mesh, in Topology topology, double[] values, bool[] changed)
+        {
+            var element = NormalElement(mesh);
+            if (element == null)
+            {
+                element = FbxLayerElementNormal.Create(mesh, "Normals");
+                Layer(mesh, 0).SetNormals(element);
+            }
+            return WriteVectors(element, topology, values, changed);
+        }
+
+        /// <summary>
+        /// Writes the changed corners of layer 0's tangents and binormals (xyz per corner each,
+        /// FBX space), creating the elements there when the mesh has none.
+        /// </summary>
+        internal static int WriteTangentFrame(FbxMesh mesh, in Topology topology, double[] tangents, double[] binormals, bool[] changed)
+        {
+            var tangent = TangentElement(mesh);
+            if (tangent == null)
+            {
+                tangent = FbxLayerElementTangent.Create(mesh, "Tangents");
+                Layer(mesh, 0).SetTangents(tangent);
+            }
+            var binormal = BinormalElement(mesh);
+            if (binormal == null)
+            {
+                binormal = FbxLayerElementBinormal.Create(mesh, "Binormals");
+                Layer(mesh, 0).SetBinormals(binormal);
+            }
+            int written = WriteVectors(tangent, topology, tangents, changed);
+            WriteVectors(binormal, topology, binormals, changed);
+            return written;
+        }
+
+        /// <summary>Per-corner xyz of a normal, tangent or binormal element.</summary>
+        internal static double[] ReadVectors(FbxLayerElementTemplateFbxVector4 element, in Topology topology)
+        {
+            var direct = element.GetDirectArray();
+            var slots = DirectSlots(element, element.GetIndexArray(), direct.GetCount(), topology);
+            var values = new double[slots.Length * 3];
+            for (int c = 0; c < slots.Length; c++)
+            {
+                var v = direct.GetAt(slots[c]);
+                values[c * 3] = v.X; values[c * 3 + 1] = v.Y; values[c * 3 + 2] = v.Z;
+            }
+            return values;
+        }
+
+        static int WriteVectors(FbxLayerElementTemplateFbxVector4 element, in Topology topology, double[] values, bool[] changed)
+        {
+            var direct = element.GetDirectArray();
+            return Write(element, element.GetIndexArray(), direct.GetCount(), topology, values, changed, 3,
+                i => { var v = direct.GetAt(i); return new[] { v.X, v.Y, v.Z }; },
+                v => direct.Add(new FbxVector4(v[0], v[1], v[2], 0)),
+                (i, v) => direct.SetAt(i, new FbxVector4(v[0], v[1], v[2], 0)));
+        }
+
+        /// <summary>Removes layer 0's normals (Unity then calculates them).</summary>
+        internal static bool RemoveNormals(FbxMesh mesh)
+        {
+            if (NormalElement(mesh) == null) return false;
+            mesh.GetLayer(0).SetNormals(null);
+            return true;
+        }
+
+        /// <summary>Removes layer 0's tangents and binormals (Unity then calculates them).</summary>
+        internal static bool RemoveTangentFrame(FbxMesh mesh)
+        {
+            bool any = false;
+            if (TangentElement(mesh) != null) { mesh.GetLayer(0).SetTangents(null); any = true; }
+            if (BinormalElement(mesh) != null) { mesh.GetLayer(0).SetBinormals(null); any = true; }
+            return any;
+        }
+
         // ── Shared element logic ──
 
         // Index into the direct array for every corner, by the element's mapping and reference modes.

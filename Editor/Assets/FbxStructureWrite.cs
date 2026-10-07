@@ -7,7 +7,9 @@
 //     node's transform and materials, named so Unity groups it with its siblings;
 //   • collision becomes `{key}_COL` (or a `{key}_COL` container of `_COL_Hull{i}` nodes)
 //     next to its source node; one already in the file with the same geometry is left alone;
-//   • a mesh with changed faces gets a new FBX mesh on the same node(s).
+//   • a mesh with changed faces gets a new FBX mesh on the same node(s);
+//   • a renderer whose materials changed gets them in its node's slots (an FBX material
+//     named after each Unity material, mapped to it on the importer).
 //
 // A node is removed only when a new one takes its name; nothing is renamed, moved or
 // normalised (that stays the explicit Prefab Builder action). Unity-space geometry goes
@@ -35,17 +37,29 @@ namespace SashaRX.UnityMeshLab
         {
             public string name, sourceName;
             public Mesh mesh;
+            /// <summary>The generated renderer's materials where they differ from its source renderer's; null when they do not.</summary>
+            public Material[] materials, replaced;
+        }
+
+        /// <summary>A renderer whose materials differ from the ones its mesh's node gives it.</summary>
+        internal sealed class MaterialEdit
+        {
+            /// <summary>The FBX mesh, and the node the renderer is (its GameObject's name).</summary>
+            public string meshName, nodeName;
+            /// <summary>The renderer's materials, and the model's it replaces, per submesh.</summary>
+            public Material[] materials, replaced;
         }
 
         internal readonly List<NewLod> lods = new List<NewLod>();
         internal readonly List<(string name, Mesh mesh)> reshaped = new List<(string, Mesh)>();
         /// <summary>From the sidecar; the meshes are owned by the plan.</summary>
         internal readonly List<(string key, List<Mesh> meshes, bool convex)> collisions = new List<(string, List<Mesh>, bool)>();
+        internal readonly List<MaterialEdit> materials = new List<MaterialEdit>();
         internal readonly List<string> refusals = new List<string>();
         /// <summary>A mesh written whole carries UV1 work (repack, transfer) of its own.</summary>
         internal bool wholeMeshUv1Edited;
 
-        public bool IsEmpty => lods.Count == 0 && reshaped.Count == 0 && collisions.Count == 0 && refusals.Count == 0;
+        public bool IsEmpty => lods.Count == 0 && reshaped.Count == 0 && collisions.Count == 0 && materials.Count == 0 && refusals.Count == 0;
 
         /// <summary>Meshes written whole by the structure step; the channel step leaves them out.</summary>
         internal ICollection<string> WholeMeshNames() => new HashSet<string>(lods.Select(l => l.name).Concat(reshaped.Select(r => r.name)), StringComparer.Ordinal);
@@ -66,7 +80,8 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// The structure changes of one FBX group: entries whose mesh the file does not have
         /// (generated LODs, paired with the source-LOD mesh they were generated from), FBX
-        /// meshes whose faces or points changed, and the sidecar's collision.
+        /// meshes whose faces or points changed, renderers whose materials changed, and the
+        /// sidecar's collision. Changed normals and tangents are channel work (FbxChannelWrite).
         /// </summary>
         internal static FbxStructurePlan Plan(string fbxPath, List<(MeshEntry entry, Mesh resultMesh)> group, int sourceLodIndex)
         {
@@ -85,8 +100,8 @@ namespace SashaRX.UnityMeshLab
                         AddReshaped(plan, entry.fbxMesh.name, result);
                         plan.wholeMeshUv1Edited |= uv1Work;
                     }
-                    else if (ShadingChanged(entry.fbxMesh, result))
-                        plan.refusals.Add($"'{entry.fbxMesh.name}' has changed normals or tangents; the document save writes them only with new geometry");
+                    var edit = MaterialChange(entry);
+                    if (edit != null) plan.materials.Add(edit);
                     continue;
                 }
                 plan.wholeMeshUv1Edited |= uv1Work;
@@ -97,14 +112,22 @@ namespace SashaRX.UnityMeshLab
                 // Two branches generating one name would write one node: the file keeps names unique per LOD.
                 if (plan.lods.Any(l => l.name == name))
                     plan.refusals.Add($"'{name}' is generated more than once (by same-named meshes in different branches); the file can take one node of that name");
-                else if (from.Count == 1 && LodMaterialsChanged(entry, group, from[0], InFile, sourceLodIndex))
-                    plan.refusals.Add($"'{name}' has materials other than its source '{from[0]}'; a new LOD node takes the source node's materials");
-                else if (from.Count == 1) plan.lods.Add(new FbxStructurePlan.NewLod { name = name, sourceName = from[0], mesh = result });
+                else if (from.Count == 1)
+                {
+                    var lod = new FbxStructurePlan.NewLod { name = name, sourceName = from[0], mesh = result };
+                    // The node starts with its source node's materials; a generated renderer
+                    // given others since takes them into its own slots.
+                    var source = group.Select(p => p.entry).FirstOrDefault(e => InFile(e) && e.lodIndex == sourceLodIndex && e.fbxMesh.name == from[0]);
+                    if (entry.renderer != null && source?.renderer != null && ImportsMaterials(fbxPath)
+                        && !entry.renderer.sharedMaterials.SequenceEqual(source.renderer.sharedMaterials))
+                    {
+                        lod.materials = entry.renderer.sharedMaterials;
+                        lod.replaced = source.renderer.sharedMaterials;
+                    }
+                    plan.lods.Add(lod);
+                }
                 else plan.refusals.Add($"'{name}' cannot be paired with the LOD{sourceLodIndex} mesh of '{System.IO.Path.GetFileName(fbxPath)}' it was generated from");
             }
-            int rematerialled = group.Count(p => MaterialsChanged(p.entry));
-            if (rematerialled > 0)
-                plan.refusals.Add($"{rematerialled} renderer(s) of '{file}' have changed materials; the document save does not rewrite material assignments");
             plan.collisions.AddRange(SidecarStore.CollisionMeshes(fbxPath));
             // Collision meshes Cleanup flagged (UVs or colours) are rewritten clean when the
             // sidecar replaces them; any other is the rebuild's to strip.
@@ -113,16 +136,6 @@ namespace SashaRX.UnityMeshLab
             if (flagged.Count > 0)
                 plan.refusals.Add($"{string.Join(", ", flagged.Select(n => $"'{n}'"))} in '{file}' carry UVs or vertex colours that collision meshes should not have; the rebuild strips them");
             return plan;
-        }
-
-        // A generated LOD's renderer starts with its source renderer's materials; one changed
-        // since would be lost, since the new node takes the source node's.
-        static bool LodMaterialsChanged(MeshEntry generated, List<(MeshEntry entry, Mesh resultMesh)> group, string sourceName,
-            Func<MeshEntry, bool> inFile, int sourceLodIndex)
-        {
-            if (generated?.renderer == null) return false;
-            var source = group.Select(p => p.entry).FirstOrDefault(e => inFile(e) && e.lodIndex == sourceLodIndex && e.fbxMesh.name == sourceName);
-            return source?.renderer != null && !generated.renderer.sharedMaterials.SequenceEqual(source.renderer.sharedMaterials);
         }
 
         // Instances of one FBX mesh share it: the same new geometry twice is one replacement,
@@ -155,54 +168,35 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
-        // Normals or tangents a channel save cannot write: the attribute was added or removed
-        // (Cleanup), or the values differ at the same position (renumbered copy or not).
-        // Tangent values count only when the importer reads the file's (Import); otherwise
-        // Unity computes them on every import and a recomputed set is no edit of the file.
-        internal static bool ShadingChanged(Mesh imported, Mesh result)
+        // The renderer's materials against the ones its mesh's node gives it in the model: the
+        // prefab source renderer's, or, for a renderer that is no prefab instance (unpacked,
+        // assembled by hand, standalone), the model's renderers that show the same mesh. With
+        // material import off the model has no assignments of its own, so there is nothing to write.
+        internal static FbxStructurePlan.MaterialEdit MaterialChange(MeshEntry entry)
         {
-            if (imported == null || result == null || imported == result) return false;
-            if (imported.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal) != result.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal)) return true;
-            if (imported.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent) != result.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent)) return true;
-            if (!imported.isReadable || !result.isReadable) return false;
-            bool tangents = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(imported)) is ModelImporter importer
-                && importer.importTangents == ModelImporterTangents.Import;
-            var importedVertices = imported.vertices;
-            var resultVertices = result.vertices;
-            if (importedVertices.SequenceEqual(resultVertices))
-                return !imported.normals.SequenceEqual(result.normals) || (tangents && !imported.tangents.SequenceEqual(result.tangents));
-            // Renumbered or welded: every vertex of the copy must carry a normal (and tangent)
-            // the import has at that position.
-            var importedNormals = imported.normals;
-            var importedTangents = tangents ? imported.tangents : null;
-            var known = new HashSet<(Vector3, Vector3, Vector4)>();
-            for (int v = 0; v < importedVertices.Length; v++)
-                known.Add((importedVertices[v], importedNormals[v], importedTangents != null ? importedTangents[v] : default));
-            var resultNormals = result.normals;
-            var resultTangents = tangents ? result.tangents : null;
-            for (int v = 0; v < resultVertices.Length; v++)
-                if (!known.Contains((resultVertices[v], resultNormals[v], resultTangents != null ? resultTangents[v] : default))) return true;
-            return false;
+            if (entry?.renderer == null || entry.fbxMesh == null) return null;
+            string path = AssetDatabase.GetAssetPath(entry.fbxMesh);
+            if (!ImportsMaterials(path)) return null;
+            var materials = entry.renderer.sharedMaterials;
+            Material[] model;
+            var source = PrefabUtility.GetCorrespondingObjectFromSource(entry.renderer);
+            if (source != null) model = source.sharedMaterials;
+            else
+            {
+                var root = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                if (root == null) return null;
+                var counterparts = root.GetComponentsInChildren<Renderer>(true).Where(r => RendererMesh(r) == entry.fbxMesh).ToList();
+                if (counterparts.Count == 0 || counterparts.Any(r => materials.SequenceEqual(r.sharedMaterials))) return null;
+                var named = counterparts.FirstOrDefault(r => r.name == entry.renderer.name);
+                model = (named ?? counterparts[0]).sharedMaterials;
+            }
+            if (materials.SequenceEqual(model)) return null;
+            return new FbxStructurePlan.MaterialEdit
+                { meshName = entry.fbxMesh.name, nodeName = entry.renderer.name, materials = materials, replaced = model };
         }
 
-        // The scene renderer's materials differ from the model's (e.g. after Cleanup's material
-        // fixes): a material change is the rebuild's to write, not the channel save's.
-        internal static bool MaterialsChanged(MeshEntry entry)
-        {
-            if (entry?.renderer == null) return false;
-            var materials = entry.renderer.sharedMaterials;
-            var source = PrefabUtility.GetCorrespondingObjectFromSource(entry.renderer);
-            if (source != null) return !materials.SequenceEqual(source.sharedMaterials);
-            // No prefab instance (unpacked, assembled by hand, standalone): the model's renderers
-            // of the same mesh, unless the importer imports no materials.
-            if (entry.fbxMesh == null) return false;
-            string path = AssetDatabase.GetAssetPath(entry.fbxMesh);
-            if (!(AssetImporter.GetAtPath(path) is ModelImporter importer) || importer.materialImportMode == ModelImporterMaterialImportMode.None) return false;
-            var model = AssetDatabase.LoadAssetAtPath<GameObject>(path);
-            if (model == null) return false;
-            var counterparts = model.GetComponentsInChildren<Renderer>(true).Where(r => RendererMesh(r) == entry.fbxMesh).ToList();
-            return counterparts.Count > 0 && !counterparts.Any(r => materials.SequenceEqual(r.sharedMaterials));
-        }
+        static bool ImportsMaterials(string fbxPath)
+            => AssetImporter.GetAtPath(fbxPath) is ModelImporter importer && importer.materialImportMode != ModelImporterMaterialImportMode.None;
 
         static Mesh RendererMesh(Renderer renderer)
             => renderer is SkinnedMeshRenderer skinned ? skinned.sharedMesh
@@ -289,6 +283,24 @@ namespace SashaRX.UnityMeshLab
             public bool uv1Regenerated;
             /// <summary>Set by <see cref="Apply"/>: some mesh got the UV set Unity imports as UV1.</summary>
             public bool uv1Written;
+            /// <summary>The importer's material remaps already in place, by FBX material name.</summary>
+            public Dictionary<string, Material> existingRemaps = new Dictionary<string, Material>(StringComparer.Ordinal);
+            /// <summary>Filled by <see cref="Apply"/>: FBX material name → the Unity material the importer must map it to.</summary>
+            public readonly Dictionary<string, Material> materialRemaps = new Dictionary<string, Material>(StringComparer.Ordinal);
+
+            // The FBX material name for a Unity material: its own name, unless that name already
+            // maps (in this save or in the importer) to another material.
+            internal string MaterialName(Material material)
+            {
+                string name = material.name;
+                for (int n = 1; ; n++)
+                {
+                    bool taken = (materialRemaps.TryGetValue(name, out var mapped) && mapped != material)
+                        || (existingRemaps.TryGetValue(name, out var existing) && existing != null && existing != material);
+                    if (!taken) { materialRemaps[name] = material; return name; }
+                    name = $"{material.name}_{n}";
+                }
+            }
         }
 
         // A source mesh as the document and its tagged import know it.
@@ -340,6 +352,9 @@ namespace SashaRX.UnityMeshLab
                 foreach (var mesh in meshes) RequirePlaceable(source, mesh, key + "_COL");
             }
             foreach (var (name, mesh) in plan.reshaped) RequirePlaceable(Ref(name), mesh, name);
+            foreach (var lod in plan.lods.Where(l => l.materials != null))
+                RequireMaterials(Ref(lod.sourceName).submeshMaterials, lod.materials, lod.replaced, lod.name);
+            var materialTargets = plan.materials.Select(edit => MaterialTarget(document, tagged, edit)).ToList();
 
             int changes = 0;
             foreach (var lod in plan.lods)
@@ -349,8 +364,10 @@ namespace SashaRX.UnityMeshLab
                 var data = FbxMeshData.FromTriangles(SourceOf(lod.mesh, r, options), r.fit, r.reverse, r.submeshMaterials);
                 var node = FbxStructureEdit.AddSibling(r.node, lod.name, true);
                 FbxStructureEdit.AddMaterials(node, r.node, Enumerable.Range(0, r.node.GetMaterialCount()));
+                int slots = lod.materials != null ? ReplaceSlots(scene, node, r.submeshMaterials, lod.materials, lod.replaced, options) : 0;
                 node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, lod.name, data));
-                log.Add($"'{lod.name}': {data.polygonSizes.Length} polygon(s) next to '{r.node.GetName()}'{(removed > 0 ? " (replacing the node of that name)" : "")}");
+                log.Add($"'{lod.name}': {data.polygonSizes.Length} polygon(s) next to '{r.node.GetName()}'{(removed > 0 ? " (replacing the node of that name)" : "")}" +
+                    (slots > 0 ? $", {slots} material slot(s) of its own" : ""));
                 changes++;
             }
             foreach (var collision in collisions)
@@ -365,7 +382,64 @@ namespace SashaRX.UnityMeshLab
                 log.Add($"'{name}': geometry replaced ({data.polygonSizes.Length} polygon(s), {nodes} node(s); node, transform and materials kept)");
                 changes++;
             }
+            foreach (var (edit, node, slots) in materialTargets)
+            {
+                int changed = ReplaceSlots(scene, node, slots, edit.materials, edit.replaced, options);
+                if (changed == 0) continue;
+                log.Add($"'{edit.nodeName}': {changed} material slot(s) take the renderer's materials");
+                changes++;
+            }
             return changes;
+        }
+
+        // ── Materials ──
+
+        // The node a material edit is about, and the node material slot of each submesh.
+        static (FbxStructurePlan.MaterialEdit edit, FbxNode node, int[] slots) MaterialTarget(FbxSourceDocument document,
+            Dictionary<string, FbxChannelWrite.Tagged> tagged, FbxStructurePlan.MaterialEdit edit)
+        {
+            if (!tagged.TryGetValue(edit.meshName, out var tag))
+                throw new FbxStructureRefusalException($"'{edit.meshName}' is not a mesh of the FBX (or its corner tags did not survive the import)");
+            var mesh = document.Meshes[tag.ordinal];
+            FbxNode node = null;
+            for (int i = 0; i < mesh.GetNodeCount() && node == null; i++)
+                if (mesh.GetNode(i).GetName() == edit.nodeName) node = mesh.GetNode(i);
+            if (node == null && mesh.GetNodeCount() == 1) node = mesh.GetNode(0);
+            if (node == null)
+                throw new FbxStructureRefusalException($"'{edit.nodeName}': which node of the instanced mesh '{edit.meshName}' it is cannot be told");
+            var slots = SubmeshSlots(mesh, node, tag);
+            RequireMaterials(slots, edit.materials, edit.replaced, edit.nodeName);
+            return (edit, node, slots);
+        }
+
+        // What a slot write needs: a slot for each changed submesh and an asset to map it to.
+        static void RequireMaterials(int[] slots, Material[] materials, Material[] replaced, string what)
+        {
+            for (int s = 0; s < materials.Length; s++)
+            {
+                if (materials[s] == (s < replaced.Length ? replaced[s] : null)) continue;
+                if (slots == null || s >= slots.Length || slots[s] < 0)
+                    throw new FbxStructureRefusalException($"'{what}': submesh {s} has no material slot in the FBX to take '{(materials[s] != null ? materials[s].name : "None")}'");
+                if (materials[s] == null)
+                    throw new FbxStructureRefusalException($"'{what}': submesh {s} has no material; the FBX cannot hold an empty slot");
+                if (!EditorUtility.IsPersistent(materials[s]))
+                    throw new FbxStructureRefusalException($"'{what}': material '{materials[s].name}' is not an asset, so the import cannot be mapped to it");
+            }
+        }
+
+        // The slots of the submeshes whose material changed take an FBX material named after
+        // the Unity material (the scene's own of that name, or a new one), and the importer
+        // maps that name to the asset. Other slots and other nodes are left as they are.
+        static int ReplaceSlots(FbxScene scene, FbxNode node, int[] slots, Material[] materials, Material[] replaced, Options options)
+        {
+            int changed = 0;
+            for (int s = 0; s < materials.Length && s < slots.Length; s++)
+            {
+                if (materials[s] == (s < replaced.Length ? replaced[s] : null)) continue;
+                FbxStructureEdit.SetMaterial(node, slots[s], FbxStructureEdit.SceneMaterial(scene, options.MaterialName(materials[s])));
+                changed++;
+            }
+            return changed;
         }
 
         static Reference Resolve(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged, string name)
@@ -378,35 +452,52 @@ namespace SashaRX.UnityMeshLab
             var node = FbxStructureEdit.NodeOf(mesh, name)
                 ?? throw new FbxStructureRefusalException($"'{name}' is instanced by several nodes and none is named after it");
 
+            var (fit, reverse) = FitOf(mesh, tag, name);
+            // A submesh no polygon tells about takes the first slot.
+            var submeshMaterials = SubmeshSlots(mesh, node, tag)?.Select(slot => Math.Max(slot, 0)).ToArray();
+            int uvSets = FbxLayerChannels.UvElements(mesh).Count;
+            // A material's texture finds its UV set by name: a rebuilt mesh keeps the source's.
+            var uvNames = document.UvSetNames(mesh.GetName());
+            return new Reference
+            {
+                name = name, mesh = mesh, node = node, fit = fit, reverse = reverse, submeshMaterials = submeshMaterials,
+                uvSets = uvSets, uvNames = uvNames != null && uvNames.Count == uvSets ? uvNames : null,
+                colors = FbxLayerChannels.ColorElement(mesh) != null,
+            };
+        }
+
+        /// <summary>
+        /// The map from <paramref name="mesh"/>'s control points to its Unity import (the tagged
+        /// one), and whether the import reversed the winding. Refused when the import is not an
+        /// affine image of the control points.
+        /// </summary>
+        internal static (FbxSpaceFit fit, bool reverse) FitOf(FbxMesh mesh, FbxChannelWrite.Tagged tag, string name)
+        {
             var topology = new FbxLayerChannels.Topology(mesh);
             int relation = FbxSpaceFit.WindingRelation(topology.polygonSizes, tag.TriangleCorners());
             // No triangle tells (all degenerate): Unity mirrors X on import and reverses the winding.
             if (relation == 0) relation = -1;
             var fit = FbxSpaceFit.FitCorners(FbxStructureEdit.ControlPoints(mesh), topology.cornerControlPoint, tag.cornerPositions, relation, out string error)
                 ?? throw new FbxStructureRefusalException($"'{name}': {error}");
+            return (fit, relation < 0);
+        }
 
-            int[] submeshMaterials = null;
-            if (node.GetMaterialCount() > 0)
+        // The node material slot of each Unity submesh (read from the polygons the submesh was
+        // imported from); -1 where no polygon tells. Null when the node has no materials.
+        static int[] SubmeshSlots(FbxMesh mesh, FbxNode node, FbxChannelWrite.Tagged tag)
+        {
+            if (node.GetMaterialCount() == 0) return null;
+            var topology = new FbxLayerChannels.Topology(mesh);
+            var polygonMaterials = FbxStructureEdit.PolygonMaterials(mesh);
+            var slots = new int[Math.Max(1, tag.submeshCorners.Length)];
+            for (int s = 0; s < slots.Length; s++)
             {
-                var polygonMaterials = FbxStructureEdit.PolygonMaterials(mesh);
-                submeshMaterials = new int[Math.Max(1, tag.submeshCorners.Length)];
-                for (int s = 0; s < tag.submeshCorners.Length; s++)
-                {
-                    var corners = tag.submeshCorners[s];
-                    int at = Array.FindIndex(corners, c => c >= 0 && c < topology.CornerCount);
-                    int material = at >= 0 ? polygonMaterials[topology.cornerPolygon[corners[at]]] : -1;
-                    submeshMaterials[s] = material >= 0 && material < node.GetMaterialCount() ? material : 0;
-                }
+                var corners = s < tag.submeshCorners.Length ? tag.submeshCorners[s] : Array.Empty<int>();
+                int at = Array.FindIndex(corners, c => c >= 0 && c < topology.CornerCount);
+                int material = at >= 0 ? polygonMaterials[topology.cornerPolygon[corners[at]]] : -1;
+                slots[s] = material >= 0 && material < node.GetMaterialCount() ? material : -1;
             }
-            int uvSets = FbxLayerChannels.UvElements(mesh).Count;
-            // A material's texture finds its UV set by name: a rebuilt mesh keeps the source's.
-            var uvNames = document.UvSetNames(mesh.GetName());
-            return new Reference
-            {
-                name = name, mesh = mesh, node = node, fit = fit, reverse = relation < 0, submeshMaterials = submeshMaterials,
-                uvSets = uvSets, uvNames = uvNames != null && uvNames.Count == uvSets ? uvNames : null,
-                colors = FbxLayerChannels.ColorElement(mesh) != null,
-            };
+            return slots;
         }
 
         // The mesh a sidecar collision entry was made from: the mesh of that name, else the one

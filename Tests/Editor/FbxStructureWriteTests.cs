@@ -487,6 +487,37 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void SetMaterial_ReplacesOneSlotAndLeavesTheOthersAndOtherNodes()
+        {
+            string source = WriteSource(), edited = Path.Combine(folder, "edited.fbx");
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                var scene = document.Scene;
+                var rock = FbxStructureEdit.FindNodes(scene, "Rock_LOD0").Single();
+                // Another node showing the same "Moss" material.
+                var twin = FbxStructureEdit.AddSibling(rock, "Rock_Twin", true);
+                FbxStructureEdit.AddMaterials(twin, rock, new[] { 1 });
+                int materials = scene.GetMaterialCount();
+                Assert.AreEqual("Stone", FbxStructureEdit.SceneMaterial(scene, "Stone").GetName());
+                Assert.AreEqual(materials, scene.GetMaterialCount(), "a material of that name is reused, not duplicated");
+
+                FbxStructureEdit.SetMaterial(rock, 1, FbxStructureEdit.SceneMaterial(scene, "Lichen"));
+                Assert.Throws<FbxStructureRefusalException>(() => FbxStructureEdit.SetMaterial(rock, 0, FbxStructureEdit.SceneMaterial(scene, "Lichen")),
+                    "one node cannot hold a material in two slots");
+                document.Save(edited);
+            }
+            using (var document = FbxSourceDocument.Load(edited))
+            {
+                var rock = FbxStructureEdit.FindNodes(document.Scene, "Rock_LOD0").Single();
+                Assert.AreEqual(2, rock.GetMaterialCount());
+                Assert.AreEqual("Stone", rock.GetMaterial(0).GetName(), "slot 0 untouched");
+                Assert.AreEqual("Lichen", rock.GetMaterial(1).GetName(), "slot 1 replaced in place");
+                var twin = FbxStructureEdit.FindNodes(document.Scene, "Rock_Twin").Single();
+                Assert.AreEqual("Moss", twin.GetMaterial(0).GetName(), "another node keeps the material it shared");
+            }
+        }
+
+        [Test]
         public void ChildrenNamed_LooksOnlyUnderTheGivenParent()
         {
             using var document = FbxSourceDocument.Load(WriteSource());

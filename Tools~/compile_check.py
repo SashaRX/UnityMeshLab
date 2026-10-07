@@ -104,6 +104,7 @@ namespace Autodesk.Fbx
     }
     public static class Globals { public const string IOSROOT = ""; public const string EXP_FBX_EMBEDDED = ""; }
     public class FbxObject {
+        public bool DisconnectSrcObject(FbxObject source) => true;
         public string GetName() => "";
         public void SetName(string name) { }
         public FbxScene GetScene() => null;
@@ -112,6 +113,7 @@ namespace Autodesk.Fbx
     public class FbxScene : FbxObject {
         public static FbxScene Create(FbxManager manager, string name) => new FbxScene();
         public int GetMaterialCount() => 0;
+        public FbxSurfaceMaterial GetMaterial(string name) => null;
         public FbxGlobalSettings GetGlobalSettings() => new FbxGlobalSettings();
         public FbxNode GetRootNode() => new FbxNode();
         public void SetCurrentAnimationStack(FbxAnimStack stack) { }
@@ -259,6 +261,7 @@ namespace Autodesk.Fbx
         public void SetAt(int index, int item) { }
         public void SetAt(int index, FbxColor item) { }
         public void SetAt(int index, FbxVector2 item) { }
+        public void SetAt(int index, FbxVector4 item) { }
     }
     public class FbxLayerElementArrayTemplateInt : FbxLayerElementArray { public int GetAt(int index) => 0; }
     public class FbxLayerElementArrayTemplateFbxVector2 : FbxLayerElementArray { public FbxVector2 GetAt(int index) => new FbxVector2(); }
