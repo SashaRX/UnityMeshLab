@@ -119,7 +119,7 @@ namespace SashaRX.UnityMeshLab
             // A changed material reaches Unity through the written file's importer remap; a file
             // written outside the project has no importer, so its slots would carry a name only.
             bool inProject = targetFbxPath.StartsWith("Assets/", StringComparison.Ordinal) || targetFbxPath.StartsWith("Packages/", StringComparison.Ordinal);
-            if (!inProject && hasStructure && structure.HasMaterialEdits)
+            if (!inProject && hasStructure && FbxStructureWrite.NeedsImporterRemap(structure, sourceFbxPath))
                 throw new FbxStructureRefusalException(
                     $"'{Path.GetFileName(targetFbxPath)}' is written outside the project: the changed materials could only go in as names, without the importer remap that maps them to their assets");
 
@@ -164,6 +164,8 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Warn($"[FBX Export] '{donor.name}' is not a mesh of '{sourceFbxPath}'; skipped.");
                     continue;
                 }
+                if (tag.ambiguous)
+                    throw new FbxStructureRefusalException($"'{donor.name}': several meshes of '{Path.GetFileName(sourceFbxPath)}' import under that name; which one it is cannot be told");
                 var mesh = document.Meshes[tag.ordinal];
                 int corners = WriteMesh(mesh, donor, tag, swapUv, channelsWritten);
                 if (corners == 0) continue;
@@ -421,6 +423,9 @@ namespace SashaRX.UnityMeshLab
                     any = true;
                 }
             }
+            if ((capture.intent & FbxExportIntent.Tangents) != 0 && !capture.fileTangents && imported != null
+                && (hasTangents != imported.HasVertexAttribute(VertexAttribute.Tangent) || (hasTangents && !imported.tangents.SequenceEqual(mesh.tangents))))
+                UvtLog.Warn($"[FBX Export] '{donor.name}': its tangents changed, but the importer calculates tangents, so they are not saved into the file.");
             // A written normal moves the binormal (cross(normal, tangent)·w), so the tangent
             // frame follows written normals even when only the normals were asked for.
             bool tangentIntent = (capture.intent & FbxExportIntent.Tangents) != 0;
@@ -445,10 +450,11 @@ namespace SashaRX.UnityMeshLab
                 }
                 else if (hasTangents)
                 {
-                    // The file's binormal is built from the normal: changed tangents on a mesh
-                    // whose normals were dropped have no frame to go into.
-                    if (imported == null || !imported.tangents.SequenceEqual(mesh.tangents))
-                        throw new FbxStructureRefusalException($"'{donor.name}': its tangents changed while its normals were removed; the FBX tangent frame needs the normals");
+                    // The file's binormal is built from the normal: a mesh whose normals were
+                    // dropped has no frame to keep (the old one would be stale once Unity
+                    // recalculates the normals) or to write.
+                    if (donor.removedNormals || imported == null || !imported.tangents.SequenceEqual(mesh.tangents))
+                        throw new FbxStructureRefusalException($"'{donor.name}': its normals were removed while its tangents were kept; the FBX tangent frame needs the normals (remove the tangents too, or keep the normals)");
                 }
                 else if (importedAny.HasVertexAttribute(VertexAttribute.Tangent))
                 {

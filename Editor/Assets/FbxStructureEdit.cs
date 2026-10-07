@@ -338,6 +338,8 @@ namespace SashaRX.UnityMeshLab
             // A node's material order is its connection order: reconnect them all in order.
             foreach (var m in list) node.DisconnectSrcObject(m);
             foreach (var m in final) node.AddMaterial(m);
+            // A node with materials renders textured only in texture shading (checklist rule).
+            node.SetShadingMode(FbxNode.EShadingMode.eTextureShading);
         }
 
         /// <summary>

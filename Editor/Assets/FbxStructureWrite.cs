@@ -59,9 +59,6 @@ namespace SashaRX.UnityMeshLab
         /// <summary>A mesh written whole carries UV1 work (repack, transfer) of its own.</summary>
         internal bool wholeMeshUv1Edited;
 
-        /// <summary>Renderer or generated-LOD materials the save puts into node slots.</summary>
-        internal bool HasMaterialEdits => materials.Count > 0 || lods.Any(l => l.materials != null);
-
         public bool IsEmpty => lods.Count == 0 && reshaped.Count == 0 && collisions.Count == 0 && materials.Count == 0 && refusals.Count == 0;
 
         /// <summary>Meshes written whole by the structure step; the channel step leaves them out.</summary>
@@ -198,7 +195,28 @@ namespace SashaRX.UnityMeshLab
             }
             if (materials.SequenceEqual(model)) return null;
             return new FbxStructurePlan.MaterialEdit
-                { meshName = entry.fbxMesh.name, nodeName = entry.renderer.name, materials = materials, replaced = model };
+                // A prefab instance's child may be renamed: its model node is its source's name.
+                { meshName = entry.fbxMesh.name, nodeName = source != null ? source.name : entry.renderer.name, materials = materials, replaced = model };
+        }
+
+        /// <summary>
+        /// The plan changes a slot to a material the source FBX does not itself import, which
+        /// reaches Unity only through the written file's importer remap.
+        /// </summary>
+        internal static bool NeedsImporterRemap(FbxStructurePlan plan, string sourceFbxPath)
+        {
+            bool Foreign(Material[] materials, Material[] replaced)
+            {
+                if (materials == null) return false;
+                for (int s = 0; s < materials.Length; s++)
+                {
+                    if (materials[s] == (replaced != null && s < replaced.Length ? replaced[s] : null)) continue;
+                    if (materials[s] == null || !string.Equals(AssetDatabase.GetAssetPath(materials[s]), sourceFbxPath, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
+            return plan.materials.Any(e => Foreign(e.materials, e.replaced)) || plan.lods.Any(l => Foreign(l.materials, l.replaced));
         }
 
         static bool ImportsMaterials(string fbxPath)
