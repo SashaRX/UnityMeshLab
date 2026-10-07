@@ -276,10 +276,17 @@ namespace SashaRX.UnityMeshLab
         static int TagOrdinal(List<Vector2> tags)
         {
             float v = tags[0].y;
-            if (v >= 0 || v != Mathf.Round(v)) return -1;
+            if (v >= 0 || !IsWhole(v, out int tagValue)) return -1;
             foreach (var t in tags)
-                if (t.y != v || t.x < 0 || t.x != Mathf.Round(t.x)) return -1;
-            return -(int)v - 1;
+                if (!IsWhole(t.y, out int y) || y != tagValue || t.x < 0 || !IsWhole(t.x, out _)) return -1;
+            return -tagValue - 1;
+        }
+
+        // Tag values are whole numbers below 2^24, so any fractional part means "not a tag".
+        static bool IsWhole(float f, out int whole)
+        {
+            whole = Mathf.RoundToInt(f);
+            return Mathf.Abs(f - whole) < 1e-3f;
         }
 
         static Tagged BuildTagged(Mesh mesh, int tagChannel, int ordinal, List<Vector2> tags)

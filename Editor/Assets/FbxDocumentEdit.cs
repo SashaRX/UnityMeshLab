@@ -147,7 +147,11 @@ namespace SashaRX.UnityMeshLab
                 int polygons = mesh.GetPolygonCount();
                 polygonSizes = new int[polygons];
                 int corners = 0;
-                for (int p = 0; p < polygons; p++) corners += polygonSizes[p] = mesh.GetPolygonSize(p);
+                for (int p = 0; p < polygons; p++)
+                {
+                    polygonSizes[p] = mesh.GetPolygonSize(p);
+                    corners += polygonSizes[p];
+                }
                 cornerPolygon = new int[corners];
                 cornerControlPoint = new int[corners];
                 for (int p = 0, c = 0; p < polygons; p++)
@@ -267,8 +271,7 @@ namespace SashaRX.UnityMeshLab
             else throw new InvalidOperationException(
                 $"Mesh '{mesh.GetName()}' has {sets.Count} UV set(s); UV{channel} cannot be added without inventing the channels before it.");
             var direct = element.GetDirectArray();
-            return Write(element, direct, element.GetIndexArray(), direct.GetCount(), topology, values, changed, 2,
-                i => { var v = direct.GetAt(i); return new[] { v.X, v.Y }; },
+            return Write(element, element.GetIndexArray(), direct.GetCount(), topology, values, changed, 2,
                 v => direct.Add(new FbxVector2(v[0], v[1])),
                 (i, v) => direct.SetAt(i, new FbxVector2(v[0], v[1])));
         }
@@ -285,8 +288,7 @@ namespace SashaRX.UnityMeshLab
                 Layer(mesh, 0).SetVertexColors(element);
             }
             var direct = element.GetDirectArray();
-            return Write(element, direct, element.GetIndexArray(), direct.GetCount(), topology, values, changed, 4,
-                i => { var v = direct.GetAt(i); return new[] { v.mRed, v.mGreen, v.mBlue, v.mAlpha }; },
+            return Write(element, element.GetIndexArray(), direct.GetCount(), topology, values, changed, 4,
                 v => direct.Add(new FbxColor(v[0], v[1], v[2], v[3])),
                 (i, v) => direct.SetAt(i, new FbxColor(v[0], v[1], v[2], v[3])));
         }
@@ -323,9 +325,9 @@ namespace SashaRX.UnityMeshLab
             return slots;
         }
 
-        static int Write(FbxLayerElement element, FbxLayerElementArray direct, FbxLayerElementArrayTemplateInt index, int directCount,
+        static int Write(FbxLayerElement element, FbxLayerElementArrayTemplateInt index, int directCount,
             in Topology topology, double[] values, bool[] changed, int arity,
-            Func<int, double[]> get, Func<double[], int> add, Action<int, double[]> set)
+            Func<double[], int> add, Action<int, double[]> set)
         {
             int corners = topology.CornerCount;
             if (values.Length != corners * arity || changed.Length != corners)
@@ -445,7 +447,7 @@ namespace SashaRX.UnityMeshLab
                 d = v.Length > 3 ? BitConverter.DoubleToInt64Bits(v[3]) : 0;
             }
             public bool Equals(ValueKey o) => a == o.a && b == o.b && c == o.c && d == o.d;
-            public override bool Equals(object o) => o is ValueKey k && Equals(k);
+            public override bool Equals(object obj) => obj is ValueKey k && Equals(k);
             public override int GetHashCode() => unchecked((a.GetHashCode() * 397) ^ (b.GetHashCode() * 31) ^ c.GetHashCode() ^ (d.GetHashCode() * 17));
         }
     }
