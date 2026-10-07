@@ -105,7 +105,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 indices[i] = i;
             }
             var soup = new TriangleBvh(positions, indices);
-            Assert.That(soup.Depth + 2, Is.LessThanOrEqualTo(GpuBvh.TraversalStack),
+            Assert.That(soup.Depth + 1, Is.LessThanOrEqualTo(GpuBvh.TraversalStack),
                 "a binned-SAH tree over a large soup stays within the fixed GPU stack");
         }
 

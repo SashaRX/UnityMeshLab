@@ -139,6 +139,7 @@ namespace SashaRX.UnityMeshLab
             {
                 for (int c = 0; c < cellCount; ++c)
                 {
+                    if ((c & 255) == 0) token.ThrowIfCancellationRequested();
                     int cx = c % resolution, cy = c / resolution;
                     int begin = offsets[c], end = offsets[c + 1];
                     for (int m = begin; m < end; ++m)
@@ -147,10 +148,12 @@ namespace SashaRX.UnityMeshLab
                         for (int n = m + 1; n < end; ++n)
                         {
                             int j = members[n];
+                            // Once per pair: only the lowest-index cell the two boxes share tests
+                            // it, and only that visit is charged to the budget — a pair of long
+                            // triangles meets in many cells, which must not count many times.
+                            if (Math.Max(cells[i * 4], cells[j * 4]) != cx || Math.Max(cells[i * 4 + 1], cells[j * 4 + 1]) != cy) continue;
                             if (++report.comparisons > comparisonBudget) { report.complete = false; return; }
                             if ((report.comparisons & 4095) == 0) token.ThrowIfCancellationRequested();
-                            // Once per pair: only the lowest-index cell the two boxes share tests it.
-                            if (Math.Max(cells[i * 4], cells[j * 4]) != cx || Math.Max(cells[i * 4 + 1], cells[j * 4 + 1]) != cy) continue;
                             var b = triangles[j];
                             if (sameChartOnly && a.chart != b.chart || b.minX >= a.maxX || a.minX >= b.maxX || b.minY >= a.maxY || a.minY >= b.maxY) continue;
                             double area = IntersectionArea(a, b, bufferA, bufferB);

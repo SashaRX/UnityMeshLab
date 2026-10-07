@@ -38,8 +38,9 @@ namespace SashaRX.UnityMeshLab
         internal double ReadbackCopyMs { get; private set; }
 
         public static bool Supported => SystemInfo.supportsComputeShaders;
-        /// <summary>BVH_MAX_STACK in BvhTraversal.hlsl: a node at depth d holds up to d
-        /// pending siblings and pushes two children, so the tree must satisfy depth + 2 ≤ this.</summary>
+        /// <summary>BVH_MAX_STACK in BvhTraversal.hlsl. A node at level L finds up to L
+        /// pending siblings on the stack and pushes two children; the deepest node that
+        /// pushes sits at Depth − 1, so a tree fits when Depth + 1 ≤ this.</summary>
         internal const int TraversalStack = 48;
         // A readback that never completes (a lost device, a stalled driver) would hold
         // the bake and its buffers forever; the vertex-AO bake gives up after the same time.
@@ -79,7 +80,7 @@ namespace SashaRX.UnityMeshLab
             // The traversal silently skips the children it cannot push; a deeper tree
             // would miss hits on the GPU that the CPU finds, so it stays on the CPU.
             int depth = bvh.Depth;
-            if (depth + 2 > TraversalStack)
+            if (depth + 1 > TraversalStack)
                 throw new InvalidOperationException($"BVH depth {depth} exceeds the GPU traversal stack of {TraversalStack} entries");
             bvh.GetGPUData(out var gpuNodes, out var gpuTriIndices, out var gpuVerts, out var gpuTris);
             FaceCount = gpuTris.Length / 3;
