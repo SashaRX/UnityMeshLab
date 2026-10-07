@@ -299,8 +299,9 @@ namespace SashaRX.UnityMeshLab
             internal string MaterialName(Material material)
             {
                 string name = material.name;
-                for (int n = 1; MapsElsewhere(name, material); n++)
-                    name = $"{material.name}_{n}";
+                int n = 0;
+                while (MapsElsewhere(name, material))
+                    name = $"{material.name}_{++n}";
                 materialRemaps[name] = material;
                 return name;
             }
