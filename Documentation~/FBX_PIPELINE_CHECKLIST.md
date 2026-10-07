@@ -266,7 +266,9 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
 
 * The source file is loaded with the FBX SDK and saved back in its own
   container format (binary/ASCII) and file version, with embedded media
-  re-embedded. Polygons (quads, n-gons), control points, smoothing,
+  re-embedded. Two exceptions: a file older than FBX 7.1 is saved as 7.1
+  (the oldest version the SDK writes), and the SDK rewrites the header's
+  creator string and timestamps. Polygons (quads, n-gons), control points, smoothing,
   materials, nodes, properties and every other layer element are never
   rebuilt.
 * Inside a written channel only the corners whose value changed are
@@ -364,7 +366,8 @@ imported with `keepQuads = true`:
 
 * **Channel re-save (UV / vertex colours)** — not affected: the FBX
   document's polygons are never rewritten, so quads and n-gons stay as
-  authored whatever `keepQuads` is set to, and the importer is not touched.
+  authored whatever `keepQuads` is set to, and `keepQuads` is not touched
+  (a save that writes UV1 does switch `generateSecondaryUV` off, see above).
 * **Isolated core (normals / tangents / hierarchy / materials intents)** —
   Phase 1 enables `keepQuads` on the source importer
   (alongside `isReadable`) before the clone is loaded. `keepQuads` only

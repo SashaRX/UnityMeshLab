@@ -303,17 +303,22 @@ namespace SashaRX.UnityMeshLab
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             int okCount = 0;
             int totalCount = 0;
-            foreach (var kv in fbxGroups)
+            BeginSourceSaves();
+            try
             {
-                totalCount++;
-                string sourceFbxPath = kv.Key;
-                var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
-                if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath)) continue;
+                foreach (var kv in fbxGroups)
+                {
+                    totalCount++;
+                    string sourceFbxPath = kv.Key;
+                    var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
+                    if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath)) continue;
 
-                RestoreAllPreviews();
-                if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
-                    okCount++;
+                    RestoreAllPreviews();
+                    if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
+                        okCount++;
+                }
             }
+            finally { EndSourceSaves(); }
             UvtLog.Info($"[FBX Export] Narrow-intent export: {okCount}/{totalCount} group(s) succeeded.");
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
@@ -436,19 +441,44 @@ namespace SashaRX.UnityMeshLab
                 // Every source save that wrote UV1 leaves a persistent sidecar replaying the same.
                 if (intent.IncludesUv(1))
                     SyncPersistentSidecar(sourceFbxPath, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
-                if (ctx?.LodGroup != null)
-                {
-                    ReleaseWorkingMeshes();
-                    ctx.Refresh(ctx.LodGroup);
-                }
-                RestoreWorkingCopiesToScene();
-                AfterWrite?.Invoke();
+                AfterSourceSave();
             }
             return true;
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
             return false;
 #endif
+        }
+
+        // A source re-save leaves the entries holding copies of what the file now has: the
+        // copies are freed and the scene reloaded. Within a save of several files that waits
+        // for the last one, since the groups still to be written hold the same entries.
+        bool sourceSavesOpen, sceneReloadPending;
+
+        void BeginSourceSaves()
+        {
+            sourceSavesOpen = true;
+            sceneReloadPending = false;
+        }
+
+        void EndSourceSaves()
+        {
+            sourceSavesOpen = false;
+            if (!sceneReloadPending) return;
+            sceneReloadPending = false;
+            AfterSourceSave();
+        }
+
+        void AfterSourceSave()
+        {
+            if (sourceSavesOpen) { sceneReloadPending = true; return; }
+            if (ctx?.LodGroup != null)
+            {
+                ReleaseWorkingMeshes();
+                ctx.Refresh(ctx.LodGroup);
+            }
+            RestoreWorkingCopiesToScene();
+            AfterWrite?.Invoke();
         }
 
         static Mesh WorkingMesh(MeshEntry e) => e.repackedMesh ?? e.transferredMesh ?? e.originalMesh ?? e.fbxMesh;
