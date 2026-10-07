@@ -294,7 +294,7 @@ namespace SashaRX.UnityMeshLab
         /// material rules require), so the file renders textured outside Unity too.
         /// </summary>
         internal static FbxSurfacePhong NewMaterial(FbxScene scene, string name, double r, double g, double b,
-            string textureName, string textureFile, string relativeTextureFile)
+            string textureName, string textureFile, string relativeTextureFile, string uvSet)
         {
             var material = FbxSurfacePhong.Create(scene, name);
             material.Diffuse.Set(new FbxDouble3(r, g, b));
@@ -304,6 +304,8 @@ namespace SashaRX.UnityMeshLab
             texture.SetRelativeFileName(relativeTextureFile ?? textureFile);
             texture.SetTextureUse(FbxTexture.ETextureUse.eStandard);
             texture.SetMappingType(FbxTexture.EMappingType.eUV);
+            // Max binds a texture to the mesh through the UV set's name (checklist rule).
+            if (!string.IsNullOrEmpty(uvSet)) texture.UVSet.Set(uvSet);
             texture.ConnectDstProperty(material.Diffuse);
             return material;
         }

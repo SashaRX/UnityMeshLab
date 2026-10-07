@@ -228,11 +228,11 @@ namespace SashaRX.UnityMeshLab
                 try
                 {
                     if (!isVariant && uv1Written) KeepWrittenUv1(sourceFbxPath);
-                    if (!isVariant) MapMaterials(sourceFbxPath, options.materialRemaps);
+                    if (!isVariant) MapMaterials(sourceFbxPath, options.materialRemaps, options.remapsToClear);
                     AssetDatabase.ImportAsset(targetFbxPath, ImportAssetOptions.ForceUpdate);
                 }
                 finally { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); }
-                if (isVariant) ImportLikeSource(sourceFbxPath, targetFbxPath, uv1Changed, options.materialRemaps);
+                if (isVariant) ImportLikeSource(sourceFbxPath, targetFbxPath, uv1Changed, options.materialRemaps, options.remapsToClear);
                 else if (sceneRoot != null) FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, sceneRoot);
             }
             catch (Exception ex)
@@ -979,24 +979,29 @@ namespace SashaRX.UnityMeshLab
 
         // A material the save put into a node slot maps, on import, to the asset the renderer
         // shows: the slot holds an FBX material of that name, the importer maps the name.
-        static void MapMaterials(string fbxPath, Dictionary<string, Material> remaps)
+        static void MapMaterials(string fbxPath, Dictionary<string, Material> remaps, ICollection<string> cleared)
         {
-            if (remaps.Count == 0 || !(AssetImporter.GetAtPath(fbxPath) is ModelImporter importer)) return;
+            if (remaps.Count == 0 && cleared.Count == 0 || !(AssetImporter.GetAtPath(fbxPath) is ModelImporter importer)) return;
+            foreach (string name in cleared) importer.RemoveRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), name));
             foreach (var kv in remaps) importer.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), kv.Key), kv.Value);
             EditorUtility.SetDirty(importer);
             AssetDatabase.WriteImportSettingsIfDirty(fbxPath);
-            UvtLog.Info($"[FBX Export] '{fbxPath}': {string.Join(", ", remaps.Select(kv => $"'{kv.Key}' → {kv.Value.name}"))} mapped on the importer.");
+            if (remaps.Count > 0)
+                UvtLog.Info($"[FBX Export] '{fbxPath}': {string.Join(", ", remaps.Select(kv => $"'{kv.Key}' → {kv.Value.name}"))} mapped on the importer.");
+            if (cleared.Count > 0)
+                UvtLog.Info($"[FBX Export] '{fbxPath}': remap of {string.Join(", ", cleared.Select(n => $"'{n}'"))} removed (the file's own material again).");
         }
 
         // A variant is a new file: import it the way its source is imported, so its meshes
         // carry the same names and layout as the source's — except a written UV1 is kept.
-        static void ImportLikeSource(string sourceFbxPath, string variantFbxPath, bool uv1Changed, Dictionary<string, Material> remaps)
+        static void ImportLikeSource(string sourceFbxPath, string variantFbxPath, bool uv1Changed, Dictionary<string, Material> remaps, ICollection<string> cleared)
         {
             var source = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             var variant = AssetImporter.GetAtPath(variantFbxPath) as ModelImporter;
             if (source == null || variant == null) return;
             new Preset(source).ApplyTo(variant);
             // The materials the save wrote into the variant map to their assets like the source's do.
+            foreach (string name in cleared) variant.RemoveRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), name));
             foreach (var kv in remaps) variant.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), kv.Key), kv.Value);
             // The variant's UV1 is the one just written (or removed): Unity must not regenerate
             // it, and a sidecar at the variant's path must not replay over it.

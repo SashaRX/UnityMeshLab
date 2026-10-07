@@ -527,7 +527,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var scene = document.Scene;
                 var rock = FbxStructureEdit.FindNodes(scene, "Rock_LOD0").Single();
                 var bark = FbxStructureEdit.NewMaterial(scene, "Bark", 0.5, 0.25, 0.125, "T_Bark_Albedo",
-                    "C:/Project/Assets/Textures/T_Bark_Albedo.png", "../Textures/T_Bark_Albedo.png");
+                    "C:/Project/Assets/Textures/T_Bark_Albedo.png", "../Textures/T_Bark_Albedo.png", "map1");
                 FbxStructureEdit.SetMaterial(rock, 1, bark);
                 document.Save(edited);
             }
@@ -542,6 +542,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreEqual(0.25, diffuse.GetFbxDouble3().Y, 1e-9);
                 Assert.AreEqual(1, diffuse.GetSrcObjectCount(), "a texture on the diffuse");
                 Assert.AreEqual("T_Bark_Albedo", diffuse.GetSrcObject(0).GetName());
+                Assert.AreEqual("map1", diffuse.GetSrcObject(0).FindProperty("UVSet").GetString(), "bound to the mesh's UV set");
             }
             // The wrapper does not downcast to FbxFileTexture: the path is read from the file. (The
             // SDK writes the relative path anew on save, from the absolute one and the file's place.)

@@ -195,8 +195,10 @@ namespace SashaRX.UnityMeshLab
             }
             if (materials.SequenceEqual(model)) return null;
             return new FbxStructurePlan.MaterialEdit
-                // A prefab instance's child may be renamed: its model node is its source's name.
-                { meshName = entry.fbxMesh.name, nodeName = source != null ? source.name : entry.renderer.name, materials = materials, replaced = model };
+                // A prefab instance's child may be renamed, at any level of nested prefabs: its
+                // model node is its original source's name.
+                { meshName = entry.fbxMesh.name, nodeName = source != null ? PrefabUtility.GetCorrespondingObjectFromOriginalSource(entry.renderer).name : entry.renderer.name,
+                  materials = materials, replaced = model };
         }
 
         /// <summary>
@@ -315,6 +317,10 @@ namespace SashaRX.UnityMeshLab
             public Dictionary<string, Material> existingRemaps = new Dictionary<string, Material>(StringComparer.Ordinal);
             /// <summary>Filled by <see cref="Apply"/>: FBX material name → the Unity material the importer must map it to.</summary>
             public readonly Dictionary<string, Material> materialRemaps = new Dictionary<string, Material>(StringComparer.Ordinal);
+            /// <summary>Filled by <see cref="Apply"/>: FBX material names whose importer remap goes (the slot shows the file's own material again).</summary>
+            public readonly HashSet<string> remapsToClear = new HashSet<string>(StringComparer.Ordinal);
+            /// <summary>Set by <see cref="Apply"/>: a mesh's UV set names as the file stores them.</summary>
+            internal Func<string, List<string>> uvSetNamesOf;
             /// <summary>Set by <see cref="Apply"/>: the names of the materials the file had before the save.</summary>
             internal HashSet<string> sceneMaterials = new HashSet<string>(StringComparer.Ordinal);
 
@@ -370,6 +376,7 @@ namespace SashaRX.UnityMeshLab
             bool preserveHierarchy = options.preserveHierarchy;
             if (plan.refusals.Count > 0) throw new FbxStructureRefusalException(plan.refusals[0]);
             var scene = document.Scene;
+            options.uvSetNamesOf = document.UvSetNames;
             options.sceneMaterials = new HashSet<string>(StringComparer.Ordinal);
             for (int i = 0; i < scene.GetMaterialCount(); i++)
             {
@@ -507,7 +514,7 @@ namespace SashaRX.UnityMeshLab
             for (int s = 0; s < materials.Length && s < slots.Length; s++)
             {
                 if (materials[s] == (s < replaced.Length ? replaced[s] : null)) continue;
-                var material = FbxMaterial(scene, materials[s], options);
+                var material = FbxMaterial(scene, node, materials[s], options);
                 if (bySlot.TryGetValue(slots[s], out var other) && other.GetName() != material.GetName())
                     throw new FbxStructureRefusalException($"'{node.GetName()}': submeshes sharing material slot {slots[s]} were given different materials");
                 bySlot[slots[s]] = material;
@@ -519,14 +526,19 @@ namespace SashaRX.UnityMeshLab
         // The FBX material for a Unity material: the file's own of its name, or a new one
         // carrying the material's colour and main texture (the file renders textured outside
         // Unity; inside Unity the importer remap maps it to the asset).
-        static Autodesk.Fbx.FbxSurfaceMaterial FbxMaterial(FbxScene scene, Material material, Options options)
+        static Autodesk.Fbx.FbxSurfaceMaterial FbxMaterial(FbxScene scene, FbxNode node, Material material, Options options)
         {
             // A material the file itself imports (another of its slots' materials) is that FBX
-            // material: no copy, no remap.
+            // material: no copy. A remap that sent its name to another asset is dropped, or the
+            // import would go on showing that asset.
             if (!string.IsNullOrEmpty(options.sourceFbxPath)
                 && string.Equals(AssetDatabase.GetAssetPath(material), options.sourceFbxPath, StringComparison.OrdinalIgnoreCase)
                 && scene.GetMaterial(material.name) is Autodesk.Fbx.FbxSurfaceMaterial own)
+            {
+                if (options.existingRemaps.TryGetValue(material.name, out var mapped) && mapped != null && mapped != material)
+                    options.remapsToClear.Add(material.name);
                 return own;
+            }
             string name = options.MaterialName(material);
             var existing = scene.GetMaterial(name);
             if (existing != null) return existing;
@@ -544,7 +556,12 @@ namespace SashaRX.UnityMeshLab
                 string folder = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(options.fbxPath));
                 relative = System.IO.Path.GetRelativePath(folder, file).Replace('\\', '/');
             }
-            return FbxStructureEdit.NewMaterial(scene, name, color.r, color.g, color.b, texture != null ? MeshHygieneUtility.SanitizeName(texture.name) : null, file, relative);
+            // The wrapper does not expose a layer element's name; the file's own names are read from it.
+            var mesh = node.GetMesh();
+            var uvSets = mesh != null ? options.uvSetNamesOf?.Invoke(mesh.GetName()) : null;
+            string uvSet = uvSets != null && uvSets.Count > 0 ? uvSets[0] : null;
+            return FbxStructureEdit.NewMaterial(scene, name, color.r, color.g, color.b, texture != null ? MeshHygieneUtility.SanitizeName(texture.name) : null,
+                file, relative, uvSet);
         }
 
         static Reference Resolve(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged, string name)

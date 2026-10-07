@@ -145,10 +145,16 @@ namespace Autodesk.Fbx
     public class FbxProperty {
         public bool IsValid() => false;
         public FbxDouble3 GetFbxDouble3() => new FbxDouble3();
+        public string GetString() => "";
         public int GetSrcObjectCount() => 0;
         public FbxObject GetSrcObject(int index) => null;
     }
+    public class FbxPropertyString : FbxProperty {
+        public FbxPropertyString Set(string value) => this;
+        public string Get() => "";
+    }
     public class FbxTexture : FbxObject {
+        public FbxPropertyString UVSet => new FbxPropertyString();
         public enum ETextureUse { eStandard, eShadowMap, eLightMap, eSphericalReflectionMap, eSphereReflectionMap, eBumpNormalMap }
         public enum EMappingType { eNull, ePlanar, eSpherical, eCylindrical, eBox, eFace, eUV, eEnvironment }
         public void SetTextureUse(ETextureUse use) { }
