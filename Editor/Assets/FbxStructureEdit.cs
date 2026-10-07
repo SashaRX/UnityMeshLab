@@ -14,6 +14,12 @@ using Autodesk.Fbx;
 
 namespace SashaRX.UnityMeshLab
 {
+    /// <summary>A structure change the FBX document cannot take as asked; the file is left as it was.</summary>
+    internal sealed class FbxStructureRefusalException : InvalidOperationException
+    {
+        public FbxStructureRefusalException(string message) : base(message) { }
+    }
+
     internal static class FbxStructureEdit
     {
         // ── Reading ──
@@ -207,13 +213,51 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         internal static FbxNode AddSibling(FbxNode template, string name, bool geometric)
         {
-            var parent = template.GetParent() ?? throw new InvalidOperationException($"'{template.GetName()}' has no parent node.");
+            var parent = template.GetParent() ?? throw new FbxStructureRefusalException($"'{template.GetName()}' has no parent node");
             var node = FbxNode.Create(template.GetScene(), name);
             CopyTransform(template, node, geometric);
             parent.AddChild(node);
             if (!SamePlacement(template, node, geometric))
-                throw new InvalidOperationException($"'{name}' does not land where '{template.GetName()}' is after copying its transform; nothing was written.");
+                throw new FbxStructureRefusalException($"'{name}' does not land where '{template.GetName()}' is after copying its transform");
             return node;
+        }
+
+        /// <summary>Whether the node's geometric scaling (baked into its import) is the same on every axis.</summary>
+        internal static bool UniformGeometricScaling(FbxNode node)
+        {
+            var s = node.GetGeometricScaling(FbxNode.EPivotSet.eSourcePivot);
+            double largest = Math.Max(Math.Abs(s.X), Math.Max(Math.Abs(s.Y), Math.Abs(s.Z)));
+            return Math.Abs(s.X - s.Y) <= 1e-6 * largest && Math.Abs(s.Y - s.Z) <= 1e-6 * largest;
+        }
+
+        /// <summary>
+        /// Whether an animation curve moves the node's local translation, rotation or scaling
+        /// away from its value. A sibling copies the values, not the curves, so it would stay
+        /// behind. Curves that only hold the value (exporters key every node) do not count.
+        /// </summary>
+        internal static bool HasTransformAnimation(FbxNode node)
+            => Animated(node.LclTranslation) || Animated(node.LclRotation) || Animated(node.LclScaling);
+
+        // Curves this cannot read (another stack or layer than the current one) count as animation.
+        static bool Animated(FbxPropertyDouble3 property)
+        {
+            int sources = property.GetSrcObjectCount();
+            if (sources == 0) return false;
+            var curveNode = sources == 1 ? property.GetCurveNode() : null;
+            if (curveNode == null) return true;
+            var value = property.Get();
+            for (uint channel = 0; channel < curveNode.GetChannelsCount() && channel < 3; channel++)
+            {
+                double rest = channel == 0 ? value.X : channel == 1 ? value.Y : value.Z;
+                for (int i = 0; i < curveNode.GetCurveCount(channel); i++)
+                {
+                    var curve = curveNode.GetCurve(channel, (uint)i);
+                    if (curve == null) continue;
+                    for (int k = 0; k < curve.KeyGetCount(); k++)
+                        if (Math.Abs(curve.KeyGetValue(k) - rest) > 1e-5 * Math.Max(1, Math.Abs(rest))) return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>A child of <paramref name="parent"/> with an identity local transform and <paramref name="geometricFrom"/>'s geometric transform.</summary>

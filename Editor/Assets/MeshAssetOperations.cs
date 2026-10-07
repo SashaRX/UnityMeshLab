@@ -453,12 +453,12 @@ namespace SashaRX.UnityMeshLab
         // A source re-save leaves the entries holding copies of what the file now has: the
         // copies are freed and the scene reloaded. Within a save of several files that waits
         // for the last one, since the groups still to be written hold the same entries.
-        bool sourceSavesOpen, sceneReloadPending;
+        bool sourceSavesOpen, sceneReloadPending, lodAdoptionPending;
 
         void BeginSourceSaves()
         {
             sourceSavesOpen = true;
-            sceneReloadPending = false;
+            sceneReloadPending = lodAdoptionPending = false;
         }
 
         void EndSourceSaves()
@@ -469,14 +469,15 @@ namespace SashaRX.UnityMeshLab
             AfterSourceSave();
         }
 
-        void AfterSourceSave()
+        // adoptLods: the save wrote generated LODs, whose slots take the imported renderers.
+        void AfterSourceSave(bool adoptLods = false)
         {
+            lodAdoptionPending |= adoptLods;
             if (sourceSavesOpen) { sceneReloadPending = true; return; }
-            if (ctx?.LodGroup != null)
-            {
-                ReleaseWorkingMeshes();
-                ctx.Refresh(ctx.LodGroup);
-            }
+            if (ctx?.LodGroup != null) ReleaseWorkingMeshes();
+            if (lodAdoptionPending) LodGroupUtility.AdoptImportedLods(ctx);
+            lodAdoptionPending = false;
+            if (ctx?.LodGroup != null) ctx.Refresh(ctx.LodGroup);
             RestoreWorkingCopiesToScene();
             AfterWrite?.Invoke();
         }
@@ -588,45 +589,45 @@ namespace SashaRX.UnityMeshLab
         void ExportDocumentGroups(Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>> fbxGroups, bool overwriteSource)
         {
             int okCount = 0;
-            foreach (var kv in fbxGroups)
+            BeginSourceSaves();
+            try
             {
-                string sourceFbxPath = kv.Key;
-                using var plan = FbxStructureWrite.Plan(sourceFbxPath, kv.Value, ctx.SourceLodIndex);
-                if (!TryChooseNarrowExportPath(sourceFbxPath, FbxExportIntent.All, overwriteSource, out string outputFbxPath)) continue;
-                bool isVariant = !string.IsNullOrEmpty(outputFbxPath)
-                    && !string.Equals(outputFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
-                var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
-                RestoreAllPreviews();
+                foreach (var kv in fbxGroups)
+                {
+                    string sourceFbxPath = kv.Key;
+                    using var plan = FbxStructureWrite.Plan(sourceFbxPath, kv.Value, ctx.SourceLodIndex);
+                    if (!TryChooseNarrowExportPath(sourceFbxPath, FbxExportIntent.All, overwriteSource, out string outputFbxPath)) continue;
+                    bool isVariant = !string.IsNullOrEmpty(outputFbxPath)
+                        && !string.Equals(outputFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
+                    var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
+                    RestoreAllPreviews();
 
-                bool written;
-                try
-                {
-                    written = FbxChannelWrite.Write(sourceFbxPath, entries, FbxChannelWrite.Supported, outputFbxPath,
-                        isVariant ? null : ctx?.LodGroup, plan);
+                    bool written;
+                    try
+                    {
+                        written = FbxChannelWrite.Write(sourceFbxPath, entries, FbxChannelWrite.Supported, outputFbxPath,
+                            isVariant ? null : ctx?.LodGroup, plan);
+                    }
+                    catch (FbxStructureRefusalException refusal)
+                    {
+                        written = ExportAfterRefusal(sourceFbxPath, kv.Value, entries, outputFbxPath, overwriteSource, refusal.Message);
+                        if (written) okCount++;
+                        continue;
+                    }
+                    catch (Exception ex)
+                    {
+                        UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
+                        UvtLog.Verbose(ex.ToString());
+                        continue;
+                    }
+                    if (!written) continue;
+                    okCount++;
+                    if (isVariant) continue;
+                    SyncPersistentSidecar(sourceFbxPath, kv.Value);
+                    AfterSourceSave(plan.lods.Count > 0);
                 }
-                catch (FbxStructureRefusalException refusal)
-                {
-                    written = ExportAfterRefusal(sourceFbxPath, kv.Value, entries, outputFbxPath, overwriteSource, refusal.Message);
-                    if (written) okCount++;
-                    continue;
-                }
-                catch (Exception ex)
-                {
-                    UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
-                    UvtLog.Verbose(ex.ToString());
-                    continue;
-                }
-                if (!written) continue;
-                okCount++;
-                if (isVariant) continue;
-                SyncPersistentSidecar(sourceFbxPath, kv.Value);
-                // Free the working copies before anything refreshes the entries holding them.
-                if (ctx?.LodGroup != null) ReleaseWorkingMeshes();
-                if (plan.lods.Count > 0) LodGroupUtility.AdoptImportedLods(ctx);
-                if (ctx?.LodGroup != null) ctx.Refresh(ctx.LodGroup);
-                RestoreWorkingCopiesToScene();
-                AfterWrite?.Invoke();
             }
+            finally { EndSourceSaves(); }
             UvtLog.Info($"[FBX Export] FBX document save: {okCount}/{fbxGroups.Count} file(s) written.");
         }
 

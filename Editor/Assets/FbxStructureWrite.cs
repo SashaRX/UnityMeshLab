@@ -28,12 +28,6 @@ using Object = UnityEngine.Object;
 
 namespace SashaRX.UnityMeshLab
 {
-    /// <summary>A structure change the FBX document cannot take as asked; the file is left as it was.</summary>
-    internal sealed class FbxStructureRefusalException : InvalidOperationException
-    {
-        public FbxStructureRefusalException(string message) : base(message) { }
-    }
-
     /// <summary>What a save adds to or replaces in one FBX beyond per-vertex channels.</summary>
     internal sealed class FbxStructurePlan : IDisposable
     {
@@ -100,7 +94,10 @@ namespace SashaRX.UnityMeshLab
                 // Generated LODs are named after their source: base (pipeline suffixes and LOD stripped) + _LOD{n}.
                 string stem = MeshNaming.StripPipelineSuffixes(name);
                 var from = sources.Where(n => MeshNaming.StripPipelineSuffixes(n) == stem).Distinct().ToList();
-                if (from.Count == 1) plan.lods.Add(new FbxStructurePlan.NewLod { name = name, sourceName = from[0], mesh = result });
+                // Two branches generating one name would write one node: the file keeps names unique per LOD.
+                if (plan.lods.Any(l => l.name == name))
+                    plan.refusals.Add($"'{name}' is generated more than once (by same-named meshes in different branches); the file can take one node of that name");
+                else if (from.Count == 1) plan.lods.Add(new FbxStructurePlan.NewLod { name = name, sourceName = from[0], mesh = result });
                 else plan.refusals.Add($"'{name}' cannot be paired with the LOD{sourceLodIndex} mesh of '{System.IO.Path.GetFileName(fbxPath)}' it was generated from");
             }
             int rematerialled = group.Count(p => MaterialsChanged(p.entry));
@@ -216,6 +213,20 @@ namespace SashaRX.UnityMeshLab
 
         // ── Apply (FBX document, after the channel edits) ──
 
+        /// <summary>What a mesh written whole carries besides positions, faces and normals.</summary>
+        internal sealed class Options
+        {
+            public bool swapUv, preserveHierarchy, writeTangents;
+            /// <summary>UV sets every mesh gets, warned about when missing (the baked UV1).</summary>
+            public int requiredUvSets;
+            /// <summary>UV sets the save may write: a mesh carries them from MeshLab's work when the file lacks them.</summary>
+            public int editableUvSets;
+            /// <summary>The save writes vertex colours: a mesh carries them even when its source had none.</summary>
+            public bool writeColors;
+            /// <summary>Set by <see cref="Apply"/>: some mesh got the UV set Unity imports as UV1.</summary>
+            public bool uv1Written;
+        }
+
         // A source mesh as the document and its tagged import know it.
         sealed class Reference
         {
@@ -227,6 +238,8 @@ namespace SashaRX.UnityMeshLab
             /// <summary>Node material index per Unity submesh; null when the node has no materials.</summary>
             public int[] submeshMaterials;
             public int uvSets;
+            /// <summary>The file's names of those sets; null when they could not be read.</summary>
+            public List<string> uvNames;
             public bool colors;
         }
 
@@ -236,8 +249,9 @@ namespace SashaRX.UnityMeshLab
         /// Throws <see cref="FbxStructureRefusalException"/> for what cannot be placed.
         /// </summary>
         internal static int Apply(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged,
-            FbxStructurePlan plan, bool swapUv, bool preserveHierarchy, int minUvSets, bool writeTangents, List<string> log)
+            FbxStructurePlan plan, Options options, List<string> log)
         {
+            bool preserveHierarchy = options.preserveHierarchy;
             if (plan.refusals.Count > 0) throw new FbxStructureRefusalException(plan.refusals[0]);
             var scene = document.Scene;
             var references = new Dictionary<string, Reference>(StringComparer.Ordinal);
@@ -249,17 +263,26 @@ namespace SashaRX.UnityMeshLab
 
             // Every source is resolved and checked before the document changes: a mesh being
             // replaced may also be the source of a LOD or a collider.
-            foreach (var lod in plan.lods) RequireLodSibling(scene, Ref(lod.sourceName), lod.name, preserveHierarchy);
+            foreach (var lod in plan.lods)
+            {
+                RequireLodSibling(scene, Ref(lod.sourceName), lod.name, preserveHierarchy);
+                RequirePlaceable(Ref(lod.sourceName), lod.mesh, lod.name);
+            }
             var collisions = plan.collisions.Where(c => !CollisionUnchanged(c, tagged)).ToList();
-            foreach (var (key, _, _) in collisions) RequireSiblingRoom(scene, Ref(CollisionSource(tagged, key)), preserveHierarchy);
-            foreach (var (name, _) in plan.reshaped) Ref(name);
+            foreach (var (key, meshes, _) in collisions)
+            {
+                var source = Ref(CollisionSource(tagged, key));
+                RequireSiblingRoom(scene, source, preserveHierarchy);
+                foreach (var mesh in meshes) RequirePlaceable(source, mesh, key + "_COL");
+            }
+            foreach (var (name, mesh) in plan.reshaped) RequirePlaceable(Ref(name), mesh, name);
 
             int changes = 0;
             foreach (var lod in plan.lods)
             {
                 var r = Ref(lod.sourceName);
                 int removed = RemoveNamed(r.node.GetParent(), lod.name);
-                var data = FbxMeshData.FromTriangles(SourceOf(lod.mesh, r, swapUv, minUvSets, writeTangents), r.fit, r.reverse, r.submeshMaterials);
+                var data = FbxMeshData.FromTriangles(SourceOf(lod.mesh, r, options), r.fit, r.reverse, r.submeshMaterials);
                 var node = FbxStructureEdit.AddSibling(r.node, lod.name, true);
                 FbxStructureEdit.AddMaterials(node, r.node, Enumerable.Range(0, r.node.GetMaterialCount()));
                 node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, lod.name, data));
@@ -273,7 +296,7 @@ namespace SashaRX.UnityMeshLab
             foreach (var (name, mesh) in plan.reshaped)
             {
                 var r = Ref(name);
-                var data = FbxMeshData.FromTriangles(SourceOf(mesh, r, swapUv, minUvSets, writeTangents), r.fit, r.reverse, r.submeshMaterials);
+                var data = FbxMeshData.FromTriangles(SourceOf(mesh, r, options), r.fit, r.reverse, r.submeshMaterials);
                 int nodes = FbxStructureEdit.ReplaceMesh(r.mesh, FbxStructureEdit.CreateMesh(scene, r.mesh.GetName(), data));
                 log.Add($"'{name}': geometry replaced ({data.polygonSizes.Length} polygon(s), {nodes} node(s); node, transform and materials kept)");
                 changes++;
@@ -311,10 +334,14 @@ namespace SashaRX.UnityMeshLab
                     submeshMaterials[s] = material >= 0 && material < node.GetMaterialCount() ? material : 0;
                 }
             }
+            int uvSets = FbxLayerChannels.UvElements(mesh).Count;
+            // A material's texture finds its UV set by name: a rebuilt mesh keeps the source's.
+            var uvNames = document.UvSetNames(mesh.GetName());
             return new Reference
             {
                 name = name, mesh = mesh, node = node, fit = fit, reverse = relation < 0, submeshMaterials = submeshMaterials,
-                uvSets = FbxLayerChannels.UvElements(mesh).Count, colors = FbxLayerChannels.ColorElement(mesh) != null,
+                uvSets = uvSets, uvNames = uvNames != null && uvNames.Count == uvSets ? uvNames : null,
+                colors = FbxLayerChannels.ColorElement(mesh) != null,
             };
         }
 
@@ -341,8 +368,24 @@ namespace SashaRX.UnityMeshLab
             RequireSiblingRoom(scene, source, preserveHierarchy);
         }
 
+        // A flat source's import tells the map only within its plane. Off it the fit assumes a
+        // similarity, which holds when the plane maps without stretch and the geometric
+        // scaling Unity bakes in is uniform; otherwise geometry leaving the plane has no
+        // known place in the file.
+        static void RequirePlaceable(Reference source, Mesh mesh, string name)
+        {
+            if (!source.fit.Flat || (source.fit.Conformal && FbxStructureEdit.UniformGeometricScaling(source.node))) return;
+            foreach (var v in mesh.vertices)
+                if (!source.fit.OnPlane(v.x, v.y, v.z))
+                    throw new FbxStructureRefusalException(
+                        $"'{name}' leaves the plane of the flat mesh '{source.name}', and its import does not tell how the file's space scales off that plane");
+        }
+
         static void RequireSiblingRoom(FbxScene scene, Reference source, bool preserveHierarchy)
         {
+            if (FbxStructureEdit.HasTransformAnimation(source.node))
+                throw new FbxStructureRefusalException(
+                    $"'{source.node.GetName()}' has an animated transform; a node next to it would not follow the animation");
             if (!preserveHierarchy && FbxStructureEdit.IsSoleTopNode(scene, source.node))
                 throw new FbxStructureRefusalException(
                     $"'{source.node.GetName()}' is the FBX's only top-level node, which Unity imports as the model root; a node next to it " +
@@ -363,7 +406,7 @@ namespace SashaRX.UnityMeshLab
             return nodes.Count;
         }
 
-        static FbxMeshData.Source SourceOf(Mesh mesh, Reference reference, bool swapUv, int minUvSets, bool writeTangents)
+        static FbxMeshData.Source SourceOf(Mesh mesh, Reference reference, Options options)
         {
             var source = new FbxMeshData.Source
             {
@@ -382,7 +425,7 @@ namespace SashaRX.UnityMeshLab
             var normals = mesh.normals;
             if (normals.Length == mesh.vertexCount) source.normals = Flatten(normals);
             // Unity reads a tangent frame from the file only when the importer imports tangents.
-            var tangents = writeTangents ? mesh.tangents : null;
+            var tangents = options.writeTangents ? mesh.tangents : null;
             if (tangents != null && tangents.Length == mesh.vertexCount)
             {
                 source.tangents = new float[tangents.Length * 4];
@@ -393,25 +436,30 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            // The UV sets the source FBX mesh has, no more: a channel Unity generates on import
-            // (lightmap UVs) is not written into the file, unless UV1 is being baked.
+            // The UV sets the source FBX mesh has, and the ones MeshLab's work added (a repacked
+            // UV1 the file never had). A channel Unity generates on import (lightmap UVs) is
+            // not editable and stays out of the file, unless UV1 is being baked.
+            if (reference.uvNames != null) source.uvNames.AddRange(reference.uvNames);
             var list = new List<Vector2>();
-            int sets = Math.Max(reference.uvSets, minUvSets);
+            int required = Math.Max(reference.uvSets, options.requiredUvSets);
+            int sets = Math.Max(required, options.editableUvSets);
             for (int set = 0; set < sets; set++)
             {
-                int channel = FbxChannelWrite.FbxUvSet(set, swapUv);
+                int channel = FbxChannelWrite.FbxUvSet(set, options.swapUv);
                 mesh.GetUVs(channel, list);
                 if (list.Count != mesh.vertexCount)
                 {
-                    UvtLog.Warn($"[FBX Export] '{mesh.name}' has no UV{channel}; it gets {set} of the {sets} UV set(s) of '{reference.name}'.");
+                    if (set < required)
+                        UvtLog.Warn($"[FBX Export] '{mesh.name}' has no UV{channel}; it gets {set} of the {required} UV set(s) of '{reference.name}'.");
                     break;
                 }
                 var uv = new float[list.Count * 2];
                 for (int v = 0; v < list.Count; v++) { uv[v * 2] = list[v].x; uv[v * 2 + 1] = list[v].y; }
                 source.uvs.Add(uv);
+                options.uv1Written |= channel == 1;
             }
             var colors = mesh.colors;
-            if (reference.colors && colors.Length == mesh.vertexCount)
+            if ((reference.colors || options.writeColors) && colors.Length == mesh.vertexCount)
             {
                 source.colors = new float[colors.Length * 4];
                 for (int v = 0; v < colors.Length; v++)

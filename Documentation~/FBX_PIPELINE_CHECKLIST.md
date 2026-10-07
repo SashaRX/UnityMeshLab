@@ -336,10 +336,16 @@ The hub's `All` save adds or replaces geometry in the same document
   in that map. A position the source import had takes its exact control
   point; a flat source takes its mirror from the import's winding. The
   triangle winding is reversed when the import reversed it, so a reimport
-  gives the Unity triangles back. New meshes carry normals, the source's
-  number of UV sets (`UVChannel_N`, set i on layer i) and layer-0 colours
-  when the source has them, all per corner, indexed and shared only within a
-  control point. Normals, colours, the tangent frame and the one material
+  gives the Unity triangles back. A flat source tells the map only within its
+  plane: geometry leaving that plane is refused unless the plane maps without
+  stretch and the source's geometric scaling is uniform. New meshes carry
+  normals, the source's UV sets under the source's set names (read from the
+  file by `FbxUvSetNames`, since a texture finds its set by name; `UVChannel_N`
+  when they cannot be read), plus the UV sets MeshLab added within the save's
+  intent (a repacked UV1 the file lacked; never a UV1 the import regenerates),
+  set i on layer i, and layer-0 colours when the source has them or the save
+  writes colours, all per corner, indexed and shared only within a control
+  point. Faces without area (repeated or collinear corners) are left out. Normals, colours, the tangent frame and the one material
   element sit on layer 0 (TS_UnityExport_SDK I4); polygons are begun without
   the legacy material bookkeeping; a node given materials gets texture
   shading.
@@ -356,11 +362,16 @@ The hub's `All` save adds or replaces geometry in the same document
 * Refused, nothing written, then a dialog offers the rebuild or "Save channels
   only": a LOD source node without an `_LOD<N>` suffix, a source that is the
   file's only top-level node (Unity imports it as the model root) unless the
-  importer preserves the hierarchy, a skinned or blend-shaped source, an import
-  that is not an affine image of its control points, a generated LOD whose
-  source mesh cannot be told.
+  importer preserves the hierarchy, a skinned or blend-shaped source, a source
+  whose transform is animated (a sibling copies the values, not the curves),
+  an import that is not an affine image of its control points, a generated LOD
+  whose source mesh cannot be told or whose name two branches generate, a
+  new node whose copied transform does not evaluate to its source's placement.
 * After an overwrite, the scene LODGroup's slots take the imported renderers
-  of the written LODs (transitions kept) and the generated objects go.
+  of the written LODs (transitions kept) and the generated objects go; when a
+  name matches no imported renderer or several, the generated objects stay. A
+  save of several FBX files frees the working copies and reloads the scene
+  once, after the last file.
 
 ### `FbxExportIntent` flags
 

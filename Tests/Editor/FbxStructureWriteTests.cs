@@ -176,6 +176,45 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(1, Math.Abs(data.binormals[1]), 1e-4, "binormal along FBX Y");
         }
 
+        [Test]
+        public void MeshData_LeavesOutAFaceWithoutArea()
+        {
+            var a = Import(0, 0, 0); var b = Import(50, 0, 0); var c = Import(100, 0, 0); var d = Import(0, 100, 0);
+            var source = new FbxMeshData.Source
+            {
+                positions = new[] { a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z },
+                submeshTriangles = new[] { new[] { 0, 1, 2, 0, 2, 3 } },
+            };
+            var data = FbxMeshData.FromTriangles(source, CubeFit(), false, null);
+            CollectionAssert.AreEqual(new[] { 3 }, data.polygonSizes, "three distinct points on one line make no polygon");
+        }
+
+        [Test]
+        public void Fit_KnowsAFlatMeshsPlaneAndWhetherItMapsWithoutStretch()
+        {
+            var points = new double[] { 0, 0, 0, 100, 0, 0, 100, 100, 0, 0, 100, 0, 40, 30, 0 };
+            var fit = FbxSpaceFit.Fit(points, Imported(points), -1, out string error);
+            Assert.IsNotNull(fit, error);
+            Assert.IsTrue(fit.Flat);
+            Assert.IsTrue(fit.Conformal, "the import scales uniformly");
+            var on = Import(70, 20, 0);
+            var off = Import(70, 20, 5);
+            Assert.IsTrue(fit.OnPlane(on.x, on.y, on.z));
+            Assert.IsFalse(fit.OnPlane(off.x, off.y, off.z));
+
+            // Stretched within the plane: off it, the scale is anyone's guess.
+            var stretched = Imported(points);
+            for (int i = 0; i < stretched.Length; i += 3) stretched[i + 2] = stretched[i + 2] * 3;
+            var skewed = FbxSpaceFit.Fit(points, stretched, -1, out error);
+            Assert.IsNotNull(skewed, error);
+            Assert.IsTrue(skewed.Flat);
+            Assert.IsFalse(skewed.Conformal);
+
+            var solid = CubeFit();
+            Assert.IsFalse(solid.Flat);
+            Assert.IsTrue(solid.OnPlane(off.x, off.y, off.z), "a solid fit has no plane to leave");
+        }
+
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
         string folder;
 
@@ -375,6 +414,76 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsNotNull(layer.GetTangents());
                 Assert.IsNotNull(layer.GetBinormals());
             }
+        }
+
+        [TestCase("FBX binary (*.fbx)", "FBX201400")]
+        [TestCase("FBX binary (*.fbx)", "FBX202000")]
+        [TestCase("FBX ascii (*.fbx)", "FBX201400")]
+        public void UvSetNames_AreReadFromTheFile(string writer, string version)
+        {
+            string path = Path.Combine(folder, "names.fbx");
+            using (var manager = FbxManager.Create())
+            {
+                var io = FbxIOSettings.Create(manager, Globals.IOSROOT);
+                manager.SetIOSettings(io);
+                var scene = FbxScene.Create(manager, "Names");
+                var data = Triangle(0);
+                data.polygonMaterials = null;
+                data.uvs.Add(new double[] { 0, 0, 1, 0, 0, 1 });
+                data.uvs.Add(new double[] { 0, 0, 0.5, 0, 0, 0.5 });
+                data.uvNames.Add("map1");
+                data.uvNames.Add("lightmap");
+                foreach (string name in new[] { "Plane", "Twin", "Twin" })
+                {
+                    var node = FbxNode.Create(scene, name);
+                    node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, name, data));
+                    scene.GetRootNode().AddChild(node);
+                }
+                using var exporter = FbxExporter.Create(manager, "Write");
+                int format = manager.GetIOPluginRegistry().FindWriterIDByDescription(writer);
+                Assert.IsTrue(exporter.Initialize(path, format, io) && exporter.SetFileExportVersion(version) && exporter.Export(scene));
+            }
+            var names = FbxUvSetNames.Read(path);
+            CollectionAssert.AreEqual(new[] { "map1", "lightmap" }, names["Plane"]);
+            Assert.IsFalse(names.ContainsKey("Twin"), "two meshes of one name cannot be told apart");
+            using var document = FbxSourceDocument.Load(path);
+            CollectionAssert.AreEqual(new[] { "map1", "lightmap" }, document.UvSetNames("Plane"));
+        }
+
+        [Test]
+        public void HasTransformAnimation_SeesCurvesThatMoveTheTransform()
+        {
+            string path = Path.Combine(folder, "animated.fbx");
+            using (var manager = FbxManager.Create())
+            {
+                var io = FbxIOSettings.Create(manager, Globals.IOSROOT);
+                manager.SetIOSettings(io);
+                var scene = FbxScene.Create(manager, "Animated");
+                var stack = FbxAnimStack.Create(scene, "Take");
+                var layer = FbxAnimLayer.Create(scene, "Base");
+                stack.AddMember(layer);
+                scene.SetCurrentAnimationStack(stack);
+                foreach (var (name, second) in new[] { ("Still", 0f), ("Keyed", 0f), ("Moving", 5f) })
+                {
+                    var node = FbxNode.Create(scene, name);
+                    scene.GetRootNode().AddChild(node);
+                    if (name == "Still") continue;
+                    // Every exporter keys X at its value; only Moving leaves it.
+                    node.LclTranslation.GetCurveNode(layer, true);
+                    var curve = node.LclTranslation.GetCurve(layer, "X", true);
+                    curve.KeyModifyBegin();
+                    curve.KeySet(curve.KeyAdd(FbxTime.FromSecondDouble(0)), FbxTime.FromSecondDouble(0), 0f);
+                    curve.KeySet(curve.KeyAdd(FbxTime.FromSecondDouble(1)), FbxTime.FromSecondDouble(1), second);
+                    curve.KeyModifyEnd();
+                }
+                using var exporter = FbxExporter.Create(manager, "Write");
+                int format = manager.GetIOPluginRegistry().FindWriterIDByDescription("FBX binary (*.fbx)");
+                Assert.IsTrue(exporter.Initialize(path, format, io) && exporter.Export(scene));
+            }
+            using var document = FbxSourceDocument.Load(path);
+            Assert.IsFalse(FbxStructureEdit.HasTransformAnimation(FbxStructureEdit.FindNodes(document.Scene, "Still").Single()));
+            Assert.IsFalse(FbxStructureEdit.HasTransformAnimation(FbxStructureEdit.FindNodes(document.Scene, "Keyed").Single()), "keys at the value");
+            Assert.IsTrue(FbxStructureEdit.HasTransformAnimation(FbxStructureEdit.FindNodes(document.Scene, "Moving").Single()));
         }
 
         [Test]

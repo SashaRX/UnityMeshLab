@@ -114,6 +114,7 @@ namespace Autodesk.Fbx
         public int GetMaterialCount() => 0;
         public FbxGlobalSettings GetGlobalSettings() => new FbxGlobalSettings();
         public FbxNode GetRootNode() => new FbxNode();
+        public void SetCurrentAnimationStack(FbxAnimStack stack) { }
     }
     public class FbxGlobalSettings {
         public FbxSystemUnit GetSystemUnit() => new FbxSystemUnit();
@@ -136,7 +137,33 @@ namespace Autodesk.Fbx
         public override bool Equals(object obj) => obj is FbxVector4 v && v == this;
         public override int GetHashCode() => X.GetHashCode();
     }
-    public class FbxPropertyDouble3 { public FbxDouble3 Get() => new FbxDouble3(); public FbxPropertyDouble3 Set(FbxDouble3 value) => this; }
+    public class FbxPropertyDouble3 {
+        public FbxDouble3 Get() => new FbxDouble3();
+        public FbxPropertyDouble3 Set(FbxDouble3 value) => this;
+        public int GetSrcObjectCount() => 0;
+        public FbxAnimCurveNode GetCurveNode() => null;
+        public FbxAnimCurveNode GetCurveNode(FbxAnimLayer layer, bool create) => null;
+        public FbxAnimCurve GetCurve(FbxAnimLayer layer, string channel, bool create) => null;
+    }
+    public class FbxAnimCurveNode : FbxObject {
+        public uint GetChannelsCount() => 0;
+        public int GetCurveCount(uint channel) => 0;
+        public FbxAnimCurve GetCurve(uint channel, uint index) => null;
+    }
+    public struct FbxTime { public static FbxTime FromSecondDouble(double seconds) => new FbxTime(); }
+    public class FbxAnimCurve : FbxObject {
+        public int KeyGetCount() => 0;
+        public float KeyGetValue(int key) => 0;
+        public void KeyModifyBegin() { }
+        public void KeyModifyEnd() { }
+        public int KeyAdd(FbxTime time) => 0;
+        public void KeySet(int key, FbxTime time, float value) { }
+    }
+    public class FbxAnimLayer : FbxObject { public static FbxAnimLayer Create(FbxObject container, string name) => new FbxAnimLayer(); }
+    public class FbxAnimStack : FbxObject {
+        public static FbxAnimStack Create(FbxObject container, string name) => new FbxAnimStack();
+        public bool AddMember(FbxObject member) => true;
+    }
     public class FbxTransform { public enum EInheritType { eInheritRrSs, eInheritRSrs, eInheritRrs } }
     public class FbxPropertyEInheritType {
         public FbxTransform.EInheritType Get() => FbxTransform.EInheritType.eInheritRSrs;

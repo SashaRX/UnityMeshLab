@@ -27,6 +27,16 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Largest distance between a fitted point and the imported one, in Unity units.</summary>
         public double Residual { get; private set; }
         public double Determinant { get; private set; }
+        /// <summary>
+        /// The points lie in one plane, so they fix the map only within it: off the plane it is
+        /// assumed to scale like it does within, which holds only for a similarity.
+        /// </summary>
+        public bool Flat { get; private set; }
+        /// <summary>Within the plane of a flat fit the map is a similarity (one scale, right angles kept).</summary>
+        public bool Conformal { get; private set; }
+        // The imported plane of a flat fit: a point on it, its unit normal, the distance still on it.
+        readonly double[] planePoint = new double[3], planeNormal = new double[3];
+        double planeTolerance;
 
         FbxSpaceFit() { }
 
@@ -70,10 +80,10 @@ namespace SashaRX.UnityMeshLab
             SymmetricEigen(moments.cpp, out var lp, out var vp);
             if (lp[0] <= 0 || lp[1] <= 1e-12 * lp[0]) { error = "the points are collinear"; return null; }
 
-            var fit = new FbxSpaceFit();
-            bool solved = lp[2] > 1e-8 * lp[0]
-                ? Solve(moments.cup, moments.cpp, fit.m)
-                : FitFlat(moments, lp, vp, determinantSign, fit.m);
+            var fit = new FbxSpaceFit { Flat = lp[2] <= 1e-8 * lp[0] };
+            bool solved = fit.Flat
+                ? FitFlat(moments, lp, vp, determinantSign, fit.m)
+                : Solve(moments.cup, moments.cpp, fit.m);
             if (!solved) { error = "the fit is singular"; return null; }
 
             fit.Determinant = Det(fit.m);
@@ -90,12 +100,41 @@ namespace SashaRX.UnityMeshLab
                 if (!fit.exact.ContainsKey(key)) fit.exact[key] = (fbx[i * 3], fbx[i * 3 + 1], fbx[i * 3 + 2]);
             }
             // Unity computes in single precision: a few ulps of the coordinates' magnitude.
-            if (fit.Residual > 1e-5 * scale + 1e-12)
+            double tolerance = 1e-5 * scale + 1e-12;
+            if (fit.Residual > tolerance)
             {
                 error = $"the import is not an affine image of the control points (residual {fit.Residual:G3} at scale {scale:G3})";
                 return null;
             }
+            if (fit.Flat) fit.SetPlane(moments, vp, tolerance);
             return fit;
+        }
+
+        void SetPlane(Moments moments, double[] vp, double tolerance)
+        {
+            SymmetricEigen(moments.cuu, out _, out var vu);
+            for (int k = 0; k < 3; k++) { planePoint[k] = moments.uc[k]; planeNormal[k] = vu[k * 3 + 2]; }
+            planeTolerance = tolerance;
+            // The images of the source plane's two axes: one length and square to each other.
+            var a = new double[3];
+            var b = new double[3];
+            for (int r = 0; r < 3; r++)
+            {
+                a[r] = Row(m, r, vp[0], vp[3], vp[6]);
+                b[r] = Row(m, r, vp[1], vp[4], vp[7]);
+            }
+            double la = Math.Sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+            double lb = Math.Sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2]);
+            double dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            Conformal = Math.Abs(la - lb) <= 1e-4 * Math.Max(la, lb) && Math.Abs(dot) <= 1e-4 * la * lb;
+        }
+
+        /// <summary>Whether a Unity position lies in the imported plane of a flat fit (always true for a solid one).</summary>
+        public bool OnPlane(float x, float y, float z)
+        {
+            if (!Flat) return true;
+            double d = (x - planePoint[0]) * planeNormal[0] + (y - planePoint[1]) * planeNormal[1] + (z - planePoint[2]) * planeNormal[2];
+            return Math.Abs(d) <= planeTolerance;
         }
 
         // Centroids and centred second moments of the paired points (row-major 3×3).

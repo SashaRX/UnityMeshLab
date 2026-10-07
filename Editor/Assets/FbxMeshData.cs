@@ -52,8 +52,8 @@ namespace SashaRX.UnityMeshLab
         /// point, every triangle is a polygon, normals / UVs / colours are per corner.
         /// <paramref name="reverseWinding"/> undoes the reversal the import applies to a
         /// mirrored mesh (<see cref="FbxSpaceFit.WindingRelation"/> = -1), so a reimport gives
-        /// the triangles back as they are. Triangles that collapse onto fewer than three
-        /// control points are left out.
+        /// the triangles back as they are. Faces without area (corners on fewer distinct
+        /// control points than they have, or on one line) are left out.
         /// </summary>
         internal static FbxMeshData FromTriangles(Source source, FbxSpaceFit fit, bool reverseWinding, int[] submeshMaterials)
         {
@@ -122,7 +122,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     // Reversed: the first corner stays, the rest run backwards.
                     for (int k = 0; k < size; k++) face[k] = indices[f + (reverseWinding && k > 0 ? size - k : k)];
-                    if (Collapsed(face, pointOfVertex)) continue;
+                    if (Degenerate(face, pointOfVertex, source.positions)) continue;
                     foreach (int v in face)
                     {
                         if (!controlPointOf.TryGetValue(pointOfVertex[v], out int cp))
@@ -145,13 +145,27 @@ namespace SashaRX.UnityMeshLab
             return cornerVertex;
         }
 
-        // A face whose corners do not land on as many distinct points.
-        static bool Collapsed(int[] face, int[] pointOfVertex)
+        // A face whose corners do not land on as many distinct points, or that spans no area
+        // (collinear corners): a polygon without a normal (checklist: no degenerate polygons).
+        static bool Degenerate(int[] face, int[] pointOfVertex, float[] positions)
         {
             for (int i = 0; i < face.Length; i++)
                 for (int j = i + 1; j < face.Length; j++)
                     if (pointOfVertex[face[i]] == pointOfVertex[face[j]]) return true;
-            return false;
+            // Newell's normal is twice the area; against the longest edge it is the face's
+            // thickness, here a millionth of its length or less.
+            double nx = 0, ny = 0, nz = 0, longest = 0;
+            for (int i = 0; i < face.Length; i++)
+            {
+                int a = face[i] * 3, b = face[(i + 1) % face.Length] * 3;
+                double ax = positions[a], ay = positions[a + 1], az = positions[a + 2];
+                double bx = positions[b], by = positions[b + 1], bz = positions[b + 2];
+                nx += (ay - by) * (az + bz);
+                ny += (az - bz) * (ax + bx);
+                nz += (ax - bx) * (ay + by);
+                longest = Math.Max(longest, (bx - ax) * (bx - ax) + (by - ay) * (by - ay) + (bz - az) * (bz - az));
+            }
+            return nx * nx + ny * ny + nz * nz <= 1e-12 * longest * longest;
         }
 
         // Tangent and binormal per corner. Unity keeps a tangent and the bitangent's sign; the

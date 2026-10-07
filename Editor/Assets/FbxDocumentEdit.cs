@@ -73,6 +73,15 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        Dictionary<string, List<string>> uvSetNames;
+
+        /// <summary>The file's UV set names of the mesh named <paramref name="meshName"/>, in element order; null when unknown.</summary>
+        public List<string> UvSetNames(string meshName)
+        {
+            if (uvSetNames == null) uvSetNames = FbxUvSetNames.Read(Path.Combine(scratch, "input.fbx"));
+            return uvSetNames.TryGetValue(meshName, out var names) ? names : null;
+        }
+
         public static FbxSourceDocument Load(string path)
         {
             try { return new FbxSourceDocument(path); }

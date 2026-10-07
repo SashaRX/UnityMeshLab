@@ -182,7 +182,7 @@ namespace SashaRX.UnityMeshLab
         /// holding a generated scene object takes the imported renderer of the same name under
         /// the group instead (transitions kept), and the generated objects are cleared. When
         /// any generated object has no imported counterpart (the scene object is not an
-        /// instance of the model), nothing is changed. Returns the renderers adopted.
+        /// instance of the model) or several, nothing is changed. Returns the renderers adopted.
         /// </summary>
         internal static int AdoptImportedLods(UvToolContext ctx)
         {
@@ -190,9 +190,15 @@ namespace SashaRX.UnityMeshLab
             var generated = new HashSet<GameObject>();
             foreach (var go in ctx.GeneratedLodObjects)
                 if (go != null) generated.Add(go);
+            // Counterparts by name; a name more than one imported renderer carries is ambiguous.
             var imported = new Dictionary<string, Renderer>();
+            var ambiguous = new HashSet<string>();
             foreach (var r in ctx.LodGroup.GetComponentsInChildren<Renderer>(true))
-                if (r != null && !generated.Contains(r.gameObject) && !imported.ContainsKey(r.name)) imported[r.name] = r;
+            {
+                if (r == null || generated.Contains(r.gameObject)) continue;
+                if (imported.ContainsKey(r.name)) ambiguous.Add(r.name);
+                else imported[r.name] = r;
+            }
 
             var lods = ctx.LodGroup.GetLODs();
             int adopted = 0;
@@ -203,9 +209,11 @@ namespace SashaRX.UnityMeshLab
                 {
                     var r = lod.renderers[i];
                     if (r == null || !generated.Contains(r.gameObject)) continue;
-                    if (!imported.TryGetValue(r.name, out var written))
+                    if (!imported.TryGetValue(r.name, out var written) || ambiguous.Contains(r.name))
                     {
-                        UvtLog.Warn($"[LOD] '{r.name}' has no imported counterpart under '{ctx.LodGroup.name}'; the generated LOD objects stay.");
+                        UvtLog.Warn(ambiguous.Contains(r.name)
+                            ? $"[LOD] Several imported renderers under '{ctx.LodGroup.name}' are named '{r.name}'; the generated LOD objects stay."
+                            : $"[LOD] '{r.name}' has no imported counterpart under '{ctx.LodGroup.name}'; the generated LOD objects stay.");
                         return 0;
                     }
                     lod.renderers[i] = written;

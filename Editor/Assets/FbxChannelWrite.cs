@@ -127,14 +127,20 @@ namespace SashaRX.UnityMeshLab
                 cornersWritten += corners;
             }
 
-            // After the channels: new nodes take the UV sets their source has by now, and UV1
-            // too when it is being baked for the whole model.
+            // After the channels: new nodes take the UV sets their source has by now, the ones
+            // MeshLab added within the intent, and UV1 when it is being baked for the whole model.
             var structureLog = new List<string>();
-            int structural = hasStructure
-                ? FbxStructureWrite.Apply(document, tagged, structure, swapUv, importer != null && importer.preserveHierarchy,
-                    bakeUv1 ? 2 : 0, importer != null && importer.importTangents == ModelImporterTangents.Import, structureLog)
-                : 0;
-            bool uv1Written = channelsWritten.Contains("UV1") || (bakeUv1 && structural > 0);
+            var options = new FbxStructureWrite.Options
+            {
+                swapUv = swapUv,
+                preserveHierarchy = importer != null && importer.preserveHierarchy,
+                writeTangents = importer != null && importer.importTangents == ModelImporterTangents.Import,
+                requiredUvSets = bakeUv1 ? 2 : 0,
+                editableUvSets = EditableUvSets(intent, swapUv, generatedUv1 && !bakeUv1),
+                writeColors = (intent & FbxExportIntent.VertexColors) != 0,
+            };
+            int structural = hasStructure ? FbxStructureWrite.Apply(document, tagged, structure, options, structureLog) : 0;
+            bool uv1Written = channelsWritten.Contains("UV1") || (options.uv1Written && structural > 0);
 
             if (meshesWritten == 0 && structural == 0)
             {
@@ -628,6 +634,20 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ── Importers ──
+
+        // The leading FBX UV sets the intent covers; sets go in order, so the first one it does
+        // not (or a UV1 the import regenerates anyway) ends them.
+        static int EditableUvSets(FbxExportIntent intent, bool swapUv, bool uv1Generated)
+        {
+            int sets = 0;
+            while (sets < 8)
+            {
+                int channel = FbxUvSet(sets, swapUv);
+                if (!intent.IncludesUv(channel) || (channel == 1 && uv1Generated)) break;
+                sets++;
+            }
+            return sets;
+        }
 
         // generateSecondaryUV regenerates Unity UV channel 1 on import and would replace the
         // channel just written; switch it off for this model (the one importer setting the
