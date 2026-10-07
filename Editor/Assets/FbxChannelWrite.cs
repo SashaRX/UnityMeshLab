@@ -780,7 +780,10 @@ namespace SashaRX.UnityMeshLab
                     (v, values, at) =>
                     {
                         var t = donor.tangents[v];
-                        var b = Vector3.Cross(donor.frameNormals[v], new Vector3(t.x, t.y, t.z)) * t.w;
+                        // The frame is built on the normal the file will hold: the written one, or
+                        // (normals not written) the corner's stored normal as the import read it.
+                        var normal = donor.normals == null && tag.normals != null ? tag.normals[at / 6] : donor.frameNormals[v];
+                        var b = Vector3.Cross(normal, new Vector3(t.x, t.y, t.z)) * t.w;
                         var map = Fit();
                         map.DirectionToFbx(t.x, t.y, t.z, out values[at], out values[at + 1], out values[at + 2]);
                         map.DirectionToFbx(b.x, b.y, b.z, out values[at + 3], out values[at + 4], out values[at + 5]);

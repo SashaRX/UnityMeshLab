@@ -394,6 +394,15 @@ namespace SashaRX.UnityMeshLab
             }
 
             int changes = 0;
+            // Material edits first: a generated LOD starts with its source node's materials,
+            // which must already be the ones the source renderer was given.
+            foreach (var (edit, node, slots) in materialTargets)
+            {
+                int changed = ReplaceSlots(scene, node, slots, edit.materials, edit.replaced, options);
+                if (changed == 0) continue;
+                log.Add($"'{edit.nodeName}': {changed} material slot(s) take the renderer's materials");
+                changes++;
+            }
             foreach (var lod in plan.lods)
             {
                 var r = Ref(lod.sourceName);
@@ -417,13 +426,6 @@ namespace SashaRX.UnityMeshLab
                 var data = FbxMeshData.FromTriangles(SourceOf(mesh, r, options), r.fit, r.reverse, r.submeshMaterials);
                 int nodes = FbxStructureEdit.ReplaceMesh(r.mesh, FbxStructureEdit.CreateMesh(scene, r.mesh.GetName(), data));
                 log.Add($"'{name}': geometry replaced ({data.polygonSizes.Length} polygon(s), {nodes} node(s); node, transform and materials kept)");
-                changes++;
-            }
-            foreach (var (edit, node, slots) in materialTargets)
-            {
-                int changed = ReplaceSlots(scene, node, slots, edit.materials, edit.replaced, options);
-                if (changed == 0) continue;
-                log.Add($"'{edit.nodeName}': {changed} material slot(s) take the renderer's materials");
                 changes++;
             }
             return changes;
@@ -476,14 +478,18 @@ namespace SashaRX.UnityMeshLab
         // maps that name to the asset. Other slots and other nodes are left as they are.
         static int ReplaceSlots(FbxScene scene, FbxNode node, int[] slots, Material[] materials, Material[] replaced, Options options)
         {
-            int changed = 0;
+            // All slots change in one step: two submeshes exchanging materials are no duplicate.
+            var bySlot = new Dictionary<int, Autodesk.Fbx.FbxSurfaceMaterial>();
             for (int s = 0; s < materials.Length && s < slots.Length; s++)
             {
                 if (materials[s] == (s < replaced.Length ? replaced[s] : null)) continue;
-                FbxStructureEdit.SetMaterial(node, slots[s], FbxStructureEdit.SceneMaterial(scene, options.MaterialName(materials[s])));
-                changed++;
+                var material = FbxStructureEdit.SceneMaterial(scene, options.MaterialName(materials[s]));
+                if (bySlot.TryGetValue(slots[s], out var other) && other.GetName() != material.GetName())
+                    throw new FbxStructureRefusalException($"'{node.GetName()}': submeshes sharing material slot {slots[s]} were given different materials");
+                bySlot[slots[s]] = material;
             }
-            return changed;
+            if (bySlot.Count > 0) FbxStructureEdit.SetMaterials(node, bySlot);
+            return bySlot.Count;
         }
 
         static Reference Resolve(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged, string name)

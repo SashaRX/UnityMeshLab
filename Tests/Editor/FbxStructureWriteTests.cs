@@ -3,6 +3,7 @@
 // FBX mesh built from Unity triangles (FbxMeshData), and, with the FBX SDK, new nodes
 // placed next to their source node while the rest of the document stays as it was.
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using NUnit.Framework;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
@@ -514,6 +515,27 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreEqual("Lichen", rock.GetMaterial(1).GetName(), "slot 1 replaced in place");
                 var twin = FbxStructureEdit.FindNodes(document.Scene, "Rock_Twin").Single();
                 Assert.AreEqual("Moss", twin.GetMaterial(0).GetName(), "another node keeps the material it shared");
+            }
+        }
+
+        [Test]
+        public void SetMaterials_SwapsTwoSlotsInOneStep()
+        {
+            string source = WriteSource(), edited = Path.Combine(folder, "swapped.fbx");
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                var scene = document.Scene;
+                var rock = FbxStructureEdit.FindNodes(scene, "Rock_LOD0").Single();
+                FbxStructureEdit.SetMaterials(rock, new Dictionary<int, FbxSurfaceMaterial>
+                    { [0] = FbxStructureEdit.SceneMaterial(scene, "Moss"), [1] = FbxStructureEdit.SceneMaterial(scene, "Stone") });
+                document.Save(edited);
+            }
+            using (var document = FbxSourceDocument.Load(edited))
+            {
+                var rock = FbxStructureEdit.FindNodes(document.Scene, "Rock_LOD0").Single();
+                Assert.AreEqual(2, rock.GetMaterialCount());
+                Assert.AreEqual("Moss", rock.GetMaterial(0).GetName());
+                Assert.AreEqual("Stone", rock.GetMaterial(1).GetName());
             }
         }
 

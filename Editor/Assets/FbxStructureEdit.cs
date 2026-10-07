@@ -293,18 +293,31 @@ namespace SashaRX.UnityMeshLab
         /// the other slots keep their materials and order (the polygons' material indices stay valid).
         /// </summary>
         internal static void SetMaterial(FbxNode node, int slot, FbxSurfaceMaterial material)
+            => SetMaterials(node, new Dictionary<int, FbxSurfaceMaterial> { [slot] = material });
+
+        /// <summary>
+        /// Puts each material into its slot of <paramref name="node"/> in one step, so slots can
+        /// exchange materials; refuses when a slot would end up holding a material that another
+        /// slot of the node also holds.
+        /// </summary>
+        internal static void SetMaterials(FbxNode node, IDictionary<int, FbxSurfaceMaterial> bySlot)
         {
             int count = node.GetMaterialCount();
-            if (slot < 0 || slot >= count) throw new ArgumentOutOfRangeException(nameof(slot));
             var list = new List<FbxSurfaceMaterial>(count);
             for (int i = 0; i < count; i++) list.Add(node.GetMaterial(i));
-            for (int i = 0; i < count; i++)
-                if (i != slot && list[i].GetName() == material.GetName())
-                    throw new FbxStructureRefusalException($"'{node.GetName()}': material '{material.GetName()}' already fills slot {i}; one node cannot hold a material in two slots");
+            var final = new List<FbxSurfaceMaterial>(list);
+            foreach (var kv in bySlot)
+            {
+                if (kv.Key < 0 || kv.Key >= count) throw new ArgumentOutOfRangeException(nameof(bySlot));
+                final[kv.Key] = kv.Value;
+            }
+            foreach (int slot in bySlot.Keys)
+                for (int i = 0; i < count; i++)
+                    if (i != slot && final[i].GetName() == final[slot].GetName())
+                        throw new FbxStructureRefusalException($"'{node.GetName()}': material '{final[slot].GetName()}' would fill slots {Math.Min(i, slot)} and {Math.Max(i, slot)}; one node cannot hold a material in two slots");
             // A node's material order is its connection order: reconnect them all in order.
             foreach (var m in list) node.DisconnectSrcObject(m);
-            list[slot] = material;
-            foreach (var m in list) node.AddMaterial(m);
+            foreach (var m in final) node.AddMaterial(m);
         }
 
         /// <summary>
