@@ -61,6 +61,8 @@ namespace SashaRX.UnityMeshLab
             /// <summary>Unity-space normals the save writes; with <see cref="tangents"/>, the normals the binormals are built from.</summary>
             public Vector3[] normals, frameNormals;
             public Vector4[] tangents;
+            /// <summary>The tangents are taken only because the normals moved: a file without a frame keeps none.</summary>
+            public bool tangentsFollowNormals;
             public bool HasValues => colors != null || normals != null || tangents != null || uvs.Any(uv => uv != null);
             public Color32[] colors32;
             public Color[] colors;
@@ -185,6 +187,7 @@ namespace SashaRX.UnityMeshLab
                 writeColors = (intent & FbxExportIntent.VertexColors) != 0,
                 existingRemaps = MaterialRemaps(importer),
                 fbxPath = targetFbxPath,
+                sourceFbxPath = sourceFbxPath,
             };
             int structural = hasStructure ? FbxStructureWrite.Apply(document, tagged, structure, options, structureLog) : 0;
             bool uv1Written = channelsWritten.Contains("UV1") || (options.uv1Written && structural > 0);
@@ -427,7 +430,11 @@ namespace SashaRX.UnityMeshLab
                 {
                     var tangents = mesh.tangents;
                     bool unchanged = donor.normals == null && imported != null && imported.tangents.SequenceEqual(tangents);
-                    if (!unchanged) { donor.tangents = tangents; donor.frameNormals = mesh.normals; any = true; }
+                    if (!unchanged)
+                    {
+                        donor.tangents = tangents; donor.frameNormals = mesh.normals; any = true;
+                        donor.tangentsFollowNormals = donor.normals != null && imported != null && imported.tangents.SequenceEqual(tangents);
+                    }
                 }
                 else if (!tangentIntent)
                 {
@@ -778,9 +785,12 @@ namespace SashaRX.UnityMeshLab
                 if (corners > 0) channelsWritten.Add("normals");
                 written += corners;
             }
-            if (donor.tangents != null)
+            // A file without a tangent frame lets Unity compute one from the new normals; only
+            // tangents that changed themselves give it one.
+            bool frameExists = FbxLayerChannels.TangentElement(mesh) != null && FbxLayerChannels.BinormalElement(mesh) != null;
+            if (donor.tangents != null && (frameExists || !donor.tangentsFollowNormals))
             {
-                bool exists = FbxLayerChannels.TangentElement(mesh) != null && FbxLayerChannels.BinormalElement(mesh) != null;
+                bool exists = frameExists;
                 bool comparable = exists && tag.tangents != null;
                 // Unity keeps a tangent and the bitangent's sign; the file keeps both vectors:
                 // binormal = cross(normal, tangent) · w, both mapped as directions.

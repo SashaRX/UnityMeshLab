@@ -291,6 +291,8 @@ namespace SashaRX.UnityMeshLab
             public bool uv1Written;
             /// <summary>The FBX file being written; new materials' texture paths are made relative to it.</summary>
             public string fbxPath;
+            /// <summary>The FBX the document was loaded from; its own materials are reused as they are.</summary>
+            public string sourceFbxPath;
             /// <summary>The importer's material remaps already in place, by FBX material name.</summary>
             public Dictionary<string, Material> existingRemaps = new Dictionary<string, Material>(StringComparer.Ordinal);
             /// <summary>Filled by <see cref="Apply"/>: FBX material name → the Unity material the importer must map it to.</summary>
@@ -501,6 +503,12 @@ namespace SashaRX.UnityMeshLab
         // Unity; inside Unity the importer remap maps it to the asset).
         static Autodesk.Fbx.FbxSurfaceMaterial FbxMaterial(FbxScene scene, Material material, Options options)
         {
+            // A material the file itself imports (another of its slots' materials) is that FBX
+            // material: no copy, no remap.
+            if (!string.IsNullOrEmpty(options.sourceFbxPath)
+                && string.Equals(AssetDatabase.GetAssetPath(material), options.sourceFbxPath, StringComparison.OrdinalIgnoreCase)
+                && scene.GetMaterial(material.name) is Autodesk.Fbx.FbxSurfaceMaterial own)
+                return own;
             string name = options.MaterialName(material);
             var existing = scene.GetMaterial(name);
             if (existing != null) return existing;
