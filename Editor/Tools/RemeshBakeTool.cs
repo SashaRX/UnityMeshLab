@@ -85,6 +85,7 @@ namespace SashaRX.UnityMeshLab
             this.ctx = ctx;
             FollowSelection();
             FollowSelectionChanges(FollowSelection, true);
+            EditorApplication.hierarchyChanged -= InvalidateSourcePreview;
             EditorApplication.hierarchyChanged += InvalidateSourcePreview;
             previews.RequestRepaint = () => RequestRepaint?.Invoke();
             // Result/preview objects carry HideAndDontSave, so they survive scene loads but
@@ -174,8 +175,9 @@ namespace SashaRX.UnityMeshLab
             if (renderer is SkinnedMeshRenderer skin) {
                 var posed = new Mesh { name = skin.sharedMesh.name, hideFlags = HideFlags.HideAndDontSave };
                 ownedSourceMeshes.Add(posed);
-                // Compensate renderer scale; Get3DContent applies its matrix once.
-                skin.BakeMesh(posed, true);
+                // The same posed bake as the capture, so the preview shows the pose the
+                // remesh will see; Get3DContent applies the renderer matrix once.
+                RemeshSource.BakePosed(skin, posed);
                 CopySkinAttributes(skin.sharedMesh, posed);
                 return posed;
             }
@@ -592,7 +594,7 @@ namespace SashaRX.UnityMeshLab
         {
             bool ok;
             try { ok = await run; }
-            catch (Exception e) { Debug.LogException(e); saveStatus = e.Message; RequestRepaint?.Invoke(); return; }
+            catch (Exception e) { UvtLog.Error("[Remesh] Stage failed: " + e); saveStatus = e.Message; RequestRepaint?.Invoke(); return; }
             if (ok)
                 previews.Show(target == RemeshPipeline.Stage.Remesh ? RemeshPreview.Stage.Remesh :
                     target == RemeshPipeline.Stage.Simplify ? RemeshPreview.Stage.Simplified : RemeshPreview.Stage.Result);

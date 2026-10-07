@@ -107,7 +107,7 @@ namespace SashaRX.UnityMeshLab
                 // root scale on the prefab root (no single vertex space to bake it into).
                 bool normalize = settings.normalizeSize && !hierarchy;
                 if (settings.normalizeSize && hierarchy)
-                    UvtLog.Warn("[Remesh export] Keep-hierarchy saves keep the source root's scale on the prefab root; 'Normalize size' applies to the single-mesh weld only.");
+                    UvtLog.Warn("[Remesh export] Keep-hierarchy saves keep the source root's scale on the prefab root; 'Normalize saved transform' applies to the single-mesh weld only.");
                 var root = new GameObject(clean + "_LOD0");
                 temporary.Add(root);
                 root.transform.localScale = normalize ? Vector3.one : pipeline.RootScale;
