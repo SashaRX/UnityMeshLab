@@ -12,25 +12,29 @@ namespace SashaRX.UnityMeshLab
         {
             if (UvtLog.Current < UvtLog.Level.Info || !UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag)) return;
             try {
-                string dir = Path.Combine(Path.GetTempPath(), "meshlab-uvmerge");
-                Directory.CreateDirectory(dir);
-                string path = Path.Combine(dir, "remesh_" + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") +
-                    "_" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".bin");
-                using (var writer = new BinaryWriter(File.Create(path))) {
-                    writer.Write(0x524D4C42); writer.Write(1);
-                    writer.Write(JsonUtility.ToJson(settings));
-                    Write(writer, source.positions, source.indices);
-                    Write(writer, raw.positions, raw.indices);
-                    Write(writer, trimmed.positions, trimmed.indices);
+                // The dump is the source, the raw voxel and the trimmed mesh in full, written
+                // on every remesh: Verbose only. The topology summary stays an Info line.
+                if (UvtLog.Current >= UvtLog.Level.Verbose) {
+                    string dir = Path.Combine(Path.GetTempPath(), "meshlab-uvmerge");
+                    Directory.CreateDirectory(dir);
+                    string path = Path.Combine(dir, "remesh_" + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") +
+                        "_" + Guid.NewGuid().ToString("N").Substring(0, 6) + ".bin");
+                    using (var writer = new BinaryWriter(File.Create(path))) {
+                        writer.Write(0x524D4C42); writer.Write(1);
+                        writer.Write(JsonUtility.ToJson(settings));
+                        Write(writer, source.positions, source.indices);
+                        Write(writer, raw.positions, raw.indices);
+                        Write(writer, trimmed.positions, trimmed.indices);
+                    }
+                    UvtLog.Verbose(UvtLog.Category.RemeshDiag, "Source, raw voxel, trimmed geometry and settings captured to " + path);
+                    var stale = Directory.GetFiles(dir, "remesh_*.bin");
+                    Array.Sort(stale, StringComparer.Ordinal);
+                    for (int i = 0; i < stale.Length - 3; i++) File.Delete(stale[i]);
                 }
-                UvtLog.Info(UvtLog.Category.RemeshDiag, "Source, raw voxel, trimmed geometry and settings captured to " + path);
                 UvtLog.Info(UvtLog.Category.RemeshDiag, "Remesh stage topology: source [" +
                     RemeshTopology.Inspect(source.positions, source.indices).Description + "]; raw voxel [" +
                     RemeshTopology.Inspect(raw.positions, raw.indices).Description + "]; trimmed [" +
                     RemeshTopology.Inspect(trimmed.positions, trimmed.indices).Description + "].");
-                var stale = Directory.GetFiles(dir, "remesh_*.bin");
-                Array.Sort(stale, StringComparer.Ordinal);
-                for (int i = 0; i < stale.Length - 3; i++) File.Delete(stale[i]);
             }
             catch (Exception error) { UvtLog.Warn(UvtLog.Category.RemeshDiag, "Remesh input capture failed: " + error.Message); }
         }
