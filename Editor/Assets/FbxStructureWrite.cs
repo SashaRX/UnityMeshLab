@@ -293,14 +293,15 @@ namespace SashaRX.UnityMeshLab
             internal string MaterialName(Material material)
             {
                 string name = material.name;
-                for (int n = 1; ; n++)
-                {
-                    bool taken = (materialRemaps.TryGetValue(name, out var mapped) && mapped != material)
-                        || (existingRemaps.TryGetValue(name, out var existing) && existing != null && existing != material);
-                    if (!taken) { materialRemaps[name] = material; return name; }
+                for (int n = 1; MapsElsewhere(name, material); n++)
                     name = $"{material.name}_{n}";
-                }
+                materialRemaps[name] = material;
+                return name;
             }
+
+            bool MapsElsewhere(string name, Material material) =>
+                (materialRemaps.TryGetValue(name, out var mapped) && mapped != material)
+                || (existingRemaps.TryGetValue(name, out var existing) && existing != null && existing != material);
         }
 
         // A source mesh as the document and its tagged import know it.
