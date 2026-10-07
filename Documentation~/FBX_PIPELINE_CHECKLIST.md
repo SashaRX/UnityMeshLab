@@ -282,10 +282,12 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   colour layer Unity's importer reads (TS_UnityExport_SDK checklist I4).
 * Which Unity vertex a corner became is recovered from a throwaway import
   of a tagged copy (corner index in an extra UV set, same importer settings,
-  `Assets/__MeshLabTemp`, deleted afterwards). `FbxCornerMatch` pairs
-  corners with the working mesh by position (bit-identical: same file, same
-  import) and by the polygon's own corners, so welding, vertex splits and
-  triangle order do not matter.
+  `Assets/__MeshLabTemp`, deleted afterwards, also when it fails). A mesh with
+  all eight UV sets lends its last one to the tag; that set's values are read
+  from the file per corner instead. `FbxCornerMatch` pairs corners with the
+  working mesh by position (bit-identical: same file, same import), by the
+  polygon's own corners, and by the untouched UVs and colours, so welding,
+  vertex splits and triangle order do not matter.
 * Refused, nothing written: a value seam inside one polygon (the polygon
   cannot hold it without being split), a UV set that would skip a channel
   (UV3 on a mesh with one set), corner tags lost on import (Mesh
@@ -294,18 +296,21 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   switched off when UV1 was actually written (it would replace it). Since
   that holds for the whole model, every mesh's generated UV1 is then written
   too; a save that would leave a mesh of the model without UV1 (not loaded in
-  MeshLab) is refused. The sidecar's UV2 replay is held off only for an
-  import that brings a written UV1, and a persistent sidecar is updated to
-  the saved UVs after the hub's save.
+  MeshLab) is refused; untouched Read/Write-disabled meshes are read through
+  `MeshAccess` for it. The sidecar's UV2 replay is held off only for an import
+  that brings a written or removed UV1, and a persistent sidecar is updated to
+  the saved UVs after the save (a removed UV1 drops its entry). An import that
+  fails after the file is written is reported, and the save still finishes.
 * "Unchanged geometry" means the same faces per submesh (position loops,
   same winding, any order or vertex numbering), not just the same counts.
 * A channel the working mesh dropped (Cleanup's attribute removal) is removed
   from the file: the colour set, or the last UV sets. Removing a UV set before
   one that stays would renumber it and is refused.
-* Changed renderer materials (Cleanup's material fixes) and changed normals or
-  tangents (an attribute added or removed, or normals edited on an
-  unrenumbered copy) are not channel work: the hub's save names them and
-  offers the rebuild.
+* Changed renderer materials (Cleanup's material fixes), changed normals or
+  tangents (an attribute added or removed, normals edited on an unrenumbered
+  copy, or tangents edited where the importer imports them) and `_COL` meshes
+  carrying UVs or colours (Cleanup sends these to the overwrite) are not
+  channel work: the hub's save names them and offers the rebuild.
 * The hub's Overwrite / Export New FBX (`All`) takes this path when the work
   changed only channels of meshes the file already has. Generated LODs or
   sidecar collision need the LOD-rebuild path; the dialog says what that

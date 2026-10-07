@@ -332,8 +332,14 @@ namespace SashaRX.UnityMeshLab
         void SyncPersistentSidecar(string sourceFbxPath, List<(MeshEntry entry, Mesh resultMesh)> group)
         {
             if (!PostprocessorDefineManager.IsEnabled() || SidecarStore.Load(sourceFbxPath) == null) return;
-            int saved = SidecarStore.SaveEntries(sourceFbxPath, BuildSidecarEntriesForExport(group));
-            if (saved > 0) UvtLog.Info($"[FBX Export] Updated {saved} UV2 entr(ies) in '{SidecarStore.PathFor(sourceFbxPath)}' to match the saved FBX.");
+            // A UV1 the working mesh dropped left the file too; its entry would bring it back.
+            const UnityEngine.Rendering.VertexAttribute uv1 = UnityEngine.Rendering.VertexAttribute.TexCoord1;
+            var dropped = group.Where(p => p.entry.fbxMesh != null && p.resultMesh != null && p.resultMesh != p.entry.fbxMesh
+                && p.entry.fbxMesh.HasVertexAttribute(uv1) && !p.resultMesh.HasVertexAttribute(uv1)).ToList();
+            int removed = SidecarStore.RemoveEntries(sourceFbxPath, dropped.Select(p => p.entry.fbxMesh.name));
+            int saved = SidecarStore.SaveEntries(sourceFbxPath, BuildSidecarEntriesForExport(group.Except(dropped).ToList()));
+            if (saved + removed > 0)
+                UvtLog.Info($"[FBX Export] Updated {saved} and removed {removed} UV2 entr(ies) in '{SidecarStore.PathFor(sourceFbxPath)}' to match the saved FBX.");
         }
 
         static bool TryChooseNarrowExportPath(string sourceFbxPath, FbxExportIntent intent, bool overwriteSource, out string outputFbxPath)
@@ -616,13 +622,16 @@ namespace SashaRX.UnityMeshLab
                 if (rematerialled > 0) reasons.Add($"{rematerialled} renderer(s) of '{file}' with changed materials (the file's material assignments)");
                 int collision = SidecarStore.CollisionMeshes(kv.Key)?.Count ?? 0;
                 if (collision > 0) reasons.Add($"{collision} collision mesh set(s) from the sidecar for '{file}'");
+                int dirtyColliders = FbxExport.CollisionMeshesWithSurfaceData(kv.Key).Count;
+                if (dirtyColliders > 0) reasons.Add($"{dirtyColliders} collision mesh(es) in '{file}' carrying UVs or vertex colours (the rebuild strips them)");
             }
             return reasons;
         }
 
         // Normals or tangents the channel save cannot write: the attribute was added or removed
-        // (Cleanup), or the normals changed on a working copy that kept the import's vertices.
-        // Tangent values are not compared: tools recompute them, which is no edit of the file's.
+        // (Cleanup), or the values changed on a working copy that kept the import's vertices.
+        // Tangent values count only when the importer reads the file's (Import); otherwise
+        // Unity computes them on every import and a recomputed set is no edit of the file.
         internal static bool ShadingChanged(Mesh imported, Mesh result)
         {
             if (imported == null || result == null || imported == result) return false;
@@ -631,7 +640,10 @@ namespace SashaRX.UnityMeshLab
             if (!imported.isReadable || !result.isReadable || imported.vertexCount != result.vertexCount) return false;
             // Only an unrenumbered copy pairs vertices by index.
             if (!imported.vertices.SequenceEqual(result.vertices)) return false;
-            return !imported.normals.SequenceEqual(result.normals);
+            if (!imported.normals.SequenceEqual(result.normals)) return true;
+            return AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(imported)) is ModelImporter importer
+                && importer.importTangents == ModelImporterTangents.Import
+                && !imported.tangents.SequenceEqual(result.tangents);
         }
 
         // The scene renderer's materials differ from the model's (e.g. after Cleanup's material

@@ -1291,6 +1291,21 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
+        /// The `_COL` meshes of the model at <paramref name="fbxPath"/> that carry UVs or vertex
+        /// colours: Cleanup reports them, and only a rebuild (<see cref="StripCollisionMeshes"/>)
+        /// takes them off.
+        /// </summary>
+        internal static List<string> CollisionMeshesWithSurfaceData(string fbxPath)
+        {
+            var names = new List<string>();
+            foreach (var asset in AssetDatabase.LoadAllAssetsAtPath(fbxPath))
+                if (asset is Mesh mesh && MeshNaming.IsCollision(mesh.name)
+                    && (mesh.HasVertexAttribute(VertexAttribute.TexCoord0) || mesh.HasVertexAttribute(VertexAttribute.Color)))
+                    names.Add(mesh.name);
+            return names;
+        }
+
+        /// <summary>
         /// Reduces every readable `_COL` mesh to positions, triangles, recalculated normals
         /// and (only when the source had them) synthesized tangents — no UVs or colours —
         /// after <see cref="PrepareCollisionMaterials"/>. The stripped copies go to
