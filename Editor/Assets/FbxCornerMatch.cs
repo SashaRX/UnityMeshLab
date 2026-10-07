@@ -26,7 +26,7 @@ namespace SashaRX.UnityMeshLab
             public int missing;
         }
 
-        readonly struct PositionKey : IEquatable<PositionKey>, IComparable<PositionKey>
+        internal readonly struct PositionKey : IEquatable<PositionKey>, IComparable<PositionKey>
         {
             readonly int x, y, z;
             public PositionKey(float px, float py, float pz) { x = Bits(px); y = Bits(py); z = Bits(pz); }
