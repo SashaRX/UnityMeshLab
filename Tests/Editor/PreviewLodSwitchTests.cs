@@ -107,6 +107,28 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void PickedUvChannelReturnsWhenOnlyAGeneratedMeshCarriesIt()
+        {
+            // After a repack the source LOD's UV1 lives on repackedMesh, not on the original:
+            // the return to UV1 must be judged on the mesh the context displays at UV1.
+            var group = Group(lod1HasUv1: false, out var lod0, out var lod1);
+            lod0.GetComponent<MeshFilter>().sharedMesh = Quad("Prop_LOD0_NoUv1", false);
+            var ctx = Open(group);
+            ctx.MeshEntries.Find(e => e.lodIndex == 0).repackedMesh = Quad("Prop_LOD0_Repacked", true);
+            var canvas = Get<UvCanvasView>(hub, "canvas");
+            Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Checker);
+            Assert.That(ShowsChecker(lod0), Is.True, "UV1 on the repacked mesh is enough for the checker");
+
+            SwitchLod(1);
+            Assert.That(ctx.PreviewUvChannel, Is.EqualTo(0));
+
+            SwitchLod(0);
+            Assert.That(ctx.PreviewUvChannel, Is.EqualTo(1), "the repacked mesh carries UV1, so the picked channel returns");
+            Assert.That(canvas.CurrentPreviewMode, Is.EqualTo(UvCanvasView.PreviewMode.Checker));
+            Assert.That(ShowsChecker(lod0), Is.True);
+        }
+
+        [Test]
         public void PickedUvChannelReturnsWhenTheLodHasIt()
         {
             var group = Group(lod1HasUv1: false, out var lod0, out var lod1);

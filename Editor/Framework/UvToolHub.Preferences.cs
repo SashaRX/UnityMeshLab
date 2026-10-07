@@ -61,7 +61,8 @@ namespace SashaRX.UnityMeshLab
                 leftScroll = sideScroll, rightScroll = rightSideScroll,
                 tabsScroll = toolTabsScroll, inspectScroll = inspectionScroll,
                 canvas3D = canvas3D, inspect = inspectMesh, projection = planarProjection,
-                uvChannel = ctx.PreviewUvChannel, checkerUvChannel = _checkerUvChannel,
+                // The channel the user picked, not a LOD's temporary fallback to one it has.
+                uvChannel = preferredUvChannel, checkerUvChannel = _checkerUvChannel,
                 checkerColor = _checkerColorMode, checkerR = _checkerShowR, checkerG = _checkerShowG,
                 zoom = canvas.Zoom, pan = canvas.Pan, fillAlpha = canvas.FillAlpha, exposure = canvas.LmExposure,
                 uvWire = canvas.ShowWireframe, uvBorder = canvas.ShowBorder,

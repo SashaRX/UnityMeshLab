@@ -1115,6 +1115,7 @@ namespace SashaRX.UnityMeshLab
             uvContentEntries.Clear();
             toolOwnsUvContent = ActiveTool is IUvToolUvContent uvContent && uvContent.GetUvContent(uvContentEntries);
             canvas.EntriesOverride = toolOwnsUvContent ? uvContentEntries : null;
+            if (reapplyPreview) RestorePreferredChannel();
             CollectViewportItems();
             canvas.EntriesOverride = viewportEntries;
             int contentKey = toolOwnsUvContent ? 1 : 0;
@@ -1127,16 +1128,29 @@ namespace SashaRX.UnityMeshLab
                 canvas.ClearHoverState(); canvas.ClearFrameCaches();
                 InvalidateViewportCaches(false);
             }
-            if (reapplyPreview && ctx.PreviewUvChannel != preferredUvChannel && canvas.HasPreviewChannel(ctx, preferredUvChannel))
-            {
-                ctx.PreviewUvChannel = preferredUvChannel;
-                canvas.ClearHoverState();
-            }
             bool channelSwitched = canvas.EnsurePreviewChannel(ctx);
             var mode = canvas.CurrentPreviewMode;
             if (mode != UvCanvasView.PreviewMode.Off && (reapplyPreview || (channelSwitched && mode == UvCanvasView.PreviewMode.Checker)))
                 ApplyPreviewMode(mode);
             reapplyPreview = false;
+        }
+
+        // Back to the channel the user picked when the entries now shown carry it. Judged
+        // on the mesh the context displays AT that channel — a repacked or transferred
+        // mesh holds the UV1 its original lacks — and before this frame's items are
+        // collected, so they are collected from that mesh.
+        bool RestorePreferredChannel()
+        {
+            if (ctx.PreviewUvChannel == preferredUvChannel) return false;
+            int fallback = ctx.PreviewUvChannel;
+            ctx.PreviewUvChannel = preferredUvChannel;
+            foreach (var entry in canvas.Entries(ctx))
+            {
+                var mesh = entry != null ? ctx.DMesh(entry) : null;
+                if (mesh != null && canvas.RdUvCached(mesh, preferredUvChannel) != null) { canvas.ClearHoverState(); return true; }
+            }
+            ctx.PreviewUvChannel = fallback;
+            return false;
         }
 
         void PrepareInspectionEntries()
