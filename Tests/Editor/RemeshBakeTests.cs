@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using NUnit.Framework;
 using UnityEditor;
@@ -884,6 +885,56 @@ namespace SashaRX.UnityMeshLab.Tests
             // Closer than the projection distance the reach stays at the distance.
             var near=new TriangleBvh(new[] { new Vector3(-2,-2,0.02f), new Vector3(3,-2,0.02f), new Vector3(3,3,0.02f), new Vector3(-2,3,0.02f) }, new[] { 0,1,2, 0,2,3 });
             foreach (float r in RemeshBaker.BuildCage(target, 0.1f, 2f, near).reach) Assert.That(r, Is.EqualTo(0.1f).Within(1e-6f));
+        }
+        [Test]
+        public void CageFitUsesPerCornerFacingFallbackDirections()
+        {
+            var positions = new List<Vector3> { Vector3.zero };
+            var indices = new List<int>();
+            foreach (int angle in new[] { 0, 30, 60, 90, 120, 150, 180, 200 }) {
+                Vector3 normal = Quaternion.AngleAxis(angle, Vector3.up) * Vector3.forward;
+                Vector3 u = Vector3.up, v = Vector3.Cross(normal, u);
+                int first = positions.Count;
+                positions.Add(u); positions.Add(v);
+                indices.Add(0); indices.Add(first); indices.Add(first + 1);
+            }
+            var target = new RemeshNative.Geometry {
+                positions = positions.ToArray(), normals = new Vector3[positions.Count], indices = indices.ToArray()
+            };
+            var unsmoothed = RemeshBaker.BuildCage(target, 0.1f, 0f, null);
+            for (int c = 0; c < target.indices.Length; c += 3)
+                Assert.AreEqual(unsmoothed.side[0], unsmoothed.side[c], "fan corners share a side");
+            Assert.That(Vector3.Dot(unsmoothed.directions[0], Vector3.forward), Is.GreaterThan(0.999f),
+                "the first corner falls back from the averaged side direction to its face normal");
+            Vector3 sideDirection = Vector3.zero;
+            for (int angle = 0; angle <= 180; angle += 30)
+                sideDirection += Quaternion.AngleAxis(angle, Vector3.up) * Vector3.forward;
+            sideDirection += Quaternion.AngleAxis(200, Vector3.up) * Vector3.forward;
+            sideDirection.Normalize();
+            Assert.That(Vector3.Dot(sideDirection, Vector3.forward), Is.LessThan(0.05f));
+
+            var sourcePositions = new List<Vector3>();
+            var sourceIndices = new List<int>();
+            AddPatch(sideDirection, 0.05f);
+            AddPatch(Vector3.forward, 0.3f);
+            var source = new TriangleBvh(sourcePositions.ToArray(), sourceIndices.ToArray());
+            var fitted = RemeshBaker.BuildCage(target, 0.1f, 0f, source);
+            for (int c = 0; c < target.indices.Length; c += 3)
+                Assert.That(fitted.reach[c], Is.EqualTo(0.6f).Within(1e-4f), "side reach includes each corner's actual ray");
+
+            void AddPatch(Vector3 normal, float distance)
+            {
+                Vector3 center = normal * distance;
+                Vector3 tangent = Vector3.Cross(normal, Vector3.up).normalized * 0.005f;
+                Vector3 bitangent = Vector3.Cross(normal, tangent).normalized * 0.005f;
+                int first = sourcePositions.Count;
+                sourcePositions.Add(center - tangent - bitangent);
+                sourcePositions.Add(center + tangent - bitangent);
+                sourcePositions.Add(center + tangent + bitangent);
+                sourcePositions.Add(center - tangent + bitangent);
+                sourceIndices.Add(first); sourceIndices.Add(first + 1); sourceIndices.Add(first + 2);
+                sourceIndices.Add(first); sourceIndices.Add(first + 2); sourceIndices.Add(first + 3);
+            }
         }
 
         [TestCase(1f, false, 1f)]

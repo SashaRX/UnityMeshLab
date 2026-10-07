@@ -43,6 +43,12 @@ namespace SashaRX.UnityMeshLab
         public bool ShowGrid = true, ShowAxes = true;
         public Color Background = new Color(0.16f, 0.19f, 0.24f, 1f);
         public Action RequestRepaint;
+        /// <summary>The wire colour that reads on the current shading: near-black on the lit
+        /// grey (or scene materials) of Shaded, light on the attribute encodings.</summary>
+        public Color WireColor => Mode == Shading.Shaded ? new Color(0.05f, 0.05f, 0.05f, 1f) : new Color(0.4f, 0.85f, 1f, 1f);
+        // MSAA smooths surface silhouettes; line coverage is handled by PreviewLines.
+        // Internal override also lets render regressions exercise 1x/2x/4x identically.
+        internal int MsaaSamples = 4;
 
         // ── camera ──
         Vector3 pivot;
@@ -83,7 +89,8 @@ namespace SashaRX.UnityMeshLab
         }
 
         PreviewRenderUtility utility;
-        Material surface, flat, wire, points, translucent;
+        Material surface, flat, wire, points;
+        RenderTexture offscreen;   // owned; replaced only when the preview target's size, format or sample count changes
         Rect currentRect;
         bool drawing;
         readonly Dictionary<long, Mesh> encodedCache = new Dictionary<long, Mesh>();
@@ -95,6 +102,7 @@ namespace SashaRX.UnityMeshLab
         }
         sealed class WireData { public Vector3[] vertices; public List<int> indices; public string name; }
         readonly Dictionary<int, WirePreview> wireCache = new Dictionary<int, WirePreview>();
+        readonly PreviewLines lineRibbons = new PreviewLines();
         readonly List<Mesh> frameMeshes = new List<Mesh>();   // transient meshes built for this frame
 
         public MeshViewport3D() { VertexChannels.Changed += InvalidateMesh; }
@@ -134,12 +142,28 @@ namespace SashaRX.UnityMeshLab
             utility.ambientColor = new Color(0.25f, 0.25f, 0.25f, 1f);
 
             drawing = true;
+            lineRibbons.Repaint = RequestRepaint;
+            lineRibbons.Prune();
+            // The preview utility's own target has no anti-aliasing and a 16-bit depth
+            // buffer: one-pixel lines come out jagged, and the wire fights the surface it
+            // outlines. The frame renders into a 24-bit-depth target of the same size and
+            // goes into the utility's, which EndPreview then shows: multisampled and
+            // resolved under Built-in, or single-sampled and copied under SRP.
+            var target = camera.targetTexture;
+            var pipeline = GraphicsSettings.currentRenderPipeline;
+            // URP 17's render graph can fail its final depth resolve into an imported
+            // multisampled preview target even when the asset matches it. Keep the
+            // SRP target single-sampled and never mutate the shared pipeline asset.
+            // Analytic line coverage works at 1x; Built-in retains silhouette MSAA.
+            int samples = pipeline == null ? MsaaSamples : 1;
+            bool own = target && Offscreen(target, samples);
             try {
+                if (own) camera.targetTexture = offscreen;
                 if (items != null)
                     foreach (var item in items) {
                         if (!item.mesh) continue;
                         DrawItem(item);
-                        if (Wireframe) DrawWire(item.mesh, item.matrix, Mode == Shading.Shaded ? new Color(0.05f, 0.05f, 0.05f, 1f) : new Color(0.4f, 0.85f, 1f, 1f));
+                        if (Wireframe) DrawWire(item.mesh, item.matrix, WireColor);
                     }
                 overlay?.Invoke(this);
                 if (any) {
@@ -147,15 +171,54 @@ namespace SashaRX.UnityMeshLab
                     if (ShowAxes) DrawAxes(bounds);
                 }
                 // Scene materials of a URP project render through URP, not the built-in fallback.
+                camera.allowMSAA = samples > 1;
                 utility.Render(true);
+                if (own) ResolveFrame(offscreen, target);
             }
             catch (Exception ex) { UvtLog.Warn("[3D] " + ex.Message); }
             finally {
                 drawing = false;
+                if (own) camera.targetTexture = target;
                 GUI.DrawTexture(rect, utility.EndPreview(), ScaleMode.StretchToFill, false);
                 foreach (var mesh in frameMeshes) if (mesh) Object.DestroyImmediate(mesh);
                 frameMeshes.Clear(); frameBlocks.Clear();
             }
+        }
+
+        internal static void ResolveFrame(RenderTexture source, RenderTexture target)
+        {
+            if (source.antiAliasing == 1) { Graphics.CopyTexture(source, 0, 0, target, 0, 0); return; }
+            // Sampling a non-bindMS texture performs Unity's automatic resolve. The
+            // explicit ResolveAntiAliasedSurface(destination) path asserts on GLCore
+            // after Camera.Render restores its framebuffer. Blit also works on D3D.
+            bool previous = GL.sRGBWrite;
+            try { GL.sRGBWrite = target.sRGB; Graphics.Blit(source, target); }
+            finally { GL.sRGBWrite = previous; }
+        }
+
+        // The frame target matching the preview utility's: kept across frames and replaced
+        // only when the size, format or sample count changes. A temporary per frame would
+        // leave one differently sized multisampled texture in Unity's pool per repaint of a resize
+        // drag, which the pool frees only after several frames.
+        bool Offscreen(RenderTexture target, int samples)
+        {
+            var descriptor = target.descriptor;
+            descriptor.msaaSamples = samples; descriptor.depthBufferBits = 24;
+            descriptor.bindMS = false;
+            if (offscreen && (offscreen.width != descriptor.width || offscreen.height != descriptor.height
+                              || offscreen.graphicsFormat != descriptor.graphicsFormat || offscreen.antiAliasing != samples))
+                ReleaseOffscreen();
+            if (!offscreen)
+                offscreen = new RenderTexture(descriptor) { name = "MeshViewport3D frame", hideFlags = HideFlags.HideAndDontSave };
+            return offscreen.IsCreated() || offscreen.Create();
+        }
+
+        void ReleaseOffscreen()
+        {
+            if (!offscreen) return;
+            offscreen.Release();
+            Object.DestroyImmediate(offscreen);
+            offscreen = null;
         }
 
         void DrawItem(Item item)
@@ -233,8 +296,16 @@ namespace SashaRX.UnityMeshLab
         public void DrawLineMesh(Mesh lines, Matrix4x4 matrix, Color color)
         {
             if (!drawing || !lines) return;
+            DrawRibbons(lineRibbons.Get(lines), matrix, color);
+        }
+
+        void DrawRibbons(Mesh ribbons, Matrix4x4 matrix, Color color)
+        {
+            if (!ribbons) return;
+            var target = utility.camera.targetTexture;
             var block = Block(); block.SetColor(ColorId, color);
-            utility.DrawMesh(lines, matrix, wire, 0, block);
+            block.SetVector("_ViewportSize", new Vector4(target.width, target.height, 0, 0));
+            utility.DrawMesh(ribbons, matrix, wire, 0, block);
         }
 
         /// <summary>The world-space ray under a GUI point of the last drawn rect, from the
@@ -262,13 +333,11 @@ namespace SashaRX.UnityMeshLab
         public void DrawLines(IList<Vector3> pairs, Matrix4x4 matrix, Color color)
         {
             if (!drawing || pairs == null || pairs.Count < 2) return;
-            var mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave, indexFormat = IndexFormat.UInt32 };
-            var vertices = new Vector3[pairs.Count]; var indices = new int[pairs.Count - pairs.Count % 2];
-            for (int i = 0; i < vertices.Length; ++i) vertices[i] = pairs[i];
+            var indices = new int[pairs.Count - pairs.Count % 2];
             for (int i = 0; i < indices.Length; ++i) indices[i] = i;
-            mesh.vertices = vertices; mesh.SetIndices(indices, MeshTopology.Lines, 0);
+            var mesh = PreviewLines.Build(pairs, indices, null).Upload();
             frameMeshes.Add(mesh);
-            DrawLineMesh(mesh, matrix, color);
+            DrawRibbons(mesh, matrix, color);
         }
 
         /// <summary>Draws per-segment coloured lines: pairs[i*2..i*2+1] in colors[i].</summary>
@@ -276,12 +345,11 @@ namespace SashaRX.UnityMeshLab
         {
             if (!drawing || pairs == null || pairs.Count < 2) return;
             int count = pairs.Count - pairs.Count % 2;
-            var mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave, indexFormat = IndexFormat.UInt32 };
-            var vertices = new Vector3[count]; var vertexColors = new Color[count]; var indices = new int[count];
-            for (int i = 0; i < count; ++i) { vertices[i] = pairs[i]; vertexColors[i] = colors != null && i / 2 < colors.Count ? colors[i / 2] : Color.white; indices[i] = i; }
-            mesh.vertices = vertices; mesh.colors = vertexColors; mesh.SetIndices(indices, MeshTopology.Lines, 0);
+            var vertexColors = new Color32[count]; var indices = new int[count];
+            for (int i = 0; i < count; ++i) { vertexColors[i] = colors != null && i / 2 < colors.Count ? colors[i / 2] : Color.white; indices[i] = i; }
+            var mesh = PreviewLines.Build(pairs, indices, vertexColors).Upload();
             frameMeshes.Add(mesh);
-            utility.DrawMesh(mesh, matrix, translucent, 0);
+            DrawRibbons(mesh, matrix, Color.white);
         }
 
         // A ground grid under the content: cells at a round step near a tenth of the
@@ -456,18 +524,18 @@ namespace SashaRX.UnityMeshLab
         bool EnsureResources()
         {
             if (utility == null) utility = new PreviewRenderUtility { cameraFieldOfView = 30f };
-            if (surface && flat && wire && points && translucent) return true;
+            if (surface && flat && wire && points) return true;
             var shader = Shader.Find("Hidden/MeshLab/RemeshPreview");
-            var overlayShader = Shader.Find("Hidden/MeshLab/UvOverlay");
-            if (!shader || !overlayShader) return false;
-            translucent = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave };
+            var lineShader = Shader.Find("Hidden/MeshLab/PreviewLines");
+            if (!shader || !lineShader) return false;
             surface = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             flat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             flat.SetFloat("_DepthOffset", -1);
-            wire = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-            wire.SetFloat("_Lit", 0); wire.SetFloat("_DepthOffset", -1);
+            // Lines sit above the flat overlays and the UV layer (both at -1): at the same
+            // offset the layer, drawn later, covered the wire wherever it was opaque.
+            wire = new Material(lineShader) { hideFlags = HideFlags.HideAndDontSave };
             points = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-            points.SetFloat("_Lit", 0); points.SetFloat(UseVertexColorId, 1); points.SetFloat("_DepthOffset", -2);
+            points.SetFloat("_Lit", 0); points.SetFloat(UseVertexColorId, 1); points.SetFloat("_DepthOffset", -3);
             return true;
         }
 
@@ -641,6 +709,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Drops cached encodings and wires (call when source meshes change).</summary>
         public void InvalidateCaches()
         {
+            lineRibbons.Dispose();
             foreach (var mesh in encodedCache.Values) if (mesh) Object.DestroyImmediate(mesh);
             foreach (var preview in wireCache.Values) {
                 preview.work.Dispose();
@@ -654,8 +723,10 @@ namespace SashaRX.UnityMeshLab
         public void InvalidateMesh(Mesh mesh)
         {
             if (!mesh) return;
+            lineRibbons.Remove(mesh);
             if (wireCache.TryGetValue(mesh.GetInstanceID(), out var preview)) {
                 preview.work.Dispose();
+                lineRibbons.Remove(preview.mesh);
                 if (preview.mesh) Object.DestroyImmediate(preview.mesh);
                 wireCache.Remove(mesh.GetInstanceID());
             }
@@ -673,12 +744,12 @@ namespace SashaRX.UnityMeshLab
             VertexChannels.Changed -= InvalidateMesh;
             InvalidateCaches();
             utility?.Cleanup(); utility = null;
+            ReleaseOffscreen();
             if (surface) Object.DestroyImmediate(surface);
             if (flat) Object.DestroyImmediate(flat);
             if (wire) Object.DestroyImmediate(wire);
             if (points) Object.DestroyImmediate(points);
-            if (translucent) Object.DestroyImmediate(translucent);
-            surface = flat = wire = points = translucent = null;
+            surface = flat = wire = points = null;
         }
     }
 }

@@ -42,7 +42,7 @@ exists to catch what slipped through.
 | Diffuse-texture `UVSet` name = name of `mesh->GetElementUV(0)` | Without it Max drops the texture-mesh binding (UV resolution fails) |
 | `_COL` meshes (node name suffix `_COL`, case-insensitive) ship **no UV channels and no vcolor layers** | Collision meshes never render — pure dead weight |
 | One vcolor layer per mesh on layer 0 | Multiple vcolor layers surface as unnamed map channels (4:map, 5:map…) in Max and confuse material setup |
-| `FbxLayerElementNormal::mapping = eByPolygonVertex` if the mesh has smoothing groups, `eByControlPoint` if not | Max reads the two cases differently |
+| `FbxLayerElementNormal::mapping = eByPolygonVertex` if the mesh has smoothing groups, `eByControlPoint` if not (MeshLab's document edit: a new normal element on a mesh without smoothing groups is per control point when each point has one normal; a hard edge cannot be held per point and stays per corner) | Max reads the two cases differently |
 
 ## 4. Vertex colors
 
@@ -259,6 +259,168 @@ byte-identical from the source FBX clone (modulo what the
 Unity FBX Exporter itself rewrites at the FBX-document level;
 see §9).
 
+### Channel re-save in the FBX document (UV sets, vertex colours, normals, tangents)
+
+An intent made only of `UV0`…`UV7` and `VertexColors` does not go through
+Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
+
+* The source file is loaded with the FBX SDK and saved back in its own
+  container format (binary/ASCII) and file version, with embedded media
+  re-embedded. Two exceptions: a file older than FBX 7.1 is saved as 7.1
+  (the oldest version the SDK writes), and the SDK rewrites the header's
+  creator string and timestamps. Polygons (quads, n-gons), control points, smoothing,
+  materials, nodes, properties and every other layer element are never
+  rebuilt.
+* Inside a written channel only the corners whose value changed are
+  written; unchanged corners keep their stored doubles bit for bit. A
+  by-control-point set stays by-control-point when the change allows it;
+  otherwise it becomes per-corner indexed with the old values kept. New values
+  share an entry only between corners of the same control point with the
+  same value (eIndexToDirect, as TS_UnityExport_SDK writes it), so
+  overlapping or mirrored shells are never welded on a DCC re-import.
+* Vertex colours are read from and written to layer 0 only — the only
+  colour layer Unity's importer reads (TS_UnityExport_SDK checklist I4).
+  Written values are clamped to `[0, 1]` (§4); stored ones are left as they are.
+* Which Unity vertex a corner became is recovered from a throwaway import
+  of a tagged copy (corner index in an extra UV set, same importer settings,
+  `Assets/__MeshLabTemp`, deleted afterwards, also when it fails). A mesh with
+  all eight UV sets lends its last one to the tag; that set's values are read
+  from the file per corner instead. `FbxCornerMatch` pairs corners with the
+  working mesh by position (bit-identical: same file, same import), by the
+  polygon's own corners, and by the untouched UVs and colours, so welding,
+  vertex splits and triangle order do not matter.
+* Refused, nothing written: a value seam inside one polygon (the polygon
+  cannot hold it without being split), a UV set that would skip a channel
+  (UV3 on a mesh with one set), corner tags lost on import (Mesh
+  Compression), an instanced FBX mesh edited from more than one Unity mesh.
+* The source importer is left alone, except `generateSecondaryUV` is
+  switched off when UV1 was actually written (it would replace it). Since
+  that holds for the whole model, every mesh's generated UV1 is then written
+  too; a save that would leave a mesh of the model without UV1 (not loaded in
+  MeshLab) is refused; untouched Read/Write-disabled meshes are read through
+  `MeshAccess` for it. The sidecar's UV2 replay is held off only for an import
+  that brings a written or removed UV1, and a persistent sidecar is updated to
+  the saved UVs after the save (a removed UV1 drops its entry; the entries are
+  built before the write, from the meshes the file was read with). An import
+  that fails after the file is written is reported, and the save still
+  finishes. A standalone renderer (no LODGroup) is relinked to its reimported
+  mesh. A save of several files frees the working copies and reloads the scene
+  once, after the last file, and not at all when a file holding unsaved work
+  was not written (cancelled, refused, failed).
+* "Unchanged geometry" means the same faces per submesh (position loops,
+  same winding, any order or vertex numbering), not just the same counts.
+* A channel the working mesh dropped (Cleanup's attribute removal) is removed
+  from the file: the colour set, or the last UV sets. Removing a UV set before
+  one that stays would renumber it and is refused.
+* Normals and tangents are channels too (hub save): layer 0's normal, tangent
+  and binormal elements take the changed corners, with each value mapped back
+  into the mesh's control-point space through the map fitted to its import
+  (`FbxSpaceFit`: normals by its transpose, tangent and binormal as directions;
+  binormal = cross(normal, tangent) · w). Unchanged corners keep their doubles;
+  an added set is written whole, a dropped one removed. They are written only
+  where the importer reads them from the file (`Normals: Import`, and for
+  tangents also `Tangents: Import`): under Calculate Unity recomputes them on
+  every import, so a changed set is reported in the log and left out. A hard
+  edge inside one polygon (two normals for one corner) is refused like a UV
+  seam. Smoothing groups are left as they are.
+* "Save channels only" writes UV sets and vertex colours only.
+* The hub's Overwrite / Export New FBX (`All`) takes this path, together with
+  the structure edit below, in one load and one save of the document.
+
+### Structure edit in the FBX document (generated LODs, collision, edited faces)
+
+The hub's `All` save adds or replaces geometry in the same document
+(`Editor/Assets/FbxStructureWrite.cs`, SDK half `FbxStructureEdit.cs`):
+
+* A generated LOD becomes a node next to the node it was generated from
+  (same parent), with its local TRS, rotation order, pivots, pre/post
+  rotation, geometric transform, inherit type and materials; the copy must
+  evaluate to the source's global transform or the save is refused. Unity
+  then groups it by name (`base_LOD0` … `base_LODn`).
+* Sidecar collision becomes `{key}_COL` (one simplified mesh) or a `{key}_COL`
+  container of `{key}_COL_Hull{i}` nodes next to its source, with positions /
+  triangles / normals only: no UV, no vertex colour, no material (the
+  TS_UnityExport_SDK collider rule). Collision the file already holds with the
+  same geometry and no UVs or colours is left alone; one with UVs or colours
+  is rewritten clean.
+* A mesh whose faces or points changed gets a new FBX mesh on the same
+  node(s); node, transform and materials stay. Quads (Keep Quads imports) are
+  written as quads, and each submesh keeps its material slot. Instances edited
+  differently (any written attribute: positions, faces, normals, tangents,
+  colours, UVs) are refused.
+* Collision is placed next to the mesh named by its sidecar key, or the one
+  LOD0 / unsuffixed mesh with that group key. Collision the file already holds
+  is compared as triangle loops on the same points, not only point sets.
+* Unity-space geometry goes back into control-point space through the affine
+  map fitted to the source mesh's tagged import (`FbxSpaceFit`): whatever
+  axis conversion, unit scale, mirroring or baked pivot the import applied is
+  in that map. A position the source import had takes its exact control
+  point; a flat source takes its mirror from the import's winding. The
+  triangle winding is reversed when the import reversed it, so a reimport
+  gives the Unity triangles back. A flat source tells the map only within its
+  plane: geometry leaving that plane is refused unless the plane maps without
+  stretch and the source's geometric scaling is uniform. New meshes carry
+  normals, the source's UV sets under the source's set names (read from the
+  file by `FbxUvSetNames`, since a texture finds its set by name; `UVChannel_N`
+  when they cannot be read), plus the UV sets MeshLab added within the save's
+  intent (a repacked UV1 the file lacked; never a UV1 the import regenerates:
+  with 'Generate Lightmap UVs' on and no UV1 bake, a source's set there is
+  kept in the count but is no UV1 write and leaves the setting on),
+  set i on layer i, and layer-0 colours when the source has them or the save
+  writes colours, all per corner, indexed and shared only within a control
+  point. Faces without area (repeated or collinear corners) are left out. Normals, colours, the tangent frame and the one material
+  element sit on layer 0 (TS_UnityExport_SDK I4); polygons are begun without
+  the legacy material bookkeeping; a node given materials gets texture
+  shading.
+* Not written, by limitation: a smoothing-group element (the C# FBX SDK
+  wrapper has no `FbxLayerElementSmoothing`), so a new or replaced mesh carries
+  its shading as explicit normals only; a DCC rebuilds smoothing from them
+  (TS_UnityExport_SDK `SmoothingFromNormals`). Tangents / binormals are
+  written only when the importer imports tangents (otherwise Unity computes
+  MikkTSpace, as with the TS exporter's `stripTangentsBinormals`).
+* Nothing is renamed, moved or normalised; a node is removed only when a new
+  one takes its name next to the same source (same parent; a same-named node
+  in another branch is left alone; a replaced node with children is refused). Hierarchy
+  normalisation stays the explicit Prefab Builder action (the LOD-rebuild path).
+* A renderer whose materials differ from the ones its mesh's node gives it
+  (Cleanup's material fixes; compared with the prefab source renderer, or for a
+  renderer that is no prefab instance with the model's renderer of its name, or
+  of the same mesh) changes only the node slots of those submeshes: each takes an FBX
+  material named after the Unity material, made FBX-safe (the scene's own of that
+  name when the importer already maps it to that asset, or a new `FbxSurfacePhong`
+  with the material's colour and its main texture as an `FbxFileTexture` on the
+  diffuse, absolute and relative paths; `_1`, `_2`… when the name maps to another
+  material or names a file material not mapped to it), and the
+  importer gets a remap from that name to the asset. Other slots and other nodes
+  sharing the old material keep it. A generated LOD whose renderer's materials
+  differ from its source renderer's gets them in its own slots the same way.
+  With material import off nothing is written (Unity does not use the file's
+  materials); an adopted LOD renderer keeps the generated one's materials.
+* Refused, nothing written, then a dialog offers the rebuild or "Save channels
+  only": a changed material that is not an asset or has no slot in the FBX, a
+  renderer with fewer materials than its node's slots, renderers of one node given
+  different materials, changed materials in a file written outside the project (no
+  importer to remap them), a file's own material put back into one slot while the
+  importer remaps its name to another asset, changed tangents on a mesh whose normals were removed, a LOD source node without an `_LOD<N>` suffix, a source that is the
+  file's only top-level node (Unity imports it as the model root) unless the
+  importer preserves the hierarchy, a skinned or blend-shaped source, a source
+  whose transform is animated (a sibling copies the values, not the curves),
+  an import that is not an affine image of its control points, a generated LOD
+  whose source mesh cannot be told or whose name two branches generate, a
+  sibling of a mesh instanced by
+  several nodes (which instance it belongs with cannot be told), a mesh
+  written whole that lacks a UV set before one it has (its sets would be
+  renumbered) or lacks the UV1 a bake writes for the whole model, a new node
+  whose copied transform does not evaluate to its source's placement,
+  a `_COL` mesh of the file carrying UVs or colours that no sidecar collision
+  replaces (Cleanup sends it to the overwrite; the rebuild strips it).
+* After an overwrite, the scene LODGroup's slots take the imported renderers
+  of the written LODs (transitions kept) and those generated objects go; one
+  whose name matches no imported renderer or several keeps its slot. A save of
+  several FBX files frees the working copies, adopts the LODs and reloads the
+  scene once, after the last file; a rebuild picked for a refused file
+  finishes after that.
+
 ### `FbxExportIntent` flags
 
 | Flag | When to set |
@@ -312,7 +474,12 @@ their index buffer, and the FBX exporter writes whatever topology the
 serialized mesh has — so the clone that reaches `ModelExporter` must be
 imported with `keepQuads = true`:
 
-* **Isolated core** — Phase 1 enables `keepQuads` on the source importer
+* **Channel re-save (UV / vertex colours)** — not affected: the FBX
+  document's polygons are never rewritten, so quads and n-gons stay as
+  authored whatever `keepQuads` is set to, and `keepQuads` is not touched
+  (a save that writes UV1 does switch `generateSecondaryUV` off, see above).
+* **Isolated core (normals / tangents / hierarchy / materials intents)** —
+  Phase 1 enables `keepQuads` on the source importer
   (alongside `isReadable`) before the clone is loaded. `keepQuads` only
   reshapes the index buffer (4 indices per quad instead of two triangles);
   vertex order and count are untouched, so the snapshot/clone

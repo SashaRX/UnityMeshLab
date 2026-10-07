@@ -17,6 +17,8 @@ namespace SashaRX.UnityMeshLab
         {
             token.ThrowIfCancellationRequested();
             if (geometry.draftUv) throw new InvalidOperationException("Final normals require an unwrapped atlas; UV0 is still draft.");
+            if (geometry.normals == null || geometry.tangents == null || geometry.uv == null || geometry.charts == null)
+                throw new InvalidOperationException("Final normals require the unwrap's normals, tangents, UV0 and chart ids.");
             bool islands = settings.hardEdges == RemeshHardEdges.UvIslands || settings.hardEdges == RemeshHardEdges.UvIslandsAndAngle;
             bool angle = (settings.hardEdges == RemeshHardEdges.Angle || settings.hardEdges == RemeshHardEdges.UvIslandsAndAngle) && settings.normalCrease < 180;
             int[] groups;

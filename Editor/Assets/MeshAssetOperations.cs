@@ -303,17 +303,28 @@ namespace SashaRX.UnityMeshLab
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             int okCount = 0;
             int totalCount = 0;
-            foreach (var kv in fbxGroups)
+            BeginSourceSaves();
+            try
             {
-                totalCount++;
-                string sourceFbxPath = kv.Key;
-                var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
-                if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath)) continue;
+                foreach (var kv in fbxGroups)
+                {
+                    totalCount++;
+                    string sourceFbxPath = kv.Key;
+                    var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
+                    if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath))
+                    {
+                        MarkUnsaved(kv.Value);
+                        continue;
+                    }
 
-                RestoreAllPreviews();
-                if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
-                    okCount++;
+                    RestoreAllPreviews();
+                    if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
+                        okCount++;
+                    else
+                        MarkUnsaved(kv.Value);
+                }
             }
+            finally { EndSourceSaves(); }
             UvtLog.Info($"[FBX Export] Narrow-intent export: {okCount}/{totalCount} group(s) succeeded.");
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
@@ -321,6 +332,42 @@ namespace SashaRX.UnityMeshLab
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        // A persistent sidecar re-applies its UV2 on every import; after a save wrote the
+        // meshes' UVs into the file, its entries must hold the same UVs or the next import
+        // would bring the old ones back. The entries are built before the write, from the
+        // meshes the file was read with (the import that follows recreates them), and stored
+        // only once the write succeeded.
+        sealed class SidecarSync
+        {
+            public string fbxPath;
+            public List<MeshUv2Entry> entries;
+            public List<string> dropped;
+        }
+
+        SidecarSync PrepareSidecarSync(string fbxPath, List<(MeshEntry entry, Mesh resultMesh)> group)
+        {
+            if (!PostprocessorDefineManager.IsEnabled() || SidecarStore.Load(fbxPath) == null) return null;
+            // A UV1 the working mesh dropped leaves the file too; its entry would bring it back.
+            const UnityEngine.Rendering.VertexAttribute uv1 = UnityEngine.Rendering.VertexAttribute.TexCoord1;
+            var dropped = group.Where(p => p.entry.fbxMesh != null && p.resultMesh != null && p.resultMesh != p.entry.fbxMesh
+                && p.entry.fbxMesh.HasVertexAttribute(uv1) && !p.resultMesh.HasVertexAttribute(uv1)).ToList();
+            return new SidecarSync
+            {
+                fbxPath = fbxPath,
+                entries = BuildSidecarEntriesForExport(group.Except(dropped).ToList()),
+                dropped = dropped.Select(p => p.entry.fbxMesh.name).ToList(),
+            };
+        }
+
+        static void ApplySidecarSync(SidecarSync sync)
+        {
+            if (sync == null) return;
+            int removed = SidecarStore.RemoveEntries(sync.fbxPath, sync.dropped);
+            int saved = SidecarStore.SaveEntries(sync.fbxPath, sync.entries);
+            if (saved + removed > 0)
+                UvtLog.Info($"[FBX Export] Updated {saved} and removed {removed} UV2 entr(ies) in '{SidecarStore.PathFor(sync.fbxPath)}' to match the saved FBX.");
+        }
+
         static bool TryChooseNarrowExportPath(string sourceFbxPath, FbxExportIntent intent, bool overwriteSource, out string outputFbxPath)
         {
             outputFbxPath = null;
@@ -412,22 +459,136 @@ namespace SashaRX.UnityMeshLab
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             bool isVariantExport = !string.IsNullOrEmpty(outputFbxPathOverride)
                 && !string.Equals(outputFbxPathOverride, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
+            var list = entries as IList<MeshEntry> ?? entries.ToList();
+            // Every UV1 save leaves a persistent sidecar replaying the same: the source's, or a
+            // variant's written into the project that may already have one of its own.
+            string sidecarFbx = !intent.IncludesUv(1) ? null
+                : !isVariantExport ? sourceFbxPath
+                : outputFbxPathOverride.StartsWith("Assets/", StringComparison.Ordinal) ? outputFbxPathOverride : null;
+            var sidecar = sidecarFbx == null ? null
+                : PrepareSidecarSync(sidecarFbx, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
+            if (!isVariantExport) PrepareStandaloneRelink(sourceFbxPath);
             bool exported = FbxExport.WriteChannels(
-                sourceFbxPath, entries, intent, outputFbxPathOverride,
+                sourceFbxPath, list, intent, outputFbxPathOverride,
                 FbxExport.FirstRealMaterial(ctx?.MeshEntries),
                 isVariantExport ? null : ctx?.LodGroup);
-            if (!exported) return false;
-            if (!isVariantExport)
-            {
-                if (ctx?.LodGroup != null) ctx.Refresh(ctx.LodGroup);
-                RestoreWorkingCopiesToScene();
-                AfterWrite?.Invoke();
-            }
+            if (!exported) { standaloneRelinks.Clear(); return false; }
+            ApplySidecarSync(sidecar);
+            if (!isVariantExport) AfterSourceSave();
             return true;
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
             return false;
 #endif
+        }
+
+        // A source re-save leaves the entries holding copies of what the file now has: the
+        // copies are freed and the scene reloaded. Within a save of several files that waits
+        // for the last one, since the groups still to be written hold the same entries.
+        // A file of the batch that was not written (cancelled, refused, failed) while its
+        // entries hold working copies keeps them: they are the only record of that work, so
+        // the batch then ends without freeing, adopting or reloading anything.
+        bool sourceSavesOpen, sceneReloadPending, lodAdoptionPending, workLeftUnsaved;
+
+        void BeginSourceSaves()
+        {
+            sourceSavesOpen = true;
+            sceneReloadPending = lodAdoptionPending = workLeftUnsaved = false;
+        }
+
+        void MarkUnsaved(List<(MeshEntry entry, Mesh resultMesh)> group)
+        {
+            if (group.Any(p => HoldsWorkingCopy(p.entry))) workLeftUnsaved = true;
+        }
+
+        static bool HoldsWorkingCopy(MeshEntry e)
+            => e != null && (e.repackedMesh != null || e.transferredMesh != null
+                || (e.originalMesh != null && e.originalMesh != e.fbxMesh && !EditorUtility.IsPersistent(e.originalMesh)));
+
+        void EndSourceSaves()
+        {
+            sourceSavesOpen = false;
+            if (!sceneReloadPending) return;
+            sceneReloadPending = false;
+            if (workLeftUnsaved)
+            {
+                UvtLog.Warn("[FBX Export] Not every file of this save was written; the working copies stay loaded so nothing unsaved is lost. " +
+                            "Save again to finish (the files already written keep what they got).");
+                standaloneRelinks.Clear();
+                lodAdoptionPending = false;
+                RestoreWorkingCopiesToScene();
+                AfterWrite?.Invoke();
+                return;
+            }
+            AfterSourceSave();
+        }
+
+        // adoptLods: the save wrote generated LODs, whose slots take the imported renderers.
+        void AfterSourceSave(bool adoptLods = false)
+        {
+            lodAdoptionPending |= adoptLods;
+            if (sourceSavesOpen) { sceneReloadPending = true; return; }
+            if (ctx?.LodGroup != null) ReleaseWorkingMeshes();
+            if (lodAdoptionPending) LodGroupUtility.AdoptImportedLods(ctx);
+            lodAdoptionPending = false;
+            if (ctx?.LodGroup != null) ctx.Refresh(ctx.LodGroup);
+            else if (ctx != null && ctx.StandaloneMesh)
+            {
+                // No LODGroup for the write to relink: the renderer takes its reimported mesh here.
+                var renderer = ctx.MeshEntries.FirstOrDefault(e => e?.renderer is MeshRenderer)?.renderer as MeshRenderer;
+                ReleaseWorkingMeshes();
+                RelinkStandalone();
+                if (renderer != null) ctx.RefreshStandalone(renderer);
+            }
+            RestoreWorkingCopiesToScene();
+            AfterWrite?.Invoke();
+        }
+
+        // A standalone renderer's filter, with the FBX and mesh name it shows, taken before the
+        // write: the import that follows recreates the mesh it points at.
+        readonly List<(MeshFilter filter, string fbxPath, string meshName)> standaloneRelinks = new List<(MeshFilter, string, string)>();
+
+        void PrepareStandaloneRelink(string fbxPath)
+        {
+            if (ctx?.LodGroup != null || ctx == null || !ctx.StandaloneMesh || ctx.MeshEntries == null) return;
+            foreach (var e in ctx.MeshEntries)
+                if (e?.meshFilter != null && e.fbxMesh != null
+                    && string.Equals(AssetDatabase.GetAssetPath(e.fbxMesh), fbxPath, StringComparison.OrdinalIgnoreCase))
+                    standaloneRelinks.Add((e.meshFilter, fbxPath, e.fbxMesh.name));
+        }
+
+        void RelinkStandalone()
+        {
+            foreach (var (filter, fbxPath, meshName) in standaloneRelinks)
+            {
+                if (filter == null) continue;
+                var fresh = AssetDatabase.LoadAllAssetsAtPath(fbxPath).OfType<Mesh>().FirstOrDefault(m => m.name == meshName);
+                if (fresh == null || filter.sharedMesh == fresh) continue;
+                Undo.RecordObject(filter, "Relink Saved Mesh");
+                filter.sharedMesh = fresh;
+            }
+            standaloneRelinks.Clear();
+        }
+
+        static Mesh WorkingMesh(MeshEntry e) => e.repackedMesh ?? e.transferredMesh ?? e.originalMesh ?? e.fbxMesh;
+
+        // After a source re-save the working copies are in the file, and the refresh that
+        // follows drops the entries holding them: give the renderers their asset meshes
+        // back and free the copies instead of leaking them.
+        void ReleaseWorkingMeshes()
+        {
+            if (ctx?.MeshEntries == null) return;
+            foreach (var e in ctx.MeshEntries)
+            {
+                var copies = new[] { e.transferredMesh, e.repackedMesh, e.originalMesh != e.fbxMesh ? e.originalMesh : null };
+                foreach (var copy in copies)
+                {
+                    if (copy == null || EditorUtility.IsPersistent(copy)) continue;
+                    if (e.meshFilter != null && e.fbxMesh != null && e.meshFilter.sharedMesh == copy) e.meshFilter.sharedMesh = e.fbxMesh;
+                    UnityEngine.Object.DestroyImmediate(copy);
+                }
+                e.transferredMesh = e.repackedMesh = null;
+            }
         }
 
         string ResolveFbxPath()
@@ -448,8 +609,10 @@ namespace SashaRX.UnityMeshLab
 
         // ExportFbx with intent. Narrow intent (no Hierarchy and no LodGroup bits)
         // delegates per group to the isolated channel re-save (atomic write, preflight,
-        // nothing but the intended channels touched). Wide intent (Hierarchy or LodGroup)
-        // is the LOD-rebuild pipeline: mesh replacement by name, new LOD children, stale-
+        // nothing but the intended channels touched). The hub's All edits the FBX document
+        // (channels plus generated LODs, sidecar collision and edited faces as nodes next to
+        // their source). Other wide intents (Prefab Builder's explicit Hierarchy / LodGroup)
+        // are the LOD-rebuild pipeline: mesh replacement by name, new LOD children, stale-
         // child pruning, hierarchy normalisation, collision injection from the sidecar.
         // The mechanics live in FbxExport; the policy — dialogs, backups, importer lock,
         // sidecar storage, relink, what to refresh — stays here. Migrating the wide path
@@ -490,6 +653,16 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
+            // "Save everything" (the hub's Overwrite / Export New FBX): changed UV sets and
+            // vertex colours, generated LODs, sidecar collision and edited faces all go into the
+            // FBX document itself (FbxChannelWrite + FbxStructureWrite). A rebuild through
+            // Unity's FBX Exporter runs only when that is refused and the user picks it.
+            if (intent == FbxExportIntent.All)
+            {
+                ExportDocumentGroups(fbxGroups, overwriteSource);
+                return;
+            }
+
             bool allGroupsSucceeded = true;
             var batch = new HierarchyExportBatch();
             foreach (var kv in fbxGroups)
@@ -500,6 +673,90 @@ namespace SashaRX.UnityMeshLab
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        // The hub's full save, one FBX at a time, through the document edit.
+        void ExportDocumentGroups(Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>> fbxGroups, bool overwriteSource)
+        {
+            int okCount = 0;
+            // A rebuild picked for a refused file finishes after the loop, like the document saves.
+            var rebuilds = new HierarchyExportBatch();
+            BeginSourceSaves();
+            try
+            {
+                foreach (var kv in fbxGroups)
+                {
+                    string sourceFbxPath = kv.Key;
+                    // The plan reads renderer materials: previews (checker, AO, shells) must be off.
+                    RestoreAllPreviews();
+                    using var plan = FbxStructureWrite.Plan(sourceFbxPath, kv.Value, ctx.SourceLodIndex);
+                    if (!TryChooseNarrowExportPath(sourceFbxPath, FbxExportIntent.All, overwriteSource, out string outputFbxPath))
+                    {
+                        MarkUnsaved(kv.Value);
+                        continue;
+                    }
+                    bool isVariant = !string.IsNullOrEmpty(outputFbxPath)
+                        && !string.Equals(outputFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
+                    var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
+                    RestoreAllPreviews();
+                    // The source's persistent sidecar, or a variant's written into the project that
+                    // may already have one of its own.
+                    string sidecarFbx = !isVariant ? sourceFbxPath
+                        : outputFbxPath.StartsWith("Assets/", StringComparison.Ordinal) ? outputFbxPath : null;
+                    var sidecar = sidecarFbx == null ? null : PrepareSidecarSync(sidecarFbx, kv.Value);
+                    if (!isVariant) PrepareStandaloneRelink(sourceFbxPath);
+
+                    bool written;
+                    try
+                    {
+                        written = FbxChannelWrite.Write(sourceFbxPath, entries, FbxChannelWrite.Supported, outputFbxPath,
+                            isVariant ? null : ctx?.LodGroup, plan);
+                    }
+                    catch (FbxStructureRefusalException refusal)
+                    {
+                        written = ExportAfterRefusal(sourceFbxPath, kv.Value, entries, outputFbxPath, overwriteSource, refusal.Message, rebuilds);
+                        if (written) okCount++;
+                        else MarkUnsaved(kv.Value);
+                        continue;
+                    }
+                    catch (Exception ex)
+                    {
+                        UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
+                        UvtLog.Verbose(ex.ToString());
+                        MarkUnsaved(kv.Value);
+                        continue;
+                    }
+                    if (!written) { standaloneRelinks.Clear(); MarkUnsaved(kv.Value); continue; }
+                    okCount++;
+                    ApplySidecarSync(sidecar);
+                    if (isVariant) continue;
+                    AfterSourceSave(plan.lods.Count > 0);
+                }
+            }
+            finally { EndSourceSaves(); }
+            if (rebuilds.Groups > 0) FinishHierarchyExports(rebuilds, overwriteSource, rebuilds.AllSucceeded);
+            UvtLog.Info($"[FBX Export] FBX document save: {okCount}/{fbxGroups.Count} file(s) written.");
+        }
+
+        // The document edit refused the structure (the file is untouched): say why and let the
+        // user pick the rebuild, the channels alone, or nothing.
+        // A rebuild goes into rebuilds; the caller finishes them after its last file.
+        bool ExportAfterRefusal(string sourceFbxPath, List<(MeshEntry entry, Mesh resultMesh)> group, List<MeshEntry> entries,
+            string outputFbxPath, bool overwriteSource, string reason, HierarchyExportBatch rebuilds)
+        {
+            UvtLog.Warn($"[FBX Export] '{sourceFbxPath}': {reason}.");
+            int choice = EditorUtility.DisplayDialogComplex("Rebuild FBX?",
+                $"'{System.IO.Path.GetFileName(sourceFbxPath)}' cannot take this save as an edit of the file:\n\n{reason}.\n\n" +
+                "A rebuild re-exports every mesh from Unity's data through the FBX Exporter: polygons become triangles, " +
+                "vertices are split at seams, vertex colours are stored as 8-bit, and the hierarchy is normalised.\n\n" +
+                "'Save channels only' writes the changed UV sets and vertex colours into the existing file and leaves the rest of it untouched.",
+                "Rebuild", CancelButton, "Save channels only");
+            if (choice == 1) return false;
+            if (choice == 2) return ExportFbxIsolatedCore(sourceFbxPath, entries, FbxChannelWrite.ChannelsOnly, outputFbxPath);
+            bool ok = ExportHierarchyGroup(sourceFbxPath, group, overwriteSource, rebuilds);
+            rebuilds.Groups++;
+            rebuilds.AllSucceeded &= ok;
+            return ok;
+        }
+
         void FinishHierarchyExports(HierarchyExportBatch batch, bool overwriteSource, bool allGroupsSucceeded)
         {
             // Generated scene LOD objects are embedded in the exported FBX
@@ -542,6 +799,9 @@ namespace SashaRX.UnityMeshLab
             public readonly Dictionary<string, List<MeshUv2Entry>> TransientReplayEntriesByPath = new Dictionary<string, List<MeshUv2Entry>>();
             public readonly Dictionary<string, Dictionary<string, string>> MeshRenamesByFbx = new Dictionary<string, Dictionary<string, string>>();
             public readonly bool PersistentSidecarMode = PostprocessorDefineManager.IsEnabled();
+            /// <summary>Groups exported into this batch, and whether all of them succeeded.</summary>
+            public int Groups;
+            public bool AllSucceeded = true;
             public readonly SidecarStore.AoUvTarget Ao = AoTarget;
             public void ReArm(string path)
             {

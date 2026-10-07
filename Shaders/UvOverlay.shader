@@ -1,7 +1,9 @@
 // Mesh Lab 3D canvas: the UV viewer's layer (shell fills, borders, checker or
 // lightmap background) rendered into a UV-space texture and laid over the model
 // through the preview UV channel. Transparent, depth-offset so it wins against the
-// surface it covers; with a white texture it tints (shell highlights).
+// surface it covers; with a white texture it tints (shell highlights). The model's
+// vertex colours are ignored unless asked for (the viewport's grid carries its
+// colours and fades as vertex colours).
 Shader "Hidden/MeshLab/UvOverlay"
 {
     Properties
@@ -9,6 +11,7 @@ Shader "Hidden/MeshLab/UvOverlay"
         _MainTex ("Overlay", 2D) = "white" {}
         _Color ("Tint", Color) = (1,1,1,1)
         _UVChannel ("UV Channel", Float) = 0
+        _UseVertexColor ("Use vertex colour", Float) = 0
     }
     SubShader
     {
@@ -26,6 +29,7 @@ Shader "Hidden/MeshLab/UvOverlay"
             sampler2D _MainTex;
             float4 _Color;
             float _UVChannel;
+            float _UseVertexColor;
             struct appdata { float4 vertex : POSITION; float2 uv0 : TEXCOORD0; float2 uv1 : TEXCOORD1; float2 uv2 : TEXCOORD2; float2 uv3 : TEXCOORD3; float2 uv4 : TEXCOORD4; float2 uv5 : TEXCOORD5; float2 uv6 : TEXCOORD6; float2 uv7 : TEXCOORD7; float4 color : COLOR; };
             struct v2f { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float4 color : COLOR; };
             v2f vert(appdata v)
@@ -40,6 +44,7 @@ Shader "Hidden/MeshLab/UvOverlay"
             fixed4 frag(v2f i) : SV_Target
             {
                 fixed4 t = tex2D(_MainTex, i.uv) * _Color;
+                if (_UseVertexColor > 0.5) t *= i.color;
                 return t;
             }
             ENDCG

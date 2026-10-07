@@ -196,9 +196,10 @@ namespace SashaRX.UnityMeshLab
         // map sizes — the float EXR emission map alone is 16 bytes per texel.
         public bool embedFbxTextures = true;
 
-        // Save: bake the source's world scale into the saved geometry so the model
-        // keeps its real size with a scale-1 transform, regardless of the source's
-        // own scaling. Off: the saved transform carries the source's scale instead.
+        // Save: bake the source root's world rotation and scale into the saved geometry
+        // so the model keeps its real size and orientation with an identity transform,
+        // regardless of the source's own TRS. Off: the saved transform carries the
+        // source's rotation and scale instead.
         public bool normalizeSize = true;
 
         /// <summary>Apply the measured xatlas preset without resetting the mesh,
