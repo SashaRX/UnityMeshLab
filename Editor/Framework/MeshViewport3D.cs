@@ -48,8 +48,9 @@ namespace SashaRX.UnityMeshLab
         /// grey (or scene materials) of Shaded, light on the attribute encodings.</summary>
         public Color WireColor => Mode == Shading.Shaded ? new Color(0.05f, 0.05f, 0.05f, 1f) : new Color(0.4f, 0.85f, 1f, 1f);
         /// <summary>Samples per pixel of the render; lines (wire, grid, borders) are one pixel
-        /// wide, so they are what the anti-aliasing is for.</summary>
-        const int MsaaSamples = 8;
+        /// wide, so they are what the anti-aliasing is for. 4x smooths them about as well as
+        /// 8x at half the memory and fill.</summary>
+        const int MsaaSamples = 4;
 
         // ── camera ──
         Vector3 pivot;
@@ -145,7 +146,7 @@ namespace SashaRX.UnityMeshLab
             // The preview utility's own target has no anti-aliasing and a 16-bit depth
             // buffer: one-pixel lines come out jagged, and the wire fights the surface it
             // outlines. The frame renders into a 24-bit-depth target of the same size and
-            // goes into the utility's, which EndPreview then shows: 8x multisampled and
+            // goes into the utility's, which EndPreview then shows: multisampled and
             // resolved, or single-sampled and copied under a scriptable pipeline that has
             // no MSAA setting to match it to (see PipelineMsaa).
             var target = camera.targetTexture;
@@ -170,14 +171,12 @@ namespace SashaRX.UnityMeshLab
                 // URP renders a camera multisampled only while its asset enables MSAA, and then
                 // with the sample count of the camera's target; a target whose count differs
                 // from what it renders with fails its final blit and depth copy ("Missing
-                // resolve surface"). The asset's count is the target's for this render only.
-                int restoreMsaa = 0;
-                bool raiseMsaa = own && samples > 1 && pipelineMsaa != null;
-                if (raiseMsaa) {
-                    camera.allowMSAA = true;
-                    restoreMsaa = (int)pipelineMsaa.GetValue(pipeline);
-                    pipelineMsaa.SetValue(pipeline, samples);
-                }
+                // resolve surface"). An asset with MSAA off is switched on for this render only.
+                bool urpMsaa = own && samples > 1 && pipelineMsaa != null;
+                if (urpMsaa) camera.allowMSAA = true;
+                int restoreMsaa = urpMsaa ? (int)pipelineMsaa.GetValue(pipeline) : 0;
+                bool raiseMsaa = urpMsaa && restoreMsaa <= 1;
+                if (raiseMsaa) pipelineMsaa.SetValue(pipeline, samples);
                 try { utility.Render(true); }
                 finally { if (raiseMsaa) pipelineMsaa.SetValue(pipeline, restoreMsaa); }
                 if (own && samples > 1) offscreen.ResolveAntiAliasedSurface(target);
@@ -213,7 +212,7 @@ namespace SashaRX.UnityMeshLab
 
         // The frame target matching the preview utility's: kept across frames and replaced
         // only when the size, format or sample count changes. A temporary per frame would
-        // leave one differently sized 8x texture in Unity's pool per repaint of a resize
+        // leave one differently sized multisampled texture in Unity's pool per repaint of a resize
         // drag, which the pool frees only after several frames.
         bool Offscreen(RenderTexture target, int samples)
         {
