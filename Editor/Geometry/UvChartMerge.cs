@@ -105,11 +105,14 @@ namespace SashaRX.UnityMeshLab
             var indicesSnapshot = geometry.indices;
             UvAtlasDiagnostics.Log(geometry, "merge-baseline", token);
             var packingBaseline = UvPackingQuality.Measure(geometry, token);
+            // Outside the try: a probe past the last accepted checkpoint can throw (a
+            // refused re-pack, a residual overlap), and that must not discard the
+            // checkpoint the gates already passed.
+            RemeshNative.Geometry bestCandidate = null;
             try
             {
                 int mergeLimit = int.MaxValue;
                 int acceptedLimit = 0, rejectedLimit = int.MaxValue;
-                RemeshNative.Geometry bestCandidate = null;
                 // Packing is discontinuous: dropping half the joins and accepting
                 // the first passing atlas leaves many avoidable seams. Keep every
                 // passing checkpoint and probe nearer the rejected merge count.
@@ -180,6 +183,14 @@ namespace SashaRX.UnityMeshLab
             catch (Exception error)
             {
                 RestoreGeometry();
+                if (bestCandidate != null)
+                {
+                    CopyBuffers(bestCandidate, geometry);
+                    UvtLog.Warn("[Remesh] Chart merge probe failed; keeping the last validated checkpoint. " + error.Message);
+                    UvtLog.Info(UvtLog.Category.RemeshDiag,
+                        $"[UV] merge-strategy-candidate: {chartCountSnapshot} → {geometry.chartCount} islands; best validated checkpoint kept after a failed probe.");
+                    return;
+                }
                 UvtLog.Warn("[Remesh] Chart merge candidate rejected; restoring its baseline before strategy selection. " + error.Message);
                 UvtLog.Info(UvtLog.Category.RemeshDiag,
                     $"[UV] merge-rollback: restored original UV/chart/tangent arrays; final charts={chartCountSnapshot}, small={smallChartSnapshot}.");
@@ -896,6 +907,9 @@ namespace SashaRX.UnityMeshLab
             uint[] faceMaterials, uint resolution, uint padding, int rotateCharts, int rotateToAxis,
             int blockAlign, int bruteForce)
         {
+            // Every pack attempt would write its inputs to disk otherwise: Verbose only,
+            // like the remesh and unwrap captures.
+            if (UvtLog.Current < UvtLog.Level.Verbose || !UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag)) return;
             try
             {
                 string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "meshlab-uvmerge");
@@ -921,7 +935,7 @@ namespace SashaRX.UnityMeshLab
                 stale.Sort(StringComparer.OrdinalIgnoreCase);
                 for (int i = 0; i < stale.Count - 5; ++i)
                     System.IO.File.Delete(stale[i]);
-                UvtLog.Info("[Remesh] Chart merge re-pack inputs captured to " + path);
+                UvtLog.Verbose("[Remesh] Chart merge re-pack inputs captured to " + path);
             }
             catch (Exception error)
             {

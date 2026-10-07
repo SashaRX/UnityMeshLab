@@ -25,8 +25,9 @@ merge could spend substantially less of the texture and redistribute texel densi
   bounded deterministic search, not a global layout optimum. It adds repack calls
   when full merging is harmful. Native session safety/4x oversampling stay unchanged.
 - Info diagnostics print `uvArea`, `chartDensityCV`, `merge-packing-gate` and retries.
-  At Info with RemeshDiag enabled, `unwrap_*.bin` also stores exact source positions,
-  indices and settings in `%TEMP%/meshlab-uvmerge`; only the last five captures remain.
+  At Verbose with RemeshDiag enabled, `unwrap_*.bin` also stores exact source positions,
+  indices and settings in `%TEMP%/meshlab-uvmerge` (the remesh and re-pack captures
+  need the same level); only the last five captures remain.
   Existing repack captures contain UVs only and cannot reproduce source simplification.
 
 ## Production measurements

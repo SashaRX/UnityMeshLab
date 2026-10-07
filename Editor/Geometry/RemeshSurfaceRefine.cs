@@ -52,13 +52,15 @@ namespace SashaRX.UnityMeshLab
             foreach (var point in sourcePositions) { low = Vector3.Min(low, point); high = Vector3.Max(high, point); }
             var span = high - low;
             float cell = Mathf.Max(span.x, Mathf.Max(span.y, span.z)) / settings.voxelResolution;
+            // The source's BVH, face normals and feature edges serve every pass below.
+            var source = new Source(sourcePositions, sourceIndices, token);
             Report pre = default;
-            var prepared = Timed("pre-refinement", () => Apply(input, sourcePositions, sourceIndices, cell, token, out pre));
+            var prepared = Timed("pre-refinement", () => Apply(input, sourcePositions, sourceIndices, cell, token, out pre, source));
             Log(pre, cell, "before simplify");
             var candidate = ReferenceEquals(input, prepared) ? baseline :
                 Timed("native refined collapse", () => RemeshNative.Simplify(prepared, settings, token, out collapseError));
             error = collapseError;
-            var bvh = new TriangleBvh(sourcePositions, sourceIndices);
+            var bvh = source.bvh;
             float triangleLimit = Math.Max(baseline.TriangleCount * 1.1f, baseline.TriangleCount + 2);
             bool exceedsTriangleBudget = candidate.TriangleCount > triangleLimit;
             string collapseReason = null;
@@ -70,17 +72,17 @@ namespace SashaRX.UnityMeshLab
                 candidate = baseline; error = baselineError;
             }
             Report post = default;
-            var result = Timed("post-refinement", () => Apply(candidate, sourcePositions, sourceIndices, cell, token, out post));
+            var result = Timed("post-refinement", () => Apply(candidate, sourcePositions, sourceIndices, cell, token, out post, source));
             Log(post, cell, "after simplify");
             Report triangles = default;
-            var aligned = Timed("source-aligned triangulation", () => Retriangulate(result, sourcePositions, sourceIndices, cell, token, out triangles));
+            var aligned = Timed("source-aligned triangulation", () => RetriangulateCore(result, sourcePositions, sourceIndices, cell, token, false, out triangles, source));
             Log(triangles, cell, "source-aligned triangulation");
             Report fit = default;
-            aligned = Timed("coarse source fit", () => FitCoarse(aligned, sourcePositions, sourceIndices, cell, token, out fit));
+            aligned = Timed("coarse source fit", () => FitCoarse(aligned, sourcePositions, sourceIndices, cell, token, out fit, source));
             Log(fit, cell, "coarse source fit");
             if (fit.moves == 0 || fit.reverted) return aligned;
             Report shape = default;
-            var regularized = Timed("fitted triangle regularization", () => RegularizeFitted(aligned, sourcePositions, sourceIndices, cell, token, out shape));
+            var regularized = Timed("fitted triangle regularization", () => RetriangulateCore(aligned, sourcePositions, sourceIndices, cell, token, true, out shape, source));
             Log(shape, cell, "fitted triangle regularization");
             return regularized;
         }
@@ -97,7 +99,9 @@ namespace SashaRX.UnityMeshLab
                 (report.reverted ? $"; reverted ({report.rejectionReason})" : "") + ". " +
                 "Simplify error measures native collapse only.");
 
-        sealed class Source
+        // The source side of every query: its BVH, face normals and sharp (feature)
+        // edges. Immutable, so one instance serves all the passes of a Simplify.
+        internal sealed class Source
         {
             internal readonly TriangleBvh bvh;
             internal readonly Vector3[] normals, positions;
@@ -149,7 +153,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static RemeshNative.IndexedMesh Apply(RemeshNative.IndexedMesh input,
-            Vector3[] sourcePositions, int[] sourceIndices, float cell, CancellationToken token, out Report report)
+            Vector3[] sourcePositions, int[] sourceIndices, float cell, CancellationToken token, out Report report, Source source = null)
         {
             token.ThrowIfCancellationRequested();
             report = default;
@@ -169,7 +173,7 @@ namespace SashaRX.UnityMeshLab
             // fitting cannot create faces that the next native collapse deletes.
             float minCross = extent * extent * 4.76837158203125e-7f;
             report.meanQualityBefore = MeanQuality(p, ix);
-            var source = new Source(sourcePositions, sourceIndices, token);
+            source ??= new Source(sourcePositions, sourceIndices, token);
             var normals = MeshGeometry.AveragedNormals(p, ix, token);
             var fans = new List<int>[p.Length]; var neighbours = new SortedSet<int>[p.Length];
             var locked = new bool[p.Length]; var feature = new bool[p.Length];
@@ -358,14 +362,14 @@ namespace SashaRX.UnityMeshLab
         // Relocate coarse vertices by the error of their whole one-ring, rather
         // than projecting each vertex independently and accepting all motion at once.
         internal static RemeshNative.IndexedMesh FitCoarse(RemeshNative.IndexedMesh input,
-            Vector3[] sourcePositions, int[] sourceIndices, float cell, CancellationToken token, out Report report)
+            Vector3[] sourcePositions, int[] sourceIndices, float cell, CancellationToken token, out Report report, Source source = null)
         {
             token.ThrowIfCancellationRequested(); report = default;
             if (!(cell > 0) || !float.IsFinite(cell) || input.TriangleCount == 0 || sourceIndices.Length == 0) return input;
             var before = RemeshTopology.Inspect(input.positions, input.indices, token);
             if (!before.Valid || new HashSet<Vector3>(input.positions).Count != input.positions.Length) return input;
             var p = (Vector3[])input.positions.Clone(); var ix = input.indices;
-            var source = new Source(sourcePositions, sourceIndices, token);
+            source ??= new Source(sourcePositions, sourceIndices, token);
             var fans = new List<int>[p.Length]; var neighbours = new SortedSet<int>[p.Length];
             var locked = new bool[p.Length];
             for (int v = 0; v < p.Length; v++) { fans[v] = new List<int>(); neighbours[v] = new SortedSet<int>(); }
@@ -424,11 +428,14 @@ namespace SashaRX.UnityMeshLab
                             trials[candidateIndex * 3 + trial] = (true, next, measured.meanSquared, measured.max);
                         }
                     });
+                    // A flag, not Vector3's approximate ==: a trial within its 1e-5 tolerance
+                    // of the original is still a move that passed the gates above.
+                    bool moved = false;
                     foreach (var trial in trials) {
                         if (!trial.valid || trial.meanSquared >= best.meanSquared * .99) continue;
-                        best = (trial.meanSquared, trial.max); bestPoint = trial.point;
+                        best = (trial.meanSquared, trial.max); bestPoint = trial.point; moved = true;
                     }
-                    if (bestPoint == original) continue;
+                    if (!moved) continue;
                     p[v] = bestPoint; report.moves++;
                 }
             }
@@ -491,7 +498,7 @@ namespace SashaRX.UnityMeshLab
             => RetriangulateCore(input, sourcePositions, sourceIndices, cell, token, true, out report);
 
         static RemeshNative.IndexedMesh RetriangulateCore(RemeshNative.IndexedMesh input,
-            Vector3[] sourcePositions, int[] sourceIndices, float cell, CancellationToken token, bool regularize, out Report report)
+            Vector3[] sourcePositions, int[] sourceIndices, float cell, CancellationToken token, bool regularize, out Report report, Source source = null)
         {
             token.ThrowIfCancellationRequested(); report = default;
             if (!(cell > 0) || !float.IsFinite(cell) || input.TriangleCount == 0 || sourceIndices.Length == 0) return input;
@@ -503,7 +510,7 @@ namespace SashaRX.UnityMeshLab
             var span = high - low; float extent = Mathf.Max(span.x, Mathf.Max(span.y, span.z)) + cell * .7f;
             float minCross = extent * extent * 4.76837158203125e-7f;
             report.meanQualityBefore = MeanQuality(p, ix);
-            var source = new Source(sourcePositions, sourceIndices, token);
+            source ??= new Source(sourcePositions, sourceIndices, token);
             for (int pass = 0; pass < 4; pass++) report.flips += Flip(p, ix, source, cell, minCross, token, true, regularize);
             report.meanQualityAfter = MeanQuality(p, ix);
             if (report.flips == 0) return input;
