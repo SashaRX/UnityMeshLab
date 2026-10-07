@@ -311,11 +311,17 @@ namespace SashaRX.UnityMeshLab
                     totalCount++;
                     string sourceFbxPath = kv.Key;
                     var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
-                    if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath)) continue;
+                    if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath))
+                    {
+                        MarkUnsaved(kv.Value);
+                        continue;
+                    }
 
                     RestoreAllPreviews();
                     if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
                         okCount++;
+                    else
+                        MarkUnsaved(kv.Value);
                 }
             }
             finally { EndSourceSaves(); }
@@ -479,19 +485,40 @@ namespace SashaRX.UnityMeshLab
         // A source re-save leaves the entries holding copies of what the file now has: the
         // copies are freed and the scene reloaded. Within a save of several files that waits
         // for the last one, since the groups still to be written hold the same entries.
-        bool sourceSavesOpen, sceneReloadPending;
+        // A file of the batch that was not written (cancelled, refused, failed) while its
+        // entries hold working copies keeps them: they are the only record of that work, so
+        // the batch then ends without freeing or reloading anything.
+        bool sourceSavesOpen, sceneReloadPending, workLeftUnsaved;
 
         void BeginSourceSaves()
         {
             sourceSavesOpen = true;
-            sceneReloadPending = false;
+            sceneReloadPending = workLeftUnsaved = false;
         }
+
+        void MarkUnsaved(List<(MeshEntry entry, Mesh resultMesh)> group)
+        {
+            if (group.Any(p => HoldsWorkingCopy(p.entry))) workLeftUnsaved = true;
+        }
+
+        static bool HoldsWorkingCopy(MeshEntry e)
+            => e != null && (e.repackedMesh != null || e.transferredMesh != null
+                || (e.originalMesh != null && e.originalMesh != e.fbxMesh && !EditorUtility.IsPersistent(e.originalMesh)));
 
         void EndSourceSaves()
         {
             sourceSavesOpen = false;
             if (!sceneReloadPending) return;
             sceneReloadPending = false;
+            if (workLeftUnsaved)
+            {
+                UvtLog.Warn("[FBX Export] Not every file of this save was written; the working copies stay loaded so nothing unsaved is lost. " +
+                            "Save again to finish (the files already written keep what they got).");
+                standaloneRelinks.Clear();
+                RestoreWorkingCopiesToScene();
+                AfterWrite?.Invoke();
+                return;
+            }
             AfterSourceSave();
         }
 
