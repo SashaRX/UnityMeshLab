@@ -451,7 +451,10 @@ namespace SashaRX.UnityMeshLab
                     if (!unchanged)
                     {
                         donor.tangents = tangents; donor.frameNormals = mesh.normals; any = true;
-                        donor.tangentsFollowNormals = donor.normals != null && imported != null && imported.tangents.SequenceEqual(tangents);
+                        // Under a normals-only save the tangents only follow the normals, whatever
+                        // can be compared: a file without a frame gets none.
+                        donor.tangentsFollowNormals = donor.normals != null
+                            && (!tangentIntent || imported != null && imported.tangents.SequenceEqual(tangents));
                     }
                 }
                 else if (!tangentIntent)
