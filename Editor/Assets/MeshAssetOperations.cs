@@ -542,7 +542,7 @@ namespace SashaRX.UnityMeshLab
                     written = FbxChannelWrite.Write(sourceFbxPath, entries, FbxChannelWrite.Supported, outputFbxPath,
                         isVariant ? null : ctx?.LodGroup, plan);
                 }
-                catch (FbxStructureRefusal refusal)
+                catch (FbxStructureRefusalException refusal)
                 {
                     written = ExportAfterRefusal(sourceFbxPath, kv.Value, entries, outputFbxPath, overwriteSource, refusal.Message);
                     if (written) okCount++;

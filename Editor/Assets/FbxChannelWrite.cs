@@ -84,7 +84,7 @@ namespace SashaRX.UnityMeshLab
             bool swapUv = importer != null && importer.swapUVChannels;
             bool generatedUv1 = importer != null && importer.generateSecondaryUV;
             // Meshes the structure step writes whole are not channel donors.
-            var skip = hasStructure ? structure.WholeMeshNames : null;
+            var skip = hasStructure ? structure.WholeMeshNames() : null;
             var donors = CaptureDonors(entries, intent, generatedUv1, false, skip);
             // Writing UV1 switches 'Generate Lightmap UVs' off for the whole model, so every
             // mesh's generated UV1 goes into the file with it, edited or not.
@@ -136,7 +136,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info($"[FBX Export] '{Path.GetFileName(sourceFbxPath)}': nothing changed; file left as is.");
                 return false;
             }
-            if (bakeUv1 && uv1Written) RequireEveryUv1(sourceFbxPath, donors, hasStructure ? structure.WholeMeshNames : null, importedNames);
+            if (bakeUv1 && uv1Written) RequireEveryUv1(sourceFbxPath, donors, hasStructure ? structure.WholeMeshNames() : null, importedNames);
 
             // The sidecar's UV2 replay is held off for the import that follows only when that
             // import brings a UV1 written here; otherwise the sidecar still applies.

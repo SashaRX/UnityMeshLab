@@ -29,9 +29,9 @@ using Object = UnityEngine.Object;
 namespace SashaRX.UnityMeshLab
 {
     /// <summary>A structure change the FBX document cannot take as asked; the file is left as it was.</summary>
-    internal sealed class FbxStructureRefusal : InvalidOperationException
+    internal sealed class FbxStructureRefusalException : InvalidOperationException
     {
-        public FbxStructureRefusal(string message) : base(message) { }
+        public FbxStructureRefusalException(string message) : base(message) { }
     }
 
     /// <summary>What a save adds to or replaces in one FBX beyond per-vertex channels.</summary>
@@ -52,7 +52,7 @@ namespace SashaRX.UnityMeshLab
         public bool IsEmpty => lods.Count == 0 && reshaped.Count == 0 && collisions.Count == 0 && refusals.Count == 0;
 
         /// <summary>Meshes written whole by the structure step; the channel step leaves them out.</summary>
-        internal ICollection<string> WholeMeshNames => new HashSet<string>(lods.Select(l => l.name).Concat(reshaped.Select(r => r.name)), StringComparer.Ordinal);
+        internal ICollection<string> WholeMeshNames() => new HashSet<string>(lods.Select(l => l.name).Concat(reshaped.Select(r => r.name)), StringComparer.Ordinal);
 
         public void Dispose()
         {
@@ -177,12 +177,12 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Writes <paramref name="plan"/> into <paramref name="document"/>; returns the number of
         /// nodes added or meshes replaced, with one line per change in <paramref name="log"/>.
-        /// Throws <see cref="FbxStructureRefusal"/> for what cannot be placed.
+        /// Throws <see cref="FbxStructureRefusalException"/> for what cannot be placed.
         /// </summary>
         internal static int Apply(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged,
             FbxStructurePlan plan, bool swapUv, bool preserveHierarchy, int minUvSets, List<string> log)
         {
-            if (plan.refusals.Count > 0) throw new FbxStructureRefusal(plan.refusals[0]);
+            if (plan.refusals.Count > 0) throw new FbxStructureRefusalException(plan.refusals[0]);
             var scene = document.Scene;
             var references = new Dictionary<string, Reference>(StringComparer.Ordinal);
             Reference Ref(string name)
@@ -228,19 +228,19 @@ namespace SashaRX.UnityMeshLab
         static Reference Resolve(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged, string name)
         {
             if (!tagged.TryGetValue(name, out var tag))
-                throw new FbxStructureRefusal($"'{name}' is not a mesh of the FBX (or its corner tags did not survive the import)");
+                throw new FbxStructureRefusalException($"'{name}' is not a mesh of the FBX (or its corner tags did not survive the import)");
             var mesh = document.Meshes[tag.ordinal];
             if (FbxStructureEdit.HasDeformers(mesh))
-                throw new FbxStructureRefusal($"'{name}' is skinned or has blend shapes; geometry made from it cannot be placed through its import");
+                throw new FbxStructureRefusalException($"'{name}' is skinned or has blend shapes; geometry made from it cannot be placed through its import");
             var node = FbxStructureEdit.NodeOf(mesh, name)
-                ?? throw new FbxStructureRefusal($"'{name}' is instanced by several nodes and none is named after it");
+                ?? throw new FbxStructureRefusalException($"'{name}' is instanced by several nodes and none is named after it");
 
             var topology = new FbxLayerChannels.Topology(mesh);
             int relation = FbxSpaceFit.WindingRelation(topology.polygonSizes, tag.submeshCorners.SelectMany(c => c).ToArray());
             // No triangle tells (all degenerate): Unity mirrors X on import and reverses the winding.
             if (relation == 0) relation = -1;
             var fit = FbxSpaceFit.FitCorners(FbxStructureEdit.ControlPoints(mesh), topology.cornerControlPoint, tag.cornerPositions, relation, out string error)
-                ?? throw new FbxStructureRefusal($"'{name}': {error}");
+                ?? throw new FbxStructureRefusalException($"'{name}': {error}");
 
             int[] submeshMaterials = null;
             if (node.GetMaterialCount() > 0)
@@ -267,7 +267,7 @@ namespace SashaRX.UnityMeshLab
             string sourceNode = source.node.GetName();
             if (!MeshNaming.TryParseLod(sourceNode, out string sourceBase, out _) || !MeshNaming.TryParseLod(name, out string newBase, out _)
                 || !string.Equals(sourceBase, newBase, StringComparison.OrdinalIgnoreCase))
-                throw new FbxStructureRefusal(
+                throw new FbxStructureRefusalException(
                     $"'{name}' would not be grouped with '{sourceNode}': Unity groups LODs by one base name with _LOD<N> suffixes, " +
                     "and renaming the source node is the explicit hierarchy normalisation (Prefab Builder)");
             RequireSiblingRoom(scene, source, preserveHierarchy);
@@ -276,7 +276,7 @@ namespace SashaRX.UnityMeshLab
         static void RequireSiblingRoom(FbxScene scene, Reference source, bool preserveHierarchy)
         {
             if (!preserveHierarchy && FbxStructureEdit.IsSoleTopNode(scene, source.node))
-                throw new FbxStructureRefusal(
+                throw new FbxStructureRefusalException(
                     $"'{source.node.GetName()}' is the FBX's only top-level node, which Unity imports as the model root; a node next to it " +
                     "would change the imported hierarchy (normalise it in Prefab Builder first)");
         }
@@ -288,7 +288,7 @@ namespace SashaRX.UnityMeshLab
             foreach (var node in nodes)
             {
                 if (node.GetChildCount() > 0)
-                    throw new FbxStructureRefusal($"'{name}' already exists with child nodes; replacing it would drop them");
+                    throw new FbxStructureRefusalException($"'{name}' already exists with child nodes; replacing it would drop them");
                 FbxStructureEdit.RemoveSubtree(node);
             }
             return nodes.Count;
@@ -371,7 +371,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     var hull = FbxStructureEdit.AddChild(container, HullName(collision.key, i), r.node);
                     if (!FbxStructureEdit.SamePlacement(r.node, hull, true))
-                        throw new FbxStructureRefusal($"'{HullName(collision.key, i)}' does not land where '{r.node.GetName()}' is");
+                        throw new FbxStructureRefusalException($"'{HullName(collision.key, i)}' does not land where '{r.node.GetName()}' is");
                     hull.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, HullName(collision.key, i), CollisionData(collision.meshes[i], r)));
                 }
             }
