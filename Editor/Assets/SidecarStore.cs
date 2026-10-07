@@ -132,6 +132,18 @@ namespace SashaRX.UnityMeshLab
             return saved;
         }
 
+        /// <summary>Drops the UV2 entries of the named meshes from the sidecar behind <paramref name="fbxPath"/>; returns how many went.</summary>
+        internal static int RemoveEntries(string fbxPath, IEnumerable<string> meshNames)
+        {
+            var data = Load(fbxPath);
+            if (data == null || meshNames == null) return 0;
+            int removed = 0;
+            foreach (string name in meshNames)
+                if (data.Remove(name)) removed++;
+            if (removed > 0) Save(data);
+            return removed;
+        }
+
         /// <summary>
         /// Drops the UV2 entries of every sidecar behind <paramref name="fbxPaths"/>.
         /// Collision entries are kept; a sidecar left with nothing is deleted.

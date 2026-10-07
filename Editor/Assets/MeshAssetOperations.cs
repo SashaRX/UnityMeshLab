@@ -332,8 +332,14 @@ namespace SashaRX.UnityMeshLab
         void SyncPersistentSidecar(string sourceFbxPath, List<(MeshEntry entry, Mesh resultMesh)> group)
         {
             if (!PostprocessorDefineManager.IsEnabled() || SidecarStore.Load(sourceFbxPath) == null) return;
-            int saved = SidecarStore.SaveEntries(sourceFbxPath, BuildSidecarEntriesForExport(group));
-            if (saved > 0) UvtLog.Info($"[FBX Export] Updated {saved} UV2 entr(ies) in '{SidecarStore.PathFor(sourceFbxPath)}' to match the saved FBX.");
+            // A UV1 the working mesh dropped left the file too; its entry would bring it back.
+            const UnityEngine.Rendering.VertexAttribute uv1 = UnityEngine.Rendering.VertexAttribute.TexCoord1;
+            var dropped = group.Where(p => p.entry.fbxMesh != null && p.resultMesh != null && p.resultMesh != p.entry.fbxMesh
+                && p.entry.fbxMesh.HasVertexAttribute(uv1) && !p.resultMesh.HasVertexAttribute(uv1)).ToList();
+            int removed = SidecarStore.RemoveEntries(sourceFbxPath, dropped.Select(p => p.entry.fbxMesh.name));
+            int saved = SidecarStore.SaveEntries(sourceFbxPath, BuildSidecarEntriesForExport(group.Except(dropped).ToList()));
+            if (saved + removed > 0)
+                UvtLog.Info($"[FBX Export] Updated {saved} and removed {removed} UV2 entr(ies) in '{SidecarStore.PathFor(sourceFbxPath)}' to match the saved FBX.");
         }
 
         static bool TryChooseNarrowExportPath(string sourceFbxPath, FbxExportIntent intent, bool overwriteSource, out string outputFbxPath)

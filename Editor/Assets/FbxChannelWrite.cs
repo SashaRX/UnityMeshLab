@@ -47,6 +47,8 @@ namespace SashaRX.UnityMeshLab
             public readonly Vector2[][] uvs = new Vector2[8][];
             /// <summary>UV channels the write leaves alone, for telling coincident candidates apart.</summary>
             public readonly Vector2[][] signatureUvs = new Vector2[8][];
+            /// <summary>Colours the save does not write, compared like <see cref="signatureUvs"/>.</summary>
+            public Color32[] signatureColors;
             /// <summary>Channels the import has and the working mesh no longer does (Cleanup removed them).</summary>
             public readonly bool[] removedUvs = new bool[8];
             public bool removedColors;
@@ -150,8 +152,9 @@ namespace SashaRX.UnityMeshLab
             if (bakeUv1 && uv1Written) RequireEveryUv1(sourceFbxPath, donors, hasStructure ? structure.WholeMeshNames() : null, importedNames);
 
             // The sidecar's UV2 replay is held off for the import that follows only when that
-            // import brings a UV1 written here; otherwise the sidecar still applies.
-            if (uv1Written) Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
+            // import brings a UV1 written (or removed) here; otherwise the sidecar still applies.
+            bool uv1Changed = uv1Written || channelsWritten.Contains("UV1 (removed)");
+            if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
             try { FbxExport.ReplaceAtomically(targetFbxPath, temp => document.Save(Path.GetFullPath(temp))); }
             catch { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
             if (!isVariant && uv1Written) KeepWrittenUv1(sourceFbxPath);
@@ -167,12 +170,22 @@ namespace SashaRX.UnityMeshLab
                 Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath);
                 return true;
             }
-            // The postprocessor consumes the overwrite marker; an import that throws before it
-            // runs must not leave it for a later, unrelated import.
-            try { AssetDatabase.ImportAsset(targetFbxPath, ImportAssetOptions.ForceUpdate); }
-            finally { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); }
-            if (isVariant) ImportLikeSource(sourceFbxPath, targetFbxPath, uv1Written);
-            else if (sceneRoot != null) FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, sceneRoot);
+            // The file is written from here on: an import that fails (a third-party
+            // postprocessor) is reported, and the caller still finishes the save (sidecar,
+            // scene). The postprocessor consumes the overwrite marker; an import that throws
+            // before it runs must not leave it for a later, unrelated import.
+            try
+            {
+                try { AssetDatabase.ImportAsset(targetFbxPath, ImportAssetOptions.ForceUpdate); }
+                finally { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); }
+                if (isVariant) ImportLikeSource(sourceFbxPath, targetFbxPath, uv1Changed);
+                else if (sceneRoot != null) FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, sceneRoot);
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Error($"[FBX Export] '{targetFbxPath}' was written, but importing it failed: {ex.Message}. Reimport it once the cause is fixed.");
+                UvtLog.Verbose(ex.ToString());
+            }
             return true;
         }
 
@@ -222,24 +235,37 @@ namespace SashaRX.UnityMeshLab
         static Donor CaptureDonor(MeshEntry entry, FbxExportIntent intent, bool generatedUv1, bool bakeUv1)
         {
             var source = entry.originalMesh ?? entry.fbxMesh;
-            var mesh = entry.repackedMesh ?? entry.transferredMesh ?? source;
+            var working = entry.repackedMesh ?? entry.transferredMesh ?? source;
             var identity = entry.fbxMesh ?? source;
-            if (mesh == null || identity == null) return null;
+            if (working == null || identity == null) return null;
+            // A Read/Write-disabled import is untouched and edited nothing; when UV1 is baked
+            // its generated UV1 still goes into the file, read through a copy.
+            if (!working.isReadable && !bakeUv1) return null;
+            var mesh = MeshAccess.Readable(working, out bool isCopy);
+            try { return CaptureDonor(entry, identity.name, working, mesh, intent, generatedUv1, bakeUv1); }
+            finally { if (isCopy) UnityEngine.Object.DestroyImmediate(mesh); }
+        }
 
-            var donor = new Donor { name = identity.name };
+        // working: the entry's mesh; mesh: the same, readable.
+        static Donor CaptureDonor(MeshEntry entry, string name, Mesh working, Mesh mesh, FbxExportIntent intent, bool generatedUv1, bool bakeUv1)
+        {
+            var donor = new Donor { name = name };
             // A channel the working copy holds exactly as the current import does was not
             // edited here (e.g. lightmap UVs Unity generates on import): leave it out. A
             // mesh edited in place (the working copy is the asset mesh) cannot be told
             // apart, so its channels go on to the per-corner comparison.
-            var imported = entry.fbxMesh != null && entry.fbxMesh != mesh && entry.fbxMesh.isReadable
+            bool inPlace = working == entry.fbxMesh;
+            var imported = entry.fbxMesh != null && !inPlace && entry.fbxMesh.isReadable
                 && entry.fbxMesh.vertexCount == mesh.vertexCount ? entry.fbxMesh : null;
             // The asset mesh's UV1 is Unity's own when 'Generate Lightmap UVs' is on: not an
             // edit, and no signature either (the file holds something else there).
-            bool skipUv1 = generatedUv1 && mesh == entry.fbxMesh && !bakeUv1;
+            bool skipUv1 = generatedUv1 && inPlace && !bakeUv1;
             bool any = CaptureUvs(donor, mesh, imported, intent, skipUv1, generatedUv1, bakeUv1);
             if ((intent & FbxExportIntent.VertexColors) != 0) any |= CaptureColors(donor, mesh, imported);
-            any |= CaptureRemovals(donor, mesh, entry.fbxMesh, intent, generatedUv1);
+            any |= CaptureRemovals(donor, mesh, inPlace ? null : entry.fbxMesh, intent, generatedUv1);
             if (!any) return null;
+            // Colours not written still tell coincident polygons apart.
+            if (donor.colors == null && mesh.HasVertexAttribute(VertexAttribute.Color)) donor.signatureColors = mesh.colors32;
 
             var vertices = mesh.vertices;
             donor.positions = new float[vertices.Length * 3];
@@ -354,16 +380,25 @@ namespace SashaRX.UnityMeshLab
             if (!AssetDatabase.IsValidFolder(TempFolder)) AssetDatabase.CreateFolder("Assets", TempFolder.Substring("Assets/".Length));
             string tempPath = $"{TempFolder}/corner_tags_{Guid.NewGuid():N}.fbx";
             var tagChannels = new Dictionary<int, int>();
-            using (var tagDocument = FbxSourceDocument.Load(Path.GetFullPath(sourceFbxPath)))
-            {
-                for (int i = 0; i < tagDocument.Meshes.Count; i++)
-                    tagChannels[i] = FbxUvSet(FbxLayerChannels.AddCornerTag(tagDocument.Meshes[i], i), swapUv);
-                tagDocument.Save(Path.GetFullPath(tempPath));
-            }
-
+            // A mesh with all eight UV sets gives its last one to the tag; that set's values come
+            // from the file instead, per corner, so the corner matching still sees them.
+            var takenSets = new Dictionary<int, double[]>();
             Uv2AssetPostprocessor.bypassPaths.Add(tempPath);
             try
             {
+                using (var tagDocument = FbxSourceDocument.Load(Path.GetFullPath(sourceFbxPath)))
+                {
+                    for (int i = 0; i < tagDocument.Meshes.Count; i++)
+                    {
+                        var mesh = tagDocument.Meshes[i];
+                        var sets = FbxLayerChannels.UvElements(mesh);
+                        if (sets.Count >= FbxLayerChannels.MaxUnityUvChannels)
+                            takenSets[i] = FbxLayerChannels.ReadUv(sets[FbxLayerChannels.MaxUnityUvChannels - 1], new FbxLayerChannels.Topology(mesh));
+                        tagChannels[i] = FbxUvSet(FbxLayerChannels.AddCornerTag(mesh, i), swapUv);
+                    }
+                    tagDocument.Save(Path.GetFullPath(tempPath));
+                }
+
                 AssetDatabase.ImportAsset(tempPath, ImportAssetOptions.ForceSynchronousImport);
                 var importer = AssetImporter.GetAtPath(tempPath) as ModelImporter;
                 var source = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
@@ -383,14 +418,21 @@ namespace SashaRX.UnityMeshLab
                 {
                     importedNames.Add(mesh.name);
                     var tag = ReadTags(mesh, tagChannels);
-                    if (tag != null && !tagged.ContainsKey(mesh.name)) tagged[mesh.name] = tag;
+                    if (tag == null || tagged.ContainsKey(mesh.name)) continue;
+                    if (takenSets.TryGetValue(tag.ordinal, out var values)) tag.uvs[tagChannels[tag.ordinal]] = PerCornerUvs(values, tag.cornerPositions.Length / 3);
+                    tagged[mesh.name] = tag;
                 }
                 return tagged;
             }
             finally
             {
                 Uv2AssetPostprocessor.bypassPaths.Remove(tempPath);
-                AssetDatabase.DeleteAsset(tempPath);
+                // A copy that failed before its import is a plain file the database does not know.
+                if (!AssetDatabase.DeleteAsset(tempPath))
+                {
+                    File.Delete(Path.GetFullPath(tempPath));
+                    File.Delete(Path.GetFullPath(tempPath + ".meta"));
+                }
                 if (AssetDatabase.IsValidFolder(TempFolder) && AssetDatabase.FindAssets(string.Empty, new[] { TempFolder }).Length == 0)
                     AssetDatabase.DeleteAsset(TempFolder);
             }
@@ -425,6 +467,14 @@ namespace SashaRX.UnityMeshLab
         {
             whole = Mathf.RoundToInt(f);
             return Mathf.Abs(f - whole) < 1e-3f;
+        }
+
+        // The file's per-corner UV values as Unity imports them (single precision).
+        static Vector2[] PerCornerUvs(double[] values, int corners)
+        {
+            var uvs = new Vector2[corners];
+            for (int c = 0; c < corners && c * 2 + 1 < values.Length; c++) uvs[c] = new Vector2((float)values[c * 2], (float)values[c * 2 + 1]);
+            return uvs;
         }
 
         static Tagged BuildTagged(Mesh mesh, int tagChannel, int ordinal, List<Vector2> tags)
@@ -614,7 +664,8 @@ namespace SashaRX.UnityMeshLab
                 if (donor.signatureUvs[ch] == null || tag.uvs[ch] == null) continue;
                 if (!donor.signatureUvs[ch][vertex].Equals(tag.uvs[ch][corner])) return false;
             }
-            return true;
+            return donor.signatureColors == null || tag.colors32 == null || corner >= tag.colors32.Length
+                || Same(donor.signatureColors[vertex], tag.colors32[corner]);
         }
 
         static bool SameWrittenValues(Donor donor, int a, int b)
@@ -664,15 +715,15 @@ namespace SashaRX.UnityMeshLab
 
         // A variant is a new file: import it the way its source is imported, so its meshes
         // carry the same names and layout as the source's — except a written UV1 is kept.
-        static void ImportLikeSource(string sourceFbxPath, string variantFbxPath, bool uv1Written)
+        static void ImportLikeSource(string sourceFbxPath, string variantFbxPath, bool uv1Changed)
         {
             var source = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             var variant = AssetImporter.GetAtPath(variantFbxPath) as ModelImporter;
             if (source == null || variant == null) return;
             new Preset(source).ApplyTo(variant);
-            // The variant's UV1 is the one just written: Unity must not regenerate it, and a
-            // sidecar at the variant's path must not replay over it.
-            if (uv1Written)
+            // The variant's UV1 is the one just written (or removed): Unity must not regenerate
+            // it, and a sidecar at the variant's path must not replay over it.
+            if (uv1Changed)
             {
                 variant.generateSecondaryUV = false;
                 Uv2AssetPostprocessor.fbxOverwritePaths.Add(variantFbxPath);

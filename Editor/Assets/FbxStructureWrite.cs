@@ -104,6 +104,12 @@ namespace SashaRX.UnityMeshLab
             if (rematerialled > 0)
                 plan.refusals.Add($"{rematerialled} renderer(s) of '{file}' have changed materials; the document save does not rewrite material assignments");
             plan.collisions.AddRange(SidecarStore.CollisionMeshes(fbxPath));
+            // Collision meshes Cleanup flagged (UVs or colours) are rewritten clean when the
+            // sidecar replaces them; any other is the rebuild's to strip.
+            var replaced = new HashSet<string>(plan.collisions.SelectMany(NodeNames), StringComparer.Ordinal);
+            var flagged = FbxExport.CollisionMeshesWithSurfaceData(fbxPath).Where(n => !replaced.Contains(n)).ToList();
+            if (flagged.Count > 0)
+                plan.refusals.Add($"{string.Join(", ", flagged.Select(n => $"'{n}'"))} in '{file}' carry UVs or vertex colours that collision meshes should not have; the rebuild strips them");
             return plan;
         }
 
@@ -127,8 +133,9 @@ namespace SashaRX.UnityMeshLab
         }
 
         // Normals or tangents a channel save cannot write: the attribute was added or removed
-        // (Cleanup), or the normals changed on a working copy that kept the import's vertices.
-        // Tangent values are not compared: tools recompute them, which is no edit of the file's.
+        // (Cleanup), or the values changed on a working copy that kept the import's vertices.
+        // Tangent values count only when the importer reads the file's (Import); otherwise
+        // Unity computes them on every import and a recomputed set is no edit of the file.
         internal static bool ShadingChanged(Mesh imported, Mesh result)
         {
             if (imported == null || result == null || imported == result) return false;
@@ -137,7 +144,10 @@ namespace SashaRX.UnityMeshLab
             if (!imported.isReadable || !result.isReadable || imported.vertexCount != result.vertexCount) return false;
             // Only an unrenumbered copy pairs vertices by index.
             if (!imported.vertices.SequenceEqual(result.vertices)) return false;
-            return !imported.normals.SequenceEqual(result.normals);
+            if (!imported.normals.SequenceEqual(result.normals)) return true;
+            return AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(imported)) is ModelImporter importer
+                && importer.importTangents == ModelImporterTangents.Import
+                && !imported.tangents.SequenceEqual(result.tangents);
         }
 
         // The scene renderer's materials differ from the model's (e.g. after Cleanup's material
@@ -486,6 +496,10 @@ namespace SashaRX.UnityMeshLab
 
         static string HullName(string key, int hull) => $"{key}_COL_Hull{hull}";
 
+        // The mesh nodes a collision entry writes.
+        static IEnumerable<string> NodeNames((string key, List<Mesh> meshes, bool convex) collision)
+            => IsSingle(collision) ? new[] { collision.key + "_COL" } : Enumerable.Range(0, collision.meshes.Count).Select(i => HullName(collision.key, i));
+
         static int WriteCollision(FbxScene scene, Reference r, (string key, List<Mesh> meshes, bool convex) collision, List<string> log)
         {
             string name = collision.key + "_COL";
@@ -535,6 +549,8 @@ namespace SashaRX.UnityMeshLab
             {
                 string name = single ? collision.key + "_COL" : HullName(collision.key, i);
                 if (!tagged.TryGetValue(name, out var tag) || !SameGeometry(tag, collision.meshes[i])) return false;
+                // UVs or colours on the stored collider: rewritten without them.
+                if (tag.uvs.Any(uv => uv != null) || tag.colors != null) return false;
             }
             return true;
         }
