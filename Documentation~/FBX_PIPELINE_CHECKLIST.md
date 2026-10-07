@@ -280,6 +280,7 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   overlapping or mirrored shells are never welded on a DCC re-import.
 * Vertex colours are read from and written to layer 0 only — the only
   colour layer Unity's importer reads (TS_UnityExport_SDK checklist I4).
+  Written values are clamped to `[0, 1]` (§4); stored ones are left as they are.
 * Which Unity vertex a corner became is recovered from a throwaway import
   of a tagged copy (corner index in an extra UV set, same importer settings,
   `Assets/__MeshLabTemp`, deleted afterwards, also when it fails). A mesh with
@@ -299,16 +300,21 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   MeshLab) is refused; untouched Read/Write-disabled meshes are read through
   `MeshAccess` for it. The sidecar's UV2 replay is held off only for an import
   that brings a written or removed UV1, and a persistent sidecar is updated to
-  the saved UVs after the save (a removed UV1 drops its entry). An import that
-  fails after the file is written is reported, and the save still finishes.
+  the saved UVs after the save (a removed UV1 drops its entry; the entries are
+  built before the write, from the meshes the file was read with). An import
+  that fails after the file is written is reported, and the save still
+  finishes. A standalone renderer (no LODGroup) is relinked to its reimported
+  mesh.
 * "Unchanged geometry" means the same faces per submesh (position loops,
   same winding, any order or vertex numbering), not just the same counts.
 * A channel the working mesh dropped (Cleanup's attribute removal) is removed
   from the file: the colour set, or the last UV sets. Removing a UV set before
   one that stays would renumber it and is refused.
-* Changed renderer materials (Cleanup's material fixes), changed normals or
-  tangents (an attribute added or removed, normals edited on an unrenumbered
-  copy, or tangents edited where the importer imports them) and `_COL` meshes
+* Changed renderer materials (Cleanup's material fixes; a renderer that is no
+  prefab instance is compared with the model's renderer of the same mesh, unless
+  the importer imports no materials), changed normals or tangents (an attribute
+  added or removed, or values that differ at the same position, renumbered or
+  not; tangents only where the importer imports them) and `_COL` meshes
   carrying UVs or colours (Cleanup sends these to the overwrite) are not
   channel work: the hub's save names them and offers the rebuild.
 * The hub's Overwrite / Export New FBX (`All`) takes this path when the work

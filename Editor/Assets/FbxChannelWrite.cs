@@ -43,8 +43,9 @@ namespace SashaRX.UnityMeshLab
             public readonly Vector2[][] uvs = new Vector2[8][];
             /// <summary>UV channels the write leaves alone, for telling coincident candidates apart.</summary>
             public readonly Vector2[][] signatureUvs = new Vector2[8][];
-            /// <summary>Colours the save does not write, compared like <see cref="signatureUvs"/>.</summary>
-            public Color32[] signatureColors;
+            /// <summary>Colours the save does not write, compared like <see cref="signatureUvs"/>: bytes for an 8-bit stream, floats otherwise.</summary>
+            public Color32[] signatureColors32;
+            public Color[] signatureColors;
             /// <summary>Channels the import has and the working mesh no longer does (Cleanup removed them).</summary>
             public readonly bool[] removedUvs = new bool[8];
             public bool removedColors;
@@ -234,7 +235,11 @@ namespace SashaRX.UnityMeshLab
             any |= CaptureRemovals(donor, mesh, inPlace ? null : entry.fbxMesh, intent, generatedUv1);
             if (!any) return null;
             // Colours not written still tell coincident polygons apart.
-            if (donor.colors == null && mesh.HasVertexAttribute(VertexAttribute.Color)) donor.signatureColors = mesh.colors32;
+            if (donor.colors == null && mesh.HasVertexAttribute(VertexAttribute.Color))
+            {
+                if (mesh.GetVertexAttributeFormat(VertexAttribute.Color) == VertexAttributeFormat.UNorm8) donor.signatureColors32 = mesh.colors32;
+                else donor.signatureColors = mesh.colors;
+            }
 
             var vertices = mesh.vertices;
             donor.positions = new float[vertices.Length * 3];
@@ -539,7 +544,13 @@ namespace SashaRX.UnityMeshLab
                 bool comparable = exists && tag.colors != null;
                 int colorCorners = WriteChannel(donor.name, "vertex colours", topology, cornerToVertex, !exists, 4,
                     (c, v) => comparable && (donor.colorsAreBytes ? Same(tag.colors32[c], donor.colors32[v]) : tag.colors[c].Equals(donor.colors[v])),
-                    (v, values, at) => { var col = donor.colors[v]; values[at] = col.r; values[at + 1] = col.g; values[at + 2] = col.b; values[at + 3] = col.a; },
+                    // Written values are clamped to [0, 1] (checklist §4); stored ones stay as they are.
+                    (v, values, at) =>
+                    {
+                        var col = donor.colors[v];
+                        values[at] = Mathf.Clamp01(col.r); values[at + 1] = Mathf.Clamp01(col.g);
+                        values[at + 2] = Mathf.Clamp01(col.b); values[at + 3] = Mathf.Clamp01(col.a);
+                    },
                     (values, changed) => FbxLayerChannels.WriteColor(mesh, topology, values, changed));
                 if (colorCorners > 0) channelsWritten.Add("vertex colours");
                 written += colorCorners;
@@ -629,8 +640,11 @@ namespace SashaRX.UnityMeshLab
                 if (donor.signatureUvs[ch] == null || tag.uvs[ch] == null) continue;
                 if (!donor.signatureUvs[ch][vertex].Equals(tag.uvs[ch][corner])) return false;
             }
-            return donor.signatureColors == null || tag.colors32 == null || corner >= tag.colors32.Length
-                || Same(donor.signatureColors[vertex], tag.colors32[corner]);
+            if (donor.signatureColors32 != null && tag.colors32 != null && corner < tag.colors32.Length)
+                return Same(donor.signatureColors32[vertex], tag.colors32[corner]);
+            if (donor.signatureColors != null && tag.colors != null && corner < tag.colors.Length)
+                return donor.signatureColors[vertex].Equals(tag.colors[corner]);
+            return true;
         }
 
         static bool SameWrittenValues(Donor donor, int a, int b)

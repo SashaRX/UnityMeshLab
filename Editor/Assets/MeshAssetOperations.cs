@@ -328,18 +328,38 @@ namespace SashaRX.UnityMeshLab
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
         // A persistent sidecar re-applies its UV2 on every import; after a save wrote the
         // meshes' UVs into the file, its entries must hold the same UVs or the next import
-        // would bring the old ones back.
-        void SyncPersistentSidecar(string sourceFbxPath, List<(MeshEntry entry, Mesh resultMesh)> group)
+        // would bring the old ones back. The entries are built before the write, from the
+        // meshes the file was read with (the import that follows recreates them), and stored
+        // only once the write succeeded.
+        sealed class SidecarSync
         {
-            if (!PostprocessorDefineManager.IsEnabled() || SidecarStore.Load(sourceFbxPath) == null) return;
-            // A UV1 the working mesh dropped left the file too; its entry would bring it back.
+            public string fbxPath;
+            public List<MeshUv2Entry> entries;
+            public List<string> dropped;
+        }
+
+        SidecarSync PrepareSidecarSync(string fbxPath, List<(MeshEntry entry, Mesh resultMesh)> group)
+        {
+            if (!PostprocessorDefineManager.IsEnabled() || SidecarStore.Load(fbxPath) == null) return null;
+            // A UV1 the working mesh dropped leaves the file too; its entry would bring it back.
             const UnityEngine.Rendering.VertexAttribute uv1 = UnityEngine.Rendering.VertexAttribute.TexCoord1;
             var dropped = group.Where(p => p.entry.fbxMesh != null && p.resultMesh != null && p.resultMesh != p.entry.fbxMesh
                 && p.entry.fbxMesh.HasVertexAttribute(uv1) && !p.resultMesh.HasVertexAttribute(uv1)).ToList();
-            int removed = SidecarStore.RemoveEntries(sourceFbxPath, dropped.Select(p => p.entry.fbxMesh.name));
-            int saved = SidecarStore.SaveEntries(sourceFbxPath, BuildSidecarEntriesForExport(group.Except(dropped).ToList()));
+            return new SidecarSync
+            {
+                fbxPath = fbxPath,
+                entries = BuildSidecarEntriesForExport(group.Except(dropped).ToList()),
+                dropped = dropped.Select(p => p.entry.fbxMesh.name).ToList(),
+            };
+        }
+
+        static void ApplySidecarSync(SidecarSync sync)
+        {
+            if (sync == null) return;
+            int removed = SidecarStore.RemoveEntries(sync.fbxPath, sync.dropped);
+            int saved = SidecarStore.SaveEntries(sync.fbxPath, sync.entries);
             if (saved + removed > 0)
-                UvtLog.Info($"[FBX Export] Updated {saved} and removed {removed} UV2 entr(ies) in '{SidecarStore.PathFor(sourceFbxPath)}' to match the saved FBX.");
+                UvtLog.Info($"[FBX Export] Updated {saved} and removed {removed} UV2 entr(ies) in '{SidecarStore.PathFor(sync.fbxPath)}' to match the saved FBX.");
         }
 
         static bool TryChooseNarrowExportPath(string sourceFbxPath, FbxExportIntent intent, bool overwriteSource, out string outputFbxPath)
@@ -434,21 +454,21 @@ namespace SashaRX.UnityMeshLab
             bool isVariantExport = !string.IsNullOrEmpty(outputFbxPathOverride)
                 && !string.Equals(outputFbxPathOverride, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
             var list = entries as IList<MeshEntry> ?? entries.ToList();
+            // Every UV1 save leaves a persistent sidecar replaying the same: the source's, or a
+            // variant's written into the project that may already have one of its own.
+            string sidecarFbx = !intent.IncludesUv(1) ? null
+                : !isVariantExport ? sourceFbxPath
+                : outputFbxPathOverride.StartsWith("Assets/", StringComparison.Ordinal) ? outputFbxPathOverride : null;
+            var sidecar = sidecarFbx == null ? null
+                : PrepareSidecarSync(sidecarFbx, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
+            if (!isVariantExport) PrepareStandaloneRelink(sourceFbxPath);
             bool exported = FbxExport.WriteChannels(
                 sourceFbxPath, list, intent, outputFbxPathOverride,
                 FbxExport.FirstRealMaterial(ctx?.MeshEntries),
                 isVariantExport ? null : ctx?.LodGroup);
-            if (!exported) return false;
-            // A variant written into the project may already have a persistent sidecar of its own.
-            if (isVariantExport && intent.IncludesUv(1) && outputFbxPathOverride.StartsWith("Assets/", StringComparison.Ordinal))
-                SyncPersistentSidecar(outputFbxPathOverride, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
-            if (!isVariantExport)
-            {
-                // Every source save that wrote UV1 leaves a persistent sidecar replaying the same.
-                if (intent.IncludesUv(1))
-                    SyncPersistentSidecar(sourceFbxPath, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
-                AfterSourceSave();
-            }
+            if (!exported) { standaloneRelinks.Clear(); return false; }
+            ApplySidecarSync(sidecar);
+            if (!isVariantExport) AfterSourceSave();
             return true;
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
@@ -483,8 +503,42 @@ namespace SashaRX.UnityMeshLab
                 ReleaseWorkingMeshes();
                 ctx.Refresh(ctx.LodGroup);
             }
+            else if (ctx != null && ctx.StandaloneMesh)
+            {
+                // No LODGroup for the write to relink: the renderer takes its reimported mesh here.
+                var renderer = ctx.MeshEntries.FirstOrDefault(e => e?.renderer is MeshRenderer)?.renderer as MeshRenderer;
+                ReleaseWorkingMeshes();
+                RelinkStandalone();
+                if (renderer != null) ctx.RefreshStandalone(renderer);
+            }
             RestoreWorkingCopiesToScene();
             AfterWrite?.Invoke();
+        }
+
+        // A standalone renderer's filter, with the FBX and mesh name it shows, taken before the
+        // write: the import that follows recreates the mesh it points at.
+        readonly List<(MeshFilter filter, string fbxPath, string meshName)> standaloneRelinks = new List<(MeshFilter, string, string)>();
+
+        void PrepareStandaloneRelink(string fbxPath)
+        {
+            if (ctx?.LodGroup != null || ctx == null || !ctx.StandaloneMesh || ctx.MeshEntries == null) return;
+            foreach (var e in ctx.MeshEntries)
+                if (e?.meshFilter != null && e.fbxMesh != null
+                    && string.Equals(AssetDatabase.GetAssetPath(e.fbxMesh), fbxPath, StringComparison.OrdinalIgnoreCase))
+                    standaloneRelinks.Add((e.meshFilter, fbxPath, e.fbxMesh.name));
+        }
+
+        void RelinkStandalone()
+        {
+            foreach (var (filter, fbxPath, meshName) in standaloneRelinks)
+            {
+                if (filter == null) continue;
+                var fresh = AssetDatabase.LoadAllAssetsAtPath(fbxPath).OfType<Mesh>().FirstOrDefault(m => m.name == meshName);
+                if (fresh == null || filter.sharedMesh == fresh) continue;
+                Undo.RecordObject(filter, "Relink Saved Mesh");
+                filter.sharedMesh = fresh;
+            }
+            standaloneRelinks.Clear();
         }
 
         static Mesh WorkingMesh(MeshEntry e) => e.repackedMesh ?? e.transferredMesh ?? e.originalMesh ?? e.fbxMesh;
@@ -616,7 +670,8 @@ namespace SashaRX.UnityMeshLab
                 if (added > 0) reasons.Add($"{added} mesh(es) not in '{file}' yet (generated LODs)");
                 int reshaped = kv.Value.Count(p => p.entry.fbxMesh != null && GeometryDiffers(p.entry.fbxMesh, p.resultMesh));
                 if (reshaped > 0) reasons.Add($"{reshaped} mesh(es) of '{file}' with changed geometry (simplified or edited faces)");
-                int reshaded = kv.Value.Count(p => p.entry.fbxMesh != null && ShadingChanged(p.entry.fbxMesh, p.resultMesh));
+                int reshaded = kv.Value.Count(p => p.entry.fbxMesh != null && !GeometryDiffers(p.entry.fbxMesh, p.resultMesh)
+                    && ShadingChanged(p.entry.fbxMesh, p.resultMesh));
                 if (reshaded > 0) reasons.Add($"{reshaded} mesh(es) of '{file}' with changed normals or tangents");
                 int rematerialled = kv.Value.Count(p => MaterialsChanged(p.entry));
                 if (rematerialled > 0) reasons.Add($"{rematerialled} renderer(s) of '{file}' with changed materials (the file's material assignments)");
@@ -637,23 +692,50 @@ namespace SashaRX.UnityMeshLab
             if (imported == null || result == null || imported == result) return false;
             if (imported.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal) != result.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal)) return true;
             if (imported.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent) != result.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent)) return true;
-            if (!imported.isReadable || !result.isReadable || imported.vertexCount != result.vertexCount) return false;
-            // Only an unrenumbered copy pairs vertices by index.
-            if (!imported.vertices.SequenceEqual(result.vertices)) return false;
-            if (!imported.normals.SequenceEqual(result.normals)) return true;
-            return AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(imported)) is ModelImporter importer
-                && importer.importTangents == ModelImporterTangents.Import
-                && !imported.tangents.SequenceEqual(result.tangents);
+            if (!imported.isReadable || !result.isReadable) return false;
+            bool tangents = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(imported)) is ModelImporter importer
+                && importer.importTangents == ModelImporterTangents.Import;
+            var importedVertices = imported.vertices;
+            var resultVertices = result.vertices;
+            if (importedVertices.SequenceEqual(resultVertices))
+                return !imported.normals.SequenceEqual(result.normals) || (tangents && !imported.tangents.SequenceEqual(result.tangents));
+            // Renumbered or welded: every vertex of the copy must carry a normal (and tangent)
+            // the import has at that position.
+            var importedNormals = imported.normals;
+            var importedTangents = tangents ? imported.tangents : null;
+            var known = new HashSet<(Vector3, Vector3, Vector4)>();
+            for (int v = 0; v < importedVertices.Length; v++)
+                known.Add((importedVertices[v], importedNormals[v], importedTangents != null ? importedTangents[v] : default));
+            var resultNormals = result.normals;
+            var resultTangents = tangents ? result.tangents : null;
+            for (int v = 0; v < resultVertices.Length; v++)
+                if (!known.Contains((resultVertices[v], resultNormals[v], resultTangents != null ? resultTangents[v] : default))) return true;
+            return false;
         }
 
         // The scene renderer's materials differ from the model's (e.g. after Cleanup's material
         // fixes): a material change is the rebuild's to write, not the channel save's.
+        // A renderer that is no prefab instance (unpacked, assembled by hand, standalone) is
+        // compared with the model's renderers that show the same mesh; with material import
+        // off the model has no assignments of its own to compare with.
         internal static bool MaterialsChanged(MeshEntry entry)
         {
             if (entry?.renderer == null) return false;
+            var materials = entry.renderer.sharedMaterials;
             var source = PrefabUtility.GetCorrespondingObjectFromSource(entry.renderer);
-            return source != null && !entry.renderer.sharedMaterials.SequenceEqual(source.sharedMaterials);
+            if (source != null) return !materials.SequenceEqual(source.sharedMaterials);
+            if (entry.fbxMesh == null) return false;
+            string path = AssetDatabase.GetAssetPath(entry.fbxMesh);
+            if (!(AssetImporter.GetAtPath(path) is ModelImporter importer) || importer.materialImportMode == ModelImporterMaterialImportMode.None) return false;
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            if (model == null) return false;
+            var counterparts = model.GetComponentsInChildren<Renderer>(true).Where(r => RendererMesh(r) == entry.fbxMesh).ToList();
+            return counterparts.Count > 0 && !counterparts.Any(r => materials.SequenceEqual(r.sharedMaterials));
         }
+
+        static Mesh RendererMesh(Renderer renderer)
+            => renderer is SkinnedMeshRenderer skinned ? skinned.sharedMesh
+             : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
 
         // Faces differ from the import: per submesh, the same faces (as position loops, any
         // starting corner, same winding) in any order and any vertex numbering. Vertex dedup,
