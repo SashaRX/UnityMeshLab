@@ -6,6 +6,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Threading;
 using UnityEditor;
 using UnityEngine;
@@ -47,8 +48,9 @@ namespace SashaRX.UnityMeshLab
         /// grey (or scene materials) of Shaded, light on the attribute encodings.</summary>
         public Color WireColor => Mode == Shading.Shaded ? new Color(0.05f, 0.05f, 0.05f, 1f) : new Color(0.4f, 0.85f, 1f, 1f);
         /// <summary>Samples per pixel of the render; lines (wire, grid, borders) are one pixel
-        /// wide, so they are what the anti-aliasing is for.</summary>
-        const int MsaaSamples = 8;
+        /// wide, so they are what the anti-aliasing is for. 4x smooths them about as well as
+        /// 8x at half the memory and fill.</summary>
+        const int MsaaSamples = 4;
 
         // ── camera ──
         Vector3 pivot;
@@ -90,7 +92,7 @@ namespace SashaRX.UnityMeshLab
 
         PreviewRenderUtility utility;
         Material surface, flat, wire, points, translucent;
-        RenderTexture multisampled;   // owned; replaced only when the preview target's size or format changes
+        RenderTexture offscreen;   // owned; replaced only when the preview target's size, format or sample count changes
         Rect currentRect;
         bool drawing;
         readonly Dictionary<long, Mesh> encodedCache = new Dictionary<long, Mesh>();
@@ -143,12 +145,17 @@ namespace SashaRX.UnityMeshLab
             drawing = true;
             // The preview utility's own target has no anti-aliasing and a 16-bit depth
             // buffer: one-pixel lines come out jagged, and the wire fights the surface it
-            // outlines. The frame renders into a multisampled 24-bit-depth target of the
-            // same size and resolves into the utility's, which EndPreview then shows.
+            // outlines. The frame renders into a 24-bit-depth target of the same size and
+            // goes into the utility's, which EndPreview then shows: multisampled and
+            // resolved, or single-sampled and copied under a scriptable pipeline that has
+            // no MSAA setting to match it to (see PipelineMsaa).
             var target = camera.targetTexture;
-            bool multisample = target && Multisampled(target);
+            var pipeline = GraphicsSettings.currentRenderPipeline;
+            var pipelineMsaa = PipelineMsaa(pipeline);
+            int samples = pipeline == null || pipelineMsaa != null ? MsaaSamples : 1;
+            bool own = target && Offscreen(target, samples);
             try {
-                if (multisample) camera.targetTexture = multisampled;
+                if (own) camera.targetTexture = offscreen;
                 if (items != null)
                     foreach (var item in items) {
                         if (!item.mesh) continue;
@@ -161,41 +168,70 @@ namespace SashaRX.UnityMeshLab
                     if (ShowAxes) DrawAxes(bounds);
                 }
                 // Scene materials of a URP project render through URP, not the built-in fallback.
-                utility.Render(true);
-                if (multisample) multisampled.ResolveAntiAliasedSurface(target);
+                // URP renders a camera multisampled only while its asset enables MSAA, and then
+                // with the sample count of the camera's target; a target whose count differs
+                // from what it renders with fails its final blit and depth copy ("Missing
+                // resolve surface"). An asset with MSAA off is switched on for this render only.
+                bool urpMsaa = own && samples > 1 && pipelineMsaa != null;
+                if (urpMsaa) camera.allowMSAA = true;
+                int restoreMsaa = urpMsaa ? (int)pipelineMsaa.GetValue(pipeline) : 0;
+                bool raiseMsaa = urpMsaa && restoreMsaa <= 1;
+                if (raiseMsaa) pipelineMsaa.SetValue(pipeline, samples);
+                try { utility.Render(true); }
+                finally { if (raiseMsaa) pipelineMsaa.SetValue(pipeline, restoreMsaa); }
+                if (own && samples > 1) offscreen.ResolveAntiAliasedSurface(target);
+                else if (own) Graphics.CopyTexture(offscreen, 0, 0, target, 0, 0);
             }
             catch (Exception ex) { UvtLog.Warn("[3D] " + ex.Message); }
             finally {
                 drawing = false;
-                if (multisample) camera.targetTexture = target;
+                if (own) camera.targetTexture = target;
                 GUI.DrawTexture(rect, utility.EndPreview(), ScaleMode.StretchToFill, false);
                 foreach (var mesh in frameMeshes) if (mesh) Object.DestroyImmediate(mesh);
                 frameMeshes.Clear(); frameBlocks.Clear();
             }
         }
 
-        // The multisampled target matching the preview utility's: kept across frames and
-        // replaced only when the size or format changes. A temporary per frame would
-        // leave one differently sized 8x texture in Unity's pool per repaint of a resize
-        // drag, which the pool frees only after several frames.
-        bool Multisampled(RenderTexture target)
+        // A scriptable pipeline's MSAA sample count (URP's msaaSampleCount), or null when it
+        // has none to set or its renderer does not do MSAA (URP's deferred renderer): there
+        // the frame renders single-sampled.
+        static PropertyInfo PipelineMsaa(RenderPipelineAsset pipeline)
         {
-            var descriptor = target.descriptor;
-            descriptor.msaaSamples = MsaaSamples; descriptor.depthBufferBits = 24;
-            if (multisampled && (multisampled.width != descriptor.width || multisampled.height != descriptor.height
-                                 || multisampled.graphicsFormat != descriptor.graphicsFormat))
-                ReleaseMultisampled();
-            if (!multisampled)
-                multisampled = new RenderTexture(descriptor) { name = "MeshViewport3D MSAA", hideFlags = HideFlags.HideAndDontSave };
-            return multisampled;
+            const BindingFlags Public = BindingFlags.Public | BindingFlags.Instance;
+            var property = pipeline?.GetType().GetProperty("msaaSampleCount", Public);
+            if (property == null || property.PropertyType != typeof(int) || !property.CanRead || !property.CanWrite) return null;
+            try {
+                var renderer = pipeline.GetType().GetProperty("scriptableRenderer", Public)?.GetValue(pipeline);
+                var features = renderer?.GetType().GetProperty("supportedRenderingFeatures", Public)?.GetValue(renderer);
+                var msaa = features?.GetType().GetProperty("msaa", Public)?.GetValue(features);
+                if (msaa is bool supported && !supported) return null;
+            }
+            catch (Exception) { return null; }
+            return property;
         }
 
-        void ReleaseMultisampled()
+        // The frame target matching the preview utility's: kept across frames and replaced
+        // only when the size, format or sample count changes. A temporary per frame would
+        // leave one differently sized multisampled texture in Unity's pool per repaint of a resize
+        // drag, which the pool frees only after several frames.
+        bool Offscreen(RenderTexture target, int samples)
         {
-            if (!multisampled) return;
-            multisampled.Release();
-            Object.DestroyImmediate(multisampled);
-            multisampled = null;
+            var descriptor = target.descriptor;
+            descriptor.msaaSamples = samples; descriptor.depthBufferBits = 24;
+            if (offscreen && (offscreen.width != descriptor.width || offscreen.height != descriptor.height
+                              || offscreen.graphicsFormat != descriptor.graphicsFormat || offscreen.antiAliasing != samples))
+                ReleaseOffscreen();
+            if (!offscreen)
+                offscreen = new RenderTexture(descriptor) { name = "MeshViewport3D frame", hideFlags = HideFlags.HideAndDontSave };
+            return offscreen;
+        }
+
+        void ReleaseOffscreen()
+        {
+            if (!offscreen) return;
+            offscreen.Release();
+            Object.DestroyImmediate(offscreen);
+            offscreen = null;
         }
 
         void DrawItem(Item item)
@@ -717,7 +753,7 @@ namespace SashaRX.UnityMeshLab
             VertexChannels.Changed -= InvalidateMesh;
             InvalidateCaches();
             utility?.Cleanup(); utility = null;
-            ReleaseMultisampled();
+            ReleaseOffscreen();
             if (surface) Object.DestroyImmediate(surface);
             if (flat) Object.DestroyImmediate(flat);
             if (wire) Object.DestroyImmediate(wire);
