@@ -97,6 +97,8 @@ namespace SashaRX.UnityMeshLab
                 // Two branches generating one name would write one node: the file keeps names unique per LOD.
                 if (plan.lods.Any(l => l.name == name))
                     plan.refusals.Add($"'{name}' is generated more than once (by same-named meshes in different branches); the file can take one node of that name");
+                else if (from.Count == 1 && LodMaterialsChanged(entry, group, from[0], InFile, sourceLodIndex))
+                    plan.refusals.Add($"'{name}' has materials other than its source '{from[0]}'; a new LOD node takes the source node's materials");
                 else if (from.Count == 1) plan.lods.Add(new FbxStructurePlan.NewLod { name = name, sourceName = from[0], mesh = result });
                 else plan.refusals.Add($"'{name}' cannot be paired with the LOD{sourceLodIndex} mesh of '{System.IO.Path.GetFileName(fbxPath)}' it was generated from");
             }
@@ -111,6 +113,16 @@ namespace SashaRX.UnityMeshLab
             if (flagged.Count > 0)
                 plan.refusals.Add($"{string.Join(", ", flagged.Select(n => $"'{n}'"))} in '{file}' carry UVs or vertex colours that collision meshes should not have; the rebuild strips them");
             return plan;
+        }
+
+        // A generated LOD's renderer starts with its source renderer's materials; one changed
+        // since would be lost, since the new node takes the source node's.
+        static bool LodMaterialsChanged(MeshEntry generated, List<(MeshEntry entry, Mesh resultMesh)> group, string sourceName,
+            Func<MeshEntry, bool> inFile, int sourceLodIndex)
+        {
+            if (generated?.renderer == null) return false;
+            var source = group.Select(p => p.entry).FirstOrDefault(e => inFile(e) && e.lodIndex == sourceLodIndex && e.fbxMesh.name == sourceName);
+            return source?.renderer != null && !generated.renderer.sharedMaterials.SequenceEqual(source.renderer.sharedMaterials);
         }
 
         // Instances of one FBX mesh share it: the same new geometry twice is one replacement,
@@ -435,6 +447,9 @@ namespace SashaRX.UnityMeshLab
 
         static void RequireSiblingRoom(FbxScene scene, Reference source, bool preserveHierarchy)
         {
+            if (source.mesh.GetNodeCount() > 1)
+                throw new FbxStructureRefusalException(
+                    $"'{source.name}' is instanced by {source.mesh.GetNodeCount()} nodes; which instance a node next to it belongs with cannot be told from the mesh");
             if (FbxStructureEdit.HasTransformAnimation(source.node))
                 throw new FbxStructureRefusalException(
                     $"'{source.node.GetName()}' has an animated transform; a node next to it would not follow the animation");
@@ -501,6 +516,14 @@ namespace SashaRX.UnityMeshLab
                 mesh.GetUVs(channel, list);
                 if (list.Count != mesh.vertexCount)
                 {
+                    // Sets go in order: a later one past this gap would be renumbered.
+                    for (int later = set + 1; later < sets; later++)
+                    {
+                        mesh.GetUVs(FbxChannelWrite.FbxUvSet(later, options.swapUv), list);
+                        if (list.Count == mesh.vertexCount)
+                            throw new FbxStructureRefusalException(
+                                $"'{mesh.name}' has no UV{channel} but has UV{FbxChannelWrite.FbxUvSet(later, options.swapUv)}; written whole it would renumber its UV sets");
+                    }
                     if (set < required)
                         UvtLog.Warn($"[FBX Export] '{mesh.name}' has no UV{channel}; it gets {set} of the {required} UV set(s) of '{reference.name}'.");
                     break;

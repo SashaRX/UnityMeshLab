@@ -304,7 +304,9 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   built before the write, from the meshes the file was read with). An import
   that fails after the file is written is reported, and the save still
   finishes. A standalone renderer (no LODGroup) is relinked to its reimported
-  mesh.
+  mesh. A save of several files frees the working copies and reloads the scene
+  once, after the last file, and not at all when a file holding unsaved work
+  was not written (cancelled, refused, failed).
 * "Unchanged geometry" means the same faces per submesh (position loops,
   same winding, any order or vertex numbering), not just the same counts.
 * A channel the working mesh dropped (Cleanup's attribute removal) is removed
@@ -381,7 +383,12 @@ The hub's `All` save adds or replaces geometry in the same document
   whose transform is animated (a sibling copies the values, not the curves),
   an import that is not an affine image of its control points, a generated LOD
   whose source mesh cannot be told or whose name two branches generate, a
-  new node whose copied transform does not evaluate to its source's placement,
+  generated LOD whose renderer's materials differ from its source renderer's
+  (the new node takes the source node's), a sibling of a mesh instanced by
+  several nodes (which instance it belongs with cannot be told), a mesh
+  written whole that lacks a UV set before one it has (its sets would be
+  renumbered), a new node whose copied transform does not evaluate to its
+  source's placement,
   a `_COL` mesh of the file carrying UVs or colours that no sidecar collision
   replaces (Cleanup sends it to the overwrite; the rebuild strips it).
 * After an overwrite, the scene LODGroup's slots take the imported renderers

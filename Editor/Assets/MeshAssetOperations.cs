@@ -311,11 +311,17 @@ namespace SashaRX.UnityMeshLab
                     totalCount++;
                     string sourceFbxPath = kv.Key;
                     var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
-                    if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath)) continue;
+                    if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath))
+                    {
+                        MarkUnsaved(kv.Value);
+                        continue;
+                    }
 
                     RestoreAllPreviews();
                     if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
                         okCount++;
+                    else
+                        MarkUnsaved(kv.Value);
                 }
             }
             finally { EndSourceSaves(); }
@@ -479,19 +485,41 @@ namespace SashaRX.UnityMeshLab
         // A source re-save leaves the entries holding copies of what the file now has: the
         // copies are freed and the scene reloaded. Within a save of several files that waits
         // for the last one, since the groups still to be written hold the same entries.
-        bool sourceSavesOpen, sceneReloadPending, lodAdoptionPending;
+        // A file of the batch that was not written (cancelled, refused, failed) while its
+        // entries hold working copies keeps them: they are the only record of that work, so
+        // the batch then ends without freeing, adopting or reloading anything.
+        bool sourceSavesOpen, sceneReloadPending, lodAdoptionPending, workLeftUnsaved;
 
         void BeginSourceSaves()
         {
             sourceSavesOpen = true;
-            sceneReloadPending = lodAdoptionPending = false;
+            sceneReloadPending = lodAdoptionPending = workLeftUnsaved = false;
         }
+
+        void MarkUnsaved(List<(MeshEntry entry, Mesh resultMesh)> group)
+        {
+            if (group.Any(p => HoldsWorkingCopy(p.entry))) workLeftUnsaved = true;
+        }
+
+        static bool HoldsWorkingCopy(MeshEntry e)
+            => e != null && (e.repackedMesh != null || e.transferredMesh != null
+                || (e.originalMesh != null && e.originalMesh != e.fbxMesh && !EditorUtility.IsPersistent(e.originalMesh)));
 
         void EndSourceSaves()
         {
             sourceSavesOpen = false;
             if (!sceneReloadPending) return;
             sceneReloadPending = false;
+            if (workLeftUnsaved)
+            {
+                UvtLog.Warn("[FBX Export] Not every file of this save was written; the working copies stay loaded so nothing unsaved is lost. " +
+                            "Save again to finish (the files already written keep what they got).");
+                standaloneRelinks.Clear();
+                lodAdoptionPending = false;
+                RestoreWorkingCopiesToScene();
+                AfterWrite?.Invoke();
+                return;
+            }
             AfterSourceSave();
         }
 
@@ -658,12 +686,20 @@ namespace SashaRX.UnityMeshLab
                 {
                     string sourceFbxPath = kv.Key;
                     using var plan = FbxStructureWrite.Plan(sourceFbxPath, kv.Value, ctx.SourceLodIndex);
-                    if (!TryChooseNarrowExportPath(sourceFbxPath, FbxExportIntent.All, overwriteSource, out string outputFbxPath)) continue;
+                    if (!TryChooseNarrowExportPath(sourceFbxPath, FbxExportIntent.All, overwriteSource, out string outputFbxPath))
+                    {
+                        MarkUnsaved(kv.Value);
+                        continue;
+                    }
                     bool isVariant = !string.IsNullOrEmpty(outputFbxPath)
                         && !string.Equals(outputFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
                     var entries = kv.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
                     RestoreAllPreviews();
-                    var sidecar = isVariant ? null : PrepareSidecarSync(sourceFbxPath, kv.Value);
+                    // The source's persistent sidecar, or a variant's written into the project that
+                    // may already have one of its own.
+                    string sidecarFbx = !isVariant ? sourceFbxPath
+                        : outputFbxPath.StartsWith("Assets/", StringComparison.Ordinal) ? outputFbxPath : null;
+                    var sidecar = sidecarFbx == null ? null : PrepareSidecarSync(sidecarFbx, kv.Value);
                     if (!isVariant) PrepareStandaloneRelink(sourceFbxPath);
 
                     bool written;
@@ -676,18 +712,20 @@ namespace SashaRX.UnityMeshLab
                     {
                         written = ExportAfterRefusal(sourceFbxPath, kv.Value, entries, outputFbxPath, overwriteSource, refusal.Message, rebuilds);
                         if (written) okCount++;
+                        else MarkUnsaved(kv.Value);
                         continue;
                     }
                     catch (Exception ex)
                     {
                         UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
                         UvtLog.Verbose(ex.ToString());
+                        MarkUnsaved(kv.Value);
                         continue;
                     }
-                    if (!written) { standaloneRelinks.Clear(); continue; }
+                    if (!written) { standaloneRelinks.Clear(); MarkUnsaved(kv.Value); continue; }
                     okCount++;
-                    if (isVariant) continue;
                     ApplySidecarSync(sidecar);
+                    if (isVariant) continue;
                     AfterSourceSave(plan.lods.Count > 0);
                 }
             }
