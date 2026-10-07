@@ -331,7 +331,9 @@ The hub's `All` save adds or replaces geometry in the same document
   is rewritten clean.
 * A mesh whose faces or points changed gets a new FBX mesh on the same
   node(s); node, transform and materials stay. Quads (Keep Quads imports) are
-  written as quads. Instances edited differently are refused.
+  written as quads, and each submesh keeps its material slot. Instances edited
+  differently (any written attribute: positions, faces, normals, tangents,
+  colours, UVs) are refused.
 * Collision is placed next to the mesh named by its sidecar key, or the one
   LOD0 / unsuffixed mesh with that group key. Collision the file already holds
   is compared as triangle loops on the same points, not only point sets.
@@ -347,7 +349,9 @@ The hub's `All` save adds or replaces geometry in the same document
   normals, the source's UV sets under the source's set names (read from the
   file by `FbxUvSetNames`, since a texture finds its set by name; `UVChannel_N`
   when they cannot be read), plus the UV sets MeshLab added within the save's
-  intent (a repacked UV1 the file lacked; never a UV1 the import regenerates),
+  intent (a repacked UV1 the file lacked; never a UV1 the import regenerates:
+  with 'Generate Lightmap UVs' on and no UV1 bake, a source's set there is
+  kept in the count but is no UV1 write and leaves the setting on),
   set i on layer i, and layer-0 colours when the source has them or the save
   writes colours, all per corner, indexed and shared only within a control
   point. Faces without area (repeated or collinear corners) are left out. Normals, colours, the tangent frame and the one material
@@ -375,10 +379,11 @@ The hub's `All` save adds or replaces geometry in the same document
   a `_COL` mesh of the file carrying UVs or colours that no sidecar collision
   replaces (Cleanup sends it to the overwrite; the rebuild strips it).
 * After an overwrite, the scene LODGroup's slots take the imported renderers
-  of the written LODs (transitions kept) and the generated objects go; when a
-  name matches no imported renderer or several, the generated objects stay. A
-  save of several FBX files frees the working copies and reloads the scene
-  once, after the last file.
+  of the written LODs (transitions kept) and those generated objects go; one
+  whose name matches no imported renderer or several keeps its slot. A save of
+  several FBX files frees the working copies, adopts the LODs and reloads the
+  scene once, after the last file; a rebuild picked for a refused file
+  finishes after that.
 
 ### `FbxExportIntent` flags
 

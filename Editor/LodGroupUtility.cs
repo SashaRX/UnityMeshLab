@@ -180,9 +180,10 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// After generated LODs were written into the FBX and it was reimported: every LOD slot
         /// holding a generated scene object takes the imported renderer of the same name under
-        /// the group instead (transitions kept), and the generated objects are cleared. When
-        /// any generated object has no imported counterpart (the scene object is not an
-        /// instance of the model) or several, nothing is changed. Returns the renderers adopted.
+        /// the group instead (transitions kept), and those generated objects are destroyed. A
+        /// generated object with no imported counterpart (the scene object is not an instance
+        /// of the model, or its file is rebuilt later) or several keeps its slot. Returns the
+        /// renderers adopted.
         /// </summary>
         internal static int AdoptImportedLods(UvToolContext ctx)
         {
@@ -202,6 +203,7 @@ namespace SashaRX.UnityMeshLab
 
             var lods = ctx.LodGroup.GetLODs();
             int adopted = 0;
+            var replaced = new HashSet<GameObject>();
             foreach (var lod in lods)
             {
                 if (lod.renderers == null) continue;
@@ -212,21 +214,29 @@ namespace SashaRX.UnityMeshLab
                     if (!imported.TryGetValue(r.name, out var written) || ambiguous.Contains(r.name))
                     {
                         UvtLog.Warn(ambiguous.Contains(r.name)
-                            ? $"[LOD] Several imported renderers under '{ctx.LodGroup.name}' are named '{r.name}'; the generated LOD objects stay."
-                            : $"[LOD] '{r.name}' has no imported counterpart under '{ctx.LodGroup.name}'; the generated LOD objects stay.");
-                        return 0;
+                            ? $"[LOD] Several imported renderers under '{ctx.LodGroup.name}' are named '{r.name}'; its generated LOD object stays."
+                            : $"[LOD] '{r.name}' has no imported counterpart under '{ctx.LodGroup.name}'; its generated LOD object stays.");
+                        continue;
                     }
                     lod.renderers[i] = written;
+                    replaced.Add(r.gameObject);
                     adopted++;
                 }
             }
             if (adopted == 0) return 0;
+            int undoGroup = Undo.GetCurrentGroup();
             Undo.RecordObject(ctx.LodGroup, "Adopt Written LODs");
             ctx.LodGroup.SetLODs(lods);
             ctx.LodGroup.RecalculateBounds();
             if (PrefabUtility.IsPartOfPrefabInstance(ctx.LodGroup))
                 PrefabUtility.RecordPrefabInstancePropertyModifications(ctx.LodGroup);
-            ClearGeneratedLods(ctx);
+            // Only the objects no slot holds any more go; the rest stay generated.
+            foreach (var lod in lods)
+                foreach (var r in lod.renderers ?? System.Array.Empty<Renderer>())
+                    if (r != null) replaced.Remove(r.gameObject);
+            DestroyGeneratedLodObjects(ctx, replaced);
+            ctx.GeneratedLodObjects.RemoveAll(replaced.Contains);
+            Undo.CollapseUndoOperations(undoGroup);
             return adopted;
         }
 
@@ -270,10 +280,12 @@ namespace SashaRX.UnityMeshLab
             return remaining;
         }
 
-        static void DestroyGeneratedLodObjects(UvToolContext ctx)
+        static void DestroyGeneratedLodObjects(UvToolContext ctx) => DestroyGeneratedLodObjects(ctx, ctx.GeneratedLodObjects);
+
+        static void DestroyGeneratedLodObjects(UvToolContext ctx, IEnumerable<GameObject> objects)
         {
             var ownedMeshes = new HashSet<Mesh>();
-            foreach (var go in ctx.GeneratedLodObjects)
+            foreach (var go in objects)
             {
                 if (ctx.GeneratedLodMeshes.TryGetValue(go, out var mesh))
                 {

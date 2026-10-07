@@ -595,6 +595,8 @@ namespace SashaRX.UnityMeshLab
         void ExportDocumentGroups(Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>> fbxGroups, bool overwriteSource)
         {
             int okCount = 0;
+            // A rebuild picked for a refused file finishes after the loop, like the document saves.
+            var rebuilds = new HierarchyExportBatch();
             BeginSourceSaves();
             try
             {
@@ -616,7 +618,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     catch (FbxStructureRefusalException refusal)
                     {
-                        written = ExportAfterRefusal(sourceFbxPath, kv.Value, entries, outputFbxPath, overwriteSource, refusal.Message);
+                        written = ExportAfterRefusal(sourceFbxPath, kv.Value, entries, outputFbxPath, overwriteSource, refusal.Message, rebuilds);
                         if (written) okCount++;
                         continue;
                     }
@@ -634,13 +636,15 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             finally { EndSourceSaves(); }
+            if (rebuilds.Groups > 0) FinishHierarchyExports(rebuilds, overwriteSource, rebuilds.AllSucceeded);
             UvtLog.Info($"[FBX Export] FBX document save: {okCount}/{fbxGroups.Count} file(s) written.");
         }
 
         // The document edit refused the structure (the file is untouched): say why and let the
         // user pick the rebuild, the channels alone, or nothing.
+        // A rebuild goes into rebuilds; the caller finishes them after its last file.
         bool ExportAfterRefusal(string sourceFbxPath, List<(MeshEntry entry, Mesh resultMesh)> group, List<MeshEntry> entries,
-            string outputFbxPath, bool overwriteSource, string reason)
+            string outputFbxPath, bool overwriteSource, string reason, HierarchyExportBatch rebuilds)
         {
             UvtLog.Warn($"[FBX Export] '{sourceFbxPath}': {reason}.");
             int choice = EditorUtility.DisplayDialogComplex("Rebuild FBX?",
@@ -651,9 +655,9 @@ namespace SashaRX.UnityMeshLab
                 "Rebuild", CancelButton, "Save channels only");
             if (choice == 1) return false;
             if (choice == 2) return ExportFbxIsolatedCore(sourceFbxPath, entries, FbxChannelWrite.Supported, outputFbxPath);
-            var batch = new HierarchyExportBatch();
-            bool ok = ExportHierarchyGroup(sourceFbxPath, group, overwriteSource, batch);
-            FinishHierarchyExports(batch, overwriteSource, ok);
+            bool ok = ExportHierarchyGroup(sourceFbxPath, group, overwriteSource, rebuilds);
+            rebuilds.Groups++;
+            rebuilds.AllSucceeded &= ok;
             return ok;
         }
 
@@ -699,6 +703,9 @@ namespace SashaRX.UnityMeshLab
             public readonly Dictionary<string, List<MeshUv2Entry>> TransientReplayEntriesByPath = new Dictionary<string, List<MeshUv2Entry>>();
             public readonly Dictionary<string, Dictionary<string, string>> MeshRenamesByFbx = new Dictionary<string, Dictionary<string, string>>();
             public readonly bool PersistentSidecarMode = PostprocessorDefineManager.IsEnabled();
+            /// <summary>Groups exported into this batch, and whether all of them succeeded.</summary>
+            public int Groups;
+            public bool AllSucceeded = true;
             public readonly SidecarStore.AoUvTarget Ao = AoTarget;
             public void ReArm(string path)
             {

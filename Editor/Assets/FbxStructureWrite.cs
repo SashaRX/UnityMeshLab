@@ -123,12 +123,23 @@ namespace SashaRX.UnityMeshLab
                 plan.refusals.Add($"'{name}' is instanced and its instances were edited differently; they share one FBX mesh");
         }
 
+        // Everything a whole-mesh write takes from the mesh: positions, faces, normals,
+        // tangents, colours and every UV channel.
         static bool SameMeshData(Mesh a, Mesh b)
         {
             if (a == b) return true;
-            if (a.subMeshCount != b.subMeshCount || !a.vertices.SequenceEqual(b.vertices)) return false;
+            if (a.subMeshCount != b.subMeshCount || !a.vertices.SequenceEqual(b.vertices) || !a.normals.SequenceEqual(b.normals)
+                || !a.tangents.SequenceEqual(b.tangents) || !a.colors.SequenceEqual(b.colors)) return false;
             for (int s = 0; s < a.subMeshCount; s++)
-                if (!a.GetIndices(s).SequenceEqual(b.GetIndices(s))) return false;
+                if (a.GetTopology(s) != b.GetTopology(s) || !a.GetIndices(s).SequenceEqual(b.GetIndices(s))) return false;
+            var uvA = new List<Vector4>();
+            var uvB = new List<Vector4>();
+            for (int ch = 0; ch < 8; ch++)
+            {
+                a.GetUVs(ch, uvA);
+                b.GetUVs(ch, uvB);
+                if (!uvA.SequenceEqual(uvB)) return false;
+            }
             return true;
         }
 
@@ -233,6 +244,11 @@ namespace SashaRX.UnityMeshLab
             public int editableUvSets;
             /// <summary>The save writes vertex colours: a mesh carries them even when its source had none.</summary>
             public bool writeColors;
+            /// <summary>
+            /// 'Generate Lightmap UVs' stays on: the import replaces UV1 whatever the file holds, so
+            /// a source's set there is still written (its set count is kept) but is no UV1 write.
+            /// </summary>
+            public bool uv1Regenerated;
             /// <summary>Set by <see cref="Apply"/>: some mesh got the UV set Unity imports as UV1.</summary>
             public bool uv1Written;
         }
@@ -325,7 +341,7 @@ namespace SashaRX.UnityMeshLab
                 ?? throw new FbxStructureRefusalException($"'{name}' is instanced by several nodes and none is named after it");
 
             var topology = new FbxLayerChannels.Topology(mesh);
-            int relation = FbxSpaceFit.WindingRelation(topology.polygonSizes, tag.submeshCorners.SelectMany(c => c).ToArray());
+            int relation = FbxSpaceFit.WindingRelation(topology.polygonSizes, tag.TriangleCorners());
             // No triangle tells (all degenerate): Unity mirrors X on import and reverses the winding.
             if (relation == 0) relation = -1;
             var fit = FbxSpaceFit.FitCorners(FbxStructureEdit.ControlPoints(mesh), topology.cornerControlPoint, tag.cornerPositions, relation, out string error)
@@ -466,7 +482,7 @@ namespace SashaRX.UnityMeshLab
                 var uv = new float[list.Count * 2];
                 for (int v = 0; v < list.Count; v++) { uv[v * 2] = list[v].x; uv[v * 2 + 1] = list[v].y; }
                 source.uvs.Add(uv);
-                options.uv1Written |= channel == 1;
+                options.uv1Written |= channel == 1 && !options.uv1Regenerated;
             }
             var colors = mesh.colors;
             if ((reference.colors || options.writeColors) && colors.Length == mesh.vertexCount)
@@ -561,7 +577,7 @@ namespace SashaRX.UnityMeshLab
         static bool SameGeometry(FbxChannelWrite.Tagged tag, Mesh mesh)
         {
             var triangles = mesh.triangles;
-            var importedCorners = tag.submeshCorners.SelectMany(c => c).ToArray();
+            var importedCorners = tag.TriangleCorners();
             if (importedCorners.Length != triangles.Length) return false;
 
             var stored = mesh.vertices;

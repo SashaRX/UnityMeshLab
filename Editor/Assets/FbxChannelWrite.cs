@@ -69,6 +69,22 @@ namespace SashaRX.UnityMeshLab
             public Color[] colors;
             /// <summary>The FBX corner of each vertex of the import's triangles, submesh by submesh.</summary>
             public int[][] submeshCorners;
+            /// <summary>Corners per face of each submesh: 3, or 4 for a Keep Quads submesh.</summary>
+            public int[] submeshFaceSizes;
+
+            /// <summary>The import's faces as triangles (quads split along their first diagonal), as FBX corners.</summary>
+            public int[] TriangleCorners()
+            {
+                var triangles = new List<int>();
+                for (int s = 0; s < submeshCorners.Length; s++)
+                {
+                    var corners = submeshCorners[s];
+                    if (submeshFaceSizes[s] != 4) { triangles.AddRange(corners); continue; }
+                    for (int f = 0; f + 3 < corners.Length; f += 4)
+                        triangles.AddRange(new[] { corners[f], corners[f + 1], corners[f + 2], corners[f], corners[f + 2], corners[f + 3] });
+                }
+                return triangles.ToArray();
+            }
         }
 
         /// <summary>
@@ -139,6 +155,7 @@ namespace SashaRX.UnityMeshLab
                 writeTangents = importer != null && importer.importTangents == ModelImporterTangents.Import,
                 requiredUvSets = bakeUv1 ? 2 : 0,
                 editableUvSets = EditableUvSets(intent, swapUv, generatedUv1 && !bakeUv1),
+                uv1Regenerated = generatedUv1 && !bakeUv1,
                 writeColors = (intent & FbxExportIntent.VertexColors) != 0,
             };
             int structural = hasStructure ? FbxStructureWrite.Apply(document, tagged, structure, options, structureLog) : 0;
@@ -492,9 +509,14 @@ namespace SashaRX.UnityMeshLab
                 tag.cornerPositions[c * 3] = vertices[v].x; tag.cornerPositions[c * 3 + 1] = vertices[v].y; tag.cornerPositions[c * 3 + 2] = vertices[v].z;
             }
             tag.submeshCorners = new int[mesh.subMeshCount][];
+            tag.submeshFaceSizes = new int[mesh.subMeshCount];
             for (int s = 0; s < mesh.subMeshCount; s++)
-                tag.submeshCorners[s] = mesh.GetTopology(s) == MeshTopology.Triangles
-                    ? Array.ConvertAll(mesh.GetIndices(s), i => cornerOf[i]) : new int[0];
+            {
+                var topology = mesh.GetTopology(s);
+                bool faces = topology == MeshTopology.Triangles || topology == MeshTopology.Quads;
+                tag.submeshCorners[s] = faces ? Array.ConvertAll(mesh.GetIndices(s), i => cornerOf[i]) : new int[0];
+                tag.submeshFaceSizes[s] = topology == MeshTopology.Quads ? 4 : 3;
+            }
             var list = new List<Vector2>();
             for (int ch = 0; ch < 8; ch++)
             {
