@@ -202,6 +202,29 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Edit_RemovesTheLastUvSetAndTheColours()
+        {
+            string source = WriteSource(true), edited = Path.Combine(folder, "edited.fbx");
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                var mesh = document.Meshes[0];
+                var topology = new FbxLayerChannels.Topology(mesh);
+                FbxLayerChannels.WriteUv(mesh, 1, topology, new double[topology.CornerCount * 2], Enumerable.Repeat(true, topology.CornerCount).ToArray());
+                Assert.Throws<InvalidOperationException>(() => FbxLayerChannels.RemoveUv(mesh, 0), "UV1 would become UV0");
+                FbxLayerChannels.RemoveUv(mesh, 1);
+                Assert.IsTrue(FbxLayerChannels.RemoveColor(mesh));
+                document.Save(edited);
+            }
+            using (var document = FbxSourceDocument.Load(edited))
+            {
+                var mesh = document.Meshes[0];
+                Assert.AreEqual(1, FbxLayerChannels.UvElements(mesh).Count);
+                Assert.IsNull(FbxLayerChannels.ColorElement(mesh));
+                Assert.AreEqual(4, mesh.GetPolygonSize(0), "polygons untouched");
+            }
+        }
+
+        [Test]
         public void Edit_WritesColoursOnLayerZero()
         {
             using var document = FbxSourceDocument.Load(WriteSource(true));

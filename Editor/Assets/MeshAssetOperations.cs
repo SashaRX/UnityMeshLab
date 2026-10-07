@@ -298,8 +298,7 @@ namespace SashaRX.UnityMeshLab
         void ExportNarrowIntentGroups(
             Dictionary<string, List<(MeshEntry entry, Mesh resultMesh)>> fbxGroups,
             FbxExportIntent intent,
-            bool overwriteSource,
-            bool syncSidecar = false)
+            bool overwriteSource)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             int okCount = 0;
@@ -312,11 +311,8 @@ namespace SashaRX.UnityMeshLab
                 if (!TryChooseNarrowExportPath(sourceFbxPath, intent, overwriteSource, out string outputFbxPath)) continue;
 
                 RestoreAllPreviews();
-                if (!ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath)) continue;
-                okCount++;
-                bool isVariant = !string.IsNullOrEmpty(outputFbxPath)
-                    && !string.Equals(outputFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
-                if (syncSidecar && !isVariant) SyncPersistentSidecar(sourceFbxPath, kv.Value);
+                if (ExportFbxIsolatedCore(sourceFbxPath, entries, intent, outputFbxPath))
+                    okCount++;
             }
             UvtLog.Info($"[FBX Export] Narrow-intent export: {okCount}/{totalCount} group(s) succeeded.");
 #else
@@ -426,14 +422,22 @@ namespace SashaRX.UnityMeshLab
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             bool isVariantExport = !string.IsNullOrEmpty(outputFbxPathOverride)
                 && !string.Equals(outputFbxPathOverride, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
+            var list = entries as IList<MeshEntry> ?? entries.ToList();
             bool exported = FbxExport.WriteChannels(
-                sourceFbxPath, entries, intent, outputFbxPathOverride,
+                sourceFbxPath, list, intent, outputFbxPathOverride,
                 FbxExport.FirstRealMaterial(ctx?.MeshEntries),
                 isVariantExport ? null : ctx?.LodGroup);
             if (!exported) return false;
             if (!isVariantExport)
             {
-                if (ctx?.LodGroup != null) ctx.Refresh(ctx.LodGroup);
+                // Every source save that wrote UV1 leaves a persistent sidecar replaying the same.
+                if (intent.IncludesUv(1))
+                    SyncPersistentSidecar(sourceFbxPath, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
+                if (ctx?.LodGroup != null)
+                {
+                    ReleaseWorkingMeshes();
+                    ctx.Refresh(ctx.LodGroup);
+                }
                 RestoreWorkingCopiesToScene();
                 AfterWrite?.Invoke();
             }
@@ -442,6 +446,27 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
             return false;
 #endif
+        }
+
+        static Mesh WorkingMesh(MeshEntry e) => e.repackedMesh ?? e.transferredMesh ?? e.originalMesh ?? e.fbxMesh;
+
+        // After a source re-save the working copies are in the file, and the refresh that
+        // follows drops the entries holding them: give the renderers their asset meshes
+        // back and free the copies instead of leaking them.
+        void ReleaseWorkingMeshes()
+        {
+            if (ctx?.MeshEntries == null) return;
+            foreach (var e in ctx.MeshEntries)
+            {
+                var copies = new[] { e.transferredMesh, e.repackedMesh, e.originalMesh != e.fbxMesh ? e.originalMesh : null };
+                foreach (var copy in copies)
+                {
+                    if (copy == null || EditorUtility.IsPersistent(copy)) continue;
+                    if (e.meshFilter != null && e.fbxMesh != null && e.meshFilter.sharedMesh == copy) e.meshFilter.sharedMesh = e.fbxMesh;
+                    UnityEngine.Object.DestroyImmediate(copy);
+                }
+                e.transferredMesh = e.repackedMesh = null;
+            }
         }
 
         string ResolveFbxPath()
@@ -513,7 +538,7 @@ namespace SashaRX.UnityMeshLab
                 var reasons = StructuralChanges(fbxGroups);
                 if (reasons.Count == 0)
                 {
-                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource, syncSidecar: true);
+                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource);
                     return;
                 }
                 int choice = EditorUtility.DisplayDialogComplex("Rebuild FBX?",
@@ -525,7 +550,7 @@ namespace SashaRX.UnityMeshLab
                 if (choice == 1) return;
                 if (choice == 2)
                 {
-                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource, syncSidecar: true);
+                    ExportNarrowIntentGroups(fbxGroups, FbxChannelWrite.Supported, overwriteSource);
                     return;
                 }
             }
@@ -552,10 +577,21 @@ namespace SashaRX.UnityMeshLab
                 if (added > 0) reasons.Add($"{added} mesh(es) not in '{file}' yet (generated LODs)");
                 int reshaped = kv.Value.Count(p => p.entry.fbxMesh != null && GeometryDiffers(p.entry.fbxMesh, p.resultMesh));
                 if (reshaped > 0) reasons.Add($"{reshaped} mesh(es) of '{file}' with changed geometry (simplified or edited faces)");
+                int rematerialled = kv.Value.Count(p => MaterialsChanged(p.entry));
+                if (rematerialled > 0) reasons.Add($"{rematerialled} renderer(s) of '{file}' with changed materials (the file's material assignments)");
                 int collision = SidecarStore.CollisionMeshes(kv.Key)?.Count ?? 0;
                 if (collision > 0) reasons.Add($"{collision} collision mesh set(s) from the sidecar for '{file}'");
             }
             return reasons;
+        }
+
+        // The scene renderer's materials differ from the model's (e.g. after Cleanup's material
+        // fixes): a material change is the rebuild's to write, not the channel save's.
+        internal static bool MaterialsChanged(MeshEntry entry)
+        {
+            if (entry?.renderer == null) return false;
+            var source = PrefabUtility.GetCorrespondingObjectFromSource(entry.renderer);
+            return source != null && !entry.renderer.sharedMaterials.SequenceEqual(source.sharedMaterials);
         }
 
         // Faces differ from the import: per submesh, the same faces (as position loops, any

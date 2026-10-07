@@ -43,6 +43,10 @@ namespace SashaRX.UnityMeshLab
             public readonly Vector2[][] uvs = new Vector2[8][];
             /// <summary>UV channels the write leaves alone, for telling coincident candidates apart.</summary>
             public readonly Vector2[][] signatureUvs = new Vector2[8][];
+            /// <summary>Channels the import has and the working mesh no longer does (Cleanup removed them).</summary>
+            public readonly bool[] removedUvs = new bool[8];
+            public bool removedColors;
+            public bool HasValues => colors != null || uvs.Any(uv => uv != null);
             public Color32[] colors32;
             public Color[] colors;
             /// <summary>The mesh stores colours as bytes: compare them as Color32, not as floats.</summary>
@@ -133,7 +137,10 @@ namespace SashaRX.UnityMeshLab
                 Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath);
                 return true;
             }
-            AssetDatabase.ImportAsset(targetFbxPath, ImportAssetOptions.ForceUpdate);
+            // The postprocessor consumes the overwrite marker; an import that throws before it
+            // runs must not leave it for a later, unrelated import.
+            try { AssetDatabase.ImportAsset(targetFbxPath, ImportAssetOptions.ForceUpdate); }
+            finally { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); }
             if (isVariant) ImportLikeSource(sourceFbxPath, targetFbxPath, uv1Written);
             else if (sceneRoot != null) FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, sceneRoot);
             return true;
@@ -200,6 +207,7 @@ namespace SashaRX.UnityMeshLab
             bool skipUv1 = generatedUv1 && mesh == entry.fbxMesh && !bakeUv1;
             bool any = CaptureUvs(donor, mesh, imported, intent, skipUv1, generatedUv1, bakeUv1);
             if ((intent & FbxExportIntent.VertexColors) != 0) any |= CaptureColors(donor, mesh, imported);
+            any |= CaptureRemovals(donor, mesh, entry.fbxMesh, intent, generatedUv1);
             if (!any) return null;
 
             var vertices = mesh.vertices;
@@ -257,8 +265,29 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
+        // A channel the import carries and the working mesh dropped is a removal to write.
+        // Lightmap UVs Unity generates are not in the file and cannot be removed from it.
+        static bool CaptureRemovals(Donor donor, Mesh mesh, Mesh imported, FbxExportIntent intent, bool generatedUv1)
+        {
+            if (imported == null || imported == mesh) return false;
+            bool any = false;
+            for (int ch = 0; ch < 8; ch++)
+            {
+                var attribute = (VertexAttribute)((int)VertexAttribute.TexCoord0 + ch);
+                if (!intent.IncludesUv(ch) || (ch == 1 && generatedUv1)) continue;
+                if (!imported.HasVertexAttribute(attribute) || mesh.HasVertexAttribute(attribute)) continue;
+                donor.removedUvs[ch] = true;
+                any = true;
+            }
+            if ((intent & FbxExportIntent.VertexColors) != 0
+                && imported.HasVertexAttribute(VertexAttribute.Color) && !mesh.HasVertexAttribute(VertexAttribute.Color))
+                donor.removedColors = any = true;
+            return any;
+        }
+
         static bool SameEdit(Donor a, Donor b)
         {
+            if (!a.removedUvs.SequenceEqual(b.removedUvs) || a.removedColors != b.removedColors) return false;
             if (!a.positions.SequenceEqual(b.positions) || !a.faces.SequenceEqual(b.faces)) return false;
             for (int ch = 0; ch < 8; ch++)
                 if ((a.uvs[ch] == null) != (b.uvs[ch] == null) || (a.uvs[ch] != null && !a.uvs[ch].SequenceEqual(b.uvs[ch]))) return false;
@@ -405,6 +434,33 @@ namespace SashaRX.UnityMeshLab
 
         // Returns the number of corner values written into the document.
         static int WriteMesh(Autodesk.Fbx.FbxMesh mesh, Donor donor, Tagged tag, bool swapUv, HashSet<string> channelsWritten)
+        {
+            int written = donor.HasValues ? WriteValues(mesh, donor, tag, swapUv, channelsWritten) : 0;
+            return written + WriteRemovals(mesh, donor, swapUv, channelsWritten);
+        }
+
+        // Removed channels go last and from the highest FBX set down, so each is the last set
+        // when it goes; one before a kept set would renumber it and is refused.
+        static int WriteRemovals(Autodesk.Fbx.FbxMesh mesh, Donor donor, bool swapUv, HashSet<string> channelsWritten)
+        {
+            int removed = 0;
+            foreach (int ch in Enumerable.Range(0, 8).Where(c => donor.removedUvs[c]).OrderByDescending(c => FbxUvSet(c, swapUv)))
+            {
+                int set = FbxUvSet(ch, swapUv);
+                if (set >= FbxLayerChannels.UvElements(mesh).Count) continue;
+                FbxLayerChannels.RemoveUv(mesh, set);
+                channelsWritten.Add($"UV{ch} (removed)");
+                removed++;
+            }
+            if (donor.removedColors && FbxLayerChannels.RemoveColor(mesh))
+            {
+                channelsWritten.Add("vertex colours (removed)");
+                removed++;
+            }
+            return removed;
+        }
+
+        static int WriteValues(Autodesk.Fbx.FbxMesh mesh, Donor donor, Tagged tag, bool swapUv, HashSet<string> channelsWritten)
         {
             var topology = new FbxLayerChannels.Topology(mesh);
             var cornerToVertex = PairCorners(donor, tag, topology);
@@ -572,7 +628,8 @@ namespace SashaRX.UnityMeshLab
                 variant.generateSecondaryUV = false;
                 Uv2AssetPostprocessor.fbxOverwritePaths.Add(variantFbxPath);
             }
-            variant.SaveAndReimport();
+            try { variant.SaveAndReimport(); }
+            finally { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(variantFbxPath); }
         }
     }
 }
