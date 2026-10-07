@@ -176,6 +176,16 @@ namespace SashaRX.UnityMeshLab
             fz = inverse[6] * dx + inverse[7] * dy + inverse[8] * dz;
         }
 
+        /// <summary>A Unity direction (tangent, binormal) in FBX space, unit length: directions map by M, so back by its inverse.</summary>
+        public void DirectionToFbx(float x, float y, float z, out double fx, out double fy, out double fz)
+        {
+            fx = inverse[0] * x + inverse[1] * y + inverse[2] * z;
+            fy = inverse[3] * x + inverse[4] * y + inverse[5] * z;
+            fz = inverse[6] * x + inverse[7] * y + inverse[8] * z;
+            double len = Math.Sqrt(fx * fx + fy * fy + fz * fz);
+            if (len > 0) { fx /= len; fy /= len; fz /= len; }
+        }
+
         /// <summary>A Unity normal in FBX space: normals map by the inverse transpose, so back by the transpose.</summary>
         public void NormalToFbx(float x, float y, float z, out double fx, out double fy, out double fz)
         {

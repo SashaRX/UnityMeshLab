@@ -74,6 +74,19 @@ namespace SashaRX.UnityMeshLab
             return found;
         }
 
+        /// <summary>The direct children of <paramref name="parent"/> named <paramref name="name"/>.</summary>
+        internal static List<FbxNode> ChildrenNamed(FbxNode parent, string name)
+        {
+            var found = new List<FbxNode>();
+            if (parent == null) return found;
+            for (int i = 0; i < parent.GetChildCount(); i++)
+            {
+                var child = parent.GetChild(i);
+                if (child.GetName() == name) found.Add(child);
+            }
+            return found;
+        }
+
         static void Collect(FbxNode node, string name, List<FbxNode> found)
         {
             for (int i = 0; i < node.GetChildCount(); i++)
@@ -119,6 +132,17 @@ namespace SashaRX.UnityMeshLab
                 FbxLayerChannels.Layer(mesh, 0).SetNormals(normals);
                 var direct = normals.GetDirectArray();
                 FillIndexed(normals, normals.GetIndexArray(), cornerPoint, data.normals, 3, v => direct.Add(new FbxVector4(v[0], v[1], v[2], 0)));
+            }
+            if (data.tangents != null && data.binormals != null)
+            {
+                var tangents = FbxLayerElementTangent.Create(mesh, "Tangents");
+                FbxLayerChannels.Layer(mesh, 0).SetTangents(tangents);
+                var tangentArray = tangents.GetDirectArray();
+                FillIndexed(tangents, tangents.GetIndexArray(), cornerPoint, data.tangents, 3, v => tangentArray.Add(new FbxVector4(v[0], v[1], v[2], 0)));
+                var binormals = FbxLayerElementBinormal.Create(mesh, "Binormals");
+                FbxLayerChannels.Layer(mesh, 0).SetBinormals(binormals);
+                var binormalArray = binormals.GetDirectArray();
+                FillIndexed(binormals, binormals.GetIndexArray(), cornerPoint, data.binormals, 3, v => binormalArray.Add(new FbxVector4(v[0], v[1], v[2], 0)));
             }
             if (data.polygonMaterials != null && data.polygonMaterials.Length > 0)
                 WriteMaterials(mesh, data.polygonMaterials);
@@ -204,11 +228,16 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Gives <paramref name="node"/> the materials of <paramref name="from"/> listed in <paramref name="indices"/>, in that order.</summary>
         internal static void AddMaterials(FbxNode node, FbxNode from, IEnumerable<int> indices)
         {
+            bool any = false;
             foreach (int i in indices)
             {
                 var material = from.GetMaterial(i);
-                if (material != null) node.AddMaterial(material);
+                if (material == null) continue;
+                node.AddMaterial(material);
+                any = true;
             }
+            // A node with materials renders textured only in texture shading (checklist rule).
+            if (any) node.SetShadingMode(FbxNode.EShadingMode.eTextureShading);
         }
 
         /// <summary>

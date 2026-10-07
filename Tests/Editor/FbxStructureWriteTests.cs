@@ -139,6 +139,43 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNull(data.polygonMaterials);
         }
 
+        [Test]
+        public void MeshData_KeepsQuadsAsQuadsAndReversesThemWhole()
+        {
+            var a = Import(0, 0, 0); var b = Import(100, 0, 0); var c = Import(100, 100, 0); var d = Import(0, 100, 0);
+            var source = new FbxMeshData.Source
+            {
+                positions = new[] { a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z },
+                submeshTriangles = new[] { new[] { 0, 1, 2, 3 } },
+                submeshFaceSizes = new[] { 4 },
+            };
+            var data = FbxMeshData.FromTriangles(source, CubeFit(), true, null);
+            CollectionAssert.AreEqual(new[] { 4 }, data.polygonSizes, "a quad stays a quad");
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 3 }, data.polygonVertices, "points numbered in first use: a, d, c, b");
+            Assert.AreEqual(0.0, data.controlPoints[0], 1e-9, "the first corner stays first");
+            Assert.AreEqual(100.0, data.controlPoints[4], 1e-9, "then the last one: (0, 100, 0)");
+        }
+
+        [Test]
+        public void MeshData_WritesTheTangentFrameBackThroughTheMap()
+        {
+            var source = SeamedSquare();
+            var t = Import(1, 0, 0);
+            var o = Import(0, 0, 0);
+            // Unity tangent = the image of FBX +X, normal = the image of FBX +Z (the map is linear here).
+            var n = Import(0, 0, 1);
+            var tangent = new[] { t.x - o.x, t.y - o.y, t.z - o.z };
+            var normal = new[] { n.x - o.x, n.y - o.y, n.z - o.z };
+            source.normals = Enumerable.Range(0, 6).SelectMany(_ => normal).ToArray();
+            source.tangents = Enumerable.Range(0, 6).SelectMany(_ => new[] { tangent[0], tangent[1], tangent[2], 1f }).ToArray();
+            var data = FbxMeshData.FromTriangles(source, CubeFit(), false, null);
+            Assert.IsNotNull(data.tangents);
+            Assert.AreEqual(1, data.tangents[0], 1e-4, "tangent back on FBX +X");
+            Assert.AreEqual(0, data.tangents[1], 1e-4);
+            Assert.AreEqual(0, data.tangents[2], 1e-4);
+            Assert.AreEqual(1, Math.Abs(data.binormals[1]), 1e-4, "binormal along FBX Y");
+        }
+
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
         string folder;
 
@@ -317,6 +354,36 @@ namespace SashaRX.UnityMeshLab.Tests
                     for (int k = 0; k < e.Length; k++) Assert.AreEqual(e[k], a[k], 1e-6f, "same triangle, same orientation");
                 }
             }
+        }
+
+        [Test]
+        public void CreateMesh_PutsTheTangentFrameOnLayerZero()
+        {
+            string source = WriteSource(), edited = Path.Combine(folder, "edited.fbx");
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                var data = Triangle(0);
+                data.tangents = new double[] { 1, 0, 0, 1, 0, 0, 1, 0, 0 };
+                data.binormals = new double[] { 0, 1, 0, 0, 1, 0, 0, 1, 0 };
+                var node = FbxStructureEdit.AddSibling(FbxStructureEdit.NodeOf(document.Meshes[0], "Rock_LOD0"), "Rock_LOD1", true);
+                node.SetNodeAttribute(FbxStructureEdit.CreateMesh(document.Scene, "Rock_LOD1", data));
+                document.Save(edited);
+            }
+            using (var document = FbxSourceDocument.Load(edited))
+            {
+                var layer = FbxStructureEdit.FindNodes(document.Scene, "Rock_LOD1").Single().GetMesh().GetLayer(0);
+                Assert.IsNotNull(layer.GetTangents());
+                Assert.IsNotNull(layer.GetBinormals());
+            }
+        }
+
+        [Test]
+        public void ChildrenNamed_LooksOnlyUnderTheGivenParent()
+        {
+            using var document = FbxSourceDocument.Load(WriteSource());
+            var group = FbxStructureEdit.FindNodes(document.Scene, "Group").Single();
+            Assert.AreEqual(1, FbxStructureEdit.ChildrenNamed(group, "Rock_LOD0").Count);
+            Assert.IsEmpty(FbxStructureEdit.ChildrenNamed(document.Scene.GetRootNode(), "Rock_LOD0"), "a same-named node in another branch is not this parent's");
         }
 
         [Test]

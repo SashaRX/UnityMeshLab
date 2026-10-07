@@ -92,7 +92,8 @@ namespace SashaRX.UnityMeshLab
             var donors = CaptureDonors(entries, intent, generatedUv1, false, skip);
             // Writing UV1 switches 'Generate Lightmap UVs' off for the whole model, so every
             // mesh's generated UV1 goes into the file with it, edited or not.
-            bool bakeUv1 = generatedUv1 && intent.IncludesUv(1) && donors.Any(d => d.uvs[1] != null);
+            bool bakeUv1 = generatedUv1 && intent.IncludesUv(1)
+                && (donors.Any(d => d.uvs[1] != null) || (hasStructure && structure.wholeMeshUv1Edited));
             if (bakeUv1) donors = CaptureDonors(entries, intent, generatedUv1, true, skip);
             if (donors.Count == 0 && !hasStructure)
             {
@@ -126,14 +127,14 @@ namespace SashaRX.UnityMeshLab
                 cornersWritten += corners;
             }
 
-            bool uv1Written = channelsWritten.Contains("UV1");
             // After the channels: new nodes take the UV sets their source has by now, and UV1
             // too when it is being baked for the whole model.
             var structureLog = new List<string>();
             int structural = hasStructure
                 ? FbxStructureWrite.Apply(document, tagged, structure, swapUv, importer != null && importer.preserveHierarchy,
-                    bakeUv1 && uv1Written ? 2 : 0, structureLog)
+                    bakeUv1 ? 2 : 0, importer != null && importer.importTangents == ModelImporterTangents.Import, structureLog)
                 : 0;
+            bool uv1Written = channelsWritten.Contains("UV1") || (bakeUv1 && structural > 0);
 
             if (meshesWritten == 0 && structural == 0)
             {

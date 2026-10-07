@@ -25,16 +25,22 @@ namespace SashaRX.UnityMeshLab
         public readonly List<string> uvNames = new List<string>();
         /// <summary>rgba per corner; null writes no colours.</summary>
         public double[] colors;
+        /// <summary>xyz per corner each; null writes no tangent frame.</summary>
+        public double[] tangents, binormals;
 
         public int CornerCount => polygonVertices.Length;
 
-        /// <summary>A Unity-space triangle mesh, flattened.</summary>
+        /// <summary>A Unity-space triangle (or quad) mesh, flattened.</summary>
         internal sealed class Source
         {
             public float[] positions;
-            /// <summary>Triangle indices of each submesh.</summary>
+            /// <summary>Face indices of each submesh: triangles, or quads where <see cref="submeshFaceSizes"/> says 4.</summary>
             public int[][] submeshTriangles;
+            /// <summary>Corners per face of each submesh; null means triangles throughout.</summary>
+            public int[] submeshFaceSizes;
             public float[] normals;
+            /// <summary>xyzw per vertex (w: bitangent sign); null writes no tangent frame.</summary>
+            public float[] tangents;
             /// <summary>uv per vertex of each FBX UV set, in FBX set order.</summary>
             public readonly List<float[]> uvs = new List<float[]>();
             public readonly List<string> uvNames = new List<string>();
@@ -70,8 +76,11 @@ namespace SashaRX.UnityMeshLab
                         out data.normals[c * 3], out data.normals[c * 3 + 1], out data.normals[c * 3 + 2]);
                 }
             }
+            if (data.normals != null && source.tangents != null && source.tangents.Length == vertexCount * 4)
+                data.WriteTangentFrame(source, fit, cornerVertex);
             for (int set = 0; set < source.uvs.Count; set++)
             {
+                if (source.uvs[set] == null || source.uvs[set].Length != vertexCount * 2) break; // a set must exist at every corner, and sets go in order
                 data.uvs.Add(PerCorner(source.uvs[set], 2, cornerVertex));
                 data.uvNames.Add(set < source.uvNames.Count && !string.IsNullOrEmpty(source.uvNames[set]) ? source.uvNames[set] : "UVChannel_" + (set + 1));
             }
@@ -99,20 +108,22 @@ namespace SashaRX.UnityMeshLab
         {
             var cornerVertex = new List<int>();
             var corners = new List<int>();
+            var sizes = new List<int>();
             var points = new List<double>();
-            var materials = submeshMaterials != null ? new List<int>() : null;
+            bool hasMaterials = submeshMaterials != null && submeshMaterials.Length > 0;
+            var materials = hasMaterials ? new List<int>() : null;
             var controlPointOf = new Dictionary<int, int>(); // weld point → control point, in first use
-            var triangle = new int[3];
             for (int s = 0; s < source.submeshTriangles.Length; s++)
             {
-                var tris = source.submeshTriangles[s] ?? Array.Empty<int>();
-                for (int t = 0; t + 2 < tris.Length; t += 3)
+                var indices = source.submeshTriangles[s] ?? Array.Empty<int>();
+                int size = source.submeshFaceSizes != null && s < source.submeshFaceSizes.Length ? source.submeshFaceSizes[s] : 3;
+                var face = new int[size];
+                for (int f = 0; f + size <= indices.Length; f += size)
                 {
-                    triangle[0] = tris[t];
-                    triangle[1] = reverseWinding ? tris[t + 2] : tris[t + 1];
-                    triangle[2] = reverseWinding ? tris[t + 1] : tris[t + 2];
-                    if (Collapsed(triangle, pointOfVertex)) continue;
-                    foreach (int v in triangle)
+                    // Reversed: the first corner stays, the rest run backwards.
+                    for (int k = 0; k < size; k++) face[k] = indices[f + (reverseWinding && k > 0 ? size - k : k)];
+                    if (Collapsed(face, pointOfVertex)) continue;
+                    foreach (int v in face)
                     {
                         if (!controlPointOf.TryGetValue(pointOfVertex[v], out int cp))
                         {
@@ -123,21 +134,42 @@ namespace SashaRX.UnityMeshLab
                         corners.Add(cp);
                         cornerVertex.Add(v);
                     }
+                    sizes.Add(size);
                     materials?.Add(submeshMaterials[Math.Min(s, submeshMaterials.Length - 1)]);
                 }
             }
             controlPoints = points.ToArray();
             polygonVertices = corners.ToArray();
-            polygonSizes = new int[corners.Count / 3];
-            for (int p = 0; p < polygonSizes.Length; p++) polygonSizes[p] = 3;
+            polygonSizes = sizes.ToArray();
             polygonMaterials = materials?.ToArray();
             return cornerVertex;
         }
 
-        static bool Collapsed(int[] triangle, int[] pointOfVertex)
+        // A face whose corners do not land on as many distinct points.
+        static bool Collapsed(int[] face, int[] pointOfVertex)
         {
-            int a = pointOfVertex[triangle[0]], b = pointOfVertex[triangle[1]], c = pointOfVertex[triangle[2]];
-            return a == b || b == c || a == c;
+            for (int i = 0; i < face.Length; i++)
+                for (int j = i + 1; j < face.Length; j++)
+                    if (pointOfVertex[face[i]] == pointOfVertex[face[j]]) return true;
+            return false;
+        }
+
+        // Tangent and binormal per corner. Unity keeps a tangent and the bitangent's sign; the
+        // FBX keeps both vectors, so the binormal is rebuilt as cross(normal, tangent) · sign in
+        // Unity space and both go back as directions through the inverse map.
+        void WriteTangentFrame(Source source, FbxSpaceFit fit, List<int> cornerVertex)
+        {
+            tangents = new double[cornerVertex.Count * 3];
+            binormals = new double[cornerVertex.Count * 3];
+            for (int c = 0; c < cornerVertex.Count; c++)
+            {
+                int v = cornerVertex[c];
+                float tx = source.tangents[v * 4], ty = source.tangents[v * 4 + 1], tz = source.tangents[v * 4 + 2], w = source.tangents[v * 4 + 3];
+                float nx = source.normals[v * 3], ny = source.normals[v * 3 + 1], nz = source.normals[v * 3 + 2];
+                float bx = (ny * tz - nz * ty) * w, by = (nz * tx - nx * tz) * w, bz = (nx * ty - ny * tx) * w;
+                fit.DirectionToFbx(tx, ty, tz, out tangents[c * 3], out tangents[c * 3 + 1], out tangents[c * 3 + 2]);
+                fit.DirectionToFbx(bx, by, bz, out binormals[c * 3], out binormals[c * 3 + 1], out binormals[c * 3 + 2]);
+            }
         }
 
         static double[] PerCorner(float[] perVertex, int arity, List<int> cornerVertex)

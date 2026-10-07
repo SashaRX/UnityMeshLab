@@ -300,8 +300,10 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
 * A channel the working mesh dropped (Cleanup's attribute removal) is removed
   from the file: the colour set, or the last UV sets. Removing a UV set before
   one that stays would renumber it and is refused.
-* Changed renderer materials (Cleanup's material fixes) are not channel work:
-  the hub's save names them and offers the rebuild.
+* Changed renderer materials (Cleanup's material fixes) and changed normals or
+  tangents (an attribute added or removed, or normals edited on an
+  unrenumbered copy) are not channel work: the hub's save names them and
+  offers the rebuild.
 * The hub's Overwrite / Export New FBX (`All`) takes this path, together with
   the structure edit below, in one load and one save of the document.
 
@@ -321,7 +323,11 @@ The hub's `All` save adds or replaces geometry in the same document
   TS_UnityExport_SDK collider rule). Collision the file already holds with the
   same geometry is left alone.
 * A mesh whose faces or points changed gets a new FBX mesh on the same
-  node(s); node, transform and materials stay.
+  node(s); node, transform and materials stay. Quads (Keep Quads imports) are
+  written as quads. Instances edited differently are refused.
+* Collision is placed next to the mesh named by its sidecar key, or the one
+  LOD0 / unsuffixed mesh with that group key. Collision the file already holds
+  is compared as triangle loops on the same points, not only point sets.
 * Unity-space geometry goes back into control-point space through the affine
   map fitted to the source mesh's tagged import (`FbxSpaceFit`): whatever
   axis conversion, unit scale, mirroring or baked pivot the import applied is
@@ -331,17 +337,19 @@ The hub's `All` save adds or replaces geometry in the same document
   gives the Unity triangles back. New meshes carry normals, the source's
   number of UV sets (`UVChannel_N`, set i on layer i) and layer-0 colours
   when the source has them, all per corner, indexed and shared only within a
-  control point. Normals, colours and the one material element sit on layer 0
-  (TS_UnityExport_SDK I4); polygons are begun without the legacy material
-  bookkeeping.
+  control point. Normals, colours, the tangent frame and the one material
+  element sit on layer 0 (TS_UnityExport_SDK I4); polygons are begun without
+  the legacy material bookkeeping; a node given materials gets texture
+  shading.
 * Not written, by limitation: a smoothing-group element (the C# FBX SDK
   wrapper has no `FbxLayerElementSmoothing`), so a new or replaced mesh carries
   its shading as explicit normals only; a DCC rebuilds smoothing from them
-  (TS_UnityExport_SDK `SmoothingFromNormals`). Tangents / binormals are not
-  written either; Unity computes MikkTSpace on import, as with the TS
-  exporter's `stripTangentsBinormals`.
+  (TS_UnityExport_SDK `SmoothingFromNormals`). Tangents / binormals are
+  written only when the importer imports tangents (otherwise Unity computes
+  MikkTSpace, as with the TS exporter's `stripTangentsBinormals`).
 * Nothing is renamed, moved or normalised; a node is removed only when a new
-  one takes its name (a replaced node with children is refused). Hierarchy
+  one takes its name next to the same source (same parent; a same-named node
+  in another branch is left alone; a replaced node with children is refused). Hierarchy
   normalisation stays the explicit Prefab Builder action (the LOD-rebuild path).
 * Refused, nothing written, then a dialog offers the rebuild or "Save channels
   only": a LOD source node without an `_LOD<N>` suffix, a source that is the

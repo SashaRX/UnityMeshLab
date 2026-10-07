@@ -151,6 +151,9 @@ namespace Autodesk.Fbx
     }
     public class FbxNode : FbxObject {
         public enum EPivotSet { eSourcePivot, eDestinationPivot }
+        public enum EShadingMode { eHardShading, eWireFrame, eFlatShading, eLightShading, eTextureShading, eFullShading }
+        public void SetShadingMode(EShadingMode mode) { }
+        public EShadingMode GetShadingMode() => EShadingMode.eHardShading;
         public FbxPropertyEInheritType InheritType => new FbxPropertyEInheritType();
         public FbxNode GetParent() => null;
         public FbxNode RemoveChild(FbxNode node) => node;
@@ -262,6 +265,12 @@ namespace Autodesk.Fbx
     public class FbxLayerElementNormal : FbxLayerElementTemplateFbxVector4 {
         public static FbxLayerElementNormal Create(FbxLayerContainer owner, string name) => new FbxLayerElementNormal();
     }
+    public class FbxLayerElementTangent : FbxLayerElementTemplateFbxVector4 {
+        public static FbxLayerElementTangent Create(FbxLayerContainer owner, string name) => new FbxLayerElementTangent();
+    }
+    public class FbxLayerElementBinormal : FbxLayerElementTemplateFbxVector4 {
+        public static FbxLayerElementBinormal Create(FbxLayerContainer owner, string name) => new FbxLayerElementBinormal();
+    }
     public class FbxLayerElementTemplateFbxSurfaceMaterial : FbxLayerElement {
         public FbxLayerElementArrayTemplateInt GetIndexArray() => new FbxLayerElementArrayTemplateInt();
     }
@@ -281,6 +290,10 @@ namespace Autodesk.Fbx
         public void SetVertexColors(FbxLayerElementVertexColor colors) { }
         public FbxLayerElementNormal GetNormals() => null;
         public void SetNormals(FbxLayerElementNormal normals) { }
+        public FbxLayerElementTangent GetTangents() => null;
+        public void SetTangents(FbxLayerElementTangent tangents) { }
+        public FbxLayerElementBinormal GetBinormals() => null;
+        public void SetBinormals(FbxLayerElementBinormal binormals) { }
         public FbxLayerElementMaterial GetMaterials() => null;
         public void SetMaterials(FbxLayerElementMaterial materials) { }
     }

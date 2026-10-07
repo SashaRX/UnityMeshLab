@@ -48,6 +48,8 @@ namespace SashaRX.UnityMeshLab
         /// <summary>From the sidecar; the meshes are owned by the plan.</summary>
         internal readonly List<(string key, List<Mesh> meshes, bool convex)> collisions = new List<(string, List<Mesh>, bool)>();
         internal readonly List<string> refusals = new List<string>();
+        /// <summary>A mesh written whole carries UV1 work (repack, transfer) of its own.</summary>
+        internal bool wholeMeshUv1Edited;
 
         public bool IsEmpty => lods.Count == 0 && reshaped.Count == 0 && collisions.Count == 0 && refusals.Count == 0;
 
@@ -78,13 +80,22 @@ namespace SashaRX.UnityMeshLab
             bool InFile(MeshEntry e) => e.fbxMesh != null
                 && string.Equals(AssetDatabase.GetAssetPath(e.fbxMesh), fbxPath, StringComparison.OrdinalIgnoreCase);
             var sources = group.Where(p => InFile(p.entry) && p.entry.lodIndex == sourceLodIndex).Select(p => p.entry.fbxMesh.name).ToList();
+            string file = System.IO.Path.GetFileName(fbxPath);
             foreach (var (entry, result) in group)
             {
+                bool uv1Work = entry.repackedMesh != null || entry.transferredMesh != null;
                 if (InFile(entry))
                 {
-                    if (GeometryDiffers(entry.fbxMesh, result)) plan.reshaped.Add((entry.fbxMesh.name, result));
+                    if (GeometryDiffers(entry.fbxMesh, result))
+                    {
+                        AddReshaped(plan, entry.fbxMesh.name, result);
+                        plan.wholeMeshUv1Edited |= uv1Work;
+                    }
+                    else if (ShadingChanged(entry.fbxMesh, result))
+                        plan.refusals.Add($"'{entry.fbxMesh.name}' has changed normals or tangents; the document save writes them only with new geometry");
                     continue;
                 }
+                plan.wholeMeshUv1Edited |= uv1Work;
                 string name = FbxExport.ResolveExportMeshName(entry, result);
                 // Generated LODs are named after their source: base (pipeline suffixes and LOD stripped) + _LOD{n}.
                 string stem = MeshNaming.StripPipelineSuffixes(name);
@@ -94,9 +105,42 @@ namespace SashaRX.UnityMeshLab
             }
             int rematerialled = group.Count(p => MaterialsChanged(p.entry));
             if (rematerialled > 0)
-                plan.refusals.Add($"{rematerialled} renderer(s) of '{System.IO.Path.GetFileName(fbxPath)}' have changed materials; the document save does not rewrite material assignments");
+                plan.refusals.Add($"{rematerialled} renderer(s) of '{file}' have changed materials; the document save does not rewrite material assignments");
             plan.collisions.AddRange(SidecarStore.CollisionMeshes(fbxPath));
             return plan;
+        }
+
+        // Instances of one FBX mesh share it: the same new geometry twice is one replacement,
+        // different geometry cannot both be written.
+        static void AddReshaped(FbxStructurePlan plan, string name, Mesh mesh)
+        {
+            int at = plan.reshaped.FindIndex(r => r.name == name);
+            if (at < 0) { plan.reshaped.Add((name, mesh)); return; }
+            if (!SameMeshData(plan.reshaped[at].mesh, mesh))
+                plan.refusals.Add($"'{name}' is instanced and its instances were edited differently; they share one FBX mesh");
+        }
+
+        static bool SameMeshData(Mesh a, Mesh b)
+        {
+            if (a == b) return true;
+            if (a.subMeshCount != b.subMeshCount || !a.vertices.SequenceEqual(b.vertices)) return false;
+            for (int s = 0; s < a.subMeshCount; s++)
+                if (!a.GetIndices(s).SequenceEqual(b.GetIndices(s))) return false;
+            return true;
+        }
+
+        // Normals or tangents a channel save cannot write: the attribute was added or removed
+        // (Cleanup), or the normals changed on a working copy that kept the import's vertices.
+        // Tangent values are not compared: tools recompute them, which is no edit of the file's.
+        internal static bool ShadingChanged(Mesh imported, Mesh result)
+        {
+            if (imported == null || result == null || imported == result) return false;
+            if (imported.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal) != result.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Normal)) return true;
+            if (imported.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent) != result.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent)) return true;
+            if (!imported.isReadable || !result.isReadable || imported.vertexCount != result.vertexCount) return false;
+            // Only an unrenumbered copy pairs vertices by index.
+            if (!imported.vertices.SequenceEqual(result.vertices)) return false;
+            return !imported.normals.SequenceEqual(result.normals);
         }
 
         // The scene renderer's materials differ from the model's (e.g. after Cleanup's material
@@ -192,7 +236,7 @@ namespace SashaRX.UnityMeshLab
         /// Throws <see cref="FbxStructureRefusalException"/> for what cannot be placed.
         /// </summary>
         internal static int Apply(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged,
-            FbxStructurePlan plan, bool swapUv, bool preserveHierarchy, int minUvSets, List<string> log)
+            FbxStructurePlan plan, bool swapUv, bool preserveHierarchy, int minUvSets, bool writeTangents, List<string> log)
         {
             if (plan.refusals.Count > 0) throw new FbxStructureRefusalException(plan.refusals[0]);
             var scene = document.Scene;
@@ -207,31 +251,31 @@ namespace SashaRX.UnityMeshLab
             // replaced may also be the source of a LOD or a collider.
             foreach (var lod in plan.lods) RequireLodSibling(scene, Ref(lod.sourceName), lod.name, preserveHierarchy);
             var collisions = plan.collisions.Where(c => !CollisionUnchanged(c, tagged)).ToList();
-            foreach (var (key, _, _) in collisions) RequireSiblingRoom(scene, Ref(key), preserveHierarchy);
+            foreach (var (key, _, _) in collisions) RequireSiblingRoom(scene, Ref(CollisionSource(tagged, key)), preserveHierarchy);
             foreach (var (name, _) in plan.reshaped) Ref(name);
 
             int changes = 0;
             foreach (var lod in plan.lods)
             {
                 var r = Ref(lod.sourceName);
-                int removed = RemoveNamed(scene, lod.name);
-                var data = FbxMeshData.FromTriangles(SourceOf(lod.mesh, r, swapUv, minUvSets), r.fit, r.reverse, r.submeshMaterials);
+                int removed = RemoveNamed(r.node.GetParent(), lod.name);
+                var data = FbxMeshData.FromTriangles(SourceOf(lod.mesh, r, swapUv, minUvSets, writeTangents), r.fit, r.reverse, r.submeshMaterials);
                 var node = FbxStructureEdit.AddSibling(r.node, lod.name, true);
                 FbxStructureEdit.AddMaterials(node, r.node, Enumerable.Range(0, r.node.GetMaterialCount()));
                 node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, lod.name, data));
-                log.Add($"'{lod.name}': {data.polygonSizes.Length} triangle(s) next to '{r.node.GetName()}'{(removed > 0 ? " (replacing the node of that name)" : "")}");
+                log.Add($"'{lod.name}': {data.polygonSizes.Length} polygon(s) next to '{r.node.GetName()}'{(removed > 0 ? " (replacing the node of that name)" : "")}");
                 changes++;
             }
             foreach (var collision in collisions)
             {
-                changes += WriteCollision(scene, Ref(collision.key), collision, log);
+                changes += WriteCollision(scene, Ref(CollisionSource(tagged, collision.key)), collision, log);
             }
             foreach (var (name, mesh) in plan.reshaped)
             {
                 var r = Ref(name);
-                var data = FbxMeshData.FromTriangles(SourceOf(mesh, r, swapUv, minUvSets), r.fit, r.reverse, r.submeshMaterials);
+                var data = FbxMeshData.FromTriangles(SourceOf(mesh, r, swapUv, minUvSets, writeTangents), r.fit, r.reverse, r.submeshMaterials);
                 int nodes = FbxStructureEdit.ReplaceMesh(r.mesh, FbxStructureEdit.CreateMesh(scene, r.mesh.GetName(), data));
-                log.Add($"'{name}': geometry replaced ({data.polygonSizes.Length} triangle(s), {nodes} node(s); node, transform and materials kept)");
+                log.Add($"'{name}': geometry replaced ({data.polygonSizes.Length} polygon(s), {nodes} node(s); node, transform and materials kept)");
                 changes++;
             }
             return changes;
@@ -274,6 +318,18 @@ namespace SashaRX.UnityMeshLab
             };
         }
 
+        // The mesh a sidecar collision entry was made from: the mesh of that name, else the one
+        // LOD0 (or unsuffixed) mesh whose group key it is.
+        static string CollisionSource(Dictionary<string, FbxChannelWrite.Tagged> tagged, string key)
+        {
+            if (tagged.ContainsKey(key)) return key;
+            var matches = tagged.Keys.Where(n => !MeshNaming.IsCollision(n) && MeshNaming.GroupKey(n) == key && MeshNaming.LodIndex(n) <= 0).ToList();
+            if (matches.Count == 1) return matches[0];
+            throw new FbxStructureRefusalException(matches.Count == 0
+                ? $"collision '{key}': no mesh of the FBX is named '{key}' or has it as its group key"
+                : $"collision '{key}': {string.Join(", ", matches.Select(m => $"'{m}'"))} all have that group key");
+        }
+
         static void RequireLodSibling(FbxScene scene, Reference source, string name, bool preserveHierarchy)
         {
             string sourceNode = source.node.GetName();
@@ -293,10 +349,11 @@ namespace SashaRX.UnityMeshLab
                     "would change the imported hierarchy (normalise it in Prefab Builder first)");
         }
 
-        // Removes the nodes a new one replaces (same name); a node with children is not ours to drop.
-        static int RemoveNamed(FbxScene scene, string name)
+        // Removes the siblings a new node replaces (same name, same parent); a node with children
+        // is not ours to drop, and a same-named node elsewhere in the file is another branch's.
+        static int RemoveNamed(FbxNode parent, string name)
         {
-            var nodes = FbxStructureEdit.FindNodes(scene, name);
+            var nodes = FbxStructureEdit.ChildrenNamed(parent, name);
             foreach (var node in nodes)
             {
                 if (node.GetChildCount() > 0)
@@ -306,17 +363,35 @@ namespace SashaRX.UnityMeshLab
             return nodes.Count;
         }
 
-        static FbxMeshData.Source SourceOf(Mesh mesh, Reference reference, bool swapUv, int minUvSets)
+        static FbxMeshData.Source SourceOf(Mesh mesh, Reference reference, bool swapUv, int minUvSets, bool writeTangents)
         {
             var source = new FbxMeshData.Source
             {
                 positions = Flatten(mesh.vertices),
                 submeshTriangles = new int[mesh.subMeshCount][],
+                submeshFaceSizes = new int[mesh.subMeshCount],
             };
+            // Triangles and quads (Keep Quads imports) both go in as polygons of their own size.
             for (int s = 0; s < mesh.subMeshCount; s++)
-                source.submeshTriangles[s] = mesh.GetTopology(s) == MeshTopology.Triangles ? mesh.GetTriangles(s) : null;
+            {
+                var topology = mesh.GetTopology(s);
+                bool faces = topology == MeshTopology.Triangles || topology == MeshTopology.Quads;
+                source.submeshTriangles[s] = faces ? mesh.GetIndices(s) : null;
+                source.submeshFaceSizes[s] = topology == MeshTopology.Quads ? 4 : 3;
+            }
             var normals = mesh.normals;
             if (normals.Length == mesh.vertexCount) source.normals = Flatten(normals);
+            // Unity reads a tangent frame from the file only when the importer imports tangents.
+            var tangents = writeTangents ? mesh.tangents : null;
+            if (tangents != null && tangents.Length == mesh.vertexCount)
+            {
+                source.tangents = new float[tangents.Length * 4];
+                for (int v = 0; v < tangents.Length; v++)
+                {
+                    source.tangents[v * 4] = tangents[v].x; source.tangents[v * 4 + 1] = tangents[v].y;
+                    source.tangents[v * 4 + 2] = tangents[v].z; source.tangents[v * 4 + 3] = tangents[v].w;
+                }
+            }
 
             // The UV sets the source FBX mesh has, no more: a channel Unity generates on import
             // (lightmap UVs) is not written into the file, unless UV1 is being baked.
@@ -366,8 +441,9 @@ namespace SashaRX.UnityMeshLab
         static int WriteCollision(FbxScene scene, Reference r, (string key, List<Mesh> meshes, bool convex) collision, List<string> log)
         {
             string name = collision.key + "_COL";
-            int removed = FbxStructureEdit.FindNodes(scene, name).Count;
-            foreach (var old in FbxStructureEdit.FindNodes(scene, name)) FbxStructureEdit.RemoveSubtree(old);
+            var replaced = FbxStructureEdit.ChildrenNamed(r.node.GetParent(), name);
+            int removed = replaced.Count;
+            foreach (var old in replaced) FbxStructureEdit.RemoveSubtree(old);
             // Colliders never render: positions, triangles and normals only, no material
             // (TS_UnityExport_SDK PIPELINE_RULES: no UV, no vertex colour, no material on _COL).
 
@@ -415,45 +491,103 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
+        // Same triangles on the same points, same winding (within the precision an import
+        // round trip leaves): the imported corners snap to the stored vertices, then both
+        // triangle lists compare as multisets of point loops.
         static bool SameGeometry(FbxChannelWrite.Tagged tag, Mesh mesh)
         {
-            if (tag.submeshCorners.Sum(c => c.Length) != mesh.triangles.Length) return false;
-            var imported = new List<Vector3>();
-            for (int c = 0; c * 3 < tag.cornerPositions.Length; c++)
-                if (!float.IsNaN(tag.cornerPositions[c * 3]))
-                    imported.Add(new Vector3(tag.cornerPositions[c * 3], tag.cornerPositions[c * 3 + 1], tag.cornerPositions[c * 3 + 2]));
+            var triangles = mesh.triangles;
+            var importedCorners = tag.submeshCorners.SelectMany(c => c).ToArray();
+            if (importedCorners.Length != triangles.Length) return false;
+
             var stored = mesh.vertices;
+            var pointOf = new int[stored.Length];
+            var firstAt = new Dictionary<Vector3, int>();
+            for (int v = 0; v < stored.Length; v++)
+            {
+                if (!firstAt.TryGetValue(stored[v], out int point)) firstAt[stored[v]] = point = v;
+                pointOf[v] = point;
+            }
             float scale = 0;
             foreach (var p in stored) scale = Mathf.Max(scale, Mathf.Abs(p.x), Mathf.Abs(p.y), Mathf.Abs(p.z));
-            float tolerance = 1e-5f * Mathf.Max(scale, 1e-3f);
-            return Covers(imported, stored, tolerance) && Covers(stored, imported, tolerance);
-        }
+            var grid = new PointGrid(stored, 1e-5f * Mathf.Max(scale, 1e-3f));
 
-        // Every point of b has a point of a within tolerance (grid of tolerance-sized cells).
-        static bool Covers(IList<Vector3> a, IList<Vector3> b, float tolerance)
-        {
-            var grid = new Dictionary<(long, long, long), List<Vector3>>();
-            (long, long, long) Cell(Vector3 p) => ((long)Math.Floor(p.x / tolerance), (long)Math.Floor(p.y / tolerance), (long)Math.Floor(p.z / tolerance));
-            foreach (var p in a)
+            var counts = new Dictionary<(int, int, int), int>();
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
             {
-                var cell = Cell(p);
-                if (!grid.TryGetValue(cell, out var list)) grid[cell] = list = new List<Vector3>(1);
-                list.Add(p);
+                var key = Loop(pointOf[triangles[t]], pointOf[triangles[t + 1]], pointOf[triangles[t + 2]]);
+                counts.TryGetValue(key, out int n);
+                counts[key] = n + 1;
             }
-            foreach (var p in b)
-                if (!HasNear(grid, Cell(p), p, tolerance)) return false;
+            var snapped = new int[3];
+            for (int t = 0; t + 2 < importedCorners.Length; t += 3)
+            {
+                for (int k = 0; k < 3; k++)
+                {
+                    int c = importedCorners[t + k];
+                    if (c < 0 || c * 3 + 2 >= tag.cornerPositions.Length) return false;
+                    int v = grid.Nearest(new Vector3(tag.cornerPositions[c * 3], tag.cornerPositions[c * 3 + 1], tag.cornerPositions[c * 3 + 2]));
+                    if (v < 0) return false;
+                    snapped[k] = pointOf[v];
+                }
+                var key = Loop(snapped[0], snapped[1], snapped[2]);
+                if (!counts.TryGetValue(key, out int n) || n == 0) return false;
+                counts[key] = n - 1;
+            }
             return true;
         }
 
-        static bool HasNear(Dictionary<(long, long, long), List<Vector3>> grid, (long x, long y, long z) cell, Vector3 p, float tolerance)
+        // A triangle as a loop of points, started at its smallest: any starting corner, same winding.
+        static (int, int, int) Loop(int a, int b, int c)
         {
-            for (long dx = -1; dx <= 1; dx++)
-                for (long dy = -1; dy <= 1; dy++)
-                    for (long dz = -1; dz <= 1; dz++)
-                        if (grid.TryGetValue((cell.x + dx, cell.y + dy, cell.z + dz), out var list)
-                            && list.Exists(q => (q - p).sqrMagnitude <= tolerance * tolerance))
-                            return true;
-            return false;
+            if (a <= b && a <= c) return (a, b, c);
+            return b <= c ? (b, c, a) : (c, a, b);
+        }
+
+        // Vertices bucketed in tolerance-sized cells, for nearest-within-tolerance lookups.
+        sealed class PointGrid
+        {
+            readonly Vector3[] points;
+            readonly float tolerance;
+            readonly Dictionary<(long, long, long), List<int>> cells = new Dictionary<(long, long, long), List<int>>();
+
+            public PointGrid(Vector3[] points, float tolerance)
+            {
+                this.points = points;
+                this.tolerance = tolerance;
+                for (int i = 0; i < points.Length; i++)
+                {
+                    var cell = Cell(points[i]);
+                    if (!cells.TryGetValue(cell, out var list)) cells[cell] = list = new List<int>(1);
+                    list.Add(i);
+                }
+            }
+
+            (long, long, long) Cell(Vector3 p) => ((long)Math.Floor(p.x / tolerance), (long)Math.Floor(p.y / tolerance), (long)Math.Floor(p.z / tolerance));
+
+            /// <summary>The closest point within tolerance of <paramref name="p"/>, or -1.</summary>
+            public int Nearest(Vector3 p)
+            {
+                var (cx, cy, cz) = Cell(p);
+                int best = -1;
+                float bestDistance = tolerance * tolerance;
+                for (long dx = -1; dx <= 1; dx++)
+                    for (long dy = -1; dy <= 1; dy++)
+                        for (long dz = -1; dz <= 1; dz++)
+                            if (cells.TryGetValue((cx + dx, cy + dy, cz + dz), out var list))
+                                best = Closest(list, p, best, ref bestDistance);
+                return best;
+            }
+
+            int Closest(List<int> candidates, Vector3 p, int best, ref float bestDistance)
+            {
+                foreach (int i in candidates)
+                {
+                    float d = (points[i] - p).sqrMagnitude;
+                    if (d <= bestDistance) { bestDistance = d; best = i; }
+                }
+                return best;
+            }
         }
     }
 }

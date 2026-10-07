@@ -428,6 +428,9 @@ namespace SashaRX.UnityMeshLab
                 FbxExport.FirstRealMaterial(ctx?.MeshEntries),
                 isVariantExport ? null : ctx?.LodGroup);
             if (!exported) return false;
+            // A variant written into the project may already have a persistent sidecar of its own.
+            if (isVariantExport && intent.IncludesUv(1) && outputFbxPathOverride.StartsWith("Assets/", StringComparison.Ordinal))
+                SyncPersistentSidecar(outputFbxPathOverride, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
             if (!isVariantExport)
             {
                 // Every source save that wrote UV1 leaves a persistent sidecar replaying the same.
