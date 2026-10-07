@@ -15,6 +15,46 @@ LITERALS_AND_COMMENTS = re.compile(
 )
 TOOL = re.compile(r'(?:(?:public|internal|private|protected|sealed|abstract|static|partial|new)\s+)*class\s+(\w+)[^{;]*:\s*[^{;]*\bIUvTool\b')
 ATTRIBUTES = re.compile(r'(?:\[[^\]]*\]\s*)+$')
+SCOPES = re.compile(
+    r'\bnamespace\s+([\w.]+)\s*([;{])'
+    r'|\b(?:record(?:\s+(?:class|struct))?(?=\s+\w+\s*[({<:;])|class|struct|interface|enum)\s+(\w+)'
+    r'|\bdelegate\s+[\w.<>\[\],?\s]+?\s+(\w+)\s*[<(]'
+    r'|[{}]'
+)
+USING = re.compile(r'^\s*(?:global\s+)?using\s+([\w.]+)\s*;', re.M)
+TOOLS_DIR = 'Tools'
+
+
+def declarations(code):
+    """Return ([(type name, namespace, top-level)], namespaces the file opens).
+
+    Top-level means only namespace scopes enclose the type; a nested type is
+    reached through its owner. Braces are tracked as a scope stack so nested
+    namespace blocks and file-scoped namespaces both resolve correctly.
+    """
+    file_namespace, stack, types, namespaces = '', [], [], set()
+    for token in SCOPES.finditer(code):
+        namespace = '.'.join(part for part in [file_namespace, *(s for s in stack if s)] if part)
+        if token.group(1):
+            opened = f'{namespace}.{token.group(1)}' if namespace else token.group(1)
+            namespaces.add(opened)
+            if token.group(2) == ';':
+                file_namespace = token.group(1)
+            else:
+                stack.append(token.group(1))
+        elif token.group(3) or token.group(4):
+            types.append((token.group(3) or token.group(4), namespace, all(stack)))
+        elif token.group() == '{':
+            stack.append(None)
+        elif stack:
+            stack.pop()
+    return types, namespaces
+
+
+def sees(namespace, file_namespaces, usings):
+    """C# name lookup reaches a namespace's types from inside it, its children, or a using directive."""
+    return (not namespace or namespace in usings
+            or any(f == namespace or f.startswith(namespace + '.') for f in file_namespaces))
 
 
 def scan(root):
@@ -40,7 +80,41 @@ def scan(root):
             for match in reference.finditer(code):
                 findings.append((path, code.count('\n', 0, match.start()) + 1,
                                  f'direct dependency on {name}; use a shared library or contract'))
+    findings.extend(tool_folder_findings(root, sources, owners))
     return owners, findings
+
+
+def tool_folder_findings(root, sources, owners):
+    """Code outside Tools/ that resolves to a top-level type declared under Tools/."""
+    parsed = {path: declarations(code) for path, code in sources.items()}
+    in_tools = {path for path in sources if path.relative_to(root).parts[0] == TOOLS_DIR}
+    elsewhere = {}
+    for path, (types, _) in parsed.items():
+        if path not in in_tools:
+            for name, namespace, top_level in types:
+                if top_level:
+                    elsewhere.setdefault(name, set()).add(namespace)
+    for owner in sorted(in_tools):
+        for name, namespace, top_level in parsed[owner][0]:
+            if not top_level or name in owners:
+                continue
+            reference = re.compile(r'\b' + re.escape(name) + r'\b')
+            qualified = re.compile(r'\b' + re.escape(f'{namespace}.{name}') + r'\b') if namespace else None
+            for path, code in sources.items():
+                if path in in_tools:
+                    continue
+                types, namespaces = parsed[path]
+                usings = set(USING.findall(code))
+                # A same-named type the file declares or can see elsewhere wins (or is a compile error).
+                shadowed = any(n == name for n, _, _ in types) or any(
+                    ns != namespace and sees(ns, namespaces, usings) for ns in elsewhere.get(name, ()))
+                if shadowed or not sees(namespace, namespaces, usings):
+                    matches = qualified.finditer(code) if qualified else ()
+                else:
+                    matches = reference.finditer(code)
+                for match in matches:
+                    yield (path, code.count('\n', 0, match.start()) + 1,
+                           f'library code depends on {name} from {TOOLS_DIR}/; move it to the library that owns it')
 
 
 def main():
@@ -66,6 +140,46 @@ def main():
                 assert 'Tab' in scan(root)[0] and not scan(root)[1], modifiers
                 library.write_text('class Library { Tab tool; }', encoding='utf-8')
                 assert scan(root)[1], f'Multi-line {modifiers} tool dependencies must fail'
+            tools = root / TOOLS_DIR
+            tools.mkdir()
+
+            def tool_folder(code):
+                library.write_text(code, encoding='utf-8')
+                return [item for item in scan(root)[1] if 'from Tools/' in item[2]]
+
+            tool.write_text('[MeshLabTool("tab")] public class Tab : IUvTool { enum Kind { A } }', encoding='utf-8')
+            (tools / 'Panel.cs').write_text('namespace N {\n class Panel { struct Result {} }\n}', encoding='utf-8')
+            assert not tool_folder('namespace N { class Library { enum Kind { B } Result result; } }'), \
+                'Nested types are not tool-folder dependencies'
+            assert tool_folder('namespace N { class Library { Panel panel; } }'), 'Library use of a tool-folder type must fail'
+            assert not tool_folder('class Library { Panel panel; }'), 'A namespace the file cannot see is not a dependency'
+            (tools / 'Other.cs').write_text('namespace N { class Other { Panel panel; } }', encoding='utf-8')
+            assert not tool_folder('class Library {}'), 'Tool-folder types may be shared between tool-folder files'
+            (tools / 'Intent.cs').write_text('namespace N;\npublic enum Intent { None }\nclass Holder { class Inner {} }', encoding='utf-8')
+            assert tool_folder('namespace N { class Library { Intent intent; } }'), 'File-scoped namespace types count as top-level'
+            assert not tool_folder('namespace N { class Library { Inner inner; } }'), \
+                'A type nested under a file-scoped namespace is not top-level'
+            (tools / 'Deep.cs').write_text('namespace A { namespace B { enum Deep { X } } }', encoding='utf-8')
+            assert tool_folder('namespace A.B.C { class Library { Deep deep; } }'), 'Types in nested namespace blocks count as top-level'
+            assert tool_folder('using A.B;\nclass Library { Deep deep; }'), 'A using directive makes a tool-folder type visible'
+            assert tool_folder('class Library { A.B.Deep deep; }'), 'Qualified references must fail'
+            assert not tool_folder('namespace A { class Library { Deep deep; } }'), 'A parent namespace does not see child types'
+            (tools / 'Settings.cs').write_text('namespace ToolUi { class Settings {} }', encoding='utf-8')
+            (root / 'Shared.cs').write_text('namespace Shared { class Settings {} }', encoding='utf-8')
+            assert not tool_folder('namespace Shared { class Library { Settings settings; } }'), \
+                'A same-named type in another namespace is not a dependency'
+            assert not tool_folder('using ToolUi;\nnamespace Shared { class Library { Settings settings; } }'), \
+                'An ambiguous simple name is left to the compiler'
+            assert tool_folder('namespace Shared { class Library { ToolUi.Settings settings; } }'), \
+                'A qualified reference to the tool-folder type still fails'
+            (tools / 'Pair.cs').write_text('namespace N { public readonly record struct Pair(int A); }', encoding='utf-8')
+            found = tool_folder('namespace N { class Library { Pair pair; } }')
+            assert any('Pair from Tools/' in item[2] for item in found), 'Record declarations capture the type name'
+            (tools / 'Callback.cs').write_text('namespace N { public delegate Task<bool> ExportCallback(int a); }', encoding='utf-8')
+            found = tool_folder('namespace N { class Library { ExportCallback callback; } }')
+            assert any('ExportCallback from Tools/' in item[2] for item in found), 'Delegate declarations are types'
+            assert not tool_folder('namespace N { class Library { void M() { System.Action a = delegate (int x) { }; } } }'), \
+                'Anonymous delegates declare no type'
         print('tool dependency guard self-test passed')
         return 0
     owners, findings = scan(args.editor_root)
