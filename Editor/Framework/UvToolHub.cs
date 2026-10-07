@@ -1139,18 +1139,17 @@ namespace SashaRX.UnityMeshLab
         // on the mesh the context displays AT that channel — a repacked or transferred
         // mesh holds the UV1 its original lacks — and before this frame's items are
         // collected, so they are collected from that mesh.
-        bool RestorePreferredChannel()
+        void RestorePreferredChannel()
         {
-            if (ctx.PreviewUvChannel == preferredUvChannel) return false;
+            if (ctx.PreviewUvChannel == preferredUvChannel) return;
             int fallback = ctx.PreviewUvChannel;
             ctx.PreviewUvChannel = preferredUvChannel;
             foreach (var entry in canvas.Entries(ctx))
             {
                 var mesh = entry != null ? ctx.DMesh(entry) : null;
-                if (mesh != null && canvas.RdUvCached(mesh, preferredUvChannel) != null) { canvas.ClearHoverState(); return true; }
+                if (mesh != null && canvas.RdUvCached(mesh, preferredUvChannel) != null) { canvas.ClearHoverState(); return; }
             }
             ctx.PreviewUvChannel = fallback;
-            return false;
         }
 
         void PrepareInspectionEntries()
