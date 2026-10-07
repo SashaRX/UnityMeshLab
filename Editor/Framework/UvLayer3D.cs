@@ -19,7 +19,6 @@ namespace SashaRX.UnityMeshLab
         public int LayerSize = 1024;
         static readonly Color HoverColor = new Color(.25f, 1f, .95f, .35f);
         static readonly Color SelectedColor = new Color(1f, .95f, .2f, .4f);
-        static readonly Color WireShaded = new Color(0.05f, 0.05f, 0.05f, 1f);
 
         readonly Dictionary<int, Layer> layers = new Dictionary<int, Layer>();
         readonly Dictionary<long, Mesh> shellMeshes = new Dictionary<long, Mesh>();
@@ -65,7 +64,7 @@ namespace SashaRX.UnityMeshLab
                 var entry = i < entries.Count ? entries[i] : null;
                 // The status bar's Wire is the one wireframe toggle of both canvas modes,
                 // tool content included; the UV layer and spot picking need an entry.
-                if (canvas.ShowWireframe) view.DrawWire(item.mesh, item.matrix, WireShaded);
+                if (canvas.ShowWireframe) view.DrawWire(item.mesh, item.matrix, view.WireColor);
                 if (entry == null) continue;
                 if (layerVisible && UvTopology.HasUv(item.mesh, ctx.PreviewUvChannel) && MeshInspection.HasOnlyTriangles(item.mesh))
                 {

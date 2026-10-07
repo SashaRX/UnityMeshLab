@@ -666,6 +666,59 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void UvOverlayAppliesVertexColorsOnlyWhenAsked()
+        {
+            // The viewport's grid draws its fades as vertex colours through this shader;
+            // the UV layer on a model must keep ignoring the model's own vertex colours.
+            var mesh = Quad();
+            var cameraObject = new GameObject("UV overlay vertex colour test camera") { hideFlags = HideFlags.HideAndDontSave };
+            Material material = null; RenderTexture target = null; Texture2D pixels = null;
+            var previous = RenderTexture.active;
+            try {
+                mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
+                var tint = new Color(1f, 0f, 0f, .5f);
+                mesh.colors = new[] { tint, tint, tint, tint };
+                var shader = Shader.Find("Hidden/MeshLab/UvOverlay"); Assert.IsNotNull(shader);
+                material = new Material(shader);
+                material.SetTexture("_MainTex", Texture2D.whiteTexture);
+                material.SetColor("_Color", Color.white);
+                target = new RenderTexture(16, 16, 24, RenderTextureFormat.ARGB32); target.Create();
+                var camera = cameraObject.AddComponent<Camera>();
+                camera.enabled = false; camera.orthographic = true; camera.orthographicSize = .5f;
+                camera.transform.position = new Vector3(.5f, .5f, -2);
+                camera.clearFlags = CameraClearFlags.SolidColor; camera.backgroundColor = Color.black;
+                camera.cullingMask = 1 << 31; camera.targetTexture = target;
+                pixels = new Texture2D(16, 16, TextureFormat.RGBA32, false);
+
+                Color Render()
+                {
+                    Graphics.DrawMesh(mesh, Matrix4x4.identity, material, 31, camera, 0, null,
+                        UnityEngine.Rendering.ShadowCastingMode.Off, false);
+                    camera.Render();
+                    RenderTexture.active = target;
+                    pixels.ReadPixels(new Rect(0, 0, 16, 16), 0, 0); pixels.Apply();
+                    return pixels.GetPixel(8, 8);
+                }
+
+                var plain = Render();
+                Assert.That(plain.g, Is.GreaterThan(.9f), "by default the overlay is the texture times the tint, whatever the vertices carry");
+                material.SetFloat("_UseVertexColor", 1);
+                var coloured = Render();
+                Assert.That(coloured.g, Is.LessThan(.1f), "asked for, the vertex colour multiplies in");
+                // Half alpha over black: .5 in a gamma project, ~.73 read back sRGB-encoded in a linear one.
+                Assert.That(coloured.r, Is.InRange(.35f, .8f), "and its alpha blends the line over the background");
+            }
+            finally {
+                RenderTexture.active = previous;
+                Object.DestroyImmediate(cameraObject);
+                if (target) { target.Release(); Object.DestroyImmediate(target); }
+                if (pixels) Object.DestroyImmediate(pixels);
+                if (material) Object.DestroyImmediate(material);
+                Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [Test]
         public void UvOverlayShowsCheckerEvenWhenModelVertexColorsAreBlack()
         {
             var mesh = Quad();
