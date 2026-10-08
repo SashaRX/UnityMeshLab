@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
 
@@ -56,10 +57,15 @@ namespace SashaRX.UnityMeshLab
             if (!string.IsNullOrEmpty(path)) Replay(path);
         }
 
-        internal static async void Replay(string path)
+        internal static void Replay(string path)
         {
             if (replayRunning) return;
             replayRunning = true;
+            _ = ReplayAsync(path);
+        }
+
+        static async Task ReplayAsync(string path)
+        {
             try { await TransferCaseReplay.Replay(path); }
             catch (Exception error) { UvtLog.Error(UvtLog.Category.Benchmark, "[TransferReplay] " + error.Message); }
             finally { replayRunning = false; }

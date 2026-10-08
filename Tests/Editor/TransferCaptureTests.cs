@@ -23,6 +23,36 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ExactUvComparison_DetectsSingleBitChangesAndSignedZero()
+        {
+            var value = new Vector2(.1f, .2f);
+            var changed = value;
+            changed.x = BitConverter.Int32BitsToSingle(BitConverter.SingleToInt32Bits(value.x) ^ 1);
+            Assert.IsFalse(TransferCaseReplay.SameUvBits(value, changed));
+            Assert.IsTrue(TransferCaseReplay.SameUvBits(value, value));
+            Assert.IsFalse(TransferCaseReplay.SameUvBits(Vector2.zero, new Vector2(BitConverter.Int32BitsToSingle(int.MinValue), 0)));
+        }
+
+        [Test]
+        public void Capture_RecordsActualSettingsOfTheDerivedTransferTool()
+        {
+            var context = new UvToolContext { CaptureNextTransfer = true };
+            var workflow = new LightmapTransferTool { SymmetrySplitMode = SymmetrySplitShells.ThresholdMode.Adaptive };
+            typeof(UvTransferWorkflow).GetField("stageRunRepack", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(workflow, false);
+            var capture = TransferCaseCapture.Begin(context, workflow, "Settings fixture");
+            try {
+                Assert.IsNotNull(capture);
+                var settings = capture.Data.stages[0].settings;
+                Assert.AreEqual("False", settings.Find(setting => setting.owner == "workflow" && setting.name == "stageRunRepack").value);
+                Assert.AreEqual("Adaptive", settings.Find(setting => setting.owner == "workflow" && setting.name == "SymmetrySplitMode").value);
+            }
+            finally {
+                capture?.Finish(true);
+                if (capture != null && Directory.Exists(capture.Folder)) Directory.Delete(capture.Folder, true);
+            }
+        }
+
+        [Test]
         public void Snapshot_PreservesFloatBitsUvDimensionsAndSubmeshes()
         {
             var mesh = Quad(); Mesh restored = null;

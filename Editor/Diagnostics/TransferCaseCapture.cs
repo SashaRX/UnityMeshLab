@@ -98,7 +98,7 @@ namespace SashaRX.UnityMeshLab
             Safe(() => {
                 var stage = new Stage { name = name };
                 ReadSettings(stage.settings, context, "context");
-                ReadSettings(stage.settings, workflow, "workflow");
+                if (workflow is UvTransferWorkflow uvWorkflow) uvWorkflow.AppendDiagnosticSettings(stage.settings);
                 stage.settings.Add(new Setting { owner = "context", name = "PipeSettings", value = JsonUtility.ToJson(context.PipeSettings) });
                 foreach (var entry in context.MeshEntries) {
                     if (!entry.include || !entry.originalMesh) continue;
@@ -216,7 +216,7 @@ namespace SashaRX.UnityMeshLab
         static void ReadSettings(List<Setting> output, object source, string owner)
         {
             if (source == null) return;
-            foreach (var field in source.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)) {
+            foreach (var field in source.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public)) {
                 var type = field.FieldType;
                 if (!type.IsPrimitive && !type.IsEnum && type != typeof(string)) continue;
                 output.Add(new Setting { owner = owner, name = field.Name,

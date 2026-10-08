@@ -102,6 +102,8 @@ the result. This verifies synthetic fixtures; a user's failing model still needs
 next-run capture before declaring its symmetry/overlap issue fixed.
 
 After integration with PR #225's geometry helpers and the latest main, the broader
-Unity run passed 319 tests, failed none and skipped one source-normal convention
+Unity run passed 321 tests, failed none and skipped one source-normal convention
 fixture because the isolated test project has no URP source shader. Both FBX compile
 variants, identifier/dependency checks and `.meta` coverage passed.
+The final capture regressions also verify settings from the derived UV Transfer tool
+and detect single-bit UV differences and signed zero. Replay file I/O is asynchronous.

@@ -31,7 +31,9 @@ namespace SashaRX.UnityMeshLab
             if (UvProgress.IsActive) throw new InvalidOperationException("Wait for the active operation to finish.");
             var file = new FileInfo(manifestPath);
             if (!file.Exists || file.Length > 64L * 1024 * 1024) throw new InvalidDataException("Missing or oversized transfer manifest.");
-            var manifest = JsonUtility.FromJson<TransferCaseCapture.Manifest>(File.ReadAllText(file.FullName));
+            string json = await File.ReadAllTextAsync(file.FullName);
+            if (UvProgress.IsActive) throw new InvalidOperationException("Wait for the active operation to finish.");
+            var manifest = JsonUtility.FromJson<TransferCaseCapture.Manifest>(json);
             if (manifest == null || manifest.schema != 1 || manifest.pairs == null || manifest.pairs.Count > 10000)
                 throw new InvalidDataException("Unsupported transfer manifest.");
             string root = file.DirectoryName;
@@ -59,7 +61,7 @@ namespace SashaRX.UnityMeshLab
             }
             catch (Exception error) { report.error = error.ToString(); throw; }
             finally {
-                try { File.WriteAllText(Path.Combine(report.folder, "replay.json"), JsonUtility.ToJson(report, true)); }
+                try { await File.WriteAllTextAsync(Path.Combine(report.folder, "replay.json"), JsonUtility.ToJson(report, true)); }
                 finally { if (UvProgress.CancelRequested) UvProgress.Cancel(); else UvProgress.End(); }
             }
             UvtLog.Info(UvtLog.Category.Benchmark, "[TransferReplay] " + Path.Combine(report.folder, "replay.json"));
@@ -84,7 +86,7 @@ namespace SashaRX.UnityMeshLab
                 if (expected.Length != first.uv2.Length) item.changedVertices = Math.Max(expected.Length, first.uv2.Length);
                 else for (int i = 0; i < expected.Length; ++i) {
                     var delta = expected[i] - first.uv2[i];
-                    if (expected[i].x != first.uv2[i].x || expected[i].y != first.uv2[i].y) ++item.changedVertices;
+                    if (!SameUvBits(expected[i], first.uv2[i])) ++item.changedVertices;
                     item.maximumUvDelta = Mathf.Max(item.maximumUvDelta, delta.magnitude);
                 }
                 item.changedMappings = MappingChanges(pair.result, first);
@@ -159,5 +161,9 @@ namespace SashaRX.UnityMeshLab
         static void CheckUv(Vector2[] uv)
         { foreach (var value in uv) if (!Finite(value.x) || !Finite(value.y)) throw new InvalidDataException("Non-finite UV."); }
         static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
+
+        internal static bool SameUvBits(Vector2 a, Vector2 b)
+            => BitConverter.SingleToInt32Bits(a.x) == BitConverter.SingleToInt32Bits(b.x)
+                && BitConverter.SingleToInt32Bits(a.y) == BitConverter.SingleToInt32Bits(b.y);
     }
 }

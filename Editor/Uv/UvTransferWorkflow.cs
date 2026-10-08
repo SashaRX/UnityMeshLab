@@ -138,6 +138,21 @@ namespace SashaRX.UnityMeshLab
         // toggle so the operator can run the pure UV weld alone.
         bool stageWeldRunMeshopt = true;
 
+        internal void AppendDiagnosticSettings(List<TransferCaseCapture.Setting> output)
+        {
+            void Add(string name, object value) => output.Add(new TransferCaseCapture.Setting {
+                owner = "workflow", name = name, value = Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture)
+            });
+            Add(nameof(SymmetrySplitMode), SymmetrySplitMode);
+            Add(nameof(splitTargetsInSymmetryStep), splitTargetsInSymmetryStep);
+            Add(nameof(skipSymmetrySplitStep), skipSymmetrySplitStep);
+            Add(nameof(stageRunAnalyzeUv0), stageRunAnalyzeUv0);
+            Add(nameof(stageRunWeldUv0), stageRunWeldUv0);
+            Add(nameof(stageRunRepack), stageRunRepack);
+            Add(nameof(stageRunTransfer), stageRunTransfer);
+            Add(nameof(stageWeldRunMeshopt), stageWeldRunMeshopt);
+        }
+
         // Per-stage outcome from the most recent ExecFullPipeline run.
         // Drawn as a small status icon at the right of each stage row.
         enum StageStatus { Idle, Running, Success, Failed, Skipped }
