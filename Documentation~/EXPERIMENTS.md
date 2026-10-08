@@ -140,6 +140,11 @@
   variants проходят. Все 42 строки до/после детерминированы, сохраняют frozen inputs
   и имеют complete overlap scans. Local artifacts: `_results~/pre-optimize-20261009/`;
   provenance — `075fa92` плюс recorded dirty working tree с этим patch.
+- Замечание Sonar S6640 устранено managed-упаковкой position/identity через
+  переиспользуемые массивы и `Buffer.BlockCopy`, без unsafe блока. Проверен diff
+  автоматического commit `2cb376e`: 64/64 tests capture/quality и повтор всех 42
+  imported-FBX строк на clean checkout сохраняют те же quality counters. Повтор
+  имеет `gitDirty=false` и SHA `2cb376e`; это отдельная проверка после 193-test subset.
 - Контроль и исправленный pre-optimize сохраняют 1 вырожденную target-грань и 1299
   stretched faces на шкафе: устранено именно добавочное ухудшение от dedup. Это
   отдельные атласы пар, не UI auto-tune/shared-atlas run; reverse correspondence,
