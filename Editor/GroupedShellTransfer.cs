@@ -485,7 +485,7 @@ namespace SashaRX.UnityMeshLab
             HashSet<int> excludeSources,
             out int chosenSrc, out float chosenDistSq, out float chosenAvg3D,
             Vector3 tgtNormal = default, Vector3[] srcAvgNormal = null,
-            float meshDiag = 0f, TransferMatchTrace.Shell trace = null, string tracePhase = "match")
+            TransferMatchTrace.Shell trace = null, string tracePhase = "match")
         {
             chosenSrc = -1;
             chosenDistSq = float.MaxValue;
@@ -1404,7 +1404,7 @@ namespace SashaRX.UnityMeshLab
                             shellBvh3D, shellBvh3DFaceMap,
                             tCentroid, kMaxRetries, kGoodDistSq, null,
                             out chosenSrc, out chosenDistSq, out chosenAvg3D,
-                            tgtAvgNormal[tsi], srcAvgNormal, meshDiagonal, shellTrace);
+                            tgtAvgNormal[tsi], srcAvgNormal, shellTrace);
                     }
                 }
 
@@ -1642,7 +1642,7 @@ namespace SashaRX.UnityMeshLab
                                 result.targetShellCentroids[tsi],
                                 kMaxRetries * 3, kGoodDistSq, claimed,
                                 out int newSrc, out float newDistSq, out float newAvg3D,
-                                tgtAvgNormal[tsi], srcAvgNormal, meshDiagonal, trace?.ForShell(tsi), "dedup");
+                                tgtAvgNormal[tsi], srcAvgNormal, trace?.ForShell(tsi), "dedup");
 
                             if (newSrc >= 0)
                             {

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
 
@@ -47,16 +48,16 @@ namespace SashaRX.UnityMeshLab
         }
 
         [MenuItem(Menu + "Replay Last Transfer Capture")]
-        internal static void ReplayLast() => Replay(TransferCaseCapture.LastManifest);
+        internal static void ReplayLast() => _ = Replay(TransferCaseCapture.LastManifest);
 
         [MenuItem(Menu + "Replay Transfer Capture File")]
         static void ReplayFile()
         {
             string path = EditorUtility.OpenFilePanel("Transfer capture manifest", SweepRunner.ReportsRoot(), "json");
-            if (!string.IsNullOrEmpty(path)) Replay(path);
+            if (!string.IsNullOrEmpty(path)) _ = Replay(path);
         }
 
-        internal static async void Replay(string path)
+        internal static async Task Replay(string path)
         {
             if (replayRunning) return;
             replayRunning = true;

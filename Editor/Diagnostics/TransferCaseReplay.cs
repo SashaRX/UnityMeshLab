@@ -31,7 +31,7 @@ namespace SashaRX.UnityMeshLab
             if (UvProgress.IsActive) throw new InvalidOperationException("Wait for the active operation to finish.");
             var file = new FileInfo(manifestPath);
             if (!file.Exists || file.Length > 64L * 1024 * 1024) throw new InvalidDataException("Missing or oversized transfer manifest.");
-            var manifest = JsonUtility.FromJson<TransferCaseCapture.Manifest>(File.ReadAllText(file.FullName));
+            var manifest = JsonUtility.FromJson<TransferCaseCapture.Manifest>(await File.ReadAllTextAsync(file.FullName));
             if (manifest == null || manifest.schema != 1 || manifest.pairs == null || manifest.pairs.Count > 10000)
                 throw new InvalidDataException("Unsupported transfer manifest.");
             string root = file.DirectoryName;
@@ -59,7 +59,7 @@ namespace SashaRX.UnityMeshLab
             }
             catch (Exception error) { report.error = error.ToString(); throw; }
             finally {
-                try { File.WriteAllText(Path.Combine(report.folder, "replay.json"), JsonUtility.ToJson(report, true)); }
+                try { await File.WriteAllTextAsync(Path.Combine(report.folder, "replay.json"), JsonUtility.ToJson(report, true)); }
                 finally { if (UvProgress.CancelRequested) UvProgress.Cancel(); else UvProgress.End(); }
             }
             UvtLog.Info(UvtLog.Category.Benchmark, "[TransferReplay] " + Path.Combine(report.folder, "replay.json"));
