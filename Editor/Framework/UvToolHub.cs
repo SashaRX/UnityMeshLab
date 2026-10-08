@@ -53,7 +53,7 @@ namespace SashaRX.UnityMeshLab
         readonly List<MeshEntry> viewportEntries = new List<MeshEntry>();   // parallel to viewportItems; null for tool content
         readonly List<MeshEntry> uvContentEntries = new List<MeshEntry>();  // a tool's own UV canvas content (IUvToolUvContent)
         int uvContentKey;
-        bool reapplyPreview;        // a LOD switch: re-apply the 3D preview once the entries list the new LOD
+        bool reapplyPreview;        // re-apply the preview once the entries list the newly selected model/LOD
         int preferredUvChannel = 1; // the channel the user picked; a LOD switch returns to it when the LOD has it
         Vector2 viewportSpotPointer;
         bool viewportSpotPointerValid, selectViewportSpotWhenReady;
@@ -248,13 +248,11 @@ namespace SashaRX.UnityMeshLab
                 var lg = go.GetComponentInParent<LODGroup>();
                 if (lg != null && lg != ctx.LodGroup)
                 {
-                    // Restore preview before switching LODGroup
-                    if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
-                        ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
-                    RestoreWorkingMeshes();
+                    PrepareModelSelection();
                     ctx.Refresh(lg);
                     _cachedLodCount = ctx.LodCount;
                     _cachedRendererCount = CountValidRenderers(lg);
+                    ctx.PreviewLod = Mathf.Clamp(ctx.PreviewLod, 0, Mathf.Max(0, ctx.LodCount - 1));
                     ActiveTool?.OnRefresh(); InvalidateViewportCaches();
                 }
                 else if (lg == null)
@@ -277,11 +275,7 @@ namespace SashaRX.UnityMeshLab
                                              || LodGroupUtility.FindLodSiblings(go) != null;
                         if (hasMeshRelevance)
                         {
-                            if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
-                                ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
-                            if (ctx.LodGroup != null)
-                                ctx.LodGroup.ForceLOD(-1);
-                            RestoreWorkingMeshes();
+                            PrepareModelSelection();
 
                             if (isStandaloneMesh)
                             {
@@ -303,6 +297,15 @@ namespace SashaRX.UnityMeshLab
 
             UpdateSelectedSidecar();
             Repaint();
+        }
+
+        void PrepareModelSelection()
+        {
+            // Restore the old model before refreshing entries, retaining the user's display mode.
+            RestorePreviewOverrides();
+            if (ctx.LodGroup != null) ctx.LodGroup.ForceLOD(-1);
+            RestoreWorkingMeshes();
+            reapplyPreview = true;
         }
 
         void OnUndoRedo()
@@ -1862,17 +1865,18 @@ namespace SashaRX.UnityMeshLab
             new Color(.40f,.40f,.90f),new Color(.90f,.70f,.40f),
         };
 
-        void ApplyPreviewMode(UvCanvasView.PreviewMode newMode)
+        void RestorePreviewOverrides()
         {
-            // Turn off current preview
-            if (canvas.CheckerEnabled)
-            {
-                canvas.CheckerEnabled = false;
-                CheckerTexturePreview.Restore();
-            }
+            canvas.CheckerEnabled = false;
+            if (CheckerTexturePreview.IsActive) CheckerTexturePreview.Restore();
             if (ShellColorModelPreview.IsActive)
                 ShellColorModelPreview.Restore();
             RestoreLightmapPreview();
+        }
+
+        void ApplyPreviewMode(UvCanvasView.PreviewMode newMode)
+        {
+            RestorePreviewOverrides();
 
             canvas.CurrentPreviewMode = newMode;
 
@@ -1916,7 +1920,6 @@ namespace SashaRX.UnityMeshLab
                     }
                     else
                     {
-                        canvas.CurrentPreviewMode = UvCanvasView.PreviewMode.Off;
                         UvtLog.Warn($"[Checker] No meshes with UV data on channel {_checkerUvChannel}.");
                     }
                     break;
@@ -1940,7 +1943,6 @@ namespace SashaRX.UnityMeshLab
                     }
                     else
                     {
-                        canvas.CurrentPreviewMode = UvCanvasView.PreviewMode.Off;
                         UvtLog.Warn($"[Shells3D] No meshes with UV{ctx.PreviewUvChannel}.");
                     }
                     break;
@@ -2003,7 +2005,6 @@ namespace SashaRX.UnityMeshLab
                     }
                     if (lightmapBackups.Count == 0)
                     {
-                        canvas.CurrentPreviewMode = UvCanvasView.PreviewMode.Off;
                         UvtLog.Warn("[Lightmap] No lightmapped meshes found.");
                     }
                     break;

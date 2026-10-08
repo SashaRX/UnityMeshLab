@@ -23,6 +23,10 @@ namespace SashaRX.UnityMeshLab.Tests
         const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
         readonly List<Object> owned = new List<Object>();
         UvToolHub hub;
+        GameObject previousSelection;
+
+        [SetUp]
+        public void RememberSelection() => previousSelection = UnityEditor.Selection.activeGameObject;
 
         [TearDown]
         public void Cleanup()
@@ -30,6 +34,7 @@ namespace SashaRX.UnityMeshLab.Tests
             // Closing the hub restores an active preview; the materials go after it.
             if (hub != null) Object.DestroyImmediate(hub);
             hub = null;
+            UnityEditor.Selection.activeGameObject = previousSelection;
             foreach (var item in owned) if (item) Object.DestroyImmediate(item);
             owned.Clear();
         }
@@ -119,6 +124,192 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             Call(hub, "SetPreviewLod", lod);
             Call(hub, "CollectCanvasEntries");
+        }
+
+        MeshRenderer Standalone(string name, bool withUv1 = true)
+        {
+            var renderer = Lod(null, name, Quad(name, withUv1));
+            owned.Add(renderer.gameObject);
+            return renderer;
+        }
+
+        void SelectModel(GameObject model)
+        {
+            UnityEditor.Selection.activeGameObject = model;
+            Call(hub, "OnSelectionChange");
+            Call(hub, "CollectCanvasEntries");
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void CheckerMovesToTheNextModelAndRestoresAllPreviousMaterialSlots(bool fromStandalone, bool toStandalone)
+        {
+            var group = Group(true, out var oldRenderer, out var oldHidden);
+            var context = Open(group);
+            if (fromStandalone) {
+                oldRenderer = Standalone("First standalone");
+                SelectModel(oldRenderer.gameObject);
+            }
+            var canvas = Get<UvCanvasView>(hub, "canvas");
+            var viewport = Get<MeshViewport3D>(hub, "viewport");
+            var firstMaterial = oldRenderer.sharedMaterial;
+            var secondMaterial = new Material(firstMaterial); owned.Add(secondMaterial);
+            var originals = new[] { firstMaterial, secondMaterial };
+            oldRenderer.sharedMaterials = originals;
+            var originalMesh = oldRenderer.GetComponent<MeshFilter>().sharedMesh;
+            var working = Quad("Temporary repacked first model", true);
+            context.MeshEntries.Find(entry => entry.renderer == oldRenderer).repackedMesh = working;
+            Set(hub, "_checkerColorMode", true); Set(hub, "_checkerShowR", false);
+            Call(hub, "CollectCanvasEntries");
+            Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Checker);
+            ChooseCameraFrame(viewport);
+            canvas.Zoom = 3f; canvas.Pan = new Vector2(87, -31);
+            Assert.IsTrue(ShowsChecker(oldRenderer));
+            Assert.AreSame(working, oldRenderer.GetComponent<MeshFilter>().sharedMesh);
+
+            LODGroup nextGroup = null;
+            MeshRenderer nextRenderer, nextHidden = null;
+            if (toStandalone) nextRenderer = Standalone("Next standalone");
+            else nextGroup = Group(true, out nextRenderer, out nextHidden);
+            var nextMaterials = nextRenderer.sharedMaterials;
+            var nextMesh = nextRenderer.GetComponent<MeshFilter>().sharedMesh;
+            UnityEditor.Selection.activeGameObject = toStandalone ? nextRenderer.gameObject : nextGroup.gameObject;
+            Call(hub, "OnSelectionChange");
+            CollectionAssert.AreEqual(originals, oldRenderer.sharedMaterials, "restore before collecting the new preview");
+            Assert.IsFalse(CheckerTexturePreview.IsActive);
+            Call(hub, "CollectCanvasEntries");
+
+            Assert.AreEqual(UvCanvasView.PreviewMode.Checker, canvas.CurrentPreviewMode);
+            Assert.IsTrue(canvas.CheckerEnabled); Assert.IsTrue(ShowsChecker(nextRenderer));
+            Assert.IsTrue(canvas.CheckerColorMode); Assert.IsFalse(canvas.CheckerShowR); Assert.IsTrue(canvas.CheckerShowG);
+            Assert.AreEqual(1, context.PreviewUvChannel);
+            CollectionAssert.AreEqual(originals, oldRenderer.sharedMaterials);
+            Assert.AreSame(originalMesh, oldRenderer.GetComponent<MeshFilter>().sharedMesh);
+            Assert.IsTrue(working == null, "the old working mesh is destroyed after its preview is restored");
+            Assert.IsFalse(ShowsChecker(oldHidden));
+            if (nextHidden) Assert.IsFalse(ShowsChecker(nextHidden));
+            AssertCameraFrame(viewport); Assert.AreEqual(3f, canvas.Zoom); Assert.AreEqual(new Vector2(87, -31), canvas.Pan);
+            Assert.AreSame(nextMesh, context.MeshEntries.Find(entry => entry.renderer == nextRenderer).fbxMesh);
+            Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Off);
+            CollectionAssert.AreEqual(nextMaterials, nextRenderer.sharedMaterials);
+            Assert.AreSame(nextMesh, nextRenderer.GetComponent<MeshFilter>().sharedMesh);
+            Assert.IsFalse(CheckerTexturePreview.IsActive);
+        }
+
+        void AssignLightmap(params MeshRenderer[] renderers)
+        {
+            var texture = new Texture2D(8, 8); owned.Add(texture);
+            LightmapSettings.lightmaps = new[] { new LightmapData { lightmapColor = texture } };
+            foreach (var renderer in renderers) {
+                renderer.lightmapIndex = 0;
+                renderer.lightmapScaleOffset = new Vector4(.5f, .5f, .1f, .2f);
+            }
+        }
+
+        [TestCase(UvCanvasView.PreviewMode.Off)]
+        [TestCase(UvCanvasView.PreviewMode.Shells3D)]
+        [TestCase(UvCanvasView.PreviewMode.Lightmap)]
+        public void DisplayModeFollowsTheNextGroupAndRestoresItsPredecessor(UvCanvasView.PreviewMode mode)
+        {
+            var firstGroup = Group(true, out var first, out _);
+            var context = Open(firstGroup);
+            var secondGroup = Group(true, out var second, out _);
+            var firstMaterial = first.sharedMaterial; var firstMesh = first.GetComponent<MeshFilter>().sharedMesh;
+            var secondMaterial = second.sharedMaterial; var secondMesh = second.GetComponent<MeshFilter>().sharedMesh;
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                if (mode == UvCanvasView.PreviewMode.Lightmap) AssignLightmap(first, second);
+                Call(hub, "ApplyPreviewMode", mode);
+                var oldPreviewMesh = first.GetComponent<MeshFilter>().sharedMesh;
+                SelectModel(secondGroup.gameObject);
+                Assert.AreEqual(mode, Get<UvCanvasView>(hub, "canvas").CurrentPreviewMode);
+                Assert.AreSame(firstMaterial, first.sharedMaterial);
+                Assert.AreSame(firstMesh, first.GetComponent<MeshFilter>().sharedMesh);
+                if (mode != UvCanvasView.PreviewMode.Off) {
+                    Assert.IsTrue(oldPreviewMesh == null, "the previous preview clone was destroyed");
+                    Assert.AreNotSame(secondMaterial, second.sharedMaterial);
+                } else Assert.AreSame(secondMaterial, second.sharedMaterial);
+                Assert.AreSame(secondMesh, context.MeshEntries.Find(entry => entry.renderer == second).fbxMesh);
+                Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Off);
+                Assert.AreSame(secondMaterial, second.sharedMaterial);
+                Assert.AreSame(secondMesh, second.GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        [TestCase(UvCanvasView.PreviewMode.Checker)]
+        [TestCase(UvCanvasView.PreviewMode.Shells3D)]
+        [TestCase(UvCanvasView.PreviewMode.Lightmap)]
+        public void MissingPreviewDataDoesNotDiscardTheSelectedDisplayMode(UvCanvasView.PreviewMode mode)
+        {
+            var firstGroup = Group(true, out var first, out _);
+            var context = Open(firstGroup);
+            var firstMaterial = first.sharedMaterial;
+            var unsupported = Standalone("Model without UVs", false);
+            unsupported.GetComponent<MeshFilter>().sharedMesh.uv = System.Array.Empty<Vector2>();
+            var unsupportedMaterial = unsupported.sharedMaterial;
+            var supported = Standalone("Next model with UVs");
+            var supportedMaterial = supported.sharedMaterial;
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                if (mode == UvCanvasView.PreviewMode.Lightmap) AssignLightmap(first, supported);
+                Call(hub, "ApplyPreviewMode", mode);
+                SelectModel(unsupported.gameObject);
+                var canvas = Get<UvCanvasView>(hub, "canvas");
+                Assert.AreEqual(mode, canvas.CurrentPreviewMode);
+                Assert.IsFalse(canvas.CheckerEnabled);
+                Assert.IsFalse(CheckerTexturePreview.IsActive); Assert.IsFalse(ShellColorModelPreview.IsActive);
+                Assert.AreSame(firstMaterial, first.sharedMaterial);
+                Assert.AreSame(unsupportedMaterial, unsupported.sharedMaterial);
+                SelectModel(supported.gameObject);
+                Assert.AreEqual(mode, canvas.CurrentPreviewMode);
+                Assert.AreNotSame(supportedMaterial, supported.sharedMaterial);
+                Assert.AreEqual(1, context.PreviewUvChannel);
+                Assert.AreSame(unsupportedMaterial, unsupported.sharedMaterial);
+                Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Off);
+                Assert.AreSame(supportedMaterial, supported.sharedMaterial);
+            }
+            finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        [Test]
+        public void PreferredCheckerChannelReturnsAcrossModelsAndOffRemainsOff()
+        {
+            Open(Group(true, out var first, out _));
+            var canvas = Get<UvCanvasView>(hub, "canvas");
+            var context = Get<UvToolContext>(hub, "ctx");
+            Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Checker);
+            var uv0Only = Standalone("UV0-only model", false);
+            var uv0Material = uv0Only.sharedMaterial;
+            SelectModel(uv0Only.gameObject);
+            Assert.AreEqual(UvCanvasView.PreviewMode.Checker, canvas.CurrentPreviewMode);
+            Assert.AreEqual(0, context.PreviewUvChannel); Assert.IsTrue(ShowsChecker(uv0Only)); Assert.IsFalse(ShowsChecker(first));
+            var uv1Model = Standalone("UV1 model");
+            SelectModel(uv1Model.gameObject);
+            Assert.AreEqual(1, context.PreviewUvChannel); Assert.IsTrue(ShowsChecker(uv1Model));
+            Assert.AreSame(uv0Material, uv0Only.sharedMaterial);
+            Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Off);
+            SelectModel(uv0Only.gameObject);
+            Assert.AreEqual(UvCanvasView.PreviewMode.Off, canvas.CurrentPreviewMode);
+            Assert.IsFalse(ShowsChecker(uv0Only)); Assert.IsFalse(ShowsChecker(uv1Model));
+        }
+
+        [Test]
+        public void ModelSelectionClampsAnUnavailableLodAndRetainsInspectionShading()
+        {
+            Open(Group(true, out _, out _));
+            SwitchLod(1);
+            var viewport = Get<MeshViewport3D>(hub, "viewport");
+            viewport.Mode = MeshViewport3D.Shading.Normals;
+            Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Checker);
+            var singleLod = Group(true, out var next, out _);
+            singleLod.SetLODs(new[] { new LOD(.5f, new Renderer[] { next }) });
+            SelectModel(singleLod.gameObject);
+            Assert.AreEqual(0, Get<UvToolContext>(hub, "ctx").PreviewLod);
+            Assert.AreEqual(MeshViewport3D.Shading.Normals, viewport.Mode);
+            Assert.IsTrue(ShowsChecker(next));
         }
 
         [Test]
