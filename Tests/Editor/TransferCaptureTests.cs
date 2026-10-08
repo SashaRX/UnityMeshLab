@@ -46,6 +46,92 @@ namespace SashaRX.UnityMeshLab.Tests
             return mesh;
         }
 
+        static Mesh HalfUvMesh(int dimension)
+        {
+            var mesh = new Mesh { name = "Half precision UV0 fixture" };
+            mesh.SetVertexBufferParams(4,
+                new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3, 0),
+                new VertexAttributeDescriptor(VertexAttribute.Normal, VertexAttributeFormat.Float32, 3, 0),
+                new VertexAttributeDescriptor(VertexAttribute.Color, VertexAttributeFormat.UNorm8, 4, 1),
+                new VertexAttributeDescriptor(VertexAttribute.TexCoord0, VertexAttributeFormat.Float16, dimension, 1));
+            var geometry = new[] { 0f, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1 };
+            mesh.SetVertexBufferData(geometry, 0, 0, geometry.Length, 0);
+            int stride = mesh.GetVertexBufferStride(1), offset = mesh.GetVertexAttributeOffset(VertexAttribute.TexCoord0);
+            var channel = new byte[4 * stride];
+            ushort[] u = { 0x8000, 0x3c00, 0x3c00, 0 }, v = { 0, 0, 0x3800, 0x3800 };
+            for (int vertex = 0; vertex < 4; ++vertex) {
+                channel[vertex * stride] = (byte)(vertex * 37);
+                channel[vertex * stride + 3] = 255;
+                for (int component = 0; component < dimension; ++component) {
+                    ushort value = component == 0 ? u[vertex] : component == 1 ? v[vertex] : (ushort)0x4200;
+                    Buffer.BlockCopy(BitConverter.GetBytes(value), 0, channel, vertex * stride + offset + component * 2, 2);
+                }
+            }
+            mesh.SetVertexBufferData(channel, 0, 0, channel.Length, 1);
+            mesh.triangles = new[] { 0, 1, 2, 0, 2, 3 }; mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        static byte[] RawChannel(Mesh mesh, VertexAttribute attribute, int size)
+        {
+            using (var data = Mesh.AcquireReadOnlyMeshData(mesh)) {
+                int stream = mesh.GetVertexAttributeStream(attribute), stride = mesh.GetVertexBufferStride(stream);
+                int offset = mesh.GetVertexAttributeOffset(attribute);
+                var bytes = data[0].GetVertexData<byte>(stream);
+                var channel = new byte[mesh.vertexCount * size];
+                for (int vertex = 0; vertex < mesh.vertexCount; ++vertex)
+                    Unity.Collections.NativeArray<byte>.Copy(bytes, vertex * stride + offset, channel, vertex * size, size);
+                return channel;
+            }
+        }
+
+        [TestCase(2, false)]
+        [TestCase(4, false)]
+        [TestCase(2, true)]
+        [TestCase(4, true)]
+        public void WorkingCopy_PreservesHalfUv0FormatStreamsAndRawBits(int dimension, bool unreadable)
+        {
+            var mesh = HalfUvMesh(dimension); Mesh copy = null;
+            try {
+                var expected = RawChannel(mesh, VertexAttribute.TexCoord0, dimension * 2);
+                var colors = RawChannel(mesh, VertexAttribute.Color, 4);
+                var layout = mesh.GetVertexAttributes();
+                if (unreadable) mesh.UploadMeshData(true);
+                copy = MeshAccess.ReadableCopy(mesh);
+                CollectionAssert.AreEqual(layout, copy.GetVertexAttributes());
+                CollectionAssert.AreEqual(expected, RawChannel(copy, VertexAttribute.TexCoord0, dimension * 2));
+                CollectionAssert.AreEqual(colors, RawChannel(copy, VertexAttribute.Color, 4));
+                CollectionAssert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, copy.triangles);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); if (copy) UnityEngine.Object.DestroyImmediate(copy); }
+        }
+
+        [TestCase(2)]
+        [TestCase(4)]
+        public void Metric_RestoresHalfUv0DescriptorAndBitsWhileKeepingGeneratedUv2(int dimension)
+        {
+            var mesh = HalfUvMesh(dimension);
+            try {
+                var expected = RawChannel(mesh, VertexAttribute.TexCoord0, dimension * 2);
+                var colors = RawChannel(mesh, VertexAttribute.Color, 4);
+                var vertices = mesh.vertices; var normals = mesh.normals; var bounds = mesh.bounds;
+                var metric = new SourceTextureUvMetric { uvScale = new Vector2(.5f, 2) };
+                var original = metric.PrepareTemporaryMesh(mesh, true);
+                var generated = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+                mesh.uv2 = generated;
+                original.Restore(mesh);
+                Assert.AreEqual(VertexAttributeFormat.Float16, mesh.GetVertexAttributeFormat(VertexAttribute.TexCoord0));
+                Assert.AreEqual(dimension, mesh.GetVertexAttributeDimension(VertexAttribute.TexCoord0));
+                Assert.AreEqual(1, mesh.GetVertexAttributeStream(VertexAttribute.TexCoord0));
+                CollectionAssert.AreEqual(expected, RawChannel(mesh, VertexAttribute.TexCoord0, dimension * 2));
+                CollectionAssert.AreEqual(colors, RawChannel(mesh, VertexAttribute.Color, 4));
+                CollectionAssert.AreEqual(generated, mesh.uv2);
+                CollectionAssert.AreEqual(vertices, mesh.vertices); CollectionAssert.AreEqual(normals, mesh.normals);
+                CollectionAssert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, mesh.triangles); Assert.AreEqual(bounds, mesh.bounds);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
         [TestCase(0, false)]
         [TestCase(7, false)]
         [TestCase(0, true)]
@@ -268,11 +354,13 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
-        [TestCase(true, 1f)]
-        [TestCase(false, 2f)]
-        public void Workflow_RectangularTextureProducesSquareMetricUv2WithoutChangingUv0(bool correction, float expectedStretch)
+        [TestCase(true, 1f, 0)]
+        [TestCase(false, 2f, 0)]
+        [TestCase(true, 1f, 2)]
+        [TestCase(true, 1f, 4)]
+        public void Workflow_RectangularTextureProducesSquareMetricUv2WithoutChangingUv0(bool correction, float expectedStretch, int halfDimension)
         {
-            var source = Quad(); var target = Quad();
+            var source = halfDimension == 0 ? Quad() : HalfUvMesh(halfDimension); var target = Quad();
             var go = new GameObject("Source");
             var texture = new Texture2D(1024, 2048);
             var material = new Material(Shader.Find("Unlit/Texture"));
@@ -283,7 +371,9 @@ namespace SashaRX.UnityMeshLab.Tests
                 catch (DllNotFoundException) { Assert.Ignore("xatlas native plugin unavailable."); }
                 var renderer = go.AddComponent<MeshRenderer>(); material.mainTexture = texture; renderer.sharedMaterial = material;
                 var primary = new List<Vector3> { Vector3.zero, Vector3.right, new Vector3(1, .5f, 7), new Vector3(0, .5f, -3) };
-                source.SetUVs(0, primary);
+                if (halfDimension == 0) source.SetUVs(0, primary);
+                var originalPrimary = new List<Vector4>(); source.GetUVs(0, originalPrimary);
+                byte[] rawUv0 = RawChannel(source, VertexAttribute.TexCoord0, halfDimension == 0 ? 12 : halfDimension * 2);
                 entry = new MeshEntry { renderer = renderer, originalMesh = source, fbxMesh = source, meshGroupKey = "Source" };
                 workflow.OnActivate(context, canvas);
                 context.MeshEntries.Add(entry); context.RepackResolutionMode = ResolutionMode.Manual; context.AtlasResolution = 128;
@@ -301,8 +391,12 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
                 CollectionAssert.AreEqual(original, source.uv);
                 CollectionAssert.AreEqual(original, entry.repackedMesh.uv);
-                var preserved = new List<Vector3>(); entry.repackedMesh.GetUVs(0, preserved);
-                CollectionAssert.AreEqual(primary, preserved);
+                var preserved = new List<Vector4>(); entry.repackedMesh.GetUVs(0, preserved);
+                CollectionAssert.AreEqual(originalPrimary, preserved);
+                Assert.AreEqual(source.GetVertexAttributeFormat(VertexAttribute.TexCoord0), entry.repackedMesh.GetVertexAttributeFormat(VertexAttribute.TexCoord0));
+                Assert.AreEqual(source.GetVertexAttributeDimension(VertexAttribute.TexCoord0), entry.repackedMesh.GetVertexAttributeDimension(VertexAttribute.TexCoord0));
+                Assert.AreEqual(source.GetVertexAttributeStream(VertexAttribute.TexCoord0), entry.repackedMesh.GetVertexAttributeStream(VertexAttribute.TexCoord0));
+                CollectionAssert.AreEqual(rawUv0, RawChannel(entry.repackedMesh, VertexAttribute.TexCoord0, halfDimension == 0 ? 12 : halfDimension * 2));
                 var packed = TransferUvQuality.Measure(entry.repackedMesh, entry.repackedMesh.uv2, Vector2.one, Matrix4x4.identity);
                 Assert.AreEqual(expectedStretch, packed.worstAnisotropy, .05);
                 var result = GroupedShellTransfer.Transfer(target, entry.repackedMesh, sourceAtlasWidth: (int)entry.repackedAtlasWidth,
@@ -354,8 +448,11 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsTrue(report.complete, report.error); Assert.AreEqual(2, report.pairs.Count);
                 foreach (var replay in report.pairs) {
                     Assert.IsNull(replay.error); Assert.IsTrue(replay.baselineEqual); Assert.IsTrue(replay.repeatEqual);
-                    Assert.AreEqual(0, replay.changedMappings); Assert.Greater(replay.trace.shells.Count, 0);
+                    var replayDetails = TransferCaseCapture.ReadDetails<TransferCaseReplay.PairDetails>(report.folder, replay.details);
+                    Assert.AreEqual(0, replay.changedMappings); Assert.Greater(replayDetails.trace.shells.Count, 0);
+                    Assert.IsNotNull(replayDetails.quality); Assert.IsNotEmpty(replayDetails.result.uv2);
                 }
+                Assert.Less(new FileInfo(Path.Combine(report.folder, "replay.json")).Length, 8192);
                 // Schema 1 captures remain readable after the storage-format change.
                 capture.Data.schema = 1;
                 string legacy = Path.Combine(capture.Folder, "legacy.json");
@@ -411,6 +508,41 @@ namespace SashaRX.UnityMeshLab.Tests
                 capture?.Finish(true);
                 if (capture != null && Directory.Exists(capture.Folder)) Directory.Delete(capture.Folder, true);
             }
+        }
+
+        [UnityTest]
+        public IEnumerator Replay_LargePairDiagnosticsStayOutsideTheReport()
+        {
+            string folder = Path.Combine(Path.GetTempPath(), "MeshLab-replay-payload-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(folder);
+            try {
+                var report = new TransferCaseReplay.Report { folder = folder, complete = true };
+                var values = new float[1000000];
+                for (int i = 0; i < values.Length; ++i) values[i] = 1.234567f;
+                for (int pair = 0; pair < 10; ++pair) {
+                    var details = new TransferCaseReplay.PairDetails {
+                        quality = new TransferUvQuality { faces = values.Length, faceAnisotropy = values, worstAnisotropy = pair + 1 },
+                        trace = new TransferMatchTrace(),
+                        result = new GroupedShellTransfer.TransferResult { uv2 = new[] { new Vector2(pair, .5f) } } };
+                    var write = TransferCaseCapture.StoreDetailsAsync(folder, details);
+                    while (!write.IsCompleted) yield return null;
+                    report.pairs.Add(new TransferCaseReplay.PairReport { index = pair, details = write.GetAwaiter().GetResult() });
+                }
+                var save = TransferCaseReplay.SaveReport(report);
+                while (!save.IsCompleted) yield return null;
+                save.GetAwaiter().GetResult();
+                string path = Path.Combine(folder, "replay.json");
+                Assert.Less(new FileInfo(path).Length, 16384);
+                StringAssert.DoesNotContain("faceAnisotropy", File.ReadAllText(path));
+                long total = 0;
+                foreach (string detail in Directory.GetFiles(Path.Combine(folder, "details"))) total += new FileInfo(detail).Length;
+                Assert.Greater(total, TransferCaseCapture.MaxManifestBytes);
+                var restored = TransferCaseCapture.ReadDetails<TransferCaseReplay.PairDetails>(folder, report.pairs[9].details);
+                CollectionAssert.AreEqual(values, restored.quality.faceAnisotropy);
+                Assert.AreEqual(10, restored.quality.worstAnisotropy);
+                CollectionAssert.AreEqual(new[] { new Vector2(9, .5f) }, restored.result.uv2);
+            }
+            finally { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
         }
     }
 }

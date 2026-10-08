@@ -261,12 +261,29 @@ namespace SashaRX.UnityMeshLab
 
         string StoreDetails(object details)
         {
-            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(details, false));
-            if (bytes.LongLength > TransferMeshSnapshot.MaxFileBytes) throw new InvalidDataException("Transfer diagnostic payload exceeds the size limit.");
+            byte[] bytes = EncodeDetails(details);
             string hash = TransferMeshSnapshot.Hash(bytes);
             string path = Path.Combine(Folder, "details", hash + ".json");
             if (!File.Exists(path)) File.WriteAllBytes(path, bytes);
             return hash;
+        }
+
+        internal static async System.Threading.Tasks.Task<string> StoreDetailsAsync(string folder, object details)
+        {
+            byte[] bytes = EncodeDetails(details);
+            string hash = TransferMeshSnapshot.Hash(bytes);
+            string directory = Path.Combine(folder, "details");
+            Directory.CreateDirectory(directory);
+            string path = Path.Combine(directory, hash + ".json");
+            if (!File.Exists(path)) await File.WriteAllBytesAsync(path, bytes);
+            return hash;
+        }
+
+        static byte[] EncodeDetails(object details)
+        {
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(details, false));
+            if (bytes.LongLength > TransferMeshSnapshot.MaxFileBytes) throw new InvalidDataException("Transfer diagnostic payload exceeds the size limit.");
+            return bytes;
         }
 
         internal static T ReadDetails<T>(string root, string hash)

@@ -53,7 +53,14 @@ the defect first appears; the repeated worker run isolates transfer itself.
 - `baselineEqual`: the replay UV2 hash matches the captured output.
 - `changedVertices`, `maximumUvDelta`, `changedMappings`: differences from baseline.
 - `repeatEqual`: a second run, with tracing disabled, has the same UV2 and mappings.
-- Geometry-based quality and a new matching trace; per-pair errors are explicit.
+- Per-pair errors and a `details` checksum referencing geometry-based quality, the
+  complete transfer result and a new matching trace.
+
+The report contains summaries only, with the same 64 MiB metadata limit. Each pair's
+bulk data is saved to `replay_<UTC>_<id>/details/<SHA256>.json` (512 MiB per payload)
+before the next pair is processed; the report does not retain the arrays from prior
+pairs. Keep the replay folder together when sharing it. Read a payload with the
+same checksum validation used for capture detail files.
 
 Invalid checksums, unsafe blob names, unsupported formats and missing inputs are
 rejected. A current-state snapshot requires a new captured run before Replay works.
@@ -66,7 +73,9 @@ same complete menu path. No MCP-specific assembly dependency is required.
 For a 1024×2048 source texture, the area-preserving pre-pack metric scales U by
 `sqrt(1/2)` and V by `sqrt(2)`. This removes the texture aspect from correctly authored
 source UVs before ARAP and packing. Material tiling contributes to the metric.
-The original UV0, including extra UV components, is restored before transfer.
+The original UV0, including extra UV components, vertex format, stream and raw bytes,
+is restored before transfer. Float16 channels retain their half precision layout
+and bit patterns; the newly generated UV2 is retained separately.
 The shapes of islands still follow geometry; a rectangular surface should retain a
 rectangular island.
 
@@ -125,3 +134,8 @@ After reviewing the Sonar autofix, the affected subset (transfer capture, shell
 extraction, geometry helpers and mesh access) passed 42/42 tests without skips.
 This is a subset of the 341-test integration run above. Both FBX compile variants
 also passed on the reviewed code.
+The later preview/UV0-format/replay-report changes passed 138/138 tests without
+skips on Unity 6000.2.6f2 / DX11: transfer capture, mesh access, FBX export, preview
+LOD switches and the 3D viewport. The added regressions verify Float16 UV0 formats
+and raw bytes through readable/unreadable copies and native repack/transfer, and
+replay pair payloads exceeding 64 MiB in aggregate with a compact summary report.

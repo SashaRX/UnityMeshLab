@@ -8,7 +8,8 @@
 - Исходный случай: текстура 1024×2048 и соответствующие ей UV0. До упаковки UV2
   временная копия получает pixel metric текстуры с учётом tiling материала:
   U × sqrt(width/height), V × sqrt(height/width). ARAP и density работают уже
-  в этой метрике; исходный UV0 с исходной размерностью восстанавливается в finally.
+  в этой метрике; исходный UV0 с исходной размерностью, форматом, stream и raw bytes
+  восстанавливается в finally.
   Разные или неизвестные аспекты используемых материалов одного меша не исправляются
   одной общей матрицей. Пустые submeshes не участвуют в выборе метрики.
 - Дополнительный дефект подтверждён native-тестом: bridge нормализует координаты
@@ -21,7 +22,8 @@
   repack и transfer. Trace записывает реально оценённые кандидаты без дополнительных
   matching queries; Replay сравнивает baseline и два запуска. Schema 2 выносит большие
   stage/pair данные в checksum-protected details JSON; manifest имеет общий лимит
-  writer/reader 64 MiB, payloads — 512 MiB. Schema 1 по-прежнему читается.
+  writer/reader 64 MiB, payloads — 512 MiB. Replay также выносит массивы каждой пары
+  в свой details JSON и держит только summaries в replay.json. Schema 1 по-прежнему читается.
   Добавлены axis stretch
   против 3D и positive-area overlap, включая same-shell пары. Алгоритмы symmetry,
   overlap repair и критерий выбора auto-tune не менялись.
@@ -39,6 +41,11 @@
   42/42 tests (transfer capture, shell extraction, geometry helpers, mesh access),
   без skipped. Это subset полного прогона 341 tests, а не другой полный прогон.
   Обе FBX compile variants прошли после autofix.
+  Последующие preview/UV0-format/replay-report правки проверены 138/138 tests без
+  skipped (transfer capture, mesh access, FBX export, preview LOD switches, viewport),
+  Unity 6000.2.6f2 / DX11. Float16 UV0 сохраняет формат, stream и raw bits после
+  working copy и native repack/transfer; replay payloads суммарно >64 MiB не растят
+  общий summary report.
   Реальная модель пользователя пока не захвачена новым кодом, её overlap/symmetry
   проблема не объявляется исправленной. [Использование и ограничения](TRANSFER_CAPTURE.md).
 

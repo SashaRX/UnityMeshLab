@@ -12,9 +12,12 @@ namespace SashaRX.UnityMeshLab
         [Serializable] internal sealed class PairReport
         {
             public int index, changedVertices, changedMappings;
-            public string target, baselineHash, replayHash, repeatHash, error;
+            public string target, baselineHash, replayHash, repeatHash, error, details;
             public bool baselineEqual, repeatEqual;
             public float maximumUvDelta;
+        }
+        [Serializable] internal sealed class PairDetails
+        {
             public TransferUvQuality quality;
             public TransferMatchTrace trace;
             public GroupedShellTransfer.TransferResult result;
@@ -56,36 +59,41 @@ namespace SashaRX.UnityMeshLab
                     if (UvProgress.CancelRequested) break;
                     UvProgress.Report((float)report.pairs.Count / ready, pair.target);
                     if (manifest.schema == 2) TransferCaseCapture.RestorePairDetails(root, pair);
-                    var item = await ReplayPair(root, pair);
+                    var item = await ReplayPair(root, pair, report.folder);
                     report.pairs.Add(item);
                     // The next pair does not need the previous capture's large diagnostic arrays.
-                    if (manifest.schema == 2) {
-                        pair.result = null; pair.trace = null; pair.quality = null; pair.validation = null;
-                        pair.overlapHints = null; pair.matchHints = null;
-                    }
+                    pair.result = null; pair.trace = null; pair.quality = null; pair.validation = null;
+                    pair.overlapHints = null; pair.matchHints = null;
                 }
                 report.complete = report.pairs.Count == ready && !UvProgress.CancelRequested && report.pairs.TrueForAll(pair => string.IsNullOrEmpty(pair.error));
             }
             catch (Exception error) { report.error = error.ToString(); throw; }
             finally {
-                try { await File.WriteAllTextAsync(Path.Combine(report.folder, "replay.json"), JsonUtility.ToJson(report, true)); }
+                try { await SaveReport(report); }
                 finally { if (UvProgress.CancelRequested) UvProgress.Cancel(); else UvProgress.End(); }
             }
             UvtLog.Info(UvtLog.Category.Benchmark, "[TransferReplay] " + Path.Combine(report.folder, "replay.json"));
             return report;
         }
 
-        static async Task<PairReport> ReplayPair(string root, TransferCaseCapture.Pair pair)
+        internal static async Task SaveReport(Report report)
         {
-            var item = new PairReport { index = pair.index, target = pair.target, baselineHash = pair.baselineUvHash,
-                trace = new TransferMatchTrace() };
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(report, true));
+            if (bytes.LongLength > TransferCaseCapture.MaxManifestBytes) throw new InvalidDataException("Transfer replay report exceeds the size limit.");
+            await File.WriteAllBytesAsync(Path.Combine(report.folder, "replay.json"), bytes);
+        }
+
+        static async Task<PairReport> ReplayPair(string root, TransferCaseCapture.Pair pair, string folder)
+        {
+            var item = new PairReport { index = pair.index, target = pair.target, baselineHash = pair.baselineUvHash };
+            var details = new PairDetails { trace = new TransferMatchTrace() };
             Mesh source = null, target = null, baseline = null;
             try {
                 source = Load(root, pair.sourceMesh); target = Load(root, pair.targetMesh); baseline = Load(root, pair.outputMesh);
                 ValidateInput(source, true); ValidateInput(target, false);
-                var first = await Run(pair, target, source, item.trace);
+                var first = await Run(pair, target, source, details.trace);
                 if (first.uv2 == null) throw new InvalidDataException("Replay produced no UV2.");
-                item.result = first;
+                details.result = first;
                 item.replayHash = TransferMeshSnapshot.UvHash(first.uv2);
                 item.baselineEqual = item.replayHash == pair.baselineUvHash;
                 var expected = baseline.uv2;
@@ -97,7 +105,7 @@ namespace SashaRX.UnityMeshLab
                     item.maximumUvDelta = Mathf.Max(item.maximumUvDelta, delta.magnitude);
                 }
                 item.changedMappings = MappingChanges(pair.result, first);
-                item.quality = TransferUvQuality.Measure(target, first.uv2, Vector2.one, pair.localToWorld);
+                details.quality = TransferUvQuality.Measure(target, first.uv2, Vector2.one, pair.localToWorld);
                 var repeat = await Run(pair, target, source, null);
                 item.repeatHash = TransferMeshSnapshot.UvHash(repeat.uv2);
                 item.repeatEqual = item.repeatHash == item.replayHash && MappingChanges(first, repeat) == 0;
@@ -108,6 +116,9 @@ namespace SashaRX.UnityMeshLab
                 if (target) UnityEngine.Object.DestroyImmediate(target);
                 if (baseline) UnityEngine.Object.DestroyImmediate(baseline);
             }
+            // Only this pair's arrays remain alive while writing; report.pairs keeps metadata.
+            try { item.details = await TransferCaseCapture.StoreDetailsAsync(folder, details); }
+            catch (Exception error) { item.error = (item.error ?? "") + error; }
             return item;
         }
 

@@ -25,19 +25,17 @@ namespace SashaRX.UnityMeshLab
 
         internal sealed class OriginalUv0
         {
-            internal readonly List<Vector4> values = new List<Vector4>();
+            readonly MeshAccess.RawVertexAttribute channel;
             readonly int dimension;
             internal bool modified;
             internal int Dimension => dimension;
             internal OriginalUv0(Mesh mesh) {
-                mesh.GetUVs(0, values);
-                dimension = values.Count == 0 ? 0 : mesh.GetVertexAttributeDimension(UnityEngine.Rendering.VertexAttribute.TexCoord0);
+                channel = MeshAccess.RawVertexAttribute.Capture(mesh, UnityEngine.Rendering.VertexAttribute.TexCoord0);
+                dimension = channel == null ? 0 : channel.Dimension;
             }
             internal void Restore(Mesh mesh) {
                 if (!modified) return;
-                if (dimension <= 2) mesh.SetUVs(0, values.ConvertAll(value => new Vector2(value.x, value.y)));
-                else if (dimension == 3) mesh.SetUVs(0, values.ConvertAll(value => new Vector3(value.x, value.y, value.z)));
-                else mesh.SetUVs(0, values);
+                channel.Restore(mesh);
             }
         }
 
