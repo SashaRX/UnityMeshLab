@@ -100,3 +100,8 @@ UV2 after repack and transfer; disabling source correction retains approximately
 includes two LODs and nonempty cross-LOD hints, and verifies tracing does not change
 the result. This verifies synthetic fixtures; a user's failing model still needs a
 next-run capture before declaring its symmetry/overlap issue fixed.
+
+After integration with PR #225's geometry helpers and the latest main, the broader
+Unity run passed 319 tests, failed none and skipped one source-normal convention
+fixture because the isolated test project has no URP source shader. Both FBX compile
+variants, identifier/dependency checks and `.meta` coverage passed.

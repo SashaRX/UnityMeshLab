@@ -25,6 +25,10 @@
   LOD с hints совпадает по UV2 hash и mapping; trace on/off не меняет результат.
   Реальная модель пользователя пока не захвачена новым кодом, её overlap/symmetry
   проблема не объявляется исправленной. [Использование и ограничения](TRANSFER_CAPTURE.md).
+- Интеграция в PR #225 с geometry helpers и актуальным main: 319 passed / 0 failed /
+  1 skipped в Unity 6000.2.6f2 / DX11. Пропущен fixture совместных Standard/URP normal
+  conventions: в изолированном test project отсутствует URP source shader. Обе FBX
+  compile variants, identifier/dependency checks и `.meta` coverage прошли.
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
