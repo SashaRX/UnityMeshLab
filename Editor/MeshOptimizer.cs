@@ -292,6 +292,94 @@ namespace SashaRX.UnityMeshLab
 
         // ── Layout computation ──
 
+        /// <summary>
+        /// Cache/overdraw triangle ordering for UV preparation. Vertex identity,
+        /// every vertex stream and point-contact chart seams remain unchanged.
+        /// Decode the native fetch remap back to original vertex indices instead
+        /// of accepting a geometry dedup that could join unrelated UV charts.
+        /// </summary>
+        internal static OptimizeResult OptimizeUvTriangleOrder(Mesh mesh)
+        {
+            var result = new OptimizeResult();
+            if (mesh == null || !mesh.isReadable || mesh.vertexCount == 0 || mesh.subMeshCount == 0) {
+                result.error = "Mesh must be readable and have vertices/submeshes";
+                return result;
+            }
+            const int stride = 16; // float3 position + original uint vertex identity
+            if (!TryGetPackedByteCount(mesh.vertexCount, stride, out _)) {
+                result.error = "Mesh exceeds UV pre-optimization vertex budget";
+                return result;
+            }
+            result.originalVertexCount = result.optimizedVertexCount = mesh.vertexCount;
+            result.submeshCount = mesh.subMeshCount;
+            long totalIndices = 0;
+            for (int s = 0; s < mesh.subMeshCount; ++s) {
+                totalIndices += mesh.GetIndexCount(s);
+                if (totalIndices > MAX_OPTIMIZE_INDICES || mesh.GetTopology(s) != MeshTopology.Triangles) {
+                    result.error = "UV pre-optimization requires triangles within the index budget";
+                    return result;
+                }
+            }
+            var positions = mesh.vertices;
+            var triangles = new List<int[]>();
+            for (int submesh = 0; submesh < mesh.subMeshCount; ++submesh) {
+                var indices = mesh.GetTriangles(submesh);
+                if (indices.Length == 0) { triangles.Add(indices); continue; }
+                var localVertices = new Dictionary<int, int>();
+                foreach (int index in indices)
+                    if (!localVertices.ContainsKey(index)) localVertices.Add(index, localVertices.Count);
+                if (!TryGetPackedByteCount(localVertices.Count, stride, out int byteCount)) {
+                    result.error = "Submesh exceeds UV pre-optimization vertex budget";
+                    return result;
+                }
+                var packed = new byte[byteCount];
+                PackVertexIdentities(packed, positions, localVertices);
+                var localIndices = new uint[indices.Length];
+                for (int i = 0; i < indices.Length; ++i) localIndices[i] = (uint)localVertices[indices[i]];
+                var output = new byte[byteCount]; var outputIndices = new uint[indices.Length];
+                int error = MeshoptNative.meshoptOptimize(packed, (uint)localVertices.Count, stride, stride,
+                    localIndices, (uint)localIndices.Length, 1.05f, output, outputIndices, out uint count);
+                if (error != 0 || count != (uint)localVertices.Count) {
+                    result.error = $"UV triangle ordering failed on submesh {submesh} (error {error}, vertices {count})";
+                    return result;
+                }
+                var originalIndices = new int[count];
+                for (int i = 0; i < originalIndices.Length; ++i) {
+                    uint original = System.BitConverter.ToUInt32(output, i * stride + 12);
+                    if (original >= positions.Length || !localVertices.ContainsKey((int)original)) {
+                        result.error = "UV triangle ordering returned an invalid vertex identity";
+                        return result;
+                    }
+                    originalIndices[i] = (int)original;
+                }
+                var ordered = new int[indices.Length];
+                for (int i = 0; i < ordered.Length; ++i) {
+                    if (outputIndices[i] >= count) {
+                        result.error = "UV triangle ordering returned an invalid triangle index";
+                        return result;
+                    }
+                    ordered[i] = originalIndices[outputIndices[i]];
+                }
+                triangles.Add(ordered);
+            }
+            // Commit only after every submesh succeeds. Keep all vertex buffers,
+            // layouts, skinning data, blend shapes and submesh boundaries intact.
+            for (int s = 0; s < triangles.Count; ++s) mesh.SetTriangles(triangles[s], s, false);
+            VertexChannels.RaiseChanged(mesh);
+            result.ok = true;
+            return result;
+        }
+
+        static unsafe void PackVertexIdentities(byte[] packed, Vector3[] positions, Dictionary<int, int> localVertices)
+        {
+            fixed (byte* data = packed)
+                foreach (var vertex in localVertices) {
+                    byte* entry = data + vertex.Value * 16;
+                    WriteFloat3(entry, 0, positions[vertex.Key]);
+                    *(uint*)(entry + 12) = (uint)vertex.Key;
+                }
+        }
+
         static ChannelLayout BuildChannelLayout(Mesh mesh)
         {
             var layout = new ChannelLayout();

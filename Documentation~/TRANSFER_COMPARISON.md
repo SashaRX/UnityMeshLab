@@ -68,8 +68,9 @@ bad baselines are comparisons, so quality alone does not fail execution.
 
 `assetCases` can prepare inputs without an open scene or tool window. FBX meshes
 must follow the package's `Name_LOD{N}` naming convention. The imported asset is
-read only. Each source/target pair is copied, optionally split with coordinated
-source symmetry parameters, packed once, then frozen before timed methods run.
+read only. Each source/target pair is copied, optionally pre-optimized and edge
+welded, split with coordinated source symmetry parameters, packed once, then
+frozen before timed methods run.
 
 ```json
 {
@@ -81,6 +82,8 @@ source symmetry parameters, packed once, then frozen before timed methods run.
   "textureWidth": 1024,
   "textureHeight": 2048,
   "correctSourceAspect": true,
+  "weldUv0": true,
+  "preOptimize": true,
   "resolution": 512,
   "normalizeDensity": true,
   "arap": true
@@ -92,8 +95,13 @@ explicitly. `symmetry` is `off`, `legacy` or `adaptive`. Texture size is an expl
 input, not inferred from a missing imported material; include material tiling in
 the declared effective aspect. Use separate cases for source aspect ON/OFF and
 symmetry modes. To isolate aspect correction, set `normalizeDensity=false` and
-`arap=false` for both cases. These preparation cases do not reproduce UI auto-tune,
-weld or material/submesh resolution; an exact captured pipeline run covers those.
+`arap=false` for both cases. `weldUv0` and `preOptimize` default to false for existing
+configs. Pre-optimization preserves vertex identity and every vertex stream;
+only triangle order changes. The UV-aware edge weld then decides which seams may
+merge. To investigate the pipeline's pre-optimization checkbox, compare otherwise
+identical cases with `weldUv0=true` and `preOptimize` on/off. These preparation cases
+do not reproduce UI auto-tune, material/submesh resolution or a shared multi-mesh
+atlas; an exact captured pipeline run covers those.
 
 To measure reverse transfer, choose the lower-detail source and set
 `includeHigherDetailTargets=true`. For example, `sourceLod=1` includes LOD0 as a

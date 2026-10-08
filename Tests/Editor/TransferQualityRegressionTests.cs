@@ -24,6 +24,63 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void PipelinePreOptimizationKeepsPointContactUvChartsSeparate()
+        {
+            var mesh = PointContactAtlas();
+            try {
+                var originalUv2 = mesh.uv2;
+                PreOptimize(mesh);
+                Assert.AreEqual(8, mesh.vertexCount, "Coincident UV0 corners are still separate chart vertices.");
+                Assert.AreEqual(2, UvShellExtractor.Extract(mesh.uv, mesh.triangles).Count);
+                CollectionAssert.AreEqual(originalUv2, mesh.uv2);
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
+        public void PipelinePreOptimizationPreservesTheTargetAtlasAfterTransfer()
+        {
+            var source = PointContactAtlas(); var target = Object.Instantiate(source);
+            try {
+                PreOptimize(target);
+                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                var quality = TransferUvQuality.Measure(target, result.uv2, Vector2.one, Matrix4x4.identity);
+                Assert.AreEqual(0, quality.degenerateFaces);
+                Assert.AreEqual(0, quality.overlapPairs);
+                Assert.AreEqual(1, quality.areaWeightedAnisotropy, .001);
+                CollectionAssert.AreEqual(source.uv2, result.uv2);
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        static void PreOptimize(Mesh mesh)
+        {
+            var root = new GameObject("Preoptimization regression");
+            try {
+                var context = new UvToolContext { LodGroup = root.AddComponent<LODGroup>() };
+                context.MeshEntries.Add(new MeshEntry { originalMesh = mesh });
+                var workflow = new UvTransferWorkflow();
+                const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                typeof(UvTransferWorkflow).GetField("ctx", flags).SetValue(workflow, context);
+                typeof(UvTransferWorkflow).GetMethod("ExecMeshOptimize", flags).Invoke(workflow, null);
+            }
+            finally { Object.DestroyImmediate(root); }
+        }
+
+        static Mesh PointContactAtlas()
+        {
+            var mesh = new Mesh { name = "Separate point-contact UV charts" };
+            mesh.vertices = new[] { new Vector3(-1, -1, 0), new Vector3(0, -1, 0), Vector3.zero, new Vector3(-1, 0, 0),
+                Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up };
+            mesh.uv = new[] { new Vector2(-1, -1), new Vector2(0, -1), Vector2.zero, new Vector2(-1, 0),
+                Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+            mesh.uv2 = new[] { new Vector2(.05f, .05f), new Vector2(.15f, .05f), new Vector2(.15f, .15f), new Vector2(.05f, .15f),
+                new Vector2(.85f, .85f), new Vector2(.95f, .85f), new Vector2(.95f, .95f), new Vector2(.85f, .95f) };
+            mesh.triangles = new[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+            mesh.RecalculateNormals(); return mesh;
+        }
+
+        [Test]
         public void TopologyMoveRejectsCollapseFlipAndNewStretchButAllowsImprovement()
         {
             var a = Vector2.zero; var b = Vector2.right; var c = Vector2.up;

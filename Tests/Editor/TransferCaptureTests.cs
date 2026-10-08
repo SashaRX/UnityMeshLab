@@ -108,6 +108,40 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TestCase(2)]
         [TestCase(4)]
+        public void UvPreOptimizationPreservesRawStreamsSkinningAndMaterialBoundaries(int dimension)
+        {
+            var mesh = HalfUvMesh(dimension);
+            try {
+                mesh.bindposes = new[] { Matrix4x4.identity };
+                var weights = new BoneWeight[mesh.vertexCount];
+                for (int i = 0; i < weights.Length; ++i) weights[i] = new BoneWeight { boneIndex0 = 0, weight0 = 1 };
+                mesh.boneWeights = weights;
+                var delta = new Vector3[mesh.vertexCount]; delta[1] = Vector3.up * .1f;
+                mesh.AddBlendShapeFrame("Keep shape", 100, delta, null, null);
+                mesh.subMeshCount = 3;
+                mesh.SetTriangles(new[] { 0, 1, 2 }, 0); mesh.SetTriangles(System.Array.Empty<int>(), 1);
+                mesh.SetTriangles(new[] { 0, 2, 3 }, 2);
+                var half = RawChannel(mesh, VertexAttribute.TexCoord0, dimension * 2);
+                var colors = RawChannel(mesh, VertexAttribute.Color, 4);
+                var layout = mesh.GetVertexAttributes();
+                var result = MeshOptimizer.OptimizeUvTriangleOrder(mesh);
+                Assert.IsTrue(result.ok, result.error); Assert.AreEqual(4, mesh.vertexCount);
+                CollectionAssert.AreEqual(layout, mesh.GetVertexAttributes());
+                CollectionAssert.AreEqual(half, RawChannel(mesh, VertexAttribute.TexCoord0, dimension * 2));
+                CollectionAssert.AreEqual(colors, RawChannel(mesh, VertexAttribute.Color, 4));
+                CollectionAssert.AreEqual(weights, mesh.boneWeights);
+                CollectionAssert.AreEqual(new[] { Matrix4x4.identity }, mesh.bindposes);
+                Assert.AreEqual(1, mesh.blendShapeCount); Assert.AreEqual("Keep shape", mesh.GetBlendShapeName(0));
+                var actualDelta = new Vector3[mesh.vertexCount]; mesh.GetBlendShapeFrameVertices(0, 0, actualDelta, null, null);
+                CollectionAssert.AreEqual(delta, actualDelta);
+                CollectionAssert.AreEqual(new[] { 0, 1, 2 }, mesh.GetTriangles(0));
+                Assert.AreEqual(0, mesh.GetIndexCount(1)); CollectionAssert.AreEqual(new[] { 0, 2, 3 }, mesh.GetTriangles(2));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [TestCase(2)]
+        [TestCase(4)]
         public void Metric_RestoresHalfUv0DescriptorAndBitsWhileKeepingGeneratedUv2(int dimension)
         {
             var mesh = HalfUvMesh(dimension);

@@ -16,6 +16,7 @@ namespace SashaRX.UnityMeshLab
             public int sourceLod, textureWidth = 1, textureHeight = 1, resolution = 512;
             public bool correctSourceAspect = true, normalizeDensity = true, arap = true;
             public bool includeHigherDetailTargets;
+            public bool weldUv0, preOptimize;
         }
 
         internal sealed class Pair
@@ -74,6 +75,8 @@ namespace SashaRX.UnityMeshLab
             int fallback = SymmetrySplitShells.LastFallbackCount, total = SymmetrySplitShells.LastTotalSplitCount;
             try {
                 input.source = MeshAccess.ReadableCopy(pair.source); input.target = MeshAccess.ReadableCopy(pair.target);
+                input.source = PrepareWeld(input.source, settings);
+                input.target = PrepareWeld(input.target, settings);
                 if (settings.symmetry != "off") {
                     SymmetrySplitShells.CurrentThresholdMode = settings.symmetry == "adaptive" ? SymmetrySplitShells.ThresholdMode.Adaptive : SymmetrySplitShells.ThresholdMode.LegacyFixed;
                     var sourceShells = UvShellExtractor.Extract(input.source.uv, input.source.triangles, true);
@@ -104,6 +107,18 @@ namespace SashaRX.UnityMeshLab
                 SymmetrySplitShells.CurrentThresholdMode = mode;
                 SymmetrySplitShells.LastFallbackCount = fallback; SymmetrySplitShells.LastTotalSplitCount = total;
             }
+        }
+
+        static Mesh PrepareWeld(Mesh mesh, Case settings)
+        {
+            if (settings.preOptimize) {
+                var optimized = MeshOptimizer.OptimizeUvTriangleOrder(mesh);
+                if (!optimized.ok) throw new InvalidDataException("Pre-optimization failed: " + optimized.error);
+            }
+            if (!settings.weldUv0) return mesh;
+            var welded = Uv0Analyzer.UvEdgeWeld(mesh);
+            if (welded != null && welded != mesh) { UnityEngine.Object.DestroyImmediate(mesh); return welded; }
+            return mesh;
         }
     }
 }

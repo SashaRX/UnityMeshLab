@@ -5,6 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+- UV pipeline pre-optimization preserves vertex identity and all vertex streams while optimizing triangle order. Coincident UV0 corners from separate charts no longer merge through a point contact and corrupt the target atlas after transfer. UV-aware edge weld remains responsible for merging seams; imported-FBX benchmark cases can compare it with pre-optimization on and off.
 - UV2 transfer evaluates the complete bounded source-candidate set, avoids matching the opposite side of thin sheets, preserves exact retained source vertices and handles tiny UV triangles without collapsing them. An orthogonal average chart normal cannot override an exact surface match on curved geometry. Topology correction cannot collapse or newly stretch a valid triangle. Clean charts can recover from displaced or collapsed authored UV0 through checked interpolation/projection fallbacks; imported source UV0 remains unchanged.
 - Symmetry splitting and spatial partitioning use positive-area triangle intersections instead of shared grid cells. Reparameterization repairs collapsed source charts without scaling them back to zero and flattens stretched single-face islands directly. The comparison benchmark can include higher-detail targets for reverse LOD transfer.
 

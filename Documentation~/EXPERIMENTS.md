@@ -110,6 +110,42 @@
   global UV0/3D nearest методы дают значительно больше наложений на этом cabinet corpus;
   их меньший vertex miss count не означает лучшую lightmap-развёртку.
 
+### Pre-optimize и иглы на целевом LOD — 2026-10-09
+
+- Продолжение эксперимента PR #225. Пользователь подтвердил ухудшение после Transfer
+  на целевом LOD при включённом `Pre-optimize (meshopt dedup)`. Старый этап сравнивал
+  только position/normal/UV0 и склеивал вершины независимых chart, касающихся одной
+  точкой. Extractor объединяет грани по общему индексу вершины; такой merge меняет
+  connectivity и убирает возможность хранить разные UV2 на совпадающих углах.
+  Полная byte equivalence также не доказывает, что два chart следует соединить.
+- Два аналитических regression tests сначала упали на реальном native пути:
+  8 вершин превращались в 7, два UV0 chart — в один; последующий Transfer давал
+  2 вырожденные грани. Теперь UV pre-optimization выполняет cache/overdraw triangle
+  ordering через прежний native ABI с уникальной identity каждой вершины и обратным
+  декодированием fetch remap. Вершины, raw streams, formats, skinning, blend shapes
+  и material boundaries сохраняются. Никакого geometric weld flag этот этап не
+  устанавливает; решение о слиянии остаётся за UV-aware edge weld.
+- Imported-FBX preparation получил независимые opt-in `weldUv0`/`preOptimize`.
+  На 21 части шкафа LOD0 → LOD1 сравниваются два одинаковых набора с edge weld,
+  adaptive symmetry, ARAP/density и aspect 4096×8192; меняется только pre-optimize.
+  По 2 измеряемых повтора, 42 строки на прогон, без warmup. Старый pre-optimize дал
+  405 positive-area source overlap pairs и 263 target pairs против 0/0 в контроле;
+  target vertices уменьшились с 3419 до 3183. На Dpanel_A area-weighted anisotropy
+  выросла с 1.130 до 8.423. После исправления оба варианта дают 3419 target vertices,
+  0 source/target overlaps и одинаковые целочисленные quality counters; anisotropy
+  отличается только малым численным округлением после изменения порядка граней.
+- Unity 6000.2.6f2 / DX11: 193/193 affected EditMode tests, без failed/skipped,
+  включая actual workflow point-contact fixtures и сохранение Float16 UV0 2D/4D,
+  color raw bits, skinning, blend shapes и пустого material slot. Оба C# compile
+  variants проходят. Все 42 строки до/после детерминированы, сохраняют frozen inputs
+  и имеют complete overlap scans. Local artifacts: `_results~/pre-optimize-20261009/`;
+  provenance — `075fa92` плюс recorded dirty working tree с этим patch.
+- Контроль и исправленный pre-optimize сохраняют 1 вырожденную target-грань и 1299
+  stretched faces на шкафе: устранено именно добавочное ухудшение от dedup. Это
+  отдельные атласы пар, не UI auto-tune/shared-atlas run; reverse correspondence,
+  исходное локальное растяжение и качество произвольных моделей не объявляются
+  исправленными. Native source и binaries не менялись.
+
 ### Общий бюджет плотности в совместном атласе — 2026-10-08
 
 - Лог пользователя v1.1.34 и CSV `20261008_202301_950` подтверждают проблему при

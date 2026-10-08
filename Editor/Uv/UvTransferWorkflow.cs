@@ -670,12 +670,10 @@ namespace SashaRX.UnityMeshLab
         void DrawWeldStageSettings()
         {
             stageWeldRunMeshopt = EditorGUILayout.ToggleLeft(
-                new GUIContent("Pre-optimize (meshopt dedup)",
-                    "Run meshoptimizer's binary-equivalence dedup + GPU cache/"
-                    + "overdraw/fetch reorder before the UV weld. This is a GPU "
-                    + "optimisation, NOT a UV weld — it only removes byte-identical "
-                    + "vertices (always safe). Turn OFF to run the pure UV-aware "
-                    + "seam weld in isolation."),
+                new GUIContent("Pre-optimize (triangle order)",
+                    "Order triangles for GPU cache/overdraw locality while preserving "
+                    + "vertex identity, UV streams and chart seams. The UV-aware "
+                    + "edge weld follows this step."),
                 stageWeldRunMeshopt);
         }
 
@@ -1392,12 +1390,9 @@ namespace SashaRX.UnityMeshLab
             RequestRepaint?.Invoke();
         }
 
-        /// <summary>meshopt binary-equivalence dedup + GPU cache/overdraw/
-        /// fetch reorder. NOT a UV weld — only removes vertices that are
-        /// byte-identical in position + normal + uv0 (per meshoptimizer's
-        /// generateVertexRemap; the library docs explicitly warn it is
-        /// unsuitable for attribute-seam handling). Exact duplicates are
-        /// always safe to merge, so no chart-awareness is needed here.
+        /// <summary>meshopt cache/overdraw triangle ordering with original
+        /// vertex identity and every vertex channel preserved. Position/UV0
+        /// equality alone cannot establish chart connectivity at point contacts.
         /// The semantic UV-aware seam weld is <see cref="ExecWeldUv0"/>.
         /// </summary>
         void ExecMeshOptimize()
@@ -1411,14 +1406,13 @@ namespace SashaRX.UnityMeshLab
                     e.originalMesh = MeshAccess.ReadableCopy(e.fbxMesh);
                     e.originalMesh.name = e.fbxMesh.name + "_wc";
                 }
-                var optResult = MeshOptimizer.Optimize(e.originalMesh);
+                var optResult = MeshOptimizer.OptimizeUvTriangleOrder(e.originalMesh);
                 if (optResult.ok)
                 {
-                    e.wasWelded = true;
                     UvtLog.Info($"[MeshOpt] '{e.originalMesh.name}' LOD{e.lodIndex}: "
-                        + $"meshopt dedup/reorder ({optResult.originalVertexCount} → "
-                        + $"{optResult.optimizedVertexCount} verts)");
+                        + $"triangle order optimized ({optResult.originalVertexCount} verts, UV seams preserved)");
                 }
+                else UvtLog.Warn($"[MeshOpt] '{e.originalMesh.name}': {optResult.error}");
             }
             ctx.ClearAllCaches();
             RequestRepaint?.Invoke();
@@ -1429,11 +1423,11 @@ namespace SashaRX.UnityMeshLab
         /// endpoints (a real chart-interior false seam), with the
         /// instance-pair guard that blocks welds across mirror / N-fold
         /// instance shells. This is the actual "weld" — distinct from
-        /// the meshopt GPU dedup in <see cref="ExecMeshOptimize"/>.
+        /// the meshopt triangle ordering in <see cref="ExecMeshOptimize"/>.
         ///
         /// When <paramref name="runMeshoptFirst"/> is true (pipeline
-        /// default) the meshopt dedup runs first so exact duplicates are
-        /// gone before the UV weld looks for seams. Set false to run the
+        /// default) meshopt triangle ordering runs before the UV weld.
+        /// The edge weld decides which vertices may merge. Set false to run the
         /// pure UV weld in isolation.</summary>
         void ExecWeldUv0(bool runMeshoptFirst = true)
         {
