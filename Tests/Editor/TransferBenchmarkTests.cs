@@ -123,20 +123,25 @@ namespace SashaRX.UnityMeshLab.Tests
                         new TransferBenchmarkAssets.Case { asset = asset, label = "corrected", textureWidth = 1024, textureHeight = 2048,
                             resolution = 128, arap = false, normalizeDensity = false, symmetry = "adaptive" },
                         new TransferBenchmarkAssets.Case { asset = asset, label = "control", textureWidth = 1024, textureHeight = 2048,
-                            resolution = 128, arap = false, normalizeDensity = false, correctSourceAspect = false, symmetry = "legacy" } } });
+                            resolution = 128, arap = false, normalizeDensity = false, correctSourceAspect = false, symmetry = "legacy" },
+                        new TransferBenchmarkAssets.Case { asset = asset, label = "reverse", textureWidth = 1024, textureHeight = 2048,
+                            sourceLod = 1, includeHigherDetailTargets = true, resolution = 128, arap = false, normalizeDensity = false } } });
                 while (!task.IsCompleted) yield return null;
                 var report = task.GetAwaiter().GetResult();
-                Assert.IsTrue(report.complete, JsonUtility.ToJson(report)); Assert.AreEqual(2, report.rows.Count);
+                Assert.IsTrue(report.complete, JsonUtility.ToJson(report)); Assert.AreEqual(3, report.rows.Count);
                 Assert.AreEqual(1, report.rows[0].sourceQuality.areaWeightedAnisotropy, .02);
                 Assert.AreEqual(2, report.rows[1].sourceQuality.areaWeightedAnisotropy, .02);
+                Assert.AreEqual(1, report.rows[2].quality.areaWeightedAnisotropy, .02);
+                StringAssert.Contains("LOD0", report.rows[2].name);
                 Assert.AreEqual(sourceHash, TransferMeshSnapshot.Hash(TransferMeshSnapshot.Capture(fixture.source)));
                 string frozen = Path.Combine(report.folder, "manifest.json");
                 var replay = TransferBenchmark.Run(new TransferBenchmark.Config { outputRoot = root, includeSynthetic = false,
                     repetitions = 2, warmup = 0, captures = new[] { frozen }, methods = new[] { "uv0-nearest" } });
                 while (!replay.IsCompleted) yield return null;
                 var repeated = replay.GetAwaiter().GetResult();
-                Assert.IsTrue(repeated.complete, JsonUtility.ToJson(repeated)); Assert.AreEqual(2, repeated.rows.Count);
+                Assert.IsTrue(repeated.complete, JsonUtility.ToJson(repeated)); Assert.AreEqual(3, repeated.rows.Count);
                 Assert.AreEqual(report.rows[0].uvHash, repeated.rows[0].uvHash); Assert.AreEqual(report.rows[1].uvHash, repeated.rows[1].uvHash);
+                Assert.AreEqual(report.rows[2].uvHash, repeated.rows[2].uvHash);
             }
             finally { AssetDatabase.DeleteAsset(asset); }
         }

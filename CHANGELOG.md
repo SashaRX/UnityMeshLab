@@ -5,6 +5,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+- UV2 transfer evaluates the complete bounded source-candidate set, prefers compatible surface normals, preserves exact retained source vertices and handles tiny UV triangles without collapsing them. Topology correction cannot collapse or newly stretch a valid triangle. Clean charts can recover from displaced or collapsed authored UV0 through checked interpolation/projection fallbacks; imported source UV0 remains unchanged.
+- Symmetry splitting and spatial partitioning use positive-area triangle intersections instead of shared grid cells. Reparameterization repairs collapsed source charts without scaling them back to zero and flattens stretched single-face islands directly. The comparison benchmark can include higher-detail targets for reverse LOD transfer.
+
 - Shared UV2 atlases use one texel-density target and coverage budget across all input meshes. Optional post-pack correction uses a common surface-area-weighted target and shrinks each packed chart within its own bounds, preventing tiny parts from receiving the main body's UV allocation.
 
 - Add an autonomous UV transfer comparison benchmark with six methods, seven analytic controls, imported FBX aspect/symmetry preparation, portable frozen captures, repeated timing/determinism checks and JSON/CSV/HTML/SVG reports.

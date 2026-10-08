@@ -7,9 +7,10 @@ namespace SashaRX.UnityMeshLab.Tests
     public class SpatialPartitionerTests
     {
         [Test]
-        public void PartitionShells_FacesSharingGridCellsAndVertex_DoNotOverlap()
+        public void PartitionShells_FoldedFacesSharingVertex_DetectsOverlap()
         {
             var uv = BuildFullBoundsUvs(4);
+            uv[7] = uv[1]; uv[8] = uv[2];
             var triangles = new[]
             {
                 0, 1, 2,
@@ -20,14 +21,15 @@ namespace SashaRX.UnityMeshLab.Tests
 
             var result = PartitionSingleShell(uv, triangles);
 
-            Assert.IsFalse(result.hasOverlap,
-                "Faces that only meet through a shared vertex must not be treated as UV overlap");
+            Assert.IsTrue(result.hasOverlap,
+                "Sharing a vertex does not make a positive-area fold legal");
         }
 
         [Test]
         public void PartitionShells_NonAdjacentFaceInSharedGridCells_DetectsOverlap()
         {
             var uv = BuildFullBoundsUvs(4);
+            uv[7] = uv[1]; uv[8] = uv[2];
             var triangles = new[]
             {
                 0, 1, 2,
@@ -39,7 +41,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var result = PartitionSingleShell(uv, triangles);
 
             Assert.IsTrue(result.hasOverlap,
-                "A face sharing grid cells but no vertex must be treated as UV overlap");
+                "Disconnected faces with a positive-area intersection must be treated as UV overlap");
         }
 
         [Test]
@@ -56,23 +58,21 @@ namespace SashaRX.UnityMeshLab.Tests
 
             var result = PartitionSingleShell(uv, triangles);
 
-            // The degenerate face shares vertex 0 with every other face. If its
-            // repeated pair key is counted twice, inclusion-exclusion subtracts
-            // the intersection twice and the face is falsely reported as overlap.
             Assert.IsFalse(result.hasOverlap,
-                "A degenerate triangle must not inflate the shared-vertex pair counts");
+                "Zero-area triangles and shared edges do not have positive overlap area");
         }
 
         static Vector2[] BuildFullBoundsUvs(int faceCount)
         {
             var uv = new Vector2[faceCount * 2 + 2];
-            uv[0] = Vector2.zero;
+            uv[0] = new Vector2(.5f, .5f);
+            var ring = new[] { new Vector2(1, .5f), new Vector2(.5f, 1), new Vector2(0, .5f), new Vector2(.5f, 0) };
             for (int i = 0; i < faceCount; i++)
             {
-                uv[i * 2 + 1] = Vector2.right;
-                uv[i * 2 + 2] = Vector2.up;
+                uv[i * 2 + 1] = ring[i % 4];
+                uv[i * 2 + 2] = ring[(i + 1) % 4];
             }
-            uv[9] = Vector2.zero;
+            uv[9] = uv[0];
             return uv;
         }
 

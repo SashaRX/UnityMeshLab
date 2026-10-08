@@ -15,6 +15,7 @@ namespace SashaRX.UnityMeshLab
             public string[] groups = Array.Empty<string>();
             public int sourceLod, textureWidth = 1, textureHeight = 1, resolution = 512;
             public bool correctSourceAspect = true, normalizeDensity = true, arap = true;
+            public bool includeHigherDetailTargets;
         }
 
         internal sealed class Pair
@@ -43,7 +44,7 @@ namespace SashaRX.UnityMeshLab
                     if (sources.ContainsKey(key)) throw new InvalidDataException("Ambiguous source group: " + key);
                     sources.Add(key, mesh);
                 }
-                else if (lod > settings.sourceLod) targets.Add(mesh);
+                else if (lod > settings.sourceLod || settings.includeHigherDetailTargets) targets.Add(mesh);
             }
             targets.Sort((a, b) => string.CompareOrdinal(a.name, b.name));
             var pairs = new List<Pair>();

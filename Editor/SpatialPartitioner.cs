@@ -35,7 +35,6 @@ namespace SashaRX.UnityMeshLab
         }
 
         const int kMinFacesForPartition = 4;
-        const int kGridResolution = 128;
 
         /// <summary>
         /// Partition source shells by detecting UV0 overlap and splitting via
@@ -73,8 +72,8 @@ namespace SashaRX.UnityMeshLab
                 // Step 1: Build face adjacency for flood-fill
                 var adjacency = BuildFaceAdjacency(shell.faceIndices, triangles);
 
-                // Step 2: Overlap detection — only flag faces sharing a grid cell
-                // with a NON-ADJACENT face (no shared vertex)
+                // Step 2: Positive-area intersections. Shared edges are legal,
+                // but genuinely folded adjacent faces must be detected too.
                 var overlappingFaces = DetectOverlap(shell, uv0, triangles);
                 r.hasOverlap = overlappingFaces.Count > 0;
 
@@ -217,171 +216,27 @@ namespace SashaRX.UnityMeshLab
             return faces.ToArray();
         }
 
-        readonly struct FaceVertexKey : System.IEquatable<FaceVertexKey>
+        // Exact positive-area intersections, including folded neighbours.
+        // A shared grid cell is only a broad-phase candidate, not overlap proof.
+        static HashSet<int> DetectOverlap(UvShell shell, Vector2[] uv0, int[] triangles)
         {
-            public readonly int a;
-            public readonly int b;
-            public readonly int c;
-
-            public FaceVertexKey(int v0, int v1, int v2)
-            {
-                if (v0 > v1) { int t = v0; v0 = v1; v1 = t; }
-                if (v1 > v2) { int t = v1; v1 = v2; v2 = t; }
-                if (v0 > v1) { int t = v0; v0 = v1; v1 = t; }
-                a = v0;
-                b = v1;
-                c = v2;
-            }
-
-            public bool Equals(FaceVertexKey other)
-            {
-                return a == other.a && b == other.b && c == other.c;
-            }
-
-            public override bool Equals(object obj) => obj is FaceVertexKey other && Equals(other);
-
-            public override int GetHashCode()
-            {
-                unchecked
-                {
-                    int hash = a;
-                    hash = (hash * 397) ^ b;
-                    return (hash * 397) ^ c;
-                }
-            }
-        }
-
-        // ════════════════════════════════════════════════════════════
-        //  Overlap detection: grid rasterization + vertex-sharing filter
-        // ════════════════════════════════════════════════════════════
-
-        static HashSet<int> DetectOverlap(
-            UvShell shell, Vector2[] uv0, int[] triangles)
-        {
+            var indices = new int[shell.faceIndices.Count * 3];
+            int offset = 0;
+            foreach (int face in shell.faceIndices)
+                for (int corner = 0; corner < 3; ++corner) indices[offset++] = triangles[face * 3 + corner];
+            var report = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {
+                uv = uv0, indices = indices, charts = new int[uv0.Length]
+            }, System.Threading.CancellationToken.None, comparisonBudget: 2000000, collectConflicts: true);
             var overlapping = new HashSet<int>();
-
-            Vector2 bMin = shell.boundsMin;
-            Vector2 bMax = shell.boundsMax;
-            float rangeX = bMax.x - bMin.x;
-            float rangeY = bMax.y - bMin.y;
-            if (rangeX < 1e-8f || rangeY < 1e-8f) return overlapping;
-
-            int gridRes = kGridResolution;
-            float invX = gridRes / rangeX;
-            float invY = gridRes / rangeY;
-
-            var cellFaces = new Dictionary<long, List<int>>();
-
-            foreach (int f in shell.faceIndices)
-            {
-                int i0 = triangles[f * 3], i1 = triangles[f * 3 + 1], i2 = triangles[f * 3 + 2];
-                if (i0 >= uv0.Length || i1 >= uv0.Length || i2 >= uv0.Length) continue;
-
-                Vector2 a = uv0[i0], b = uv0[i1], c = uv0[i2];
-
-                int gxMin = Mathf.Clamp((int)((Mathf.Min(a.x, Mathf.Min(b.x, c.x)) - bMin.x) * invX), 0, gridRes - 1);
-                int gxMax = Mathf.Clamp((int)((Mathf.Max(a.x, Mathf.Max(b.x, c.x)) - bMin.x) * invX), 0, gridRes - 1);
-                int gyMin = Mathf.Clamp((int)((Mathf.Min(a.y, Mathf.Min(b.y, c.y)) - bMin.y) * invY), 0, gridRes - 1);
-                int gyMax = Mathf.Clamp((int)((Mathf.Max(a.y, Mathf.Max(b.y, c.y)) - bMin.y) * invY), 0, gridRes - 1);
-
-                for (int gy = gyMin; gy <= gyMax; gy++)
-                {
-                    for (int gx = gxMin; gx <= gxMax; gx++)
-                    {
-                        long key = (long)gy * gridRes + gx;
-                        if (!cellFaces.TryGetValue(key, out var list))
-                        {
-                            list = new List<int>(2);
-                            cellFaces[key] = list;
-                        }
-                        list.Add(f);
-                    }
-                }
+            foreach (var pair in report.conflicts) {
+                overlapping.Add(shell.faceIndices[pair.a]); overlapping.Add(shell.faceIndices[pair.b]);
             }
-
-            // Count incidences instead of comparing every pair in a cell. For a
-            // face, inclusion-exclusion gives the number of cell faces sharing
-            // at least one of its vertices. Any remaining face is non-adjacent.
-            // This keeps detection linear in face-cell memberships even when a
-            // crafted mesh makes every face cover every grid cell.
-            var vertexCounts = new Dictionary<int, int>();
-            var pairCounts = new Dictionary<long, int>();
-            var tripleCounts = new Dictionary<FaceVertexKey, int>();
-
-            foreach (var kv in cellFaces)
-            {
-                var list = kv.Value;
-                if (list.Count < 2) continue;
-
-                vertexCounts.Clear();
-                pairCounts.Clear();
-                tripleCounts.Clear();
-
-                for (int i = 0; i < list.Count; i++)
-                {
-                    int f = list[i];
-                    int i0 = triangles[f * 3], i1 = triangles[f * 3 + 1], i2 = triangles[f * 3 + 2];
-                    IncrementCount(vertexCounts, i0);
-                    if (i1 != i0) IncrementCount(vertexCounts, i1);
-                    if (i2 != i0 && i2 != i1) IncrementCount(vertexCounts, i2);
-
-                    // A degenerate face repeats a vertex index, so two of its three
-                    // edges collapse onto the same unordered pair (e.g. (0,1,1)
-                    // yields key(0,1) twice). Counting that pair twice inflates the
-                    // subtracted intersection term and makes the face look less
-                    // shared than it is. Keys are order-independent and never
-                    // negative, so -1 is a safe "no such pair" marker.
-                    long k01 = i0 != i1 ? VertexPairKey(i0, i1) : -1L;
-                    long k02 = i0 != i2 ? VertexPairKey(i0, i2) : -1L;
-                    long k12 = i1 != i2 ? VertexPairKey(i1, i2) : -1L;
-                    if (k01 >= 0) IncrementCount(pairCounts, k01);
-                    if (k02 >= 0 && k02 != k01) IncrementCount(pairCounts, k02);
-                    if (k12 >= 0 && k12 != k01 && k12 != k02) IncrementCount(pairCounts, k12);
-                    if (i0 != i1 && i0 != i2 && i1 != i2)
-                        IncrementCount(tripleCounts, new FaceVertexKey(i0, i1, i2));
-                }
-
-                for (int i = 0; i < list.Count; i++)
-                {
-                    int f = list[i];
-                    int i0 = triangles[f * 3], i1 = triangles[f * 3 + 1], i2 = triangles[f * 3 + 2];
-                    int sharedCount = vertexCounts[i0];
-
-                    if (i1 != i0)
-                        sharedCount += vertexCounts[i1] - pairCounts[VertexPairKey(i0, i1)];
-                    if (i2 != i0 && i2 != i1)
-                    {
-                        sharedCount += vertexCounts[i2] - pairCounts[VertexPairKey(i0, i2)];
-                        if (i1 != i0)
-                        {
-                            sharedCount -= pairCounts[VertexPairKey(i1, i2)];
-                            sharedCount += tripleCounts[new FaceVertexKey(i0, i1, i2)];
-                        }
-                    }
-
-                    if (sharedCount < list.Count)
-                        overlapping.Add(f);
-                }
-            }
-
+            if (!report.complete)
+                UvtLog.Warn($"[SpatialPartitioner] Shell {shell.shellId}: UV overlap scan incomplete; using witnessed intersections only.");
             return overlapping;
         }
 
-        static long VertexPairKey(int v0, int v1)
-        {
-            return v0 < v1 ? ((long)v0 << 32) | (uint)v1 : ((long)v1 << 32) | (uint)v0;
-        }
-
-        static void IncrementCount<TKey>(Dictionary<TKey, int> counts, TKey key)
-        {
-            counts.TryGetValue(key, out int count);
-            counts[key] = count + 1;
-        }
-
-        // ════════════════════════════════════════════════════════════
-        //  Face adjacency graph
-        // ════════════════════════════════════════════════════════════
-
+        // Face adjacency graph.
         static Dictionary<int, List<int>> BuildFaceAdjacency(
             List<int> faceIndices, int[] triangles)
         {

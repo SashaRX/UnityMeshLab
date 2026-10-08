@@ -95,6 +95,19 @@ symmetry modes. To isolate aspect correction, set `normalizeDensity=false` and
 `arap=false` for both cases. These preparation cases do not reproduce UI auto-tune,
 weld or material/submesh resolution; an exact captured pipeline run covers those.
 
+To measure reverse transfer, choose the lower-detail source and set
+`includeHigherDetailTargets=true`. For example, `sourceLod=1` includes LOD0 as a
+target as well as any LOD2+ targets. The default is false and retains the original
+LOD0-to-LOD1+ preparation contract. The production tool already accepts any source
+LOD; this flag extends the benchmark, not the tool's source-selection API.
+
+Run each direction as a separate preparation case, then replay its portable
+manifest to compare methods on identical source UV2. Reverse preparation generates
+a new source atlas; comparing its UV2 hashes directly against a forward run does
+not measure correspondence. A removed source surface or a different UV2 seam
+cannot be reconstructed by nearest-point projection alone. Check source quality,
+target quality and retained surface coverage independently.
+
 ## Methods and controls
 
 | Method | What it compares |

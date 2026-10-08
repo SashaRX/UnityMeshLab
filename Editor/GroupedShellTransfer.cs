@@ -89,6 +89,8 @@ namespace SashaRX.UnityMeshLab
             public int shellsUnmatched;
             public int shellsTransform;    // shells that used similarity transform
             public int shellsInterpolation; // shells that fell back to interpolation
+            public int shellsUv0Aligned; // clean source charts with displaced authored target UV0
+            public int shellsGeometryFallback; // clean charts whose UV0 cannot support interpolation
             public int shellsMerged;       // merged shells (multi-source)
             public int consistencyCorrected; // verts where 3D check overrode UV0 in merged shells
             public int verticesTransferred;
@@ -481,7 +483,7 @@ namespace SashaRX.UnityMeshLab
             Vector3[] triPosA, Vector3[] triPosB, Vector3[] triPosC,
             TriangleBvh[] shellBvh3D, int[][] shellBvh3DFaceMap,
             Vector3 tCentroid,
-            int maxRetries, float goodDistSq,
+            int maxRetries,
             HashSet<int> excludeSources,
             out int chosenSrc, out float chosenDistSq, out float chosenAvg3D,
             Vector3 tgtNormal = default, Vector3[] srcAvgNormal = null,
@@ -508,8 +510,9 @@ namespace SashaRX.UnityMeshLab
             int step = Mathf.Max(1, vertList.Count / kMaxSampleVerts);
 
             float bestScore = float.MaxValue;
-            float bestNormalDot = useNormal ? -2f : 1f; // when not using normals, assume good
-            const float kMinDotForEarlyExit = 0.3f;
+            float bestCompatibleScore = float.MaxValue;
+            int compatibleSource = -1;
+            float compatibleCentroidDistance = float.MaxValue, compatibleSurfaceDistance = float.MaxValue;
             int tries = Mathf.Min(maxRetries, ranked.Count);
             for (int attempt = 0; attempt < tries; attempt++)
             {
@@ -564,16 +567,27 @@ namespace SashaRX.UnityMeshLab
                 if (score < bestScore)
                 {
                     bestScore = score;
-                    bestNormalDot = candidateDot;
                     chosenSrc = si;
                     chosenDistSq = ranked[attempt].distSq;
                     chosenAvg3D = avgDist;
                 }
-                // Early exit requires BOTH good distance AND good normal alignment.
-                // With multiplicative penalty, even wrong-side shells have low scores
-                // when distance is small (thin belts), so we must also check that the
-                // best candidate has reasonable normal agreement before exiting.
-                if (bestScore < goodDistSq && bestNormalDot >= kMinDotForEarlyExit) break;
+                // LOD vertices may move across a thin sheet. Multiplying the
+                // wrong-side distance by three still lets the opposite surface
+                // win. Prefer a compatible normal when one exists in the search
+                // set, retaining the closest fallback if every normal is opposed.
+                if (candidateDot >= .3f && score < bestCompatibleScore) {
+                    bestCompatibleScore = score; compatibleSource = si;
+                    compatibleCentroidDistance = ranked[attempt].distSq;
+                    compatibleSurfaceDistance = avgDist;
+                }
+                // Centroid order is not a lower bound on surface distance. A nearby
+                // parallel chart can be "good enough" while a later candidate is exact.
+                // Evaluate the complete bounded candidate set before choosing a source.
+            }
+            if (compatibleSource >= 0) {
+                chosenSrc = compatibleSource;
+                chosenDistSq = compatibleCentroidDistance;
+                chosenAvg3D = compatibleSurfaceDistance;
             }
         }
 
@@ -1212,11 +1226,11 @@ namespace SashaRX.UnityMeshLab
             }
 
             // Per-shell local face normals for 3D BVH normal-filtered queries
-            // Only built for shells with UV0 overlap (used by direct 3D projection path)
+            // Used by overlap projection and clean-chart geometric fallbacks.
             var shellBvh3DFaceNormals = new Vector3[srcShells.Count][];
             for (int si = 0; si < srcShells.Count; si++)
             {
-                if (shellBvh3D[si] != null && srcPartitions[si].hasOverlap)
+                if (shellBvh3D[si] != null)
                 {
                     var faces = srcShells[si].faceIndices;
                     var localNormals = new Vector3[faces.Count];
@@ -1229,9 +1243,6 @@ namespace SashaRX.UnityMeshLab
             float kRayMaxDist = Mathf.Max(meshDiagonal * 0.1f, 0.01f);
 
             // Adaptive thresholds
-            float kGoodDistSq = meshDiagonal > 0f
-                ? 0.001f * meshDiagonal * meshDiagonal
-                : 0.001f;
             float kUv0BadThreshold = Mathf.Max(avgUv0Edge * avgUv0Edge, 0.001f);
 
             // Adaptive kMaxRetries based on overlap group size. The overlap detector is
@@ -1257,7 +1268,7 @@ namespace SashaRX.UnityMeshLab
                     srcShellOverlapMembers[si] = group;
 
             UvtLog.Verbose($"[GroupedTransfer] Adaptive: meshDiag={meshDiagonal:F4}, " +
-                $"avgUv0Edge={avgUv0Edge:F6}, goodDistSq={kGoodDistSq:F6}, " +
+                $"avgUv0Edge={avgUv0Edge:F6}, " +
                 $"uv0BadThresh={kUv0BadThreshold:F6}, maxRetries={kMaxRetries}, " +
                 $"overlapGroups={overlapGroups.Count}(maxSize={maxOverlapGroupSize})");
 
@@ -1402,7 +1413,7 @@ namespace SashaRX.UnityMeshLab
                         FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
                             triPosA, triPosB, triPosC,
                             shellBvh3D, shellBvh3DFaceMap,
-                            tCentroid, kMaxRetries, kGoodDistSq, null,
+                            tCentroid, kMaxRetries, null,
                             out chosenSrc, out chosenDistSq, out chosenAvg3D,
                             tgtAvgNormal[tsi], srcAvgNormal, shellTrace);
                     }
@@ -1640,7 +1651,7 @@ namespace SashaRX.UnityMeshLab
                                 triPosA, triPosB, triPosC,
                                 shellBvh3D, shellBvh3DFaceMap,
                                 result.targetShellCentroids[tsi],
-                                kMaxRetries * 3, kGoodDistSq, claimed,
+                                kMaxRetries * 3, claimed,
                                 out int newSrc, out float newDistSq, out float newAvg3D,
                                 tgtAvgNormal[tsi], srcAvgNormal, trace?.ForShell(tsi), "dedup");
 
@@ -1869,6 +1880,8 @@ namespace SashaRX.UnityMeshLab
             var fragmentRestrictedFaces = new Dictionary<int, List<int>>();
             var fragmentRestrictedBvh = new Dictionary<int, TriangleBvh2D>();
             var duplicateSources = new HashSet<int>();
+            var sharedSources = new HashSet<int>();
+            var exactSourceVertices = new Dictionary<(Vector3 position, Vector2 uv0), Vector2>[srcShells.Count];
             {
                 var srcToTargets = new Dictionary<int, List<int>>();
                 for (int tsi = 0; tsi < tgtShells.Count; tsi++)
@@ -1885,6 +1898,7 @@ namespace SashaRX.UnityMeshLab
                 foreach (var kv in srcToTargets)
                 {
                     if (kv.Value.Count <= 1) continue;
+                    sharedSources.Add(kv.Key);
 
                     // Check if these targets have overlapping UV0 bboxes
                     bool hasOverlap = false;
@@ -2209,7 +2223,7 @@ namespace SashaRX.UnityMeshLab
                             srcUv2Min, srcUv2Max, groupMembers,
                             kRayMaxDist, uv2BoundsTolerance);
 
-                        var best = SelectBestCandidate(allCandidates, tShell.faceIndices, tgtTris, tUv0);
+                        var best = SelectBestCandidate(allCandidates, tShell.faceIndices, tgtTris, tVerts);
                         if (best.HasValue)
                         {
                             validCandidates[si] = best.Value;
@@ -2623,7 +2637,7 @@ namespace SashaRX.UnityMeshLab
                         // Recount issues after outlier correction
                         if (vertexOutliersFixed > 0)
                             bestOverlapIssues = CountShellIssues(
-                                tShell.faceIndices, tgtTris, tUv0, compositeUv2);
+                                tShell.faceIndices, tgtTris, tVerts, compositeUv2);
 
                         if (!tooManyIssues)
                         {
@@ -2858,7 +2872,7 @@ namespace SashaRX.UnityMeshLab
                             }
                         }
 
-                        int issues = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, candidate);
+                        int issues = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, candidate);
 
                         // Guard: reject candidate if its UV2 AABB overlaps with a claimed
                         // source shell's UV2 region. For force3D, also check the assigned
@@ -2936,7 +2950,7 @@ namespace SashaRX.UnityMeshLab
                             kRayMaxDist, uv2BoundsTolerance);
 
                         var bestOverlap = SelectBestCandidate(
-                            overlapCandidates, tShell.faceIndices, tgtTris, tUv0);
+                            overlapCandidates, tShell.faceIndices, tgtTris, tVerts);
 
                         if (bestOverlap.HasValue && bestOverlap.Value.issues < bestMergedIssues)
                         {
@@ -2994,7 +3008,7 @@ namespace SashaRX.UnityMeshLab
                                                      + triUv2C[bestF] * bestW;
                             }
 
-                            int issuesUv0 = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, candidateUv0);
+                            int issuesUv0 = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, candidateUv0);
                             if (issuesUv0 < bestMergedIssues)
                             {
                                 bestMergedIssues = issuesUv0;
@@ -3259,7 +3273,7 @@ namespace SashaRX.UnityMeshLab
                             if (vi >= tUv0.Length) continue;
                             uv2_transform[vi] = xf.Apply(tUv0[vi]);
                         }
-                        issuesTransform = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, uv2_transform);
+                        issuesTransform = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, uv2_transform);
 
                         // Penalize xform if it extrapolates beyond source shell's UV2 bounds.
                         // Extrapolation is the primary cause of cross-source UV2 overlaps,
@@ -3325,10 +3339,18 @@ namespace SashaRX.UnityMeshLab
                     // non-overlapping UV0 fragments) to prevent cross-fragment UV2 bleed
                     var srcBvh = fragmentRestrictedBvh.TryGetValue(tsi, out var rBvh)
                         ? rBvh : shellUv0Bvh[chosenSrc]; // may be null for small shells
+                    if (exactSourceVertices[chosenSrc] == null)
+                        exactSourceVertices[chosenSrc] = ExactVertexUvs(srcShells[chosenSrc], srcVerts, srcUv0, srcUv2);
                     foreach (int vi in tShell.vertexIndices)
                     {
                         if (vi >= tUv0.Length) continue;
                         Vector2 tUv = tUv0[vi];
+                        // A retained source vertex needs no projection. UV0 alone may
+                        // identify several corners of a fold or a degenerate triangle.
+                        if (exactSourceVertices[chosenSrc].TryGetValue((tVerts[vi], tUv), out var exactUv)) {
+                            uv2_interp[vi] = exactUv;
+                            continue;
+                        }
                         int bestF; float bestU, bestV, bestW;
 
                         if (srcBvh != null)
@@ -3375,7 +3397,39 @@ namespace SashaRX.UnityMeshLab
                                            + triUv2C[bestF] * bestW;
                     }
 
-                    int issuesInterp = CountShellIssues(tShell.faceIndices, tgtTris, tUv0, uv2_interp);
+                    int issuesInterp = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, uv2_interp);
+
+                    // A LOD may move an authored trim strip to another UV0 row.
+                    // Raw nearest-UV queries then all land on the source boundary.
+                    // Align only a substantially disjoint clean chart, never a
+                    // fragment or stacked/shared source whose region is ambiguous.
+                    bool alignedInterpolation = false;
+                    bool geometricInterpolation = false;
+                    if (issuesInterp > 0 && !sharedSources.Contains(chosenSrc)
+                        && !fragmentRestrictedBvh.ContainsKey(tsi) && !srcPartitions[chosenSrc].hasOverlap
+                        && TryAlignDisplacedUv0(tShell, srcShells[chosenSrc], tUv0, tNormals,
+                            srcFacesChosen, srcBvh, triNormal, triUv0A, triUv0B, triUv0C,
+                            triUv2A, triUv2B, triUv2C, out var aligned))
+                    {
+                        int alignedIssues = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, aligned);
+                        if (alignedIssues < issuesInterp && !CandidateHasOverlap(tShell, tgtTris, tVerts, aligned)) {
+                            uv2_interp = aligned; issuesInterp = alignedIssues;
+                            alignedInterpolation = true;
+                        }
+                    }
+
+                    if (issuesInterp > 0 && !sharedSources.Contains(chosenSrc)
+                        && !fragmentRestrictedFaces.ContainsKey(tsi) && !srcPartitions[chosenSrc].hasOverlap)
+                    {
+                        var geometric = ProjectCleanChart(tShell, tVerts, tNormals, srcFacesChosen,
+                            shellBvh3D[chosenSrc], shellBvh3DFaceMap[chosenSrc], shellBvh3DFaceNormals[chosenSrc],
+                            triPosA, triPosB, triPosC, triNormal, triUv2A, triUv2B, triUv2C);
+                        int geometricIssues = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, geometric);
+                        if (geometricIssues < issuesInterp && !CandidateHasOverlap(tShell, tgtTris, tVerts, geometric)) {
+                            uv2_interp = geometric; issuesInterp = geometricIssues;
+                            alignedInterpolation = false; geometricInterpolation = true;
+                        }
+                    }
 
                     if (uv2_transform != null && issuesTransform < issuesInterp)
                     {
@@ -3390,6 +3444,14 @@ namespace SashaRX.UnityMeshLab
                         shellsInterpolation++;
                         result.targetShellMethod[tsi] = 0; // interp
                         result.targetShellIssues[tsi] = issuesInterp;
+                        if (alignedInterpolation) {
+                            result.shellsUv0Aligned++;
+                            UvtLog.Info($"[GroupedTransfer] t{tsi}: aligned displaced UV0 to src{chosenSrc} ({issuesInterp} issues)");
+                        }
+                        if (geometricInterpolation) {
+                            result.shellsGeometryFallback++;
+                            UvtLog.Info($"[GroupedTransfer] t{tsi}: geometry fallback to src{chosenSrc} ({issuesInterp} issues)");
+                        }
                     }
                 }
 
@@ -4128,8 +4190,15 @@ namespace SashaRX.UnityMeshLab
 
                     if (consistentCount < (neighbors.Count + 1) / 2) continue;
 
-                    // No triangle flip
-                    bool wouldFlip = false;
+                    // Validate the actual capped move, rather than the uncapped prediction.
+                    float maxCorrection = avgNeighborEdge * 3f;
+                    Vector2 delta = predicted - uv2[vi];
+                    if (delta.magnitude > maxCorrection)
+                        predicted = uv2[vi] + delta.normalized * maxCorrection;
+
+                    // A Laplacian prediction lies on the opposite edge of an isolated
+                    // triangle. A sign-only test previously accepted that collapse.
+                    bool unsafeMove = false;
                     if (vertexToFaces.TryGetValue(vi, out var facesOfVi))
                     {
                         foreach (int f in facesOfVi)
@@ -4142,29 +4211,19 @@ namespace SashaRX.UnityMeshLab
                             Vector2 b = i1 == vi ? predicted : uv2[i1];
                             Vector2 c = i2 == vi ? predicted : uv2[i2];
 
-                            float areaBefore = (uv2[i1].x - uv2[i0].x) * (uv2[i2].y - uv2[i0].y) -
-                                                (uv2[i1].y - uv2[i0].y) * (uv2[i2].x - uv2[i0].x);
-                            float areaAfter = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-
-                            if (Mathf.Abs(areaBefore) > 1e-9f && Mathf.Abs(areaAfter) > 1e-9f &&
-                                Mathf.Sign(areaBefore) != Mathf.Sign(areaAfter))
+                            if (!TopologyMovePreservesTriangle(verts[i0], verts[i1], verts[i2],
+                                uv2[i0], uv2[i1], uv2[i2], a, b, c))
                             {
-                                wouldFlip = true;
+                                unsafeMove = true;
                                 break;
                             }
                         }
                     }
-                    if (wouldFlip) continue;
+                    if (unsafeMove) continue;
 
                     UvtLog.Info($"[ShellTopology] iter={iteration} Fixed vertex {vi}: " +
                         $"({uv2[vi].x:F4},{uv2[vi].y:F4}) → ({predicted.x:F4},{predicted.y:F4}) " +
                         $"disp/scale={displacement / avgNeighborEdge:F2}");
-
-                    // Cap correction to prevent extreme displacements that cause overlaps
-                    float maxCorrection = avgNeighborEdge * 3f;
-                    Vector2 delta = predicted - uv2[vi];
-                    if (delta.magnitude > maxCorrection)
-                        predicted = uv2[vi] + delta.normalized * maxCorrection;
 
                     uv2[vi] = predicted;
                     fixedThisPass++;
@@ -4190,8 +4249,135 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        internal static bool TopologyMovePreservesTriangle(Vector3 p0, Vector3 p1, Vector3 p2,
+            Vector2 a0, Vector2 b0, Vector2 c0, Vector2 a1, Vector2 b1, Vector2 c1)
+        {
+            double before = UvArea(a0, b0, c0), after = UvArea(a1, b1, c1);
+            if (!(before * after > 0) || System.Math.Abs(after) < System.Math.Abs(before) * .1)
+                return false;
+            double oldStretch = TriangleStretch(p0, p1, p2, a0, b0, c0);
+            double newStretch = TriangleStretch(p0, p1, p2, a1, b1, c1);
+            return !double.IsNaN(newStretch) && !double.IsInfinity(newStretch)
+                && newStretch <= System.Math.Max(1.05, oldStretch * 1.05);
+        }
+
+        static double UvArea(Vector2 a, Vector2 b, Vector2 c)
+            => ((double)b.x - a.x) * ((double)c.y - a.y) - ((double)b.y - a.y) * ((double)c.x - a.x);
+
+        static Dictionary<(Vector3 position, Vector2 uv0), Vector2> ExactVertexUvs(
+            UvShell shell, Vector3[] positions, Vector2[] uv0, Vector2[] uv2)
+        {
+            var result = new Dictionary<(Vector3 position, Vector2 uv0), Vector2>();
+            var ambiguous = new HashSet<(Vector3 position, Vector2 uv0)>();
+            foreach (int vertex in shell.vertexIndices) {
+                var key = (positions[vertex], uv0[vertex]);
+                if (result.TryGetValue(key, out var previous) && !previous.Equals(uv2[vertex])) ambiguous.Add(key);
+                else result[key] = uv2[vertex];
+            }
+            foreach (var key in ambiguous) result.Remove(key);
+            return result;
+        }
+
+        static Dictionary<int, Vector2> ProjectCleanChart(UvShell target, Vector3[] positions, Vector3[] normals,
+            List<int> faces, TriangleBvh bvh, int[] faceMap, Vector3[] bvhNormals,
+            Vector3[] a, Vector3[] b, Vector3[] c, Vector3[] faceNormals, Vector2[] a2, Vector2[] b2, Vector2[] c2)
+        {
+            var result = new Dictionary<int, Vector2>();
+            foreach (int vertex in target.vertexIndices) {
+                Vector3 normal = normals != null && vertex < normals.Length ? normals[vertex] : Vector3.zero;
+                int face = -1; float u = 0, v = 0, w = 0;
+                if (bvh != null) {
+                    var hit = normal.sqrMagnitude > .5f
+                        ? bvh.FindNearestNormalFiltered(positions[vertex], normal, bvhNormals, 0)
+                        : bvh.FindNearest(positions[vertex]);
+                    if (hit.triangleIndex < 0) hit = bvh.FindNearest(positions[vertex]);
+                    if (hit.triangleIndex >= 0) {
+                        face = faceMap[hit.triangleIndex]; u = hit.barycentric.x; v = hit.barycentric.y; w = hit.barycentric.z;
+                    }
+                }
+                else {
+                    float best = float.MaxValue, bestCompatible = float.MaxValue;
+                    int compatible = -1; float cu = 0, cv = 0, cw = 0;
+                    foreach (int f in faces) {
+                        float distance = PointToTri3D(positions[vertex], a[f], b[f], c[f], out float fu, out float fv, out float fw);
+                        if (distance < best) { best = distance; face = f; u = fu; v = fv; w = fw; }
+                        if (Vector3.Dot(normal, faceNormals[f]) >= 0 && distance < bestCompatible) {
+                            bestCompatible = distance; compatible = f; cu = fu; cv = fv; cw = fw;
+                        }
+                    }
+                    if (compatible >= 0) { face = compatible; u = cu; v = cv; w = cw; }
+                }
+                if (face >= 0) result[vertex] = a2[face] * u + b2[face] * v + c2[face] * w;
+            }
+            return result;
+        }
+
+        static bool TryAlignDisplacedUv0(UvShell target, UvShell source, Vector2[] uv0, Vector3[] normals,
+            List<int> sourceFaces, TriangleBvh2D bvh, Vector3[] faceNormals,
+            Vector2[] a0, Vector2[] b0, Vector2[] c0, Vector2[] a2, Vector2[] b2, Vector2[] c2,
+            out Dictionary<int, Vector2> candidate)
+        {
+            candidate = null;
+            Vector2 targetSize = target.boundsMax - target.boundsMin;
+            Vector2 sourceSize = source.boundsMax - source.boundsMin;
+            if (!(targetSize.x > 0 && targetSize.y > 0 && sourceSize.x > 0 && sourceSize.y > 0)) return false;
+            float overlapX = Mathf.Max(0, Mathf.Min(target.boundsMax.x, source.boundsMax.x) - Mathf.Max(target.boundsMin.x, source.boundsMin.x));
+            float overlapY = Mathf.Max(0, Mathf.Min(target.boundsMax.y, source.boundsMax.y) - Mathf.Max(target.boundsMin.y, source.boundsMin.y));
+            if (overlapX >= Mathf.Min(targetSize.x, sourceSize.x) * .1f
+                && overlapY >= Mathf.Min(targetSize.y, sourceSize.y) * .1f) return false;
+            candidate = new Dictionary<int, Vector2>();
+            foreach (int vertex in target.vertexIndices) {
+                Vector2 q = uv0[vertex] - target.boundsMin;
+                q = source.boundsMin + new Vector2(q.x * sourceSize.x / targetSize.x, q.y * sourceSize.y / targetSize.y);
+                Vector3 normal = normals != null && vertex < normals.Length ? normals[vertex] : Vector3.zero;
+                int face = -1; float u = 0, v = 0, w = 0;
+                if (bvh != null) {
+                    var hit = normal.sqrMagnitude > .5f ? bvh.FindNearestNormalFiltered(q, normal, faceNormals, 0) : bvh.FindNearest(q);
+                    face = hit.faceIndex; u = hit.u; v = hit.v; w = hit.w;
+                }
+                else {
+                    float best = float.MaxValue;
+                    foreach (int f in sourceFaces) {
+                        if (normal.sqrMagnitude > .5f && Vector3.Dot(normal, faceNormals[f]) < 0) continue;
+                        float distance = PointToTri2D(q, a0[f], b0[f], c0[f], out float cu, out float cv, out float cw);
+                        if (distance < best) { best = distance; face = f; u = cu; v = cv; w = cw; }
+                    }
+                }
+                if (face >= 0) candidate[vertex] = a2[face] * u + b2[face] * v + c2[face] * w;
+            }
+            return candidate.Count == target.vertexIndices.Count;
+        }
+
+        static bool CandidateHasOverlap(UvShell shell, int[] triangles, Vector3[] positions, Dictionary<int, Vector2> candidate)
+        {
+            var uv = new Vector2[positions.Length];
+            foreach (var point in candidate) uv[point.Key] = point.Value;
+            var indices = new int[shell.faceIndices.Count * 3];
+            int i = 0;
+            foreach (int face in shell.faceIndices)
+                for (int corner = 0; corner < 3; ++corner) indices[i++] = triangles[face * 3 + corner];
+            var quality = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = uv, indices = indices,
+                charts = new int[positions.Length] }, System.Threading.CancellationToken.None, comparisonBudget: 200000);
+            return !quality.complete || quality.pairs > 0;
+        }
+
+        static double TriangleStretch(Vector3 a, Vector3 b, Vector3 c, Vector2 u, Vector2 v, Vector2 w)
+        {
+            Vector3 e1 = b - a, e2 = c - a;
+            double length = e1.magnitude, area = Vector3.Cross(e1, e2).magnitude;
+            if (!(length > 0 && area > 0)) return double.PositiveInfinity;
+            double x = Vector3.Dot(e1, e2) / length, y = area / length;
+            double j00 = ((double)v.x - u.x) / length, j10 = ((double)v.y - u.y) / length;
+            double j01 = (((double)w.x - u.x) - j00 * x) / y;
+            double j11 = (((double)w.y - u.y) - j10 * x) / y;
+            double trace = j00 * j00 + j10 * j10 + j01 * j01 + j11 * j11;
+            double det = j00 * j11 - j10 * j01;
+            double largest = (trace + System.Math.Sqrt(System.Math.Max(0, trace * trace - 4 * det * det))) * .5;
+            return det == 0 ? double.PositiveInfinity : largest / System.Math.Abs(det);
+        }
+
         // ═══════════════════════════════════════════════════════════
-        //  Count triangle issues (inverted + zero-area) for a UV2 candidate
+        //  Count missing, collapsed and effectively collapsed UV2 triangles
         //  Used to pick between transform and interpolation per shell
         // ═══════════════════════════════════════════════════════════
 
@@ -4207,10 +4393,10 @@ namespace SashaRX.UnityMeshLab
             return sum.sqrMagnitude > 1e-8f ? sum.normalized : Vector3.up;
         }
 
-        static int CountShellIssues(List<int> faceIndices, int[] tris, Vector2[] uv0,
+        internal static int CountShellIssues(List<int> faceIndices, int[] tris, Vector3[] positions,
             Dictionary<int, Vector2> candidateUv2)
         {
-            // Only count missing UV2 and degenerate faces as issues.
+            // Count missing UV2 and collapsed faces as issues.
             // Winding flip (UV0 vs UV2 opposite sign) is normal — UV0 and UV2 are
             // independent coordinate spaces, so different winding is expected.
             int issues = 0;
@@ -4224,6 +4410,12 @@ namespace SashaRX.UnityMeshLab
 
                 float saUv2 = (b2.x - a2.x) * (c2.y - a2.y) - (c2.x - a2.x) * (b2.y - a2.y);
                 if (Mathf.Abs(saUv2) < 1e-10f) { issues++; continue; }
+                // Float roundoff may leave a tiny nonzero width instead of a line.
+                // Compare against geometry so genuine thin 3D triangles stay valid.
+                // 10,000:1 is an effectively collapsed mapping, not ordinary stretch.
+                Vector3 p0 = positions[i0], p1 = positions[i1], p2 = positions[i2];
+                if (Vector3.Cross(p1 - p0, p2 - p0).sqrMagnitude > 0
+                    && TriangleStretch(p0, p1, p2, a2, b2, c2) > 10000) issues++;
             }
             return issues;
         }
@@ -4266,38 +4458,9 @@ namespace SashaRX.UnityMeshLab
         static float PointToTri3D(Vector3 p, Vector3 a, Vector3 b, Vector3 c,
             out float u, out float v, out float w)
         {
-            Vector3 ab = b - a, ac = c - a, ap = p - a;
-            float d00 = Vector3.Dot(ab, ab), d01 = Vector3.Dot(ab, ac);
-            float d11 = Vector3.Dot(ac, ac), d20 = Vector3.Dot(ap, ab);
-            float d21 = Vector3.Dot(ap, ac);
-            float denom = d00 * d11 - d01 * d01;
-
-            if (Mathf.Abs(denom) < 1e-12f)
-            { u = 1f; v = 0f; w = 0f; return (p - a).sqrMagnitude; }
-
-            float bV = (d11 * d20 - d01 * d21) / denom;
-            float bW = (d00 * d21 - d01 * d20) / denom;
-            float bU = 1f - bV - bW;
-
-            if (bU >= 0f && bV >= 0f && bW >= 0f)
-            {
-                u = bU; v = bV; w = bW;
-                Vector3 proj = a * u + b * v + c * w;
-                return (p - proj).sqrMagnitude;
-            }
-
-            float best = float.MaxValue; u = 1; v = 0; w = 0;
-            { float t = Mathf.Clamp01(Vector3.Dot(p - a, ab) / Mathf.Max(d00, 1e-12f));
-              float d = (p - (a + ab * t)).sqrMagnitude;
-              if (d < best) { best = d; u = 1f - t; v = t; w = 0f; } }
-            { float t = Mathf.Clamp01(Vector3.Dot(p - a, ac) / Mathf.Max(d11, 1e-12f));
-              float d = (p - (a + ac * t)).sqrMagnitude;
-              if (d < best) { best = d; u = 1f - t; v = 0f; w = t; } }
-            { Vector3 bc = c - b; float bcL = Vector3.Dot(bc, bc);
-              float t = Mathf.Clamp01(Vector3.Dot(p - b, bc) / Mathf.Max(bcL, 1e-12f));
-              float d = (p - (b + bc * t)).sqrMagnitude;
-              if (d < best) { best = d; u = 0f; v = 1f - t; w = t; } }
-            return best;
+            Vector3 point = TriangleBvh.ClosestPointOnTriangle(p, a, b, c, out Vector3 bary);
+            u = bary.x; v = bary.y; w = bary.z;
+            return (p - point).sqrMagnitude;
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -4307,38 +4470,7 @@ namespace SashaRX.UnityMeshLab
         static float PointToTri2D(Vector2 p, Vector2 a, Vector2 b, Vector2 c,
             out float u, out float v, out float w)
         {
-            Vector2 ab = b - a, ac = c - a, ap = p - a;
-            float d00 = Vector2.Dot(ab, ab), d01 = Vector2.Dot(ab, ac);
-            float d11 = Vector2.Dot(ac, ac), d20 = Vector2.Dot(ap, ab);
-            float d21 = Vector2.Dot(ap, ac);
-            float denom = d00 * d11 - d01 * d01;
-
-            if (Mathf.Abs(denom) < 1e-12f)
-            { u = 1f; v = 0f; w = 0f; return (p - a).sqrMagnitude; }
-
-            float bV = (d11 * d20 - d01 * d21) / denom;
-            float bW = (d00 * d21 - d01 * d20) / denom;
-            float bU = 1f - bV - bW;
-
-            if (bU >= 0f && bV >= 0f && bW >= 0f)
-            {
-                u = bU; v = bV; w = bW;
-                Vector2 proj = a * u + b * v + c * w;
-                return (p - proj).sqrMagnitude;
-            }
-
-            float best = float.MaxValue; u = 1; v = 0; w = 0;
-            { float t = Mathf.Clamp01(Vector2.Dot(p - a, ab) / Mathf.Max(d00, 1e-12f));
-              float d = (p - (a + ab * t)).sqrMagnitude;
-              if (d < best) { best = d; u = 1f - t; v = t; w = 0f; } }
-            { float t = Mathf.Clamp01(Vector2.Dot(p - a, ac) / Mathf.Max(d11, 1e-12f));
-              float d = (p - (a + ac * t)).sqrMagnitude;
-              if (d < best) { best = d; u = 1f - t; v = 0f; w = t; } }
-            { Vector2 bc = c - b; float bcL = Vector2.Dot(bc, bc);
-              float t = Mathf.Clamp01(Vector2.Dot(p - b, bc) / Mathf.Max(bcL, 1e-12f));
-              float d = (p - (b + bc * t)).sqrMagnitude;
-              if (d < best) { best = d; u = 0f; v = 1f - t; w = t; } }
-            return best;
+            return TriangleBvh2D.PointToTri2D(p, a, b, c, out u, out v, out w);
         }
 
         static float SignedArea2D(Vector2 a, Vector2 b, Vector2 c)
@@ -4768,7 +4900,7 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         static OverlapCandidate? SelectBestCandidate(
             List<OverlapCandidate> candidates,
-            List<int> faceIndices, int[] tgtTris, Vector2[] tUv0)
+            List<int> faceIndices, int[] tgtTris, Vector3[] positions)
         {
             if (candidates == null || candidates.Count == 0) return null;
 
@@ -4776,7 +4908,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < candidates.Count; i++)
             {
                 var c = candidates[i];
-                c.issues = CountShellIssues(faceIndices, tgtTris, tUv0, c.uv2);
+                c.issues = CountShellIssues(faceIndices, tgtTris, positions, c.uv2);
                 candidates[i] = c;
             }
 
