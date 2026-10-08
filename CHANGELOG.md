@@ -5,6 +5,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+- Add an autonomous UV transfer comparison benchmark with six methods, seven analytic controls, imported FBX aspect/symmetry preparation, portable frozen captures, repeated timing/determinism checks and JSON/CSV/HTML/SVG reports.
+
 - UV transfer repack accounts for source texture dimensions and material tiling before ARAP/packing, preserves the complete original UV0 channel, and converts rectangular native atlas output to a square lightmap metric before transfer. Source texture correction is enabled by default and can be disabled in Repack.
 - Diagnostics can capture the next Full Pipeline/Transfer run with exact binary mesh inputs, stage snapshots, texture proportions, cross-LOD hints and shell matching decisions. Replay runs each completed transfer twice and compares UV2 hashes and shell mappings against the captured output; geometry-based axis stretch and positive-area triangle overlaps are reported independently of the existing validator.
 

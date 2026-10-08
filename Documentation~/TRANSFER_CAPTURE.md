@@ -42,6 +42,10 @@ extra candidates or change matching. Shell traces are capped at 10,000 shells;
 
 ## Replay
 
+Captured pairs can also be compared across transfer methods with the
+[autonomous benchmark](TRANSFER_COMPARISON.md), including a batch entry point,
+repeated timing runs and independent geometry/overlap metrics.
+
 Choose **Replay Last Transfer Capture** or **Replay Transfer Capture File**.
 Replay uses owned temporary meshes and leaves the scene and source assets untouched.
 It uses the currently loaded transfer code with each captured pair's exact inputs.

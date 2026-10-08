@@ -82,7 +82,11 @@ namespace SashaRX.UnityMeshLab
                 using (new EditorGUI.DisabledScope(ctx.MeshEntries.Count == 0))
                     if (GUILayout.Button("Capture current state")) CaptureCurrentSafe(ctx);
                 using (new EditorGUI.DisabledScope(!File.Exists(TransferCaseCapture.LastManifest)))
+                {
                     if (GUILayout.Button("Replay last capture (twice)")) ReplayLast();
+                    if (GUILayout.Button("Compare transfer methods on last capture")) TransferBenchmarkCommands.LastCapture();
+                }
+                if (GUILayout.Button("Run synthetic transfer benchmark")) TransferBenchmarkCommands.Synthetic();
             }
             EditorGUILayout.HelpBox("Next-run capture records exact mesh inputs and cross-LOD hints. Replay compares UV2 and shell matching without changing the scene.", MessageType.Info);
         }

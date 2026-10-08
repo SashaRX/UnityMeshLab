@@ -49,6 +49,32 @@
   Реальная модель пользователя пока не захвачена новым кодом, её overlap/symmetry
   проблема не объявляется исправленной. [Использование и ограничения](TRANSFER_CAPTURE.md).
 
+### Автономное сравнение transfer — 2026-10-08
+
+- Добавлен [бенч зафиксированных входов](TRANSFER_COMPARISON.md): шесть методов,
+  семь аналитических случаев, native source preparation на копиях импортированных
+  FBX с aspect ON/OFF и symmetry off/legacy/adaptive. Production transfer и выбор
+  auto-tune не менялись. Подготовленные входы сохраняются как переносимый capture.
+- Изолированный Unity 6000.2.6f2 / DX11 прогон исходных FBX с E: стул и 21 группа
+  `Grandma_Cabinet_B_Destructed`, плюс матрица подготовки трёх групп шкафа.
+  Всего 41 случай × 6 методов = 246 строк, warmup 1, measured repeats 3 и отдельный
+  trace run; UV2/mapping повторяемы, input mesh hashes сохранены.
+- В базовой adaptive-подготовке 21 группы текущий grouped transfer дал 75
+  positive-area triangle overlap pairs, 74 degenerate faces и 1441 stretched faces.
+  Это реальные дефекты качества, а не ошибки выполнения бенча. Source atlas
+  `Dpanel_A` уже имеет большую анизотропию (area-weighted ≈542.6) до transfer;
+  у `Handles` transfer даёт большую анизотропию (≈58770.2) при source ≈1.9.
+  Эти случаи пригодны для раздельной проверки source repack и matching/topology.
+- При ARAP/density OFF на трёх выбранных группах source anisotropy с aspect
+  OFF в среднем по группам ≈2.08, с aspect ON ≈1.09. Подготовка использует явный
+  аспект 4096×8192 из исходного Wood Trim albedo (также 1:2); размеры импортированной
+  текстуры могут быть уменьшены без смены аспекта.
+- Прогон импортированных sub-assets не воспроизводит UI auto-tune/weld, material
+  tiling/conflicts или индивидуальные renderer transforms. Для точного выбранного
+  запуска всё ещё нужен next-run capture. Внутри бенча reference для реальных FBX
+  является recorded production baseline, не independent ground truth; дефекты
+  overlap/symmetry не объявляются исправленными.
+
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
 - **UV repair contention 2026-10-05 (продолжение Exp #1):** занятая legacy
