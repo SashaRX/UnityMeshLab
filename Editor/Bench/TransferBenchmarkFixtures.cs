@@ -30,12 +30,12 @@ namespace SashaRX.UnityMeshLab
                         break;
                     case "mirrored-stacked-uv0":
                         UnityEngine.Object.DestroyImmediate(source); UnityEngine.Object.DestroyImmediate(target);
-                        input.source = source = Stacked(false, false); input.target = target = Stacked(true, false);
+                        input.source = Stacked(false, false); input.target = Stacked(true, false);
                         input.description = "Two disconnected 3D instances share mirrored UV0 but occupy distinct UV2 charts.";
                         break;
                     case "close-opposite-surfaces":
                         UnityEngine.Object.DestroyImmediate(source); UnityEngine.Object.DestroyImmediate(target);
-                        input.source = source = Stacked(false, true); input.target = target = Stacked(true, true);
+                        input.source = Stacked(false, true); input.target = Stacked(true, true);
                         input.description = "Opposite normals, 0.02 gap; LOD vertices move closer to the other surface.";
                         break;
                     case "retriangulated-lod": break;
@@ -46,7 +46,7 @@ namespace SashaRX.UnityMeshLab
                         break;
                     case "same-shell-overlap-control":
                         UnityEngine.Object.DestroyImmediate(target);
-                        input.target = target = Grid(2, true);
+                        input.target = Grid(2, true);
                         source.uv2 = Fold(source.vertices); input.negativeControl = true;
                         input.description = "A connected source chart folds over itself; same-shell overlap must be reported.";
                         break;

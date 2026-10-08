@@ -9,6 +9,7 @@ namespace SashaRX.UnityMeshLab
     internal static class TransferBenchmarkReport
     {
         const int MaxVisualFaces = 20000;
+        const string TableCellSeparator = "</td><td>";
         static string Number(double value) => value.ToString("G9", CultureInfo.InvariantCulture);
         static string Escape(string value) => WebUtility.HtmlEncode(value ?? "");
 
@@ -44,15 +45,15 @@ namespace SashaRX.UnityMeshLab
                 text.Append("<tr class=\"").Append(bad ? "bad" : row.negativeControl ? "control" : "").Append("\"><td>")
                     .Append(Escape(row.name)).Append("<br><strong>").Append(Escape(row.method)).Append("</strong><br>").Append(Escape(row.description));
                 if (bad) text.Append("<pre>").Append(Escape(row.error)).Append("</pre>");
-                text.Append("</td><td>");
+                text.Append(TableCellSeparator);
                 if (!string.IsNullOrEmpty(row.view)) text.Append("<a href=\"").Append(Escape(row.view)).Append("\"><img loading=\"lazy\" alt=\"UV2 triangles\" src=\"").Append(Escape(row.view)).Append("\"></a>");
-                text.Append("</td><td>").Append(Number(row.medianMilliseconds)).Append("</td><td>");
+                text.Append(TableCellSeparator).Append(Number(row.medianMilliseconds)).Append(TableCellSeparator);
                 var q = row.quality;
                 if (q != null) text.Append(Number(q.areaWeightedAnisotropy)).Append(" / ").Append(Number(q.worstAnisotropy));
-                text.Append("</td><td>").Append(q == null ? "unavailable" : q.stretchedFaces + " / " + q.degenerateFaces + " / " + q.invalidFaces)
-                    .Append("</td><td>").Append(q == null ? "unavailable" : q.overlapPairs + (q.overlapScanComplete ? "" : "+ (incomplete)") + " / " + q.outOfBoundsVertices)
-                    .Append("</td><td>").Append(Number(row.maximumReferenceTexels)).Append(row.referenceIsGroundTruth ? " (truth)" : " (baseline)")
-                    .Append("</td><td>").Append(row.deterministic).Append(" / ").Append(row.inputUnchanged).Append(" / ").Append(row.misses).Append("</td></tr>");
+                text.Append(TableCellSeparator).Append(q == null ? "unavailable" : q.stretchedFaces + " / " + q.degenerateFaces + " / " + q.invalidFaces)
+                    .Append(TableCellSeparator).Append(q == null ? "unavailable" : q.overlapPairs + (q.overlapScanComplete ? "" : "+ (incomplete)") + " / " + q.outOfBoundsVertices)
+                    .Append(TableCellSeparator).Append(Number(row.maximumReferenceTexels)).Append(row.referenceIsGroundTruth ? " (truth)" : " (baseline)")
+                    .Append(TableCellSeparator).Append(row.deterministic).Append(" / ").Append(row.inputUnchanged).Append(" / ").Append(row.misses).Append("</td></tr>");
             }
             return text.Append("</tbody></table></html>").ToString();
         }
