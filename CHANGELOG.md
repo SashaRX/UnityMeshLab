@@ -5,6 +5,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+- Shared UV2 atlases use one texel-density target and coverage budget across all input meshes. Optional post-pack correction uses a common surface-area-weighted target and shrinks each packed chart within its own bounds, preventing tiny parts from receiving the main body's UV allocation.
+
 - Add an autonomous UV transfer comparison benchmark with six methods, seven analytic controls, imported FBX aspect/symmetry preparation, portable frozen captures, repeated timing/determinism checks and JSON/CSV/HTML/SVG reports.
 
 - UV transfer repack accounts for source texture dimensions and material tiling before ARAP/packing, preserves the complete original UV0 channel, and converts rectangular native atlas output to a square lightmap metric before transfer. Source texture correction is enabled by default and can be disabled in Repack.

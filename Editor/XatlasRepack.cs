@@ -498,40 +498,52 @@ namespace SashaRX.UnityMeshLab
         static int ApplyPostPackDensityCorrection(
             Vector2[] uv2, int[] tris, Vector3[] positions,
             List<UvShell> shells, uint[] vertexChartIds, string meshLabel)
+            => ApplyPostPackDensityCorrectionToTarget(uv2, tris, positions, shells,
+                vertexChartIds, meshLabel, 0d);
+
+        static double[] MeasurePostPackDensities(Vector2[] uv2, int[] tris, Vector3[] positions,
+            List<UvShell> shells, out double[] worldAreas)
+        {
+            var density = new double[shells.Count];
+            worldAreas = new double[shells.Count];
+            for (int si = 0; si < shells.Count; ++si)
+            {
+                if (shells[si]?.faceIndices == null) continue;
+                double world = 0, area = 0;
+                foreach (int f in shells[si].faceIndices)
+                {
+                    int t = f * 3;
+                    if ((uint)(t + 2) >= (uint)tris.Length) continue;
+                    int a = tris[t], b = tris[t + 1], c = tris[t + 2];
+                    if ((uint)a >= (uint)positions.Length || (uint)b >= (uint)positions.Length || (uint)c >= (uint)positions.Length ||
+                        (uint)a >= (uint)uv2.Length || (uint)b >= (uint)uv2.Length || (uint)c >= (uint)uv2.Length) continue;
+                    world += Vector3.Cross(positions[b] - positions[a], positions[c] - positions[a]).magnitude * .5;
+                    area += Math.Abs((double)(uv2[b].x - uv2[a].x) * (uv2[c].y - uv2[a].y) -
+                        (double)(uv2[c].x - uv2[a].x) * (uv2[b].y - uv2[a].y)) * .5;
+                }
+                if (world >= 1e-12 && area >= 1e-12)
+                {
+                    density[si] = area / world;
+                    worldAreas[si] = world;
+                }
+            }
+            return density;
+        }
+
+        static int ApplyPostPackDensityCorrectionToTarget(Vector2[] uv2, int[] tris, Vector3[] positions,
+            List<UvShell> shells, uint[] vertexChartIds, string meshLabel, double sharedDensity)
         {
             if (uv2 == null || tris == null || positions == null || shells == null ||
                 vertexChartIds == null || vertexChartIds.Length < uv2.Length) return 0;
             int uvLen = uv2.Length;
-            int posLen = positions.Length;
             int n = shells.Count;
             if (n == 0) return 0;
 
-            var a3Arr = new double[n];
-            var au2Arr = new double[n];
-            var densArr = new double[n];
+            var densArr = MeasurePostPackDensities(uv2, tris, positions, shells, out _);
             var validShells = new List<int>(n);
             for (int si = 0; si < n; si++)
             {
-                var shell = shells[si];
-                if (shell?.faceIndices == null) continue;
-                double a3 = 0.0, au = 0.0;
-                foreach (int f in shell.faceIndices)
-                {
-                    int t = f * 3;
-                    if ((uint)(t + 2) >= (uint)tris.Length) continue;
-                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                    if ((uint)i0 >= (uint)posLen || (uint)i1 >= (uint)posLen || (uint)i2 >= (uint)posLen) continue;
-                    if ((uint)i0 >= (uint)uvLen || (uint)i1 >= (uint)uvLen || (uint)i2 >= (uint)uvLen) continue;
-                    Vector3 p0 = positions[i0], p1 = positions[i1], p2 = positions[i2];
-                    a3 += Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5;
-                    Vector2 a = uv2[i0], b = uv2[i1], c = uv2[i2];
-                    au += Math.Abs((double)(b.x - a.x) * (c.y - a.y) - (double)(c.x - a.x) * (b.y - a.y)) * 0.5;
-                }
-                a3Arr[si] = a3;
-                au2Arr[si] = au;
-                if (a3 < 1e-12 || au < 1e-12) continue;
-                densArr[si] = au / a3;
-                validShells.Add(si);
+                if (densArr[si] > 0 && IsFiniteD(densArr[si])) validShells.Add(si);
             }
 
             if (validShells.Count == 0) return 0;
@@ -541,7 +553,8 @@ namespace SashaRX.UnityMeshLab
             var sortedDens = new List<double>(validShells.Count);
             foreach (int si in validShells) sortedDens.Add(densArr[si]);
             sortedDens.Sort();
-            double targetDensity = sortedDens[sortedDens.Count / 2];
+            double targetDensity = sharedDensity > 0 && IsFiniteD(sharedDensity)
+                ? sharedDensity : sortedDens[sortedDens.Count / 2];
             if (targetDensity < 1e-12) return 0;
 
             int modified = 0;
@@ -1502,7 +1515,6 @@ namespace SashaRX.UnityMeshLab
                 {
                     var mesh = meshes[m];
                     int vertCount = mesh.vertexCount;
-                    int faceCount = allTris[m].Length / 3;
 
                     float[] uvFlat = new float[vertCount * 2];
                     for (int i = 0; i < vertCount; i++)
@@ -1543,13 +1555,23 @@ namespace SashaRX.UnityMeshLab
                                 $"[Repack] ARAP mesh {m}: reparameterized {convergedM}/{stretchedFoundM} stretched shells (L²>{opts.stretchThreshold:F2}, skipped {skippedM})");
                     }
 
-                    if (opts.normalizeTexelDensity)
-                    {
-                        // Normalize logs its own [Density] summary at Info level.
-                        TexelDensityNormalizer.Normalize(
-                            uvFlat, allShells[m], allTris[m], allPositions[m],
-                            targetCoverage: opts.targetUvCoverage);
-                    }
+                }
+
+                // The atlas has one coverage budget. Giving each mesh that full
+                // budget made tiny parts as large in UV as the main body, even
+                // though all of their charts were packed into the same atlas.
+                // Measure after every ARAP pass so a disabled coverage budget
+                // also preserves the batch's total prepared UV area.
+                if (opts.normalizeTexelDensity)
+                    TexelDensityNormalizer.NormalizeBatch(allUvFlat, allShells, allTris,
+                        allPositions, opts.targetUvCoverage);
+
+                for (int m = 0; m < meshCount; m++)
+                {
+                    var mesh = meshes[m];
+                    int vertCount = mesh.vertexCount;
+                    int faceCount = allTris[m].Length / 3;
+                    var uvFlat = allUvFlat[m];
 
                     // Diagnostic: predict xatlas Stage B amplification on
                     // the actual UVs we hand xatlas. See RepackSingle for
@@ -1630,6 +1652,7 @@ namespace SashaRX.UnityMeshLab
 
                 // ── Per-mesh output extraction ──
                 var allUv2 = new Vector2[meshCount][];
+                var allChartIds = new uint[meshCount][];
 
                 for (int m = 0; m < meshCount; m++)
                 {
@@ -1682,18 +1705,41 @@ namespace SashaRX.UnityMeshLab
 
                     LogPostPackDensity(uv2, allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postOrphan]");
 
-                    if (opts.postPackDensityCorrection)
-                    {
-                        ApplyPostPackDensityCorrection(uv2, allTris[m], allPositions[m], allShells[m], vertChartId, meshes[m].name);
-                        LogPostPackDensity(uv2, allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postCorrection]");
-                    }
-
                     allUv2[m] = uv2;
+                    allChartIds[m] = vertChartId;
                     results[m].ok = true;
+                }
 
-                    double coverageM = ComputeUv2CoverageFraction(uv2, allTris[m]);
-                    UvtLog.Info(UvtLog.Category.Repack,
-                        $"Atlas utilization mesh {m}: {coverageM * 100.0:F1}% of [0,1]² covered ({allShells[m].Count} shells)");
+                double jointDensity = 0;
+                if (opts.postPackDensityCorrection && opts.normalizeTexelDensity)
+                {
+                    // Tiny charts receive the largest ceil(extent) amplification.
+                    // Weight the common median by surface area so a large count
+                    // of screws/trim strips cannot set the density of the cabinet.
+                    var densities = new List<(double density, double area)>();
+                    double totalArea = 0;
+                    for (int m = 0; m < meshCount; ++m)
+                    {
+                        if (allUv2[m] == null || !results[m].ok) continue;
+                        var measured = MeasurePostPackDensities(allUv2[m], allTris[m], allPositions[m], allShells[m], out var areas);
+                        for (int si = 0; si < measured.Length; ++si)
+                        {
+                            double density = measured[si];
+                            if (!(density > 0 && IsFiniteD(density))) continue;
+                            densities.Add((density, areas[si]));
+                            totalArea += areas[si];
+                        }
+                    }
+                    densities.Sort((a, b) => a.density.CompareTo(b.density));
+                    double cumulativeArea = 0;
+                    foreach (var sample in densities)
+                    {
+                        cumulativeArea += sample.area;
+                        if (cumulativeArea < totalArea * .5) continue;
+                        jointDensity = sample.density;
+                        break;
+                    }
+                    UvtLog.Info(UvtLog.Category.Repack, $"[Density:batchCorrection] target={jointDensity:G6}, shells={densities.Count}");
                 }
 
                 // Apply UV2, border padding, and atlas-fill normalization
@@ -1701,6 +1747,13 @@ namespace SashaRX.UnityMeshLab
                 for (int m = 0; m < meshCount; m++)
                 {
                     if (allUv2[m] == null || !results[m].ok) continue;
+
+                    if (opts.postPackDensityCorrection)
+                    {
+                        ApplyPostPackDensityCorrectionToTarget(allUv2[m], allTris[m], allPositions[m], allShells[m],
+                            allChartIds[m], meshes[m].name, jointDensity);
+                        LogPostPackDensity(allUv2[m], allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postCorrection]");
+                    }
 
                     if (opts.borderPadding > 0 && atlasW > 0)
                     {
@@ -1717,6 +1770,9 @@ namespace SashaRX.UnityMeshLab
                     meshes[m].SetUVs(1, allUv2[m]);
 
                     LogPostPackDensity(allUv2[m], allTris[m], allPositions[m], allShells[m], meshes[m].name + " [final]");
+                    double coverageM = ComputeUv2CoverageFraction(allUv2[m], allTris[m]);
+                    UvtLog.Info(UvtLog.Category.Repack,
+                        $"Atlas utilization mesh {m}: {coverageM * 100.0:F1}% of [0,1]² covered ({allShells[m].Count} shells)");
                 }
                 if (clampedTotal > 0)
                     UvtLog.Verbose(UvtLog.Category.Repack,
