@@ -1084,6 +1084,7 @@ namespace SashaRX.UnityMeshLab
                 return viewportItems;
             }
             viewportItems.Clear();
+            var worldToPreview = ContextWorldToPreview();
             List<string> groupKeys = canvas.EntriesOverride == null && ctx.RepackPerMesh && ctx.IsolatedMeshGroup >= 0 ? ctx.BuildGroupKeys(ctx.PreviewLod) : null;
             foreach (var e in canvas.Entries(ctx))
             {
@@ -1094,12 +1095,23 @@ namespace SashaRX.UnityMeshLab
                 }
                 Mesh mesh = ctx.DMesh(e);
                 if (mesh == null) continue;
-                var matrix = e.renderer != null ? e.renderer.localToWorldMatrix : Matrix4x4.identity;
+                var matrix = e.renderer != null ? worldToPreview * e.renderer.localToWorldMatrix : Matrix4x4.identity;
                 viewportItems.Add(new MeshViewport3D.Item(mesh, matrix, e.renderer != null ? e.renderer.sharedMaterials : null));
                 viewportEntries.Add(e);
             }
             PrepareInspectionEntries();
             return viewportItems;
+        }
+
+        // The selected object's origin belongs at zero in preview space. Remove
+        // only its scene translation; retain rotation, scale and child placement.
+        Matrix4x4 ContextWorldToPreview()
+        {
+            Transform root = null;
+            if (ctx.LodGroup) root = ctx.LodGroup.transform;
+            else if (ctx.StandaloneMesh && ctx.MeshEntries.Count > 0 && ctx.MeshEntries[0].renderer)
+                root = ctx.MeshEntries[0].renderer.transform;
+            return root ? Matrix4x4.Translate(-root.position) : Matrix4x4.identity;
         }
 
         bool toolOwnsUvContent;

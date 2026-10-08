@@ -72,6 +72,8 @@ namespace SashaRX.UnityMeshLab.Tests
         static T Get<T>(object target, string field) => (T)target.GetType().GetField(field, Private).GetValue(target);
         static void Set(object target, string field, object value) => target.GetType().GetField(field, Private).SetValue(target, value);
         static object Call(object target, string method, params object[] args) => target.GetType().GetMethod(method, Private).Invoke(target, args);
+        static Bounds PreviewBounds(IReadOnlyList<MeshViewport3D.Item> items) => (Bounds)typeof(MeshViewport3D)
+            .GetMethod("BoundsOf", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, new object[] { items, false });
         static bool ShowsChecker(Renderer renderer) => CheckerTexturePreview.IsPreviewShader(renderer.sharedMaterial.shader.name);
 
         static ViewportSpotInputWindow OpenSpotInputWindow()
@@ -174,13 +176,81 @@ namespace SashaRX.UnityMeshLab.Tests
             ChooseCameraFrame(viewport);
 
             var nextGroup = Group(lod1HasUv1: true, out _, out _);
-            nextGroup.transform.position = new Vector3(20, 0, 0);
+            nextGroup.transform.position = new Vector3(20, -7, 30);
             Call(hub, "RestoreWorkingMeshes");
             ctx.Refresh(nextGroup);
             Call(hub, "CollectCanvasEntries");
-            var bounds = new Bounds(nextGroup.transform.position, new Vector3(4, 3, 1));
+            var items = Get<List<MeshViewport3D.Item>>(hub, "viewportItems");
+            Assert.That(items[0].matrix.MultiplyPoint3x4(Vector3.zero), Is.EqualTo(Vector3.zero));
+            Assert.That(nextGroup.transform.position, Is.EqualTo(new Vector3(20, -7, 30)), "preview does not move the scene object");
+            var bounds = PreviewBounds(items);
             Call(viewport, "FrameIfRequested", bounds, true);
             AssertCameraFrame(viewport);
+        }
+
+        [Test]
+        public void OriginPlacementPreservesHierarchyRotationScaleAndLodSwitch()
+        {
+            var group = Group(lod1HasUv1: true, out var lod0, out var lod1);
+            var offset = new Vector3(40, -10, 70);
+            group.transform.position = offset;
+            group.transform.rotation = Quaternion.Euler(17, 35, -11);
+            group.transform.localScale = new Vector3(2, 3, .5f);
+            lod0.transform.localPosition = new Vector3(1, 2, -3);
+            lod1.transform.localPosition = lod0.transform.localPosition;
+            lod0.transform.localRotation = Quaternion.Euler(0, 25, 0);
+            lod1.transform.localRotation = lod0.transform.localRotation;
+            Open(group);
+            var viewport = Get<MeshViewport3D>(hub, "viewport");
+            ChooseCameraFrame(viewport);
+            for (int lod = 0; lod < 2; ++lod) {
+                SwitchLod(lod);
+                var item = Get<List<MeshViewport3D.Item>>(hub, "viewportItems")[0];
+                var renderer = lod == 0 ? lod0 : lod1;
+                foreach (var point in new[] { Vector3.zero, Vector3.one, new Vector3(-2, 3, 4) }) {
+                    var expected = renderer.transform.TransformPoint(point) - offset;
+                    Assert.That(Vector3.Distance(item.matrix.MultiplyPoint3x4(point), expected), Is.LessThan(1e-5f));
+                }
+                Call(viewport, "FrameIfRequested", PreviewBounds(new[] { item }), true);
+                AssertCameraFrame(viewport);
+            }
+            Assert.That(group.transform.position, Is.EqualTo(offset));
+        }
+
+        [Test]
+        public void StandalonePreviewUsesZeroPositionWithoutChangingItsSceneTransform()
+        {
+            var group = Group(lod1HasUv1: true, out var renderer, out _);
+            var ctx = Open(group);
+            renderer.transform.position = new Vector3(-30, 12, 17);
+            renderer.transform.rotation = Quaternion.Euler(5, 25, 45);
+            renderer.transform.localScale = new Vector3(2, 1, 3);
+            var original = renderer.localToWorldMatrix;
+            Call(hub, "RestoreWorkingMeshes");
+            ctx.RefreshStandalone(renderer);
+            Call(hub, "CollectCanvasEntries");
+            var item = Get<List<MeshViewport3D.Item>>(hub, "viewportItems")[0];
+            Assert.That(item.matrix.MultiplyPoint3x4(Vector3.zero), Is.EqualTo(Vector3.zero));
+            Assert.That(Vector3.Distance(item.matrix.MultiplyVector(Vector3.one), original.MultiplyVector(Vector3.one)), Is.LessThan(1e-5f));
+            Assert.That(renderer.localToWorldMatrix, Is.EqualTo(original));
+        }
+
+        [Test]
+        public void TextureAoPreviewRemovesRootTranslationButPreservesExportPlacement()
+        {
+            var panel = new TextureAoBakePanel();
+            var resultType = typeof(TextureAoBakePanel).GetNestedType("Result", BindingFlags.NonPublic);
+            var result = System.Activator.CreateInstance(resultType, true);
+            var mesh = Quad("AO preview", true);
+            var placement = Matrix4x4.TRS(new Vector3(20, -30, 40), Quaternion.Euler(15, 30, 5), new Vector3(2, 3, 4));
+            resultType.GetField("mesh", Private).SetValue(result, mesh);
+            resultType.GetField("placement", Private).SetValue(result, placement);
+            ((System.Collections.IList)typeof(TextureAoBakePanel).GetField("results", Private).GetValue(panel)).Add(result);
+            var items = new List<MeshViewport3D.Item>();
+            Assert.IsTrue(panel.Get3DContent(items));
+            Assert.That(items[0].matrix.MultiplyPoint3x4(Vector3.zero), Is.EqualTo(Vector3.zero));
+            Assert.That(items[0].matrix.MultiplyVector(Vector3.one), Is.EqualTo(placement.MultiplyVector(Vector3.one)));
+            Assert.That(resultType.GetField("placement", Private).GetValue(result), Is.EqualTo(placement));
         }
 
         [Test]
@@ -230,7 +300,9 @@ namespace SashaRX.UnityMeshLab.Tests
         [UnityTest]
         public IEnumerator ThreeDSpotUsesTheCurrentInputRect()
         {
-            var ctx = Open(Group(lod1HasUv1: true, out _, out _));
+            var group = Group(lod1HasUv1: true, out _, out _);
+            group.transform.position = new Vector3(60, -13, 42);
+            var ctx = Open(group);
             var viewport = Get<MeshViewport3D>(hub, "viewport");
             var canvas = Get<UvCanvasView>(hub, "canvas");
             var items = Get<List<MeshViewport3D.Item>>(hub, "viewportItems");

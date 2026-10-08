@@ -284,7 +284,9 @@ namespace SashaRX.UnityMeshLab
         {
             if (results.Count == 0) return false;
             var r = results[Mathf.Clamp(resultIndex, 0, results.Count - 1)];
-            items.Add(new MeshViewport3D.Item(r.mesh, r.placement, r.material ? Enumerable.Repeat(r.material, r.mesh.subMeshCount).ToArray() : null));
+            var previewPlacement = r.placement;
+            previewPlacement.SetColumn(3, new Vector4(0, 0, 0, 1));
+            items.Add(new MeshViewport3D.Item(r.mesh, previewPlacement, r.material ? Enumerable.Repeat(r.material, r.mesh.subMeshCount).ToArray() : null));
             return true;
         }
     }

@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Removed the obsolete standalone Python/BAT sweep-gallery generator. It only understood the retired flat `BenchmarkReports/*_sweep_*.csv` + `{csvBase}_png/` layout; sweeps now generate their own `index.html` in the current nested run layout. Benchmark documentation and hierarchical-repack artefact descriptions now name the files the current code actually writes.
 
 ### Fixed
+- Selecting a model places its root at (0, 0, 0) in the shared 3D preview while preserving camera state, rotation, scale and child offsets. Scene transforms and Texture AO export placement remain unchanged; Spot picking uses the same preview placement.
 - Square-domain UV2 conversion preserves the configured pixel border; global source aspect correction declines used materials with unresolved texture metrics. Scalar UV0/auxiliary channels retain their dimensions in working copies and diagnostic replay.
 - Transfer captures keep large stage/pair diagnostics in checksum-protected detail files instead of the replay manifest, share writer/reader limits, and retain support for older captures. Capture failures produce an explicit warning; the Diagnostics button handles exceptions without interrupting IMGUI.
 - 3D Spot picking uses the current input viewport rect and keeps that rect through IMGUI Layout passes, so hover, clicks and async island preparation no longer pick against a placeholder or stale viewport size.
