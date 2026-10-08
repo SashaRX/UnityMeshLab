@@ -65,7 +65,10 @@ namespace SashaRX.UnityMeshLab
                 int root = Find(i);
                 if (rootLabels == null) labels[i] = root == i ? count++ : labels[root];
                 else {
-                    if (!rootLabels.TryGetValue(root, out int label)) rootLabels.Add(root, label = count++);
+                    if (!rootLabels.TryGetValue(root, out int label)) {
+                        label = count++;
+                        rootLabels.Add(root, label);
+                    }
                     labels[i] = label;
                 }
             }

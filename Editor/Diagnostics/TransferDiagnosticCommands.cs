@@ -11,6 +11,7 @@ namespace SashaRX.UnityMeshLab
     {
         static bool replayRunning;
         const string Menu = "Tools/Mesh Lab/Diagnostics/";
+        const string CaptureLogPrefix = "[TransferCapture] ";
 
         internal static UvToolHub FindHub()
         {
@@ -23,13 +24,13 @@ namespace SashaRX.UnityMeshLab
         internal static void CaptureCurrent()
         {
             try { CaptureCurrentSafe(FindHub().DiagnosticContext); }
-            catch (Exception error) { UvtLog.Error(UvtLog.Category.Benchmark, "[TransferCapture] " + error.Message); }
+            catch (Exception error) { UvtLog.Error(UvtLog.Category.Benchmark, CaptureLogPrefix + error.Message); }
         }
 
         internal static void CaptureCurrentSafe(UvToolContext ctx)
         {
             try { TransferCaseCapture.CaptureCurrent(ctx); }
-            catch (Exception error) { UvtLog.Error(UvtLog.Category.Benchmark, "[TransferCapture] " + error.Message); }
+            catch (Exception error) { UvtLog.Error(UvtLog.Category.Benchmark, CaptureLogPrefix + error.Message); }
         }
 
         [MenuItem(Menu + "Capture Next Transfer Run")]
@@ -37,9 +38,9 @@ namespace SashaRX.UnityMeshLab
         {
             try {
                 FindHub().DiagnosticContext.CaptureNextTransfer = true;
-                UvtLog.Info(UvtLog.Category.Benchmark, "[TransferCapture] Armed for the next Full Pipeline or Transfer run.");
+                UvtLog.Info(UvtLog.Category.Benchmark, CaptureLogPrefix + "Armed for the next Full Pipeline or Transfer run.");
             }
-            catch (Exception error) { UvtLog.Error(UvtLog.Category.Benchmark, "[TransferCapture] " + error.Message); }
+            catch (Exception error) { UvtLog.Error(UvtLog.Category.Benchmark, CaptureLogPrefix + error.Message); }
         }
 
         [MenuItem(Menu + "Run Captured Full Pipeline")]
@@ -50,7 +51,7 @@ namespace SashaRX.UnityMeshLab
                 if (workflow == null) throw new InvalidOperationException("Enable the UV Transfer library first.");
                 workflow.RunCapturedPipeline();
             }
-            catch (Exception error) { UvtLog.Error(UvtLog.Category.Benchmark, "[TransferCapture] " + error.Message); }
+            catch (Exception error) { UvtLog.Error(UvtLog.Category.Benchmark, CaptureLogPrefix + error.Message); }
         }
 
         [MenuItem(Menu + "Replay Last Transfer Capture")]
