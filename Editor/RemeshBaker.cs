@@ -733,20 +733,8 @@ namespace SashaRX.UnityMeshLab
         static bool Inside(RemeshNative.Geometry target, int face, Vector2 uv, out Vector3 w)
         {
             int a = target.indices[face * 3], b = target.indices[face * 3 + 1], c = target.indices[face * 3 + 2];
-            return BarycentricUv(uv, target.uv[a], target.uv[b], target.uv[c], out w) &&
+            return MeshGeometry.Barycentric(uv, target.uv[a], target.uv[b], target.uv[c], out w) &&
                 w.x >= -1e-6f && w.y >= -1e-6f && w.z >= -1e-6f;
-        }
-
-        static bool BarycentricUv(Vector2 p, Vector2 a, Vector2 b, Vector2 c, out Vector3 weights)
-        {
-            double bx = (double)b.x - a.x, by = (double)b.y - a.y, cx = (double)c.x - a.x, cy = (double)c.y - a.y;
-            double px = (double)p.x - a.x, py = (double)p.y - a.y, determinant = bx * cy - by * cx;
-            weights = default;
-            if (determinant == 0 || double.IsNaN(determinant) || double.IsInfinity(determinant)) return false;
-            double v = (px * cy - py * cx) / determinant, w = (bx * py - by * px) / determinant;
-            weights = new Vector3((float)(1 - v - w), (float)v, (float)w);
-            return !float.IsNaN(weights.x) && !float.IsNaN(weights.y) && !float.IsNaN(weights.z) &&
-                !float.IsInfinity(weights.x) && !float.IsInfinity(weights.y) && !float.IsInfinity(weights.z);
         }
 
         // Clip the UV triangle to the texel square (Sutherland-Hodgman), retaining
@@ -786,7 +774,7 @@ namespace SashaRX.UnityMeshLab
             }
             if (area == 0f) return false; // edge/point contact has no coverage
             int ia = target.indices[face * 3], ib = target.indices[face * 3 + 1], ic = target.indices[face * 3 + 2];
-            if (!BarycentricUv(new Vector2((float)(sumX / (area * size)), (float)(sumY / (area * size))),
+            if (!MeshGeometry.Barycentric(new Vector2((float)(sumX / (area * size)), (float)(sumY / (area * size))),
                 target.uv[ia], target.uv[ib], target.uv[ic], out weights)) return false;
             // Roundoff on a very narrow chart must not extrapolate beyond its surface.
             weights = Vector3.Max(weights, Vector3.zero);

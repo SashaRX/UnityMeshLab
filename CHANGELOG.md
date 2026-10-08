@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Changed
 - Split shared UV setup/quality panels, pipeline auto-tune, Hier UV2 packing and FBX import/export into explicit stages. Preserve native session cleanup, cancellation, import replay, Undo ordering and allocation-free inspection loops.
 - Shared export, UV workflow and meshoptimizer simplification live in libraries independently of tool tabs. LOD generation batches the common simplifier; generated results are tracked by the context for export cleanup.
+- One union-find (`DisjointSet`, representative = smallest member), one `HasArea` and one barycentric routine (`MeshGeometry`, both in double) replace the ten parent-array copies and the per-file triangle helpers in the shell, edge, weld, repack, diagnostics and Remesh passes. Component and shell numbering is unchanged; the hierarchical repack's shell ids and the texel owner lookup no longer depend on union order or on a float determinant cutoff.
 - Removed the obsolete standalone Python/BAT sweep-gallery generator. It only understood the retired flat `BenchmarkReports/*_sweep_*.csv` + `{csvBase}_png/` layout; sweeps now generate their own `index.html` in the current nested run layout. Benchmark documentation and hierarchical-repack artefact descriptions now name the files the current code actually writes.
 
 ### Fixed

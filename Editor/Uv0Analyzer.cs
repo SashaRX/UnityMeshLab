@@ -883,9 +883,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── 3. Union-Find for vertex merging ──
-            int[] parent = new int[vertCount];
-            int[] rank   = new int[vertCount];
-            for (int i = 0; i < vertCount; i++) parent[i] = i;
+            var welds = new DisjointSet(vertCount);
 
             int weldCount = 0;
 
@@ -903,8 +901,7 @@ namespace SashaRX.UnityMeshLab
                         var eB = edges[b];
 
                         // Already same vertices? Skip
-                        if (Find(parent, eA.vA) == Find(parent, eB.vA) &&
-                            Find(parent, eA.vB) == Find(parent, eB.vB))
+                        if (welds.Connected(eA.vA, eB.vA) && welds.Connected(eA.vB, eB.vB))
                             continue;
 
                         // Check UV distance at both endpoints
@@ -929,16 +926,8 @@ namespace SashaRX.UnityMeshLab
                                 if (sAb >= 0 && sBb >= 0 && sAb != sBb
                                     && blockedShellPair[sAb, sBb]) continue;
                             }
-                            if (Find(parent, eA.vA) != Find(parent, eB.vA))
-                            {
-                                Union(parent, rank, eA.vA, eB.vA);
-                                weldCount++;
-                            }
-                            if (Find(parent, eA.vB) != Find(parent, eB.vB))
-                            {
-                                Union(parent, rank, eA.vB, eB.vB);
-                                weldCount++;
-                            }
+                            if (welds.Union(eA.vA, eB.vA)) weldCount++;
+                            if (welds.Union(eA.vB, eB.vB)) weldCount++;
                         }
                     }
                 }
@@ -955,14 +944,14 @@ namespace SashaRX.UnityMeshLab
                 int undone = 0;
                 for (int i = 0; i < vertCount; i++)
                 {
-                    int root = Find(parent, i);
+                    int root = welds.Find(i);
                     if (root == i) continue;
                     float dist = Vector3.Distance(verts[i], verts[root]);
                     if (dist > posEps * 10f) // generous threshold: 10x posEps
                     {
                         badMerges++;
                         // Undo this merge by making vertex its own root
-                        parent[i] = i;
+                        welds.Detach(i);
                         undone++;
                     }
                 }
@@ -971,14 +960,10 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Warn($"[UV0Fix] UvEdgeWeld '{mesh.name}': detected {badMerges} bad merges " +
                                 $"(vertices at different positions merged due to hash collision), " +
                                 $"undone {undone} merges to prevent stretching");
-                    // Re-run Find with path compression to fix up parent chains
-                    for (int i = 0; i < vertCount; i++)
-                        Find(parent, i);
-
                     // Recount actual welds after undo
                     int actualWelds = 0;
                     for (int i = 0; i < vertCount; i++)
-                        if (Find(parent, i) != i) actualWelds++;
+                        if (welds.Find(i) != i) actualWelds++;
                     if (actualWelds == 0) return mesh;
                 }
             }
@@ -987,7 +972,7 @@ namespace SashaRX.UnityMeshLab
             // Remap indices
             int[] newTris = new int[tris.Length];
             for (int i = 0; i < tris.Length; i++)
-                newTris[i] = Find(parent, tris[i]);
+                newTris[i] = welds.Find(tris[i]);
 
             // Compact
             var used = new HashSet<int>();
@@ -1034,7 +1019,7 @@ namespace SashaRX.UnityMeshLab
             var groupMembers = new Dictionary<int, List<int>>();
             for (int i = 0; i < vertCount; i++)
             {
-                int root = Find(parent, i);
+                int root = welds.Find(i);
                 if (!groupMembers.TryGetValue(root, out var members))
                 {
                     members = new List<int>();
@@ -1073,7 +1058,7 @@ namespace SashaRX.UnityMeshLab
                     if (hasBW)       newBW[ni]       = boneWeights[i];
 
                     // For UV2+: compute average across all members of the Union-Find group
-                    int root = Find(parent, i);
+                    int root = welds.Find(i);
                     var members = groupMembers[root];
                     for (int ch = UV_INTERP_START; ch < UV_INTERP_END; ch++)
                     {
@@ -1136,7 +1121,7 @@ namespace SashaRX.UnityMeshLab
             // groups so different merged vertices may have had opposing tangent.w —
             // this is exactly the case the user asked us to surface as an error.
             TangentValidator.ValidateAfterWeld(mesh, result, "UvEdgeWeld");
-            ValidateUnionFindTangentHandedness(mesh, parent, "UvEdgeWeld");
+            ValidateUnionFindTangentHandedness(mesh, welds, "UvEdgeWeld");
 
             return result;
         }
@@ -1147,19 +1132,19 @@ namespace SashaRX.UnityMeshLab
         //  resulting normal-mapped lighting will flip on one side, so
         //  warn loudly when the input mesh had tangents.
         // ═══════════════════════════════════════════════════════════
-        static void ValidateUnionFindTangentHandedness(Mesh sourceMesh, int[] parent, string operation)
+        static void ValidateUnionFindTangentHandedness(Mesh sourceMesh, DisjointSet welds, string operation)
         {
-            if (sourceMesh == null || parent == null) return;
+            if (sourceMesh == null || welds == null) return;
             var srcTan = sourceMesh.tangents;
-            if (srcTan == null || srcTan.Length != parent.Length) return;
+            if (srcTan == null || srcTan.Length != welds.Count) return;
 
             var rootSign = new Dictionary<int, int>();
             int conflictVerts = 0;
             int firstConflictRoot = -1;
 
-            for (int i = 0; i < parent.Length; i++)
+            for (int i = 0; i < welds.Count; i++)
             {
-                int root = Find(parent, i);
+                int root = welds.Find(i);
                 if (root == i) continue;
 
                 float w = srcTan[i].w;
@@ -1201,21 +1186,6 @@ namespace SashaRX.UnityMeshLab
             if (!edgeMap.ContainsKey(key))
                 edgeMap[key] = new List<(int, int)>();
             edgeMap[key].Add((vLow, vHigh));
-        }
-
-        static int Find(int[] parent, int x)
-        {
-            while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
-            return x;
-        }
-
-        static void Union(int[] parent, int[] rank, int a, int b)
-        {
-            a = Find(parent, a); b = Find(parent, b);
-            if (a == b) return;
-            if (rank[a] < rank[b]) { int t = a; a = b; b = t; }
-            parent[b] = a;
-            if (rank[a] == rank[b]) rank[a]++;
         }
 
         // ═══════════════════════════════════════════════════════════

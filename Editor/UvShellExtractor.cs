@@ -123,9 +123,7 @@ namespace SashaRX.UnityMeshLab
         public static List<UvShell> Extract(Vector2[] uvs, int[] triangles, bool computeDescriptors)
         {
             int faceCount = triangles.Length / 3;
-            int[] parent = new int[faceCount];
-            int[] rank   = new int[faceCount];
-            for (int i = 0; i < faceCount; i++) parent[i] = i;
+            var shellsOfFaces = new DisjointSet(faceCount);
 
             // vertex → faces
             var vertToFaces = new Dictionary<int, List<int>>();
@@ -148,14 +146,14 @@ namespace SashaRX.UnityMeshLab
             {
                 var list = kv.Value;
                 for (int i = 1; i < list.Count; i++)
-                    Union(parent, rank, list[0], list[i]);
+                    shellsOfFaces.Union(list[0], list[i]);
             }
 
             // Group faces by root
             var groups = new Dictionary<int, List<int>>();
             for (int f = 0; f < faceCount; f++)
             {
-                int root = Find(parent, f);
+                int root = shellsOfFaces.Find(f);
                 if (!groups.TryGetValue(root, out var list))
                 {
                     list = new List<int>();
@@ -232,19 +230,17 @@ namespace SashaRX.UnityMeshLab
         public static List<List<int>> FindOverlapGroups(List<UvShell> shells, float threshold = 0.25f)
         {
             int n = shells.Count;
-            int[] parent = new int[n];
-            int[] rank   = new int[n];
-            for (int i = 0; i < n; i++) parent[i] = i;
+            var overlapping = new DisjointSet(n);
 
             for (int i = 0; i < n; i++)
                 for (int j = i + 1; j < n; j++)
                     if (BboxOverlapRatio(shells[i], shells[j]) > threshold)
-                        Union(parent, rank, i, j);
+                        overlapping.Union(i, j);
 
             var groups = new Dictionary<int, List<int>>();
             for (int i = 0; i < n; i++)
             {
-                int root = Find(parent, i);
+                int root = overlapping.Find(i);
                 if (!groups.TryGetValue(root, out var list))
                 {
                     list = new List<int>();
@@ -289,17 +285,6 @@ namespace SashaRX.UnityMeshLab
             float overlapArea = (oMaxX - oMinX) * (oMaxY - oMinY);
             float smaller = Mathf.Min(a.bboxArea, b.bboxArea);
             return smaller > 0f ? overlapArea / smaller : 0f;
-        }
-
-        static int Find(int[] p, int x) { while (p[x] != x) { p[x] = p[p[x]]; x = p[x]; } return x; }
-
-        static void Union(int[] p, int[] r, int a, int b)
-        {
-            a = Find(p, a); b = Find(p, b);
-            if (a == b) return;
-            if (r[a] < r[b]) { int t = a; a = b; b = t; }
-            p[b] = a;
-            if (r[a] == r[b]) r[a]++;
         }
     }
 }

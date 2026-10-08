@@ -376,11 +376,11 @@ namespace SashaRX.UnityMeshLab
             // Pieces are counted once each: a component's faces all carry the same class,
             // and a component is identified by its root slot below.
             var slot = WeldSlots(out int slotCount);
-            var parent = ComponentForest(slot, slotCount);
+            var components = ComponentForest(slot, slotCount);
             var counted = new HashSet<int>();
             for (int f = 0; f < faceCount; ++f) {
                 if (cls[f] == PartKept) continue;
-                int root = FindRoot(parent, slot[indices[f * 3]]);
+                int root = components.Find(slot[indices[f * 3]]);
                 if (!counted.Add(root)) continue;
                 if (cls[f] == PartSmall) ++removedSmall; else ++removedThin;
             }
@@ -435,14 +435,14 @@ namespace SashaRX.UnityMeshLab
             float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, resolution);
             float rodLimit = minRodVoxels * cell;
             var slot = WeldSlots(out int slotCount);
-            var parent = ComponentForest(slot, slotCount);
+            var components = ComponentForest(slot, slotCount);
             var members = new Dictionary<int, List<Vector3>>();
             var firstOfSlot = new int[slotCount];
             for (int i = 0; i < slotCount; ++i) firstOfSlot[i] = -1;
             for (int i = 0; i < vertexCount; ++i) {
                 if (firstOfSlot[slot[i]] >= 0) continue;  // one point per welded position
                 firstOfSlot[slot[i]] = i;
-                int root = FindRoot(parent, slot[i]);
+                int root = components.Find(slot[i]);
                 if (!members.TryGetValue(root, out var list)) members[root] = list = new List<Vector3>();
                 list.Add(positions[i]);
             }
@@ -454,7 +454,7 @@ namespace SashaRX.UnityMeshLab
                 verdict[pair.Key] = small ? PartSmall : rod ? PartRod : PartKept;
             }
             var cls = new byte[faceCount];
-            for (int f = 0; f < faceCount; ++f) cls[f] = verdict[FindRoot(parent, slot[indices[f * 3]])];
+            for (int f = 0; f < faceCount; ++f) cls[f] = verdict[components.Find(slot[indices[f * 3]])];
             return cls;
         }
 
@@ -462,25 +462,14 @@ namespace SashaRX.UnityMeshLab
         int[] WeldSlots(out int slotCount) => MeshGeometry.WeldPositions(positions, out slotCount);
 
         // Union-find over the welded slots joined by the triangles.
-        int[] ComponentForest(int[] slot, int slotCount)
+        DisjointSet ComponentForest(int[] slot, int slotCount)
         {
-            var parent = new int[slotCount];
-            for (int i = 0; i < slotCount; ++i) parent[i] = i;
+            var components = new DisjointSet(slotCount);
             for (int f = 0; f * 3 + 2 < indices.Length; ++f) {
-                int a = FindRoot(parent, slot[indices[f * 3]]);
-                int b = FindRoot(parent, slot[indices[f * 3 + 1]]);
-                int c = FindRoot(parent, slot[indices[f * 3 + 2]]);
-                if (a != b) parent[a] = b;
-                a = FindRoot(parent, a);
-                if (a != c) parent[a] = c;
+                components.Union(slot[indices[f * 3]], slot[indices[f * 3 + 1]]);
+                components.Union(slot[indices[f * 3]], slot[indices[f * 3 + 2]]);
             }
-            return parent;
-        }
-
-        static int FindRoot(int[] parent, int x)
-        {
-            while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
-            return x;
+            return components;
         }
 
         /// <summary>

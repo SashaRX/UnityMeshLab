@@ -279,21 +279,18 @@ namespace SashaRX.UnityMeshLab
         static int CountGeometryIslands(int[] tris, int vertCount)
         {
             if (tris == null || tris.Length < 3 || vertCount <= 0) return 0;
-            var parent = new int[vertCount];
-            for (int i = 0; i < vertCount; i++) parent[i] = i;
-            int Find(int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
-            void Union(int a, int b) { int ra = Find(a), rb = Find(b); if (ra != rb) parent[ra] = rb; }
+            var islands = new DisjointSet(vertCount);
             for (int f = 0; f < tris.Length; f += 3)
             {
                 int a = tris[f], b = tris[f + 1], c = tris[f + 2];
                 if (a >= vertCount || b >= vertCount || c >= vertCount) continue;
-                Union(a, b); Union(b, c);
+                islands.Union(a, b); islands.Union(b, c);
             }
             var roots = new HashSet<int>();
             for (int f = 0; f < tris.Length; f += 3)
             {
                 int a = tris[f];
-                if (a < vertCount) roots.Add(Find(a));
+                if (a < vertCount) roots.Add(islands.Find(a));
             }
             return roots.Count;
         }
