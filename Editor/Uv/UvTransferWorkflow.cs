@@ -157,6 +157,14 @@ namespace SashaRX.UnityMeshLab
         // a stale event reaching the click path can't double-trigger.
         bool _pipelineInFlight;
 
+        internal void RunCapturedPipeline()
+        {
+            if (_pipelineInFlight || UvProgress.IsActive) throw new InvalidOperationException("Wait for the active operation to finish.");
+            if (!ctx.LodGroup) throw new InvalidOperationException("Select a LODGroup first.");
+            ctx.CaptureNextTransfer = true;
+            FireAndForget(ExecFullPipelineAsync, "Captured Full Pipeline");
+        }
+
         /// <summary>
         /// Schedule a fire-and-forget async pipeline action with: (a) an
         /// in-flight gate that suppresses double-clicks, (b) Task fault
@@ -1078,6 +1086,10 @@ namespace SashaRX.UnityMeshLab
 
         void DrawRepackDensityControls()
         {
+            ctx.CorrectSourceTextureAspect = EditorGUILayout.ToggleLeft(
+                new GUIContent("Correct source texture proportions",
+                    "Use source texture width/height and material tiling before packing UV2 into a square lightmap. Source UV0 is preserved."),
+                ctx.CorrectSourceTextureAspect);
             ctx.NormalizeTexelDensity = EditorGUILayout.ToggleLeft(
                 new GUIContent("Normalize texel density",
                     "Per-shell UV0 rescale so UV-area is proportional to 3D surface area. "
@@ -1525,6 +1537,7 @@ namespace SashaRX.UnityMeshLab
         async Task ExecFullPipelineImpl(string runLabel, bool useAsync)
         {
             if (ctx.LodGroup == null) return;
+            var capture = TransferCaseCapture.Begin(ctx, this, runLabel);
             using var _bench = BenchmarkRecorder.NewRun(ctx, runLabel,
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
             BenchmarkRecorder.Current?.StageBegin("pipeline");
@@ -1535,6 +1548,7 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
+                capture?.Finish(completedSuccessfully);
                 BenchmarkRecorder.Current?.StageEnd("pipeline");
                 // When the pipeline aborts early (user-cancel or exception)
                 // the per-mesh shellTransferResult / validation state is stale
@@ -1587,6 +1601,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 e.repackedAtlasWidth = 0;
                 e.repackedAtlasHeight = 0;
+                e.diagnosticPackedAtlasWidth = e.diagnosticPackedAtlasHeight = 0;
                 e.transferState = null;
                 e.shellTransferResult = null;
                 e.validationReport = null;
@@ -1638,8 +1653,10 @@ namespace SashaRX.UnityMeshLab
             // result every time. Resetting here makes a full-pipeline run a
             // pure function of (fbxMesh, settings).
             ResetWorkingMeshesToFbx();
+            ctx.DiagnosticCapture?.StageSafe(this, "imported");
 
             RunInitialPipelineStages();
+            ctx.DiagnosticCapture?.StageSafe(this, "after-analyze-weld");
 
             // ── Auto-tune: try multiple SymSplit configs, pick best ──
             // Save working copies so we can restore between attempts.
@@ -1667,6 +1684,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             if (best.Meshes.Count > 0 && !cancelled) RestoreAutoTuneChoice(best);
+            ctx.DiagnosticCapture?.StageSafe(this, "selected-final");
 
             // Cleanup saved copies
             foreach (var m in savedMeshes.Values)
@@ -1836,8 +1854,11 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 RunSymmetryStage(sepThresh);
+                ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-symmetry-separation-{sepThresh:R}");
                 await RunRepackStage(useAsync);
+                ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-repack");
                 await RunTransferStage(useAsync, hasTransferTargets);
+                ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-transfer");
 
                 if (!hasTransferTargets)
                     break;
@@ -2018,7 +2039,25 @@ namespace SashaRX.UnityMeshLab
             opts.blockSize = ctx.XatlasBlockSize;
             opts.texelsPerUnit = ctx.XatlasTexelsPerUnit;
 
-            var results = await RepackMeshes(meshCopies.ToArray(), opts, useAsync);
+            var originalUv0 = new List<SourceTextureUvMetric.OriginalUv0>();
+            RepackResult[] results;
+            try {
+                for (int i = 0; i < meshCopies.Count; ++i) {
+                    var metric = SourceTextureUvMetric.Resolve(validEntries[i].renderer, validEntries[i].previewTexture);
+                    if (ctx.CorrectSourceTextureAspect && metric.conflictingAspects)
+                        UvtLog.Warn(UvtLog.Category.Repack, $"[TextureAspect] '{meshCopies[i].name}': {metric.reason}");
+                    originalUv0.Add(metric.PrepareTemporaryMesh(meshCopies[i], ctx.CorrectSourceTextureAspect));
+                }
+                results = await RepackMeshes(meshCopies.ToArray(), opts, useAsync);
+            }
+            catch {
+                foreach (var copy in meshCopies) if (copy) UnityEngine.Object.DestroyImmediate(copy);
+                throw;
+            }
+            finally {
+                for (int i = 0; i < originalUv0.Count; ++i)
+                    if (meshCopies[i] != null) originalUv0[i].Restore(meshCopies[i]);
+            }
             for (int i = 0; i < validEntries.Count; i++)
             {
                 if (!results[i].ok)
@@ -2030,8 +2069,11 @@ namespace SashaRX.UnityMeshLab
                     continue;
                 }
                 validEntries[i].repackedMesh = meshCopies[i];
-                validEntries[i].repackedAtlasWidth = results[i].atlasWidth;
-                validEntries[i].repackedAtlasHeight = results[i].atlasHeight;
+                uint side = SourceTextureUvMetric.NormalizePackedLightmap(meshCopies[i], results[i].atlasWidth, results[i].atlasHeight);
+                validEntries[i].diagnosticPackedAtlasWidth = results[i].atlasWidth;
+                validEntries[i].diagnosticPackedAtlasHeight = results[i].atlasHeight;
+                validEntries[i].repackedAtlasWidth = side;
+                validEntries[i].repackedAtlasHeight = side;
             }
 
             // HasRepack gates the Apply UV2 UI, so it must mean "a repacked mesh
@@ -2064,6 +2106,7 @@ namespace SashaRX.UnityMeshLab
 
         async Task ExecTransferAllImpl(bool useAsync)
         {
+            var capture = TransferCaseCapture.Begin(ctx, this, "TransferAll");
             using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
             bool ownsSession = _bench is BenchmarkRecorder;
@@ -2100,6 +2143,7 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
+                capture?.Finish(completedSuccessfully);
                 BenchmarkRecorder.Current?.StageEnd("transfer");
                 if (completedSuccessfully && ownsSession) RecordIncludedTransferMeshes();
                 if (ownsProgress)
@@ -2142,11 +2186,12 @@ namespace SashaRX.UnityMeshLab
 
         static Task<GroupedShellTransfer.TransferResult> TransferMesh(Mesh target, Mesh source,
             List<GroupedShellTransfer.OverlapSourceHint> overlapHints,
-            List<GroupedShellTransfer.CrossLodMatchHint> matchHints, int atlasWidth, int atlasHeight, bool useAsync)
+            List<GroupedShellTransfer.CrossLodMatchHint> matchHints, int atlasWidth, int atlasHeight, bool useAsync,
+            TransferMatchTrace trace)
         {
             if (useAsync)
-                return GroupedShellTransfer.TransferAsync(target, source, overlapHints, matchHints, atlasWidth, atlasHeight);
-            return Task.FromResult(GroupedShellTransfer.Transfer(target, source, overlapHints, matchHints, atlasWidth, atlasHeight));
+                return GroupedShellTransfer.TransferAsyncWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace);
+            return Task.FromResult(GroupedShellTransfer.TransferWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace));
         }
 
         async Task ExecTransferLodImpl(int tLod, bool useAsync)
@@ -2189,12 +2234,16 @@ namespace SashaRX.UnityMeshLab
             if (!HasSourceShellTransforms(srcMesh)) return;
 
             UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
+            var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints);
             var tr = await TransferMesh(tgtMesh, srcMesh,
                 hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
                 hintState.matchHints.Count > 0 ? hintState.matchHints : null,
                 srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
-                srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync);
-            if (tr.uv2 == null) { UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); return; }
+                srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync, pair?.trace);
+            if (tr.uv2 == null) {
+                ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
+                UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); return;
+            }
 
             // Accumulate overlap hints for subsequent LODs
             if (tr.overlapHints != null && tr.overlapHints.Count > 0)
@@ -2207,6 +2256,7 @@ namespace SashaRX.UnityMeshLab
                 hintState.matchHints.AddRange(tr.matchHints);
 
             ApplyTransferResult(tgt, tgtMesh, tr, tLod);
+            ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
         }
 
         bool HasSourceShellTransforms(Mesh srcMesh)

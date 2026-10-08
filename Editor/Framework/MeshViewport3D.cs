@@ -54,10 +54,7 @@ namespace SashaRX.UnityMeshLab
         Vector3 pivot;
         Vector2 orbit = new Vector2(-135f, 20f);   // yaw, pitch (degrees)
         float distance = 5f, radius = 1f;
-        int framedKey;
-        bool framedOnce;
-        object framedContext;
-        internal object FramingContext { get; set; }
+        bool frameRequested;
 
         static readonly int ColorId = Shader.PropertyToID("_Color");
         static readonly int UseVertexColorId = Shader.PropertyToID("_UseVertexColor");
@@ -110,6 +107,13 @@ namespace SashaRX.UnityMeshLab
         public Rect LastRect => currentRect;
         public Camera Camera => utility?.camera;
 
+        // GUILayout supplies a placeholder during Layout. Keep the usable rect for
+        // async Spot completion, and refresh it before picking an input event.
+        internal void PrepareRect(Rect rect, EventType eventType)
+        {
+            if (eventType != EventType.Layout) currentRect = rect;
+        }
+
         // ═══════════════════════════════════════════════════════════
         //  Drawing
         // ═══════════════════════════════════════════════════════════
@@ -118,9 +122,9 @@ namespace SashaRX.UnityMeshLab
         /// current shading, calls overlay for the tool's additions and blits the result.</summary>
         public void Draw(Rect rect, IReadOnlyList<Item> items, Action<MeshViewport3D> overlay)
         {
-            currentRect = rect;
-            var bounds = BoundsOf(items, out int key, out bool any);
-            AutoFrame(bounds, key, any);
+            PrepareRect(rect, Event.current.type);
+            var bounds = BoundsOf(items, out bool any);
+            FrameIfRequested(bounds, any);
             HandleInput(rect, any ? bounds : (Bounds?)null);
             if (Event.current.type != EventType.Repaint) return;
             EditorGUI.DrawRect(rect, Background);
@@ -441,19 +445,15 @@ namespace SashaRX.UnityMeshLab
         //  Camera
         // ═══════════════════════════════════════════════════════════
 
-        void AutoFrame(Bounds bounds, int key, bool any)
+        void FrameIfRequested(Bounds bounds, bool any)
         {
-            if (!any) return;
-            bool changed = FramingContext != null ? !ReferenceEquals(framedContext, FramingContext)
-                : framedContext != null || key != framedKey;
-            if (!framedOnce || changed) {
-                Frame(bounds); framedKey = key; framedContext = FramingContext; framedOnce = true;
-            }
+            if (any && frameRequested) Frame(bounds);
         }
 
         /// <summary>Centres the camera on bounds at a distance that fits them.</summary>
         public void Frame(Bounds bounds)
         {
+            frameRequested = false;
             pivot = bounds.center;
             radius = Mathf.Max(bounds.extents.magnitude, 1e-4f);
             distance = radius / Mathf.Sin(15f * Mathf.Deg2Rad) * 1.05f;
@@ -461,7 +461,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>Re-frames the current content on the next draw.</summary>
-        public void FrameContent() { framedOnce = false; RequestRepaint?.Invoke(); }
+        public void FrameContent() { frameRequested = true; RequestRepaint?.Invoke(); }
 
         void HandleInput(Rect rect, Bounds? content)
         {
@@ -499,13 +499,12 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Bounds BoundsOf(IReadOnlyList<Item> items, out int key, out bool any)
+        static Bounds BoundsOf(IReadOnlyList<Item> items, out bool any)
         {
-            var bounds = new Bounds(); any = false; key = 17;
+            var bounds = new Bounds(); any = false;
             if (items == null) return bounds;
             foreach (var item in items) {
                 if (!item.mesh) continue;
-                key = unchecked(key * 31 + item.mesh.GetInstanceID());
                 var local = item.mesh.bounds;
                 // Transform the eight corners so a rotated item still fits.
                 for (int c = 0; c < 8; ++c) {

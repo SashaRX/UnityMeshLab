@@ -66,12 +66,6 @@ namespace SashaRX.UnityMeshLab
         System.Action RequestRepaint { set; }
     }
 
-    internal interface IUvTool3DFrameContext
-    {
-        // Stable model identity across intermediate meshes of one pipeline.
-        object FrameContext { get; }
-    }
-
     internal interface IUvToolWindowPreferences
     {
         void SaveWindowPreferences();

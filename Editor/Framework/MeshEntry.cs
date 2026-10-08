@@ -68,6 +68,7 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public uint repackedAtlasWidth;
         public uint repackedAtlasHeight;
+        internal uint diagnosticPackedAtlasWidth, diagnosticPackedAtlasHeight;
 
         /// <summary>
         /// UV2-transferred mesh for target LODs. Null until the Transfer step runs.

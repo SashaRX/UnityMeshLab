@@ -3,6 +3,29 @@
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v0.15.39 (2026-04-07)
 
+## Эксперимент 2026-10-08 — Пропорции исходной текстуры и квадратного lightmap
+
+- Исходный случай: текстура 1024×2048 и соответствующие ей UV0. До упаковки UV2
+  временная копия получает pixel metric текстуры с учётом tiling материала:
+  U × sqrt(width/height), V × sqrt(height/width). ARAP и density работают уже
+  в этой метрике; исходный UV0 с исходной размерностью восстанавливается в finally.
+  Разные аспекты материалов одного меша не исправляются одной общей матрицей.
+- Дополнительный дефект подтверждён native-тестом: bridge нормализует координаты
+  отдельно по ширине/высоте прямоугольного packed atlas. В UV transfer workflow
+  результат переводится в квадратную метрику max(width,height) на стороне C#,
+  включая размеры, переданные transfer. Native source и binaries не менялись.
+- Opt-in Capture сохраняет точные меши/параметры/меж-LOD hints и этапы симметрии,
+  repack и transfer. Trace записывает реально оценённые кандидаты без дополнительных
+  matching queries; Replay сравнивает baseline и два запуска. Добавлены axis stretch
+  против 3D и positive-area overlap, включая same-shell пары. Алгоритмы symmetry,
+  overlap repair и критерий выбора auto-tune не менялись.
+- Проверка: 51/51 Unity EditMode tests, Unity 6000.2.6f2 / DX11, без skipped.
+  При выключенных ARAP/density source aspect ON даёт anisotropy ≈1, OFF ≈2 после
+  repack и transfer; UV0 (включая третий компонент) сохранён. Capture/Replay двух
+  LOD с hints совпадает по UV2 hash и mapping; trace on/off не меняет результат.
+  Реальная модель пользователя пока не захвачена новым кодом, её overlap/symmetry
+  проблема не объявляется исправленной. [Использование и ограничения](TRANSFER_CAPTURE.md).
+
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
 - **UV repair contention 2026-10-05 (продолжение Exp #1):** занятая legacy

@@ -80,8 +80,10 @@ namespace SashaRX.UnityMeshLab
             Unmatched = 4
         }
 
+        [System.Serializable]
         public class TransferResult
         {
+            internal TransferMatchTrace matchTrace;
             public Vector2[] uv2;
             public int shellsMatched;
             public int shellsUnmatched;
@@ -145,6 +147,7 @@ namespace SashaRX.UnityMeshLab
         /// Records which source shell was chosen for a merged target at a given 3D position.
         /// Used to propagate consistent source selection across LOD levels.
         /// </summary>
+        [System.Serializable]
         public struct OverlapSourceHint
         {
             public Vector3 centroid3D;
@@ -158,6 +161,7 @@ namespace SashaRX.UnityMeshLab
         /// of a nail pattern), so bbox-overlap matching is more reliable than
         /// centroid distance.
         /// </summary>
+        [System.Serializable]
         public struct CrossLodMatchHint
         {
             public Vector3 centroid3D;
@@ -481,7 +485,7 @@ namespace SashaRX.UnityMeshLab
             HashSet<int> excludeSources,
             out int chosenSrc, out float chosenDistSq, out float chosenAvg3D,
             Vector3 tgtNormal = default, Vector3[] srcAvgNormal = null,
-            float meshDiag = 0f)
+            float meshDiag = 0f, TransferMatchTrace.Shell trace = null, string tracePhase = "match")
         {
             chosenSrc = -1;
             chosenDistSq = float.MaxValue;
@@ -556,6 +560,7 @@ namespace SashaRX.UnityMeshLab
                     score *= 1f + (1f - candidateDot);
                 }
 
+                TransferMatchTrace.RecordCandidate(trace, tracePhase, si, ranked[attempt].distSq, avgDist, candidateDot, score);
                 if (score < bestScore)
                 {
                     bestScore = score;
@@ -810,6 +815,12 @@ namespace SashaRX.UnityMeshLab
             List<CrossLodMatchHint> previousLodMatchHints = null,
             int sourceAtlasWidth = 0,
             int sourceAtlasHeight = 0)
+            => TransferWithDiagnostics(targetMesh, sourceMesh, previousLodHints, previousLodMatchHints,
+                sourceAtlasWidth, sourceAtlasHeight, null);
+
+        internal static TransferResult TransferWithDiagnostics(Mesh targetMesh, Mesh sourceMesh,
+            List<OverlapSourceHint> previousLodHints, List<CrossLodMatchHint> previousLodMatchHints,
+            int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace)
         {
             ExtractMeshData(targetMesh, sourceMesh,
                 out var srcVerts, out var srcTris, out var srcUv0, out var srcUv2, out var srcNormals, out var sourceMeshName,
@@ -818,7 +829,7 @@ namespace SashaRX.UnityMeshLab
                 srcVerts, srcTris, srcUv0, srcUv2, srcNormals, sourceMeshName,
                 tVerts, tNormals, tUv0, tgtTris, vertCount, targetMeshName,
                 previousLodHints, previousLodMatchHints,
-                sourceAtlasWidth, sourceAtlasHeight);
+                sourceAtlasWidth, sourceAtlasHeight, trace);
         }
 
         /// <summary>
@@ -836,6 +847,12 @@ namespace SashaRX.UnityMeshLab
             List<CrossLodMatchHint> previousLodMatchHints = null,
             int sourceAtlasWidth = 0,
             int sourceAtlasHeight = 0)
+            => TransferAsyncWithDiagnostics(targetMesh, sourceMesh, previousLodHints, previousLodMatchHints,
+                sourceAtlasWidth, sourceAtlasHeight, null);
+
+        internal static Task<TransferResult> TransferAsyncWithDiagnostics(Mesh targetMesh, Mesh sourceMesh,
+            List<OverlapSourceHint> previousLodHints, List<CrossLodMatchHint> previousLodMatchHints,
+            int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace)
         {
             ExtractMeshData(targetMesh, sourceMesh,
                 out var srcVerts, out var srcTris, out var srcUv0, out var srcUv2, out var srcNormals, out var sourceMeshName,
@@ -844,7 +861,7 @@ namespace SashaRX.UnityMeshLab
                 srcVerts, srcTris, srcUv0, srcUv2, srcNormals, sourceMeshName,
                 tVerts, tNormals, tUv0, tgtTris, vertCount, targetMeshName,
                 previousLodHints, previousLodMatchHints,
-                sourceAtlasWidth, sourceAtlasHeight));
+                sourceAtlasWidth, sourceAtlasHeight, trace));
         }
 
         // Main-thread mesh read — splits Mesh API access (Mesh.vertices etc.
@@ -887,9 +904,9 @@ namespace SashaRX.UnityMeshLab
             int vertCount, string targetMeshName,
             List<OverlapSourceHint> previousLodHints,
             List<CrossLodMatchHint> previousLodMatchHints,
-            int sourceAtlasWidth, int sourceAtlasHeight)
+            int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace)
         {
-            var result = new TransferResult();
+            var result = new TransferResult { matchTrace = trace };
             float uv2OobMargin = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 1.25f, 0.005f);
             float uv2BoundsTolerance = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 2.5f, 0.01f);
             if (sourceAtlasWidth > 0 || sourceAtlasHeight > 0)
@@ -1051,6 +1068,10 @@ namespace SashaRX.UnityMeshLab
             UvProgress.ReportFromBackground($"'{targetMeshName}' · Phase 1b — transforms ({srcShells.Count} src)");
             if (UvProgress.CancelRequested) return CancelTransfer(result);
             var srcTransforms = new SimilarityTransform[srcShells.Count];
+            if (trace != null) {
+                trace.sourceTransformResiduals = new float[srcShells.Count];
+                trace.sourceMirrored = new bool[srcShells.Count];
+            }
             for (int si = 0; si < srcShells.Count; si++)
             {
                 var sh = srcShells[si];
@@ -1063,6 +1084,10 @@ namespace SashaRX.UnityMeshLab
                 bool mirrored = saUv0 * saUv2 < 0f;
 
                 srcTransforms[si] = ComputeSimilarityTransform(srcUv0, srcUv2, idxArr, mirrored);
+                if (trace != null) {
+                    trace.sourceTransformResiduals[si] = srcTransforms[si].residual;
+                    trace.sourceMirrored[si] = mirrored;
+                }
             }
 
             // Compute 3D centroid + AABB for each source shell
@@ -1292,6 +1317,8 @@ namespace SashaRX.UnityMeshLab
             {
                 var tShell = tgtShells[tsi];
 
+                var shellTrace = trace?.ForShell(tsi);
+
                 // Compute target shell 3D centroid
                 Vector3 tCentroid = Vector3.zero; int tN = 0;
                 foreach (int vi in tShell.vertexIndices)
@@ -1336,6 +1363,7 @@ namespace SashaRX.UnityMeshLab
                     chosenSrc = tgtFragmentMergeSource[tsi];
                     chosenDistSq = (tCentroid - srcCentroid3D[chosenSrc]).sqrMagnitude;
                     chosenAvg3D = chosenDistSq; // approximate
+                    if (shellTrace != null) shellTrace.initialReason = "UV0 fragment containment";
                     UvtLog.Info($"[GroupedTransfer] Phase2a: t{tsi} forced to merge source src{chosenSrc}");
                 }
                 else
@@ -1376,10 +1404,17 @@ namespace SashaRX.UnityMeshLab
                             shellBvh3D, shellBvh3DFaceMap,
                             tCentroid, kMaxRetries, kGoodDistSq, null,
                             out chosenSrc, out chosenDistSq, out chosenAvg3D,
-                            tgtAvgNormal[tsi], srcAvgNormal, meshDiagonal);
+                            tgtAvgNormal[tsi], srcAvgNormal, meshDiagonal, shellTrace);
                     }
                 }
 
+                if (shellTrace != null) {
+                    shellTrace.initialSource = chosenSrc;
+                    shellTrace.hintMatched = tgtHintMatched[tsi];
+                    shellTrace.fragmentMerged = tgtIsFragmentMerged != null && tgtIsFragmentMerged[tsi];
+                    if (shellTrace.initialReason == null) shellTrace.initialReason = shellTrace.hintMatched
+                        ? "Cross-LOD hint" : "Sampled surface distance with normal penalty";
+                }
                 if (chosenSrc < 0) continue;
 
                 result.targetShellToSourceShell[tsi] = chosenSrc;
@@ -1607,7 +1642,7 @@ namespace SashaRX.UnityMeshLab
                                 result.targetShellCentroids[tsi],
                                 kMaxRetries * 3, kGoodDistSq, claimed,
                                 out int newSrc, out float newDistSq, out float newAvg3D,
-                                tgtAvgNormal[tsi], srcAvgNormal, meshDiagonal);
+                                tgtAvgNormal[tsi], srcAvgNormal, meshDiagonal, trace?.ForShell(tsi), "dedup");
 
                             if (newSrc >= 0)
                             {
@@ -1629,6 +1664,8 @@ namespace SashaRX.UnityMeshLab
 
                                 if (catastrophicDegradation)
                                 {
+                                    var dedupTrace = trace?.ForShell(tsi);
+                                    if (dedupTrace != null) dedupTrace.dedupDecision = "Kept shared source: alternative surface distance catastrophically worse";
                                     UvtLog.Info($"[GroupedTransfer] Dedup: t{tsi} keeping src{oldSrc} " +
                                         $"(avg3D={oldAvg3D:F4} — new src{newSrc} avg3D={newAvg3D:F4} " +
                                         $"catastrophically worse, sharing source preferred)");
@@ -1639,6 +1676,11 @@ namespace SashaRX.UnityMeshLab
                                 }
 
                                 // Re-check merged status with new source (BVH + adaptive threshold)
+                                var acceptedDedupTrace = trace?.ForShell(tsi);
+                                if (acceptedDedupTrace != null) {
+                                    acceptedDedupTrace.dedupReassigned = newSrc != oldSrc;
+                                    acceptedDedupTrace.dedupDecision = "Reassigned to an unclaimed source";
+                                }
                                 bool newIsMerged = DetectMergedShell(tShell, tUv0,
                                     srcShells[newSrc].faceIndices, triUv0A, triUv0B, triUv0C,
                                     shellUv0Bvh[newSrc], kUv0BadThreshold);
@@ -3860,6 +3902,17 @@ namespace SashaRX.UnityMeshLab
                     $"verts={result.verticesTransferred}/{result.verticesTotal}");
             }
 
+            if (trace != null && result.targetShellToSourceShell != null)
+                for (int tsi = 0; tsi < result.targetShellToSourceShell.Length; ++tsi) {
+                    var shellTrace = trace.ForShell(tsi);
+                    if (shellTrace == null) continue;
+                    shellTrace.finalSource = result.targetShellToSourceShell[tsi];
+                    shellTrace.method = result.targetShellMethod[tsi];
+                    shellTrace.status = (int)result.targetShellStatus[tsi];
+                    shellTrace.issues = result.targetShellIssues[tsi];
+                    shellTrace.force3D = tgtForce3DFallback[tsi];
+                    shellTrace.finalSurfaceDistanceSquared = tgtChosenAvg3D[tsi];
+                }
             return result;
         }
 

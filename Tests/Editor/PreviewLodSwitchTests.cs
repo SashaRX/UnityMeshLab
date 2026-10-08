@@ -1,14 +1,23 @@
 // PreviewLodSwitchTests.cs — the 3D preview follows the preview LOD switched from the
 // canvas toolbar: the checker moves to the renderers now shown, the previous LOD gets
 // its materials back, and the UV channel the user picked returns when the LOD has it.
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
 using Object = UnityEngine.Object;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
+    internal sealed class ViewportSpotInputWindow : UnityEditor.EditorWindow
+    {
+        internal System.Action<Event> Input;
+        void OnEnable() => wantsMouseMove = true;
+        void OnGUI() => Input?.Invoke(Event.current);
+    }
+
     public class PreviewLodSwitchTests
     {
         const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
@@ -61,8 +70,34 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         static T Get<T>(object target, string field) => (T)target.GetType().GetField(field, Private).GetValue(target);
+        static void Set(object target, string field, object value) => target.GetType().GetField(field, Private).SetValue(target, value);
         static object Call(object target, string method, params object[] args) => target.GetType().GetMethod(method, Private).Invoke(target, args);
         static bool ShowsChecker(Renderer renderer) => CheckerTexturePreview.IsPreviewShader(renderer.sharedMaterial.shader.name);
+
+        static ViewportSpotInputWindow OpenSpotInputWindow()
+        {
+            if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null)
+                Assert.Ignore("IMGUI mouse input requires a graphics device; run without -nographics.");
+            var window = ScriptableObject.CreateInstance<ViewportSpotInputWindow>();
+            window.Show();
+            return window;
+        }
+
+        static void ChooseCameraFrame(MeshViewport3D viewport)
+        {
+            Set(viewport, "pivot", new Vector3(3, 4, 5));
+            Set(viewport, "orbit", new Vector2(25, -15));
+            Set(viewport, "distance", 2f);
+            Set(viewport, "radius", .75f);
+        }
+
+        static void AssertCameraFrame(MeshViewport3D viewport)
+        {
+            Assert.That(Get<Vector3>(viewport, "pivot"), Is.EqualTo(new Vector3(3, 4, 5)));
+            Assert.That(Get<Vector2>(viewport, "orbit"), Is.EqualTo(new Vector2(25, -15)));
+            Assert.That(Get<float>(viewport, "distance"), Is.EqualTo(2f));
+            Assert.That(Get<float>(viewport, "radius"), Is.EqualTo(.75f));
+        }
 
         // The hub on the group with the transfer tool active and UV1 picked, after one
         // frame's entry collection — the state the LOD row is clicked from.
@@ -85,6 +120,92 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void UvAnd3DModesKeepTheCameraFrameUntilFrameIsRequested()
+        {
+            Open(Group(lod1HasUv1: true, out _, out _));
+            var viewport = Get<MeshViewport3D>(hub, "viewport");
+            var bounds = new Bounds(Vector3.zero, Vector3.one);
+            Call(hub, "SetCanvas3D", true);
+            viewport.Frame(bounds);
+            ChooseCameraFrame(viewport);
+
+            Call(hub, "SetCanvas3D", false);
+            Call(hub, "SetCanvas3D", true);
+            Call(viewport, "FrameIfRequested", bounds, true);
+            AssertCameraFrame(viewport);
+
+            viewport.FrameContent();
+            Call(viewport, "FrameIfRequested", bounds, true);
+            Assert.That(Get<Vector3>(viewport, "pivot"), Is.EqualTo(bounds.center));
+            Assert.That(Get<float>(viewport, "distance"), Is.Not.EqualTo(2f));
+        }
+
+        [Test]
+        public void LodSwitchKeepsBothCameraAndUvFrame()
+        {
+            var ctx = Open(Group(lod1HasUv1: true, out var lod0, out var lod1));
+            var viewport = Get<MeshViewport3D>(hub, "viewport");
+            var canvas = Get<UvCanvasView>(hub, "canvas");
+            var firstMesh = lod0.GetComponent<MeshFilter>().sharedMesh;
+            var secondMesh = lod1.GetComponent<MeshFilter>().sharedMesh;
+            viewport.Frame(firstMesh.bounds);
+            ChooseCameraFrame(viewport);
+            canvas.Zoom = 3f;
+            canvas.Pan = new Vector2(87, -31);
+
+            SwitchLod(1);
+            Call(viewport, "FrameIfRequested", secondMesh.bounds, true);
+            AssertCameraFrame(viewport);
+            Assert.That(canvas.Zoom, Is.EqualTo(3f));
+            Assert.That(canvas.Pan, Is.EqualTo(new Vector2(87, -31)));
+
+            SwitchLod(0);
+            Call(viewport, "FrameIfRequested", firstMesh.bounds, true);
+            AssertCameraFrame(viewport);
+            Assert.That(ctx.PreviewLod, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void SelectingAnotherModelKeepsTheCameraFrame()
+        {
+            var ctx = Open(Group(lod1HasUv1: true, out _, out _));
+            var viewport = Get<MeshViewport3D>(hub, "viewport");
+            viewport.Frame(new Bounds(Vector3.zero, Vector3.one));
+            ChooseCameraFrame(viewport);
+
+            var nextGroup = Group(lod1HasUv1: true, out _, out _);
+            nextGroup.transform.position = new Vector3(20, 0, 0);
+            Call(hub, "RestoreWorkingMeshes");
+            ctx.Refresh(nextGroup);
+            Call(hub, "CollectCanvasEntries");
+            var bounds = new Bounds(nextGroup.transform.position, new Vector3(4, 3, 1));
+            Call(viewport, "FrameIfRequested", bounds, true);
+            AssertCameraFrame(viewport);
+        }
+
+        [Test]
+        public void ContentIsFramedOnlyOnAnExplicitRequest()
+        {
+            using (var viewport = new MeshViewport3D())
+            {
+                var bounds = new Bounds(new Vector3(20, 0, 0), new Vector3(4, 3, 1));
+                Call(viewport, "FrameIfRequested", bounds, true);
+                Assert.That(Get<Vector3>(viewport, "pivot"), Is.EqualTo(Vector3.zero));
+                Assert.That(Get<float>(viewport, "distance"), Is.EqualTo(5f));
+
+                viewport.FrameContent();
+                Call(viewport, "FrameIfRequested", bounds, false);
+                Assert.That(Get<Vector3>(viewport, "pivot"), Is.EqualTo(Vector3.zero), "an empty view waits for content");
+                Call(viewport, "FrameIfRequested", bounds, true);
+                Assert.That(Get<Vector3>(viewport, "pivot"), Is.EqualTo(bounds.center));
+
+                ChooseCameraFrame(viewport);
+                Call(viewport, "FrameIfRequested", bounds, true);
+                AssertCameraFrame(viewport);
+            }
+        }
+
+        [Test]
         public void CheckerFollowsThePreviewLod()
         {
             var group = Group(lod1HasUv1: true, out var lod0, out var lod1);
@@ -104,6 +225,99 @@ namespace SashaRX.UnityMeshLab.Tests
             SwitchLod(0);
             Assert.That(ShowsChecker(lod0), Is.True);
             Assert.That(ShowsChecker(lod1), Is.False);
+        }
+
+        [UnityTest]
+        public IEnumerator ThreeDSpotUsesTheCurrentInputRect()
+        {
+            var ctx = Open(Group(lod1HasUv1: true, out _, out _));
+            var viewport = Get<MeshViewport3D>(hub, "viewport");
+            var canvas = Get<UvCanvasView>(hub, "canvas");
+            var items = Get<List<MeshViewport3D.Item>>(hub, "viewportItems");
+            var entries = Get<List<MeshEntry>>(hub, "viewportEntries");
+            var mesh = items[0].mesh;
+            Call(hub, "SetCanvas3D", true);
+            canvas.SpotMode = true;
+            Set(viewport, "orbit", Vector2.zero);
+            viewport.Frame(mesh.bounds);
+            // A Layout pass or resize can leave a different rect from the input event.
+            Set(viewport, "currentRect", new Rect(0, 0, 1, 1));
+            long key = ((long)mesh.GetInstanceID() << 8) | (uint)ctx.PreviewUvChannel;
+            ctx.PreviewShellDataCache[key] = UvTopology.BuildShellData(mesh.uv2, mesh.triangles);
+            ctx.PreviewBvhCache[mesh.GetInstanceID()] = new TriangleBvh(mesh.vertices, mesh.triangles);
+
+            var rect = new Rect(20, 30, 200, 100);
+            var inputWindow = OpenSpotInputWindow();
+            try {
+                yield return null;
+                foreach (var eventType in new[] { EventType.MouseMove, EventType.MouseDown }) {
+                    Set(viewport, "currentRect", new Rect(0, 0, 1, 1));
+                    bool handled = false;
+                    inputWindow.Input = input => {
+                        if (input.type != eventType) return;
+                        handled = true;
+                        Call(hub, "HandleViewportSpot", rect, input);
+                        if (eventType == EventType.MouseDown)
+                            Assert.That(input.type, Is.EqualTo(EventType.Used), "selection precedes camera orbit input");
+                    };
+                    inputWindow.SendEvent(new Event { type = eventType, mousePosition = rect.center, button = 0, clickCount = 1 });
+                    Assert.That(handled, Is.True, "input must reach an actual OnGUI callback");
+                    Assert.That(canvas.HasHoveredShell, Is.True, "Spot must use the rect of this input event");
+                    Assert.That(canvas.HoverHitValid, Is.True);
+                    Assert.That(canvas.HoveredShell.meshEntry, Is.SameAs(entries[0]));
+                    Assert.That(canvas.HasSelectedShell, Is.EqualTo(eventType == EventType.MouseDown));
+                }
+            }
+            finally { inputWindow.Close(); }
+        }
+
+        [Test]
+        public void LayoutKeepsTheRectForPendingSpotPicking()
+        {
+            using (var viewport = new MeshViewport3D()) {
+                var rect = new Rect(20, 30, 200, 100);
+                viewport.PrepareRect(rect, EventType.Repaint);
+                viewport.PrepareRect(new Rect(0, 0, 1, 1), EventType.Layout);
+                Assert.That(viewport.LastRect, Is.EqualTo(rect));
+                Assert.That(viewport.TryScreenRay(rect.center, out _, out _), Is.True);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator ThreeDSpotCompletesTheFirstClickAfterPreviewPreparation()
+        {
+            var ctx = Open(Group(lod1HasUv1: true, out _, out _));
+            var viewport = Get<MeshViewport3D>(hub, "viewport");
+            var canvas = Get<UvCanvasView>(hub, "canvas");
+            var items = Get<List<MeshViewport3D.Item>>(hub, "viewportItems");
+            Call(hub, "SetCanvas3D", true);
+            canvas.SpotMode = true;
+            Set(viewport, "orbit", Vector2.zero);
+            viewport.Frame(items[0].mesh.bounds);
+            var rect = new Rect(20, 30, 200, 100);
+            var inputWindow = OpenSpotInputWindow();
+            try {
+                yield return null;
+                bool handled = false;
+                inputWindow.Input = input => {
+                    if (input.type != EventType.MouseDown) return;
+                    handled = true; Call(hub, "HandleViewportSpot", rect, input);
+                };
+                inputWindow.SendEvent(new Event { type = EventType.MouseDown, mousePosition = rect.center, button = 0, clickCount = 1 });
+                Assert.That(handled, Is.True, "input must reach an actual OnGUI callback");
+                Assert.That(canvas.HasSelectedShell, Is.False, "the first click queues missing preview data");
+                viewport.PrepareRect(new Rect(0, 0, 1, 1), EventType.Layout);
+
+                double deadline = UnityEditor.EditorApplication.timeSinceStartup + 10;
+                while (!canvas.HasSelectedShell && UnityEditor.EditorApplication.timeSinceStartup < deadline) {
+                    canvas.PollPreviewJobs(); yield return null;
+                }
+                Assert.That(canvas.HasHoveredShell, Is.True);
+                Assert.That(canvas.HasSelectedShell, Is.True, "worker completion must finish the click without another mouse event");
+                Assert.That(canvas.SelectedShellDebug, Is.Not.Null);
+                Assert.That(canvas.SelectedShellDebug.uvChannel, Is.EqualTo(ctx.PreviewUvChannel));
+            }
+            finally { inputWindow.Close(); }
         }
 
         [Test]

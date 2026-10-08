@@ -124,6 +124,10 @@ namespace SashaRX.UnityMeshLab
         /// non-uniform density.
         /// </summary>
         public bool NormalizeTexelDensity = true;
+        public bool CorrectSourceTextureAspect = true;
+
+        internal bool CaptureNextTransfer;
+        internal TransferCaseCapture DiagnosticCapture;
 
         /// <summary>
         /// Auto-reparameterize shells whose UV0 stretch (Sander L² metric) exceeds

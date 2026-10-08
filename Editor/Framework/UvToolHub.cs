@@ -34,6 +34,8 @@ namespace SashaRX.UnityMeshLab
 
         // ── Shared components ──
         UvToolContext ctx;
+        internal UvToolContext DiagnosticContext => ctx;
+        internal UvTransferWorkflow DiagnosticWorkflow => tools?.OfType<UvTransferWorkflow>().FirstOrDefault();
         UvCanvasView canvas;
         // The shared 3D viewport behind the canvas's UV | 3D switch. One instance per
         // window; every tool draws into it through IUvTool3D.
@@ -1056,7 +1058,6 @@ namespace SashaRX.UnityMeshLab
             canvas.ForgetUvSpotPointer();
             // Hover belongs to the view it was picked in; selection carries over.
             canvas.HasHoveredShell = false; canvas.HoveredShellDebug = null; canvas.HoverHitValid = false;
-            if (on) viewport?.FrameContent();
             Repaint(); SceneView.RepaintAll();
         }
 
@@ -1215,11 +1216,11 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        void HandleViewportSpot(Rect rect)
+        void HandleViewportSpot(Rect rect, Event e)
         {
             if (!canvas.SpotMode) { viewportSpotPointerValid = false; return; }
-            var e = Event.current;
             if (!UvCanvasView.IsSpotInput(e.type)) return;
+            viewport.PrepareRect(rect, e.type);
             if (!rect.Contains(e.mousePosition)) {
                 viewportSpotPointerValid = false; selectViewportSpotWhenReady = false;
                 if (!canvas.SpotSelectionLocked) canvas.ClearSpotHover();
@@ -1257,14 +1258,14 @@ namespace SashaRX.UnityMeshLab
             else
             {
                 var e = Event.current;
+                viewport.PrepareRect(rect, e.type);
                 if (inspectMesh && e.type == EventType.MouseDown && e.button == 0 && e.control && rect.Contains(e.mousePosition) &&
                     viewport.TryScreenRay(e.mousePosition, out var origin, out var direction)) {
                     if (inspection.Pick(items, origin, direction, out int item)) { inspectedItem = item; Repaint(); }
                     e.Use();
                 }
-                HandleViewportSpot(rect);
+                HandleViewportSpot(rect, e);
                 var tool3D = ActiveTool as IUvTool3D;
-                viewport.FramingContext = (ActiveTool as IUvTool3DFrameContext)?.FrameContext;
                 viewport.Draw(rect, items, view =>
                 {
                     uvLayer.Draw(view, canvas, ctx, viewportItems, viewportEntries);
