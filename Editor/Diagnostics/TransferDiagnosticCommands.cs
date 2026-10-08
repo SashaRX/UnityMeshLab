@@ -22,7 +22,13 @@ namespace SashaRX.UnityMeshLab
         [MenuItem(Menu + "Capture Current Transfer State")]
         internal static void CaptureCurrent()
         {
-            try { TransferCaseCapture.CaptureCurrent(FindHub().DiagnosticContext); }
+            try { CaptureCurrentSafe(FindHub().DiagnosticContext); }
+            catch (Exception error) { UvtLog.Error(UvtLog.Category.Benchmark, "[TransferCapture] " + error.Message); }
+        }
+
+        internal static void CaptureCurrentSafe(UvToolContext ctx)
+        {
+            try { TransferCaseCapture.CaptureCurrent(ctx); }
             catch (Exception error) { UvtLog.Error(UvtLog.Category.Benchmark, "[TransferCapture] " + error.Message); }
         }
 
@@ -70,10 +76,10 @@ namespace SashaRX.UnityMeshLab
         {
             EditorGUILayout.LabelField("Transfer capture & replay", EditorStyles.boldLabel);
             if (ctx == null) return;
-            using (new EditorGUI.DisabledScope(UvProgress.IsActive)) {
+            using (new EditorGUI.DisabledScope(UvProgress.IsActive || ctx.DiagnosticCapture != null)) {
                 ctx.CaptureNextTransfer = EditorGUILayout.ToggleLeft("Capture next Full Pipeline / Transfer run", ctx.CaptureNextTransfer);
                 using (new EditorGUI.DisabledScope(ctx.MeshEntries.Count == 0))
-                    if (GUILayout.Button("Capture current state")) TransferCaseCapture.CaptureCurrent(ctx);
+                    if (GUILayout.Button("Capture current state")) CaptureCurrentSafe(ctx);
                 using (new EditorGUI.DisabledScope(!File.Exists(TransferCaseCapture.LastManifest)))
                     if (GUILayout.Button("Replay last capture (twice)")) ReplayLast();
             }

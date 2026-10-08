@@ -59,16 +59,19 @@ namespace SashaRX.UnityMeshLab
                 var colors = new Color[count];
                 for (int i = 0; i < count; ++i) { var value = ReadVector4(reader); colors[i] = new Color(value.x, value.y, value.z, value.w); }
                 if (count > 0) mesh.colors = colors;
+                var scalarChannels = new Dictionary<int, List<Vector4>>();
                 for (int channel = 0; channel < 8; ++channel) {
                     int dimension = Count(reader, 4); count = Count(reader, MaxVertices);
                     if (count == 0 && dimension == 0) continue;
-                    if (count != mesh.vertexCount || dimension < 2) throw new InvalidDataException("Invalid UV channel size.");
+                    if (count != mesh.vertexCount || dimension < 1) throw new InvalidDataException("Invalid UV channel size.");
                     var values = new List<Vector4>(count);
                     for (int i = 0; i < count; ++i) values.Add(ReadVector4(reader));
-                    if (dimension == 2) mesh.SetUVs(channel, values.ConvertAll(value => new Vector2(value.x, value.y)));
+                    if (dimension == 1) scalarChannels.Add(channel, values);
+                    else if (dimension == 2) mesh.SetUVs(channel, values.ConvertAll(value => new Vector2(value.x, value.y)));
                     else if (dimension == 3) mesh.SetUVs(channel, values.ConvertAll(value => new Vector3(value.x, value.y, value.z)));
                     else mesh.SetUVs(channel, values);
                 }
+                if (scalarChannels.Count > 0) RestoreScalarChannels(mesh, scalarChannels);
                 mesh.subMeshCount = Count(reader, 65536);
                 for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
                     var topology = (MeshTopology)reader.ReadInt32();
@@ -86,6 +89,53 @@ namespace SashaRX.UnityMeshLab
                 return mesh;
             }
             catch { UnityEngine.Object.DestroyImmediate(mesh); throw; }
+        }
+
+        // Snapshot attributes are float vectors. A single interleaved float buffer
+        // also represents scalar UV channels, which the SetUVs overloads cannot do.
+        static void RestoreScalarChannels(Mesh mesh, Dictionary<int, List<Vector4>> scalarChannels)
+        {
+            var attributes = new List<VertexAttributeDescriptor>();
+            var values = new List<Vector4[]>();
+            var positions = mesh.vertices;
+            attributes.Add(new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3));
+            values.Add(Array.ConvertAll(positions, value => new Vector4(value.x, value.y, value.z, 0)));
+            var normals = mesh.normals;
+            if (normals.Length > 0) {
+                attributes.Add(new VertexAttributeDescriptor(VertexAttribute.Normal, VertexAttributeFormat.Float32, 3));
+                values.Add(Array.ConvertAll(normals, value => new Vector4(value.x, value.y, value.z, 0)));
+            }
+            var tangents = mesh.tangents;
+            if (tangents.Length > 0) {
+                attributes.Add(new VertexAttributeDescriptor(VertexAttribute.Tangent, VertexAttributeFormat.Float32, 4));
+                values.Add(tangents);
+            }
+            var colors = mesh.colors;
+            if (colors.Length > 0) {
+                attributes.Add(new VertexAttributeDescriptor(VertexAttribute.Color, VertexAttributeFormat.Float32, 4));
+                values.Add(Array.ConvertAll(colors, value => new Vector4(value.r, value.g, value.b, value.a)));
+            }
+            for (int channel = 0; channel < 8; ++channel) {
+                var attribute = (VertexAttribute)((int)VertexAttribute.TexCoord0 + channel);
+                if (scalarChannels.TryGetValue(channel, out var scalars)) {
+                    attributes.Add(new VertexAttributeDescriptor(attribute, VertexAttributeFormat.Float32, 1));
+                    values.Add(scalars.ToArray());
+                }
+                else if (mesh.HasVertexAttribute(attribute)) {
+                    attributes.Add(new VertexAttributeDescriptor(attribute, VertexAttributeFormat.Float32, mesh.GetVertexAttributeDimension(attribute)));
+                    var uv = new List<Vector4>(); mesh.GetUVs(channel, uv); values.Add(uv.ToArray());
+                }
+            }
+            int stride = 0;
+            foreach (var attribute in attributes) stride += attribute.dimension;
+            var buffer = new float[checked(positions.Length * stride)];
+            int offset = 0;
+            for (int vertex = 0; vertex < positions.Length; ++vertex)
+                for (int attribute = 0; attribute < attributes.Count; ++attribute)
+                    for (int component = 0; component < attributes[attribute].dimension; ++component)
+                        buffer[offset++] = values[attribute][vertex][component];
+            mesh.SetVertexBufferParams(positions.Length, attributes.ToArray());
+            mesh.SetVertexBufferData(buffer, 0, 0, buffer.Length);
         }
 
         internal static string Hash(byte[] data)

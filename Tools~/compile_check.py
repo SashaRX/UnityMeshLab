@@ -20,8 +20,9 @@ in SHIMS with the reason. Keep that list short: every entry is an API the real
 Unity build sees and this check cannot.
 
 The Unity Test Framework is a separate package, absent from Unity3D.SDK. Its
-UnityTest marker attribute is stubbed only in the generated compile-check sources;
-coroutine execution is verified by the real Unity Test Runner.
+UnityTest marker and LogAssert.Expect signatures are stubbed only in the generated
+compile-check sources; coroutine execution and log assertions are verified by the
+real Unity Test Runner.
 
 Usage:
   python3 Tools~/compile_check.py                 # build both define variants
@@ -70,6 +71,11 @@ namespace UnityEngine.TestTools
 {
     [System.AttributeUsage(System.AttributeTargets.Method)]
     public sealed class UnityTestAttribute : System.Attribute { }
+    public static class LogAssert
+    {
+        public static void Expect(UnityEngine.LogType type, string message) { }
+        public static void Expect(UnityEngine.LogType type, System.Text.RegularExpressions.Regex message) { }
+    }
 }
 """
 

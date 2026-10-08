@@ -30,17 +30,18 @@ namespace SashaRX.UnityMeshLab
         {
             if (UvProgress.IsActive) throw new InvalidOperationException("Wait for the active operation to finish.");
             var file = new FileInfo(manifestPath);
-            if (!file.Exists || file.Length > 64L * 1024 * 1024) throw new InvalidDataException("Missing or oversized transfer manifest.");
+            if (!file.Exists || file.Length > TransferCaseCapture.MaxManifestBytes) throw new InvalidDataException("Missing or oversized transfer manifest.");
             string json = await File.ReadAllTextAsync(file.FullName);
             if (UvProgress.IsActive) throw new InvalidOperationException("Wait for the active operation to finish.");
             var manifest = JsonUtility.FromJson<TransferCaseCapture.Manifest>(json);
-            if (manifest == null || manifest.schema != 1 || manifest.pairs == null || manifest.pairs.Count > 10000)
+            if (manifest == null || (manifest.schema != 1 && manifest.schema != 2) || manifest.pairs == null || manifest.pairs.Count > TransferCaseCapture.MaxPairs)
                 throw new InvalidDataException("Unsupported transfer manifest.");
             string root = file.DirectoryName;
             int ready = 0;
             foreach (var pair in manifest.pairs) {
                 if (pair.status != "complete") continue;
                 Verify(root, pair.sourceMesh); Verify(root, pair.targetMesh); Verify(root, pair.outputMesh);
+                if (manifest.schema == 2) Verify(root, pair.details, "details", ".json");
                 ++ready;
             }
             if (ready == 0) throw new InvalidDataException("This capture has no completed transfer pairs. Arm Capture next run, then run Transfer or Full Pipeline.");
@@ -54,8 +55,14 @@ namespace SashaRX.UnityMeshLab
                     if (pair.status != "complete") continue;
                     if (UvProgress.CancelRequested) break;
                     UvProgress.Report((float)report.pairs.Count / ready, pair.target);
+                    if (manifest.schema == 2) TransferCaseCapture.RestorePairDetails(root, pair);
                     var item = await ReplayPair(root, pair);
                     report.pairs.Add(item);
+                    // The next pair does not need the previous capture's large diagnostic arrays.
+                    if (manifest.schema == 2) {
+                        pair.result = null; pair.trace = null; pair.quality = null; pair.validation = null;
+                        pair.overlapHints = null; pair.matchHints = null;
+                    }
                 }
                 report.complete = report.pairs.Count == ready && !UvProgress.CancelRequested && report.pairs.TrueForAll(pair => string.IsNullOrEmpty(pair.error));
             }
@@ -131,14 +138,14 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static Mesh Load(string root, string hash) => TransferMeshSnapshot.Restore(Verify(root, hash));
-        internal static byte[] Verify(string root, string hash)
+        internal static byte[] Verify(string root, string hash, string directory = "meshes", string extension = ".bin")
         {
             if (hash == null || hash.Length != 64) throw new InvalidDataException("Invalid mesh hash.");
             foreach (char character in hash)
                 if (!(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f'))
                     throw new InvalidDataException("Invalid mesh hash.");
-            // Hash-only names cannot escape the capture's meshes directory.
-            var file = new FileInfo(Path.Combine(root, "meshes", hash + ".bin"));
+            // Hash-only names cannot escape the selected capture directory.
+            var file = new FileInfo(Path.Combine(root, directory, hash + extension));
             if (!file.Exists || file.Length > TransferMeshSnapshot.MaxFileBytes) throw new InvalidDataException("Missing or oversized mesh snapshot.");
             var bytes = File.ReadAllBytes(file.FullName);
             if (TransferMeshSnapshot.Hash(bytes) != hash) throw new InvalidDataException("Mesh snapshot checksum mismatch.");

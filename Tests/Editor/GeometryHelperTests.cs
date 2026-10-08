@@ -6,6 +6,16 @@ namespace SashaRX.UnityMeshLab.Tests
     public class GeometryHelperTests
     {
         [Test]
+        public void RankRootsRetainLegacyUnionOrderAndDenseLabels()
+        {
+            var set = new DisjointSet(5, preserveRankRoots: true);
+            set.Union(0, 4); set.Union(2, 3); set.Union(2, 4);
+            Assert.AreEqual(2, set.Find(0));
+            CollectionAssert.AreEqual(new[] { 0, 1, 0, 0, 0 }, set.Labels(out int count));
+            Assert.AreEqual(2, count);
+        }
+
+        [Test]
         public void DisjointSetRepresentativeIsTheSmallestMember()
         {
             var set = new DisjointSet(6);

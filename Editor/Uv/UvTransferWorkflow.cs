@@ -2036,7 +2036,8 @@ namespace SashaRX.UnityMeshLab
             var opts = RepackOptions.Default;
             opts.resolution = resolvedResolution;
             opts.padding = (uint)safeShellPadding;
-            opts.borderPadding = (uint)safeBorderPadding;
+            // Border pixels are applied after conversion to the final square lightmap domain.
+            opts.borderPadding = 0;
             opts.bruteForce = ctx.XatlasBruteForce;
             opts.rotateCharts = ctx.XatlasRotateCharts;
             opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
@@ -2058,7 +2059,7 @@ namespace SashaRX.UnityMeshLab
             RepackResult[] results;
             try {
                 for (int i = 0; i < meshCopies.Count; ++i) {
-                    var metric = SourceTextureUvMetric.Resolve(validEntries[i].renderer, validEntries[i].previewTexture);
+                    var metric = SourceTextureUvMetric.Resolve(validEntries[i].renderer, validEntries[i].previewTexture, meshCopies[i]);
                     if (ctx.CorrectSourceTextureAspect && metric.conflictingAspects)
                         UvtLog.Warn(UvtLog.Category.Repack, $"[TextureAspect] '{meshCopies[i].name}': {metric.reason}");
                     originalUv0.Add(metric.PrepareTemporaryMesh(meshCopies[i], ctx.CorrectSourceTextureAspect));
@@ -2085,6 +2086,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 validEntries[i].repackedMesh = meshCopies[i];
                 uint side = SourceTextureUvMetric.NormalizePackedLightmap(meshCopies[i], results[i].atlasWidth, results[i].atlasHeight);
+                XatlasRepack.ApplyBorderInset(meshCopies[i], safeBorderPadding, resolvedResolution > 0 ? resolvedResolution : side);
                 validEntries[i].diagnosticPackedAtlasWidth = results[i].atlasWidth;
                 validEntries[i].diagnosticPackedAtlasHeight = results[i].atlasHeight;
                 validEntries[i].repackedAtlasWidth = side;

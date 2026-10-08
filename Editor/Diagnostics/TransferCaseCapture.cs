@@ -11,6 +11,8 @@ namespace SashaRX.UnityMeshLab
     /// <summary>Opt-in, exact transfer inputs. No scene/assets are changed by capture or replay.</summary>
     internal sealed class TransferCaseCapture
     {
+        internal const long MaxManifestBytes = 64L * 1024 * 1024;
+        internal const int MaxPairs = 10000;
         static string LastPathKey => "MeshLab.TransferCapture.LastManifest." +
             TransferMeshSnapshot.Hash(System.Text.Encoding.UTF8.GetBytes(Application.dataPath));
         [Serializable] internal sealed class Setting { public string owner, name, value; }
@@ -25,7 +27,7 @@ namespace SashaRX.UnityMeshLab
         }
         [Serializable] internal sealed class Stage
         {
-            public string name;
+            public string name, details;
             public List<Setting> settings = new List<Setting>();
             public List<MeshState> meshes = new List<MeshState>();
         }
@@ -33,12 +35,22 @@ namespace SashaRX.UnityMeshLab
         {
             public int index, targetLod, atlasWidth, atlasHeight;
             public string source, target, group, sourceMesh, targetMesh, outputMesh, baselineUvHash, status = "pending";
+            public string details;
             public bool clamp;
             public Matrix4x4 localToWorld;
             public List<GroupedShellTransfer.OverlapSourceHint> overlapHints;
             public List<GroupedShellTransfer.CrossLodMatchHint> matchHints;
             public GroupedShellTransfer.TransferResult result;
             public TransferMatchTrace trace = new TransferMatchTrace();
+            public TransferUvQuality quality;
+            public Validation validation;
+        }
+        [Serializable] internal sealed class PairDetails
+        {
+            public List<GroupedShellTransfer.OverlapSourceHint> overlapHints;
+            public List<GroupedShellTransfer.CrossLodMatchHint> matchHints;
+            public GroupedShellTransfer.TransferResult result;
+            public TransferMatchTrace trace;
             public TransferUvQuality quality;
             public Validation validation;
         }
@@ -49,7 +61,7 @@ namespace SashaRX.UnityMeshLab
         }
         [Serializable] internal sealed class Manifest
         {
-            public int schema = 1;
+            public int schema = 2;
             public string createdUtc, unityVersion, packageName, packageVersion, gitSha, gitBranch, packagePath;
             public bool gitDirty;
             public string run, status = "recording", error;
@@ -69,6 +81,7 @@ namespace SashaRX.UnityMeshLab
             Folder = Path.Combine(SweepRunner.ReportsRoot(), "transfer_" + DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture)
                 + "_" + Guid.NewGuid().ToString("N").Substring(0, 8));
             Directory.CreateDirectory(Path.Combine(Folder, "meshes"));
+            Directory.CreateDirectory(Path.Combine(Folder, "details"));
             var provenance = BenchmarkSweep.ResolvePackageProvenance();
             var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(TransferCaseCapture).Assembly);
             Data = new Manifest { createdUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
@@ -102,7 +115,7 @@ namespace SashaRX.UnityMeshLab
                 stage.settings.Add(new Setting { owner = "context", name = "PipeSettings", value = JsonUtility.ToJson(context.PipeSettings) });
                 foreach (var entry in context.MeshEntries) {
                     if (!entry.include || !entry.originalMesh) continue;
-                    var metric = SourceTextureUvMetric.Resolve(entry.renderer, entry.previewTexture);
+                    var metric = SourceTextureUvMetric.Resolve(entry.renderer, entry.previewTexture, entry.originalMesh);
                     var matrix = entry.renderer ? entry.renderer.localToWorldMatrix : Matrix4x4.identity;
                     var state = new MeshState { renderer = entry.renderer ? entry.renderer.name : entry.originalMesh.name,
                         group = entry.meshGroupKey, lod = entry.lodIndex, importedAsset = AssetDatabase.GetAssetPath(entry.fbxMesh),
@@ -122,8 +135,14 @@ namespace SashaRX.UnityMeshLab
                     if (output) state.uv2 = TransferUvQuality.Measure(output, output.uv2, Vector2.one, matrix);
                     stage.meshes.Add(state);
                 }
-                Data.stages.Add(stage); Save();
+                RecordStage(stage);
             });
+        }
+
+        internal void RecordStage(Stage stage)
+        {
+            stage.details = StoreDetails(stage);
+            Data.stages.Add(stage); Save();
         }
 
         internal Pair BeforePair(MeshEntry source, MeshEntry target, Mesh sourceMesh, Mesh targetMesh,
@@ -131,6 +150,7 @@ namespace SashaRX.UnityMeshLab
         {
             Pair pair = null;
             Safe(() => {
+                if (Data.pairs.Count >= MaxPairs) throw new InvalidDataException("Transfer capture exceeds the replay pair limit.");
                 pair = new Pair { index = Data.pairs.Count, source = source.renderer ? source.renderer.name : sourceMesh.name,
                     target = target.renderer ? target.renderer.name : targetMesh.name, targetLod = target.lodIndex, group = target.meshGroupKey,
                     sourceMesh = StoreMesh(sourceMesh), targetMesh = StoreMesh(targetMesh), clamp = context.ClampLightmapToUnit,
@@ -138,6 +158,7 @@ namespace SashaRX.UnityMeshLab
                     localToWorld = target.renderer ? target.renderer.localToWorldMatrix : Matrix4x4.identity,
                     overlapHints = overlapHints == null || overlapHints.Count == 0 ? null : new List<GroupedShellTransfer.OverlapSourceHint>(overlapHints),
                     matchHints = matchHints == null || matchHints.Count == 0 ? null : new List<GroupedShellTransfer.CrossLodMatchHint>(matchHints) };
+                StorePairDetails(pair);
                 Data.pairs.Add(pair); Save();
             });
             return failed ? null : pair;
@@ -147,7 +168,6 @@ namespace SashaRX.UnityMeshLab
         {
             if (pair == null) return;
             Safe(() => {
-                pair.status = result.uv2 == null ? "failed" : "complete";
                 pair.result = result;
                 pair.baselineUvHash = TransferMeshSnapshot.UvHash(result.uv2);
                 if (result.uv2 != null && entry.transferredMesh) {
@@ -161,6 +181,8 @@ namespace SashaRX.UnityMeshLab
                         perTriangle = validation.perTriangle == null ? null : (TransferValidator.TriIssue[])validation.perTriangle.Clone()
                     };
                 }
+                StorePairDetails(pair);
+                pair.status = result.uv2 == null ? "failed" : "complete";
                 Save();
             });
         }
@@ -169,7 +191,10 @@ namespace SashaRX.UnityMeshLab
         {
             Data.status = failed ? "capture-failed" : complete ? "complete" : "aborted";
             try { Save(); }
-            catch (Exception error) { UvtLog.Warn(UvtLog.Category.Benchmark, "[TransferCapture] Cannot finish: " + error.Message); }
+            catch (Exception error) {
+                failed = true; Data.status = "capture-failed"; Data.error = error.ToString();
+                UvtLog.Warn(UvtLog.Category.Benchmark, "[TransferCapture] Cannot finish: " + error.Message);
+            }
             finally { if (context.DiagnosticCapture == this) context.DiagnosticCapture = null; }
         }
 
@@ -178,7 +203,9 @@ namespace SashaRX.UnityMeshLab
             if (UvProgress.IsActive || ctx.DiagnosticCapture != null) throw new InvalidOperationException("Wait for the active operation to finish.");
             var capture = new TransferCaseCapture(ctx, "Current snapshot (no historical transfer inputs)");
             capture.StageSafe(null, "current"); capture.Finish(true);
-            UvtLog.Info(UvtLog.Category.Benchmark, "[TransferCapture] Snapshot: " + capture.Folder + ". Arm the next run to capture exact hints and replay inputs.");
+            if (capture.Data.status == "complete")
+                UvtLog.Info(UvtLog.Category.Benchmark, "[TransferCapture] Snapshot: " + capture.Folder + ". Arm the next run to capture exact hints and replay inputs.");
+            else UvtLog.Warn(UvtLog.Category.Benchmark, "[TransferCapture] Snapshot incomplete: " + capture.Folder + ". " + capture.Data.error);
         }
 
         string StoreMesh(Mesh mesh)
@@ -208,9 +235,50 @@ namespace SashaRX.UnityMeshLab
         void Save()
         {
             string path = Path.Combine(Folder, "manifest.json"), temp = path + ".tmp";
-            File.WriteAllText(temp, JsonUtility.ToJson(Data, true));
+            // Keep metadata bounded independently of vertex/face counts and pipeline attempts.
+            var compact = new Manifest { schema = Data.schema, createdUtc = Data.createdUtc,
+                unityVersion = Data.unityVersion, packageName = Data.packageName, packageVersion = Data.packageVersion,
+                gitSha = Data.gitSha, gitBranch = Data.gitBranch, gitDirty = Data.gitDirty, packagePath = Data.packagePath,
+                run = Data.run, status = Data.status, error = Data.error };
+            foreach (var stage in Data.stages) compact.stages.Add(new Stage { name = stage.name, details = stage.details });
+            foreach (var pair in Data.pairs) compact.pairs.Add(new Pair { index = pair.index, targetLod = pair.targetLod,
+                atlasWidth = pair.atlasWidth, atlasHeight = pair.atlasHeight, source = pair.source, target = pair.target,
+                group = pair.group, sourceMesh = pair.sourceMesh, targetMesh = pair.targetMesh, outputMesh = pair.outputMesh,
+                baselineUvHash = pair.baselineUvHash, status = pair.status, clamp = pair.clamp,
+                localToWorld = pair.localToWorld, details = pair.details, trace = null });
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(compact, true));
+            if (bytes.LongLength > MaxManifestBytes) throw new InvalidDataException("Transfer manifest exceeds the replay size limit.");
+            File.WriteAllBytes(temp, bytes);
             if (File.Exists(path)) File.Delete(path);
             File.Move(temp, path);
+        }
+
+        void StorePairDetails(Pair pair)
+        {
+            pair.details = StoreDetails(new PairDetails { overlapHints = pair.overlapHints, matchHints = pair.matchHints,
+                result = pair.result, trace = pair.trace, quality = pair.quality, validation = pair.validation });
+        }
+
+        string StoreDetails(object details)
+        {
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(details, false));
+            if (bytes.LongLength > TransferMeshSnapshot.MaxFileBytes) throw new InvalidDataException("Transfer diagnostic payload exceeds the size limit.");
+            string hash = TransferMeshSnapshot.Hash(bytes);
+            string path = Path.Combine(Folder, "details", hash + ".json");
+            if (!File.Exists(path)) File.WriteAllBytes(path, bytes);
+            return hash;
+        }
+
+        internal static T ReadDetails<T>(string root, string hash)
+            => JsonUtility.FromJson<T>(System.Text.Encoding.UTF8.GetString(TransferCaseReplay.Verify(root, hash, "details", ".json")));
+
+        internal static void RestorePairDetails(string root, Pair pair)
+        {
+            var details = ReadDetails<PairDetails>(root, pair.details);
+            if (details == null) throw new InvalidDataException("Invalid transfer pair payload.");
+            pair.overlapHints = details.overlapHints; pair.matchHints = details.matchHints;
+            pair.result = details.result; pair.trace = details.trace;
+            pair.quality = details.quality; pair.validation = details.validation;
         }
 
         static void ReadSettings(List<Setting> output, object source, string owner)

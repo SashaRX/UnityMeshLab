@@ -14,7 +14,7 @@ It does not save mesh assets, sidecars or FBX files.
    UV Transfer workflow and settings. To isolate matching against an already packed
    source, arm capture and run Transfer only.
 4. The Console prints the capture directory. Preserve the whole directory, including
-   `manifest.json` and `meshes/`. One manifest without its binary inputs cannot replay.
+   `manifest.json`, `meshes/` and `details/`. The manifest alone cannot replay.
 
 **Capture Current Transfer State** exports the current working state for inspection.
 It cannot recover historical matching hints or earlier pipeline stages; this snapshot
@@ -25,6 +25,11 @@ auto-tune attempt after symmetry/repack/transfer, and the selected final state.
 Attempt labels include the actual symmetry separation. Context/workflow settings,
 material texture sizes and tiling, renderer transforms, package provenance and Unity
 version accompany the snapshots. A partial or cancelled run is labelled explicitly.
+
+Schema 2 keeps the manifest below the shared 64 MiB writer/replay limit. Large
+stage metrics, transfer results, hints, traces and per-triangle validation live in
+checksum-protected `details/<SHA256>.json` files, each limited to 512 MiB. Replay
+loads pair details on demand. Older schema 1 captures are still supported.
 
 Each completed transfer pair stores the exact source UV0/UV2, target geometry/UV0,
 cross-LOD hints passed to that invocation, lightmap dimensions and clamp setting.
@@ -70,11 +75,17 @@ height. A rectangular native atlas is converted to a square UV2 domain by multip
 its coordinates by `(width/max(width,height), height/max(width,height))`. Transfer
 receives the corresponding square dimensions. This does not require native changes.
 Capture records both native packed dimensions and effective lightmap dimensions.
+Border padding is applied after the square-domain conversion, against the requested
+lightmap resolution, so the shorter native axis retains the configured margin.
 
-Meshes with conflicting material texture aspects receive no mesh-wide source aspect
-correction and a warning; their individual material dimensions are still captured.
+Meshes with conflicting material texture aspects or missing texture metadata on
+any used material receive no mesh-wide source aspect correction and a warning;
+individual texture dimensions and unresolved materials are still captured. Empty
+submeshes do not contribute a material metric.
 No texture metadata means no source correction. These cases require inspection of
 the captured material/submesh data before introducing a per-material algorithm.
+One-component UV0 is preserved without applying a 2D source metric. Working copies
+and binary snapshot restoration also retain one-component auxiliary UV channels.
 
 ## Reading quality
 
@@ -92,8 +103,10 @@ not change symmetry/overlap acceptance, repair or auto-tune selection.
 
 ## Verification
 
-Unity 6000.2.6f2 / DX11: 51 EditMode tests passed, no skips (transfer capture,
-native xatlas repack, UV topology and preview regressions). The rectangular-texture
+Unity 6000.2.6f2 / DX11: 340 EditMode tests passed, none failed, one skipped across
+transfer capture, preview, native xatlas, geometry helpers, mesh access, shell
+extraction, topology, normals, remesh bake, source-normal scale, hierarchical repack,
+FBX metrics, UV chart repair/merge and atlas diagnostics. The rectangular-texture
 case runs with ARAP and texel normalization disabled: correction yields isotropic
 UV2 after repack and transfer; disabling source correction retains approximately
 2:1 axis stretch. UV0 and its extra components remain unchanged. Exact capture/replay
@@ -101,9 +114,10 @@ includes two LODs and nonempty cross-LOD hints, and verifies tracing does not ch
 the result. This verifies synthetic fixtures; a user's failing model still needs a
 next-run capture before declaring its symmetry/overlap issue fixed.
 
-After integration with PR #225's geometry helpers and the latest main, the broader
-Unity run passed 321 tests, failed none and skipped one source-normal convention
-fixture because the isolated test project has no URP source shader. Both FBX compile
-variants, identifier/dependency checks and `.meta` coverage passed.
-The final capture regressions also verify settings from the derived UV Transfer tool
-and detect single-bit UV differences and signed zero. Replay file I/O is asynchronous.
+The skipped source-normal convention fixture requires a URP source shader absent
+from the isolated test project. Capture regressions verify settings from the derived
+UV Transfer tool, single-bit UV differences and signed zero, scalar UV channels in
+readable/unreadable working copies and snapshots, legacy replay, payload checksums,
+capture errors and stage diagnostics exceeding 64 MiB without growing the manifest.
+Source-metric regressions cover textureless used materials and final pixel borders;
+shell extraction retains historical IDs. Replay file I/O is asynchronous.

@@ -123,7 +123,8 @@ namespace SashaRX.UnityMeshLab
         public static List<UvShell> Extract(Vector2[] uvs, int[] triangles, bool computeDescriptors)
         {
             int faceCount = triangles.Length / 3;
-            var shellsOfFaces = new DisjointSet(faceCount);
+            // Public shell IDs historically sort union-by-rank roots, not minimum members.
+            var shellsOfFaces = new DisjointSet(faceCount, preserveRankRoots: true);
 
             // vertex → faces
             var vertToFaces = new Dictionary<int, List<int>>();

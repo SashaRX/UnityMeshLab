@@ -79,8 +79,38 @@ namespace SashaRX.UnityMeshLab
             return dst;
         }
 
+        // SetUVs only accepts vectors of dimension 2..4. Copy raw buffers for scalar
+        // UVs so working copies retain their original layout and all other attributes.
+        static Mesh CopyScalarUvMesh(Mesh src, Mesh dst)
+        {
+            using (var data = Mesh.AcquireReadOnlyMeshData(src)) {
+                var meshData = data[0];
+                dst.SetVertexBufferParams(meshData.vertexCount, src.GetVertexAttributes());
+                for (int stream = 0; stream < src.vertexBufferCount; ++stream) {
+                    var bytes = meshData.GetVertexData<byte>(stream);
+                    dst.SetVertexBufferData(bytes, 0, 0, bytes.Length, stream);
+                }
+                dst.subMeshCount = meshData.subMeshCount;
+                for (int sub = 0; sub < meshData.subMeshCount; ++sub)
+                    dst.SetIndices(ReadIndices(meshData, sub), meshData.GetSubMesh(sub).topology, sub, calculateBounds: false);
+            }
+            if (src.isReadable) dst.bindposes = src.bindposes;
+            dst.bounds = src.bounds;
+            return dst;
+        }
+
+        static bool HasScalarUv(Mesh mesh)
+        {
+            for (int channel = 0; channel < 8; ++channel) {
+                var attribute = (VertexAttribute)((int)VertexAttribute.TexCoord0 + channel);
+                if (mesh.HasVertexAttribute(attribute) && mesh.GetVertexAttributeDimension(attribute) == 1) return true;
+            }
+            return false;
+        }
+
         static void FillReadableCopy(Mesh src, Mesh dst)
         {
+            if (HasScalarUv(src)) { CopyScalarUvMesh(src, dst); return; }
             dst.SetVertices(new List<Vector3>(src.vertices));
             if (src.normals != null && src.normals.Length > 0) dst.SetNormals(new List<Vector3>(src.normals));
             if (src.tangents != null && src.tangents.Length > 0) dst.SetTangents(new List<Vector4>(src.tangents));
@@ -123,6 +153,7 @@ namespace SashaRX.UnityMeshLab
         // do better (skinned capture bakes through the renderer instead).
         static Mesh MakeReadableCopyFromMeshData(Mesh src, Mesh dst)
         {
+            if (HasScalarUv(src)) return CopyScalarUvMesh(src, dst);
             using (var dataArray = Mesh.AcquireReadOnlyMeshData(src))
             {
                 var md = dataArray[0];

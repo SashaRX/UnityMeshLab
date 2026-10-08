@@ -9,26 +9,34 @@
   временная копия получает pixel metric текстуры с учётом tiling материала:
   U × sqrt(width/height), V × sqrt(height/width). ARAP и density работают уже
   в этой метрике; исходный UV0 с исходной размерностью восстанавливается в finally.
-  Разные аспекты материалов одного меша не исправляются одной общей матрицей.
+  Разные или неизвестные аспекты используемых материалов одного меша не исправляются
+  одной общей матрицей. Пустые submeshes не участвуют в выборе метрики.
 - Дополнительный дефект подтверждён native-тестом: bridge нормализует координаты
   отдельно по ширине/высоте прямоугольного packed atlas. В UV transfer workflow
   результат переводится в квадратную метрику max(width,height) на стороне C#,
-  включая размеры, переданные transfer. Native source и binaries не менялись.
+  включая размеры, переданные transfer. Border inset применяется после перевода
+  в квадрат, чтобы сохранить указанный отступ в пикселях на обеих осях.
+  Native source и binaries не менялись.
 - Opt-in Capture сохраняет точные меши/параметры/меж-LOD hints и этапы симметрии,
   repack и transfer. Trace записывает реально оценённые кандидаты без дополнительных
-  matching queries; Replay сравнивает baseline и два запуска. Добавлены axis stretch
+  matching queries; Replay сравнивает baseline и два запуска. Schema 2 выносит большие
+  stage/pair данные в checksum-protected details JSON; manifest имеет общий лимит
+  writer/reader 64 MiB, payloads — 512 MiB. Schema 1 по-прежнему читается.
+  Добавлены axis stretch
   против 3D и positive-area overlap, включая same-shell пары. Алгоритмы symmetry,
   overlap repair и критерий выбора auto-tune не менялись.
-- Проверка: 51/51 Unity EditMode tests, Unity 6000.2.6f2 / DX11, без skipped.
+- Проверка после исправления замечаний PR #225: 340 passed / 0 failed / 1 skipped,
+  Unity 6000.2.6f2 / DX11. Пропущен fixture совместных Standard/URP normal conventions:
+  в изолированном test project отсутствует URP source shader.
   При выключенных ARAP/density source aspect ON даёт anisotropy ≈1, OFF ≈2 после
   repack и transfer; UV0 (включая третий компонент) сохранён. Capture/Replay двух
   LOD с hints совпадает по UV2 hash и mapping; trace on/off не меняет результат.
+  Подтверждены прежние shell IDs, scalar UV0 и auxiliary UVs в readable/unreadable
+  working copies и snapshots, отказ общей коррекции при textureless used material,
+  pixel border после repack, capture payloads суммарно >64 MiB с компактным manifest,
+  legacy replay, проверка checksum и обработка ошибок capture/IMGUI.
   Реальная модель пользователя пока не захвачена новым кодом, её overlap/symmetry
   проблема не объявляется исправленной. [Использование и ограничения](TRANSFER_CAPTURE.md).
-- Интеграция в PR #225 с geometry helpers и актуальным main: 321 passed / 0 failed /
-  1 skipped в Unity 6000.2.6f2 / DX11. Пропущен fixture совместных Standard/URP normal
-  conventions: в изолированном test project отсутствует URP source shader. Обе FBX
-  compile variants, identifier/dependency checks и `.meta` coverage прошли.
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
