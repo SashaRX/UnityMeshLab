@@ -1855,6 +1855,23 @@ namespace SashaRX.UnityMeshLab
         readonly List<LightmapBackup> lightmapBackups = new List<LightmapBackup>();
         Material lightmapPreviewMat;
 
+        // Read authored materials without suspending the user's preview or replacing
+        // renderer references. Texture metrics must not use checker/lightmap textures.
+        internal static Material[] OriginalPreviewMaterials(Renderer renderer)
+        {
+            if (CheckerTexturePreview.TryGetOriginalMaterials(renderer, out var materials)
+                || ShellColorModelPreview.TryGetOriginalMaterials(renderer, out materials))
+                return materials;
+            foreach (var hub in Resources.FindObjectsOfTypeAll<UvToolHub>()) {
+                foreach (var backup in hub.lightmapBackups)
+                    if (backup.renderer == renderer) return backup.origMaterials;
+                if (hub.ActiveTool is UvTransferWorkflow workflow
+                    && workflow.TryGetOriginalLightmapMaterials(renderer, out materials))
+                    return materials;
+            }
+            return renderer.sharedMaterials;
+        }
+
         // ── Shell color palette ──
         static readonly Color32[] shellPalette = {
             new Color(.20f,.60f,1f),  new Color(1f,.40f,.20f),

@@ -140,6 +140,44 @@ namespace SashaRX.UnityMeshLab.Tests
             Call(hub, "CollectCanvasEntries");
         }
 
+        [TestCase(UvCanvasView.PreviewMode.Checker)]
+        [TestCase(UvCanvasView.PreviewMode.Shells3D)]
+        [TestCase(UvCanvasView.PreviewMode.Lightmap)]
+        public void SourceTextureMetricReadsAuthoredMaterialsWithoutChangingPreview(UvCanvasView.PreviewMode mode)
+        {
+            var group = Group(true, out var renderer, out _);
+            var texture = new Texture2D(8, 16) { name = "Rectangular authored albedo" }; owned.Add(texture);
+            var authored = new Material(Shader.Find("Standard")) { mainTexture = texture, mainTextureScale = new Vector2(1, 2) };
+            owned.Add(authored);
+            var second = new Material(authored); owned.Add(second);
+            renderer.sharedMaterials = new[] { authored, second };
+            var mesh = renderer.GetComponent<MeshFilter>().sharedMesh;
+            var uv0 = mesh.uv;
+            var expected = SourceTextureUvMetric.Resolve(renderer, mesh: mesh);
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                if (mode == UvCanvasView.PreviewMode.Lightmap) AssignLightmap(renderer);
+                Open(group);
+                Call(hub, "ApplyPreviewMode", mode);
+                var previewMaterials = renderer.sharedMaterials;
+                Assert.AreNotSame(authored, previewMaterials[0]);
+                var metric = SourceTextureUvMetric.Resolve(renderer, mesh: mesh);
+                Assert.AreEqual(expected.uvScale, metric.uvScale);
+                Assert.AreEqual(2, metric.textures.Count, "Retain every authored material slot.");
+                foreach (var info in metric.textures) {
+                    Assert.AreEqual(texture.name, info.texture);
+                    Assert.AreEqual(new Vector2(1, 2), info.tiling);
+                    Assert.AreEqual(.25f, info.aspect);
+                }
+                CollectionAssert.AreEqual(previewMaterials, renderer.sharedMaterials);
+                Assert.AreEqual(mode, Get<UvCanvasView>(hub, "canvas").CurrentPreviewMode);
+                CollectionAssert.AreEqual(uv0, mesh.uv);
+                Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Off);
+                CollectionAssert.AreEqual(new[] { authored, second }, renderer.sharedMaterials);
+            }
+            finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
         [TestCase(false, false)]
         [TestCase(false, true)]
         [TestCase(true, false)]

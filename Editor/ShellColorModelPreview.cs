@@ -109,6 +109,14 @@ namespace SashaRX.UnityMeshLab
         }
 
         static readonly List<RendererBackup> backups = new List<RendererBackup>();
+
+        internal static bool TryGetOriginalMaterials(Renderer renderer, out Material[] materials)
+        {
+            foreach (var backup in backups)
+                if (backup.renderer == renderer) { materials = backup.origMaterials; return true; }
+            materials = null;
+            return false;
+        }
         static Material vertexColorMaterial;
         static bool isActive;
 

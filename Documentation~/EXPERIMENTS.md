@@ -12,6 +12,12 @@
   восстанавливается в finally.
   Разные или неизвестные аспекты используемых материалов одного меша не исправляются
   одной общей матрицей. Пустые submeshes не участвуют в выборе метрики.
+- Дополнительно воспроизведено влияние активного Checker/Shells3D/Lightmap preview:
+  resolution метрики читало подменённые renderer materials, поэтому исходный
+  прямоугольный texture aspect становился квадратным. Read-only lookup теперь
+  берёт сохранённые исходные material slots и tiling. Он не снимает preview,
+  не меняет выбранный режим, renderer references или UV0. Три regression fixtures
+  сначала воспроизвели неверную метрику во всех режимах, затем прошли с исправлением.
 - Дополнительный дефект подтверждён native-тестом: bridge нормализует координаты
   отдельно по ширине/высоте прямоугольного packed atlas. В UV transfer workflow
   результат переводится в квадратную метрику max(width,height) на стороне C#,
@@ -90,9 +96,10 @@
   растянутая грань получает точную развёртку в собственной tangent plane без ARAP solve.
   На `Grandma_Cabinet_B_Dpanel_B` исчезли все 14 вырожденных source/target UV2-граней
   при ARAP ON. Исходный UV0 остаётся нетронутым; ARAP OFF сохраняет прежний контракт.
-- Проверено в Unity 6000.2.6f2 / DX11: 128/128 EditMode tests, без skipped, включая
+- Проверено в Unity 6000.2.6f2 / DX11: 189/189 EditMode tests, без skipped, включая
   native xatlas, shared density, capture/replay, forward/reverse analytic atlas,
-  thin-sheet normal disambiguation, tiny UV charts, source collapse и IMGUI regressions.
+  thin-sheet normal disambiguation, curved-source fragments, tiny UV charts,
+  source collapse, preview material metrics и IMGUI regressions.
   Обе FBX compile variants проходят. Отдельно сохранён replay старых 41 frozen inputs
   для проверки transfer без новой подготовки source. Artifact reports имеют dirty-state
   provenance; записанный результат capture не является независимой correspondence truth.

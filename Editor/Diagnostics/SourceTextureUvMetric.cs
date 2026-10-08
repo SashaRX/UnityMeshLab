@@ -50,7 +50,7 @@ namespace SashaRX.UnityMeshLab
                         if (filter) mesh = filter.sharedMesh;
                     }
                 }
-                var materials = renderer.sharedMaterials;
+                var materials = UvToolHub.OriginalPreviewMaterials(renderer);
                 int slots = mesh != null ? Math.Max(mesh.subMeshCount, materials.Length) : materials.Length;
                 for (int slot = 0; slot < slots; ++slot) {
                     // Extra renderer materials render the last submesh. Empty submeshes contribute no UVs.
