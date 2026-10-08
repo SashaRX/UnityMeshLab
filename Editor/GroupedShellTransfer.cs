@@ -510,6 +510,7 @@ namespace SashaRX.UnityMeshLab
             int step = Mathf.Max(1, vertList.Count / kMaxSampleVerts);
 
             float bestScore = float.MaxValue;
+            float bestDot = 1f;
             float bestCompatibleScore = float.MaxValue;
             int compatibleSource = -1;
             float compatibleCentroidDistance = float.MaxValue, compatibleSurfaceDistance = float.MaxValue;
@@ -567,14 +568,16 @@ namespace SashaRX.UnityMeshLab
                 if (score < bestScore)
                 {
                     bestScore = score;
+                    bestDot = candidateDot;
                     chosenSrc = si;
                     chosenDistSq = ranked[attempt].distSq;
                     chosenAvg3D = avgDist;
                 }
                 // LOD vertices may move across a thin sheet. Multiplying the
                 // wrong-side distance by three still lets the opposite surface
-                // win. Prefer a compatible normal when one exists in the search
-                // set, retaining the closest fallback if every normal is opposed.
+                // win. Override an opposed winner when a compatible normal exists.
+                // A curved chart's average normal may be orthogonal to an exact
+                // fragment, so it must retain its surface-distance advantage.
                 if (candidateDot >= .3f && score < bestCompatibleScore) {
                     bestCompatibleScore = score; compatibleSource = si;
                     compatibleCentroidDistance = ranked[attempt].distSq;
@@ -584,7 +587,7 @@ namespace SashaRX.UnityMeshLab
                 // parallel chart can be "good enough" while a later candidate is exact.
                 // Evaluate the complete bounded candidate set before choosing a source.
             }
-            if (compatibleSource >= 0) {
+            if (compatibleSource >= 0 && bestDot < 0f) {
                 chosenSrc = compatibleSource;
                 chosenDistSq = compatibleCentroidDistance;
                 chosenAvg3D = compatibleSurfaceDistance;

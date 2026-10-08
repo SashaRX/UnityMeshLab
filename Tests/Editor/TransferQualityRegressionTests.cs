@@ -190,6 +190,45 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ExactFragmentOfCurvedSourceWinsAgainstRemoteNormalAlignedChart()
+        {
+            var source = new Mesh { name = "U shaped chart and remote wall" };
+            var target = new Mesh { name = "Exact side of U shaped chart" };
+            try {
+                source.vertices = new[] {
+                    new Vector3(.02f, 0, 0), new Vector3(.02f, 1, 0),
+                    new Vector3(.02f, 1, 1), new Vector3(.02f, 0, 1),
+                    Vector3.zero, new Vector3(2, 0, 0), new Vector3(2, 1, 0), Vector3.up,
+                    Vector3.forward, new Vector3(0, 1, 1), new Vector3(2, 0, 1), new Vector3(2, 1, 1)
+                };
+                source.uv = new[] {
+                    Vector2.right, Vector2.one, Vector2.up, Vector2.zero,
+                    Vector2.right, new Vector2(3, 0), new Vector2(3, 1), Vector2.one,
+                    Vector2.zero, Vector2.up, new Vector2(4, 0), new Vector2(4, 1)
+                };
+                var sourceUv2 = source.uv;
+                for (int i = 0; i < sourceUv2.Length; ++i)
+                    sourceUv2[i] = sourceUv2[i] * .18f + new Vector2(.1f, i < 4 ? .1f : .55f);
+                source.uv2 = sourceUv2;
+                source.triangles = new[] {
+                    0, 1, 2, 0, 2, 3,
+                    4, 5, 6, 4, 6, 7, 4, 7, 9, 4, 9, 8, 5, 10, 11, 5, 11, 6
+                };
+                target.vertices = new[] { Vector3.zero, Vector3.up, new Vector3(0, 1, 1), Vector3.forward };
+                target.uv = new[] { Vector2.right, Vector2.one, Vector2.up, Vector2.zero };
+                target.triangles = new[] { 0, 1, 2, 0, 2, 3 };
+                source.RecalculateNormals(); target.RecalculateNormals();
+                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                Assert.AreEqual(1, result.targetShellToSourceShell[0],
+                    "The source chart's average normal is orthogonal to this exact fragment.");
+                var sourceVertices = new[] { 4, 7, 9, 8 };
+                for (int i = 0; i < sourceVertices.Length; ++i)
+                    Assert.That(Vector2.Distance(sourceUv2[sourceVertices[i]], result.uv2[i]), Is.LessThan(1e-5f));
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
         public void RetainedVerticesPreserveUv2WhenAuthoredUv0CornersCoincide()
         {
             using var input = TransferBenchmarkFixtures.Create("retriangulated-lod");
