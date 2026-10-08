@@ -370,14 +370,20 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
-        static unsafe void PackVertexIdentities(byte[] packed, Vector3[] positions, Dictionary<int, int> localVertices)
+        static void PackVertexIdentities(byte[] packed, Vector3[] positions, Dictionary<int, int> localVertices)
         {
-            fixed (byte* data = packed)
-                foreach (var vertex in localVertices) {
-                    byte* entry = data + vertex.Value * 16;
-                    WriteFloat3(entry, 0, positions[vertex.Key]);
-                    *(uint*)(entry + 12) = (uint)vertex.Key;
-                }
+            var coordinates = new float[3];
+            var identity = new uint[1];
+            foreach (var vertex in localVertices) {
+                var position = positions[vertex.Key];
+                coordinates[0] = position.x;
+                coordinates[1] = position.y;
+                coordinates[2] = position.z;
+                identity[0] = (uint)vertex.Key;
+                int offset = vertex.Value * 16;
+                System.Buffer.BlockCopy(coordinates, 0, packed, offset, 12);
+                System.Buffer.BlockCopy(identity, 0, packed, offset + 12, 4);
+            }
         }
 
         static ChannelLayout BuildChannelLayout(Mesh mesh)
