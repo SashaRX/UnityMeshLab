@@ -121,3 +121,7 @@ readable/unreadable working copies and snapshots, legacy replay, payload checksu
 capture errors and stage diagnostics exceeding 64 MiB without growing the manifest.
 Source-metric regressions cover textureless used materials and final pixel borders;
 shell extraction retains historical IDs. Replay file I/O is asynchronous.
+After reviewing the Sonar autofix, the affected subset (transfer capture, shell
+extraction, geometry helpers and mesh access) passed 42/42 tests without skips.
+This is a subset of the 341-test integration run above. Both FBX compile variants
+also passed on the reviewed code.

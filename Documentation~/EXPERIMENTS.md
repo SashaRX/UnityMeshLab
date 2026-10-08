@@ -35,6 +35,10 @@
   working copies и snapshots, отказ общей коррекции при textureless used material,
   pixel border после repack, capture payloads суммарно >64 MiB с компактным manifest,
   legacy replay, проверка checksum и обработка ошибок capture/IMGUI.
+  После проверки и интеграции Sonar autofix отдельно повторён затронутый набор:
+  42/42 tests (transfer capture, shell extraction, geometry helpers, mesh access),
+  без skipped. Это subset полного прогона 341 tests, а не другой полный прогон.
+  Обе FBX compile variants прошли после autofix.
   Реальная модель пользователя пока не захвачена новым кодом, её overlap/symmetry
   проблема не объявляется исправленной. [Использование и ограничения](TRANSFER_CAPTURE.md).
 
