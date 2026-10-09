@@ -99,6 +99,14 @@ namespace SashaRX.UnityMeshLab.Tests
             int n=points.Length; ix.AddRange(new[] {n,n+1,n+2,n,n+2,n+3});
             var saved=ix.ToArray();
             Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(p.ToArray(),saved,"0,1",default,false,RemeshClosureMode.Bridge));
+            var owners = Enumerable.Repeat(0, source.Length / 3).Concat(new[] { 1, 1 }).ToArray();
+            var accepted = RemeshPlanarCap.Prepare(p.ToArray(), saved, "0,1", default, false, RemeshClosureMode.Bridge, sourceFaceOwners: owners);
+            Assert.Greater(accepted.externalContacts.count, 0);
+            var contacts = new RemeshPlanarCap.ExternalContacts { faceOwners = owners, closingOwners = new HashSet<int> { 0 } };
+            int trials = 0;
+            RemeshPlanarCap.AuditContacts(accepted.positions, accepted.positions.Select(RemeshCapIntersection.Point).ToArray(),
+                accepted.indices, saved.Length / 3, default, ref trials, out _, contacts);
+            Assert.AreEqual(contacts.count, accepted.externalContacts.count, "Diagnostics must describe only the winning Bridge candidate.");
             CollectionAssert.AreEqual(ix,saved);
             Assert.Throws<OperationCanceledException>(()=>RemeshPlanarCap.Prepare(points,source,"0,1",new System.Threading.CancellationToken(true),false,RemeshClosureMode.Bridge));
             Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(points,source,"0,1",default,false,(RemeshClosureMode)999));

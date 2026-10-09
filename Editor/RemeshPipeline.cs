@@ -341,9 +341,14 @@ namespace SashaRX.UnityMeshLab
                 node.voxel = await Task.Run(() => {
                     if (shape == RemeshShape.BoundingBox) return captured.OrientedBoxes();
                     if (options.planarCap && (shape == RemeshShape.Hull || !options.shell)) {
+                        var capOwners = captured.FaceOwners();
                         try {
-                            node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes, options.closureMode, options.capPlaneTolerance);
+                            node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes, options.closureMode, options.capPlaneTolerance, capOwners);
                             UvtLog.Info(LogPrefix + node.name + ": planar Cap " + node.support.Description);
+                            var contacts = node.support.externalContacts;
+                            if (contacts != null && contacts.count > 0)
+                                UvtLog.Warn(LogPrefix + node.name + $": Cap/Bridge has {contacts.count} contacts with other source meshes " +
+                                    $"(first added face {contacts.firstNewFace}, source face {contacts.firstSourceFace}). Continuing Remesh.");
                             RemeshGeometryDiagnostics.CaptureSupport(captured, node.support, options, node.name);
                             var closed = RemeshTopology.ClosedVolumeFaces(node.support.positions, node.support.indices, token);
                             foreach (bool face in closed) {
@@ -358,7 +363,7 @@ namespace SashaRX.UnityMeshLab
                         }
                         catch (InvalidOperationException failure) {
                             RemeshGeometryDiagnostics.CaptureFailure(captured.positions, captured.indices, null, null, options,
-                                "Cap preparation", node.name, failure.Message, 0, 0, 0, node.support);
+                                "Cap preparation", node.name, failure.Message, 0, 0, 0, node.support, capOwners);
                             throw;
                         }
                     }

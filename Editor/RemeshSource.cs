@@ -359,6 +359,17 @@ namespace SashaRX.UnityMeshLab
                 vertexRenderer = vertexRenderer.ToArray(), rendererToSpace = rendererToSpace.ToArray(), rendererLayer = rendererLayer.ToArray() };
         }
 
+        internal int[] FaceOwners()
+        {
+            if (vertexRenderer == null || vertexRenderer.Length != positions.Length) return null;
+            var owners = new int[indices.Length / 3];
+            for (int f = 0; f < owners.Length; ++f) {
+                int a = vertexRenderer[indices[f * 3]], b = vertexRenderer[indices[f * 3 + 1]], c = vertexRenderer[indices[f * 3 + 2]];
+                owners[f] = a >= 0 && a == b && a == c ? a : -1;
+            }
+            return owners;
+        }
+
         static int TriangulateCaptureQuads(Mesh mesh)
         {
             int converted = 0;

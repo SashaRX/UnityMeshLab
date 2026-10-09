@@ -17,6 +17,9 @@ namespace SashaRX.UnityMeshLab
             public string stage, node, reason, settingsJson;
             public int resolution;
             public int capRevision;
+            public int[] sourceFaceOwners;
+            public int externalContactCount;
+            public int firstContactAddedFace = -1, firstContactSourceFace = -1;
             public uint initialFlags, resultFlags;
         }
 
@@ -29,14 +32,19 @@ namespace SashaRX.UnityMeshLab
 
         internal static string CaptureFailure(Vector3[] sourcePositions, int[] sourceIndices,
             RemeshNative.IndexedMesh raw, RemeshNative.IndexedMesh input, RemeshSettings settings,
-            string stage, string node, string reason, int resolution, uint initialFlags, uint resultFlags, RemeshPlanarCap.Support support)
+            string stage, string node, string reason, int resolution, uint initialFlags, uint resultFlags, RemeshPlanarCap.Support support,
+            int[] sourceFaceOwners = null)
         {
             try {
                 string path = WriteFailure(Path.Combine(Path.GetTempPath(), "meshlab-uvmerge", "failures"),
                     sourcePositions, sourceIndices, raw, input, new FailureMetadata {
                         stage = stage, node = node, reason = reason, settingsJson = JsonUtility.ToJson(settings),
                         resolution = resolution, initialFlags = initialFlags, resultFlags = resultFlags,
-                        capRevision = support == null ? 0 : RemeshPlanarCap.Revision
+                        capRevision = support == null ? 0 : RemeshPlanarCap.Revision,
+                        sourceFaceOwners = sourceFaceOwners ?? support?.externalContacts?.faceOwners,
+                        externalContactCount = support?.externalContacts?.count ?? 0,
+                        firstContactAddedFace = support?.externalContacts?.firstNewFace ?? -1,
+                        firstContactSourceFace = support?.externalContacts?.firstSourceFace ?? -1
                     }, support);
                 UvtLog.Warn("[Remesh] " + stage + " failure geometry and settings captured to " + path);
                 return path;
@@ -110,7 +118,10 @@ namespace SashaRX.UnityMeshLab
             try {
                 string path = WriteFailure(Path.Combine(Path.GetTempPath(), "meshlab-uvmerge", "cap"), source.positions, source.indices,
                     null, null, new FailureMetadata { stage = "Cap preparation", node = node, reason = support.Description,
-                        settingsJson = JsonUtility.ToJson(settings), capRevision = RemeshPlanarCap.Revision }, support);
+                        settingsJson = JsonUtility.ToJson(settings), capRevision = RemeshPlanarCap.Revision,
+                        sourceFaceOwners = source.FaceOwners(), externalContactCount = support.externalContacts?.count ?? 0,
+                        firstContactAddedFace = support.externalContacts?.firstNewFace ?? -1,
+                        firstContactSourceFace = support.externalContacts?.firstSourceFace ?? -1 }, support);
                 UvtLog.Info("[Remesh] Original donor and prepared Cap support captured to " + path);
             }
             catch (Exception error) { UvtLog.Warn("[Remesh] Cap support capture failed: " + error.Message); }

@@ -14,6 +14,33 @@ Enable **Local compound caps** to also allow a selected nonplanar cycle with one
 supported decomposition into two continuous planar arcs. The option is off in
 existing settings. Automatic mode enables local compound analysis implicitly.
 
+## Revision 5: contacts with other captured meshes
+
+The production pipeline passes original face ownership from the capture into
+Cap/Bridge preparation. Ownership identifies a captured renderer instance, so
+two instances of the same shared Mesh asset are distinct donors. Filtering keeps
+that provenance. A closure derives its owner set from the original rim faces;
+a Bridge includes owners of both rims.
+
+An exact improper contact with an original face from another known donor is
+reported as a warning and does not stop preparation. Contact counts and the first
+added/source face pair are recorded with source face owners in capture metadata.
+These contacts do not affect donor attributes or the synthetic-face mask. The
+Bridge and compound searches report contacts from their accepted candidate only.
+
+Contacts with the closing donor, unknown ownership and any other newly generated
+patch remain strict. Earlier accepted patches never become original donors during
+incremental closure. Existing preflight, winding, fan, boundary, budget and native
+output checks remain in place. Offline array callers without ownership keep strict
+contact auditing; old private captures do not fabricate missing mesh identities.
+
+The analytic external-mesh controls cover planar, two-plane, three-plane and
+Bridge preparation. A full native replay of the closed box plus an intersecting
+tetrahedron at resolution 64, Solve off, still produces nine open edges. The Cap
+support is valid and closed; the separate native output guard refuses that result.
+`NativeGuardStillRefusesMeasuredOpenUnionOfIntersectingClosedDonors` records this
+remaining limitation rather than claiming the whole Remesh succeeds.
+
 ## Revision 3: Bridge, three planes and projected masks
 
 - `RemeshBridge` enumerates cyclic seams and two best monotone zippers per seam.

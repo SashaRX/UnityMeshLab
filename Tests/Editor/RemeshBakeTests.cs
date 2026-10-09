@@ -1956,6 +1956,26 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void CaptureKeepsDistinctRendererOwnershipEvenWhenTheyUseTheSameMeshAsset()
+        {
+            var first = new GameObject("First donor"); var second = new GameObject("Second donor");
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up }, triangles = new[] { 0, 1, 2 } };
+            try {
+                first.AddComponent<MeshFilter>().sharedMesh = mesh; second.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var a = first.AddComponent<MeshRenderer>(); var b = second.AddComponent<MeshRenderer>();
+                second.transform.position = Vector3.right * 2;
+                var source = RemeshSource.Capture(Matrix4x4.identity, new[] { a, b }, geometryOnly: true);
+                CollectionAssert.AreEqual(new[] { 0, 1 }, source.FaceOwners());
+                source.FilterSmallParts(0, 0, 64, out _, out _);
+                CollectionAssert.AreEqual(new[] { 0, 1 }, source.FaceOwners());
+                source.vertexRenderer[source.indices[0]] = -1;
+                CollectionAssert.AreEqual(new[] { -1, 1 }, source.FaceOwners());
+                source.vertexRenderer = null; Assert.IsNull(source.FaceOwners());
+            }
+            finally { UnityEngine.Object.DestroyImmediate(first); UnityEngine.Object.DestroyImmediate(second); UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
         public void CaptureTriangulatesQuadsKeepsMaterialSlotsAndSkipsOnlyLines()
         {
             var root = new GameObject("Mixed surface source");

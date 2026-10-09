@@ -10,9 +10,30 @@ namespace SashaRX.UnityMeshLab
     /// donor arrays are never mutated. Ambiguous/invalid candidates fail atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 4;
+        internal const int Revision = 5;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
         const int MaxPairTrials = 2000000;
+
+        internal sealed class ExternalContacts
+        {
+            internal int[] faceOwners;
+            internal HashSet<int> closingOwners;
+            internal int count, firstNewFace = -1, firstSourceFace = -1;
+            internal ExternalContacts Fork(HashSet<int> owners = null) =>
+                new ExternalContacts { faceOwners = faceOwners, closingOwners = owners ?? closingOwners };
+            internal bool IsExternal(int face) => face < faceOwners.Length && faceOwners[face] >= 0 &&
+                closingOwners != null && closingOwners.Count > 0 && !closingOwners.Contains(faceOwners[face]);
+            internal void Add(int addedFace, int sourceFace)
+            {
+                if (count++ == 0) { firstNewFace = addedFace; firstSourceFace = sourceFace; }
+            }
+            internal void Merge(ExternalContacts accepted)
+            {
+                if (accepted == null || accepted.count == 0) return;
+                if (count == 0) { firstNewFace = accepted.firstNewFace; firstSourceFace = accepted.firstSourceFace; }
+                count += accepted.count;
+            }
+        }
 
         internal sealed class Support
         {
@@ -21,13 +42,15 @@ namespace SashaRX.UnityMeshLab
             internal int originalFaces, weldedVertices, loops, addedFaces, contactTests, localPatches, planeRechecks;
             internal string selection;
             internal int[] facePatches;
+            internal ExternalContacts externalContacts;
             internal readonly List<int> patchEnds = new List<int>();
             internal string Description => $"welded {weldedVertices} vertices; {loops} boundary loops; selection {selection}; added {addedFaces} faces; " +
-                $"{localPatches} local patches; {planeRechecks} fresh plane checks; {contactTests} exact contact tests";
+                $"{localPatches} local patches; {planeRechecks} fresh plane checks; {contactTests} exact contact tests; " +
+                $"{externalContacts?.count ?? 0} non-blocking contacts with other source meshes";
         }
 
         internal static Support Prepare(Vector3[] positions, int[] indices, string selection, CancellationToken token, bool localPlanes = false,
-            RemeshClosureMode mode = RemeshClosureMode.Caps, double planeTolerance = 0)
+            RemeshClosureMode mode = RemeshClosureMode.Caps, double planeTolerance = 0, int[] sourceFaceOwners = null)
         {
             token.ThrowIfCancellationRequested();
             if (!Enum.IsDefined(typeof(RemeshClosureMode),mode)) throw Refuse("unknown closure method");
@@ -41,6 +64,8 @@ namespace SashaRX.UnityMeshLab
                     throw Refuse("source positions are not finite");
             }
             foreach (int v in indices) if (v < 0 || v >= positions.Length) throw Refuse("source index is out of range");
+            if (sourceFaceOwners != null && sourceFaceOwners.Length != indices.Length / 3)
+                throw new ArgumentException("Source face ownership must match the donor face count.");
 
             // This is the shared position-weld primitive used by mesh connectivity.
             // UV-aware UvEdgeWeld deliberately preserves seams; those seams must
@@ -54,6 +79,7 @@ namespace SashaRX.UnityMeshLab
             var loops = Boundaries(topology, token);
             var result = new Support { positions = pWeld, indices = iWeld, originalFaces = iWeld.Length / 3,
                 weldedVertices = positions.Length - count, loops = loops.Count, selection = selection };
+            if (sourceFaceOwners != null) result.externalContacts = new ExternalContacts { faceOwners = (int[])sourceFaceOwners.Clone() };
             if (loops.Count == 0) return result;
             var chosen = Selection(selection, loops.Count);
             var exact = new RemeshCapIntersection.Q[pWeld.Length][];
@@ -79,12 +105,20 @@ namespace SashaRX.UnityMeshLab
                 int partner = -1;
                 if (mode == RemeshClosureMode.Bridge) { foreach (int other in chosen) if (other != loop) partner = other; }
                 else if (mode == RemeshClosureMode.Automatic && partners.TryGetValue(loop,out int paired)) partner = paired;
+                var owners = ClosingOwners(topology, loops[loop], partner >= 0 ? loops[partner] : null, sourceFaceOwners);
+                var external = owners == null ? null : result.externalContacts?.Fork(owners);
                 if (partner >= 0) {
-                    var patch = RemeshBridge.Generate(pWeld,assembled.ToArray(),loops[loop],loops[partner],token,ref contactTrials,out int tested);
+                    var patch = RemeshBridge.Generate(pWeld,assembled.ToArray(),loops[loop],loops[partner],token,ref contactTrials,out int tested, external);
                     result.contactTests += tested; assembled.AddRange(patch); result.patchEnds.Add(assembled.Count/3); finished.Add(partner);
                 }
-                else if (localPlanes || mode == RemeshClosureMode.Automatic) CloseLocal(ref pWeld, ref exact, assembled, loops[loop], token, result, ref contactTrials, planeTolerance);
-                else { assembled.AddRange(Triangulate(pWeld, exact, loops[loop], token, planeTolerance)); result.patchEnds.Add(assembled.Count / 3); }
+                else if (localPlanes || mode == RemeshClosureMode.Automatic) CloseLocal(ref pWeld, ref exact, assembled, loops[loop], token, result, ref contactTrials, planeTolerance, external);
+                else {
+                    var candidate = new List<int>(assembled);
+                    candidate.AddRange(Triangulate(pWeld, exact, loops[loop], token, planeTolerance));
+                    AuditContacts(pWeld, exact, candidate.ToArray(), assembled.Count / 3, token, ref contactTrials, out int tested, external);
+                    result.contactTests += tested; assembled = candidate; result.patchEnds.Add(assembled.Count / 3);
+                }
+                result.externalContacts?.Merge(external);
                 finished.Add(loop);
                 if (assembled.Count - iWeld.Length > MaxLoopEdges * 3 * 8) throw Refuse("total Cap face budget exceeded");
             }
@@ -93,7 +127,6 @@ namespace SashaRX.UnityMeshLab
             int removedEdges = 0; foreach (int loop in chosen) removedEdges += loops[loop].Count;
             if (!after.Valid || after.boundary.Count != topology.boundary.Count - removedEdges)
                 throw Refuse("assembled Cap topology: " + after.Description);
-            if (!localPlanes && mode == RemeshClosureMode.Caps) AuditContacts(pWeld, exact, allIndices, iWeld.Length / 3, token, ref contactTrials, out result.contactTests);
             result.positions = pWeld; result.indices = allIndices; result.addedFaces = (allIndices.Length - iWeld.Length) / 3;
             result.facePatches = new int[allIndices.Length / 3];
             int patchStart = result.originalFaces;
@@ -104,16 +137,31 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
+        static HashSet<int> ClosingOwners(RemeshTopology.Snapshot topology, List<int> first, List<int> second, int[] faceOwners)
+        {
+            if (faceOwners == null) return null;
+            var owners = new HashSet<int>();
+            foreach (var loop in new[] { first, second }) {
+                if (loop == null) continue;
+                for (int i = 0; i < loop.Count; ++i) {
+                    int face = topology.edges[EdgeKey(topology.slots[loop[i]], topology.slots[loop[(i + 1) % loop.Count]])].firstFace;
+                    if (faceOwners[face] < 0) return null;
+                    owners.Add(faceOwners[face]);
+                }
+            }
+            return owners;
+        }
+
         static void CloseLocal(ref Vector3[] p, ref RemeshCapIntersection.Q[][] exact, List<int> assembled,
-            List<int> loop, CancellationToken token, Support result, ref int contactTrials, double planeTolerance)
+            List<int> loop, CancellationToken token, Support result, ref int contactTrials, double planeTolerance, ExternalContacts external)
         {
             var analysis = RemeshCapPlanes.Analyze(p, loop, token, minimumTolerance: planeTolerance); ++result.planeRechecks;
             if (analysis.kind == RemeshCapPlanes.Kind.Planar) {
-                AppendPatch(p, exact, assembled, loop, true, token, result, ref contactTrials, planeTolerance);
+                AppendPatch(p, exact, assembled, loop, true, token, result, ref contactTrials, planeTolerance, external);
                 return;
             }
             if (analysis.kind != RemeshCapPlanes.Kind.TwoPlanes) {
-                var compound = RemeshCompoundCap.Generate(p,assembled.ToArray(),loop,token,ref contactTrials,planeTolerance);
+                var compound = RemeshCompoundCap.Generate(p,assembled.ToArray(),loop,token,ref contactTrials,planeTolerance, external);
                 p = compound.positions; exact = new RemeshCapIntersection.Q[p.Length][];
                 for (int i=0;i<p.Length;++i) exact[i]=RemeshCapIntersection.Point(p[i]);
                 foreach (var patch in compound.patches) { assembled.AddRange(patch); result.patchEnds.Add(assembled.Count/3); ++result.localPatches; ++result.planeRechecks; }
@@ -121,7 +169,7 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
             var arc = analysis.firstArc;
-            AppendPatch(p, exact, assembled, arc, false, token, result, ref contactTrials, planeTolerance);
+            AppendPatch(p, exact, assembled, arc, false, token, result, ref contactTrials, planeTolerance, external);
             // Accepting the first patch changes the actual halfedge contour. Use
             // that new topology, not the stale second arc or guessed loop number.
             var fresh = Boundaries(RemeshTopology.Inspect(p, assembled.ToArray(), token), token);
@@ -135,7 +183,7 @@ namespace SashaRX.UnityMeshLab
             if (remaining == null) throw Refuse("the new closure chord is missing from the remaining contour");
             var next = RemeshCapPlanes.Analyze(p, remaining, token, minimumTolerance: planeTolerance); ++result.planeRechecks;
             if (next.kind != RemeshCapPlanes.Kind.Planar) throw Refuse("the remaining local contour is not wholly planar after the first patch");
-            AppendPatch(p, exact, assembled, remaining, true, token, result, ref contactTrials, planeTolerance);
+            AppendPatch(p, exact, assembled, remaining, true, token, result, ref contactTrials, planeTolerance, external);
         }
 
         static (int, int) EdgeKey(int a, int b) => a < b ? (a, b) : (b, a);
@@ -148,7 +196,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static void AppendPatch(Vector3[] p, RemeshCapIntersection.Q[][] exact, List<int> assembled,
-            List<int> arc, bool closed, CancellationToken token, Support result, ref int trials, double planeTolerance)
+            List<int> arc, bool closed, CancellationToken token, Support result, ref int trials, double planeTolerance, ExternalContacts external)
         {
             int oldFaces = assembled.Count / 3;
             var before = RemeshTopology.Inspect(p, assembled.ToArray(), token);
@@ -175,7 +223,7 @@ namespace SashaRX.UnityMeshLab
             var all = candidate.ToArray(); var after = RemeshTopology.Inspect(p, all, token);
             if (!after.Valid || !BoundaryEdges(after).SetEquals(expected))
                 throw Refuse("local patch changes an unselected boundary or has invalid topology: " + after.Description);
-            AuditContacts(p, exact, all, oldFaces, token, ref trials, out int contacts);
+            AuditContacts(p, exact, all, oldFaces, token, ref trials, out int contacts, external);
             result.contactTests += contacts;
             assembled.AddRange(added); ++result.localPatches;
             result.patchEnds.Add(assembled.Count / 3);
@@ -325,7 +373,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static void AuditContacts(Vector3[] positions, RemeshCapIntersection.Q[][] exact, int[] ix, int originalFaces,
-            CancellationToken token, ref int trials, out int tests)
+            CancellationToken token, ref int trials, out int tests, ExternalContacts external = null)
         {
             int faces = ix.Length / 3; tests = 0;
             var low = new Vector3[faces]; var high = new Vector3[faces];
@@ -340,7 +388,9 @@ namespace SashaRX.UnityMeshLab
                 ++tests;
                 var a = new[] { exact[ix[f * 3]], exact[ix[f * 3 + 1]], exact[ix[f * 3 + 2]] };
                 var b = new[] { exact[ix[g * 3]], exact[ix[g * 3 + 1]], exact[ix[g * 3 + 2]] };
-                if (RemeshCapIntersection.Improper(a, b)) throw Refuse($"new face {f} contacts face {g} beyond their shared vertex/edge");
+                if (!RemeshCapIntersection.Improper(a, b)) continue;
+                if (external != null && external.IsExternal(g)) { external.Add(f, g); continue; }
+                throw Refuse($"new face {f} contacts face {g} beyond their shared vertex/edge");
             }
         }
 

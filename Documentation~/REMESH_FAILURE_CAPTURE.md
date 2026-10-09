@@ -40,7 +40,11 @@ The retained `Bush_19` failure has 224 captured vertices, 214 faces and a valid
 four-edge planar rim at Y approximately 0.069419. The proposed disk crosses donor
 face 26. Exact offline intersection checks find 30 improper contacts for either
 diagonal of the rim. A different triangulation cannot repair this geometry;
-Cap still refuses atomically. The optional `MESH_LAB_CAP_OBSTACLE_SOURCE` test
+Without mesh ownership, Cap still refuses atomically. Production revision 5 now
+permits contacts with another known source mesh; this old capture cannot establish
+whether face 26 belongs to that case. Fresh metadata retains `sourceFaceOwners`,
+`externalContactCount` and the first added/source face pair. Binary slot layouts
+are unchanged. The optional `MESH_LAB_CAP_OBSTACLE_SOURCE` test
 replays the decoded source with local planes both off and on, verifying the
 same refusal and unchanged donors. An obstacle-aware closure would need a
 separate shape/topology strategy and validation.

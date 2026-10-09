@@ -52,7 +52,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 var input = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = new[] { 0, 1, 3 } };
                 var metadata = new RemeshGeometryDiagnostics.FailureMetadata {
                     stage = "Simplify", node = "Synthetic tetra", reason = "invalid topology", resolution = 128,
-                    initialFlags = 1, resultFlags = 0, settingsJson = JsonUtility.ToJson(new RemeshSettings { shell = true })
+                    initialFlags = 1, resultFlags = 0, settingsJson = JsonUtility.ToJson(new RemeshSettings { shell = true }),
+                    sourceFaceOwners = new[] { 0, 0, 1, 1 }, externalContactCount = 2, firstContactAddedFace = 4, firstContactSourceFace = 2
                 };
                 string first = null;
                 for (int i = 0; i < RemeshGeometryDiagnostics.MaxFailureCaptures + 2; i++) {
@@ -64,6 +65,9 @@ namespace SashaRX.UnityMeshLab.Tests
                     var readMetadata = JsonUtility.FromJson<RemeshGeometryDiagnostics.FailureMetadata>(reader.ReadString());
                     Assert.AreEqual(metadata.node, readMetadata.node); Assert.AreEqual(metadata.stage, readMetadata.stage);
                     Assert.AreEqual(128, readMetadata.resolution); Assert.AreEqual(0u, readMetadata.resultFlags);
+                    CollectionAssert.AreEqual(metadata.sourceFaceOwners, readMetadata.sourceFaceOwners);
+                    Assert.AreEqual(2, readMetadata.externalContactCount); Assert.AreEqual(4, readMetadata.firstContactAddedFace);
+                    Assert.AreEqual(2, readMetadata.firstContactSourceFace);
                     Assert.IsTrue(JsonUtility.FromJson<RemeshSettings>(readMetadata.settingsJson).shell);
                     AssertCaptureMesh(reader, source, original);
                     if (i == 3) Assert.IsFalse(reader.ReadBoolean());

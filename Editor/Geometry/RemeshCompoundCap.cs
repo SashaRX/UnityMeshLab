@@ -16,10 +16,12 @@ namespace SashaRX.UnityMeshLab
             internal int contacts;
         }
 
-        internal static Result Generate(Vector3[] p,int[] source,List<int> loop,CancellationToken token,ref int trials,double planeTolerance = 0)
+        internal static Result Generate(Vector3[] p,int[] source,List<int> loop,CancellationToken token,ref int trials,double planeTolerance = 0,
+            RemeshPlanarCap.ExternalContacts external = null)
         {
             if(loop.Count>64) throw Refuse("three-plane rim exceeds 64 edges");
             Result winner=null; int fits=0,samples=0;
+            RemeshPlanarCap.ExternalContacts winnerContacts = null;
             var low=p[loop[0]]; var high=low;
             foreach(int v in loop) { low=Vector3.Min(low,p[v]); high=Vector3.Max(high,p[v]); }
             double tolerance=Math.Max((high-low).magnitude*1e-5,planeTolerance);
@@ -41,6 +43,7 @@ namespace SashaRX.UnityMeshLab
                 var exact=new RemeshCapIntersection.Q[points.Length][];
                 for(int i=0;i<points.Length;++i) exact[i]=RemeshCapIntersection.Point(points[i]);
                 var candidate=new List<int>(source); var result=new Result {positions=points};
+                var candidateContacts = external?.Fork();
                 try {
                     foreach(var arc in arcs) {
                         // Re-extract actual boundary after each patch. The next arc
@@ -57,16 +60,18 @@ namespace SashaRX.UnityMeshLab
                         var patch=RemeshPlanarCap.Triangulate(points,exact,polygon,token,planeTolerance); int oldFaces=candidate.Count/3;
                         candidate.AddRange(patch); var all=candidate.ToArray(); var after=RemeshTopology.Inspect(points,all,token);
                         if(!after.Valid || !Edges(after).SetEquals(expected)) throw Refuse("patch has invalid topology or changes another boundary");
-                        RemeshPlanarCap.AuditContacts(points,exact,all,oldFaces,token,ref trials,out int tested);
+                        RemeshPlanarCap.AuditContacts(points,exact,all,oldFaces,token,ref trials,out int tested,candidateContacts);
                         result.contacts+=tested; result.patches.Add(patch);
                     }
                 }
                 catch(InvalidOperationException ex) when(!ex.Message.Contains("budget")) { continue; }
                 if(winner!=null && (winner.positions[p.Length]-corner).magnitude>tolerance)
                     throw Refuse("no unique local closure: multiple non-intersecting three-plane corners");
-                if(winner==null) winner=result;
+                if(winner==null) { winner=result; winnerContacts=candidateContacts; }
             }
-            return winner ?? throw Refuse("no unique local closure: no audited three-plane corner");
+            if (winner == null) throw Refuse("no unique local closure: no audited three-plane corner");
+            external?.Merge(winnerContacts);
+            return winner;
         }
 
         static List<int> Arc(List<int> loop,int start,int length)

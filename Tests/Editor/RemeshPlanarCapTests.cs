@@ -150,6 +150,67 @@ namespace SashaRX.UnityMeshLab.Tests
                 RemeshPlanarCap.Prepare(p, new[] { 0, 1, 2 }, "0", default)).Message);
         }
 
+        [TestCase(false, 1)] [TestCase(true, 1)] [TestCase(true, 2)] [TestCase(true, 3)]
+        public void OtherClosedMeshContactsAreDiagnosticButSameMeshOrUnknownOwnershipStillRefuses(bool local, int missing)
+        {
+            int[] absent = missing == 1 ? new[] { 2 } : missing == 2 ? new[] { 0, 2 } : new[] { 0, 2, 4 };
+            var donor = Faces.Where((_, k) => !absent.Contains(k / 6)).ToArray();
+            var points = Box.Concat(new[] {
+                new Vector3(-1.3f,-1.3f,-1.3f), new Vector3(-.7f,-1.3f,-.7f),
+                new Vector3(-.7f,-.7f,-1.3f), new Vector3(-1.3f,-.7f,-.7f) }).ToArray();
+            var indices = donor.Concat(new[] {8,10,9,8,9,11,9,10,11,10,8,11}).ToArray();
+            var owners = Enumerable.Repeat(0, donor.Length / 3).Concat(Enumerable.Repeat(1, 4)).ToArray();
+            var saved = (Vector3[])points.Clone(); var savedIndices = (int[])indices.Clone();
+            var support = RemeshPlanarCap.Prepare(points, indices, "all", default, local, sourceFaceOwners: owners);
+            Assert.AreEqual(missing * 2, support.addedFaces);
+            Assert.Greater(support.externalContacts.count, 0);
+            var topology = RemeshTopology.Inspect(support.positions, support.indices);
+            Assert.IsTrue(topology.Valid); Assert.AreEqual(0, topology.boundary.Count);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(support.positions, support.indices, default).All(v => v));
+            for (int i = 0; i < indices.Length; ++i) Assert.AreEqual(points[indices[i]], support.positions[support.indices[i]]);
+            CollectionAssert.AreEqual(saved, points); CollectionAssert.AreEqual(savedIndices, indices);
+            foreach (var strictOwners in new[] { new int[owners.Length], owners.Select(v => v == 1 ? -1 : v).ToArray(), owners.Select(v => v == 0 ? -1 : v).ToArray() })
+                Assert.Throws<InvalidOperationException>(() => RemeshPlanarCap.Prepare(points, indices, "all", default, local, sourceFaceOwners: strictOwners));
+            Assert.Throws<ArgumentException>(() => RemeshPlanarCap.Prepare(points, indices, "all", default, local, sourceFaceOwners: new[] { 0 }));
+            TestContext.WriteLine($"External closed mesh: {support.externalContacts.count} diagnostic contacts; {support.addedFaces} added faces.");
+        }
+
+        [Test]
+        public void NativeGuardStillRefusesMeasuredOpenUnionOfIntersectingClosedDonors()
+        {
+            var points = Box.Concat(new[] {
+                new Vector3(-1.3f,-1.3f,-1.3f), new Vector3(-.7f,-1.3f,-.7f),
+                new Vector3(-.7f,-.7f,-1.3f), new Vector3(-1.3f,-.7f,-.7f) }).ToArray();
+            var indices = Faces.Where((_, k) => k / 6 != 2).Concat(new[] {8,10,9,8,9,11,9,10,11,10,8,11}).ToArray();
+            var owners = Enumerable.Repeat(0, 10).Concat(Enumerable.Repeat(1, 4)).ToArray();
+            var support = RemeshPlanarCap.Prepare(points, indices, "all", default, sourceFaceOwners: owners);
+            Assert.Greater(support.externalContacts.count, 0);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(support.positions, support.indices, default).All(v => v));
+            var saved = (int[])support.indices.Clone(); var savedPoints = (Vector3[])support.positions.Clone();
+            var error = Assert.Throws<InvalidOperationException>(() =>
+                RemeshNative.Voxelize(support.positions, support.indices, new RemeshSettings { voxelResolution = 64, solve = false }, default));
+            StringAssert.Contains("Solid voxel remesh is not a valid closed surface", error.Message);
+            StringAssert.Contains("boundary 9", error.Message);
+            CollectionAssert.AreEqual(saved, support.indices); CollectionAssert.AreEqual(savedPoints, support.positions);
+            TestContext.WriteLine("Measured native limitation after successful Cap: " + error.Message);
+        }
+
+        [TestCase(1)] [TestCase(2)]
+        public void ExternalSourcePolicyNeverExemptsEarlierSyntheticFaces(int priorFaces)
+        {
+            var positions = new[] {
+                new Vector3(10,10,10), new Vector3(11,10,10), new Vector3(10,11,10),
+                Vector3.zero, Vector3.right, Vector3.up,
+                new Vector3(.25f,.25f,-1), new Vector3(.25f,.25f,1), new Vector3(.75f,.25f,0) };
+            var exact = positions.Select(RemeshCapIntersection.Point).ToArray();
+            var contacts = new RemeshPlanarCap.ExternalContacts { faceOwners = new[] { 1 }, closingOwners = new System.Collections.Generic.HashSet<int> { 0 } };
+            int trials = 0;
+            var error = Assert.Throws<InvalidOperationException>(() => RemeshPlanarCap.AuditContacts(positions, exact,
+                Enumerable.Range(0, 9).ToArray(), priorFaces, default, ref trials, out _, contacts));
+            StringAssert.Contains("new face 2 contacts face 1", error.Message);
+            Assert.AreEqual(0, contacts.count);
+        }
+
         [Test]
         public void IntersectingObstacleRejectsCapEvenThoughSourceTopologyIsValid()
         {

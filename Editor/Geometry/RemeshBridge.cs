@@ -12,7 +12,7 @@ namespace SashaRX.UnityMeshLab
         sealed class Path { internal double score; internal string moves; }
 
         internal static int[] Generate(Vector3[] p, int[] source, List<int> a, List<int> forwardB,
-            CancellationToken token, ref int trials, out int contacts)
+            CancellationToken token, ref int trials, out int contacts, RemeshPlanarCap.ExternalContacts external = null)
         {
             if (a.Count > MaxEdges || forwardB.Count > MaxEdges)
                 throw new InvalidOperationException("Bridge refused: each rim is limited to 64 edges.");
@@ -28,6 +28,7 @@ namespace SashaRX.UnityMeshLab
             var normalized = new Vector3[p.Length]; var exact = new RemeshCapIntersection.Q[p.Length][];
             for (int i = 0; i < p.Length; ++i) { normalized[i] = (p[i]-low)/scale; exact[i] = RemeshCapIntersection.Point(p[i]); }
             int states = 0; contacts = 0; int[] best = null; double score = double.PositiveInfinity;
+            RemeshPlanarCap.ExternalContacts bestContacts = null;
             for (int phase = 0; phase < forwardB.Count; ++phase) {
                 var b = new List<int>(); var nb = new Vector3[forwardB.Count];
                 for (int j = 0; j < forwardB.Count; ++j) {
@@ -43,12 +44,14 @@ namespace SashaRX.UnityMeshLab
                     // are checked above, not inferred from the zipper's score.
                     var annulus = RemeshTopology.Inspect(p,patch,token);
                     if (!annulus.Valid || annulus.euler.Count != 1 || annulus.euler[0] != 0 || annulus.boundary.Count != a.Count+b.Count) continue;
-                    try { RemeshPlanarCap.AuditContacts(p,exact,candidate,source.Length/3,token,ref trials,out int tested); contacts += tested; }
+                    var candidateContacts = external?.Fork();
+                    try { RemeshPlanarCap.AuditContacts(p,exact,candidate,source.Length/3,token,ref trials,out int tested,candidateContacts); contacts += tested; }
                     catch (InvalidOperationException ex) when (ex.Message.Contains("contacts face")) { continue; }
-                    if (path.score < score) { score = path.score; best = patch; }
+                    if (path.score < score) { score = path.score; best = patch; bestContacts = candidateContacts; }
                 }
             }
             if (best == null) throw new InvalidOperationException("Bridge refused: no non-intersecting annulus in the bounded zipper family.");
+            external?.Merge(bestContacts);
             return best;
         }
 
