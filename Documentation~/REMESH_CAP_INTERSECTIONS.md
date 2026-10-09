@@ -74,6 +74,11 @@ Correcting Cap intersections alone has not yet been shown to fix voxel topology.
 
 ## Next controlled experiment
 
+The following experiment was subsequently implemented and measured in
+[Compound Cap results](REMESH_COMPOUND_CAP.md). It eliminates new geometric
+intersections but leaves a disconnected vertex fan and invalid voxel topology;
+it is not accepted as a production repair.
+
 Construct a single domain for the main outer contour with its interior
 boundaries, retaining the existing source islands. Handle the touching boundary
 explicitly instead of treating it as an ordinary disjoint hole. Reject occupied

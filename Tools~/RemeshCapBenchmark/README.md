@@ -4,9 +4,12 @@ Offline diagnostics for a proposed source Cap. These tools do not change Unity
 meshes, settings, native binaries, or the production Remesh pipeline. Private
 model captures and generated reports belong in ignored scratch directories.
 
-Python dependencies: NumPy; Matplotlib only for the optional plot.
+Python dependencies: NumPy 2.1.3 and Triangle 20250106 for the compound experiment
+and its tests; Matplotlib only for the optional plot. Triangle remains an external
+offline dependency; no library is vendored or linked into Unity.
 
 ```powershell
+python -m pip install numpy==2.1.3 triangle==20250106
 python -m unittest discover -s 'Tools~/RemeshCapBenchmark' -v
 python 'Tools~/RemeshCapBenchmark/analyze.py' --source SOURCE.bin --capped CAPPED.bin --voxel VOXEL.npz --resolution 128 --output REPORT.json
 python 'Tools~/RemeshCapBenchmark/render.py' --report REPORT.json --output REPORT.png
@@ -38,6 +41,12 @@ face or new improper intersection/contact. It is a geometric gate only; full Cap
 needs separate topology, component/volume, and shape checks. It does not repair
 or silently remove any offending face.
 
+`topology` also records closed edges, duplicates, winding, degenerate faces and
+disconnected geometric vertex fans, independently of UV/normal vertex splits.
+`capAccepted` requires both the geometric gate and closed manifold topology.
+This is not a full solid/bake-quality certificate: existing source intersections,
+volume, shape deviation and the actual voxel output still need verification.
+
 Each report preserves zero-based face IDs, cap component IDs, and 3D intersection
 witnesses. Cap components join over shared edges, not over a lone contact vertex.
 Voxel defects are sampled once per duplicate geometric face group and once per
@@ -49,3 +58,32 @@ not prove that the entire offending face is far from an intersection.
 
 Measured PileOfBricks findings and the next experiment are recorded in
 `Documentation~/REMESH_CAP_INTERSECTIONS.md`.
+
+## Controlled compound Cap experiment
+
+```powershell
+python 'Tools~/RemeshCapBenchmark/compound.py' --source SOURCE.bin --boundaries BOUNDARIES.json --shear 0.1 -1 --floor-margin 0.0001 --output CANDIDATE.bin
+```
+
+Boundary JSON is an array of directed cycles covering every original boundary
+edge once. Its integer vertex slots refer to `np.unique(sourcePositions, axis=0)`
+(lexicographic geometric weld), not raw imported vertex indices. The tool rejects
+missing/reversed edges, crossed projected constraints, overlaps and T junctions.
+Shared branch vertices remain explicit and are checked for disconnected fans.
+
+Projection is `(X + shearX * Y, Z + shearZ * Y)`. Projection and the floor margin
+are explicit capture-unit parameters, not automatic production defaults. The
+largest projected contour determines winding; oppositely wound contours are
+treated as interior boundaries. This assumes one layer of holes in equally
+oriented domains; arbitrary nested volumes and sheets are outside its scope.
+
+The experiment constrains boundary edges, adds only interior vertices, and lifts
+them to `min(sourceY) - floorMargin`. It then performs up to `--max-rounds` local
+refinement rounds at remaining source/Cap crossings. This changes the closure
+surface, so shape and bake behavior must be measured before production use.
+It never moves/splits an original source edge or face and checks the face prefix.
+It writes a diagnostic candidate and JSON even when rejected; exit code **2**
+means `capAccepted=false`. Do not apply that candidate to a Unity asset.
+
+Measured results, remaining branch/voxel failures and limitations:
+`Documentation~/REMESH_COMPOUND_CAP.md`.

@@ -37,6 +37,13 @@ def main():
         axes[0].text(*center,f'{group} ({len(faces)}f)',fontsize=8,color=colors(group),bbox={'facecolor':'white','alpha':.9,'edgecolor':'none','pad':1})
     for ax in axes[1:]:
         ax.add_collection(LineCollection(np.concatenate(contours),colors='#b4bbc4',linewidths=.7))
+    fans=report.get('topology',{}).get('disconnectedFanPositions',[])
+    if fans:
+        locations=np.array(fans)[:,[0,2]]
+        axes[0].scatter(locations[:,0],locations[:,1],marker='x',color='#d63235',s=60,zorder=5)
+        axes[0].annotate(f'{len(fans)} disconnected vertex fan(s)',locations[0],xytext=(5,-25),
+                         textcoords='offset points',color='#d63235',fontsize=9,
+                         bbox={'facecolor':'white','edgecolor':'none','alpha':.9})
     palette={'source-source':'#267f4b','source-cap':'#d63235','cap-cap':'#aa31af'}
     for role,color in palette.items():
         proper=[pair for pair in report['pairs'] if pair['role']==role and pair['kind'] in ('crossing','coplanar_overlap')]
@@ -61,7 +68,10 @@ def main():
             if len(points):
                 axes[2].scatter(points[:,0],points[:,2],s=9,color=color,label=f'{label}: {len(points)}',alpha=.7)
         near=voxel['association'].get('non_manifold_edge',{}).get('capCrossingsWithin2Cells',0)
-        axes[2].text(.02,.02,f'{near}/{voxel["counts"]["nonManifoldEdges"]} edge midpoints within 2 voxel cells\nof new crossing/overlap geometry',transform=axes[2].transAxes,fontsize=9,bbox={'facecolor':'white','edgecolor':'#dde0e4','alpha':.95})
+        note=f'{near}/{voxel["counts"]["nonManifoldEdges"]} edge midpoints within 2 voxel cells\nof new crossing/overlap geometry'
+        if not report['summary']['newCrossingOrOverlapPairs']:
+            note=f'No new Cap crossings/overlaps.\n{voxel["counts"]["nonManifoldEdges"]} non-manifold edges remain.'
+        axes[2].text(.02,.02,note,transform=axes[2].transAxes,fontsize=9,bbox={'facecolor':'white','edgecolor':'#dde0e4','alpha':.95})
     voxel_title='Voxel defects'
     if report['voxels']:
         voxel_title=f"Voxel defects, resolution {voxel['resolution']} / {Path(voxel['file']).stem}"
