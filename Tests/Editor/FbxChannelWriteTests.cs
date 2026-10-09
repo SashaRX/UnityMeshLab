@@ -6,7 +6,10 @@ using System.Linq;
 using NUnit.Framework;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
 using System.IO;
+using System.Collections.Generic;
 using Autodesk.Fbx;
+using UnityEditor;
+using UnityEngine;
 #endif
 
 namespace SashaRX.UnityMeshLab.Tests
@@ -132,6 +135,102 @@ namespace SashaRX.UnityMeshLab.Tests
             int format = manager.GetIOPluginRegistry().FindWriterIDByDescription(binary ? "FBX binary (*.fbx)" : "FBX ascii (*.fbx)");
             Assert.IsTrue(exporter.Initialize(path, format, io) && exporter.SetFileExportVersion("FBX201400") && exporter.Export(scene));
             return path;
+        }
+
+        [TestCase(ModelImporterMeshCompression.Off)]
+        [TestCase(ModelImporterMeshCompression.Low)]
+        [TestCase(ModelImporterMeshCompression.Medium)]
+        [TestCase(ModelImporterMeshCompression.High)]
+        public void ChannelWrite_CompressedImportKeepsSourceAndWritesUv1(ModelImporterMeshCompression compression)
+        {
+            string assetFolder = "Assets/MeshLabCornerTags_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring("Assets/".Length));
+            string sourcePath = assetFolder + "/source.fbx";
+            string outputPath = Path.Combine(folder, "written.fbx");
+            Mesh working = null;
+            try
+            {
+                File.WriteAllBytes(sourcePath, File.ReadAllBytes(WriteSource(true)));
+                AssetDatabase.ImportAsset(sourcePath, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(sourcePath);
+                importer.isReadable = true;
+                importer.keepQuads = true;
+                importer.generateSecondaryUV = false;
+                importer.meshCompression = compression;
+                importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(sourcePath).OfType<Mesh>().Single();
+                working = UnityEngine.Object.Instantiate(imported);
+                working.uv2 = imported.uv.Select(uv => new Vector2(uv.x * .37f + .13f, uv.y * .41f + .17f)).ToArray();
+                var sourceBytes = File.ReadAllBytes(sourcePath);
+                var metaBytes = File.ReadAllBytes(sourcePath + ".meta");
+                Assert.IsTrue(FbxChannelWrite.Write(sourcePath,
+                    new[] { new MeshEntry { fbxMesh = imported, originalMesh = working } },
+                    FbxExportIntent.UV1, outputPath, null));
+                CollectionAssert.AreEqual(sourceBytes, File.ReadAllBytes(sourcePath));
+                CollectionAssert.AreEqual(metaBytes, File.ReadAllBytes(sourcePath + ".meta"));
+                Assert.AreEqual(compression, ((ModelImporter)AssetImporter.GetAtPath(sourcePath)).meshCompression);
+                using var source = FbxSourceDocument.Load(Path.GetFullPath(sourcePath));
+                using var written = FbxSourceDocument.Load(outputPath);
+                var sourceMesh = source.Meshes.Single();
+                var writtenMesh = written.Meshes.Single();
+                Assert.AreEqual((source.Binary, source.Major, source.Minor), (written.Binary, written.Major, written.Minor));
+                Assert.AreEqual(sourceMesh.GetControlPointsCount(), writtenMesh.GetControlPointsCount());
+                for (int p = 0; p < sourceMesh.GetControlPointsCount(); p++)
+                {
+                    var before = sourceMesh.GetControlPointAt(p);
+                    var after = writtenMesh.GetControlPointAt(p);
+                    for (int axis = 0; axis < 3; axis++) Assert.AreEqual(before[axis], after[axis]);
+                }
+                var sourceTopology = new FbxLayerChannels.Topology(sourceMesh);
+                var writtenTopology = new FbxLayerChannels.Topology(writtenMesh);
+                CollectionAssert.AreEqual(sourceTopology.polygonSizes, writtenTopology.polygonSizes);
+                CollectionAssert.AreEqual(sourceTopology.cornerControlPoint, writtenTopology.cornerControlPoint);
+                CollectionAssert.AreEqual(FbxLayerChannels.ReadUv(FbxLayerChannels.UvElements(sourceMesh)[0], sourceTopology),
+                    FbxLayerChannels.ReadUv(FbxLayerChannels.UvElements(writtenMesh)[0], writtenTopology));
+                CollectionAssert.AreEqual(FbxLayerChannels.ReadColor(FbxLayerChannels.ColorElement(sourceMesh), sourceTopology),
+                    FbxLayerChannels.ReadColor(FbxLayerChannels.ColorElement(writtenMesh), writtenTopology));
+                var uv1 = FbxLayerChannels.ReadUv(FbxLayerChannels.UvElements(writtenMesh)[1], writtenTopology);
+                Assert.AreEqual(sourceTopology.CornerCount * 2, uv1.Length);
+                var uv0 = FbxLayerChannels.ReadUv(FbxLayerChannels.UvElements(sourceMesh)[0], sourceTopology);
+                var importedUvs = imported.uv;
+                var editedUvs = working.uv2;
+                for (int c = 0; c < sourceTopology.CornerCount; c++)
+                {
+                    // The original values are distinct (apart from corners sharing an edit).
+                    // Find their imported, compressed counterparts independently of the tags.
+                    var originalUv = new Vector2((float)uv0[c * 2], (float)uv0[c * 2 + 1]);
+                    int vertex = Enumerable.Range(0, importedUvs.Length)
+                        .OrderBy(i => (importedUvs[i] - originalUv).sqrMagnitude).First();
+                    Assert.That((importedUvs[vertex] - originalUv).magnitude, Is.LessThan(.005f));
+                    Assert.AreEqual((double)editedUvs[vertex].x, uv1[c * 2], $"corner {c} U");
+                    Assert.AreEqual((double)editedUvs[vertex].y, uv1[c * 2 + 1], $"corner {c} V");
+                }
+            }
+            finally
+            {
+                if (working != null) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
+        [Test]
+        public void CornerTags_DecodeSmallCompressionNoiseIncludingNegativeZero()
+        {
+            Assert.AreEqual(0, FbxChannelWrite.TagOrdinal(new List<Vector2>
+                { new Vector2(-.000000894f, -1), new Vector2(131.00101f, -1) }));
+        }
+
+        [TestCase(-1f, -1f)]
+        [TestCase(-.01f, -1f)]
+        [TestCase(.01f, -1f)]
+        [TestCase(1f, -1.01f)]
+        [TestCase(1f, -2f)]
+        [TestCase(float.NaN, -1f)]
+        [TestCase(float.PositiveInfinity, -1f)]
+        public void CornerTags_RefuseInvalidNumbersAndMixedOrdinals(float corner, float ordinal)
+        {
+            Assert.AreEqual(-1, FbxChannelWrite.TagOrdinal(new List<Vector2>
+                { new Vector2(0, -1), new Vector2(corner, ordinal) }));
         }
 
         [TestCase(true)]

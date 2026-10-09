@@ -103,3 +103,35 @@ missing mesh. Speaker completed in approximately 0.45–0.68 seconds per run;
 its reported hang was **not reproduced** with the controlled settings. These
 times are local observations, not throughput targets. Actual scene/captured
 settings are still needed to diagnose a hang outside this setup.
+
+### Compressed FBX channel save: metal_beam
+
+The Bakery messages about checking `Assets/__MeshLabTemp/corner_tags_*.fbx`
+announce a UV overlap scan; they do not report an overlap. The reported save
+failure came from decoding the temporary FBX corner tags instead.
+
+The original `metal_beam.fbx` uses Low Mesh Compression. Its corner-zero tag
+imports as approximately `-0.000000894`, which the previous sign check rejected
+before rounding. High Compression also produces an approximately `0.00101`
+fractional error at corner 131. The decoder now checks the rounded corner ID
+after a bounded `0.002` precision check. Negative IDs, larger fractional errors,
+non-finite numbers and inconsistent mesh ordinals are still refused. Exact
+position/attribute pairing and atomic-write refusal remain unchanged; compression
+is kept on the temporary import so its positions match the working mesh.
+
+An isolated copy of the actual model successfully wrote UV1 (Unity UV2) at Off,
+Low, Medium and High Compression. All 132 corner values equal the edited values;
+original UV0 values, control points, polygons and the input file/metadata are
+unchanged. The actual E: project model and its importer were not modified.
+Original FBX SHA-256:
+`95E9AF9F18BAE78536CFCED21EB363857F14802CDFFC6DE7D26C45813107AF26`.
+
+A separate quad/n-gon fixture with UV seams and full-precision vertex colours
+reproduced the old refusal at Low and Medium Compression. The fixed integration
+test covers all four compression settings and verifies written corner values,
+source bytes/metadata, polygons, control points, UV0, colours and FBX format.
+Related FBX EditMode tests: **86 passed, 0 failed, 0 skipped** on Unity 6000.2.6f2.
+Both reference C# compile variants also passed. Evidence is local under
+`_results~/fbx-compression-20261009/` (`fbx-final.xml`, `metal-write-final.log`).
+This case establishes safe export of the tested meshes, not a fix for the
+remaining transfer overlaps or chart collapse described above.

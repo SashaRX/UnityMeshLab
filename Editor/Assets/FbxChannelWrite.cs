@@ -164,8 +164,8 @@ namespace SashaRX.UnityMeshLab
                 {
                     if (importedNames.Contains(donor.name))
                         throw new InvalidOperationException(
-                            $"'{donor.name}': the corner tags did not survive the import (is Mesh Compression on for '{sourceFbxPath}'? " +
-                            "The exact corner pairing needs it Off); nothing was written.");
+                            $"'{donor.name}': the corner tags could not be decoded safely after import. " +
+                            $"Mesh Compression may need to be reduced for '{sourceFbxPath}'; nothing was written.");
                     UvtLog.Warn($"[FBX Export] '{donor.name}' is not a mesh of '{sourceFbxPath}'; skipped.");
                     continue;
                 }
@@ -627,20 +627,24 @@ namespace SashaRX.UnityMeshLab
         }
 
         // The ordinal every vertex of the channel agrees on, or -1 when it is not a tag channel.
-        static int TagOrdinal(List<Vector2> tags)
+        internal static int TagOrdinal(List<Vector2> tags)
         {
             float v = tags[0].y;
             if (v >= 0 || !IsWhole(v, out int tagValue)) return -1;
             foreach (var t in tags)
-                if (!IsWhole(t.y, out int y) || y != tagValue || t.x < 0 || !IsWhole(t.x, out _)) return -1;
+                // Mesh Compression can import the zero corner as a tiny negative value.
+                // Validate the decoded integer after the precision check, not its noisy sign.
+                if (!IsWhole(t.y, out int y) || y != tagValue || !IsWhole(t.x, out int corner) || corner < 0) return -1;
             return -tagValue - 1;
         }
 
-        // Tag values are whole numbers below 2^24, so any fractional part means "not a tag".
+        // Tags are integral below 2^24. Allow tiny import/compression noise, including
+        // the ~0.00101 error measured at corner 131 with High Compression, while keeping
+        // the tolerance far below the distance to another integer ID.
         static bool IsWhole(float f, out int whole)
         {
             whole = Mathf.RoundToInt(f);
-            return Mathf.Abs(f - whole) < 1e-3f;
+            return Mathf.Abs(f - whole) < 2e-3f;
         }
 
         // The file's per-corner UV values as Unity imports them (single precision).
