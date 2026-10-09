@@ -14,6 +14,7 @@ namespace SashaRX.UnityMeshLab
         {
             public string stage, node, reason, settingsJson;
             public int resolution;
+            public int capRevision;
             public uint initialFlags, resultFlags;
         }
 
@@ -22,13 +23,19 @@ namespace SashaRX.UnityMeshLab
         internal static string CaptureFailure(Vector3[] sourcePositions, int[] sourceIndices,
             RemeshNative.IndexedMesh raw, RemeshNative.IndexedMesh input, RemeshSettings settings,
             string stage, string node, string reason, int resolution, uint initialFlags, uint resultFlags)
+            => CaptureFailure(sourcePositions, sourceIndices, raw, input, settings, stage, node, reason, resolution, initialFlags, resultFlags, null);
+
+        internal static string CaptureFailure(Vector3[] sourcePositions, int[] sourceIndices,
+            RemeshNative.IndexedMesh raw, RemeshNative.IndexedMesh input, RemeshSettings settings,
+            string stage, string node, string reason, int resolution, uint initialFlags, uint resultFlags, RemeshPlanarCap.Support support)
         {
             try {
                 string path = WriteFailure(Path.Combine(Path.GetTempPath(), "meshlab-uvmerge", "failures"),
                     sourcePositions, sourceIndices, raw, input, new FailureMetadata {
                         stage = stage, node = node, reason = reason, settingsJson = JsonUtility.ToJson(settings),
-                        resolution = resolution, initialFlags = initialFlags, resultFlags = resultFlags
-                    });
+                        resolution = resolution, initialFlags = initialFlags, resultFlags = resultFlags,
+                        capRevision = support == null ? 0 : RemeshPlanarCap.Revision
+                    }, support);
                 UvtLog.Warn("[Remesh] " + stage + " failure geometry and settings captured to " + path);
                 return path;
             }
@@ -40,6 +47,10 @@ namespace SashaRX.UnityMeshLab
 
         internal static string WriteFailure(string directory, Vector3[] sourcePositions, int[] sourceIndices,
             RemeshNative.IndexedMesh raw, RemeshNative.IndexedMesh input, FailureMetadata metadata)
+            => WriteFailure(directory, sourcePositions, sourceIndices, raw, input, metadata, null);
+
+        internal static string WriteFailure(string directory, Vector3[] sourcePositions, int[] sourceIndices,
+            RemeshNative.IndexedMesh raw, RemeshNative.IndexedMesh input, FailureMetadata metadata, RemeshPlanarCap.Support support)
         {
             lock (FailureWriteLock) {
                 Directory.CreateDirectory(directory);
@@ -48,9 +59,10 @@ namespace SashaRX.UnityMeshLab
                 string partial = path + ".tmp";
                 try {
                     using (var writer = new BinaryWriter(File.Create(partial))) {
-                        writer.Write(0x524D4C42); writer.Write(2);
+                        writer.Write(0x524D4C42); writer.Write(support == null ? 2 : 3);
                         writer.Write(JsonUtility.ToJson(metadata));
                         WriteOptional(writer, sourcePositions, sourceIndices);
+                        if (support != null) WriteOptional(writer, support.positions, support.indices);
                         WriteOptional(writer, raw?.positions, raw?.indices);
                         WriteOptional(writer, input?.positions, input?.indices);
                     }
@@ -73,6 +85,17 @@ namespace SashaRX.UnityMeshLab
             bool present = positions != null && indices != null;
             writer.Write(present);
             if (present) Write(writer, positions, indices);
+        }
+
+        internal static void CaptureSupport(RemeshSource source, RemeshPlanarCap.Support support, RemeshSettings settings, string node)
+        {
+            try {
+                string path = WriteFailure(Path.Combine(Path.GetTempPath(), "meshlab-uvmerge", "cap"), source.positions, source.indices,
+                    null, null, new FailureMetadata { stage = "Cap preparation", node = node, reason = support.Description,
+                        settingsJson = JsonUtility.ToJson(settings), capRevision = RemeshPlanarCap.Revision }, support);
+                UvtLog.Info("[Remesh] Original donor and prepared Cap support captured to " + path);
+            }
+            catch (Exception error) { UvtLog.Warn("[Remesh] Cap support capture failed: " + error.Message); }
         }
 
         internal static void Capture(RemeshSource source, RemeshNative.IndexedMesh raw,

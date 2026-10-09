@@ -48,6 +48,15 @@ Binary layout is little endian:
 The prior successful-stage version 1 format remains unchanged. Its reader must
 not treat the new version as a version 1 payload.
 
+With prepared planar Cap support, version **3** adds a fourth slot: **source**,
+**prepared**, **raw**, **input**, in that order. `source` still means the original
+filtered donor. `prepared` contains welded positions/indices and synthetic Cap
+faces; its original face prefix retains donor face order via the support remap.
+Metadata additionally records `capRevision`. Preparation-only captures have
+absent raw/input slots and live in `%TEMP%/meshlab-uvmerge/cap/`, with independent
+three-file retention. The decoder accepts both v2 and v3. See
+[managed integration](REMESH_PLANAR_CAP_UNITY.md) for closure intent and limitations.
+
 ```powershell
 python 'Tools~/RemeshCapBenchmark/failure_capture.py' --capture FAILURE.bin --output PRIVATE_OUTPUT
 ```

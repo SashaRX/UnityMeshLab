@@ -30,6 +30,22 @@ def capture_bytes():
 
 
 class FailureCaptureTests(unittest.TestCase):
+    def test_v3_prepared_support_is_separate_from_original_donor(self):
+        binary, metadata, points, source, rejected = capture_bytes()
+        original = b'\x01'+struct.pack('<II',len(points),source.size)+points.tobytes()+source.tobytes()
+        prepared = b'\x01'+struct.pack('<II',len(points),rejected.size)+points.tobytes()+rejected.tobytes()
+        # Insert the explicitly versioned fourth slot; retain absent raw semantics.
+        offset = binary.index(original, 8)+len(original)
+        v3 = struct.pack('<II',0x524D4C42,3)+binary[8:offset]+prepared+binary[offset:]
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/'cap.bin'
+            path.write_bytes(v3)
+            data, meshes = read_failure(path)
+            self.assertEqual(metadata,data)
+            np.testing.assert_array_equal(source,meshes['source'][1])
+            np.testing.assert_array_equal(rejected,meshes['prepared'][1])
+            self.assertIsNone(meshes['raw'])
+
     def test_cross_language_layout_and_exact_geometry_export(self):
         binary, metadata, points, source, rejected = capture_bytes()
         with tempfile.TemporaryDirectory() as folder:

@@ -390,6 +390,16 @@ namespace SashaRX.UnityMeshLab
                             "plane, a curtain) into a thin slab; its back side and rims have no source face nearby with an aligned normal and go. " +
                             "Closed sources are left whole. Turn off to keep the slab, e.g. with Two-sided shell."), settings.trimToSource);
                     }
+                    using (new EditorGUI.DisabledScope(settings.sourceShape == RemeshShape.BoundingBox ||
+                        settings.sourceShape == RemeshShape.LOD0 && settings.shell)) {
+                        settings.planarCap = EditorGUILayout.Toggle(new GUIContent("Cap planar holes (disks)",
+                            "Weld coincident positions in geometry-only support, then close selected continuous planar loops. " +
+                            "This explicitly requests disks, not Bridge. Original material/UV donors are preserved. " +
+                            "Synthetic surfaces project from the original donor; missing projections remain visible as magenta."), settings.planarCap);
+                        if (settings.planarCap) settings.planarCapLoops = EditorGUILayout.TextField(new GUIContent("Cap loop numbers",
+                            "Comma-separated loop numbers, starting at 0 in welded vertex order (e.g. 0,1). " +
+                            "The first prototype requires all openings closed for solid remesh. Nonplanar/ambiguous loops refuse the run."), settings.planarCapLoops);
+                    }
                     settings.sourceBackfaces = (RemeshBackfaces)EditorGUILayout.EnumPopup(new GUIContent("Source backfaces",
                         "Whether the source's back faces count as surface. From materials: two-sided when a material's cull mode is Off or its double-sided " +
                         "switch is on (a Cull Off written into the shader itself is not detectable — use Always). The trim still keeps one sheet; the result " +

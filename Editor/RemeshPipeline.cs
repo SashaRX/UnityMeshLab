@@ -35,6 +35,7 @@ namespace SashaRX.UnityMeshLab
             public Vector3 localScale = Vector3.one;
             public Matrix4x4 spaceToWorld = Matrix4x4.identity; // captured at remesh time
             public RemeshSource source;
+            internal RemeshPlanarCap.Support support;
             public RemeshNative.IndexedMesh voxel, simplified;
             // Trim mask: the untrimmed remesh and the class of each of its faces
             // (RemeshTrim.Kept/Back/Rim), for the Remesh stage's preview; null without a trim.
@@ -154,7 +155,8 @@ namespace SashaRX.UnityMeshLab
         {
             switch (stage) {
                 case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
-                    $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:F4}|{s.minRodVoxels:F3}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}";
+                    $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:F4}|{s.minRodVoxels:F3}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}|" +
+                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
@@ -305,8 +307,27 @@ namespace SashaRX.UnityMeshLab
                 RemeshTrim.Result trim = null;
                 node.voxel = await Task.Run(() => {
                     if (shape == RemeshShape.BoundingBox) return captured.OrientedBoxes();
-                    if (shape == RemeshShape.Hull) return Hull(captured, options, token, node.name);
-                    var voxel = RemeshNative.VoxelizeCaptured(captured.positions, captured.indices, options, token, node.name);
+                    if (options.planarCap && (shape == RemeshShape.Hull || !options.shell)) {
+                        try {
+                            node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token);
+                            UvtLog.Info(LogPrefix + node.name + ": planar Cap " + node.support.Description);
+                            RemeshGeometryDiagnostics.CaptureSupport(captured, node.support, options, node.name);
+                            var closed = RemeshTopology.ClosedVolumeFaces(node.support.positions, node.support.indices, token);
+                            foreach (bool face in closed) if (!face)
+                                throw new InvalidOperationException("Planar Cap support still has an open or zero-volume component. " +
+                                    "Select every required disk loop explicitly; Bridge and compound closure are not inferred.");
+                        }
+                        catch (InvalidOperationException failure) {
+                            RemeshGeometryDiagnostics.CaptureFailure(captured.positions, captured.indices, null, null, options,
+                                "Cap preparation", node.name, failure.Message, 0, 0, 0, node.support);
+                            throw;
+                        }
+                    }
+                    var supportPositions = node.support?.positions ?? captured.positions;
+                    var supportIndices = node.support?.indices ?? captured.indices;
+                    if (shape == RemeshShape.Hull) return Hull(captured, node.support, options, token, node.name);
+                    var voxel = RemeshNative.VoxelizeCaptured(supportPositions, supportIndices, options, token, node.name,
+                        captured.positions, captured.indices, node.support);
                     if (!options.trimToSource || voxel == null) {
                         if (voxel != null) RemeshGeometryDiagnostics.Capture(captured, voxel, voxel, options);
                         return voxel;
@@ -317,7 +338,7 @@ namespace SashaRX.UnityMeshLab
                     foreach (var p in captured.positions) { mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p); }
                     var extent = mx - mn;
                     float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, options.voxelResolution);
-                    trim = RemeshTrim.Trim(voxel, captured.positions, captured.indices, cell * 2f, token);
+                    trim = RemeshTrim.Trim(voxel, supportPositions, supportIndices, cell * 2f, token);
                     node.voxelRaw = voxel; node.trimClasses = trim.classes;
                     RemeshGeometryDiagnostics.Capture(captured, voxel, trim.mesh, options);
                     return trim.mesh;
@@ -387,11 +408,12 @@ namespace SashaRX.UnityMeshLab
         // design), then a strongly regularized simplification down to a small budget
         // with small-part pruning, so the result is a chunky silhouette that keeps L/T
         // footprints, courtyards and roof steps.
-        static RemeshNative.IndexedMesh Hull(RemeshSource captured, RemeshSettings options, CancellationToken token, string node)
+        static RemeshNative.IndexedMesh Hull(RemeshSource captured, RemeshPlanarCap.Support support, RemeshSettings options, CancellationToken token, string node)
         {
             var coarse = JsonUtility.FromJson<RemeshSettings>(JsonUtility.ToJson(options));
             coarse.voxelResolution = options.hullResolution; coarse.solve = false; coarse.shell = false;
-            var voxel = RemeshNative.VoxelizeCaptured(captured.positions, captured.indices, coarse, token, node);
+            var voxel = RemeshNative.VoxelizeCaptured(support?.positions ?? captured.positions, support?.indices ?? captured.indices,
+                coarse, token, node, captured.positions, captured.indices, support);
             coarse.targetTriangles = options.hullTriangles; coarse.maximumError = 0.5f;
             coarse.regularize = RemeshRegularize.Strong; coarse.preserveFolds = false; coarse.pruneSmallParts = true;
             return RemeshNative.Simplify(voxel, coarse, token, out _);
@@ -411,7 +433,8 @@ namespace SashaRX.UnityMeshLab
                     try {
                         node.simplified = await Task.Run(() => {
                             bool fit = options.solve && !options.shell && options.sourceShape == RemeshShape.LOD0;
-                            return fit ? RemeshSurfaceRefine.Simplify(input, node.source.positions, node.source.indices, options, token, out error)
+                            return fit ? RemeshSurfaceRefine.Simplify(input, node.support?.positions ?? node.source.positions,
+                                node.support?.indices ?? node.source.indices, options, token, out error)
                                 : RemeshNative.Simplify(input, options, token, out error);
                         }, token);
                     }
@@ -419,7 +442,7 @@ namespace SashaRX.UnityMeshLab
                         uint flags = (options.solve ? 1u : 0u) | (options.shell ? 2u : 0u);
                         int resolution = options.sourceShape == RemeshShape.Hull ? options.hullResolution : options.voxelResolution;
                         RemeshGeometryDiagnostics.CaptureFailure(node.source.positions, node.source.indices,
-                            node.voxelRaw, input, options, "Simplify", node.name, failure.Message, resolution, flags, flags);
+                            node.voxelRaw, input, options, "Simplify", node.name, failure.Message, resolution, flags, flags, node.support);
                         throw;
                     }
                     node.simplifyError = error;
@@ -490,8 +513,8 @@ namespace SashaRX.UnityMeshLab
                     // GPU: the band loop is driven from here (main thread) so the compute
                     // dispatches are legal; CPU: the whole bake on a worker.
                     node.maps = options.gpuProjection && GpuBvh.Supported
-                        ? await RemeshBaker.BakeAsync(source, target, frame, options, token, nodeBeauty, RemeshBaker.CreateGpu)
-                        : await Task.Run(() => RemeshBaker.Bake(source, target, frame, options, token, nodeBeauty), token);
+                        ? await RemeshBaker.BakeAsync(source, target, frame, options, token, nodeBeauty, RemeshBaker.CreateGpu, support: node.support)
+                        : await Task.Run(() => RemeshBaker.Bake(source, target, frame, options, token, nodeBeauty, node.support), token);
                 }
                 finally { source.ReleaseLightmaps(); }
                 // A re-bake without the transfer must not keep the previous colors.
@@ -500,6 +523,8 @@ namespace SashaRX.UnityMeshLab
                 misses += node.maps.misses; covered += node.maps.covered; empty += node.maps.empty; warnings += source.warnings.Length;
                 partialMisses += node.maps.partialMisses;
                 LogDiagnostics(node, options.sourceShape);
+                if (node.support?.addedFaces > 0) UvtLog.Info(LogPrefix + node.name + $": Cap-associated bake texels {node.maps.capCovered}, " +
+                    $"missed {node.maps.capMisses}, partially projected {node.maps.capPartialMisses}. Original donors only; nearest-support face classification.");
             }
             token.ThrowIfCancellationRequested();
             var primary = Primary;

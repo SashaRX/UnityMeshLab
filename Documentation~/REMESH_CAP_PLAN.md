@@ -205,6 +205,13 @@ certify shape or implement automatic planar feature-graph completion.
 
 ## Integration and regression controls
 
+The [first managed planar disk integration](REMESH_PLANAR_CAP_UNITY.md) now adds
+opt-in welded support before solid Voxelize, retained through Trim and fitted
+Simplify. Original bake donors remain separate. Sandbag succeeds at 64/128;
+256 is safely rejected for a remaining native defect. P6 is partial: automatic
+rim selection, Bridge/compound reconstruction and broader real-model evidence
+remain outstanding.
+
 An [explicitly selected planar disk generator](REMESH_SANDBAG_PLANAR_CAP.md) now
 triangulates simple whole-rim candidates and checks them through the independent
 incremental audit. On a real SandbagRoundedcorner capture, 45 generated floor

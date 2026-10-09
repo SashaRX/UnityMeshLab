@@ -77,7 +77,8 @@ namespace SashaRX.UnityMeshLab
             => VoxelizeCaptured(positions, indices, settings, token, "");
 
         internal static IndexedMesh VoxelizeCaptured(Vector3[] positions, int[] indices, RemeshSettings settings,
-            CancellationToken token, string node)
+            CancellationToken token, string node, Vector3[] donorPositions = null, int[] donorIndices = null,
+            RemeshPlanarCap.Support support = null)
         {
             settings.Validate();
             token.ThrowIfCancellationRequested();
@@ -87,8 +88,8 @@ namespace SashaRX.UnityMeshLab
             return GuardVoxelSolid(result, flags, resolution, token,
                 retryFlags => VoxelizeRaw(positions, indices, resolution, retryFlags, token),
                 (first, rejected, rejectedFlags, reason) => RemeshGeometryDiagnostics.CaptureFailure(
-                    positions, indices, first, rejected, settings, "Voxel solid preflight", node, reason,
-                    resolution, flags, rejectedFlags)).PrepareChannels(token);
+                    donorPositions ?? positions, donorIndices ?? indices, first, rejected, settings, "Voxel solid preflight", node, reason,
+                    resolution, flags, rejectedFlags, support)).PrepareChannels(token);
         }
 
         // A raw solid voxel result must be closed BEFORE source trimming. Otherwise

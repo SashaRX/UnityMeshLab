@@ -1,4 +1,4 @@
-"""Decode a Mesh Lab v2 failure capture without loading Unity or private assets."""
+"""Decode Mesh Lab v2/v3 failure/support captures without Unity or private assets."""
 import argparse
 import io
 import json
@@ -31,13 +31,15 @@ def read_string(stream):
 
 def read_failure(path):
     stream = io.BytesIO(Path(path).read_bytes())
-    if struct.unpack('<II', take(stream, 8)) != (0x524D4C42, 2):
-        raise ValueError('Expected a version 2 Remesh failure capture')
+    magic, version = struct.unpack('<II', take(stream, 8))
+    if magic != 0x524D4C42 or version not in (2, 3):
+        raise ValueError('Expected a version 2 or 3 Remesh failure capture')
     metadata = json.loads(read_string(stream))
     if not isinstance(metadata, dict):
         raise ValueError('Capture metadata must be an object')
     meshes = {}
-    for name in ('source', 'raw', 'input'):
+    slots = ('source', 'prepared', 'raw', 'input') if version == 3 else ('source', 'raw', 'input')
+    for name in slots:
         present = take(stream, 1)[0]
         if present == 0:
             meshes[name] = None

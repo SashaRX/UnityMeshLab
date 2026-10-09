@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- Opt-in selected planar disk Cap before solid Remesh: weld coincident support vertices, preserve donor attributes, validate continuous rims and exact new-face contacts, improve constrained diagonals, and use prepared geometry through Trim/source-fitted Simplify. Bake reports Cap-associated misses from original donors; v3 captures retain original/prepared geometry separately. Bridge and compound closure are not inferred.
 - Failed solid Remesh and pipeline Simplify attempts automatically capture exact source/result geometry, effective stage settings and node context for offline reproduction. Captures retain rejected Solve and fallback attempts without weakening topology guards; a Python decoder exports geometry and topology reports.
 - Add an autonomous UV transfer comparison benchmark with six methods, seven analytic controls, imported FBX aspect/symmetry preparation, portable frozen captures, repeated timing/determinism checks and JSON/CSV/HTML/SVG reports.
 - Diagnostics can capture the next Full Pipeline/Transfer run with exact binary mesh inputs, stage snapshots, texture proportions, cross-LOD hints and shell matching decisions. Replay runs each completed transfer twice and compares UV2 hashes and shell mappings against the captured output; geometry-based axis stretch and positive-area triangle overlaps are reported independently of the existing validator.

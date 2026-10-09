@@ -16,6 +16,7 @@ namespace SashaRX.UnityMeshLab
             public Color[] emission;
             public Color[] vertexColors; // per result vertex, null unless a transfer was requested
             public int size, misses, covered;
+            public int capCovered, capMisses, capPartialMisses;
             public int partialMisses, gutterTexels, gutterMisses, surfaceSamples, boundarySamples;
             public int surfaceEdges, stoppedWalks, walkLimitHits, patchLimitHits, unfoldOverlapTexels;
             public float missedSampleArea;
@@ -60,9 +61,9 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>CPU bake: thread-safe, no UnityEngine.Object access. beauty (optional) folds the scene lighting into the albedo.</summary>
         public static Maps Bake(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents,
-            RemeshSettings settings, CancellationToken token, RemeshBeauty beauty = null)
+            RemeshSettings settings, CancellationToken token, RemeshBeauty beauty = null, RemeshPlanarCap.Support support = null)
         {
-            var ctx = Prepare(source, target, tangents, settings, token, beauty);
+            var ctx = Prepare(source, target, tangents, settings, token, beauty, support);
             var band = new Band(ctx);
             for (int pixel = 0; pixel < ctx.owners.Length; pixel = band.nextPixel) {
                 BuildRequests(ctx, band, pixel, token);
@@ -79,10 +80,11 @@ namespace SashaRX.UnityMeshLab
         /// same as <see cref="Bake"/>'s.
         /// </summary>
         public static async Task<Maps> BakeAsync(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents,
-            RemeshSettings settings, CancellationToken token, RemeshBeauty beauty, Func<Context, GpuBvh> createGpu, bool gpuSourceAO = false)
+            RemeshSettings settings, CancellationToken token, RemeshBeauty beauty, Func<Context, GpuBvh> createGpu, bool gpuSourceAO = false,
+            RemeshPlanarCap.Support support = null)
         {
             var timer = Stopwatch.StartNew();
-            var ctx = await Task.Run(() => Prepare(source, target, tangents, settings, token, beauty), token);
+            var ctx = await Task.Run(() => Prepare(source, target, tangents, settings, token, beauty, support), token);
             ctx.result.gpuPrepareMs = timer.Elapsed.TotalMilliseconds;
             GpuBvh gpu = null;
             SourceAoBaker.Gpu aoGpu = null;
@@ -233,6 +235,7 @@ namespace SashaRX.UnityMeshLab
             public bool[] twoSided;         // source faces whose back counts (null = none)
             public bool facingFilter;
             public bool[] emptyTexels;
+            internal bool[] capFaces;
             public int misses, rayFallbacks, empties, partialMisses, gutterMisses, surfaceSamples, boundarySamples;
             public double missedSampleArea;
             public int invalidNormalFrames;
@@ -323,7 +326,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static Context Prepare(RemeshSource source, RemeshNative.Geometry target, Vector4[] tangents,
-            RemeshSettings settings, CancellationToken token, RemeshBeauty beauty)
+            RemeshSettings settings, CancellationToken token, RemeshBeauty beauty, RemeshPlanarCap.Support support)
         {
             if (target.draftUv) throw new InvalidOperationException("Bake requires an unwrapped atlas; UV0 is still draft.");
             settings.Validate();
@@ -394,6 +397,7 @@ namespace SashaRX.UnityMeshLab
             int bandRows = Mathf.Clamp(QueryBudget / Math.Max(1, size * offsets.Length), 1, size);
             return new Context { source = source, target = target, tangents = tangents, settings = settings, beauty = beauty,
                 result = result, aoBaker = aoBaker, size = size, bandRows = bandRows, offsets = offsets, owners = owners,
+                capFaces = ClassifyCapFaces(target, support, token),
                 receivers = receivers, footprint = footprint, bvh = bvh, cage = cage,
                 proxy = proxy, faceDirs = faceDirs, depth = depth, faceNormals = faceNormals, twoSided = twoSided,
                 facingFilter = facingFilter, emptyTexels = proxy ? new bool[count] : null };
@@ -516,11 +520,14 @@ namespace SashaRX.UnityMeshLab
                 MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) }, r => {
                 int i = band.rowStart[r], end = band.rowStart[r + 1];
                 int misses = 0, fallbacks = 0, empties = 0, partial = 0, gutterMisses = 0, invalidFrames = 0;
+                int capCovered = 0, capMisses = 0, capPartial = 0;
                 double missedArea = 0;
                 while (i < end) {
                     token.ThrowIfCancellationRequested();
                     int pixel = band.pixel[i], receiver = ctx.receivers[pixel];
                     bool covered = ctx.owners[pixel] >= 0;
+                    bool cap = covered && ctx.capFaces != null && ctx.capFaces[ctx.owners[pixel]];
+                    if (cap) ++capCovered;
                     var frame = TargetFrame(ctx, receiver, pixel);
                     Color color = default, metal = default, ao = default, emission = default;
                     Vector3 normal = Vector3.zero;
@@ -551,6 +558,7 @@ namespace SashaRX.UnityMeshLab
                     if (covered && sampleMiss && totalArea > 0) missedArea += (totalArea - hitArea) / totalArea;
                     if (!(hitArea > 0)) {
                         if (!covered) { ++gutterMisses; continue; }
+                        if (cap) ++capMisses;
                         if (ctx.proxy) { ctx.emptyTexels[pixel] = true; ++empties; continue; }
                         ++misses;
                         result.color[pixel] = new Color32(255, 0, 255, 255);
@@ -559,6 +567,7 @@ namespace SashaRX.UnityMeshLab
                         continue;
                     }
                     if (covered && sampleMiss) ++partial;
+                    if (cap && sampleMiss) ++capPartial;
                     float inv = 1f / hitArea;
                     Color averaged = (color * inv).gamma; averaged.a = 1;
                     // Average physical directions before inverse TBN: normalizing the
@@ -573,8 +582,26 @@ namespace SashaRX.UnityMeshLab
                 Interlocked.Add(ref ctx.empties, empties); Interlocked.Add(ref ctx.partialMisses, partial);
                 Interlocked.Add(ref ctx.gutterMisses, gutterMisses);
                 Interlocked.Add(ref ctx.invalidNormalFrames, invalidFrames);
+                Interlocked.Add(ref result.capCovered, capCovered); Interlocked.Add(ref result.capMisses, capMisses);
+                Interlocked.Add(ref result.capPartialMisses, capPartial);
                 if (missedArea > 0) lock (result) ctx.missedSampleArea += missedArea;
             });
+        }
+
+        // Diagnostic association, not exact face provenance after voxelization/
+        // decimation: assign each target centroid to the nearest support face.
+        internal static bool[] ClassifyCapFaces(RemeshNative.Geometry target, RemeshPlanarCap.Support support, CancellationToken token)
+        {
+            if (support == null || support.addedFaces == 0) return null;
+            var bvh = new TriangleBvh(support.positions, support.indices);
+            var result = new bool[target.indices.Length / 3];
+            for (int f = 0; f < result.Length; ++f) {
+                if ((f & 1023) == 0) token.ThrowIfCancellationRequested();
+                var centroid = (target.positions[target.indices[f * 3]] + target.positions[target.indices[f * 3 + 1]] +
+                    target.positions[target.indices[f * 3 + 2]]) / 3f;
+                result[f] = bvh.FindNearest(centroid).triangleIndex >= support.originalFaces;
+            }
+            return result;
         }
 
         static Maps Finish(Context ctx, CancellationToken token)
